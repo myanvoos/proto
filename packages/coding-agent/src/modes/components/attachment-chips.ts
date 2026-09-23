@@ -31,6 +31,7 @@ interface ImageContentWithPng extends ImageContent {
 
 export class AttachmentChipsBand implements Component {
 	#imageIds = new Map<string, { key: string; id: number }>();
+	#maxHeight = INNER_ROWS + 2;
 
 	constructor(
 		private readonly editor: CustomEditor,
@@ -38,27 +39,80 @@ export class AttachmentChipsBand implements Component {
 		private readonly requestRender: () => void,
 	) {}
 
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(0, Math.floor(rows));
+		if (this.#maxHeight === 0) this.#releaseInactiveImages(new Set());
+	}
+
 	render(width: number): readonly string[] {
 		const chips = this.editor.composerChips();
 		const activeImageChips = new Set<string>();
-		if (chips.length === 0) {
+		if (chips.length === 0 || this.#maxHeight === 0 || width <= 0) {
 			this.#releaseInactiveImages(activeImageChips);
 			return [];
 		}
+		if (this.#maxHeight < INNER_ROWS + 2 || width < CARD_COLS) {
+			// Never expose half a box: the atom in the editor retains the payload,
+			// while a complete compact caption identifies the hidden preview.
+			this.#releaseInactiveImages(activeImageChips);
+			const captions = chips.map(chip => {
+				const detail =
+					chip.kind === "image"
+						? "image"
+						: chip.text.lineCount > 1
+							? `${chip.text.lineCount} lines`
+							: `${chip.text.charCount} chars`;
+				return `#${chip.n} ${detail}`;
+			});
+			const summary = chips.length > 1 ? `${chips.length} attachments · ${captions.join(" · ")}` : captions[0]!;
+			return [theme.fg("muted", truncateToWidth(summary, width))];
+		}
 		const rows = ["", "", "", "", "", ""];
 		const gap = " ".repeat(CARD_GAP);
-		let x = 0;
+		const visible: ComposerChipDescriptor[] = [];
+		let minimumWidth = 0;
 		for (const chip of chips) {
-			if (x + CARD_COLS > width) break;
-			const card = this.#card(chip, activeImageChips);
+			const next = minimumWidth + (visible.length > 0 ? CARD_GAP : 0) + CARD_COLS;
+			if (next > width) break;
+			visible.push(chip);
+			minimumWidth = next;
+		}
+		const innerCols = this.#innerCols(visible, width - minimumWidth);
+		let x = 0;
+		for (let index = 0; index < visible.length; index++) {
+			const card = this.#card(visible[index]!, innerCols[index]!, activeImageChips);
 			for (let r = 0; r < rows.length; r++) rows[r] += (x > 0 ? gap : "") + card[r];
-			x += (x > 0 ? CARD_GAP : 0) + CARD_COLS;
+			x += (x > 0 ? CARD_GAP : 0) + innerCols[index]! + 2;
 		}
 		this.#releaseInactiveImages(activeImageChips);
 		return rows;
 	}
 
-	#card(chip: ComposerChipDescriptor, activeImageChips: Set<string>): string[] {
+	/** Spreads the row's spare columns over the text cards, each capped by what its preview needs. */
+	#innerCols(chips: readonly ComposerChipDescriptor[], slack: number): number[] {
+		const wanted = chips.map(chip =>
+			chip.kind === "image" ? 0 : Math.max(0, this.#previewWidth(chip.text) - INNER_COLS),
+		);
+		let spare = Math.max(0, slack);
+		let claimants = wanted.filter(want => want > 0).length;
+		// An image preview is sized for its own grid, so only text cards grow past the minimum.
+		return wanted.map(want => {
+			if (want === 0) return INNER_COLS;
+			const grant = Math.min(want, Math.floor(spare / claimants));
+			spare -= grant;
+			claimants--;
+			return INNER_COLS + grant;
+		});
+	}
+
+	#previewWidth(entry: TextAttachment): number {
+		let widest = 0;
+		const lines = entry.content.split("\n", INNER_ROWS);
+		for (const line of lines) widest = Math.max(widest, visibleWidth(replaceTabs(line)));
+		return widest;
+	}
+
+	#card(chip: ComposerChipDescriptor, innerCols: number, activeImageChips: Set<string>): string[] {
 		const sgr = attachmentSgr(chip.kind, chip.n);
 		const icon = theme.symbol(chip.kind === "image" ? "chip.image" : "chip.paste");
 		let bottomCaption: string;
@@ -68,24 +122,27 @@ export class AttachmentChipsBand implements Component {
 			bottomCaption = dims ? `${dims.width}x${dims.height}` : "";
 			interior = this.#imageInterior(chip.image, dims, `image:${chip.n}`, activeImageChips);
 		} else {
-			bottomCaption = chip.text.lineCount > 1 ? `+${chip.text.lineCount} lines` : `${chip.text.charCount} chars`;
-			interior = this.#textInterior(chip.text);
+			// The caption reports what the preview does not show, so a paste whose rows are all
+			// visible describes its size instead of repeating the row count.
+			const hidden = chip.text.lineCount - Math.min(INNER_ROWS, chip.text.lineCount);
+			bottomCaption = hidden > 0 ? `+${hidden} lines` : `${chip.text.charCount} chars`;
+			interior = this.#textInterior(chip.text, innerCols);
 		}
 		const vertical = `${sgr}${theme.symbol("boxRound.vertical")}${RESET_FG}`;
 		return [
-			this.#borderRow(sgr, `${icon} #${chip.n}`, "top"),
+			this.#borderRow(sgr, `${icon} #${chip.n}`, "top", innerCols),
 			...interior.map(row => vertical + row + vertical),
-			this.#borderRow(sgr, bottomCaption, "bottom"),
+			this.#borderRow(sgr, bottomCaption, "bottom", innerCols),
 		];
 	}
 
-	#borderRow(sgr: string, caption: string, edge: "top" | "bottom"): string {
+	#borderRow(sgr: string, caption: string, edge: "top" | "bottom", innerCols: number): string {
 		const left = theme.symbol(edge === "top" ? "boxRound.topLeft" : "boxRound.bottomLeft");
 		const right = theme.symbol(edge === "top" ? "boxRound.topRight" : "boxRound.bottomRight");
 		const horizontal = theme.symbol("boxRound.horizontal");
-		if (!caption) return `${sgr}${left}${horizontal.repeat(INNER_COLS)}${right}${RESET_FG}`;
-		const cut = truncateToWidth(caption, INNER_COLS - 2);
-		const fill = INNER_COLS - visibleWidth(cut) - 2;
+		if (!caption) return `${sgr}${left}${horizontal.repeat(innerCols)}${right}${RESET_FG}`;
+		const cut = truncateToWidth(caption, innerCols - 2);
+		const fill = innerCols - visibleWidth(cut) - 2;
 		const leftFill = Math.max(0, Math.floor(fill / 2));
 		const rightFill = Math.max(0, fill - leftFill);
 		return `${sgr}${left}${horizontal.repeat(leftFill)} \x1b[1m${cut}\x1b[22m ${horizontal.repeat(rightFill)}${right}${RESET_FG}`;
@@ -188,12 +245,12 @@ export class AttachmentChipsBand implements Component {
 		return rows;
 	}
 
-	#textInterior(entry: TextAttachment): string[] {
+	#textInterior(entry: TextAttachment, innerCols: number): string[] {
 		const lines = entry.content.split("\n");
 		const rows: string[] = [];
 		for (let r = 0; r < INNER_ROWS; r++) {
-			const cut = truncateToWidth(replaceTabs(lines[r] ?? ""), INNER_COLS);
-			const pad = INNER_COLS - visibleWidth(cut);
+			const cut = truncateToWidth(replaceTabs(lines[r] ?? ""), innerCols);
+			const pad = innerCols - visibleWidth(cut);
 			rows.push(theme.fg("muted", cut) + " ".repeat(Math.max(0, pad)));
 		}
 		return rows;

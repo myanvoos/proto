@@ -10,11 +10,9 @@ import {
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
 import { keyHint, rawKeyHint } from "./keybinding-hints";
-import { bottomBorder, divider, row, topBorder } from "./overlay-box";
+import { bottomBorder, divider, getDialogViewport, row, topBorder } from "./overlay-box";
 
 const MIN_TREE_ROWS = 3;
-
-const CHROME_ROWS = 5;
 
 interface CopySelectorCallbacks {
 	onPick: (target: CopyTarget) => void;
@@ -46,6 +44,7 @@ export class CopySelectorComponent implements Component {
 	#lastSourceTarget?: CopyTarget;
 	#lastSource?: string;
 	#treeRows = MIN_TREE_ROWS;
+	#maxHeight: number | undefined;
 
 	#previewText = new Text("", 0, 0);
 
@@ -55,6 +54,10 @@ export class CopySelectorComponent implements Component {
 	) {
 		this.#roots = roots;
 		this.#cursorId = roots[0]?.id ?? "";
+	}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
 	}
 
 	invalidate(): void {
@@ -102,15 +105,15 @@ export class CopySelectorComponent implements Component {
 		}
 	}
 
-	#renderTree(width: number, flat: FlatNode[], cursorIdx: number, rows: number): string[] {
-		const inner = Math.max(0, width - 4);
+	#renderTree(width: number, flat: FlatNode[], cursorIdx: number, rows: number, framed: boolean): string[] {
+		const inner = Math.max(0, framed ? width - 4 : width);
 		const start = Math.max(0, Math.min(cursorIdx - Math.floor(rows / 2), Math.max(0, flat.length - rows)));
 		const out: string[] = [];
 		for (let r = 0; r < rows; r++) {
 			const i = start + r;
 			const node = flat[i];
 			if (!node) {
-				out.push(row("", width));
+				out.push(row("", width, framed));
 				continue;
 			}
 			const target = node.target;
@@ -120,16 +123,19 @@ export class CopySelectorComponent implements Component {
 			for (let l = 0; l < node.depth - 1; l++) prefix += gutterCells(node.ancestorHasNext[l]!);
 			if (node.depth > 0) prefix += connectorCells(node.isLast ? theme.tree.last : theme.tree.branch);
 
-			const cursor = isSelected ? "❯ " : "  ";
-			const hint = target.hint ?? "";
-			const hintWidth = hint ? visibleWidth(hint) + 2 : 0;
+			const cursor = isSelected ? `${theme.nav.cursor} ` : "  ";
+			const label = replaceTabs(target.label);
+			const labelBudget = Math.min(12, visibleWidth(label));
+			prefix = truncateToWidth(prefix, Math.max(0, inner - visibleWidth(cursor) - labelBudget));
 			const used = visibleWidth(cursor) + visibleWidth(prefix);
-			const labelPlain = truncateToWidth(target.label, Math.max(1, inner - used - hintWidth));
+			const hint = target.hint && inner - used - visibleWidth(target.hint) - 2 >= labelBudget ? target.hint : "";
+			const hintWidth = hint ? visibleWidth(hint) + 2 : 0;
+			const labelPlain = truncateToWidth(label, Math.max(1, inner - used - hintWidth));
 			const left = isSelected
 				? theme.fg("accent", cursor) + theme.fg("dim", prefix) + theme.bold(theme.fg("accent", labelPlain))
 				: cursor + theme.fg("dim", prefix) + labelPlain;
-			const gap = Math.max(1, inner - used - visibleWidth(labelPlain) - visibleWidth(hint));
-			out.push(row(left + padding(gap) + (hint ? theme.fg("dim", hint) : ""), width));
+			const gap = hint ? Math.max(1, inner - used - visibleWidth(labelPlain) - visibleWidth(hint)) : 0;
+			out.push(row(left + padding(gap) + (hint ? theme.fg("dim", hint) : ""), width, framed));
 		}
 		return out;
 	}
@@ -174,7 +180,7 @@ export class CopySelectorComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const height = process.stdout.rows || 40;
+		const viewport = getDialogViewport(this.#maxHeight ?? (process.stdout.rows || 40));
 		const flat = this.#flatten();
 		const cursorIdx = Math.max(
 			0,
@@ -182,25 +188,28 @@ export class CopySelectorComponent implements Component {
 		);
 		const selected = flat[cursorIdx]?.target;
 
-		const available = Math.max(MIN_TREE_ROWS + 1, height - CHROME_ROWS);
-		const treeRows = Math.max(1, Math.min(flat.length, Math.floor(available / 2)));
+		const showPreview = viewport.bodyRows >= 6;
+		const treeRows = showPreview
+			? Math.max(1, Math.min(flat.length, Math.floor((viewport.bodyRows - 1) / 2)))
+			: Math.max(1, Math.min(flat.length, viewport.bodyRows));
 		this.#treeRows = treeRows;
-		const previewRows = Math.max(1, available - treeRows);
+		const previewRows = showPreview ? viewport.bodyRows - treeRows - 1 : 0;
 
 		const footer = [
 			rawKeyHint("↑↓", "move"),
 			keyHint("tui.select.confirm", "copy"),
-			keyHint("tui.select.cancel", "quit"),
+			keyHint("tui.select.cancel", "close"),
 		].join(theme.fg("dim", " · "));
 
 		return [
-			topBorder(width, "Copy to clipboard"),
-			...this.#renderTree(width, flat, cursorIdx, treeRows),
-			divider(width),
-			...this.#renderPreview(width, selected, previewRows),
-			divider(width),
-			row(footer, width),
-			bottomBorder(width),
+			...(viewport.titleRows ? [topBorder(width, "Copy to clipboard")] : []),
+			...(flat.length > 0
+				? this.#renderTree(width, flat, cursorIdx, treeRows, viewport.titleRows > 0)
+				: [row(theme.fg("muted", "Nothing to copy"), width, viewport.titleRows > 0)]),
+			...(showPreview ? [divider(width), ...this.#renderPreview(width, selected, previewRows)] : []),
+			...(viewport.dividerRows ? [divider(width)] : []),
+			...(viewport.footerRows ? [row(footer, width, viewport.titleRows > 0)] : []),
+			...(viewport.bottomRows ? [bottomBorder(width)] : []),
 		];
 	}
 }

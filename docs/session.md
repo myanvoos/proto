@@ -58,6 +58,24 @@ Terminal breadcrumb files are written under:
 
 Breadcrumb content is original cwd and session file path, plus an optional third line `fresh`. A fresh breadcrumb preserves a `/new` boundary whose lazily-created JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Writes are synchronous, ordered, and best-effort.
 
+### Unwritable session directories
+
+The default session directory is the harness's choice, not the user's, so a directory it cannot create degrades instead of aborting: the run continues entirely in memory and both modes state the cause and the fix once at startup (`Cannot create the session directory "…": permission denied on "…". This run is not being saved.` plus a remedy naming `chmod u+w`, `PI_CODING_AGENT_DIR`, and `--no-session`). The same applies to `autoResume`, which is also implicit.
+
+An explicitly requested location still fails fast with the same sentence pair: `--session-dir` is rejected as a usage error before startup, and any other explicit resume path throws `SessionDirectoryError` (`session-paths.ts`), which the CLI renders as `Error: <message>` plus a dimmed hint and exit 1.
+
+### Oversized entries and their temporary copies
+
+Entries larger than `MAX_PERSIST_CHARS` are truncated in the file copy, and the full version is spilled to a per-process directory under the system temp root (`proto-session-history-*`), keyed by entry id and cached in memory up to 8 MiB. A record with no usable id — possible only in a hand-edited file — is never spilled, because two such records would share one key; it stays whole in memory instead.
+
+That directory is a cache, not storage: the session file on disk already holds the truncated copy. When a spill file cannot be read back — a temp cleaner removed the directory, the file is corrupt, or it holds another entry — the entry degrades to its truncated form and the session keeps running. The mapping is forgotten so the failure is not retried on every read, the next oversized entry re-creates the directory at full fidelity, and the user gets one `warning` notice naming the entry, the session file, the temp path, the fact that the session file was not modified, and the advice to exclude `proto-session-history-*` from temp cleanup. Before this, the read threw `Raw session entry file is missing for <id>`, which failed every later operation that materializes history — subagent spawn, compaction, recovery — until the process was restarted.
+
+### Ownership
+
+A session file is written by exactly one live process. Ownership is claimed in `session-liveness.ts` (`claimSessionOwnership`) before the file is read, using a process-owned OS lock keyed on `<session>.jsonl.owner` plus the `<session>.jsonl.live` heartbeat marker, which the claim publishes immediately so other processes can name the owner. Every CLI entry point that resolves a session to write — `--resume`, the resume picker, `--continue`, `autoResume`, `--session-dir`, and a freshly created session — takes the claim; `--no-session` and read-only opens (listing, rendering, subagent transcripts) do not.
+
+A second process that tries to resume an owned session is refused with the owning pid and a `proto --fork <file>` hint instead of silently writing nothing; `--continue`/`autoResume` skip an owned candidate and start a new session. The claim dies with its process (killed owners release it immediately) and the marker goes stale after `SESSION_LIVE_FRESH_WINDOW_MS`.
+
 ## File Format
 
 Session files are JSONL: one JSON object per line. Current files physically begin with a fixed-width, 256-byte `type: "title"` slot, followed by the session header and then `SessionEntry` values. Legacy files may begin directly with the header. Loaders strip the physical slot and fold its current title/source into the logical header.

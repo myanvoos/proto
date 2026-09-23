@@ -2,14 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL, truncateStartToWidth } from "@oh-my-pi/pi-tui";
-import {
-	formatDuration,
-	formatNumber,
-	getProjectDir,
-	pathIsWithin,
-	relativePathWithinRoot,
-	sanitizeText,
-} from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { sanitizeStatusText } from "../../shared";
@@ -71,7 +64,7 @@ function classifyProjectDir(pwd: string): { scratch: boolean; relative: string |
 }
 
 export function focusExitBadge(focusedAgentId: string): string {
-	const who = theme.fg("warning", withIcon(theme.icon.ghost, focusedAgentId));
+	const who = theme.fg("warning", withIcon(theme.icon.ghost, sanitizeStatusText(focusedAgentId)));
 	const exit = `${theme.fg("accent", "esc")}${theme.fg("muted", " to go back")}`;
 	return `${who}${theme.fg("muted", " · ")}${exit}${theme.fg("border", " │")}`;
 }
@@ -90,7 +83,7 @@ const modelSegment: StatusLineSegment = {
 		const state = ctx.session.state;
 		const opts = ctx.options.model ?? {};
 
-		let modelName = state.model?.name || state.model?.id || "no-model";
+		let modelName = sanitizeStatusText(state.model?.name || state.model?.id || "no-model");
 		if (modelName.startsWith("Claude ")) {
 			modelName = modelName.slice(7);
 		}
@@ -258,7 +251,7 @@ const pathSegment: StatusLineSegment = {
 			const { projectName, worktreeName } = ctx.worktree;
 			// Basenames come from the filesystem: collapse control bytes before
 			// the label reaches the single-line status row (the worktree branch
-			// returns early, so the normal-path sanitizeText below never runs).
+			// returns early, so the normal-path sanitizer below never runs).
 			const safeProject = sanitizeStatusText(projectName);
 			const safeWorktree = sanitizeStatusText(worktreeName);
 			if (!safeProject && !safeWorktree) return { content: "", visible: false };
@@ -279,14 +272,14 @@ const pathSegment: StatusLineSegment = {
 				pwd = stripDisplayRoot(pwd);
 			}
 		}
-		const repoSuffix = ctx.activeRepo ? ` ↳ ${ctx.activeRepo.relativeRepoRoot}` : "";
+		const repoSuffix = ctx.activeRepo ? ` ↳ ${sanitizeStatusText(ctx.activeRepo.relativeRepoRoot)}` : "";
 		if (opts.abbreviate !== false) {
 			pwd = shortenPath(pwd);
 		}
-		pwd = sanitizeText(pwd);
+		pwd = sanitizeStatusText(pwd);
 		pwd = truncateStartToWidth(pwd, opts.maxLength ?? 40);
 		if (repoSuffix) {
-			pwd = `${pwd}${sanitizeText(repoSuffix)}`;
+			pwd = `${pwd}${repoSuffix}`;
 		}
 
 		const showScratchIcon = scratch && stripPrefix;
@@ -309,7 +302,7 @@ const gitSegment: StatusLineSegment = {
 		const showBranch = opts.showBranch !== false;
 		let content = "";
 		if (showBranch && branch) {
-			content = withIcon(theme.icon.branch, branch);
+			content = withIcon(theme.icon.branch, sanitizeStatusText(branch));
 		}
 
 		if (isDirty) content = `${content} ${theme.fg("statusLineDirty", "*")}`;
@@ -367,8 +360,16 @@ const tokenOutSegment: StatusLineSegment = {
 const tokenTotalSegment: StatusLineSegment = {
 	id: "token_total",
 	render(ctx) {
-		const { input, output, cacheWrite, orchestrationInput, orchestrationOutput } = ctx.usageStats;
-		const total = input + output + cacheWrite + orchestrationInput + orchestrationOutput;
+		const { input, output, cacheWrite, orchestrationInput, orchestrationOutput, subagent } = ctx.usageStats;
+		const total =
+			input +
+			output +
+			cacheWrite +
+			orchestrationInput +
+			orchestrationOutput +
+			subagent.input +
+			subagent.output +
+			subagent.cacheWrite;
 		if (!total) return { content: "", visible: false };
 
 		const content = withIcon(theme.icon.tokens, formatNumber(total));
@@ -390,8 +391,11 @@ const tokenRateSegment: StatusLineSegment = {
 const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
-		const { cost, premiumRequests } = ctx.usageStats;
-		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
+		const { cost: ownCost, premiumRequests, subagent } = ctx.usageStats;
+		// Subagents bill to their own transcripts; a session total that ignores them understates what
+		// the run actually cost.
+		const cost = ownCost + subagent.cost;
+		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests + subagent.premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? (ctx.session.modelRegistry?.isUsingOAuth(state.model) ?? false) : false;
 

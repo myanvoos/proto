@@ -594,9 +594,7 @@ export class CustomEditor extends Editor {
 		if (paste.handled) {
 			if (paste.pasteContent === undefined) return;
 			const content = paste.pasteContent;
-			const remaining = paste.remaining;
 
-			if (remaining.length > 0) this.#pendingInput.push(remaining);
 			if (content.length === 0 && this.onPasteImage) {
 				this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
 				return;

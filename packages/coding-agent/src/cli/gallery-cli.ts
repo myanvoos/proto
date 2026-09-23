@@ -4,6 +4,7 @@ import { Settings } from "../config/settings";
 import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
 import { toolRenderers } from "../tools/renderers";
+import { GALLERY_STATE_ALIASES, GALLERY_STATE_TOKENS } from "./command-help";
 import { type GalleryFixture, type GalleryResult, galleryFixtures } from "./gallery-fixtures";
 import { captureGalleryScreenshots } from "./gallery-screenshot";
 
@@ -16,19 +17,6 @@ const GALLERY_STATE_LABELS: Record<GalleryState, string> = {
 	success: "done",
 	error: "failed",
 };
-
-const GALLERY_STATE_ALIASES: Record<string, GalleryState> = {
-	streaming: "streaming",
-	"streaming args": "streaming",
-	progress: "progress",
-	"in progress": "progress",
-	success: "success",
-	done: "success",
-	error: "error",
-	failed: "error",
-};
-
-export const GALLERY_STATE_TOKENS = Object.keys(GALLERY_STATE_ALIASES);
 
 export function parseGalleryStates(states: readonly string[] | undefined): GalleryState[] | undefined {
 	if (!states || states.length === 0) return undefined;

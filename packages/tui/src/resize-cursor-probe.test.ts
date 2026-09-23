@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import type { TerminalCursorPosition } from "./terminal";
+import { setReportedTerminalHostIdentity } from "./ttyid";
 import {
 	CURSOR_MARKER,
 	type HistoryBatch,
@@ -18,6 +19,9 @@ class FakeTerminal {
 	writes: string[] = [];
 	readonly vt: VTermTerminal;
 	answersCursorPosition = true;
+	keepCursorRowOnNarrow = false;
+	// A size the OS already reports but whose SIGWINCH has not been handled yet.
+	osSize: { columns: number; rows: number } | undefined;
 	#resizeCallback: (() => void) | undefined;
 	constructor(columns: number, rows: number, growPullsHistory: GrowMode) {
 		this.columns = columns;
@@ -62,12 +66,28 @@ class FakeTerminal {
 		return Promise.resolve({ row: buffer.cursorY, col: buffer.cursorX });
 	}
 	resize(columns: number, rows: number): void {
+		const oldColumns = this.columns;
+		const cursorRow = this.vt.buffer.normal.cursorY;
 		this.columns = columns;
 		this.rows = rows;
 		this.vt.resize(columns, rows);
+		// xterm's narrower reflow may move rows below the visible cursor while
+		// leaving its screen row unchanged. CPR then reports that detached row.
+		if (this.keepCursorRowOnNarrow && columns < oldColumns) {
+			this.vt.write(`\x1b[${Math.min(cursorRow, rows - 1) + 1};1H`);
+		}
 	}
 	triggerResize(): void {
 		this.#resizeCallback?.();
+	}
+	refreshSize(): boolean {
+		const size = this.osSize;
+		if (size === undefined) return false;
+		this.osSize = undefined;
+		this.columns = size.columns;
+		this.rows = size.rows;
+		this.#resizeCallback?.();
+		return true;
 	}
 	tape(): string[] {
 		const buffer = this.vt.buffer.normal;
@@ -294,19 +314,67 @@ for (const liveRows of [8, 38]) {
 	});
 }
 
+// A grow the host pads (the visible cursor is off the last row) leaves blank
+// rows under the frame. The frame holds its place over them, so the next shrink
+// discards them below the cursor instead of pushing a blank band into history.
 test("visible editor cursor preserves acknowledged history across padded growth", async () => {
 	const h = startHarness("cursorOnLastRow", { showHardwareCursor: true, liveRows: 8 });
 	try {
 		expect(h.terminal.vt.buffer.normal.cursorY).toBe(34);
-		for (const height of [50, 20, 38]) {
+		for (const [height, frameTop] of [
+			[50, 30],
+			[20, 12],
+			[38, 12],
+		] as const) {
 			await h.resize(height);
-			expect(
-				h.terminal.tape().filter(row => row !== ""),
-				`semantic tape at ${height} rows`,
-			).toEqual(h.body);
-			expect(h.terminal.screen().slice(-8), `viewport at ${height} rows`).toEqual(h.body.slice(-8));
-			expect(h.terminal.vt.buffer.normal.cursorY).toBe(height - 4);
+			expect(h.terminal.tape(), `tape at ${height} rows`).toEqual(h.body);
+			expect(h.terminal.screen().slice(frameTop, frameTop + 8), `frame at ${height} rows`).toEqual(h.body.slice(-8));
+			expect(h.terminal.vt.buffer.normal.cursorY).toBe(frameTop + 4);
 		}
+	} finally {
+		h.stop();
+	}
+});
+
+// A host can apply a grow after a frame is computed but before its write lands.
+// The line feeds meant to scroll the retiring row off then fall mid-screen, so
+// the frame sits a row lower than computed; the settled resize must find it
+// there instead of repainting over the retired row.
+test("a grow that lands before a retiring frame keeps the retired row", async () => {
+	const h = startHarness("cursorOnLastRow", { showHardwareCursor: true, liveRows: 38 });
+	try {
+		h.provider.rows.push("row-late");
+		h.terminal.vt.resize(54, 44);
+		h.tui.requestRender(true);
+		await h.scheduler.flush();
+		h.terminal.rows = 44;
+		h.terminal.triggerResize();
+		await h.scheduler.flush();
+		await Promise.resolve();
+		await Promise.resolve();
+		await h.scheduler.flush();
+		expect(h.terminal.tape().filter(row => row !== "")).toEqual([...h.body, "row-late"]);
+	} finally {
+		h.stop();
+	}
+});
+
+// The OS reports the new size as soon as the host resizes, but the SIGWINCH
+// reaches the event loop later. A frame due in between would paint the grown
+// grid at the old geometry, over the history rows the grow pulled into view.
+test("a frame due before the resize signal is handled paints at the new size", async () => {
+	const h = startHarness("always", { liveRows: 38 });
+	try {
+		h.terminal.vt.resize(54, 44);
+		h.terminal.osSize = { columns: 54, rows: 44 };
+		h.provider.rows.push("row-late");
+		h.tui.requestRender(true);
+		await h.scheduler.flush();
+		await Promise.resolve();
+		await Promise.resolve();
+		await h.scheduler.flush();
+		expect(h.terminal.tape().filter(row => row !== "")).toEqual([...h.body, "row-late"]);
+		expect(h.terminal.screen().at(-1)).toBe("row-late");
 	} finally {
 		h.stop();
 	}
@@ -401,5 +469,267 @@ test("rows streamed during a resize burst retire through acknowledged batches ex
 		expect(new Set(h.provider.acknowledgements).size).toBe(h.provider.acknowledgements.length);
 	} finally {
 		h.stop();
+	}
+});
+
+/** One composer-shaped frame: blank padding, hairline, editor with the cursor, status. */
+function composerViewport(columns: number, rows: number): string[] {
+	const wide = [
+		"",
+		`editor${CURSOR_MARKER} ask anything / for commands`,
+		"status-full-width-xxxxxxxxxxxxxxxxxxxx",
+		"",
+	];
+	const tall = ["", "", "hairline", "", `editor${CURSOR_MARKER} ask anything`, "", "status", ""];
+	return (rows <= 6 ? wide : tall)
+		.slice(-rows)
+		.map(row => row.slice(0, columns + (row.includes(CURSOR_MARKER) ? CURSOR_MARKER.length : 0)));
+}
+
+function startComposerHarness(options: {
+	columns: number;
+	rows: number;
+	answersCursorPosition?: boolean;
+	keepCursorRowOnNarrow?: boolean;
+}) {
+	const restore = setEnvironment({
+		HERDR_ENV: undefined,
+		HERDR_PANE_ID: undefined,
+		HERDR_TAB_ID: undefined,
+		HERDR_WORKSPACE_ID: undefined,
+		TMUX: undefined,
+		STY: undefined,
+		ZELLIJ: undefined,
+		CMUX_WORKSPACE_ID: undefined,
+		CMUX_SURFACE_ID: undefined,
+		CMUX_REMOTE_TRANSPORT: undefined,
+		TERM: "xterm-256color",
+		PI_NO_SYNC_OUTPUT: "1",
+	});
+	const terminal = new FakeTerminal(options.columns, options.rows, "cursorOnLastRow");
+	terminal.answersCursorPosition = options.answersCursorPosition ?? true;
+	terminal.keepCursorRowOnNarrow = options.keepCursorRowOnNarrow ?? false;
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+	const history = Array.from({ length: 30 }, (_, index) => `history-${index}`);
+	const acknowledgements: number[] = [];
+	let committed = false;
+	tui.setFrameProvider({
+		renderFrame: ({ columns, rows }) => ({
+			history: committed ? undefined : { id: 1, rows: history },
+			viewport: composerViewport(columns, rows),
+			viewportAnchor: "bottom",
+		}),
+		acknowledgeHistory(id) {
+			committed = true;
+			acknowledgements.push(id);
+		},
+	} satisfies TerminalFrameProvider);
+	tui.start({ deferInput: true });
+	return { terminal, scheduler, tui, history, acknowledgements, restore };
+}
+
+test("saved viewport bottom prevents editor ghosts when a native CPR cursor detaches on narrow reflow", async () => {
+	const restore = setEnvironment({
+		HERDR_ENV: undefined,
+		HERDR_PANE_ID: undefined,
+		HERDR_TAB_ID: undefined,
+		HERDR_WORKSPACE_ID: undefined,
+		TMUX: undefined,
+		STY: undefined,
+		ZELLIJ: undefined,
+		CMUX_WORKSPACE_ID: undefined,
+		CMUX_SURFACE_ID: undefined,
+		CMUX_REMOTE_TRANSPORT: undefined,
+		TERM: "xterm-256color",
+		PI_NO_SYNC_OUTPUT: "1",
+	});
+	const terminal = new FakeTerminal(40, 6, "cursorOnLastRow");
+	terminal.keepCursorRowOnNarrow = true;
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+	let committed = false;
+	const history = Array.from({ length: 30 }, (_, index) => `history-${index}`);
+	const acknowledgements: number[] = [];
+	const provider: TerminalFrameProvider = {
+		renderFrame({ columns, rows }) {
+			const viewport =
+				rows <= 6
+					? [
+							"",
+							`editor${CURSOR_MARKER} ask anything / for commands`,
+							"status-full-width-xxxxxxxxxxxxxxxxxxxx",
+							"",
+						].slice(-rows)
+					: [
+							"",
+							"",
+							"hairline",
+							"",
+							`editor${CURSOR_MARKER} ask anything`.slice(0, columns + CURSOR_MARKER.length),
+							"",
+							"status",
+							"",
+						];
+			return { history: committed ? undefined : { id: 1, rows: history }, viewport, viewportAnchor: "bottom" };
+		},
+		acknowledgeHistory(id) {
+			committed = true;
+			acknowledgements.push(id);
+		},
+	};
+	tui.setFrameProvider(provider);
+	tui.start({ deferInput: true });
+	await scheduler.flush();
+	try {
+		terminal.resize(20, 10);
+		terminal.triggerResize();
+		await scheduler.flush();
+		expect(terminal.screen().filter(row => row.includes("editor"))).toHaveLength(1);
+		expect(terminal.tape().filter(line => line.startsWith("history-"))).toEqual(history);
+		for (const [columns, rows] of [
+			[40, 10],
+			[20, 10],
+			[20, 3],
+			[20, 2],
+			[20, 1],
+			[20, 10],
+			[40, 6],
+			[20, 10],
+		] as const) {
+			terminal.resize(columns, rows);
+			terminal.triggerResize();
+			await scheduler.flush();
+			expect(terminal.screen().filter(row => row.includes("editor")).length).toBeLessThanOrEqual(1);
+			expect(
+				terminal.tape().filter(line => line.startsWith("history-")),
+				`${columns}x${rows}`,
+			).toEqual(history);
+		}
+		expect(acknowledgements).toEqual([1]);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+for (const answersCursorPosition of [true, false]) {
+	const label = answersCursorPosition ? "" : " without a cursor-position report";
+	test(`mixed width, height, and combined resizes stay ghost-free and keep history once${label}`, async () => {
+		const h = startComposerHarness({ columns: 20, rows: 10, answersCursorPosition });
+		await h.scheduler.flush();
+		try {
+			for (const [columns, rows] of [
+				[40, 10],
+				[20, 10],
+				[20, 6],
+				[40, 6],
+				[40, 10],
+				[20, 10],
+				[20, 3],
+				[40, 3],
+				[20, 3],
+				[20, 10],
+				[40, 10],
+				[20, 10],
+			] as const) {
+				h.terminal.resize(columns, rows);
+				h.terminal.triggerResize();
+				await h.scheduler.flush();
+				expect(
+					h.terminal.tape().filter(line => line.startsWith("history-")),
+					`${columns}x${rows}`,
+				).toEqual(h.history);
+				expect(
+					h.terminal.screen().filter(row => row.includes("editor")).length,
+					`${columns}x${rows}`,
+				).toBeLessThanOrEqual(1);
+			}
+			expect(h.acknowledgements).toEqual([1]);
+		} finally {
+			h.tui.stop();
+			h.restore();
+		}
+	});
+
+	test(`one-row and two-row frames keep acknowledged history exactly once${label}`, async () => {
+		// A frame shorter than the composer leaves the host no room: the shrink
+		// pushes the remaining live rows into native history before SIGWINCH
+		// arrives, and a later grow pulls them back onto the screen. Those rows are
+		// never retracted (that would erase user scrollback), so these degenerate
+		// sizes assert the acknowledged-history contract only.
+		const h = startComposerHarness({ columns: 20, rows: 1, answersCursorPosition });
+		await h.scheduler.flush();
+		try {
+			for (const [columns, rows] of [
+				[20, 2],
+				[20, 1],
+				[40, 1],
+				[40, 2],
+				[20, 2],
+				[20, 1],
+				[20, 10],
+				[20, 1],
+				[20, 10],
+			] as const) {
+				h.terminal.resize(columns, rows);
+				h.terminal.triggerResize();
+				await h.scheduler.flush();
+				expect(
+					h.terminal.tape().filter(line => line.startsWith("history-")),
+					`${columns}x${rows}`,
+				).toEqual(h.history);
+			}
+			expect(h.acknowledgements).toEqual([1]);
+		} finally {
+			h.tui.stop();
+			h.restore();
+		}
+	});
+}
+
+/** Writes that restore the saved bottom anchor before erasing the live region. */
+function savedAnchorErases(writes: string[]): string[] {
+	return writes.filter(write => write.startsWith("\x1b[?25l\x1b8"));
+}
+
+test("a host that names itself through the identity probe keeps its saved anchor untouched", async () => {
+	const h = startComposerHarness({ columns: 40, rows: 10 });
+	await h.scheduler.flush();
+	try {
+		// A direct terminal rewraps the saved cursor with its logical line, so
+		// the resize erase restores that anchor.
+		h.terminal.writes.length = 0;
+		h.terminal.resize(20, 10);
+		h.terminal.triggerResize();
+		await h.scheduler.flush();
+		expect(savedAnchorErases(h.terminal.writes).length).toBeGreaterThan(0);
+		expect(h.terminal.tape().filter(line => line.startsWith("history-"))).toEqual(h.history);
+
+		// The same session inside a multiplexer that the environment does not
+		// advertise: only the probe reply says so, and it must be enough to stop
+		// the writer from trusting an anchor the host never adjusts. This
+		// terminal emulates a reflowing xterm, so it can only witness the path
+		// switch; that the clipping host then keeps every block is proven
+		// against real tmux in the resize integrity runs.
+		setReportedTerminalHostIdentity("tmux 3.4");
+		for (const [columns, rows] of [
+			[40, 10],
+			[20, 4],
+			[40, 10],
+			[20, 2],
+			[40, 10],
+		] as const) {
+			h.terminal.writes.length = 0;
+			h.terminal.resize(columns, rows);
+			h.terminal.triggerResize();
+			await h.scheduler.flush();
+			expect(savedAnchorErases(h.terminal.writes), `${columns}x${rows}`).toEqual([]);
+		}
+		expect(h.acknowledgements).toEqual([1]);
+	} finally {
+		setReportedTerminalHostIdentity(null);
+		h.tui.stop();
+		h.restore();
 	}
 });

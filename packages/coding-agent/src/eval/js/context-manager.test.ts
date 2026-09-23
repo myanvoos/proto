@@ -466,3 +466,85 @@ test("reset rejects the active and queued JS cells before starting a fresh worke
 		await disposeVmContextsByOwner(ownerId);
 	}
 }, 10_000);
+
+test("an already-cancelled JS cell cannot reset or mutate the live kernel", async () => {
+	using tempDir = TempDir.createSync("@js-worker-preabort-");
+	const cwd = tempDir.path();
+	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
+	const session: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+	const sessionId = `test-session:${crypto.randomUUID()}`;
+	const ownerId = `test-owner:${crypto.randomUUID()}`;
+	const options = { sessionKey: sessionId, sessionId, ownerId, cwd, session, filename: "preabort.js" };
+	try {
+		await executeInVmContext({ ...options, code: "var preserved = 42;", runState: {} });
+		await expect(
+			executeInVmContext({
+				...options,
+				reset: true,
+				code: "preserved = 0;",
+				runState: { signal: AbortSignal.abort(new Error("cancel before dispatch")) },
+			}),
+		).rejects.toThrow("cancel before dispatch");
+		let output = "";
+		await executeInVmContext({
+			...options,
+			code: "console.log(preserved)",
+			runState: {
+				onText: text => {
+					output += text;
+				},
+			},
+		});
+		expect(output.trim()).toBe("42");
+	} finally {
+		await disposeVmContextsByOwner(ownerId);
+	}
+}, 10_000);
+
+test("a failed JS output consumer rejects its cell without breaking later cells", async () => {
+	using tempDir = TempDir.createSync("@js-worker-output-error-");
+	const cwd = tempDir.path();
+	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
+	const session: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+	const sessionId = `test-session:${crypto.randomUUID()}`;
+	const ownerId = `test-owner:${crypto.randomUUID()}`;
+	const options = { sessionKey: sessionId, sessionId, ownerId, cwd, session, filename: "output-error.js" };
+	try {
+		await expect(
+			executeInVmContext({
+				...options,
+				code: "var consumerProbe = 42; console.log('first'); console.log('second');",
+				runState: {
+					onText: () => {
+						throw new Error("output storage unavailable");
+					},
+				},
+			}),
+		).rejects.toThrow("output storage unavailable");
+		let output = "";
+		await executeInVmContext({
+			...options,
+			code: "console.log(consumerProbe)",
+			runState: {
+				onText: text => {
+					output += text;
+				},
+			},
+		});
+		expect(output.trim()).toBe("42");
+	} finally {
+		await disposeVmContextsByOwner(ownerId);
+	}
+}, 10_000);

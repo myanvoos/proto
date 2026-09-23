@@ -309,7 +309,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			case "jobs": {
 				const manager = this.session.asyncJobManager;
 				if (!manager) return this.#asyncDisabled("jobs");
-				return executeJobsSnapshot(this.session, manager, this.#ownerId());
+				return await executeJobsSnapshot(this.session, manager, this.#ownerId());
 			}
 			case "start":
 			case "ps":
@@ -372,7 +372,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		}
 		const runningJobs = jobsToWatch.filter(j => j.status === "running");
 		if (manager && jobsToWatch.length > 0 && runningJobs.length === 0) {
-			return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
+			return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 		}
 
 		if (!manager || runningJobs.length === 0) {
@@ -469,7 +469,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			if (settled.message) return messageResult(messaging.senderId, settled.message);
 		}
 
-		return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
+		return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 	}
 }
 

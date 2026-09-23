@@ -32,7 +32,17 @@ import {
 	sortModelItems,
 	thinkingLevelGlyph,
 } from "./model-browser";
-import { bottomBorder, dividerSplit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
+import {
+	bottomBorder,
+	divider,
+	dividerSplit,
+	getDialogViewport,
+	row,
+	splitBodyWidth,
+	splitRow,
+	topBorder,
+	topBorderSplit,
+} from "./overlay-box";
 import { renderSegmentTrack } from "./segment-track";
 
 type RolesRow =
@@ -185,9 +195,13 @@ export class ModelHubComponent implements Component {
 	#reprobedHiddenProviders = new Set<string>();
 
 	#contentRowStart = 1;
+	#contentColInset = 2;
 	#contentRowCount = 0;
 	#sidebarWidthLast = SIDEBAR_MIN_WIDTH;
-	#footerRow = 0;
+	#footerRow = -1;
+	#compact = false;
+	#bodyOffset = 1;
+	#widthLast = 0;
 	#chipRanges: ChipRange[] = [];
 	#lockedLoginLine: number | null = null;
 	#rolesRowStart = 1;
@@ -1080,13 +1094,18 @@ export class ModelHubComponent implements Component {
 			return;
 		}
 		if (matchesKey(data, "right")) {
-			if (rolesView || this.#isBrowserView(entry)) {
+			if (rolesView || lockedView || this.#isBrowserView(entry)) {
 				this.#focus = "list";
 			}
 			return;
 		}
 
 		if (this.#focus === "scope") {
+			// A single-pane scope selection opens its content before Enter can act on it.
+			if (this.#compact && (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n")) {
+				this.#focus = "list";
+				return;
+			}
 			if (matchesSelectUp(data)) {
 				this.#moveSidebar(-1);
 				return;
@@ -1334,12 +1353,24 @@ export class ModelHubComponent implements Component {
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		const contentLine = event.row - this.#contentRowStart;
 		const overContent = contentLine >= 0 && contentLine < this.#contentRowCount;
-		const sidebarColStart = 2;
+		const sidebarColStart = this.#contentColInset;
 		const sidebarColEnd = sidebarColStart + this.#sidebarWidthLast;
-		const bodyColStart = this.#sidebarWidthLast + 5;
-		const overSidebar = overContent && event.col >= 0 && event.col < sidebarColEnd;
-		const overBody = overContent && event.col >= bodyColStart;
-		const bodyLine = contentLine - 1;
+		const bodyColStart = this.#compact ? this.#contentColInset : this.#sidebarWidthLast + 5;
+		const overSidebar =
+			overContent &&
+			(!this.#compact || this.#focus === "scope") &&
+			event.col >= sidebarColStart &&
+			event.col < sidebarColEnd;
+		const overBody =
+			overContent &&
+			(!this.#compact || this.#focus === "list") &&
+			event.col >= bodyColStart &&
+			event.col < this.#widthLast - this.#contentColInset;
+		const bodyLine = contentLine - this.#bodyOffset;
+		if (this.#compact && this.#focus === "list" && this.#contentRowStart > 0 && event.leftClick && event.row === 0) {
+			this.#focus = "scope";
+			return true;
+		}
 		const entry = this.#activeEntry();
 
 		if (event.row === this.#footerRow && this.#strip) {
@@ -1398,7 +1429,7 @@ export class ModelHubComponent implements Component {
 				if (clicked.kind === "roles") this.#assigning = null;
 				this.#setActiveEntry(clicked.id);
 
-				if (clicked.kind === "roles") this.#focus = "list";
+				if (this.#compact || clicked.kind === "roles") this.#focus = "list";
 				if (already && clicked.kind === "provider" && clicked.locked) {
 					this.#requestLogin(clicked);
 				}
@@ -1426,6 +1457,7 @@ export class ModelHubComponent implements Component {
 					this.#requestLogin(entry);
 				}
 			} else if (this.#isBrowserView(entry)) {
+				this.#focus = "list";
 				this.#browser.routeMouse(event, bodyLine);
 			}
 		}
@@ -1552,6 +1584,10 @@ export class ModelHubComponent implements Component {
 			);
 		}
 		const entry = this.#activeEntry();
+		if (width < 24 && this.#focus === "list" && this.#isBrowserView(entry)) {
+			const selected = this.#browser.getSelected();
+			if (selected) return truncateToWidth(theme.fg("accent", selected.id), width);
+		}
 		const scopedSuffix = this.#scopedModels.length > 0 ? " · --models scope" : "";
 		let text: string;
 		switch (entry.kind) {
@@ -1593,7 +1629,8 @@ export class ModelHubComponent implements Component {
 
 	#renderRolesView(width: number, rows: number): string[] {
 		const lines: string[] = [];
-		lines.push("");
+		const spacious = rows >= 6;
+		if (spacious) lines.push("");
 
 		this.#rolesRowStart = lines.length;
 
@@ -1608,9 +1645,9 @@ export class ModelHubComponent implements Component {
 		const listFocused = this.#focus === "list";
 
 		const total = this.#rolesRows.length;
-		const capacity = Math.max(0, rows - 2 - this.#rolesRowStart);
+		const capacity = Math.max(1, rows - (spacious ? 2 : 0) - this.#rolesRowStart);
 		const overflow = total > capacity;
-		const viewHeight = overflow ? Math.max(0, capacity - 1) : capacity;
+		const viewHeight = overflow && spacious ? Math.max(1, capacity - 1) : capacity;
 		this.#roleScrollStart = this.#ensureRoleVisible(viewHeight, total);
 		const endIndex = Math.min(this.#roleScrollStart + viewHeight, total);
 		this.#rolesVisibleCount = Math.max(0, endIndex - this.#roleScrollStart);
@@ -1697,7 +1734,7 @@ export class ModelHubComponent implements Component {
 			lines.push(line);
 		}
 
-		if (overflow) {
+		if (overflow && spacious) {
 			const hiddenAbove = this.#roleScrollStart;
 			const hiddenBelow = total - endIndex;
 			const parts: string[] = [];
@@ -1706,8 +1743,8 @@ export class ModelHubComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("dim", `   ${parts.join("   ")}`), width));
 		}
 
-		while (lines.length < rows - 1) lines.push("");
-		if (rows >= 2) {
+		while (lines.length < rows - (spacious ? 1 : 0)) lines.push("");
+		if (spacious) {
 			const cycleKey = getKeybindings().getKeys("app.model.cycleForward")[0] ?? "ctrl+p";
 			if (cycleOrder.length > 0) {
 				const selectedRow = this.#rolesRows[this.#roleIndex];
@@ -1732,6 +1769,16 @@ export class ModelHubComponent implements Component {
 	#renderLockedView(entry: SidebarEntry, width: number, rows: number): string[] {
 		const lines: string[] = [];
 		this.#lockedLoginLine = null;
+		if (rows < 6) {
+			if (entry.oauth) {
+				this.#lockedLoginLine = 0;
+				lines.push(truncateToWidth(theme.fg("accent", `${theme.nav.cursor} Enter log in`), width));
+			} else {
+				lines.push(truncateToWidth(theme.fg("warning", "API key required"), width));
+			}
+			while (lines.length < rows) lines.push("");
+			return lines;
+		}
 		lines.push("");
 		lines.push(truncateToWidth(theme.fg("warning", `  ${entry.label} has no credentials configured`), width));
 		lines.push("");
@@ -1747,7 +1794,7 @@ export class ModelHubComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("muted", "  Add an API key for this provider in config."), width));
 		}
 		if (entry.oauth) {
-			this.#lockedLoginLine = lines.length + 1;
+			this.#lockedLoginLine = lines.length;
 			lines.push(truncateToWidth(theme.fg("accent", `  ${theme.nav.cursor} Log in with OAuth (Enter)`), width));
 		}
 		lines.push("");
@@ -1814,7 +1861,14 @@ export class ModelHubComponent implements Component {
 		this.#chipRanges = [];
 		const strip = this.#strip;
 		if (!strip) {
-			return truncateToWidth(theme.fg("dim", this.#footerHint()), width);
+			const hint = this.#compact
+				? this.#focus === "scope"
+					? "Enter open · ↑/↓"
+					: width < 20
+						? "Enter · ← back"
+						: "Enter pick · ← back"
+				: this.#footerHint();
+			return truncateToWidth(theme.fg("dim", hint), width);
 		}
 
 		if (strip.kind === "roleName") {
@@ -1822,6 +1876,14 @@ export class ModelHubComponent implements Component {
 			const inputWidth = Math.max(8, Math.min(32, width - visibleWidth("New role name:") - 24));
 			const inputLine = strip.input.render(inputWidth)[0] ?? "";
 			return truncateToWidth(`${label} ${inputLine} ${theme.fg("dim", "(letters, digits, - and _)")}`, width);
+		}
+
+		if (width < 60) {
+			const chip = strip.chips[strip.index];
+			if (!chip) return "";
+			const action = truncateToWidth(`[${chip.styled}]`, Math.max(1, width - 4));
+			this.#chipRanges.push({ start: 4, end: 4 + visibleWidth(action), index: strip.index });
+			return `${theme.fg("dim", "← ")}${theme.bg("selectedBg", action)}${theme.fg("dim", " →")}`;
 		}
 
 		const prefix =
@@ -1874,37 +1936,55 @@ export class ModelHubComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const height = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
+		const height = this.#tui.terminal?.rows || process.stdout.rows || 40;
+		const viewport = getDialogViewport(height, 1);
 		const sidebarWidth = this.#sidebarWidth();
-		this.#sidebarWidthLast = sidebarWidth;
-		const bodyWidth = splitBodyWidth(width, sidebarWidth);
-		const contentRows = Math.max(10, height - 4);
+		const compact = !viewport.titleRows || splitBodyWidth(width, sidebarWidth) < 40;
+		this.#contentColInset = viewport.titleRows ? 2 : 0;
+		const innerWidth = Math.max(0, width - this.#contentColInset * 2);
+		if (compact !== this.#compact) this.#sidebarFollowActive = true;
+		this.#compact = compact;
+		this.#widthLast = width;
+		this.#sidebarWidthLast = compact ? innerWidth : sidebarWidth;
+		const bodyWidth = compact ? innerWidth : splitBodyWidth(width, sidebarWidth);
+		const contentRows = viewport.bodyRows + viewport.headerRows;
+		if (contentRows !== this.#contentRowCount) this.#sidebarFollowActive = true;
 		this.#contentRowCount = contentRows;
+		this.#bodyOffset = viewport.headerRows;
 
 		const entry = this.#activeEntry();
-		const bodyLines: string[] = [this.#statusRow(bodyWidth)];
-		if (entry.kind === "roles" && this.#assigning === null) {
-			bodyLines.push(...this.#renderRolesView(bodyWidth, contentRows - 1));
-		} else if (entry.kind === "provider" && entry.locked && this.#assigning === null) {
-			bodyLines.push(...this.#renderLockedView(entry, bodyWidth, contentRows - 1));
-		} else {
-			this.#browser.setMaxVisible(contentRows - 1 - 5);
-			this.#browser.setFocused(this.#focus === "list");
-			bodyLines.push(...this.#browser.render(bodyWidth));
+		const bodyLines: string[] = viewport.headerRows ? [this.#statusRow(bodyWidth)] : [];
+		if (!compact || this.#focus === "list") {
+			if (entry.kind === "roles" && this.#assigning === null) {
+				bodyLines.push(...this.#renderRolesView(bodyWidth, viewport.bodyRows));
+			} else if (entry.kind === "provider" && entry.locked && this.#assigning === null) {
+				bodyLines.push(...this.#renderLockedView(entry, bodyWidth, viewport.bodyRows));
+			} else {
+				this.#browser.setFocused(this.#focus === "list");
+				bodyLines.push(...this.#browser.render(bodyWidth, viewport.bodyRows));
+			}
 		}
-
-		const sidebarLines = this.#renderSidebar(sidebarWidth, contentRows);
-
+		const sidebarLines =
+			!compact || this.#focus === "scope" ? this.#renderSidebar(this.#sidebarWidthLast, contentRows) : [];
 		const out: string[] = [];
-		out.push(topBorderSplit(width, "Models", sidebarWidth));
+		if (viewport.titleRows)
+			out.push(
+				compact
+					? topBorder(width, this.#focus === "scope" ? "Models" : `← ${entry.label}`)
+					: topBorderSplit(width, "Models", sidebarWidth),
+			);
 		this.#contentRowStart = out.length;
 		for (let i = 0; i < contentRows; i++) {
-			out.push(splitRow(sidebarLines[i] ?? "", bodyLines[i] ?? "", width, sidebarWidth));
+			out.push(
+				compact
+					? row((this.#focus === "scope" ? sidebarLines[i] : bodyLines[i]) ?? "", width, viewport.titleRows > 0)
+					: splitRow(sidebarLines[i] ?? "", bodyLines[i] ?? "", width, sidebarWidth),
+			);
 		}
-		out.push(dividerSplit(width, sidebarWidth));
-		this.#footerRow = out.length;
-		out.push(row(this.#renderFooter(width - 4), width));
-		out.push(bottomBorder(width));
+		if (viewport.dividerRows) out.push(compact ? divider(width) : dividerSplit(width, sidebarWidth));
+		this.#footerRow = viewport.footerRows ? out.length : -1;
+		if (viewport.footerRows) out.push(row(this.#renderFooter(innerWidth), width, viewport.titleRows > 0));
+		if (viewport.bottomRows) out.push(bottomBorder(width));
 		return out;
 	}
 }

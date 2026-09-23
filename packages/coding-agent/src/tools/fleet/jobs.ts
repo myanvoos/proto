@@ -1,11 +1,13 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AsyncJob, AsyncJobManager, AsyncJobType } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
+import { formatAsyncJobTextForContext } from "../../session/async-job-delivery";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { readSessionLiveState } from "../../session/session-liveness";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
@@ -160,14 +162,39 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 	});
 }
 
-export function buildJobResult(
+const CAPPED_JOB_TEXT_MAX_ENTRIES = 64;
+/** Polling `wait`/`jobs` re-renders the same finished job, so each one keeps a single artifact. */
+const cappedJobText = new LRUCache<string, string>({ max: CAPPED_JOB_TEXT_MAX_ENTRIES });
+
+/**
+ * Job text reaches the model here exactly as it does through async delivery, so both paths share
+ * one cap and one `artifact://` pointer instead of this snapshot dumping whole job outputs.
+ */
+async function forContext(
+	session: ToolSession,
+	jobId: string,
+	kind: "result" | "error",
+	text: string,
+): Promise<string> {
+	const key = `${jobId}:${kind}:${text.length}`;
+	const cached = cappedJobText.get(key);
+	if (cached !== undefined) return cached;
+	const formatted = await formatAsyncJobTextForContext(text, toolType => {
+		const allocate = session.allocateOutputArtifact;
+		return allocate ? allocate(toolType) : Promise.resolve({});
+	});
+	if (formatted !== text) cappedJobText.set(key, formatted);
+	return formatted;
+}
+
+export async function buildJobResult(
 	session: ToolSession,
 	manager: AsyncJobManager,
 	op: "wait" | "cancel" | "jobs",
 	jobs: TrackedJobLike[],
 	cancelOutcomes: CancelOutcome[],
 	agents: AgentActivitySnapshot[] = [],
-): AgentToolResult<CoordinationDetails> {
+): Promise<AgentToolResult<CoordinationDetails>> {
 	const seen = new Set<string>();
 	const uniqueJobs = jobs.filter(j => {
 		if (seen.has(j.id)) return false;
@@ -183,9 +210,13 @@ export function buildJobResult(
 
 	const lines: string[] = [];
 
-	if (cancelOutcomes.length > 0) {
-		lines.push(`## Cancelled (${cancelOutcomes.length})\n`);
-		for (const o of cancelOutcomes) lines.push(`- ${o.message}`);
+	for (const [heading, outcomes] of [
+		["Cancelled", cancelOutcomes.filter(outcome => outcome.status === "cancelled")],
+		["Not cancelled", cancelOutcomes.filter(outcome => outcome.status !== "cancelled")],
+	] as const) {
+		if (outcomes.length === 0) continue;
+		lines.push(`## ${heading} (${outcomes.length})\n`);
+		for (const outcome of outcomes) lines.push(`- ${outcome.message}`);
 		lines.push("");
 	}
 
@@ -195,10 +226,10 @@ export function buildJobResult(
 			lines.push(`### ${j.id} [${j.type}] — ${j.status}`);
 			lines.push(`Label: ${j.label}`);
 			if (j.resultText) {
-				lines.push("```", j.resultText, "```");
+				lines.push("```", await forContext(session, j.id, "result", j.resultText), "```");
 			}
 			if (j.errorText) {
-				lines.push(`Error: ${j.errorText}`);
+				lines.push(`Error: ${await forContext(session, j.id, "error", j.errorText)}`);
 			}
 			lines.push("");
 		}
@@ -306,7 +337,7 @@ export async function executeCancel(
 				: { id, status: "already_completed", message: `Background job ${id} is already completed.` },
 		);
 	}
-	return buildJobResult(session, manager, "cancel", visibleJobs(manager, ids, ownerId), cancelOutcomes);
+	return await buildJobResult(session, manager, "cancel", visibleJobs(manager, ids, ownerId), cancelOutcomes);
 }
 
 async function cancelAgentRegistration(
@@ -346,13 +377,13 @@ async function cancelAgentRegistration(
 	return { id, status: "cancelled", message: `Cancelled agent ${id} (killed session, dropped registration).` };
 }
 
-export function executeJobsSnapshot(
+export async function executeJobsSnapshot(
 	session: ToolSession,
 	manager: AsyncJobManager,
 	ownerId: string | undefined,
-): AgentToolResult<CoordinationDetails> {
+): Promise<AgentToolResult<CoordinationDetails>> {
 	const jobs = manager.getAllJobs(ownerId ? { ownerId } : undefined);
-	return buildJobResult(session, manager, "jobs", jobs, [], runningAgentsOutsideJobs(session));
+	return await buildJobResult(session, manager, "jobs", jobs, [], runningAgentsOutsideJobs(session));
 }
 
 interface JobRenderArgs {

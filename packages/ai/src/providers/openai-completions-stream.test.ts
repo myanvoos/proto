@@ -51,6 +51,20 @@ describe("OpenAI Completions stream termination", () => {
 		expect(result).toEqual({ stopReason: "stop", errorMessage: undefined, text: "Hello" });
 	});
 
+	it("reports a 200 body that is not a stream instead of an empty successful turn", async () => {
+		const fetchImpl = Object.assign(
+			async (): Promise<Response> =>
+				new Response("<html>not json at all</html>", { headers: { "content-type": "text/html" } }),
+			{ preconnect: fetch.preconnect },
+		);
+		const result = await streamOpenAICompletions(model, context, { apiKey: "test-key", fetch: fetchImpl }).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("OpenAI completions response was not a stream");
+		expect(result.errorMessage).toContain("content-type text/html");
+		expect(result.content).toEqual([]);
+	});
+
 	it("still reports a genuine EOF without [DONE] or finish_reason as incomplete", async () => {
 		const result = await runStream([
 			{ choices: [{ delta: { content: "Hel" } }] },

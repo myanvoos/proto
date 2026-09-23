@@ -20,7 +20,7 @@ export default class Index extends Command {
 			parsed = parseArgs(args);
 		} catch (error) {
 			if (reportCliUsageError(error)) {
-				process.exitCode = 2;
+				process.exitCode = 1;
 				return;
 			}
 			throw error;

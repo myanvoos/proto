@@ -8,6 +8,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
+import { emptyUsageStatistics } from "../../../session/session-entries";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import * as git from "../../../utils/git";
@@ -205,11 +206,15 @@ function resolveWorktreeContext(cwd: string): WorktreeContext | null {
 	return { projectName, worktreeName: path.basename(worktree.root) };
 }
 
+/** How the last finished turn ended, so the run clock does not report a failure as a success. */
+export type RunOutcome = "ok" | "error" | "aborted";
+
 interface ActiveMeter {
 	activeMs: number;
 	activeStartedAt: number | null;
 
 	lastRunMs: number;
+	lastRunOutcome: RunOutcome;
 	sessionFile: string | undefined;
 }
 
@@ -405,6 +410,7 @@ export class StatusLineComponent implements Component {
 		meter.activeMs = 0;
 		meter.activeStartedAt = null;
 		meter.lastRunMs = 0;
+		meter.lastRunOutcome = "ok";
 	}
 
 	markActivityStart(): void {
@@ -413,20 +419,22 @@ export class StatusLineComponent implements Component {
 		meter.activeStartedAt = Date.now();
 	}
 
-	markActivityEnd(): void {
+	markActivityEnd(outcome: RunOutcome = "ok"): void {
 		const meter = this.#meter();
 		if (meter.activeStartedAt === null) return;
 		const windowMs = Math.max(0, Date.now() - meter.activeStartedAt);
 		meter.activeMs += windowMs;
 		meter.lastRunMs = windowMs;
+		meter.lastRunOutcome = outcome;
 		meter.activeStartedAt = null;
 	}
 
-	getRunClock(): { runningMs: number | null; lastRunMs: number } {
+	getRunClock(): { runningMs: number | null; lastRunMs: number; lastRunOutcome: RunOutcome } {
 		const meter = this.#meter();
 		return {
 			runningMs: meter.activeStartedAt === null ? null : Math.max(0, Date.now() - meter.activeStartedAt),
 			lastRunMs: meter.lastRunMs,
+			lastRunOutcome: meter.lastRunOutcome,
 		};
 	}
 
@@ -449,7 +457,7 @@ export class StatusLineComponent implements Component {
 			}
 		}
 		if (!meter) {
-			meter = { activeMs: 0, activeStartedAt: null, lastRunMs: 0, sessionFile: currentFile };
+			meter = { activeMs: 0, activeStartedAt: null, lastRunMs: 0, lastRunOutcome: "ok", sessionFile: currentFile };
 			this.#activeMeters.set(this.session, meter);
 		}
 		return meter;
@@ -964,18 +972,7 @@ export class StatusLineComponent implements Component {
 
 		this.refreshUsageInBackground();
 
-		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			orchestrationInput: 0,
-			orchestrationOutput: 0,
-			orchestrationCacheRead: 0,
-			premiumRequests: 0,
-			cost: 0,
-		};
+		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? emptyUsageStatistics();
 		const usageStats = {
 			...aggregateUsageStats,
 			tokensPerSecond: includeTokenRate ? this.#getTokensPerSecond() : null,
@@ -1171,8 +1168,16 @@ export class StatusLineComponent implements Component {
 	#locationWithRunClock(location: string[], sep: string, gap: string = SESSION_CLOCK_GAP): string {
 		const left = location.join(sep);
 		if (!left) return left;
-		const { runningMs, lastRunMs } = this.getRunClock();
-		const readout = runningMs !== null ? formatClock(runningMs) : lastRunMs > 0 ? `✓ ${formatClock(lastRunMs)}` : "";
+		const { runningMs, lastRunMs, lastRunOutcome } = this.getRunClock();
+		// A check mark claims the turn succeeded; a failed or interrupted turn gets its own mark.
+		const outcomeMark =
+			lastRunOutcome === "error"
+				? theme.status.error
+				: lastRunOutcome === "aborted"
+					? theme.status.aborted
+					: theme.status.success;
+		const readout =
+			runningMs !== null ? formatClock(runningMs) : lastRunMs > 0 ? `${outcomeMark} ${formatClock(lastRunMs)}` : "";
 		if (!readout) return left;
 		return `${left}${gap}${theme.fg("dim", readout)}`;
 	}

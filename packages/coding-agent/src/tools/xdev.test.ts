@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
+import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import type { ToolSession } from ".";
-import { dispatchXdTarget } from "./xdev";
+import { dispatchXdevTool, dispatchXdTarget, type XdevState } from "./xdev";
 
 test("xd resolution forwards cancellation before a pending action applies", async () => {
 	const started = Promise.withResolvers<void>();
@@ -44,4 +46,42 @@ test("xd resolution forwards cancellation before a pending action applies", asyn
 	expect(seenSignal).toBe(controller.signal);
 	expect(seenInvokerSignal).toBe(controller.signal);
 	expect(sideEffectRan).toBe(false);
+});
+
+function probeState(seen: { args?: Record<string, unknown> }): XdevState {
+	const probe = {
+		name: "probe",
+		label: "Probe",
+		description: "probe device",
+		parameters: type({ target: type("string > 0").describe("thing to probe") }),
+		execute: async (_id: string, args: Record<string, unknown>) => {
+			seen.args = args;
+			return { content: [{ type: "text" as const, text: "probed\n" }] };
+		},
+	} as unknown as AiTool;
+	return {
+		tools: new Map([["probe", probe as never]]),
+		mountedNames: new Set(["probe"]),
+		builtInNames: new Set(["probe"]),
+		isActive: () => true,
+	};
+}
+
+test("devices accept the documented intent field and drop it before execution", async () => {
+	const seen: { args?: Record<string, unknown> } = {};
+	const { result } = await dispatchXdevTool(
+		probeState(seen),
+		"probe",
+		JSON.stringify({ target: "disk", i: "Probing disk" }),
+		"xd-intent",
+	);
+
+	expect(result.isError).toBeFalsy();
+	expect(seen.args).toEqual({ target: "disk" });
+});
+
+test("device validation states the constraint and the offending value", async () => {
+	await expect(
+		dispatchXdevTool(probeState({}), "probe", JSON.stringify({ target: "" }), "xd-invalid"),
+	).rejects.toThrow(/target must be at least length 1 \(was ""\)/);
 });

@@ -12,10 +12,10 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { formatNumber, logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import type { Keybinding, KeyId } from "../../../config/keybindings";
 import type { MessageRenderer } from "../../../extensibility/extensions/types";
-import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
+import { AgentLifecycleManager, persistAgentTombstone } from "../../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, getAgentTombstonePath } from "../../../registry/agent-registry";
 import { readAgentSpawnTask, registerPersistedSubagents } from "../../../registry/persisted-agents";
 import { detachedSessionHolder } from "../../../session/detached-session-holder";
@@ -30,7 +30,7 @@ import {
 	lookupBuiltinSlashCommand,
 } from "../../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../../slash-commands/helpers/parse";
-import { shortenPath } from "../../../tools/render-utils";
+import { formatCost, shortenPath } from "../../../tools/render-utils";
 import { getEditorTheme, getSymbolTheme, theme } from "../../theme/theme";
 import type { InteractiveModeContext } from "../../types";
 import {
@@ -69,6 +69,7 @@ import {
 	sectionTitle,
 	sessionFileFromIdentity,
 	sessionPathsWithinScope,
+	sumAgentsViewUsage,
 } from "./agents-view-state";
 import { matchSearchText, type ParsedSearchQuery, parseSearchQuery } from "./session-view-search";
 
@@ -166,6 +167,12 @@ interface AgentsViewActions {
 	promptAfterResume: (text: string) => Promise<void>;
 	showError: (message: string) => void;
 	showStatus: (message: string) => void;
+
+	/**
+	 * Terminates an orchestrator-managed worker the way `orchestrate_kill` does, cancelling its
+	 * in-flight turn. Resolves false when the id is not one of this session's workers.
+	 */
+	stopWorker?: (id: string) => Promise<boolean>;
 }
 
 export interface AgentsViewDeps extends AgentsViewActions {
@@ -212,6 +219,7 @@ export class AgentsViewComponent implements Component {
 	#index: AgentsViewIndex = { byKey: new Map(), childrenByParent: new Map() };
 	#rows: AgentsViewRow[] = [];
 	#selectedIndex = 0;
+	#listRows = 1;
 	readonly #rangeSelection = new ListRangeSelection<string>();
 	#selectedIdentity: string | undefined;
 
@@ -416,7 +424,14 @@ export class AgentsViewComponent implements Component {
 			const sessions = [...listed, ...this.#persistedChildSessions];
 			const refs = this.#registry.list().filter(ref => !this.#isHostRef(ref));
 			const signature =
-				refs.map(ref => `${ref.id}:${ref.status}:${ref.lastActivity}:${ref.activity ?? ""}`).join("|") +
+				refs
+					.map(
+						ref =>
+							// Spend arrives asynchronously from the transcript scan; without it in the signature the
+							// rows would keep rendering the pre-scan state that has no usage at all.
+							`${ref.id}:${ref.status}:${ref.lastActivity}:${ref.activity ?? ""}:${ref.history?.metrics?.cost ?? ""}:${ref.history?.metrics?.tokens ?? ""}`,
+					)
+					.join("|") +
 				"#" +
 				sessions
 					.map(
@@ -1180,11 +1195,26 @@ export class AgentsViewComponent implements Component {
 		ref: AgentRef,
 	): Promise<{ ok: true; action: "stop" } | { ok: false; action: "stop"; message: string }> {
 		try {
-			if (ref.status === "running" && ref.session) {
-				await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+			// Aborting the session and disposing it leaves an orchestrated worker's turn running:
+			// its async job keeps issuing provider requests until it fails on its own. Cancel the
+			// turn through the orchestrator first, exactly as the model-side kill does.
+			const live = ref.session;
+			const cancelled = (await this.#deps.stopWorker?.(ref.id)) ?? false;
+			if (live && (cancelled || ref.status === "running")) {
+				await live.abort({ reason: USER_INTERRUPT_LABEL });
 			}
-			await AgentLifecycleManager.global().release(ref.id, ref, { tombstone: true });
+			const released = await AgentLifecycleManager.global().release(ref.id, ref, { tombstone: true });
+			// A cancelled worker leaves the orchestrator holding the registry ref, so finish the
+			// teardown the release would have done: persist the tombstone the stopped row renders
+			// from, and dispose the session whose live marker otherwise keeps the row running.
+			if (!released) {
+				if (ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
+				if (live) await live.dispose();
+			}
 			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
+			// The stopped worker's cached listing still claims it is streaming; force the nested
+			// cache to be re-read so the row leaves the running section with the turn it lost.
+			this.#forgetStoppedSession(ref.sessionFile);
 			this.#lastSignature = "";
 			await this.refresh();
 			return { ok: true, action: "stop" };
@@ -1224,6 +1254,15 @@ export class AgentsViewComponent implements Component {
 				message: error instanceof Error ? error.message : String(error),
 			};
 		}
+	}
+
+	/** Drops the cached listing for a stopped agent so its live-streaming flag is re-read at once. */
+	#forgetStoppedSession(sessionPath: string | null): void {
+		if (sessionPath) {
+			this.#persistedChildSessions = this.#persistedChildSessions.filter(info => info.path !== sessionPath);
+			this.#persistSeededPaths.delete(sessionPath);
+		}
+		this.#lastChildSessionRefresh = 0;
 	}
 
 	#forgetDeletedSession(sessionPath: string): void {
@@ -1342,20 +1381,24 @@ export class AgentsViewComponent implements Component {
 		const safeWidth = Math.max(1, width);
 		const lines: string[] = [];
 
-		const promptLines = [...this.#renderReplyHeaderLine(safeWidth), ...this.#editor.render(safeWidth)];
-		const hintsLine = this.#renderHints(safeWidth);
+		const editorLines = [...this.#editor.render(safeWidth)];
+		const replyLines = this.#renderReplyHeaderLine(safeWidth);
+		const hintsRows = height >= 3 ? 1 : 0;
+		// Target, input and a focused roster row precede all decorative chrome.
+		const targetRows = replyLines.length > 0 && height >= 3 ? 1 : 0;
+		const listMinimum = Math.min(3, Math.max(1, height - editorLines.length - hintsRows - targetRows));
+		const spare = Math.max(0, height - editorLines.length - hintsRows - targetRows - listMinimum);
+		const header = this.#renderHeader(safeWidth);
+		const headerRows = spare >= header.length ? header.length : 0;
+		lines.push(...header.slice(0, headerRows));
+		lines.push(...replyLines.slice(0, targetRows));
+		lines.push(...editorLines.slice(0, Math.max(0, height - hintsRows - targetRows - 1)));
+		if (replyLines.length > 1 && spare - headerRows > 0) lines.push(replyLines[1]);
 
-		const reservedTail = promptLines.length + 3;
-		const headerBudget = Math.max(0, height - reservedTail - 1);
-		lines.push(...this.#renderHeader(safeWidth).slice(0, headerBudget));
-		lines.push(...promptLines);
-		lines.push("");
-
-		const listRows = Math.max(0, height - lines.length - 1);
-		lines.push(...this.#renderList(safeWidth, listRows));
-
-		while (lines.length < height - 1) lines.push("");
-		lines.push(hintsLine);
+		this.#listRows = Math.max(1, height - lines.length - hintsRows);
+		lines.push(...this.#renderList(safeWidth, this.#listRows));
+		while (lines.length < height - hintsRows) lines.push("");
+		if (hintsRows) lines.push(this.#renderHints(safeWidth));
 		return lines.slice(0, height).map(line => this.#finalizeLine(line, safeWidth));
 	}
 
@@ -1376,6 +1419,7 @@ export class AgentsViewComponent implements Component {
 			scopeRoot?.rootTitle ??
 			(this.#deps.hideSubagents ? (this.#sessionListScope === "cwd" ? "current folder" : "all projects") : "global");
 		const counts = countAgentsBySection(this.#rows);
+		const spend = sumAgentsViewUsage(this.#rows);
 		const cwd = selected?.record?.session?.cwd ?? this.#deps.cwd;
 		const metaLines = [
 			labelled("version", `v${this.#deps.version}`),
@@ -1385,6 +1429,14 @@ export class AgentsViewComponent implements Component {
 				"agents",
 				`${counts.running} running, ${counts.idle} idle, ${counts.current} current, ${counts.inactive} inactive`,
 			),
+			...(spend.agents > 0
+				? [
+						labelled(
+							"spend",
+							`${formatCost(spend.cost)} · ${formatNumber(spend.tokens)} tok · ${spend.agents} measured`,
+						),
+					]
+				: []),
 			labelled("scope", scopeLabel),
 			labelled("depth", String(this.#scopeFrames.length)),
 			"",
@@ -1416,7 +1468,8 @@ export class AgentsViewComponent implements Component {
 			this.#replyHeadline ??
 			theme.fg("dim", this.#replyHeadlineLoading ? "Loading last response..." : "No response yet");
 		const line = ageValue ? `${theme.fg("warning", ageValue)} ${headline}` : headline;
-		return [truncateToWidth(line, width)];
+		const title = record ? getRecordTitle(record) : target.identity;
+		return [truncateToWidth(theme.fg("warning", `Reply: ${title}`), width), truncateToWidth(line, width)];
 	}
 
 	#terminalRows(): number {
@@ -1424,7 +1477,7 @@ export class AgentsViewComponent implements Component {
 	}
 
 	#visibleListRows(): number {
-		return Math.max(4, this.#terminalRows() - 9);
+		return this.#listRows;
 	}
 
 	#renderList(width: number, maxRows: number): string[] {
@@ -1437,7 +1490,9 @@ export class AgentsViewComponent implements Component {
 						? "  No sessions in current folder. Press Tab to view all."
 						: "  No sessions found."
 					: "  No sessions match your search.";
-			return [theme.bold(sectionTitle(emptyHeading)), theme.fg("dim", emptyMessage)].slice(0, maxRows);
+			return maxRows === 1
+				? [theme.fg("dim", emptyMessage)]
+				: [theme.bold(sectionTitle(emptyHeading)), theme.fg("dim", emptyMessage)];
 		}
 
 		const wantedSections: AgentsViewSection[] = this.#deps.hideSubagents
@@ -1454,20 +1509,16 @@ export class AgentsViewComponent implements Component {
 		const selectedIndex = displayItems.findIndex(
 			item => item.type === "row" && item.row.identity === selectedIdentity,
 		);
-		const visibleRows = Math.min(maxRows, this.#visibleListRows());
+		const visibleRows = maxRows;
+		// Overflow markers must not evict the selected item, including a one-row viewport.
+		const markerBudget = visibleRows >= 4 ? 2 : 0;
+		const contentVisibleRows = Math.max(1, visibleRows - markerBudget);
 		const start = Math.max(
 			0,
-			Math.min(displayItems.length - visibleRows, selectedIndex - Math.floor(visibleRows / 2)),
+			Math.min(displayItems.length - contentVisibleRows, selectedIndex - Math.floor(contentVisibleRows / 2)),
 		);
-		const showLeadingEllipsis = start > 0;
-		let showTrailingEllipsis = start + visibleRows < displayItems.length;
-		if ((showLeadingEllipsis ? 1 : 0) + (showTrailingEllipsis ? 1 : 0) >= visibleRows) {
-			showTrailingEllipsis = false;
-		}
-		const contentVisibleRows = Math.max(
-			0,
-			visibleRows - (showLeadingEllipsis ? 1 : 0) - (showTrailingEllipsis ? 1 : 0),
-		);
+		const showLeadingEllipsis = markerBudget > 0 && start > 0;
+		const showTrailingEllipsis = markerBudget > 0 && start + contentVisibleRows < displayItems.length;
 		const visibleItems = displayItems.slice(start, start + contentVisibleRows);
 		const rangeSpan = this.#rangeSelection.range(this.#selectedIndex);
 		const markedIdentities = new Set<string>();
@@ -1543,11 +1594,16 @@ export class AgentsViewComponent implements Component {
 			if (modelLabel) suffixes.push(modelLabel);
 			if (!pendingDelete && row.subtitle) suffixes.push(row.subtitle);
 		}
+		if (!pendingDelete && row.usage) suffixes.push(row.usage);
 		const titleContent = suffixes.length > 0 ? `${title} ${theme.fg("dim", `· ${suffixes.join(" · ")}`)}` : title;
-		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - row.detailsWidth - 2);
+		const detailsWidth = Math.min(
+			row.detailsWidth,
+			Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - 22),
+		);
+		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - detailsWidth - 2);
 		const titleCell = formatTableCell(pendingDelete ? theme.fg("error", titleContent) : titleContent, titleWidth);
 		const rowMarker = selected || marked ? SELECTED_ROW_MARKER : "";
-		const base = `${indent}${icon} ${titleCell} ${formatRightTableCell(details, row.detailsWidth)}`;
+		const base = `${indent}${icon} ${titleCell} ${formatRightTableCell(details, detailsWidth)}`;
 		return `${rowMarker}${padLine(truncateToWidth(base, width), width)}`;
 	}
 

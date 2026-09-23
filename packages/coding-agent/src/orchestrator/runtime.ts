@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, formatNumber, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
 import {
 	formatModelSelectorValue,
@@ -17,6 +17,11 @@ import { MCPManager } from "../mcp/manager";
 import workerTurnResultTemplate from "../prompts/tools/worker-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, hasAgentTombstone, MAIN_AGENT_ID } from "../registry/agent-registry";
+import {
+	parseSubagentUsageEntry,
+	SUBAGENT_USAGE_CUSTOM_TYPE,
+	type SubagentUsageTotals,
+} from "../session/session-entries";
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
@@ -26,11 +31,13 @@ import { Semaphore } from "../task/parallel";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
 import { type AgentDefinition, type AgentProgress, oneLineLabel, type SingleResult } from "../task/types";
+import { recordSubagentRun, subagentRunUsage } from "../task/usage-rollup";
 import { resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ToolSession } from "../tools";
 import { buildOutputValidator } from "../tools/output-schema-validator";
-import { formatDuration } from "../tools/render-utils";
+import { formatCost, formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
+import { registerWakeTurnOwner, type WakeTurnClaim } from "./wake-turns";
 
 export type WorkerTurnState = "starting" | "running" | "idle";
 export type WorkerLifecycle = "live" | "parked" | "terminal";
@@ -73,6 +80,7 @@ export interface OrchestratorParent {
 	sessionManager?: ToolSession["sessionManager"] & Partial<Pick<SessionManager, "recoverPersistenceFromCurrentState">>;
 	asyncJobManager?: AsyncJobManager;
 	settings: ToolSession["settings"];
+	modelRegistry?: ToolSession["modelRegistry"];
 	getActiveModelString?: () => string | undefined;
 	getModelString?: () => string | undefined;
 	outputSchema?: unknown;
@@ -157,6 +165,18 @@ interface WorkerTurn {
 	toolCount: number;
 }
 
+export interface WorkerUsage {
+	tokens: number;
+	cost: number;
+
+	/** Settled turns that reported usage. */
+	turns: number;
+}
+
+function emptyWorkerUsage(): WorkerUsage {
+	return { tokens: 0, cost: 0, turns: 0 };
+}
+
 interface WorkerRecord {
 	id: string;
 
@@ -196,7 +216,14 @@ interface WorkerRecord {
 
 	lastJobId?: string;
 
+	/** Spend of every settled turn of this worker, as attributed to the owning session. */
+	usage: WorkerUsage;
+
+	/** Nested spend already billed for this worker, so follow-up turns bill only the delta. */
+	nestedUsage?: SubagentUsageTotals;
+
 	temporaryArtifacts?: { dir: string; unregister: () => void };
+	wakeTurnCleanup?: () => void;
 	temporaryArtifactsCleanup?: Promise<void>;
 	capacityWaitCleanup?: () => void;
 
@@ -225,6 +252,9 @@ export interface WorkerScreen {
 	model?: string;
 	turns: number;
 	queued: number;
+
+	/** Spend attributed to this worker so far, across its settled turns. */
+	usage?: WorkerUsage;
 
 	turnStartedAt?: number;
 
@@ -436,6 +466,9 @@ function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 
 class WorkerTurnError extends Error {}
 
+/** Result of a turn the orchestrator tracks but does not drive (an IRC wake started it). */
+type ExternalTurnOutcome = { ok: true; result: SingleResult } | { ok: false; error: unknown };
+
 export class OrchestratorRuntime {
 	static #global: OrchestratorRuntime | undefined;
 
@@ -487,6 +520,7 @@ export class OrchestratorRuntime {
 				? { jobId: record.jobId, message: "test turn", startedAt: now, trace: [], toolCount: 0 }
 				: undefined,
 			queue: [],
+			usage: emptyWorkerUsage(),
 			turnCount: record.jobId ? 1 : 0,
 			killed: false,
 			suspended: false,
@@ -495,6 +529,8 @@ export class OrchestratorRuntime {
 	}
 
 	readonly #recordsByScope = new Map<string, Map<string, WorkerRecord>>();
+	/** Last tool session seen per scope, so an IRC wake can register its turn without one in hand. */
+	readonly #toolSessionByScope = new Map<string, ToolSession>();
 	readonly #terminationTails = new Map<string, Promise<void>>();
 	#turnSemaphoreState: { limit: number; semaphore: Semaphore } | undefined;
 	readonly #waitedJobIds = new Set<string>();
@@ -507,6 +543,13 @@ export class OrchestratorRuntime {
 
 	setTeardownGraceForTesting(timeoutMs: number): void {
 		this.#teardownGraceMs = Math.max(1, timeoutMs);
+	}
+
+	/** Scope of a tool call, remembering the session so wake turns started later can be tracked. */
+	#activeScope(session: ToolSession): OwnerScope {
+		const scope = this.ownerScope(session);
+		this.#toolSessionByScope.set(scopeKey(scope, ""), session);
+		return scope;
 	}
 
 	ownerScope(session: OrchestratorParent): OwnerScope {
@@ -550,12 +593,21 @@ export class OrchestratorRuntime {
 			this.#recordsByScope.set(key, records);
 		}
 		records.set(record.id, record);
+		record.wakeTurnCleanup?.();
+		record.wakeTurnCleanup = registerWakeTurnOwner(record.id, task => this.#claimWakeTurn(scope, record, task));
+	}
+
+	#forgetWakeTurnOwner(record: WorkerRecord): void {
+		record.wakeTurnCleanup?.();
+		record.wakeTurnCleanup = undefined;
 	}
 
 	#deleteRecord(scope: OwnerScope, id: string): void {
 		const key = scopeKey(scope, "");
 		const records = this.#recordsByScope.get(key);
 		if (!records) return;
+		const record = records.get(id);
+		if (record) this.#forgetWakeTurnOwner(record);
 		records.delete(id);
 		if (records.size === 0) this.#recordsByScope.delete(key);
 	}
@@ -612,15 +664,16 @@ export class OrchestratorRuntime {
 			throw new ToolError(describeUnknownAgent(requested, agents));
 		}
 		const agentModelOverrides = session.settings.get("orchestrator.agentModelOverrides");
-		const { patterns, role, bankError } = resolveAgentSpawnModelSelection({
+		const { patterns, role, requestError } = resolveAgentSpawnModelSelection({
 			requestModel,
 			settingsOverride: agentModelOverrides[requested],
 			agentModel: agent.model,
 			settings: session.settings,
 			activeModelPattern: session.getActiveModelString?.(),
 			fallbackModelPattern: session.getModelString?.(),
+			...(session.modelRegistry ? { modelRegistry: session.modelRegistry } : {}),
 		});
-		if (bankError) throw new ToolError(bankError);
+		if (requestError) throw new ToolError(requestError);
 		return { agent, modelOverride: patterns, modelRole: role };
 	}
 
@@ -800,6 +853,7 @@ export class OrchestratorRuntime {
 		cleanupArtifacts = true,
 	): void {
 		this.#clearPendingCapacityWait(record);
+		this.#forgetWakeTurnOwner(record);
 		record.state = "dead";
 		record.terminal = this.#terminalInfo(record, reason);
 		record.lastActivityAt = record.terminal.at;
@@ -893,12 +947,28 @@ export class OrchestratorRuntime {
 		return formatModelSelectorValue(formatModelStringWithRouting(model), displayLevel);
 	}
 
+	/**
+	 * Workers in this scope with a turn still in flight. Shutdown paths report these instead of
+	 * tearing them down silently: the parent finished, but the work it delegated did not.
+	 */
+	activeTurns(session: OrchestratorParent): Array<{ id: string; label: string; turn: number; queued: number }> {
+		const scope = this.ownerScope(session);
+		return [...this.#scopeRecords(scope).values()]
+			.filter(record => record.turn !== undefined && record.state !== "dead" && record.terminal === undefined)
+			.map(record => ({
+				id: record.id,
+				label: record.label,
+				turn: record.turnCount,
+				queued: record.queue.length,
+			}));
+	}
+
 	listIds(session: ToolSession): string[] {
-		return this.#listIds(this.ownerScope(session));
+		return this.#listIds(this.#activeScope(session));
 	}
 
 	screens(session: ToolSession, ids?: string[]): WorkerScreen[] {
-		const scope = this.ownerScope(session);
+		const scope = this.#activeScope(session);
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
 		const records: WorkerRecord[] = [];
 		for (const record of this.#scopeRecords(scope).values()) {
@@ -942,6 +1012,7 @@ export class OrchestratorRuntime {
 				model: this.#displayModel(session, record),
 				turns: record.turnCount,
 				queued: record.queue.length,
+				...(record.usage.turns > 0 ? { usage: { ...record.usage } } : {}),
 				turnStartedAt: record.turn?.startedAt,
 				turnMessage: record.turn ? firstLine(record.turn.message, 80) : undefined,
 				currentTool: record.live?.currentTool,
@@ -1079,6 +1150,20 @@ export class OrchestratorRuntime {
 			else if (event.action === "tombstone") terminalIntents.set(event.id, event.reason);
 		}
 
+		// Spend already attributed to each worker is replayed from the owner transcript so a resumed
+		// session keeps reporting what its workers cost.
+		const persistedUsage = new Map<string, WorkerUsage>();
+		for (const entry of sessionManager.getEntries()) {
+			if (entry.type !== "custom" || entry.customType !== SUBAGENT_USAGE_CUSTOM_TYPE) continue;
+			const usage = parseSubagentUsageEntry(entry.data);
+			if (!usage) continue;
+			const totals = persistedUsage.get(usage.agentId) ?? emptyWorkerUsage();
+			totals.tokens += usage.totalTokens;
+			totals.cost += usage.cost;
+			totals.turns += 1;
+			persistedUsage.set(usage.agentId, totals);
+		}
+
 		const candidates = new Map<string, RestoreCandidate>();
 		for (const entry of sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
@@ -1199,6 +1284,7 @@ export class OrchestratorRuntime {
 				lastActivityAt: candidate.lastActivityAt,
 				lastActivity: candidate.inFlight ? `turn ${candidate.turnCount} interrupted by process restart` : undefined,
 				queue: [],
+				usage: persistedUsage.get(spawn.id) ?? emptyWorkerUsage(),
 				turnCount: candidate.turnCount,
 				killed: false,
 				suspended: false,
@@ -1221,7 +1307,7 @@ export class OrchestratorRuntime {
 			schemaMode?: StructuredSubagentSchemaMode;
 		},
 	): Promise<SpawnOutcome> {
-		const scope = this.ownerScope(session);
+		const scope = this.#activeScope(session);
 		return this.#withTerminationLock(scope, () => this.#spawnLocked(session, scope, args));
 	}
 
@@ -1296,6 +1382,7 @@ export class OrchestratorRuntime {
 			createdAt,
 			lastActivityAt: createdAt,
 			queue: [],
+			usage: emptyWorkerUsage(),
 			turnCount: 0,
 			killed: false,
 			suspended: false,
@@ -1343,7 +1430,7 @@ export class OrchestratorRuntime {
 	}
 
 	async send(session: ToolSession, args: { session: string; message: string }): Promise<SendOutcome> {
-		const scope = this.ownerScope(session);
+		const scope = this.#activeScope(session);
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead" || record.terminal) {
 			throw this.#terminalError(record);
@@ -1359,6 +1446,15 @@ export class OrchestratorRuntime {
 		if (record.turn) {
 			const live = registered?.session;
 			if (live?.isStreaming) {
+				// Steering a busy worker is not free: every unread steer is context it must absorb when
+				// it next looks up. Bound the unread ones by the same number as queued turns.
+				const pending = live.getQueuedMessages().steering.length;
+				if (pending >= MAX_QUEUED_TURNS) {
+					const reason = `Worker "${record.id}" already has ${pending}/${MAX_QUEUED_TURNS} steering messages its current turn has not read yet. Wait for the turn to settle (orchestrate_wait), then retry this message.`;
+					throw new ToolError(reason, {
+						receipt: this.#receipt(record, "rejected", record.turnCount, record.turn.jobId, reason),
+					});
+				}
 				await live.steer(message);
 				record.lastActivityAt = Date.now();
 				return {
@@ -1412,12 +1508,18 @@ export class OrchestratorRuntime {
 		session: ToolSession,
 		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
 	): Promise<WaitOutcome> {
-		const scope = this.ownerScope(session);
+		const scope = this.#activeScope(session);
 		const manager = this.#manager(session);
 
+		// A bare wait covers turns in flight *and* turns that settled before the parent got here:
+		// a result that was never delivered is exactly what the parent is waiting for.
 		const watched = args.sessions?.length
 			? args.sessions.map(id => this.#record(scope, id))
-			: [...this.#scopeRecords(scope).values()].filter(record => record.turn !== undefined);
+			: [...this.#scopeRecords(scope).values()].filter(
+					record =>
+						record.turn !== undefined ||
+						(record.lastJobId !== undefined && !this.#waitedJobIds.has(record.lastJobId)),
+				);
 
 		const snapshots: Array<{ record: WorkerRecord; jobId: string; turn: number }> = [];
 		for (const record of watched) {
@@ -1571,11 +1673,25 @@ export class OrchestratorRuntime {
 	}
 
 	async kill(session: ToolSession, id: string): Promise<KillOutcome> {
-		const scope = this.ownerScope(session);
+		const scope = this.#activeScope(session);
 		return this.#withTerminationLock(scope, () => {
 			const record = this.#record(scope, id);
 			return this.#killRecord(record, session.asyncJobManager, session, "explicit-kill");
 		});
+	}
+
+	/**
+	 * Terminate a worker the caller addressed by agent id, using the same cancellation
+	 * `orchestrate_kill` uses. Returns false when this scope owns no such worker, so callers
+	 * holding a registry ref (the agents view stop key) can fall back to plain session teardown.
+	 */
+	async killIfManaged(session: OrchestratorParent, id: string): Promise<KillOutcome | undefined> {
+		const scope = this.ownerScope(session);
+		const record = this.#scopeRecords(scope).get(id.trim());
+		if (!record || !matchesScope(record, scope)) return undefined;
+		return this.#withTerminationLock(scope, () =>
+			this.#killRecord(record, session.asyncJobManager, session, "explicit-kill"),
+		);
 	}
 
 	async #killRecord(
@@ -1789,23 +1905,9 @@ export class OrchestratorRuntime {
 		};
 	}
 
-	#registerTurnJob(
-		session: ToolSession,
-		manager: AsyncJobManager,
-		record: WorkerRecord,
-		message: string,
-		options: { first: boolean; reserveCapacity?: boolean },
-	): string {
-		const turnIndex = record.turnCount + 1;
-		if (record.lastJobId) this.#waitedJobIds.delete(record.lastJobId);
-		const turn: WorkerTurn = {
-			jobId: "",
-			message,
-			startedAt: Date.now(),
-			trace: [],
-			toolCount: 0,
-		};
-		const onProgress = (progress: AgentProgress): void => {
+	/** Folds a running turn's activity into the record the list and wait surfaces read. */
+	#turnProgressHandler(record: WorkerRecord, turn: WorkerTurn): (progress: AgentProgress) => void {
+		return (progress: AgentProgress): void => {
 			if (record.state === "dead" || record.terminal) return;
 			mergeTrace(turn, progress);
 			record.resolvedModel = progress.resolvedModel ?? record.resolvedModel;
@@ -1822,6 +1924,108 @@ export class OrchestratorRuntime {
 			if (gist) record.lastActivity = firstLine(gist);
 			record.lastActivityAt = Date.now();
 		};
+	}
+
+	/** Drives a turn the orchestrator owns: the first turn spawns the worker, later ones continue it. */
+	async #runOwnTurn(
+		session: ToolSession,
+		record: WorkerRecord,
+		message: string,
+		signal: AbortSignal,
+		onProgress: (progress: AgentProgress) => void,
+		first: boolean,
+	): Promise<SingleResult> {
+		const { runSubagentFollowUpTurn, runSubprocess } = await import("../task/executor");
+		if (first) {
+			return runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress));
+		}
+		return runSubagentFollowUpTurn({
+			id: record.id,
+			agent: this.#workerAgent(record),
+			message,
+			description: `worker ${record.label}`,
+			modelRole: record.modelRole,
+			outputSchema: record.outputSchema,
+			outputSchemaMode: record.outputSchemaMode,
+			outputSchemaSource: record.outputSchemaSource,
+			signal,
+			onProgress,
+			eventBus: session.eventBus,
+			artifactsDir: session.getSessionFile()?.slice(0, -6),
+		});
+	}
+
+	/** Waits for a turn someone else drives, giving up when this job is cancelled. */
+	async #awaitExternalTurn(external: Promise<ExternalTurnOutcome>, signal: AbortSignal): Promise<SingleResult> {
+		const cancelled = new ToolError("Worker turn was cancelled while it ran outside the orchestrator.");
+		if (signal.aborted) throw cancelled;
+		const { promise: abortPromise, resolve: abortResolve } = Promise.withResolvers<ExternalTurnOutcome>();
+		const onAbort = () => abortResolve({ ok: false, error: cancelled });
+		signal.addEventListener("abort", onAbort, { once: true });
+		let outcome: ExternalTurnOutcome;
+		try {
+			outcome = await Promise.race([external, abortPromise]);
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+		if (!outcome.ok) throw outcome.error;
+		return outcome.result;
+	}
+
+	/**
+	 * Tracks a turn an IRC wake started on a worker this scope owns, so the wake result is delivered
+	 * through `orchestrate_wait` exactly once and the turn is visible while it runs. Returns undefined
+	 * when the worker cannot take a turn here, leaving the wake turn untracked as before.
+	 */
+	#claimWakeTurn(scope: OwnerScope, record: WorkerRecord, task: string): WakeTurnClaim | undefined {
+		if (record.terminal || record.state === "dead" || record.killed || record.suspended) return undefined;
+		if (this.#scopeRecords(scope).get(record.id) !== record) return undefined;
+		const session = this.#toolSessionByScope.get(scopeKey(scope, ""));
+		if (!session) return undefined;
+		if (record.turn) {
+			logger.warn("orchestrator: woken worker turn overlaps a tracked turn; its result is not delivered", {
+				id: record.id,
+				jobId: record.turn.jobId,
+			});
+			return undefined;
+		}
+		const { promise, resolve } = Promise.withResolvers<ExternalTurnOutcome>();
+		let onProgress: ((progress: AgentProgress) => void) | undefined;
+		try {
+			this.#registerTurnJob(session, this.#manager(session), record, task, { first: false, external: promise });
+			const turn = record.turn;
+			if (turn) onProgress = this.#turnProgressHandler(record, turn);
+		} catch (error) {
+			logger.warn("orchestrator: could not track a woken worker turn; its result is not delivered", {
+				id: record.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
+		return {
+			progress: progress => onProgress?.(progress),
+			settle: result => resolve({ ok: true, result }),
+			fail: error => resolve({ ok: false, error }),
+		};
+	}
+
+	#registerTurnJob(
+		session: ToolSession,
+		manager: AsyncJobManager,
+		record: WorkerRecord,
+		message: string,
+		options: { first: boolean; reserveCapacity?: boolean; external?: Promise<ExternalTurnOutcome> },
+	): string {
+		const turnIndex = record.turnCount + 1;
+		if (record.lastJobId) this.#waitedJobIds.delete(record.lastJobId);
+		const turn: WorkerTurn = {
+			jobId: "",
+			message,
+			startedAt: Date.now(),
+			trace: [],
+			toolCount: 0,
+		};
+		const onProgress = this.#turnProgressHandler(record, turn);
 
 		const semaphore = this.#turnSemaphore(session);
 		const jobId = manager.register(
@@ -1829,9 +2033,15 @@ export class OrchestratorRuntime {
 			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal, markRunning }) => {
 				let acquired = false;
+				let started = false;
 				try {
-					await semaphore.acquire(signal);
-					acquired = true;
+					// An external turn is already running outside the orchestrator, so it must not wait
+					// behind a semaphore permit it cannot hold; every other turn takes its permit first.
+					if (!options.external) {
+						await semaphore.acquire(signal);
+						acquired = true;
+					}
+					started = true;
 					markRunning();
 					record.state = "running";
 					record.lastActivityAt = Date.now();
@@ -1848,23 +2058,9 @@ export class OrchestratorRuntime {
 						if (record.childSessionFile && !turnStartedPersisted) {
 							throw new ToolError(`Worker "${record.id}" changed parent scope before its turn started.`);
 						}
-						const { runSubagentFollowUpTurn, runSubprocess } = await import("../task/executor");
-						const result = options.first
-							? await runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress))
-							: await runSubagentFollowUpTurn({
-									id: record.id,
-									agent: this.#workerAgent(record),
-									message,
-									description: `worker ${record.label}`,
-									modelRole: record.modelRole,
-									outputSchema: record.outputSchema,
-									outputSchemaMode: record.outputSchemaMode,
-									outputSchemaSource: record.outputSchemaSource,
-									signal,
-									onProgress,
-									eventBus: session.eventBus,
-									artifactsDir: session.getSessionFile()?.slice(0, -6),
-								});
+						const result = options.external
+							? await this.#awaitExternalTurn(options.external, signal)
+							: await this.#runOwnTurn(session, record, message, signal, onProgress, options.first);
 						return await this.#settleTurn(session, manager, record, turn, ownJobId, turnIndex, result);
 					} catch (error) {
 						if (error instanceof WorkerTurnError) throw error;
@@ -1876,7 +2072,7 @@ export class OrchestratorRuntime {
 						);
 					}
 				} catch (error) {
-					if (acquired) throw error;
+					if (started) throw error;
 					await this.#finishTurn(session, manager, record, ownJobId);
 					const reason = error instanceof Error ? error.message : String(error);
 					throw new WorkerTurnError(
@@ -2043,6 +2239,20 @@ export class OrchestratorRuntime {
 				: (result.lastIntent ?? result.output),
 		);
 
+		const turnUsage = subagentRunUsage(result, record.nestedUsage);
+		record.nestedUsage = recordSubagentRun(session, result, {
+			agentId: record.id,
+			agent: record.agentName,
+			label: record.label,
+			turn: turnIndex,
+			...(record.nestedUsage ? { nestedBaseline: record.nestedUsage } : {}),
+		});
+		if (turnUsage) {
+			record.usage.tokens += turnUsage.totalTokens;
+			record.usage.cost += turnUsage.cost.total;
+			record.usage.turns += 1;
+		}
+
 		const traceLines = turn.trace.map(entry =>
 			firstLine(`${entry.tool}${entry.args ? `(${entry.args})` : ""}`, TRACE_LINE_MAX),
 		);
@@ -2072,6 +2282,10 @@ export class OrchestratorRuntime {
 					duration: formatDuration(result.durationMs),
 					requests: result.requests,
 					toolCount: turn.toolCount,
+					tokens: turnUsage ? formatNumber(turnUsage.totalTokens) : "",
+					cost: turnUsage ? formatCost(turnUsage.cost.total) : "",
+					totalTokens: record.usage.turns > 1 ? formatNumber(record.usage.tokens) : "",
+					totalCost: record.usage.turns > 1 ? formatCost(record.usage.cost) : "",
 					model: result.resolvedModel ?? record.resolvedModel ?? "",
 					trace: traceLines,
 					traceOverflow: traceOverflow > 0 ? traceOverflow : undefined,
@@ -2088,7 +2302,9 @@ export class OrchestratorRuntime {
 			});
 			text = [
 				`[worker:${record.id} label=${record.label} owner=${record.ownerId} parent=${record.parentSessionId} turn=${turnIndex} status=${status}]`,
-				`Activity (${turn.toolCount} tool calls, ${result.requests} requests):`,
+				`Activity (${turn.toolCount} tool calls, ${result.requests} requests${
+					turnUsage ? `, ${formatNumber(turnUsage.totalTokens)} tokens, ${formatCost(turnUsage.cost.total)}` : ""
+				}):`,
 				...traceLines.map(line => `- ${line}`),
 				"",
 				"Response:",

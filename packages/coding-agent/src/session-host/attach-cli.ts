@@ -1,17 +1,22 @@
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { PassThrough } from "node:stream";
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { replaceTabs } from "@oh-my-pi/pi-tui";
+import { matchesKey, parseKey, replaceTabs, StdinBuffer, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
 
+import { closeDaemonClients } from "../launch/client";
 import { findMostRecentSession, resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { connectSessionRpc, type SessionRpcConnection } from "./client";
 
 const commandOutput = {
-	role: (role: string, text: string): string => `${chalk.bold(role)}: ${text}`,
-	system: (text: string): string => chalk.dim(text),
+	role: (role: string, text: string): string =>
+		truncateToWidth(`${chalk.bold(cleanLine(role))}: ${cleanLine(text)}`, terminalWidth()),
+	system: (text: string): string => chalk.dim(truncateLine(text)),
 };
 
 import { ensureSessionHost, stopSessionHost } from "./ensure";
@@ -27,10 +32,24 @@ export interface AttachCommandArgs {
 	stop?: boolean;
 }
 
-function truncateLine(line: string, width = REPLAY_LINE_WIDTH): string {
-	const clean = replaceTabs(line);
-	if (clean.length <= width) return clean;
-	return `${clean.slice(0, width - 1)}…`;
+function terminalWidth(): number {
+	return process.stdout.isTTY && process.stdout.columns > 0 ? process.stdout.columns : REPLAY_LINE_WIDTH;
+}
+
+function cleanLine(line: string): string {
+	return replaceTabs(sanitizeText(line)).replaceAll("\n", " ");
+}
+
+function truncateLine(line: string): string {
+	return truncateToWidth(cleanLine(line), terminalWidth());
+}
+
+function printNotice(text: string): void {
+	for (const line of text.split("\n")) {
+		const clean = cleanLine(line);
+		const lines = process.stdout.isTTY ? wrapTextWithAnsi(clean, terminalWidth()) : [clean];
+		for (const wrapped of lines) console.log(chalk.dim(wrapped));
+	}
 }
 
 function messageText(message: AgentMessage): string {
@@ -51,9 +70,9 @@ function messageText(message: AgentMessage): string {
 function renderMessage(message: AgentMessage): void {
 	if (message.role === "bashExecution") {
 		const execution = message as { command?: string; output?: string };
-		if (execution.command) console.log(commandOutput.role("bash", truncateLine(`$ ${execution.command}`)));
+		if (execution.command) console.log(commandOutput.role("bash", `$ ${execution.command}`));
 		for (const rawLine of (execution.output ?? "").split("\n")) {
-			if (rawLine.trim()) console.log(commandOutput.system(truncateLine(rawLine)));
+			if (rawLine.trim()) console.log(commandOutput.system(rawLine));
 		}
 		return;
 	}
@@ -61,7 +80,7 @@ function renderMessage(message: AgentMessage): void {
 	if (!text) return;
 	const role = message.role === "user" ? "you" : message.role === "toolResult" ? "tool" : message.role;
 	for (const rawLine of text.split("\n")) {
-		console.log(commandOutput.role(role, truncateLine(rawLine)));
+		console.log(commandOutput.role(role, rawLine));
 	}
 }
 
@@ -88,6 +107,7 @@ export class AttachClient {
 	#pending = new Map<string, (result: RequestResult) => void>();
 	#counter = 0;
 	#pump: Promise<void>;
+	#closedError: string | undefined;
 
 	constructor(connection: SessionRpcConnection) {
 		this.#connection = connection;
@@ -111,8 +131,8 @@ export class AttachClient {
 				renderEvent(frame);
 			}
 		};
-		return pump().catch(() => {
-			// connection closed — pending requests settle via request timeouts
+		return pump().catch(error => {
+			this.#finishPending(error instanceof Error ? error.message : String(error));
 		});
 	}
 
@@ -123,6 +143,7 @@ export class AttachClient {
 	}
 
 	async request(command: Record<string, unknown>, timeoutMs = CONTROL_TIMEOUT_MS): Promise<RequestResult> {
+		if (this.#closedError) return { success: false, error: this.#closedError };
 		const id = this.send(command);
 		const { promise, resolve } = Promise.withResolvers<RequestResult>();
 		this.#pending.set(id, resolve);
@@ -137,7 +158,14 @@ export class AttachClient {
 		}
 	}
 
+	#finishPending(error: string): void {
+		this.#closedError ??= error;
+		for (const resolve of this.#pending.values()) resolve({ success: false, error: this.#closedError });
+		this.#pending.clear();
+	}
+
 	close(): void {
+		this.#finishPending("session RPC connection closed");
 		this.#connection.close();
 		void this.#pump;
 	}
@@ -147,10 +175,10 @@ function renderEvent(frame: object): void {
 	const event = frame as { type?: string; [key: string]: unknown };
 	switch (event.type) {
 		case "agent_start":
-			console.log(chalk.dim("── agent turn started ──"));
+			console.log(commandOutput.system("── agent turn started ──"));
 			break;
 		case "agent_end":
-			console.log(chalk.dim("── agent turn finished ──"));
+			console.log(commandOutput.system("── agent turn finished ──"));
 			break;
 		case "message_end": {
 			const message = event.message as AgentMessage | undefined;
@@ -159,26 +187,26 @@ function renderEvent(frame: object): void {
 		}
 		case "tool_execution_start": {
 			const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
-			console.log(chalk.cyan(`▸ ${toolName} …`));
+			console.log(chalk.cyan(truncateLine(`▸ ${toolName} …`)));
 			break;
 		}
 		case "tool_execution_end": {
 			const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
 			const isError = event.isError === true;
-			console.log(chalk[isError ? "red" : "cyan"](`▸ ${toolName} ${isError ? "failed" : "done"}`));
+			console.log(chalk[isError ? "red" : "cyan"](truncateLine(`▸ ${toolName} ${isError ? "failed" : "done"}`)));
 			break;
 		}
 		case "command_output": {
 			const text = typeof event.text === "string" ? event.text : "";
-			for (const line of text.split("\n")) console.log(commandOutput.system(truncateLine(line)));
+			for (const line of text.split("\n")) console.log(commandOutput.system(line));
 			break;
 		}
 		case "auto_compaction_start":
-			console.log(chalk.dim("── auto-compaction started ──"));
+			console.log(commandOutput.system("── auto-compaction started ──"));
 			break;
 		case "auto_compaction_end":
 		case "compaction_complete":
-			console.log(chalk.dim("── compaction finished ──"));
+			console.log(commandOutput.system("── compaction finished ──"));
 			break;
 		default:
 			break;
@@ -190,18 +218,24 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 
 	if (args.stop) {
 		if (!args.session) {
-			console.error(chalk.red("--stop requires --session <file|id> to identify the hosted session."));
+			console.error(chalk.red(`--stop needs the session to stop: ${BINARY_NAME} attach --stop <session-id|file>`));
 			process.exitCode = 1;
 			return;
 		}
 		const sessionFile = await resolveSessionFile(projectDir, args.session);
 		if (!sessionFile || !(await Bun.file(sessionFile).exists())) {
-			console.error(chalk.red(`Session not found: ${args.session}`));
+			console.error(chalk.red(truncateLine(`Session not found: ${args.session}`)));
 			process.exitCode = 1;
 			return;
 		}
-		await stopSessionHost(projectDir, sessionFile);
-		console.log(chalk.green(`Stopped session host for ${path.basename(sessionFile)}`));
+		try {
+			await stopSessionHost(projectDir, sessionFile);
+			console.log(chalk.green(truncateLine(`Stopped session host for ${path.basename(sessionFile)}`)));
+		} finally {
+			// Stopping is a one-shot command: drop the broker connection so the
+			// process can exit instead of idling on an open control socket.
+			await closeDaemonClients();
+		}
 		return;
 	}
 
@@ -209,14 +243,17 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 	if (args.session) {
 		sessionFile = await resolveSessionFile(projectDir, args.session);
 		if (!sessionFile || !(await Bun.file(sessionFile).exists())) {
-			console.error(chalk.red(`Session not found: ${args.session}`));
+			console.error(chalk.red(truncateLine(`Session not found: ${args.session}`)));
 			process.exitCode = 1;
 			return;
 		}
 	} else {
 		sessionFile = await resolveSessionFile(projectDir, undefined);
 		if (!sessionFile) {
-			console.error(chalk.red(`No sessions found for ${projectDir}. Run proto first, or pass --session.`));
+			console.error(chalk.red(truncateLine(`No sessions found for ${projectDir}.`)));
+			console.error(
+				chalk.dim(`Run ${BINARY_NAME} first, or name a session: ${BINARY_NAME} attach <session-id|file>`),
+			);
 			process.exitCode = 1;
 			return;
 		}
@@ -237,11 +274,11 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 	const state = await client.request({ type: "get_state" });
 	if (state.success) {
 		const data = state.data as { sessionName?: string; model?: { id?: string } } | undefined;
-		console.log(chalk.bold(`attached: ${data?.sessionName || path.basename(sessionFile)}`));
+		console.log(chalk.bold(truncateLine(`attached: ${data?.sessionName || path.basename(sessionFile)}`)));
 		const modelId = data?.model?.id;
-		if (modelId) console.log(chalk.dim(`model: ${modelId}`));
+		if (modelId) console.log(chalk.dim(truncateLine(`model: ${modelId}`)));
 	} else {
-		console.error(chalk.red(`get_state failed: ${state.error}`));
+		console.error(chalk.red(truncateLine(`get_state failed: ${state.error}`)));
 	}
 
 	const replayCount = args.messages ?? DEFAULT_REPLAY_MESSAGES;
@@ -250,28 +287,55 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		const list = (messages.data as { messages?: AgentMessage[] } | undefined)?.messages ?? [];
 		const recent = list.slice(-replayCount);
 		if (recent.length > 0) {
-			console.log(chalk.dim(`── last ${recent.length} message(s) ──`));
+			console.log(commandOutput.system(`── last ${recent.length} message(s) ──`));
 			for (const message of recent) renderMessage(message);
 		}
 	}
 
-	console.log(
-		chalk.dim(
-			"commands: /bash <cmd>  /abort  /stop  /detach  (Esc aborts and detaches; Ctrl-C aborts, twice detaches)",
-		),
-	);
-
 	let detached = false;
+	let interacted = false;
+	let restoreInput = (): void => {};
 	const detach = (reason: string): void => {
 		if (detached) return;
 		detached = true;
+		restoreInput();
 		client.close();
+		printNotice(`\n${reason} — session keeps running daemon-side.`);
+		// Keep the command on one logical line so copying terminal-wrapped
+		// long paths does not insert newline characters into the argument.
 		console.log(
 			chalk.dim(
-				`\n${reason} — session keeps running daemon-side. Reattach with: proto attach --session ${path.basename(sessionFile)}`,
+				`Reattach with: ${BINARY_NAME} attach ${Bun.$.escape(cleanLine(path.resolve(sessionFile)))} --dir ${Bun.$.escape(cleanLine(projectDir))}`,
 			),
 		);
 		process.exit(0);
+	};
+
+	// Piped stdin hands over every line at once and closes immediately, so a
+	// scripted attach must outlive its own input: leave only once the commands
+	// it dispatched have answered. A terminal user asking to leave gets out now.
+	const scripted = process.stdin.isTTY !== true;
+	const inFlight = new Set<Promise<unknown>>();
+	const track = (work: Promise<unknown>): void => {
+		const tracked = work.finally(() => {
+			inFlight.delete(tracked);
+		});
+		inFlight.add(tracked);
+	};
+	let leaving = false;
+	const leave = (reason: string): void => {
+		if (detached || leaving) return;
+		if (!scripted || inFlight.size === 0) {
+			detach(reason);
+			return;
+		}
+		leaving = true;
+		void (async () => {
+			while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+		})().finally(() => {
+			leaving = false;
+			detach(reason);
+		});
 	};
 
 	const abortTurn = (): void => {
@@ -279,22 +343,33 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		console.log(chalk.yellow("abort requested"));
 	};
 
-	// Escape aborts and detaches in one press, mirroring the TUI's Escape
-	// interrupt. Readline still receives the same bytes for line editing; a
-	// lone ESC byte (no continuation) is an actual Escape press — terminal
-	// escape sequences for arrows etc. arrive as one multi-byte chunk.
-	if (process.stdin.isTTY) {
-		process.stdin.on("data", (chunk: Buffer | string) => {
-			if (detached) return;
-			const text = typeof chunk === "string" ? chunk : chunk.toString("latin1");
-			// Strip CSI/SS3 sequences (arrows, Home, F-keys...) before looking
-			// for a lone Escape — keypresses can coalesce into one chunk.
-			const stripped = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1bO[A-Za-z]/g, "");
-			if (stripped.includes("\x1b")) {
-				client.send({ type: "abort" });
-				detach("esc — aborted and detached");
-			}
-		});
+	// Use the terminal's incremental parser: native data chunks need not align
+	// with key sequences. Only a complete Escape key aborts; Alt, CSI, SS3,
+	// pasted text and terminal string controls must not be mistaken for it.
+	const terminalInput = process.stdin.isTTY ? new PassThrough() : undefined;
+	const inputBuffer = terminalInput ? new StdinBuffer({ timeout: 50 }) : undefined;
+	const wasRaw = process.stdin.isRaw;
+	if (terminalInput) process.stdin.setRawMode(true);
+	restoreInput = () => {
+		inputBuffer?.destroy();
+		if (terminalInput) process.stdin.setRawMode(wasRaw);
+	};
+	inputBuffer?.on("data", sequence => {
+		if (detached) return;
+		if (matchesKey(sequence, "escape")) {
+			client.send({ type: "abort" });
+			detach("esc — aborted and detached");
+			return;
+		}
+		// Replies and string controls are not editing keys. Do not let
+		// readline turn their payloads into part of a shell command.
+		if (sequence.startsWith("\x1b") && !parseKey(sequence)) return;
+		terminalInput!.write(sequence);
+	});
+	inputBuffer?.on("paste", text => terminalInput!.write(sanitizeText(text)));
+	if (inputBuffer) {
+		process.stdin.on("data", (chunk: Buffer | string) => inputBuffer.process(chunk));
+		process.stdin.on("end", () => terminalInput!.end());
 	}
 
 	let lastInterrupt = 0;
@@ -309,20 +384,30 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 	};
 	process.on("SIGINT", onSigInt);
 
-	const rl = readline.createInterface({ input: process.stdin, terminal: process.stdin.isTTY === true });
+	const rl = readline.createInterface({
+		input: terminalInput ?? process.stdin,
+		output: process.stdin.isTTY ? process.stdout : undefined,
+		terminal: process.stdin.isTTY === true,
+	});
+	rl.on("SIGINT", onSigInt);
 	rl.on("line", line => {
 		const text = line.trim();
 		if (!text) return;
+		interacted = true;
 		if (text === "/detach" || text === "/quit") {
+			// Claim the reason before readline's close event calls it an EOF.
+			leave("detached");
 			rl.close();
-			detach("detached");
 			return;
 		}
 		if (text === "/stop") {
-			void stopSessionHost(projectDir, sessionFile).then(() => {
-				console.log(chalk.green("session host stopped"));
-				process.exit(0);
-			});
+			track(
+				stopSessionHost(projectDir, sessionFile).then(() => {
+					restoreInput();
+					console.log(chalk.green("session host stopped"));
+					process.exit(0);
+				}),
+			);
 			return;
 		}
 		if (text === "/abort") {
@@ -331,28 +416,61 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		}
 		if (text.startsWith("/bash ")) {
 			const command = text.slice("/bash ".length);
-			void client.request({ type: "bash", command }, 120_000).then(result => {
-				if (result.success) {
-					const output =
-						typeof (result.data as { output?: string })?.output === "string"
-							? (result.data as { output: string }).output
-							: JSON.stringify(result.data);
-					for (const out of output.split("\n")) console.log(commandOutput.system(truncateLine(out)));
-				} else {
-					console.log(chalk.red(`bash failed: ${result.error}`));
-				}
-			});
+			track(
+				client.request({ type: "bash", command }, 120_000).then(result => {
+					if (result.success) {
+						const output =
+							typeof (result.data as { output?: string })?.output === "string"
+								? (result.data as { output: string }).output
+								: JSON.stringify(result.data);
+						for (const out of output.split("\n")) console.log(commandOutput.system(out));
+					} else {
+						console.log(chalk.red(truncateLine(`bash failed: ${result.error}`)));
+					}
+				}),
+			);
 			return;
 		}
 		if (text === "/help") {
-			console.log(
-				chalk.dim(
-					"/bash <cmd>  /abort  /stop  /detach  /help — Esc aborts and detaches; anything else is sent as a prompt",
-				),
+			printNotice(
+				"/bash <cmd>  /abort  /stop  /detach  /help — Esc aborts and detaches; anything else is sent as a prompt",
 			);
 			return;
 		}
 		client.send({ type: "prompt", message: text });
 	});
-	rl.on("close", () => detach("input closed"));
+	// A piped attach that started the host and then saw stdin close without a
+	// single line would strand a session host — and the broker supervising it —
+	// with no one to talk to. Hand back exactly what this invocation created.
+	rl.on("close", () => {
+		if (detached) return;
+		if (interacted || !host.created || !scripted) {
+			leave("input closed");
+			return;
+		}
+		detached = true;
+		restoreInput();
+		client.close();
+		void (async () => {
+			try {
+				await stopSessionHost(projectDir, sessionFile);
+			} finally {
+				await closeDaemonClients();
+			}
+		})()
+			.catch(() => undefined)
+			.finally(() => {
+				console.error(chalk.red("stdin closed before any input — stopped the session host this attach started."));
+				console.error(
+					chalk.dim(
+						`Attach from a terminal, or pipe commands: echo /help | ${BINARY_NAME} attach <session-id|file>`,
+					),
+				);
+				process.exit(1);
+			});
+	});
+	// Advertise readiness only after raw mode and command handlers are installed.
+	printNotice(
+		"commands: /bash <cmd>  /abort  /stop  /detach  (Esc aborts and detaches; Ctrl-C aborts, twice detaches)",
+	);
 }

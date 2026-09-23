@@ -291,11 +291,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			if (pending.settled) return;
 			pending.settled = true;
 			this.#pending.delete(msgId);
-			if (!pending.cancelled && (options?.onChunk || options?.onDisplay)) {
+			if (!pending.cancelled && (pending.options?.onChunk || pending.options?.onDisplay)) {
 				this.#completedOutputSinks.delete(msgId);
 				this.#completedOutputSinks.set(msgId, {
-					onChunk: options.onChunk,
-					onDisplay: options.onDisplay,
+					onChunk: pending.options.onChunk,
+					onDisplay: pending.options.onDisplay,
 					unicodeTails: pending.unicodeTails,
 				});
 				if (this.#completedOutputSinks.size > MAX_COMPLETED_OUTPUT_SINKS) {
@@ -398,6 +398,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		try {
 			await this.#writeLine(payload);
 		} catch (err) {
+			pending.status = "error";
 			pending.cancelled = true;
 			pending.error = {
 				name: "TransportError",
@@ -525,8 +526,16 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			entry.status = "error";
 			entry.cancelled = true;
 			entry.kernelKilled = entry.kernelKilled || kernelKilledDefault;
-			void entry.options?.onChunk?.(`[kernel] ${reason}\n`);
-			entry.finalize?.();
+			try {
+				const notification = entry.options?.onChunk?.(`[kernel] ${reason}\n`);
+				void notification?.catch(error => {
+					logger.warn("Kernel shutdown output consumer failed", { error: String(error) });
+				});
+			} catch (error) {
+				logger.warn("Kernel shutdown output consumer failed", { error: String(error) });
+			} finally {
+				entry.finalize?.();
+			}
 		}
 	}
 
@@ -639,7 +648,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		if (pending) {
 			pending.status = "error";
 			pending.error = { name: "FrameTooLarge", value: message.trim(), traceback: [] };
-			await pending.options?.onChunk?.(message);
+			try {
+				await pending.options?.onChunk?.(message);
+			} catch (error) {
+				this.#failOutputConsumer(rid, error);
+			}
 			return;
 		}
 		logger.warn(`${this.#options.languageName} runner emitted an oversized unattributed frame`);
@@ -660,7 +673,30 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		if (this.#options.traceIpc) {
 			logger.debug(`${this.#options.languageName}Kernel recv`, { type: frame.type, id: frame.id });
 		}
-		await this.#handleFrame(frame);
+		try {
+			await this.#handleFrame(frame);
+		} catch (error) {
+			// An output consumer may fail (for example, artifact storage is full).
+			// Keep draining the protocol: stopping here wedges every later cell.
+			this.#failOutputConsumer(frame.id, error);
+			if (frame.type === "done" && frame.id) this.#pending.get(frame.id)?.finalize?.();
+		}
+	}
+
+	#failOutputConsumer(rid: string | undefined, error: unknown): void {
+		const pending = rid ? this.#pending.get(rid) : undefined;
+		if (pending) {
+			pending.status = "error";
+			pending.error = {
+				name: "OutputError",
+				value: error instanceof Error ? error.message : String(error),
+				traceback: [],
+			};
+			pending.options = { ...pending.options, onChunk: undefined, onDisplay: undefined };
+		} else {
+			if (rid) this.#completedOutputSinks.delete(rid);
+			logger.warn("Kernel background output consumer failed", { error: String(error) });
+		}
 	}
 
 	async #forwardTextFrame(
@@ -675,30 +711,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			sink.unicodeTails[kind] = combined.slice(-1);
 			combined = combined.slice(0, -1);
 		}
-		let repaired = "";
-		let malformed = false;
-		for (let index = 0; index < combined.length; index++) {
-			const unit = combined.charCodeAt(index);
-			if (unit >= 0xd800 && unit <= 0xdbff) {
-				const low = combined.charCodeAt(index + 1);
-				if (low >= 0xdc00 && low <= 0xdfff) {
-					repaired += combined.slice(index, index + 2);
-					index++;
-					continue;
-				}
-				malformed = true;
-				repaired += "�";
-				continue;
-			}
-			if (unit >= 0xdc00 && unit <= 0xdfff) {
-				malformed = true;
-				repaired += "�";
-				continue;
-			}
-			repaired += combined[index];
-		}
+		const repaired = combined.toWellFormed();
 		if (repaired) await sink.onChunk?.(repaired);
-		if (malformed) {
+		if (repaired !== combined) {
 			await sink.onChunk?.(
 				"\n[kernel] output contained an unrecoverable unpaired UTF-16 surrogate; replaced with U+FFFD.\n",
 			);

@@ -12,12 +12,14 @@ export type McpConnectionFailure = {
 export type McpConnectionStatusEvent =
 	| { type: "connecting"; serverNames: string[] }
 	| { type: "connected"; serverName: string }
-	| ({ type: "failed" } & McpConnectionFailure);
+	| ({ type: "failed" } & McpConnectionFailure)
+	| { type: "config-error"; error: string };
 
 type McpConnectionStatusSnapshot = {
 	pendingServers: readonly string[];
 	connectedServers: readonly string[];
 	failedServers: readonly McpConnectionFailure[];
+	configErrors?: readonly string[];
 };
 
 function sanitizeMcpStatusText(value: string, maxWidth: number): string {
@@ -61,6 +63,21 @@ export function formatMCPConnectingMessage(serverNames: readonly string[]): stri
 	return `Connecting to MCP servers: ${formatServerList(serverNames)}…`;
 }
 
+export interface McpMessageFormatOptions {
+	untruncated?: boolean;
+}
+
+function formatErrorDetail(error: string, options?: McpMessageFormatOptions): string {
+	if (!options?.untruncated) return sanitizeMcpStatusError(error);
+	return replaceTabs(sanitizeText(error))
+		.replace(/[\r\n]+/g, " ")
+		.trim();
+}
+
+export function formatMcpConfigError(error: string, options?: McpMessageFormatOptions): string {
+	return `MCP config: ${formatErrorDetail(error, options)}`;
+}
+
 function formatFailedServer({ serverName, error, sourcePath }: McpConnectionFailure): string {
 	const source = sourcePath
 		? ` [config: ${sanitizeMcpStatusText(shortenPath(sourcePath), TRUNCATE_LENGTHS.CONTENT)}]`
@@ -68,8 +85,17 @@ function formatFailedServer({ serverName, error, sourcePath }: McpConnectionFail
 	return `${sanitizeMcpServerName(serverName)}${source}: ${sanitizeMcpStatusError(error)}`;
 }
 
+export function formatMcpServerFailure(failure: McpConnectionFailure, options?: McpMessageFormatOptions): string {
+	if (!options?.untruncated) return `MCP server ${formatFailedServer(failure)}`;
+	const source = failure.sourcePath ? ` [config: ${failure.sourcePath}]` : "";
+	return `MCP server ${failure.serverName}${source}: ${formatErrorDetail(failure.error, options)}`;
+}
+
 export function formatMCPConnectionStatusMessage(snapshot: McpConnectionStatusSnapshot): string {
 	const { pendingServers, connectedServers, failedServers } = snapshot;
+	const configErrors = (snapshot.configErrors ?? []).map(error => formatMcpConfigError(error));
+	const withConfigErrors = (message: string): string =>
+		configErrors.length === 0 ? message : [...configErrors, message].filter(Boolean).join(" ");
 	if (pendingServers.length > 0) {
 		if (connectedServers.length === 0 && failedServers.length === 0) {
 			return formatMCPConnectingMessage(pendingServers);
@@ -82,19 +108,23 @@ export function formatMCPConnectionStatusMessage(snapshot: McpConnectionStatusSn
 			parts.push(`Failed: ${failedServers.map(formatFailedServer).join("; ")}.`);
 		}
 		parts.push(`Still connecting: ${formatServerList(pendingServers)}…`);
-		return parts.join(" ");
+		return withConfigErrors(parts.join(" "));
 	}
 	if (failedServers.length > 0) {
 		const failureText = failedServers.map(formatFailedServer).join("; ");
 		if (connectedServers.length === 0) {
-			return `MCP ${formatServerCount(failedServers.length)} failed to connect: ${failureText}`;
+			return withConfigErrors(`MCP ${formatServerCount(failedServers.length)} failed to connect: ${failureText}`);
 		}
-		return `MCP finished with failures. Connected: ${formatServerList(connectedServers)}. Failed: ${failureText}`;
+		return withConfigErrors(
+			`MCP finished with failures. Connected: ${formatServerList(connectedServers)}. Failed: ${failureText}`,
+		);
 	}
 	if (connectedServers.length > 0) {
-		return `Connected to MCP ${formatServerCount(connectedServers.length)}: ${formatServerList(connectedServers)}.`;
+		return withConfigErrors(
+			`Connected to MCP ${formatServerCount(connectedServers.length)}: ${formatServerList(connectedServers)}.`,
+		);
 	}
-	return "";
+	return withConfigErrors("");
 }
 
 function isRecord(data: unknown): data is Record<string, unknown> {
@@ -118,6 +148,8 @@ export function isMcpConnectionStatusEvent(data: unknown): data is McpConnection
 				typeof data.error === "string" &&
 				(data.sourcePath === undefined || typeof data.sourcePath === "string")
 			);
+		case "config-error":
+			return typeof data.error === "string";
 		default:
 			return false;
 	}

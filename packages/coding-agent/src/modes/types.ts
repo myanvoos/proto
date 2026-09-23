@@ -37,6 +37,7 @@ import type { TranscriptContainer } from "./components/transcript-container";
 import type { EventController } from "./controllers/event-controller";
 import type { ScheduledQueueController } from "./controllers/scheduled-queue-controller";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
+import type { SetupWizardScope } from "./setup-wizard/lazy";
 import type { Theme } from "./theme/theme";
 
 export type CompactionQueuedMessage = {
@@ -75,11 +76,14 @@ export type ChecklistPhase = {
 	tasks: ChecklistItem[];
 };
 
-export interface InteractiveModeInitOptions {
-	clearInitialTerminalHistory?: boolean;
-}
-
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
+
+export interface RenderInitialMessagesOptions {
+	preserveExistingChat?: boolean;
+	clearTerminalHistory?: boolean;
+	/** Offline rendering bypasses interactive transcript paging. */
+	fullHistory?: boolean;
+}
 
 export interface RenderSessionContextOptions {
 	updateFooter?: boolean;
@@ -194,7 +198,7 @@ export interface InteractiveModeContext {
 	oauthManualInput: OAuthManualInputManager;
 	checklistPhases: ChecklistPhase[];
 
-	init(options?: InteractiveModeInitOptions): Promise<void>;
+	init(): Promise<void>;
 	shutdown(): Promise<void>;
 	checkShutdownRequested(): Promise<void>;
 
@@ -279,7 +283,7 @@ export interface InteractiveModeContext {
 		options: RenderSessionContextOptions,
 		renderChunk?: () => void,
 	): Promise<void>;
-	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
+	renderInitialMessages(options?: RenderInitialMessagesOptions): Promise<void>;
 	navigateTranscriptHistory(direction: "older" | "newer" | "latest"): Promise<void>;
 	ensureLatestTranscriptWindow(): Promise<void>;
 
@@ -345,7 +349,7 @@ export interface InteractiveModeContext {
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
-	showProviderSetup(): Promise<void>;
+	showSetupWizard(scope: SetupWizardScope): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showAgentFleet(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	resetObserverRegistry(): void;

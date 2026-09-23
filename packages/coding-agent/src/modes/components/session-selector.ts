@@ -27,7 +27,7 @@ import {
 import type { SessionInfo, SessionStatus } from "../../session/session-listing";
 import { sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
 import { HookSelectorComponent } from "./hook-selector";
-import { bottomBorder, OverlayPanel, row, topBorder } from "./overlay-box";
+import { bottomBorder, getDialogViewport, OverlayPanel, row, topBorder } from "./overlay-box";
 
 function formatSessionStatus(status: SessionStatus | undefined): string | undefined {
 	switch (status) {
@@ -234,6 +234,12 @@ class SessionList implements Component {
 	onToggleScope?: () => void;
 
 	readonly #getTerminalRows: () => number;
+	#maxHeight = Number.POSITIVE_INFINITY;
+	#searchRows = 2;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
 
 	onDeleteRequest?: (sessions: SessionInfo[]) => void;
 
@@ -398,7 +404,10 @@ class SessionList implements Component {
 	#lineBudget(): number {
 		const CHROME = 7;
 		const RESERVE = 1;
-		return Math.max(8, this.#getTerminalRows() - CHROME - RESERVE);
+		return Math.min(
+			Math.max(1, this.#maxHeight - this.#searchRows),
+			Math.max(1, this.#getTerminalRows() - CHROME - RESERVE),
+		);
 	}
 
 	#pageSize(): number {
@@ -582,11 +591,14 @@ class SessionList implements Component {
 		const lines: string[] = [];
 		this.#hitRows = [];
 
-		lines.push(...this.#searchInput.render(width));
-		lines.push("");
+		this.#searchRows = this.#maxHeight >= 5 ? 2 : this.#maxHeight >= 2 ? 1 : 0;
+		if (this.#searchRows) lines.push(...this.#searchInput.render(width));
+		if (this.#searchRows > 1) lines.push("");
 
 		if (this.#filteredSessions.length === 0) {
-			if (this.#showCwd) {
+			if (this.#searchInput.getValue().trim()) {
+				lines.push(truncateToWidth(theme.fg("muted", "No matching sessions"), width));
+			} else if (this.#showCwd) {
 				lines.push(truncateToWidth(theme.fg("muted", "No sessions found"), width));
 			} else {
 				lines.push(
@@ -682,7 +694,7 @@ class SessionList implements Component {
 		}
 		const totalRows = this.#filteredTotalRows - 1;
 		const offsetRows = startIndex * 3 + this.#filteredTitlePrefix[startIndex]!;
-		const height = sessionLines.length;
+		const height = Math.min(budget, sessionLines.length);
 		const showScrollbar = safeWidth > 0 && totalRows > height;
 		const contentWidth = Math.max(0, safeWidth - (showScrollbar ? 1 : 0));
 		const maxScrollOffset = Math.max(0, totalRows - height);
@@ -993,6 +1005,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 				closeDialog();
 			},
 			closeDialog,
+			{ framed: false },
 		);
 
 		this.#contentSlot.clear();
@@ -1035,22 +1048,38 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	override render(width: number): readonly string[] {
-		const innerWidth = Math.max(1, width - 4);
+		const layout = getDialogViewport(this.#getTerminalRows());
+		const innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
 		const marked = this.#sessionList.markedCount();
-		const lines: string[] = [topBorder(width, marked > 0 ? `${this.title} · ${marked} selected` : this.title)];
-		for (const child of this.children) {
-			const childLines = child.render(innerWidth);
-			if (child === this.#contentSlot) this.#listLineOffset = lines.length;
-			for (const line of childLines) lines.push(row(line, width));
-		}
-		const footer = this.#footerLines(width);
-		if (this.#fillHeight) {
-			const target = Math.max(0, this.#getTerminalRows() - footer.length);
-			if (lines.length > target) lines.length = target;
-			else for (let i = lines.length; i < target; i++) lines.push(row("", width));
+		const lines: string[] = [];
+		// One frame per dialog: the embedded confirmation owns its question inside
+		// this body, so the host keeps its single border title.
+		if (layout.titleRows)
+			lines.push(topBorder(width, marked > 0 ? `${this.title} · ${marked} selected` : this.title));
+		const messages = this.#messageContainer.render(innerWidth).slice(0, Math.max(0, layout.bodyRows - 1));
+		for (const line of messages) lines.push(row(line, width, layout.titleRows > 0));
+		const active = this.#confirmationDialog ?? this.#sessionList;
+		// A blank divider row is chrome that shows nothing; give it to the body.
+		const bodyRows = layout.bodyRows + layout.dividerRows - messages.length;
+		active.setMaxHeight(bodyRows);
+		this.#listLineOffset = lines.length;
+		const content = active.render(innerWidth);
+		for (const line of content.slice(0, bodyRows)) lines.push(row(line, width, layout.titleRows > 0));
+		// A confirmation is as tall as its question: padding it to the viewport
+		// would leave dead rows between the choices and the footer.
+		if (this.#fillHeight && !this.#confirmationDialog) {
+			while (lines.length < layout.titleRows + layout.bodyRows + layout.dividerRows)
+				lines.push(row("", width, layout.titleRows > 0));
 		}
 		this.#footerStart = lines.length;
-		for (const line of footer) lines.push(line);
+		if (layout.footerRows) {
+			lines.push(
+				this.#confirmationDialog
+					? row(theme.fg("muted", "Esc back · Enter confirm"), width, layout.titleRows > 0)
+					: this.#footerLines(width)[1]!,
+			);
+		}
+		if (layout.bottomRows) lines.push(bottomBorder(width));
 		return lines;
 	}
 

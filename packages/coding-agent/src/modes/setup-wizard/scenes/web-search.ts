@@ -73,19 +73,17 @@ export class WebSearchTab implements SetupTab {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
-		const lines = [theme.fg("muted", "Choose the provider the web_search tool should prefer."), ""];
-		this.#listRowStart = lines.length;
-		if (maxLines !== undefined) {
-			this.#list.setMaxVisible(Math.max(1, Math.min(MAX_VISIBLE, maxLines - 5)));
-		}
-		lines.push(...this.#list.render(width));
+		if (maxLines !== undefined && maxLines <= 0) return [];
+		const budget = maxLines ?? Number.POSITIVE_INFINITY;
+		const lines =
+			budget >= 8 ? [theme.fg("muted", "Choose the provider the web_search tool should prefer."), ""] : [];
 		const selected = this.#list.getSelectedItem();
-		if (selected) {
-			lines.push("", ...this.#readinessLines(selected.value).map(line => truncateToWidth(line, width)));
-		}
-		if (this.#status.length > 0) {
-			lines.push("", ...this.#status.map(line => truncateToWidth(line, width)));
-		}
+		const details = this.#status.length > 0 ? this.#status : selected ? this.#readinessLines(selected.value) : [];
+		const detailRows = Math.min(details.length, Math.max(0, budget - lines.length - 2));
+		this.#listRowStart = lines.length;
+		this.#list.setMaxHeight(budget - lines.length - detailRows);
+		lines.push(...this.#list.render(width));
+		lines.push(...details.slice(0, detailRows).map(line => truncateToWidth(line, width)));
 		return lines;
 	}
 

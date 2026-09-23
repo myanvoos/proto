@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { EvalCellResult, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import { createTheme, getBuiltinThemes } from "../modes/theme/loader";
 import { initThemeSync, theme } from "../modes/theme/theme";
-import { generateDiffString } from "../utils/diff";
+import { capEventDiff, generateDiffString } from "../utils/diff";
 import {
 	EVAL_DEFAULT_PREVIEW_LINES,
 	EVAL_LIVE_FLOOR_LINES,
@@ -10,7 +10,7 @@ import {
 	renderKernelCellLines,
 } from "./eval-render";
 import { JSON_TREE_MAX_LINES_COLLAPSED } from "./json-tree";
-import { previewWindowRows } from "./render-utils";
+import { previewWindowRows, truncateToWidth } from "./render-utils";
 
 initThemeSync();
 
@@ -588,4 +588,88 @@ test("cached hunk rows follow the current supplied theme", () => {
 	expect(firstDiff).toContain(firstTheme.getFgAnsi("toolDiffRemoved"));
 	expect(secondDiff).toContain(secondTheme.getFgAnsi("toolDiffRemoved"));
 	expect(secondDiff).not.toContain(firstTheme.getFgAnsi("toolDiffRemoved"));
+});
+
+test("a retained eval JSON result reflows its values when the terminal narrows and widens", () => {
+	const value = "request-id-1234567890";
+	const component = evalToolRenderer.renderResult(
+		{ content: [], details: { jsonOutputs: [{ id: value }] } },
+		{ expanded: true, isPartial: false },
+		theme,
+	);
+	const visible = (width: number) => component.render(width).map(line => strip(truncateToWidth(line, width, "")));
+	const wide = visible(40);
+	const narrow = visible(8);
+	expect(narrow.join("").replaceAll(" ", "")).toContain(value);
+	expect(narrow.length).toBeGreaterThan(wide.length);
+	expect(visible(40)).toEqual(wide);
+});
+
+test("the elision notice renders on the card rail, not loose under it", () => {
+	const details: EvalToolDetails = {
+		language: "python",
+		notice: "Showing lines 1-196 and 29808-30002 of 30002; 29,611 middle lines (3.7MB) elided",
+		cells: [
+			{
+				index: 0,
+				title: "cell",
+				code: "for i in range(30002):\\n    print(i)",
+				language: "python",
+				output: "0\\n1\\n2",
+				status: "complete",
+				durationMs: 12,
+			},
+		],
+	};
+	const component = evalToolRenderer.renderResult(
+		{ content: [{ type: "text", text: "0\\n1\\n2" }], details },
+		{ expanded: false, isPartial: false },
+		theme,
+	);
+	const lines = component.render(72).map(strip);
+	const rail = theme.symbol("block.rail");
+	const first = lines.findIndex(line => line.includes("Showing lines 1-196"));
+	const last = lines.findLastIndex(line => line.includes("elided"));
+
+	expect(first).toBeGreaterThanOrEqual(0);
+	expect(last).toBeGreaterThanOrEqual(first);
+	// Every row of the notice, including its wrapped continuation, sits on the rail.
+	for (const row of lines.slice(first, last + 1)) expect(row.startsWith(rail)).toBe(true);
+	// And it stays inside the card: no un-railed row may follow it.
+	for (const row of lines.slice(last + 1)) expect(row.trim()).toBe("");
+});
+
+test("a capped whole-file rewrite renders as a rewrite in the tool card", () => {
+	const before = Array.from({ length: 1200 }, (_, index) => `before${index} = ${index}`).join("\n");
+	const after = Array.from({ length: 1200 }, (_, index) => `after${index} = ${index * 2}`).join("\n");
+	const capped = capEventDiff(before, after);
+	const event: EvalStatusEvent = {
+		op: "write",
+		path: FILE,
+		chars: after.length,
+		sha: "0",
+		diff: capped?.diff,
+		diffTruncated: capped?.diffTruncated,
+	};
+
+	const lines = render([event], { expanded: true });
+
+	expect(
+		lines.some(line => /\+\s*\d+│/.test(line)),
+		"the card shows added lines",
+	).toBe(true);
+	expect(
+		lines.some(line => /-\s*\d+│/.test(line)),
+		"the card shows removed lines",
+	).toBe(true);
+	expect(
+		lines.some(line => line.includes("diff lines omitted")),
+		"the elision is disclosed inline",
+	).toBe(true);
+	expect(
+		lines.some(line => line.includes("… diff truncated")),
+		"the card keeps its truncation footer",
+	).toBe(true);
+	// One event can no longer bury the transcript under thousands of rows.
+	expect(lines.length).toBeLessThanOrEqual(410);
 });

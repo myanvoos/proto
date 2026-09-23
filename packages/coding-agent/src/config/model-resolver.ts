@@ -15,6 +15,7 @@ import { isAuthenticated, kNoAuth, type ModelRegistry } from "./model-registry";
 import {
 	DEFAULT_MODEL_ROLE_ALIAS,
 	formatModelRoleAlias,
+	getKnownRoleIds,
 	LEGACY_MODEL_ROLE_ALIAS_PREFIX,
 	MODEL_ROLE_ALIAS_PREFIX,
 	MODEL_ROLE_IDS,
@@ -986,7 +987,52 @@ export interface AgentSpawnModelResolution {
 
 	role: string | undefined;
 
-	bankError: string | undefined;
+	/**
+	 * Why the caller's explicit `model=` cannot be used: an unknown role alias, a pattern no
+	 * available model matches, or a role model bank violation. Spawn callers reject the request
+	 * with this text instead of starting a worker that has nothing to talk to.
+	 */
+	requestError: string | undefined;
+}
+
+const MAX_MODEL_SUGGESTIONS = 5;
+
+function describeAvailableModelExamples(available: readonly Model<Api>[], requested: string): string {
+	const base = splitThinkingSuffix(requested, -1, MAX_THINKING_SUFFIX_OPTIONS).base.toLowerCase();
+	const provider = base.includes("/") ? base.slice(0, base.indexOf("/")) : undefined;
+	const sameProvider = provider ? available.filter(model => model.provider.toLowerCase() === provider) : [];
+	const pool = sameProvider.length > 0 ? sameProvider : available;
+	const names = pool.slice(0, MAX_MODEL_SUGGESTIONS).map(formatModelString);
+	const more = pool.length > names.length ? ` (+${pool.length - names.length} more)` : "";
+	return `${names.join(", ")}${more}`;
+}
+
+/** The caller named a model; report why it is unusable before a worker is started on it. */
+function describeUnusableRequestModel(
+	requestModel: string | string[] | undefined,
+	patterns: string[],
+	modelRegistry: ModelLookupRegistry,
+	settings: Settings | undefined,
+): string | undefined {
+	const requested = normalizeModelPatternList(requestModel);
+	if (requested.length === 0) return undefined;
+	const unknownRole = requested.find(
+		pattern =>
+			pattern.startsWith(MODEL_ROLE_ALIAS_PREFIX) &&
+			getModelRoleAlias(
+				splitThinkingSuffix(pattern, MODEL_ROLE_ALIAS_PREFIX.length, MAX_THINKING_SUFFIX_OPTIONS).base,
+				settings,
+			) === undefined,
+	);
+	if (unknownRole !== undefined) {
+		const roles = settings ? getKnownRoleIds(settings) : (MODEL_ROLE_IDS as string[]);
+		return `Unknown model role \`${unknownRole}\`. Use a role alias (${roles.map(formatModelRoleAlias).join(", ")}) or a concrete model id.`;
+	}
+	const available = modelRegistry.getAvailable();
+	// An empty registry cannot judge a pattern — the session itself has no model to fall back on.
+	if (available.length === 0) return undefined;
+	if (resolveModelOverride(patterns, modelRegistry, settings).model) return undefined;
+	return `Model \`${requested.join(", ")}\` did not match any available model. Available: ${describeAvailableModelExamples(available, requested[0] ?? "")}.`;
 }
 
 /**
@@ -997,7 +1043,7 @@ export interface AgentSpawnModelResolution {
  * agent/settings source when the request itself carries no role alias.
  */
 export function resolveAgentSpawnModelSelection(
-	options: AgentModelPatternResolutionOptions,
+	options: AgentModelPatternResolutionOptions & { modelRegistry?: ModelLookupRegistry },
 ): AgentSpawnModelResolution {
 	const settings = options.settings;
 	const requestWon = resolveConfiguredModelPatterns(options.requestModel, settings).length > 0;
@@ -1008,7 +1054,7 @@ export function resolveAgentSpawnModelSelection(
 		: selection.role;
 	const role = selection.role ?? sourceRole;
 
-	let bankError: string | undefined;
+	let requestError: string | undefined;
 	if (requestWon && role) {
 		const bank = settings?.getModelRoleBank(role);
 		if (bank && bank.length > 0) {
@@ -1028,11 +1074,19 @@ export function resolveAgentSpawnModelSelection(
 			);
 			const violations = selection.patterns.filter(pattern => !allowed.has(bankKey(pattern)));
 			if (violations.length > 0) {
-				bankError = `Model ${violations.join(", ")} is not in the \`${role}\` role model bank. Available models: ${bank.join(", ")}.`;
+				requestError = `Model ${violations.join(", ")} is not in the \`${role}\` role model bank. Available models: ${bank.join(", ")}.`;
 			}
 		}
 	}
-	return { patterns: selection.patterns, role, bankError };
+	if (!requestError && requestWon && options.modelRegistry) {
+		requestError = describeUnusableRequestModel(
+			options.requestModel,
+			selection.patterns,
+			options.modelRegistry,
+			settings,
+		);
+	}
+	return { patterns: selection.patterns, role, requestError };
 }
 
 export const DEFAULT_PREWALK_TARGET = "@smol";
@@ -1318,6 +1372,8 @@ export async function resolveModelScope(
 	modelRegistry: Pick<ModelRegistry, "getAvailable">,
 	preferences?: ModelMatchPreferences,
 	settings?: Settings,
+	/** Lets a caller surface patterns that matched nothing; the log alone never reaches the user. */
+	options?: { onUnmatchedPattern?: (pattern: string) => void },
 ): Promise<ScopedModel[]> {
 	const availableModels = modelRegistry.getAvailable();
 	const context = buildPreferenceContext(availableModels, preferences);
@@ -1343,6 +1399,7 @@ export async function resolveModelScope(
 
 			if (matchingModels.length === 0) {
 				logger.warn(`No models match pattern "${pattern}"`);
+				options?.onUnmatchedPattern?.(pattern);
 				continue;
 			}
 
@@ -1357,6 +1414,7 @@ export async function resolveModelScope(
 			if (resolved.warning) logger.warn(resolved.warning);
 			if (!resolved.model) {
 				logger.warn(`No models match pattern "${pattern}"`);
+				options?.onUnmatchedPattern?.(pattern);
 				continue;
 			}
 			addScopedModel(resolved.model, resolved.thinkingLevel, resolved.explicitThinkingLevel);
@@ -1375,6 +1433,7 @@ export async function resolveModelScope(
 
 		if (!model) {
 			logger.warn(`No models match pattern "${pattern}"`);
+			options?.onUnmatchedPattern?.(pattern);
 			continue;
 		}
 

@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
+import type { SubagentUsageTotals } from "../session/session-entries";
 
 import type { NestedRepoPatch } from "./worktree";
 
@@ -86,6 +87,11 @@ export function oneLineLabel(text: string, max = LABEL_MAX): string {
 	return chars.length > cap ? `${chars.slice(0, cap - 1).join("")}…` : oneLine;
 }
 
+/**
+ * `orchestrator.maxRecursionDepth` counts levels of worker-spawned workers, matching its settings
+ * label (0 = none, 1 = single, 2 = double). An agent may spawn while its own task depth is within
+ * the cap, so the main agent (depth 0) always may and the deepest worker runs at `max + 1`.
+ */
 export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): boolean {
 	return maxRecursionDepth < 0 || taskDepth === 0 || taskDepth <= maxRecursionDepth;
 }
@@ -216,6 +222,12 @@ export interface SingleResult {
 	abortReason?: string;
 
 	usage?: Usage;
+
+	/**
+	 * Cumulative spend of the subagents this agent owns, across its whole session. Its own `usage`
+	 * never includes them: subagents bill to their own transcripts.
+	 */
+	subagentUsage?: SubagentUsageTotals;
 
 	outputPath?: string;
 

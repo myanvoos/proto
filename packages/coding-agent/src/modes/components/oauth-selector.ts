@@ -7,7 +7,6 @@ import {
 	matchesKey,
 	ScrollView,
 	type SgrMouseEvent,
-	Spacer,
 	TruncatedText,
 } from "@oh-my-pi/pi-tui";
 import { settings } from "../../config/settings";
@@ -49,6 +48,8 @@ export class OAuthSelectorComponent extends OverlayPanel {
 	#visibleCount = 0;
 
 	#maxVisible = OAUTH_SELECTOR_MAX_VISIBLE;
+	#height: number | undefined;
+	#listRowStart = LIST_ROW_OFFSET;
 	#mode: "login" | "logout";
 	#authStorage: AuthStorage;
 	#onSelectCallback: (providerId: string) => void;
@@ -92,14 +93,23 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		this.#stopSpinner();
 	}
 
-	setMaxHeight(lines: number): void {
-		const strict = lines - LIST_ROW_OFFSET - 2;
-
-		const relaxed = lines - LIST_ROW_OFFSET - 1;
-		const rows = Math.min(OAUTH_SELECTOR_MAX_VISIBLE, Math.max(1, strict, Math.min(relaxed, 3)));
-		if (rows === this.#maxVisible) return;
-		this.#maxVisible = rows;
+	override setMaxHeight(lines: number): void {
+		const height = Math.max(0, Math.trunc(lines));
+		if (height === this.#height) return;
+		this.#height = height;
 		this.#updateList();
+	}
+
+	/** Framed only when the panel owns its chrome and there are rows to spend on borders. */
+	#isFramed(): boolean {
+		return this.framed && (this.#height === undefined || this.#height >= 4);
+	}
+
+	override render(width: number): readonly string[] {
+		const framed = this.#isFramed();
+		this.#listRowStart = framed ? LIST_ROW_OFFSET : 0;
+		if (this.#height === 0) return [];
+		return framed ? super.render(width) : this.#listContainer.render(width);
 	}
 	#hasSelectableAuth(providerId: string): boolean {
 		return this.#mode === "logout" ? this.#authStorage.has(providerId) : this.#authStorage.hasAuth(providerId);
@@ -216,9 +226,10 @@ export class OAuthSelectorComponent extends OverlayPanel {
 	}
 
 	#renderStatusLine(_total: number): string {
+		// A glyph gutter keeps the hint off the provider column so it never reads as a row.
+		const glyph = theme.symbol("icon.search");
 		const query = this.#searchQuery.trim();
-		const suffix = query ? `Search: ${this.#searchQuery}` : "Type to search";
-		return theme.fg("muted", suffix);
+		return theme.fg("muted", query ? `${glyph} ${this.#searchQuery}` : `${glyph} type to search`);
 	}
 
 	#getProviderSearchText(provider: OAuthProviderInfo): string {
@@ -265,6 +276,12 @@ export class OAuthSelectorComponent extends OverlayPanel {
 
 	#updateList(): void {
 		this.#listContainer.clear();
+		const frameRows = this.#isFramed() ? 2 : 0;
+		const bodyRows = this.#height === undefined ? Number.POSITIVE_INFINITY : this.#height - frameRows;
+		const statusRows = this.#statusMessage && bodyRows >= 2 ? 1 : 0;
+		this.#maxVisible = Math.min(OAUTH_SELECTOR_MAX_VISIBLE, Math.max(0, bodyRows - statusRows));
+		const showSearch = this.#shouldRenderSearchStatus() && bodyRows - statusRows >= 2;
+		this.#maxVisible = Math.min(OAUTH_SELECTOR_MAX_VISIBLE, Math.max(0, bodyRows - statusRows - Number(showSearch)));
 
 		const total = this.#filteredProviders.length;
 		const maxVisible = this.#maxVisible;
@@ -310,7 +327,7 @@ export class OAuthSelectorComponent extends OverlayPanel {
 			this.#listContainer.addChild(sv);
 		}
 
-		if (this.#shouldRenderSearchStatus()) {
+		if (showSearch) {
 			this.#listContainer.addChild(new TruncatedText(this.#renderStatusLine(total), 0, 0));
 		}
 
@@ -323,8 +340,7 @@ export class OAuthSelectorComponent extends OverlayPanel {
 					: "No matching providers";
 			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", message), 0, 0));
 		}
-		if (this.#statusMessage) {
-			this.#listContainer.addChild(new Spacer(1));
+		if (statusRows && this.#statusMessage) {
 			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", this.#statusMessage), 0, 0));
 		}
 	}
@@ -396,7 +412,7 @@ export class OAuthSelectorComponent extends OverlayPanel {
 			this.handleWheel(event.wheel);
 			return;
 		}
-		const localRow = line - LIST_ROW_OFFSET;
+		const localRow = line - this.#listRowStart;
 		const index = localRow >= 0 && localRow < this.#visibleCount ? this.#scrollStart + localRow : undefined;
 		const target = index !== undefined && index < this.#filteredProviders.length ? index : null;
 		if (event.motion) {

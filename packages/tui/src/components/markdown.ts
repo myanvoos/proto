@@ -763,6 +763,9 @@ const EMPTY_RENDER_LINES: readonly string[] = [];
 interface RenderedLine {
 	text: string;
 	literalCode?: true;
+	// Indent baked into `text` that wrapping must re-apply to continuation rows so a
+	// wrapped code line keeps aligning with its block instead of the surrounding prose.
+	wrapIndent?: string;
 }
 
 interface RenderedListItemLine extends RenderedLine {
@@ -776,8 +779,22 @@ interface MutableListParagraphCapture {
 	lineCount: number;
 }
 
-function renderedLine(text: string, literalCode?: boolean): RenderedLine {
-	return literalCode ? { text, literalCode: true } : { text };
+function renderedLine(text: string, literalCode?: boolean, wrapIndent?: string): RenderedLine {
+	const line: RenderedLine = literalCode ? { text, literalCode: true } : { text };
+	if (wrapIndent) line.wrapIndent = wrapIndent;
+	return line;
+}
+
+// Wraps a rendered row, hanging continuation rows under the indent the row already
+// carries. Rows without `wrapIndent` wrap exactly as before.
+function wrapRenderedRow(line: RenderedLine, width: number): string[] {
+	const hang = line.wrapIndent;
+	if (hang === undefined || hang.length === 0) return wrapTextWithAnsi(line.text, width);
+	const hangWidth = visibleWidth(hang);
+	if (hangWidth >= width || !line.text.startsWith(hang)) return wrapTextWithAnsi(line.text, width);
+	const rows = wrapTextWithAnsi(line.text.slice(hang.length), width - hangWidth);
+	if (rows.length === 0) return [line.text];
+	return rows.map(row => hang + row);
 }
 
 interface RenderCacheEntry {
@@ -898,6 +915,106 @@ function stableBlockBoundary(text: string, base: number, tokens: Token[]): { end
 	return { end, count };
 }
 
+const LIST_ITEM_WITH_CONTENT = /^[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+\S/;
+const PENDING_SETEXT_UNDERLINE = /\n {0,3}(?:-+|=+)[ \t]*$/;
+
+/**
+ * A streaming paragraph followed by a still-growing line of only `-` or `=`
+ * reads as a setext heading, though the line usually becomes a list item or a
+ * rule a character later. Hold that line back until it resolves, so the
+ * paragraph does not flash as a heading or retract rows already settled.
+ */
+function withoutPendingSetextUnderline(text: string, streaming: boolean): string {
+	if (!streaming) return text;
+	const match = PENDING_SETEXT_UNDERLINE.exec(text);
+	if (match === null) return text;
+	const lineStart = match.index;
+	const previousLineStart = text.lastIndexOf("\n", lineStart - 1) + 1;
+	return /\S/.test(text.slice(previousLineStart, lineStart)) ? text.slice(0, lineStart + 1) : text;
+}
+
+/**
+ * Settled points of a streaming paragraph, as offsets into its source: the
+ * last hard line break (-1 when none) and every space before a letter, in
+ * order, each only where no inline construct is open — no code span, emphasis
+ * or strike run, link, bracket, or tag the rest of the paragraph could still
+ * close and restyle — and before any line a table could still claim.
+ */
+function settledParagraphPoints(raw: string): { hardBreak: number; cuts: number[] } {
+	let hardBreak = -1;
+	const cuts: number[] = [];
+	let lineStart = { hardBreak, cuts: 0 };
+	let codeRun = 0;
+	let stars = 0;
+	let underscores = 0;
+	let tildes = 0;
+	let brackets = 0;
+	let parens = 0;
+	let angles = 0;
+	const balanced = (): boolean =>
+		codeRun === 0 &&
+		stars % 2 === 0 &&
+		underscores % 2 === 0 &&
+		tildes % 2 === 0 &&
+		brackets === 0 &&
+		parens === 0 &&
+		angles === 0;
+	for (let index = 0; index < raw.length; index++) {
+		const char = raw[index]!;
+		if (char === "`") {
+			let run = 1;
+			while (raw[index + run] === "`") run++;
+			codeRun = codeRun === 0 ? run : codeRun === run ? 0 : codeRun;
+			index += run - 1;
+			continue;
+		}
+		if (codeRun > 0) continue;
+		if (char === "\\") {
+			if (raw[index + 1] === "\n" && balanced()) hardBreak = index;
+			index++;
+			continue;
+		}
+		if (char === "\n") {
+			if (index >= 2 && raw[index - 1] === " " && raw[index - 2] === " " && balanced()) {
+				let start = index - 1;
+				while (raw[start - 1] === " ") start--;
+				hardBreak = start;
+			}
+			lineStart = { hardBreak, cuts: cuts.length };
+			continue;
+		}
+		// A line with a pipe may still become a table header once a delimiter
+		// row follows it; nothing from that line on is settled.
+		if (char === "|") return { hardBreak: lineStart.hardBreak, cuts: cuts.slice(0, lineStart.cuts) };
+		const before = raw[index - 1] ?? " ";
+		if (char === "*" || char === "_" || char === "~") {
+			// Emphasis and strike delimiters pair up as runs. A run with space on
+			// both sides is literal; so is an intraword `_` run.
+			let run = 1;
+			while (raw[index + run] === char) run++;
+			const after = raw[index + run] ?? " ";
+			index += run - 1;
+			if (/\s/.test(before) && /\s/.test(after)) continue;
+			if (char === "*") stars++;
+			else if (char === "~") tildes++;
+			else if (!(/\w/.test(before) && /\w/.test(after))) underscores++;
+			continue;
+		}
+		const after = raw[index + 1] ?? " ";
+		if (char === "[") brackets++;
+		else if (char === "]") brackets = Math.max(0, brackets - 1);
+		// Parentheses only matter as a link destination; `<` only opens a tag or autolink.
+		else if (char === "(" && before === "]") parens++;
+		else if (char === ")" && parens > 0) parens--;
+		else if (char === "<" && /[A-Za-z/!?]/.test(after)) angles++;
+		else if (char === ">" && angles > 0) angles--;
+		// Only a letter can open the continuation line: anything else may start
+		// a list item, heading, quote, or setext underline there.
+		else if (char === " " && index > 0 && /\p{L}/u.test(after) && balanced()) cuts.push(index);
+	}
+	return { hardBreak, cuts };
+}
+
 const LEX_WINDOW_BYTES = 2 * 1024;
 
 const WINDOWED_LEX_MIN_BYTES = 16 * 1024;
@@ -1001,11 +1118,33 @@ interface InlineStyleContext {
 interface RenderableListItem {
 	raw?: string;
 	tokens?: Token[];
+	task?: boolean;
+	checked?: boolean;
 }
 
 type ListToken = Token & { items: RenderableListItem[]; ordered: boolean; start?: number };
 type TableCellToken = { tokens?: Token[] };
-type TableToken = Token & { header: TableCellToken[]; rows: TableCellToken[][]; raw?: string };
+type TableAlign = "left" | "center" | "right" | null;
+type TableToken = Token & {
+	header: TableCellToken[];
+	rows: TableCellToken[][];
+	align?: TableAlign[];
+	raw?: string;
+};
+
+const DEFAULT_TASK_CHECKED_GLYPH = "■";
+const DEFAULT_TASK_UNCHECKED_GLYPH = "□";
+
+// A GFM task item carries its state in the marker: the checkbox replaces an unordered bullet so
+// the row never shows two markers, while an ordered item keeps the ordinal the source spelled out.
+function listItemMarker(item: RenderableListItem, bullet: string, ordered: boolean, symbols: SymbolTheme): string {
+	if (item.task !== true) return bullet;
+	const glyph =
+		item.checked === true
+			? symbols.taskChecked || DEFAULT_TASK_CHECKED_GLYPH
+			: symbols.taskUnchecked || DEFAULT_TASK_UNCHECKED_GLYPH;
+	return ordered ? `${bullet}${glyph} ` : `${glyph} `;
+}
 
 function formatHyperlink(text: string, target: string): string {
 	if (!TERMINAL.hyperlinks || !target) {
@@ -1210,6 +1349,8 @@ interface StreamPrefixLineCache extends RenderSignature {
 }
 interface StreamingHighlightCache extends RenderSignature {
 	lang: string | undefined;
+	/** Source offset of the code block an append-only caller extended, if any. */
+	owner: number | undefined;
 	text: string;
 	lines: string[];
 	stream: HighlightStreamSession;
@@ -1256,6 +1397,7 @@ export class Markdown implements Component {
 	#streamLexedText?: string;
 
 	#lastRenderStableText = "";
+	#streamPrefix = false;
 
 	#renderingFrozenPrefix = false;
 	#streamingHighlightCache?: StreamingHighlightCache;
@@ -1375,11 +1517,50 @@ export class Markdown implements Component {
 	}
 
 	/**
-	 * Width-independent source prefix of the last render ending at a frozen
-	 * Markdown block boundary. Empty outside transient streaming renders.
+	 * Width-independent source prefix of the last render whose rows are final:
+	 * a frozen Markdown block boundary, extended into the streaming block where
+	 * its leading rows are already settled. Empty outside transient streaming
+	 * renders.
 	 */
 	getLastRenderStableText(): string {
 		return this.#transientRenderCache ? this.#lastRenderStableText : "";
+	}
+
+	/**
+	 * Where a hard line break could split the paragraph still streaming at the
+	 * end of the text, so the rows before it settle: every space before a letter
+	 * with no inline construct open, as ascending offsets into `getText()`. Empty
+	 * when the tail is not a lone paragraph. Streaming renders only; offsets are
+	 * relative to the last render.
+	 */
+	findParagraphCuts(): number[] {
+		const stable = this.getLastRenderStableText();
+		if (!this.#transientRenderCache || !this.#text.startsWith(stable)) return [];
+		const tail = this.#text.slice(stable.length);
+		let start = 0;
+		let paragraph: Token | undefined;
+		for (const token of lexDocument(tail, false)) {
+			if (token.type === "space" && paragraph === undefined) {
+				start += token.raw.length;
+				continue;
+			}
+			if (paragraph !== undefined || token.type !== "paragraph") return [];
+			paragraph = token;
+		}
+		if (paragraph === undefined || !tail.startsWith(paragraph.raw, start)) return [];
+		const offset = stable.length + start;
+		return settledParagraphPoints(paragraph.raw).cuts.map(cut => offset + cut);
+	}
+
+	/**
+	 * Render the text as the prefix of a longer stream, as a stable-text
+	 * snapshot is: an unclosed trailing code fence continues past the text, so
+	 * it gets no synthesized closing border.
+	 */
+	setStreamPrefix(value: boolean): void {
+		if (this.#streamPrefix === value) return;
+		this.#streamPrefix = value;
+		this.invalidate();
 	}
 
 	#invalidateStreamingState(): void {
@@ -1574,11 +1755,16 @@ export class Markdown implements Component {
 			return EMPTY_RENDER_LINES;
 		}
 
-		const normalizedText = this.#normalizedTextForRender();
+		const normalizedText = withoutPendingSetextUnderline(this.#normalizedTextForRender(), this.transientRenderCache);
 		const signature = this.#renderSignature(width, paddingX);
 
 		let cacheKey: string | undefined;
-		if (this.#cacheRenderedOutput && !this.transientRenderCache && !this.#appendOnlySinceRender) {
+		if (
+			this.#cacheRenderedOutput &&
+			!this.transientRenderCache &&
+			!this.#appendOnlySinceRender &&
+			!this.#streamPrefix
+		) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
@@ -1612,6 +1798,9 @@ export class Markdown implements Component {
 			this.#activeRenderSignature = undefined;
 			this.#activeRenderFragmentRevision = undefined;
 		}
+		if (this.transientRenderCache) {
+			this.#lastRenderStableText = this.#extendStableText(tokens, normalizedText, this.#lastRenderStableText);
+		}
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
 		const rawResult = [...emptyLines, ...contentLines, ...emptyLines];
@@ -1628,6 +1817,62 @@ export class Markdown implements Component {
 		this.#appendOnlySinceRender = false;
 
 		return result;
+	}
+
+	/**
+	 * Extend the frozen prefix into the block still streaming after it, up to
+	 * the rows that can no longer change: the finished items of a list (a new
+	 * item never re-renders the ones before it — markers are per item and
+	 * looseness is not rendered) and the complete lines of an open code fence
+	 * (highlighting is line-stateful, so a later line never recolors an earlier
+	 * one), and a paragraph up to its last hard line break. All cut at source
+	 * boundaries every width wraps alike, so rows retired at one width never
+	 * overlap or skip rows rendered at another. A block taller than the live
+	 * viewport then retires as it streams instead of clipping its unfinished top
+	 * off the screen.
+	 */
+	#extendStableText(tokens: Token[], text: string, frozen: string): string {
+		const tail = tokens.slice(frozen.length > 0 ? this.#streamPrefixTokenCount : 0);
+		const lastBlock = tail.findLastIndex(token => token.type !== "space");
+		if (lastBlock < 0) return frozen;
+		// A paragraph or heading the next block interrupted without a blank line
+		// is finished even though no block boundary froze it yet.
+		let start = frozen.length;
+		for (const token of tail.slice(0, lastBlock)) {
+			if (token.type !== "space" && token.type !== "paragraph" && token.type !== "heading") return frozen;
+			if (!text.startsWith(token.raw, start)) return frozen;
+			start += token.raw.length;
+		}
+		const block = tail[lastBlock]!;
+		if (typeof block.raw !== "string" || !text.startsWith(block.raw, start)) return frozen;
+		const settled = text.slice(0, start);
+		if (block.type === "code") {
+			if (block.lang === "mermaid" || !/^ {0,3}(?:`{3,}|~{3,})/.test(block.raw)) return settled;
+			if (this.#codeTokenHasClosingFence(block)) return text.slice(0, start + block.raw.length);
+			// The line after the last newline is still streaming; so is the one
+			// before a trailing newline, since the lexer drops that newline and the
+			// streaming render highlights only lines another line follows.
+			const body = block.raw.replace(/\n+$/, "");
+			const lastLineEnd = body.lastIndexOf("\n");
+			if (lastLineEnd <= body.indexOf("\n")) return settled;
+			return text.slice(0, start + lastLineEnd + 1);
+		}
+		if (block.type === "paragraph") {
+			const { hardBreak } = settledParagraphPoints(block.raw);
+			return hardBreak > 0 ? text.slice(0, start + hardBreak) : settled;
+		}
+		if (block.type !== "list") return settled;
+		const list = block as ListToken;
+		// A bare marker may still turn into a thematic break or lazy continuation
+		// text; only an item with content after its marker closes the previous one.
+		if (list.items.length < 2 || !LIST_ITEM_WITH_CONTENT.test(list.items.at(-1)!.raw ?? "")) return settled;
+		let end = start;
+		for (let index = 0; index < list.items.length - 1; index++) {
+			const raw = list.items[index]!.raw;
+			if (raw === undefined || !text.startsWith(raw, end)) return settled;
+			end += raw.length;
+		}
+		return text.slice(0, end);
 	}
 
 	#renderSignature(width: number, paddingX: number): RenderSignature {
@@ -1832,7 +2077,12 @@ export class Markdown implements Component {
 		}
 
 		const itemIndex = listToken.items.length - 1;
-		const bullet = listToken.ordered ? `${(listToken.start ?? 1) + itemIndex}. ` : "- ";
+		const bullet = listItemMarker(
+			lastItem,
+			listToken.ordered ? `${(listToken.start ?? 1) + itemIndex}. ` : "- ",
+			listToken.ordered,
+			this.#theme.symbols,
+		);
 		const firstPrefix = this.#theme.listBullet(bullet);
 		const continuationPrefix = padding(visibleWidth(bullet));
 		const firstPrefixWidth = visibleWidth(firstPrefix);
@@ -1949,9 +2199,9 @@ export class Markdown implements Component {
 		) {
 			return undefined;
 		}
-		// An appended closing fence is removed from the code token by the lexer, so a
-		// token that still contains the cached text is necessarily still unclosed.
-		if (token.text.length === fragment.codeText.length) return undefined;
+		// A closed block renders fully highlighted, not with the streaming rows; the
+		// closing fence may arrive together with the tail of the last line.
+		if (token.text.length === fragment.codeText.length || this.#codeTokenHasClosingFence(token)) return undefined;
 		if (lang === "mermaid" && this.#theme.resolveMermaidAscii) return undefined;
 
 		const oldBodyLineCount = fragment.codeBodyLineCount;
@@ -1982,7 +2232,7 @@ export class Markdown implements Component {
 		if (this.#theme.highlightCode && completedLineCount > 0) {
 			const lineEnd = token.text.lastIndexOf("\n");
 			if (lineEnd < 0) return undefined;
-			highlightedLines = this.#highlightStreamingLines(token.text.slice(0, lineEnd), lang, true);
+			highlightedLines = this.#highlightStreamingLines(token.text.slice(0, lineEnd), lang, sourceOffset);
 			if (highlightedLines === null || highlightedLines.length !== completedLineCount) return undefined;
 		}
 
@@ -2002,9 +2252,9 @@ export class Markdown implements Component {
 					? highlightedLines[globalLineIndex]
 					: this.#theme.codeBlock(sourceLine);
 			if (renderedText === undefined) return undefined;
-			const bodyLine = renderedLine(literalCode ? renderedText : codeIndent + renderedText, literalCode);
+			const bodyLine = renderedLine(literalCode ? renderedText : codeIndent + renderedText, literalCode, codeIndent);
 			if (TERMINAL.isImageLine(bodyLine.text) || isOsc66Line(bodyLine.text)) return undefined;
-			const wrappedRows = literalCode ? [bodyLine.text] : wrapTextWithAnsi(bodyLine.text, contentWidth);
+			const wrappedRows = literalCode ? [bodyLine.text] : wrapRenderedRow(bodyLine, contentWidth);
 			if (wrappedRows.length === 0) return undefined;
 			rowCounts.push(wrappedRows.length);
 			for (const wrappedRow of wrappedRows) {
@@ -2435,7 +2685,7 @@ export class Markdown implements Component {
 						) {
 							wrappedLines.push(renderedRow);
 						} else {
-							const wrappedRows = wrapTextWithAnsi(renderedRow.text, contentWidth);
+							const wrappedRows = wrapRenderedRow(renderedRow, contentWidth);
 							if (wrappedRows.length === 1 && wrappedRows[0] === renderedRow.text) {
 								wrappedLines.push(renderedRow);
 							} else {
@@ -2615,7 +2865,7 @@ export class Markdown implements Component {
 		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const addBodyLine = (line: string): void => {
-			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode));
+			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode, codeIndent));
 		};
 
 		const streaming = this.transientRenderCache && !this.#renderingFrozenPrefix;
@@ -2681,14 +2931,18 @@ export class Markdown implements Component {
 	#highlightStreamingLines(
 		completedText: string,
 		lang: string | undefined,
-		assumeAppendOnly = false,
+		appendOwner?: number,
 	): readonly string[] | null {
 		const signature = this.#activeRenderSignature;
 		const cache = this.#streamingHighlightCache;
 		const cachePrefixMatches =
 			cache !== undefined &&
-			(assumeAppendOnly
-				? completedText.length >= cache.text.length &&
+			// An append-only caller skips the prefix comparison, so the cache must be
+			// the one it built for this same code block: another block whose lines
+			// happen to line up would otherwise lend it its highlighted rows.
+			(appendOwner !== undefined
+				? cache.owner === appendOwner &&
+					completedText.length >= cache.text.length &&
 					(cache.text.length === completedText.length || completedText.charCodeAt(cache.text.length) === 0x0a)
 				: completedText.startsWith(cache.text));
 		if (
@@ -2719,6 +2973,7 @@ export class Markdown implements Component {
 			this.#streamingHighlightCache = {
 				...signature,
 				lang,
+				owner: appendOwner ?? cache.owner,
 				text: completedText,
 				lines: cache.lines,
 				stream: cache.stream,
@@ -2730,7 +2985,7 @@ export class Markdown implements Component {
 		if (!stream) return null;
 		const lines = splitPushedHighlightLines(stream.push(`${completedText}\n`));
 		if (signature) {
-			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream };
+			this.#streamingHighlightCache = { ...signature, lang, owner: appendOwner, text: completedText, lines, stream };
 		}
 		return lines;
 	}
@@ -2932,7 +3187,9 @@ export class Markdown implements Component {
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push(bodyLine);
 				}
-				lines.push(renderedLine(this.#codeFenceRow(token.lang, "close")));
+				if (!this.#streamPrefix || this.#codeTokenHasClosingFence(token)) {
+					lines.push(renderedLine(this.#codeFenceRow(token.lang, "close")));
+				}
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine(""));
 				}
@@ -3052,7 +3309,8 @@ export class Markdown implements Component {
 				}
 			} else {
 				const styledLine = applyQuoteStyle(quoteLine.text);
-				for (const wrappedLine of wrapTextWithAnsi(styledLine, quoteContentWidth)) {
+				const quoteRows = wrapRenderedRow({ ...quoteLine, text: styledLine }, quoteContentWidth);
+				for (const wrappedLine of quoteRows) {
 					lines.push(renderedLine(this.#theme.quoteBorder(`${this.#theme.symbols.quoteBorder} `) + wrappedLine));
 				}
 			}
@@ -3177,6 +3435,26 @@ export class Markdown implements Component {
 					break;
 				}
 
+				// An image has no terminal representation beyond its alt text, so it renders exactly
+				// like the link it is: the alt text carries the target and the URL stays visible.
+				case "image": {
+					markHtmlItemWhenContent(token.text);
+					const href = typeof token.href === "string" ? token.href : "";
+					const altText =
+						token.tokens && token.tokens.length > 0
+							? this.#renderInlineTokens(token.tokens, resolvedStyleContext)
+							: applyTextWithNewlines(normalizeHtmlEntitiesForTerminal(token.text ?? ""));
+					const styledUrl = href ? formatHyperlink(this.#theme.linkUrl(`(${href})`), href) : "";
+					if (!altText) {
+						result += styledUrl + stylePrefix;
+						break;
+					}
+					const styledAlt = formatHyperlink(this.#theme.link(this.#theme.underline(altText)), href);
+					if (!href || token.text === href) result += styledAlt + stylePrefix;
+					else result += `${styledAlt} ${styledUrl}${stylePrefix}`;
+					break;
+				}
+
 				case "br":
 					result += "\n";
 					trimLeadingWhitespace = true;
@@ -3252,7 +3530,7 @@ export class Markdown implements Component {
 				return;
 			}
 			const bodyWidth = width - prefixWidth;
-			const wrapped = wrapTextWithAnsi(line.text, bodyWidth);
+			const wrapped = wrapRenderedRow(line, bodyWidth);
 			if (wrapped.length === 0) {
 				lines.push(renderedLine(firstPrefix));
 				return;
@@ -3270,7 +3548,12 @@ export class Markdown implements Component {
 		for (let i = firstItemIndex; i <= lastItemIndex; i++) {
 			const item = token.items[i];
 			const itemLineStart = lines.length;
-			const bullet = token.ordered ? `${startNumber + i}. ` : "- ";
+			const bullet = listItemMarker(
+				item,
+				token.ordered ? `${startNumber + i}. ` : "- ",
+				token.ordered,
+				this.#theme.symbols,
+			);
 			const firstPrefix = indent + this.#theme.listBullet(bullet);
 
 			const continuationIndent = indent + padding(visibleWidth(bullet));
@@ -3414,6 +3697,19 @@ export class Markdown implements Component {
 		return splitTerminalLines(text).map(line => visibleWidth(line));
 	}
 
+	// GFM delimiter rows (`:-`, `:-:`, `-:`) choose where the slack in a column goes; a cell
+	// without an alignment keeps the left-aligned padding tables always used.
+	#padCell(text: string, width: number, align: TableAlign | undefined): string {
+		const slack = Math.max(0, width - visibleWidth(text));
+		if (slack === 0) return text;
+		if (align === "right") return padding(slack) + text;
+		if (align === "center") {
+			const left = Math.floor(slack / 2);
+			return padding(left) + text + padding(slack - left);
+		}
+		return text + padding(slack);
+	}
+
 	#wrapCellText(text: string, maxWidth: number): string[] {
 		const cellWidth = Math.max(1, maxWidth);
 
@@ -3548,12 +3844,12 @@ export class Markdown implements Component {
 			return this.#wrapCellText(text, columnWidths[i]);
 		});
 		const headerLineCount = Math.max(...headerCellLines.map(c => c.length));
+		const align = token.align;
 
 		for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
 			const rowParts = headerCellLines.map((cellLines, colIdx) => {
 				const text = cellLines[lineIdx] || "";
-				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return this.#theme.bold(padded);
+				return this.#theme.bold(this.#padCell(text, columnWidths[colIdx], align?.[colIdx]));
 			});
 			lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
 		}
@@ -3573,7 +3869,7 @@ export class Markdown implements Component {
 			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
 				const rowParts = rowCellLines.map((cellLines, colIdx) => {
 					const text = cellLines[lineIdx] || "";
-					return text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
+					return this.#padCell(text, columnWidths[colIdx], align?.[colIdx]);
 				});
 				lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
 			}
@@ -3609,7 +3905,12 @@ export function renderInlineMarkdown(text: string, mdTheme: MarkdownTheme, baseC
 		} else if (token.type === "list") {
 			result += token.items
 				.map((item: Tokens.ListItem, index: number) => {
-					const prefix = token.ordered ? `${(token.start || 1) + index}. ` : "• ";
+					const prefix = listItemMarker(
+						item,
+						token.ordered ? `${(token.start || 1) + index}. ` : "• ",
+						token.ordered === true,
+						mdTheme.symbols,
+					);
 					const content = item.tokens ? renderInlineTokens(item.tokens, mdTheme, applyText) : applyText(item.text);
 					return `${applyText(prefix)}${content}`;
 				})

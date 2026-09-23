@@ -173,14 +173,16 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "setup",
 		aliases: ["providers"],
-		description: "Open provider setup",
+		description: "Re-run setup: sign-in, web search, model and theme",
 		allowArgs: true,
-		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers" }],
+		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers only" }],
 		handleTui: async (command, runtime) => {
 			const args = command.args.trim().toLowerCase();
-			const opensProviders = args === "" || args === "providers";
-			if (opensProviders) {
-				await runtime.ctx.showProviderSetup();
+			// `/providers` and `/setup providers` open the single step; bare `/setup`
+			// runs the same walkthrough as `proto setup`.
+			const providersOnly = command.name === "providers" || args === "providers";
+			if (args === "" || args === "providers") {
+				await runtime.ctx.showSetupWizard(providersOnly ? "providers" : "all");
 			} else {
 				runtime.ctx.showWarning(`Usage: /${command.name} [providers]`);
 			}

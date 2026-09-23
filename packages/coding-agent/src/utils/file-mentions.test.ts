@@ -53,3 +53,48 @@ describe("directory file mentions", () => {
 		}
 	});
 });
+
+describe("image file mentions", () => {
+	test("a corrupt image is reported as skipped instead of attached", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-file-mentions-image-"));
+		try {
+			const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+			const body = Buffer.alloc(4000);
+			for (let i = 0; i < body.length; i++) body[i] = (i * 37 + 11) % 251;
+			const corrupt = path.join(directory, "corrupt.png");
+			await Bun.write(corrupt, Buffer.concat([signature, body]));
+
+			const messages = await generateFileMentionMessages([corrupt], directory);
+			const message = messages[0] as FileMentionMessage;
+			const file = message.files[0];
+
+			expect(file?.image).toBeUndefined();
+			expect(file?.skippedReason).toBe("undecodableImage");
+			expect(file?.content).toContain("corrupt or truncated");
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("a decodable image is still attached", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-file-mentions-image-"));
+		try {
+			const valid = path.join(directory, "valid.png");
+			await Bun.write(
+				valid,
+				Buffer.from(
+					"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+					"base64",
+				),
+			);
+
+			const messages = await generateFileMentionMessages([valid], directory, { autoResizeImages: false });
+			const file = (messages[0] as FileMentionMessage).files[0];
+
+			expect(file?.skippedReason).toBeUndefined();
+			expect(file?.image?.mimeType).toBe("image/png");
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+});

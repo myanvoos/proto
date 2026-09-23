@@ -5,12 +5,17 @@ import { parseStreamingJson } from "./json-parse";
 
 const LF = 0x0a;
 
-export async function* readLines(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+/** Reject lines beyond maxLineBytes before accumulating more stream data. */
+export async function* readLines(
+	stream: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
+	maxLineBytes = Number.POSITIVE_INFINITY,
+): AsyncGenerator<Uint8Array> {
 	const buffer = new ConcatSink();
 	const source = abortableSource(stream, signal);
 	try {
 		for await (const chunk of source) {
-			for (const line of buffer.appendAndFlushLines(chunk)) {
+			for (const line of buffer.appendAndFlushLines(chunk, maxLineBytes)) {
 				yield line;
 			}
 		}
@@ -139,7 +144,7 @@ class ConcatSink {
 		this.#length = 0;
 	}
 
-	*appendAndFlushLines(chunk: Uint8Array) {
+	*appendAndFlushLines(chunk: Uint8Array, maxLineBytes: number) {
 		// Snapshot newline-bearing chunks before the first yield. The stream source
 		// may reuse its backing storage while this generator is suspended between
 		// lines, so copying each direct suffix at its eventual yield is too late.
@@ -147,6 +152,10 @@ class ConcatSink {
 		let pos = 0;
 		while (pos < source.length) {
 			const nl = source.indexOf(LF, pos);
+			const end = nl === -1 ? source.length : nl;
+			if (this.#length + end - pos > maxLineBytes) {
+				throw new RangeError(`Stream line exceeds the ${maxLineBytes}-byte limit`);
+			}
 			if (nl === -1) {
 				this.append(source.subarray(pos));
 				return;

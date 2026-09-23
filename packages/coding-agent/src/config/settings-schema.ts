@@ -695,7 +695,7 @@ export const SETTINGS_SCHEMA = {
 
 	"statusLine.leftSegments": {
 		type: "array",
-		default: ["model", "account", "mode", "path", "git", "context_pct"] as StatusLineSegmentId[],
+		default: ["model", "account", "mode", "path", "git", "context_pct", "cost"] as StatusLineSegmentId[],
 	},
 
 	"statusLine.rightSegments": { type: "array", default: ["session_name"] as StatusLineSegmentId[] },
@@ -1139,6 +1139,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"model.toolCallLoopGuard.hardLimit": {
+		type: "number",
+		default: 20,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Tool-Call Loop Hard Limit",
+			description:
+				"Consecutive identical tool calls after which the run is stopped instead of steered, bounding runaway provider spend (0 disables the ceiling)",
+		},
+	},
+
 	"model.toolCallLoopGuard.exemptTools": {
 		type: "array",
 		default: DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS,
@@ -1455,6 +1467,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"retry.unreachableMaxRetries": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Retry Attempts — Unreachable Endpoint",
+			description:
+				"Maximum retry attempts when the provider endpoint cannot be reached at all (refused, unresolvable, or unroutable). A wrong base URL is a configuration problem, so the full retry budget only burns time",
+		},
+	},
+
 	"retry.baseDelayMs": { type: "number", default: 500 },
 	"retry.maxDelayMs": {
 		type: "number",
@@ -1575,7 +1599,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Anthropic Server-Side Fallback (Fable 5)",
 			description:
-				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 4.8 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
+				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 5.5 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
 		},
 	},
 
@@ -1857,6 +1881,37 @@ export const SETTINGS_SCHEMA = {
 			group: "Notifications",
 			label: "Completion Notification",
 			description: "Notify when the agent finishes a turn",
+		},
+	},
+
+	"completion.notifyMinSeconds": {
+		type: "number",
+		default: 10,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Completion Notification Delay",
+			description:
+				"Only notify when the finished turn ran at least this long. A bell after a sub-second turn you watched happen is noise; 0 notifies on every turn.",
+			options: [
+				{ value: "0", label: "Always", description: "Notify on every finished turn." },
+				{ value: "5", label: "5 seconds" },
+				{ value: "10", label: "10 seconds", description: "Default." },
+				{ value: "30", label: "30 seconds" },
+				{ value: "60", label: "1 minute" },
+			],
+		},
+	},
+
+	"completion.notifyWhenFocused": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Notify While Focused",
+			description:
+				"Notify even when the terminal has keyboard focus. Off means a completion bell only fires when you are looking elsewhere (terminals that do not report focus always notify).",
 		},
 	},
 
@@ -3925,6 +3980,61 @@ export const SETTINGS_SCHEMA = {
 				"Spend a saved Codex reset automatically when it would otherwise expire within this many hours and either chat window (5h or weekly) has meaningful usage to restore (0 disables expiry salvage).",
 		},
 	},
+	// Claude Cedar/Juniper rate-limit resets (independent auto-redeem consent)
+	"claudeResets.autoRedeem": {
+		type: "enum",
+		values: ["unset", "yes", "no"] as const,
+		default: "unset" as const,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Resets",
+			description:
+				"Spend eligible Claude Cedar or Juniper resets automatically. Cedar is spent only for covered limits; Juniper can only recover a sole 5-hour block. unset asks before the first spend, yes spends without prompting, and no disables blocked recovery and expiry salvage.",
+			options: [
+				{
+					value: "unset",
+					label: "Unset",
+					description: "Check live eligibility, then ask before spending the first Claude reset.",
+				},
+				{ value: "yes", label: "Yes", description: "Spend eligible Claude resets without prompting." },
+				{ value: "no", label: "No", description: "Do not run Claude reset auto-redeem checks." },
+			],
+		},
+	},
+	"claudeResets.minBlockedMinutes": {
+		type: "number",
+		default: 60,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Min Block",
+			description:
+				"Only auto-redeem when the natural unblock — the latest reset among the exhausted covered windows — is at least this many minutes away. A 5-hour-only reset is never used for a weekly or model-scoped block.",
+		},
+	},
+	"claudeResets.keepCredits": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Reserve",
+			description:
+				"Keep at least this many Claude resets banked (0 allows the last eligible reset to be spent automatically). The reserve also applies to expiry salvage.",
+		},
+	},
+	"claudeResets.salvageHorizonHours": {
+		type: "number",
+		default: 12,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Reset Salvage Horizon",
+			description:
+				"Use a server-selected Cedar reset within this many hours of expiry only when its covered windows have meaningful usage to restore and the grant permits early use or a covered window is exhausted (0 disables salvage).",
+		},
+	},
 	"provider.appendOnlyContext": {
 		type: "enum",
 		values: ["auto", "on", "off"] as const,
@@ -4195,6 +4305,7 @@ interface ContextPromotionSettings {
 export interface RetrySettings {
 	enabled: boolean;
 	maxRetries: number;
+	unreachableMaxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
 	modelFallback: boolean;
@@ -4303,10 +4414,12 @@ export interface ShellMinimizerSettings {
 	sourceOutlineLevel: "default" | "aggressive";
 	legacyFilters: boolean | undefined;
 }
-export type CodexAutoRedeemMode = "unset" | "yes" | "no";
+/** Whether automatic reset redemption asks first, spends, or remains disabled. */
+export type ResetAutoRedeemMode = "unset" | "yes" | "no";
 
-interface CodexResetsSettings {
-	autoRedeem: CodexAutoRedeemMode;
+/** Independent per-provider consent and scarcity policy for saved resets. */
+interface ResetSettings {
+	autoRedeem: ResetAutoRedeemMode;
 	minBlockedMinutes: number;
 	keepCredits: number;
 	salvageHorizonHours: number;
@@ -4340,7 +4453,8 @@ export interface GroupTypeMap {
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;
-	codexResets: CodexResetsSettings;
+	codexResets: ResetSettings;
+	claudeResets: ResetSettings;
 	gc: GcSettings;
 }
 

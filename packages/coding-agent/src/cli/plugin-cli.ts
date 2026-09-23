@@ -1,5 +1,6 @@
 import { BINARY_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { resolveOrDefaultProjectRegistryPath } from "../discovery/helpers";
 import { PluginManager, parseSettingValue, validateSetting } from "../extensibility/plugins";
 import {
@@ -245,14 +246,10 @@ async function handleInstall(
 	flags: { json?: boolean; force?: boolean; dryRun?: boolean; scope?: "user" | "project" },
 ): Promise<void> {
 	if (packages.length === 0) {
-		console.error(chalk.red(`Usage: ${BINARY_NAME} plugin install <source>[features] ...`));
-		console.error(chalk.dim("Examples:"));
-		console.error(chalk.dim(`  ${BINARY_NAME} plugin install @oh-my-pi/exa`));
-		console.error(chalk.dim(`  ${BINARY_NAME} plugin install name@marketplace`));
-		console.error(chalk.dim(`  ${BINARY_NAME} plugin install github:user/repo`));
-		console.error(chalk.dim(`  ${BINARY_NAME} plugin install https://github.com/user/repo#v1.0`));
-		console.error(chalk.dim(`  ${BINARY_NAME} plugin install ./path/to/local/plugin`));
-		process.exit(1);
+		throw new CliUsageError(
+			`${BINARY_NAME} plugin install <source>[features] ...\n` +
+				`Sources: @oh-my-pi/exa, name@marketplace, github:user/repo, https://github.com/user/repo#v1.0, ./path/to/local/plugin`,
+		);
 	}
 
 	const mktMgr = await makeMarketplaceManager();
@@ -281,17 +278,8 @@ async function handleInstall(
 
 		if (target.type === "local") {
 			if (flags.scope) {
-				console.error(
-					chalk.yellow(
-						`Warning: --scope is only supported for marketplace installs (name@marketplace). Ignoring for ${spec}.`,
-					),
-				);
-			}
-			if (flags.force) {
-				console.error(
-					chalk.yellow(
-						`Warning: --force has no effect for local path installs (link is already idempotent). Ignoring for ${spec}.`,
-					),
+				throw new CliUsageError(
+					`--scope is only supported for marketplace installs (name@marketplace); ${spec} is a local path and always links at user scope.`,
 				);
 			}
 			if (flags.dryRun) {
@@ -303,10 +291,13 @@ async function handleInstall(
 				continue;
 			}
 			try {
-				const result = await manager.link(target.path);
+				const result = await manager.link(target.path, { force: flags.force });
 				if (flags.json) {
 					console.log(JSON.stringify(result, null, 2));
 				} else {
+					for (const warning of result.warnings) {
+						console.error(chalk.yellow(`${theme.status.warning} ${warning}`));
+					}
 					console.log(chalk.green(`${theme.status.success} Linked ${result.name} from ${spec}`));
 					if (result.manifest.description) {
 						console.log(chalk.dim(`  ${result.manifest.description}`));
@@ -320,10 +311,8 @@ async function handleInstall(
 		}
 
 		if (flags.scope) {
-			console.error(
-				chalk.yellow(
-					`Warning: --scope is only supported for marketplace installs (name@marketplace). Ignoring for ${spec}.`,
-				),
+			throw new CliUsageError(
+				`--scope is only supported for marketplace installs (name@marketplace); ${spec} always installs at user scope.`,
 			);
 		}
 
@@ -358,8 +347,7 @@ async function handleUninstall(
 	flags: { json?: boolean; dryRun?: boolean; scope?: "user" | "project" },
 ): Promise<void> {
 	if (packages.length === 0) {
-		console.error(chalk.red(`Usage: ${BINARY_NAME} plugin uninstall <package> ...`));
-		process.exit(1);
+		throw new CliUsageError(`${BINARY_NAME} plugin uninstall <package> ...`);
 	}
 
 	const mktMgr = await makeMarketplaceManager();
@@ -472,18 +460,24 @@ async function handleList(manager: PluginManager, flags: { json?: boolean }): Pr
 	}
 }
 
-async function handleLink(manager: PluginManager, paths: string[], flags: { json?: boolean }): Promise<void> {
+async function handleLink(
+	manager: PluginManager,
+	paths: string[],
+	flags: { json?: boolean; force?: boolean },
+): Promise<void> {
 	if (paths.length === 0) {
-		console.error(chalk.red(`Usage: ${BINARY_NAME} plugin link <path>`));
-		process.exit(1);
+		throw new CliUsageError(`${BINARY_NAME} plugin link <path>`);
 	}
 
 	try {
-		const result = await manager.link(paths[0]);
+		const result = await manager.link(paths[0], { force: flags.force });
 
 		if (flags.json) {
 			console.log(JSON.stringify(result, null, 2));
 		} else {
+			for (const warning of result.warnings) {
+				console.error(chalk.yellow(`${theme.status.warning} ${warning}`));
+			}
 			console.log(chalk.green(`${theme.status.success} Linked ${result.name} from ${paths[0]}`));
 		}
 	} catch (err) {
@@ -537,10 +531,7 @@ async function handleFeatures(
 	flags: { json?: boolean; enable?: string; disable?: string; set?: string },
 ): Promise<void> {
 	if (args.length === 0) {
-		console.error(
-			chalk.red(`Usage: ${BINARY_NAME} plugin features <plugin> [--enable f1,f2] [--disable f1] [--set f1,f2]`),
-		);
-		process.exit(1);
+		throw new CliUsageError(`${BINARY_NAME} plugin features <plugin> [--enable f1,f2] [--disable f1] [--set f1,f2]`);
 	}
 
 	const pluginName = args[0];
@@ -621,19 +612,33 @@ async function handleFeatures(
 	}
 }
 
+const CONFIG_SUBCOMMANDS = ["list", "get", "set", "delete", "validate"] as const;
+const CONFIG_USAGE = `${BINARY_NAME} plugin config <${CONFIG_SUBCOMMANDS.join("|")}> <plugin> [key] [value]
+${BINARY_NAME} plugin config <plugin> --set <key>=<value>`;
+
 async function handleConfig(
 	manager: PluginManager,
 	args: string[],
-	flags: { json?: boolean; local?: boolean },
+	flags: { json?: boolean; local?: boolean; set?: string },
 ): Promise<void> {
 	if (args.length === 0) {
-		console.error(
-			chalk.red(`Usage: ${BINARY_NAME} plugin config <list|get|set|delete|validate> <plugin> [key] [value]`),
-		);
-		process.exit(1);
+		throw new CliUsageError(CONFIG_USAGE);
 	}
 
-	const [subcommand, pluginName, key, ...valueArgs] = args;
+	let [subcommand, pluginName, key, ...valueArgs] = args;
+
+	// `--set` is documented as "key=value" in plugin --help, so honour that form here instead
+	// of reading args[0] as a subcommand and complaining that the plugin name is missing.
+	if (flags.set !== undefined && !(CONFIG_SUBCOMMANDS as readonly string[]).includes(subcommand)) {
+		const separator = flags.set.indexOf("=");
+		if (separator <= 0) {
+			throw new CliUsageError(`--set expects <key>=<value>; received ${JSON.stringify(flags.set)}.`);
+		}
+		pluginName = subcommand;
+		key = flags.set.slice(0, separator);
+		valueArgs = [flags.set.slice(separator + 1)];
+		subcommand = "set";
+	}
 
 	if (subcommand === "validate") {
 		await handleConfigValidate(manager, flags);
@@ -641,8 +646,7 @@ async function handleConfig(
 	}
 
 	if (!pluginName) {
-		console.error(chalk.red("Plugin name required"));
-		process.exit(1);
+		throw new CliUsageError(CONFIG_USAGE);
 	}
 
 	const plugin = await manager.getPlugin(pluginName);
@@ -664,7 +668,10 @@ async function handleConfig(
 
 			console.log(chalk.bold(`Settings for ${pluginName}:\n`));
 
-			if (Object.keys(schema).length === 0) {
+			// Stored values count as settings even when the manifest declares no schema for
+			// them, otherwise list claims nothing is defined while get returns a value.
+			const undeclared = Object.keys(settings).filter(k => !(k in schema));
+			if (Object.keys(schema).length === 0 && undeclared.length === 0) {
 				console.log(chalk.dim("  No settings defined"));
 				return;
 			}
@@ -680,13 +687,17 @@ async function handleConfig(
 					console.log(chalk.dim(`    env: ${s.env}`));
 				}
 			}
+
+			for (const k of undeclared) {
+				console.log(`  ${k}: ${String(settings[k])}`);
+				console.log(chalk.dim("    not declared in the plugin manifest"));
+			}
 			break;
 		}
 
 		case "get": {
 			if (!key) {
-				console.error(chalk.red("Key required"));
-				process.exit(1);
+				throw new CliUsageError(`${BINARY_NAME} plugin config get <plugin> <key>`);
 			}
 
 			const settings = await manager.getPluginSettings(pluginName);
@@ -704,8 +715,7 @@ async function handleConfig(
 
 		case "set": {
 			if (!key) {
-				console.error(chalk.red("Key required"));
-				process.exit(1);
+				throw new CliUsageError(`${BINARY_NAME} plugin config set <plugin> <key> <value>`);
 			}
 
 			const valueStr = valueArgs.join(" ");
@@ -729,8 +739,7 @@ async function handleConfig(
 
 		case "delete": {
 			if (!key) {
-				console.error(chalk.red("Key required"));
-				process.exit(1);
+				throw new CliUsageError(`${BINARY_NAME} plugin config delete <plugin> <key>`);
 			}
 
 			await manager.deletePluginSetting(pluginName, key);
@@ -739,9 +748,7 @@ async function handleConfig(
 		}
 
 		default:
-			console.error(chalk.red(`Unknown config subcommand: ${subcommand}`));
-			console.error(chalk.dim("Valid subcommands: list, get, set, delete, validate"));
-			process.exit(1);
+			throw new CliUsageError(`Unknown config subcommand: ${subcommand}\n${CONFIG_USAGE}`);
 	}
 }
 
@@ -823,8 +830,7 @@ async function handleSetEnabled(
 	const jsonKey = enabled ? "enabled" : "disabled";
 
 	if (plugins.length === 0) {
-		console.error(chalk.red(`Usage: ${BINARY_NAME} plugin ${action} <plugin> ...`));
-		process.exit(1);
+		throw new CliUsageError(`${BINARY_NAME} plugin ${action} <plugin> ...`);
 	}
 
 	const mktMgr = await makeMarketplaceManager();
@@ -893,13 +899,14 @@ ${chalk.bold("Config Subcommands:")}
   config list <pkg>              List all settings
   config get <pkg> <key>         Get a setting value
   config set <pkg> <key> <val>   Set a setting value
+  config <pkg> --set key=value   Set a setting value (flag form)
   config delete <pkg> <key>      Delete a setting
   config validate                Validate all plugin settings
 
 ${chalk.bold("Options:")}
   --json           Output as JSON
   --fix            Attempt automatic fixes (doctor)
-  --force          Overwrite without prompting (install)
+  --force          Overwrite without prompting (install); link despite validation problems
   --scope <scope>  Install scope: user (default) or project (install name@marketplace)
   --dry-run        Preview changes without applying (install)
   -l, --local      Use project-local overrides

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `Markdown#setStreamPrefix()` renders text as the prefix of a longer stream (an unclosed trailing code fence gets no closing border), and `getLastRenderStableText()` now extends into the finished items of a streaming list and the complete lines of an open code fence.
+- `Markdown#findParagraphCuts()` lists where a hard line break could split the paragraph still streaming at the end of the text, and `Terminal.refreshSize()` re-reads the window size without waiting for SIGWINCH.
+- DEC 1004 focus reporting: the terminal enables focus events on attach, tracks focus in/out, and exposes `isTerminalFocused()` (`undefined` until the host actually reports focus, so callers never mistake silence for "focused"). Focus reports are consumed instead of leaking into the input handler as stray keys.
+
 ### Breaking Changes
 
 - Native-scrollback applications now provide explicit history batches through `TerminalFrameProvider`; removed implicit full-document retirement and the `NativeScrollback*` / `RenderStablePrefix` component hooks.
@@ -9,6 +15,17 @@
 ### Changed
 
 - Native history and mutable viewport updates are separate transactions; ordinary rendering and resizing preserve committed scrollback, while explicit display resets replay it atomically.
+
+### Fixed
+
+- A frame written after the host already resized no longer overwrites the rows it retired: the scroll that retires them addresses the real bottom row, and the parked cursor follows the frame so the resize probe finds where it landed.
+- A frame drawn after the terminal resized but before the resize signal was handled no longer paints over the history rows a taller window pulled back into view.
+- A streamed code block whose closing fence arrives together with the end of its last line is highlighted in full instead of keeping its streaming rows, and a code block no longer shows an earlier block's highlighted rows while it streams.
+- Committed scrollback survives an empty live viewport, including tiny terminals and overlay transitions.
+- Resizing a terminal no longer leaves a stale duplicate of the input line above the live one, and committed history is never reprinted after a width change.
+- Typing over a selection undoes in one step instead of two, and no longer shows an intermediate state that was never typed.
+- Terminal multiplexers are identified by asking the terminal rather than by environment variables, so scrollback survives resizing inside tmux or screen even when those variables are missing.
+- Wrapped lines inside fenced code blocks keep their code indentation.
 
 ## [18.1.23] - 2026-09-20
 

@@ -130,7 +130,10 @@ test("a bash read arms the kernel stale-write guard", async () => {
 	}
 }, 60000);
 
-test("a bash write re-arms the guard so the kernel's next edit passes", async () => {
+test("a bash write between two kernel cells cannot disarm the guard; a kernel re-read does", async () => {
+	// Host observations only ever extend the guard to paths the kernel has not read. The kernel
+	// is still holding the content it read, so a shell edit in between leaves its next write
+	// stale — exactly what the JS kernel does, which keeps readSeen from its own reads only.
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-write-rearm-"));
 	try {
 		const bash = new BashTool(stubSession(dir));
@@ -142,13 +145,48 @@ test("a bash write re-arms the guard so the kernel's next edit passes", async ()
 		);
 		await bash.execute("bash-write", { command: "sed -i 's/original/shell-edited/' guarded.txt" });
 
-		const out = await runPy(
+		const blocked = await runPy(
 			bash,
 			"kernel-edit",
 			`${GUARD_PROBE}\nprint("EDIT", check(lambda: open("guarded.txt", "w").write("kernel-edited\\n")))`,
 		);
-		expect(out).toContain("EDIT ok");
+		expect(blocked).toContain("EDIT StaleWriteError");
+		expect(await Bun.file(target).text()).toBe("shell-edited\n");
+
+		const afterReread = await runPy(
+			bash,
+			"kernel-reread-edit",
+			`${GUARD_PROBE}\nPath("guarded.txt").read_text()\nprint("EDIT", check(lambda: open("guarded.txt", "w").write("kernel-edited\\n")))`,
+		);
+		expect(afterReread).toContain("EDIT ok");
 		expect(await Bun.file(target).text()).toBe("kernel-edited\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("a bash read cannot launder an edit the kernel never saw", async () => {
+	// The kernel is holding the pre-edit text in a variable; a shell `cat` in between shows the
+	// new bytes to the model but not to the kernel, so its next write must still be refused.
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-read-launder-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const target = path.join(dir, "guarded.txt");
+		await Bun.write(target, "original\n");
+
+		expect(await runPy(bash, "kernel-read", 'print("READ", len(Path("guarded.txt").read_text()))')).toContain(
+			"READ 9",
+		);
+		await Bun.write(target, "external edit\n");
+		await bash.execute("bash-cat", { command: "cat guarded.txt" });
+
+		const out = await runPy(
+			bash,
+			"kernel-write",
+			`${GUARD_PROBE}\nprint("WRITE", check(lambda: open("guarded.txt", "w").write("kernel\\n")))`,
+		);
+		expect(out).toContain("WRITE StaleWriteError");
+		expect(await Bun.file(target).text()).toBe("external edit\n");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

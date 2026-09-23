@@ -76,6 +76,43 @@ describe("fetchWithRetry response body handling", () => {
 		expect(retriedResponse.bodyUsed).toBe(true);
 	});
 
+	it("stops retrying an endpoint that cannot be reached at all", async () => {
+		let fetchCalls = 0;
+		const started = Date.now();
+
+		await expect(
+			fetchWithRetry("https://example.test", {
+				maxAttempts: 5,
+				fetch: async () => {
+					fetchCalls++;
+					throw new Error("Unable to connect. Is the computer able to access the url?");
+				},
+			}),
+		).rejects.toThrow("Unable to connect");
+
+		// One extra attempt covers a restarting local server; the full ladder would
+		// only turn a wrong base URL into a multi-second hang per request.
+		expect(fetchCalls).toBe(2);
+		expect(Date.now() - started).toBeLessThan(3_000);
+	});
+
+	it("still uses the full attempt ladder for other network errors", async () => {
+		let fetchCalls = 0;
+
+		await expect(
+			fetchWithRetry("https://example.test", {
+				maxAttempts: 4,
+				defaultDelayMs: 0,
+				fetch: async () => {
+					fetchCalls++;
+					throw new Error("socket hang up");
+				},
+			}),
+		).rejects.toThrow("socket hang up");
+
+		expect(fetchCalls).toBe(4);
+	});
+
 	it("preserves the full body when the retry predicate declines", async () => {
 		const body = "x".repeat(128 * 1024);
 		const response = await fetchWithRetry("https://example.test", {

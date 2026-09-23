@@ -15,7 +15,7 @@ import { setMcpServerEnabled } from "../../../mcp/config-writer";
 import { getTabBarTheme } from "../../../modes/shared";
 import { theme } from "../../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../../modes/utils/keybinding-matchers";
-import { bottomBorder, divider, row, topBorder } from "../overlay-box";
+import { bottomBorder, divider, getDialogViewport, getTabStripRows, row, topBorder } from "../overlay-box";
 import { ExtensionList } from "./extension-list";
 import { InspectorPanel } from "./inspector-panel";
 import {
@@ -53,6 +53,7 @@ export class ExtensionDashboard implements Component {
 	#tabRowStart = 0;
 	#tabRowCount = 0;
 	#bodyRowStart = 0;
+	#bodyColStart = 2;
 	#bodyRowCount = 0;
 
 	onClose?: () => void;
@@ -121,30 +122,39 @@ export class ExtensionDashboard implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const height = Math.max(14, this.#terminalRows());
-		const innerWidth = Math.max(1, width - 4);
+		const height = this.#terminalRows();
+		let innerWidth = Math.max(1, width - 4);
 
+		// Provider labels are text, so at narrow widths the strip wraps over many
+		// rows. Bound it the way the settings dialog does: the strip scrolls to
+		// the active tab inside its budget, so it neither swallows the dialog at
+		// mid heights nor disappears entirely when the body gets tight.
+		this.#tabBar.setMaxHeight(getTabStripRows(getDialogViewport(height)));
 		const tabLines = this.#tabBar.render(innerWidth);
 
-		const fixedRows = 1 + tabLines.length + 1 + 1 + 1 + 1;
-		const contentRows = Math.max(5, height - fixedRows);
+		const layout = getDialogViewport(height, tabLines.length + 1);
+		this.#bodyColStart = layout.titleRows ? 2 : 0;
+		innerWidth = Math.max(1, width - this.#bodyColStart * 2);
+		const contentRows = layout.bodyRows;
 
-		this.#mainList.setMaxVisible(Math.max(3, contentRows - 2));
+		this.#mainList.setMaxHeight(contentRows);
 		this.#body.setMaxHeight(contentRows);
 		const bodyLines = this.#body.render(innerWidth);
 
 		const out: string[] = [];
-		out.push(topBorder(width, "Extension Control Center"));
+		if (layout.titleRows) out.push(topBorder(width, "Extension Control Center"));
 		this.#tabRowStart = out.length;
-		this.#tabRowCount = tabLines.length;
-		for (const line of tabLines) out.push(row(line, width));
-		out.push(divider(width));
+		this.#tabRowCount = layout.headerRows ? tabLines.length : 0;
+		if (layout.headerRows) {
+			for (const line of tabLines) out.push(row(line, width, layout.titleRows > 0));
+			out.push(divider(width));
+		}
 		this.#bodyRowStart = out.length;
 		this.#bodyRowCount = contentRows;
-		for (let i = 0; i < contentRows; i++) out.push(row(bodyLines[i] ?? "", width));
-		out.push(divider(width));
-		out.push(row(theme.fg("dim", EXT_FOOTER), width));
-		out.push(bottomBorder(width));
+		for (let i = 0; i < contentRows; i++) out.push(row(bodyLines[i] ?? "", width, layout.titleRows > 0));
+		if (layout.dividerRows) out.push(divider(width));
+		if (layout.footerRows) out.push(row(theme.fg("dim", EXT_FOOTER), width, layout.titleRows > 0));
+		if (layout.bottomRows) out.push(bottomBorder(width));
 		return out;
 	}
 
@@ -158,7 +168,7 @@ export class ExtensionDashboard implements Component {
 		const event = parseSgrMouse(data);
 		if (!event) return;
 
-		const innerCol = event.col - 2;
+		const innerCol = event.col - this.#bodyColStart;
 		const tabLine = event.row - this.#tabRowStart;
 		const overTabs = tabLine >= 0 && tabLine < this.#tabRowCount;
 		const bodyLine = event.row - this.#bodyRowStart;
@@ -394,6 +404,10 @@ class TwoColumnBody implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		if (width < 60 || this.#maxHeight < 3) {
+			this.#leftWidth = width;
+			return this.leftPane.render(width);
+		}
 		const leftWidth = Math.floor(width * 0.5);
 		this.#leftWidth = leftWidth;
 		const rightWidth = Math.max(0, width - leftWidth - 3);

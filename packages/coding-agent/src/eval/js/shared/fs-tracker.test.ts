@@ -31,6 +31,11 @@ function mutationPaths(events: readonly JsStatusEvent[]): string[] {
 		.map(event => event.path);
 }
 
+function diffRows(event: JsStatusEvent | undefined): string[] {
+	const diff = event?.diff;
+	return typeof diff === "string" ? diff.split("\n") : [];
+}
+
 afterEach(async () => {
 	await Promise.all([...cleanupPaths].map(target => fs.promises.rm(target, { recursive: true, force: true })));
 	cleanupPaths.clear();
@@ -340,4 +345,45 @@ test("write streams and recursive rename/removal observe their file mutations", 
 	await expectObserved([path.join(renamedTree, "one.txt"), path.join(renamedTree, "nested", "two.txt")], () =>
 		tracked.promises.rm(renamedTree, { recursive: true }),
 	);
+});
+
+test("a truncated whole-file rewrite reports both sides of the diff", async () => {
+	const root = await tempDir();
+	const target = path.join(root, "rewrite.ts");
+	await Bun.write(target, Array.from({ length: 1200 }, (_, index) => `const before${index} = ${index};`).join("\n"));
+	const tracked = trackedFsModule(fs);
+
+	const events = await capture(async () => {
+		await tracked.promises.writeFile(
+			target,
+			Array.from({ length: 1200 }, (_, index) => `const after${index} = ${index * 2};`).join("\n"),
+		);
+	});
+
+	const event = events.find(candidate => candidate.op === "write" && candidate.path === target);
+	expect(event?.diffTruncated).toBe(true);
+	const rows = diffRows(event);
+	// A rewrite emits every removal before the first addition; a head-only cut
+	// would report the rewrite as a deletion.
+	expect(rows.filter(row => row.startsWith("-")).length).toBeGreaterThan(0);
+	expect(rows.filter(row => row.startsWith("+")).length).toBeGreaterThan(0);
+	expect(rows.filter(row => row.includes("diff lines omitted"))).toHaveLength(1);
+});
+
+test("a diff of many short lines is bounded by rows, not only by characters", async () => {
+	const root = await tempDir();
+	const target = path.join(root, "short-lines.txt");
+	await Bun.write(target, Array.from({ length: 750 }, (_, index) => `a${index}`).join("\n"));
+	const tracked = trackedFsModule(fs);
+
+	const events = await capture(async () => {
+		await tracked.promises.writeFile(target, Array.from({ length: 750 }, (_, index) => `b${index}`).join("\n"));
+	});
+
+	const event = events.find(candidate => candidate.op === "write" && candidate.path === target);
+	const rows = diffRows(event);
+	// Well under the 32000-char ceiling, so only a row bound can stop it.
+	expect(rows.join("\n").length).toBeLessThan(32000);
+	expect(event?.diffTruncated).toBe(true);
+	expect(rows.length).toBeLessThanOrEqual(400);
 });

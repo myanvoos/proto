@@ -5,6 +5,8 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Terminal, TerminalAppearance, TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import type { RenderScheduler } from "@oh-my-pi/pi-tui/tui";
 import { formatBytes, getProjectDir, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
+import { detectColorLevel } from "@oh-my-pi/pi-utils/chalk";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
@@ -120,18 +122,21 @@ async function resolveTargetSession(sessionArg: string | undefined, cwd: string)
 				await fs.access(resolved);
 				return resolved;
 			} catch (err) {
-				if (isEnoent(err)) throw new Error(`Session file not found: ${resolved}`);
+				if (isEnoent(err)) throw new CliUsageError(`Session file not found: ${resolved}`);
 				throw err;
 			}
 		}
 		const match = await resolveResumableSession(sessionArg, cwd);
-		if (!match) throw new Error(`Session "${sessionArg}" not found.`);
+		if (!match) throw new CliUsageError(`Session "${sessionArg}" not found.`);
 		return match.session.path;
 	}
 	const recent = await findMostRecentSession(SessionManager.getDefaultSessionDir(cwd));
-	if (!recent) throw new Error(`No sessions found for ${cwd}. Pass a session file or id.`);
+	if (!recent) throw new CliUsageError(`No sessions found for ${cwd}. Pass a session file or id.`);
 	return recent;
 }
+
+/** OSC 133 prompt markers: `ESC ] 133 ; … BEL` or `ESC ] 133 ; … ESC \\`. */
+const SHELL_INTEGRATION_MARKER = /\u001b\]133;[^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 
 function formatMs(ms: number): string {
 	return `${ms.toFixed(0)} ms`;
@@ -184,7 +189,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		scheduler.drain();
 
 		const replayStart = performance.now();
-		await mode.renderInitialMessages({ clearTerminalHistory: true });
+		await mode.renderInitialMessages({ clearTerminalHistory: true, fullHistory: true });
 		const replayMs = performance.now() - replayStart;
 
 		const paintStart = performance.now();
@@ -208,7 +213,17 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 
 		if (!args.quiet) {
 			const lines = mode.chatContainer.render(width);
-			const text = args.plain ? lines.map(line => Bun.stripANSI(line)).join("\n") : lines.join("\n");
+			// NO_COLOR (or TERM=dumb, or FORCE_COLOR=0) is a user decision, not a terminal
+			// capability: honour it even though the transcript is captured, not displayed. TTY
+			// detection stays out of it so `proto render > thread.ansi` still keeps its colours.
+			const stripStyling = args.plain === true || detectColorLevel(process.env, true) === 0;
+			const joined = lines.join("\n");
+			const text = stripStyling
+				? Bun.stripANSI(joined)
+				: process.stdout.isTTY
+					? joined
+					: // Shell-integration markers only mean something to a live terminal.
+						joined.replace(SHELL_INTEGRATION_MARKER, "");
 			process.stdout.write(text);
 			process.stdout.write("\n");
 		}

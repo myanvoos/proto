@@ -1,4 +1,4 @@
-import { BINARY_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
+import { BINARY_NAME, getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import {
 	getDefault,
@@ -12,6 +12,7 @@ import {
 	settings,
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
+import { formatConfigIssue } from "../config/settings-normalize";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
 import { theme } from "../modes/theme/theme";
 import { initXdg } from "./commands/init-xdg";
@@ -24,6 +25,8 @@ export interface ConfigCommandArgs {
 	value?: string;
 	flags: {
 		json?: boolean;
+		/** `--config` overlays to layer on top of the stored settings for this run. */
+		config?: string[];
 	};
 }
 
@@ -99,7 +102,8 @@ function getTypeDisplay(def: CliSettingDef): string {
 	}
 }
 
-function parseAndSetValue(path: SettingPath, rawValue: string): void {
+/** Writes the parsed value and returns it, so callers report what was stored, not what an overlay masks it with. */
+function parseAndSetValue(path: SettingPath, rawValue: string): unknown {
 	const schemaType = getType(path);
 	let parsedValue: unknown;
 
@@ -158,10 +162,22 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 	}
 
 	settings.set(path, parsedValue as SettingValue<typeof path>);
+	return parsedValue;
 }
 
 export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
-	await Settings.init();
+	await Settings.init({ cwd: getProjectDir(), configFiles: cmd.flags.config });
+	for (const issue of settings.getConfigIssues()) {
+		process.stderr.write(`${chalk.yellow(formatConfigIssue(issue))}\n`);
+	}
+	if (cmd.flags.config && cmd.flags.config.length > 0 && (cmd.action === "set" || cmd.action === "reset")) {
+		// Overlays are read-only layers, so a write lands in the stored config and can stay masked.
+		process.stderr.write(
+			chalk.yellow(
+				`Note: --config overlays are read-only; ${cmd.action} writes to the stored config in ${getAgentDir()} and the overlay still wins while it is loaded.\n`,
+			),
+		);
+	}
 
 	switch (cmd.action) {
 		case "list":
@@ -279,15 +295,14 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 		process.exit(1);
 	}
 
+	let newValue: unknown;
 	try {
-		parseAndSetValue(def.path, value);
+		newValue = parseAndSetValue(def.path, value);
 		await settings.flush();
 	} catch (err) {
 		console.error(chalk.red(String(err)));
 		process.exit(1);
 	}
-
-	const newValue = settings.get(def.path);
 
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: newValue }));

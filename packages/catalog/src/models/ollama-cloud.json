@@ -104,9 +104,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.22,
+			"output": 0.66,
+			"cacheRead": 0.007,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -135,9 +135,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.22,
+			"output": 0.66,
+			"cacheRead": 0.007,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -197,9 +197,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.66,
+			"output": 1.98,
+			"cacheRead": 0.022,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -219,11 +219,23 @@
 	},
 	"deepseek-v4-pro:0813": {
 		"id": "deepseek-v4-pro:0813",
-		"name": "deepseek-v4-pro:0813",
+		"name": "DeepSeek V4 Pro 0813",
 		"api": "ollama-chat",
 		"provider": "ollama-cloud",
 		"baseUrl": "https://ollama.com",
 		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.66,
+			"output": 1.98,
+			"cacheRead": 0.022,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 65536,
+		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -232,20 +244,8 @@
 				"max"
 			]
 		},
-		"input": [
-			"text"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 1048576,
-		"maxTokens": 65536,
-		"omitMaxOutputTokens": true,
-		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false
 	},
 	"deepseek-v4-pro:preview": {
@@ -277,6 +277,38 @@
 		"omitMaxOutputTokens": true,
 		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false
+	},
+	"deepseek-v4.1-flash": {
+		"id": "deepseek-v4.1-flash",
+		"name": "DeepSeek V4.1 Flash",
+		"api": "ollama-chat",
+		"provider": "ollama-cloud",
+		"baseUrl": "https://ollama.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.003,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 384000,
+		"omitMaxOutputTokens": true,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false
 	},
 	"devstral-2:123b": {
@@ -444,9 +476,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.14,
+			"output": 0.4,
+			"cacheRead": 0.05,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -572,9 +604,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1,
+			"output": 3.2,
+			"cacheRead": 0.2,
 			"cacheWrite": 0
 		},
 		"contextWindow": 202752,
@@ -604,9 +636,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
 			"cacheWrite": 0
 		},
 		"contextWindow": 976000,
@@ -623,6 +655,73 @@
 		"tokenizer": "glm5",
 		"supportsComputerUse": false
 	},
+	"glm-5.3": {
+		"id": "glm-5.3",
+		"name": "GLM-5.3",
+		"api": "ollama-chat",
+		"provider": "ollama-cloud",
+		"baseUrl": "https://ollama.com",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"omitMaxOutputTokens": true,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false
+	},
+	"glm-5.3-flash": {
+		"id": "glm-5.3-flash",
+		"name": "GLM-5.3-Flash",
+		"api": "ollama-chat",
+		"provider": "ollama-cloud",
+		"baseUrl": "https://ollama.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.5,
+			"cacheRead": 0.03,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"omitMaxOutputTokens": true,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false
+	},
 	"gpt-oss:120b": {
 		"id": "gpt-oss:120b",
 		"name": "gpt-oss:120b",
@@ -634,9 +733,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.014,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
@@ -665,9 +764,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.07,
+			"output": 0.3,
+			"cacheRead": 0.035,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
@@ -719,6 +818,30 @@
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
+	"kimi-k2:1t": {
+		"id": "kimi-k2:1t",
+		"name": "kimi-k2:1t",
+		"api": "ollama-chat",
+		"provider": "ollama-cloud",
+		"baseUrl": "https://ollama.com",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 262144,
+		"omitMaxOutputTokens": true,
+		"tokenizer": "kimi-k2",
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsComputerUseConfig": false
+	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
 		"name": "kimi-k2.5",
@@ -764,9 +887,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.16,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -797,9 +920,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.19,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -818,30 +941,6 @@
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false
 	},
-	"kimi-k2:1t": {
-		"id": "kimi-k2:1t",
-		"name": "kimi-k2:1t",
-		"api": "ollama-chat",
-		"provider": "ollama-cloud",
-		"baseUrl": "https://ollama.com",
-		"reasoning": false,
-		"input": [
-			"text"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 262144,
-		"maxTokens": 262144,
-		"omitMaxOutputTokens": true,
-		"tokenizer": "kimi-k2",
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
-		"supportsComputerUseConfig": false
-	},
 	"kimi-k3": {
 		"id": "kimi-k3",
 		"name": "kimi-k3",
@@ -854,9 +953,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -985,9 +1084,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.3,
+			"output": 1.2,
+			"cacheRead": 0.06,
 			"cacheWrite": 0
 		},
 		"contextWindow": 196608,
@@ -1018,9 +1117,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.6,
+			"output": 2.4,
+			"cacheRead": 0.12,
 			"cacheWrite": 0
 		},
 		"contextWindow": 512000,
@@ -1122,8 +1221,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
+			"input": 0.5,
+			"output": 1.5,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
@@ -1144,8 +1243,8 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
+			"input": 0.06,
+			"output": 0.24,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
@@ -1175,9 +1274,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.015,
+			"output": 0.6,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1206,9 +1305,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.1,
+			"output": 3,
+			"cacheRead": 0.1,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1373,8 +1472,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
+			"input": 0.6,
+			"output": 3.6,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},

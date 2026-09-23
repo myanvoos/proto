@@ -18,7 +18,7 @@ import type {
 	ThinkingContent,
 	ToolChoice,
 } from "@oh-my-pi/pi-ai";
-import { calculateRateLimitBackoffMs, parseRateLimitReason } from "@oh-my-pi/pi-ai";
+import { calculateRateLimitBackoffMs, parseRateLimitReason, thinkingLoopDetail } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -66,9 +66,27 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
+
+/** Opening of the report a turn carries once its retry budget is spent. */
+export const RETRY_BUDGET_EXHAUSTED_PREFIX = "Retry budget exhausted after";
+
+/**
+ * What the failed turn says once no retry is left. A repetition-guard error ends with "Treating as
+ * a stream stall and retrying" — true while attempts remain, a promise nothing keeps at the end of
+ * the budget. Name the guard and its evidence instead.
+ */
+function terminalRetryError(errorMessage: string, thinkingLoop: boolean): string {
+	if (!thinkingLoop) return errorMessage;
+	return `repetition guard: ${thinkingLoopDetail(errorMessage) ?? "the model repeated near-identical content"}`;
+}
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
 const STREAM_STALL_ERROR_RE = /stream stall/i;
+// "The endpoint is not there" — refused, unresolvable or unroutable. Retrying the
+// full budget cannot fix a wrong base URL or a provider that is simply down, and
+// each attempt costs a full connect timeout.
+const UNREACHABLE_ENDPOINT_RE =
+	/unable to connect\.\s*is the computer able to access the url\?|econnrefused|connection refused|enotfound|getaddrinfo|eai_again|ehostunreach|enetunreach|connection timed out|connect timeout/i;
 const HTTP2_STREAM_RESET_ERROR_RE =
 	/stream closed with error code\s+nghttp2_(?:internal_error|refused_stream)|nghttp2_(?:internal_error|refused_stream)|HTTP2(?:StreamReset|RefusedStream)/i;
 
@@ -106,6 +124,8 @@ export interface TurnRecoveryHost {
 	isStreaming(): boolean;
 	isCompacting(): boolean;
 	abortInProgress(): boolean;
+	deadlineExceeded(): boolean;
+	toolCallLoopStopped(): boolean;
 	promptGeneration(): number;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
@@ -116,8 +136,12 @@ export interface TurnRecoveryHost {
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	resetCurrentResponsesProviderSession(reason: string): void;
-
-	maybeAutoRedeemCodexReset(activeBlockUnblockAtMs?: number): Promise<boolean>;
+	/**
+	 * Spend an eligible saved reset for the blocked provider pool.
+	 * `activeBlockUnblockAtMs` is the absolute unblock time parsed from the live
+	 * usage-limit error and never substitutes for live grant eligibility.
+	 */
+	maybeAutoRedeemReset(activeBlockUnblockAtMs?: number): Promise<boolean>;
 	runAutoCompaction(
 		reason: "overflow" | "threshold" | "idle" | "incomplete",
 		willRetry: boolean,
@@ -406,13 +430,19 @@ export class TurnRecovery {
 		if (switchedCredential) return "credential";
 		if (switchedModel) return "model";
 		if (AIError.is(id, AIError.Flag.UsageLimit) && delayMs > 0) return "wait";
+		if (AIError.is(id, AIError.Flag.ThinkingLoop)) return "loop";
 		return "plain";
 	}
 
-	#retryRecoveryNote(recovery: AssistantRetryRecoveryKind, rateLimited: boolean): string {
+	#retryRecoveryNote(recovery: AssistantRetryRecoveryKind, rateLimited: boolean, detail?: string): string {
 		const parts: string[] = [];
 		if (rateLimited) {
 			parts.push("rate-limited");
+		} else if (recovery === "loop") {
+			// Name the guard and its evidence: "error; retried" gave the user no
+			// way to tell a discarded turn from a provider fault.
+			parts.push(detail ? `repetition guard: ${detail}` : "repetition guard tripped");
+			parts.push("discarded turn");
 		} else if (recovery === "plain") {
 			parts.push("error");
 		}
@@ -449,7 +479,7 @@ export class TurnRecovery {
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
 		const rateLimited = AIError.is(id, AIError.Flag.UsageLimit);
 		const recovery = this.#retryRecoveryKind(id, options.switchedCredential, options.switchedModel, options.delayMs);
-		const note = this.#retryRecoveryNote(recovery, rateLimited);
+		const note = this.#retryRecoveryNote(recovery, rateLimited, thinkingLoopDetail(message.errorMessage));
 		this.#pendingRetryErrors.push({
 			entryId: branchEntry.id,
 			persistenceKey,
@@ -844,6 +874,11 @@ export class TurnRecovery {
 			(message.stopReason !== "aborted" && message.stopReason !== "error") ||
 			message.content.length !== 0 ||
 			this.#host.abortInProgress() ||
+			// A run stopped by its own deadline or by the tool-call loop ceiling is
+			// deliberate: retrying would burn the remaining time or walk straight back
+			// into the loop that was just stopped.
+			this.#host.deadlineExceeded() ||
+			this.#host.toolCallLoopStopped() ||
 			this.#host.isDisposed()
 		) {
 			return false;
@@ -925,6 +960,8 @@ export class TurnRecovery {
 		const reasonlessAbort =
 			(message.stopReason === "aborted" || message.stopReason === "error") &&
 			!this.#host.abortInProgress() &&
+			!this.#host.deadlineExceeded() &&
+			!this.#host.toolCallLoopStopped() &&
 			!this.#host.isDisposed() &&
 			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
 		const errorMessage = message.errorMessage ?? "";
@@ -1555,9 +1592,12 @@ export class TurnRecovery {
 			this.#retryResolve = resolve;
 		}
 
+		const unreachableEndpoint = UNREACHABLE_ENDPOINT_RE.test(message.errorMessage ?? "");
 		const maxRetries = this.#isOpenRouterThinkingStreamClose(message)
 			? Math.min(retrySettings.maxRetries, 1)
-			: retrySettings.maxRetries;
+			: unreachableEndpoint
+				? Math.min(retrySettings.maxRetries, Math.max(0, Math.trunc(retrySettings.unreachableMaxRetries)))
+				: retrySettings.maxRetries;
 		const retryBudgetExhausted = this.#retryAttempt > maxRetries;
 
 		const errorMessage = message.errorMessage || "Unknown error";
@@ -1596,7 +1636,9 @@ export class TurnRecovery {
 		if (!retryBudgetExhausted && !staleOpenAIResponsesReplayError && recordedUsageLimitOutcome) {
 			if (
 				recordedUsageLimitOutcome.switchedCredential ||
-				(await this.#host.maybeAutoRedeemCodexReset(
+				// Convert the parsed hint to an absolute timestamp NOW, before the
+				// hook's usage IO — a duration re-anchored after slow fetches drifts.
+				(await this.#host.maybeAutoRedeemReset(
 					parsedRetryAfterMs === undefined ? undefined : Date.now() + parsedRetryAfterMs,
 				))
 			) {
@@ -1660,14 +1702,15 @@ export class TurnRecovery {
 		if (retryBudgetExhausted) {
 			if (!switchedModel && !switchedCredential) {
 				const attempt = this.#retryAttempt - 1;
-				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
+				const terminalError = terminalRetryError(errorMessage, thinkingLoop);
+				message.errorMessage = `${RETRY_BUDGET_EXHAUSTED_PREFIX} ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${terminalError}`;
 				await this.persistTerminalEmptyErrorTurn(message);
 				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 				await this.#host.emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt,
-					finalError: errorMessage,
+					finalError: terminalError,
 					retryErrors,
 				});
 				this.#clearPendingRetryErrors();

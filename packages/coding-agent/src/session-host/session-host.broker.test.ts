@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { workerHostEntry } from "@oh-my-pi/pi-utils";
 
-import { createDaemonBrokerClient } from "../launch/client";
+import { createDaemonBrokerClient, type DaemonBrokerClient } from "../launch/client";
+import { daemonBrokerEndpoint } from "../launch/paths";
 import {
 	DAEMON_BROKER_WORKER_ARG,
 	DAEMON_IDLE_GRACE_ENV,
@@ -22,7 +24,8 @@ let tmpDir: string;
 let projectDir: string;
 let brokerSocketDir: string;
 let broker: Bun.Subprocess<"ignore", "ignore", "pipe"> | undefined;
-let brokerStderr: string;
+let brokerStderr = "";
+let client: DaemonBrokerClient | undefined;
 let sessionFile: string;
 let sessionHostSocket: string;
 let sessionHostName: string;
@@ -48,7 +51,33 @@ beforeAll(async () => {
 	});
 
 	// The broker reads the runtime token created by clients — create it first.
-	const client = await createDaemonBrokerClient(projectDir, { runtimeDir: brokerSocketDir });
+	client = await createDaemonBrokerClient(projectDir, { runtimeDir: brokerSocketDir });
+
+	// Observe this child's listener before issuing a client request: the client
+	// auto-spawns on connection refusal and would otherwise race our sandboxed child.
+	const readinessAbort = new AbortController();
+	const readinessTimeout = setTimeout(
+		() => readinessAbort.abort(new Error("broker listener timed out")),
+		PROBE_TIMEOUT_MS,
+	);
+	const endpoint = daemonBrokerEndpoint(projectDir, brokerSocketDir);
+	const listenerReady = (async () => {
+		for await (const event of fs.watch(brokerSocketDir, { signal: readinessAbort.signal })) {
+			if (event.filename !== path.basename(endpoint)) continue;
+			const accepts = await new Promise<boolean>(resolve => {
+				const socket = net.createConnection(endpoint);
+				socket.once("connect", () => {
+					socket.destroy();
+					resolve(true);
+				});
+				socket.once("error", () => {
+					socket.destroy();
+					resolve(false);
+				});
+			});
+			if (accepts) return;
+		}
+	})();
 
 	const hostEntry = workerHostEntry() ?? path.resolve(import.meta.dir, "..", "cli.ts");
 	broker = Bun.spawn({
@@ -70,15 +99,13 @@ beforeAll(async () => {
 	const brokerExited = broker.exited.then(code => {
 		throw new Error(`daemon broker exited (code ${code}) before accepting connections\n${brokerStderr}`);
 	});
-	const pingUntilAlive = async (): Promise<void> => {
-		for (let i = 0; i < 150; i++) {
-			const result = await client.request({ op: "ping" }).catch(() => undefined);
-			if (result?.op === "ping") return;
-			await Bun.sleep(100);
-		}
-		throw new Error(`daemon broker did not answer ping\n${brokerStderr}`);
-	};
-	await Promise.race([pingUntilAlive(), brokerExited]);
+	try {
+		await Promise.race([listenerReady, brokerExited]);
+		expect((await client.request({ op: "ping" })).op).toBe("ping");
+	} finally {
+		clearTimeout(readinessTimeout);
+		readinessAbort.abort();
+	}
 
 	// Hand-written minimal session file — creating one via SessionManager would
 	// write into the real (unsandboxed) config root from the test process.
@@ -103,8 +130,14 @@ beforeAll(async () => {
 }, 240_000);
 
 afterAll(async () => {
-	broker?.kill();
-	await fs.rm(tmpDir, { recursive: true, force: true });
+	try {
+		if (broker?.exitCode === null && client) await client.request({ op: "shutdown" });
+	} finally {
+		client?.close();
+		if (broker?.exitCode === null) broker.kill();
+		await broker?.exited;
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
 });
 
 test("ensure starts a broker-supervised host, crash restart recovers the session, stop tears it down", async () => {
@@ -114,10 +147,11 @@ test("ensure starts a broker-supervised host, crash restart recovers the session
 	const state1 = await first.frames.findResponse("b-state-1", PROBE_TIMEOUT_MS);
 	expect(state1.success).toBe(true);
 	expect((state1.data as { sessionFile?: string }).sessionFile).toBe(path.resolve(sessionFile));
+	first.close();
 
 	// Kill -9 the worker process: the broker must restart it (on-failure)
 	// and the recovered host must serve the same session file.
-	const client = await createDaemonBrokerClient(projectDir, { runtimeDir: brokerSocketDir });
+	if (!client) throw new Error("broker client not initialized");
 	const described = await client.request({ op: "describe", name: sessionHostName });
 	expect(described.op).toBe("describe");
 	const snapshot = (described as { daemon: { pid: number } }).daemon;
@@ -132,6 +166,7 @@ test("ensure starts a broker-supervised host, crash restart recovers the session
 	const state2 = await second.frames.findResponse("b-state-2", PROBE_TIMEOUT_MS);
 	expect(state2.success).toBe(true);
 	expect((state2.data as { sessionFile?: string }).sessionFile).toBe(path.resolve(sessionFile));
+	second.close();
 
 	// Explicit stop tears the host down; the socket stops answering.
 	await stopSessionHost(projectDir, sessionFile, { client });

@@ -40,6 +40,11 @@ export class ExtensionUiController {
 	#dialogActive = false;
 	#dialogQueue: Array<() => void> = [];
 
+	/** Last notice text rendered per level, for consecutive-duplicate collapse. */
+	#lastHookNotice = new Map<"info" | "warning" | "error", string>();
+	/** Session the collapse memory belongs to; a switch must not silence a new session. */
+	#lastHookNoticeSessionId: string | undefined;
+
 	#toolUIContext: ExtensionUIContext | undefined;
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -502,7 +507,10 @@ export class ExtensionUiController {
 				draftEditor.getText().length > 0
 					? {
 							isBlocked: () => draftEditor.getText().length > 0,
-							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+							handleInput: (keyData: string) => {
+								draftEditor.handleDraftEdit(keyData);
+								if (draftEditor.getText().length === 0) this.ctx.editorContainer.removeChild(draftEditor);
+							},
 							hint: "Finish or clear the current prompt to answer",
 
 							syncPresentation: () => {
@@ -516,8 +524,9 @@ export class ExtensionUiController {
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
 
-				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+				if (inputGuard?.isBlocked()) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
+				draftEditor.focused = inputGuard?.isBlocked() ?? false;
 				this.ctx.ui.requestRender();
 			};
 
@@ -564,8 +573,9 @@ export class ExtensionUiController {
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(askDialog);
-			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+			if (inputGuard?.isBlocked()) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
+			draftEditor.focused = inputGuard?.isBlocked() ?? false;
 			this.ctx.ui.requestRender();
 
 			return () => {
@@ -713,9 +723,28 @@ export class ExtensionUiController {
 	}
 
 	showHookNotify(message: string, type?: "info" | "warning" | "error"): void {
-		if (type === "error") {
+		const level = type ?? "info";
+		// Background extensions re-report an unchanged condition once per turn —
+		// observational memory emitted the same "no observations" warning on eight
+		// consecutive auto-compactions. Repeating identical text says nothing the
+		// user has not already read, so a notice that matches the previous one at
+		// its level is dropped; anything that actually changed still renders.
+		// `showStatus` already collapses this way for back-to-back info notices
+		// (ui-helpers.ts), and tracking per level keeps interleaved progress
+		// chatter from re-arming a warning.
+		// The controller outlives the session, so resuming or branching has to start
+		// with a clean slate — otherwise a notice already shown in the previous
+		// session would be silently dropped in the new one.
+		const sessionId = this.ctx.session.sessionId;
+		if (this.#lastHookNoticeSessionId !== sessionId) {
+			this.#lastHookNoticeSessionId = sessionId;
+			this.#lastHookNotice.clear();
+		}
+		if (this.#lastHookNotice.get(level) === message) return;
+		this.#lastHookNotice.set(level, message);
+		if (level === "error") {
 			this.ctx.showError(message);
-		} else if (type === "warning") {
+		} else if (level === "warning") {
 			this.ctx.showWarning(message);
 		} else {
 			this.ctx.showStatus(message);

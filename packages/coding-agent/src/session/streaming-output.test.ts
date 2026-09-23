@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { formatBytes, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
+import { formatTruncationMetaNotice, outputMeta } from "../tools/output-meta";
 import { OutputSink } from "./streaming-output";
 
 interface ReferenceCappedBuffers {
@@ -434,4 +435,47 @@ test("bounded held sixel tails still trigger artifact spill", async () => {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
 	});
+});
+
+test("the truncation notice counts exactly the lines the artifact holds", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "streaming-output-notice-"));
+	const artifactPath = path.join(directory, "0.bash.log");
+	// The shape that produced the off-by-one: a long run of lines ending with a
+	// trailing newline, spilled to an artifact and elided in the middle.
+	const lines = [
+		"BIGSTART",
+		...Array.from({ length: 4_000 }, (_value, index) => `line ${index} ${"x".repeat(48)}`),
+		"BIGEND",
+	];
+	const raw = `${lines.join("\n")}\n`;
+
+	try {
+		const sink = new OutputSink({ artifactPath, artifactId: "0", spillThreshold: 1, headBytes: 16 * 1024 });
+		sink.push(raw);
+		const summary = await sink.dump();
+		const artifact = await fs.readFile(artifactPath, "utf8");
+		const artifactLines = artifact.split("\n").length - (artifact.endsWith("\n") ? 1 : 0);
+
+		expect(artifactLines).toBe(lines.length);
+		expect(summary.totalLines).toBe(artifactLines);
+
+		const truncation = outputMeta().truncationFromSummary(summary, { direction: "tail" }).get()?.truncation;
+		if (!truncation) throw new Error("expected a truncation notice for a spilled artifact");
+		expect(truncation.totalLines).toBe(artifactLines);
+		expect(truncation.tailRange?.end ?? truncation.shownRange?.end).toBe(artifactLines);
+		expect(formatTruncationMetaNotice(truncation)).toContain(`of ${artifactLines}`);
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a stream without a trailing newline still counts its final partial line", async () => {
+	const sink = new OutputSink({ spillThreshold: 1 });
+	sink.push("alpha\nbeta\ngamma");
+	const summary = await sink.dump();
+	expect(summary.totalLines).toBe(3);
+
+	const terminated = new OutputSink({ spillThreshold: 1 });
+	terminated.push("alpha\nbeta\ngamma\n");
+	expect((await terminated.dump()).totalLines).toBe(3);
 });

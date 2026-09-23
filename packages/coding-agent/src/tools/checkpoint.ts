@@ -51,7 +51,7 @@ interface RewindToolDetails {
 export class CheckpointTool implements AgentTool<typeof checkpointSchema, CheckpointToolDetails> {
 	readonly name = "checkpoint";
 	readonly label = "Checkpoint";
-	readonly summary = "Create a git-based checkpoint to save and restore session state";
+	readonly summary = "Mark a context checkpoint that rewind collapses into a short report";
 	readonly description: string;
 	readonly parameters = checkpointSchema;
 	readonly strict = true;

@@ -213,6 +213,25 @@ test("writes ordered history once and acknowledges only after the physical write
 	tui.stop();
 });
 
+test("a frame that scrolls committed history keeps it when the host grew before the write landed", () => {
+	const { terminal, scheduler, provider, tui } = makeTui();
+	provider.plan = { history: { id: 1, rows: ["h1", "h2", "h3"] }, viewport: ["v1"], viewportAnchor: "bottom" };
+	tui.start({ deferInput: true });
+	scheduler.flush();
+
+	// The pane grows, but the next frame is already computed for the old height.
+	terminal.resize(40, 9);
+	terminal.rows = 6;
+	provider.plan = { viewport: ["v1", "v2", "v3"], viewportAnchor: "bottom" };
+	tui.requestRender();
+	scheduler.flush();
+
+	const rows = terminal.allNormalRows();
+	for (const row of ["h1", "h2", "h3", "v1", "v2", "v3"]) expect(countRow(rows, row), row).toBe(1);
+	expect(rows.indexOf("h3")).toBeLessThan(rows.indexOf("v1"));
+	tui.stop();
+});
+
 test("bottom anchored viewport grows and shrinks without archiving stale mutable rows", () => {
 	const { terminal, scheduler, provider, tui } = makeTui();
 	provider.plan = { history: { id: 1, rows: ["history"] }, viewport: ["old-a", "old-b"], viewportAnchor: "bottom" };
@@ -244,6 +263,48 @@ test("bottom anchored viewport grows and shrinks without archiving stale mutable
 	expect(terminal.screenRows()).toContain("history");
 	expect(terminal.screenRows().slice(-3)).toEqual(["new-history-1", "new-history-2", "small"]);
 	tui.stop();
+});
+
+test("large retired tool tails and interruption markers survive growing chrome and the next turn", () => {
+	const { terminal, scheduler, provider, tui } = makeTui(10);
+	const chrome = Array.from({ length: 8 }, (_, index) => `chrome-${index}`);
+	const toolRows = [...Array.from({ length: 30 }, (_, index) => `tool-${index}`), "tool final wrapped tail", ""];
+	provider.plan = { history: { id: 1, rows: toolRows }, viewport: chrome, viewportAnchor: "bottom" };
+	tui.start({ deferInput: true });
+	scheduler.flush();
+	try {
+		for (let height = 9; height <= 10; height++) {
+			provider.plan = {
+				viewport: Array.from({ length: height }, (_, index) => `working-${index}`),
+				viewportAnchor: "bottom",
+			};
+			tui.requestRender();
+			scheduler.flush();
+		}
+		expect(countRow(terminal.allNormalRows(), "tool final wrapped tail")).toBe(1);
+		provider.plan = {
+			history: { id: 2, rows: ["cancelled streamed text", "", "∎ Interrupted", ""] },
+			viewport: chrome,
+			viewportAnchor: "bottom",
+		};
+		tui.requestRender();
+		scheduler.flush();
+		provider.plan = {
+			history: { id: 3, rows: ["next user turn", ""] },
+			viewport: ["next answer", ...chrome],
+			viewportAnchor: "bottom",
+		};
+		tui.requestRender();
+		scheduler.flush();
+		const tape = terminal.allNormalRows();
+		for (const row of [...toolRows.filter(Boolean), "cancelled streamed text", "∎ Interrupted", "next user turn"]) {
+			expect(countRow(tape, row)).toBe(1);
+		}
+		expect(provider.acks).toEqual([1, 2, 3]);
+		expect(tape.some(row => row.startsWith("working-"))).toBe(false);
+	} finally {
+		tui.stop();
+	}
 });
 
 test("fullscreen overlays defer provider history and restore the normal buffer", () => {
@@ -348,3 +409,44 @@ test("output backlog defers history and stop flushes the final eligible batch", 
 	expect(terminal.stopped).toBe(true);
 	expect(countRow(terminal.allNormalRows(), "at-shutdown")).toBe(1);
 });
+
+for (const [columns, rows] of [
+	[2, 1],
+	[3, 2],
+	[20, 6],
+	[240, 80],
+]) {
+	test(`stream growth/shrink and overlays preserve history at ${columns}x${rows}`, () => {
+		const { terminal, scheduler, provider, tui } = makeTui(rows);
+		terminal.resize(columns!, rows!);
+		const expected: string[] = [];
+		try {
+			tui.start({ deferInput: true });
+			scheduler.flush();
+			for (let tick = 1; tick <= 80; tick++) {
+				const history = String.fromCharCode(0x4e00 + tick);
+				expected.push(history);
+				const viewport = Array.from({ length: tick % (rows! + 1) }, () => "\x1b[31mL\x1b[0m");
+				provider.plan = { history: { id: tick, rows: [history] }, viewport, viewportAnchor: "bottom" };
+				const overlay = tick % 9 === 0 ? tui.showOverlay({ render: () => ["M"] }, { fullscreen: true }) : undefined;
+				tui.requestRender();
+				scheduler.flush();
+				if (overlay) {
+					expect(provider.acks.length).toBe(tick - 1);
+					overlay.hide();
+					scheduler.flush();
+				}
+				expect(terminal.allNormalRows().filter(row => /[\u4e00-\u4eff]/u.test(row))).toEqual(expected);
+				expect(terminal.allNormalRows().slice(0, terminal.vt.buffer.normal.baseY)).not.toContain("L");
+				if (viewport.length > 0) {
+					expect(terminal.screenRows().slice(-viewport.length)).toEqual(viewport.map(() => "L"));
+				}
+				terminal.writes.length = 0;
+			}
+			expect(provider.acks).toEqual(Array.from({ length: 80 }, (_, index) => index + 1));
+		} finally {
+			tui.stop();
+			terminal.vt.dispose();
+		}
+	});
+}

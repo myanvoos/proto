@@ -217,8 +217,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
 	#hasIncrementalSections = false;
+	/** Strict mode never drops the schema: an exhausted retry budget fails the turn instead. */
+	readonly #schemaStrict: boolean;
 
 	constructor(session: ToolSession) {
+		this.#schemaStrict = session.outputSchemaMode === "strict";
 		let validate: ((value: unknown) => JsonSchemaValidationResult) | undefined;
 		let validateSection: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult> | undefined;
 		let rejectUnknownSections = false;
@@ -388,10 +391,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				this.#schemaValidationFailures++;
 				if (this.#schemaValidationFailures <= MAX_SCHEMA_RETRIES) {
 					const remaining = MAX_SCHEMA_RETRIES - this.#schemaValidationFailures;
+					const outcome = this.#schemaStrict
+						? "the turn fails with schema_violation"
+						: "the schema constraint is dropped";
 					const retryHint =
 						remaining > 0
-							? ` Call yield again with the corrected shape — ${remaining} retry attempt(s) remain before the schema constraint is dropped.`
-							: " Call yield again with the corrected shape — this is the final retry before the schema constraint is dropped.";
+							? ` Call yield again with the corrected shape — ${remaining} retry attempt(s) remain before ${outcome}.`
+							: ` Call yield again with the corrected shape — this is the final retry before ${outcome}.`;
 					const scope = isIncremental ? `Section ${formatYieldLabels(yieldType as string[])}` : "Output";
 					throw new Error(
 						`${scope} does not match schema: ${formatAllValidationIssues(sectionFailure.issues)}.${retryHint}`,
@@ -407,7 +413,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			status === "aborted"
 				? `Task aborted: ${errorMessage}`
 				: schemaValidationOverridden
-					? `Result submitted (schema validation overridden after ${this.#schemaValidationFailures} failed attempt(s)).`
+					? this.#schemaStrict
+						? `Result recorded after ${this.#schemaValidationFailures} failed attempt(s) but it still does not match the schema; strict mode fails this turn with schema_violation.`
+						: `Result submitted (schema validation overridden after ${this.#schemaValidationFailures} failed attempt(s)).`
 					: "Result submitted.";
 		return {
 			content: [{ type: "text", text: responseText }],

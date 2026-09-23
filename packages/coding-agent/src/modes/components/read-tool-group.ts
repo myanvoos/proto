@@ -1,6 +1,6 @@
 import * as path from "node:path";
-import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
+import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
+import type { Component, ImageBudget } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
@@ -9,9 +9,13 @@ import { PREVIEW_LIMITS, sanitizeSingleLine, shortenPath } from "../../tools/ren
 import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
+import { ToolResultImagesComponent } from "./tool-result-images";
 import { formatUsageRow } from "./usage-row";
 
 const MARKER_SELECTOR_RE = /^(?:raw|conflicts)$/i;
+
+/** Failure reasons shown under a collapsed read row before the rest is folded away. */
+const READ_ERROR_REASON_LINES = 3;
 
 function splitGroupDisplayPath(value: string): { path: string; sel?: string } {
 	const split = splitPathAndSel(value);
@@ -104,6 +108,8 @@ type ReadToolResultDetails = {
 
 type ReadToolGroupOptions = {
 	showContentPreview?: boolean;
+	imageBudget?: ImageBudget;
+	requestRender?: () => void;
 };
 
 function getSuffixResolution(details: ReadToolResultDetails | undefined): ReadToolSuffixResolution | undefined {
@@ -329,12 +335,18 @@ function formatMergedSelectorParts(selectors: string[]): string {
 
 export class ReadToolGroupComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, ReadEntry>();
+	// Images returned by a read live in this card, below the call they belong to.
+	// The component instances persist across rebuilds so their graphics keys and
+	// budget registrations stay stable.
+	#imageBlocks = new Map<string, ToolResultImagesComponent>();
 	#usageRows = new Map<string, ReadUsageRow>();
 	#usageBatchByToolCallId = new Map<string, string>();
 	#text: Text;
 	#expanded = false;
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
+	readonly #imageBudget?: ImageBudget;
+	readonly #requestRender: () => void;
 
 	#finalized = false;
 
@@ -342,6 +354,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
+		this.#imageBudget = options.imageBudget;
+		this.#requestRender = options.requestRender ?? ((): void => {});
 		this.#showContentPreview = options.showContentPreview ?? false;
 		this.#text = new Text("", 0, 0);
 		this.addChild(this.#text);
@@ -378,7 +392,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	updateArgs(args: ReadRenderArgs, toolCallId?: string): void {
 		if (!toolCallId) return;
-		const rawPath = args.file_path || args.path || "";
+		// A model can send a non-string path; it still has to render and split like one.
+		const pathArg = args.file_path || args.path || "";
+		const rawPath = typeof pathArg === "string" ? pathArg : String(pathArg);
 		const entry: ReadEntry = this.#entries.get(toolCallId) ?? {
 			toolCallId,
 			path: rawPath,
@@ -394,6 +410,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const entry = this.#entries.get(oldId);
 		if (!entry || this.#entries.has(newId)) return;
 		entry.toolCallId = newId;
+		const block = this.#imageBlocks.get(oldId);
+		if (block) {
+			this.#imageBlocks.delete(oldId);
+			this.#imageBlocks.set(newId, block);
+		}
 		const reordered = [...this.#entries].map(([key, value]): [string, ReadEntry] => [
 			key === oldId ? newId : key,
 			value,
@@ -403,7 +424,25 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	/** Attach the images a read returned, so they paint under that read's row. */
+	setToolResultImages(toolCallId: string, images: readonly ImageContent[]): void {
+		if (!toolCallId) return;
+		const valid = images.filter(image => image.type === "image" && image.data && image.mimeType);
+		if (valid.length === 0) {
+			this.#imageBlocks.delete(toolCallId);
+		} else {
+			let block = this.#imageBlocks.get(toolCallId);
+			if (!block) {
+				block = new ToolResultImagesComponent(toolCallId, this.#imageBudget, this.#requestRender);
+				this.#imageBlocks.set(toolCallId, block);
+			}
+			block.setImages(valid);
+		}
+		this.#updateDisplay();
+	}
+
 	removeEntry(toolCallId: string): boolean {
+		this.#imageBlocks.delete(toolCallId);
 		if (!this.#entries.delete(toolCallId)) return this.#entries.size === 0;
 		this.#updateDisplay();
 		return this.#entries.size === 0;
@@ -501,6 +540,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (displayRows.length === 0) {
 			this.#text.setText(` ${theme.format.bullet} ${theme.fg("toolTitle", theme.bold("Read"))}`);
 			this.addChild(this.#text);
+			this.#addImageBlocks(entries);
 			return;
 		}
 
@@ -510,6 +550,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				const statusSymbol = this.#formatStatus(this.#statusForTargets(row.targets));
 				const pathDisplay = this.#formatRowPath(row);
 				const lines = [` ${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd()];
+				this.#appendErrorReason(lines, row, "   ");
 				const usageRows = this.#usageRowsBySummaryRow(displayRows).get(0) ?? [];
 				this.#appendUsageRows(lines, usageRows, "   ");
 				this.#text.setText(lines.join("\n"));
@@ -519,6 +560,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				this.#addContentPreview(entry);
 				this.#addPreviewUsage(entry);
 			}
+			this.#addImageBlocks(entries);
 			return;
 		}
 
@@ -540,6 +582,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				this.#addContentPreview(entry);
 				this.#addPreviewUsage(entry);
 			}
+		}
+		this.#addImageBlocks(entries);
+	}
+
+	/** Images follow the read rows, in the order their calls were issued. */
+	#addImageBlocks(entries: readonly ReadEntry[]): void {
+		for (const entry of entries) {
+			const block = this.#imageBlocks.get(entry.toolCallId);
+			if (block && block.imageCount > 0) this.addChild(block);
 		}
 	}
 
@@ -630,6 +681,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			index === total - 1
 				? " ".repeat(connectorWidth)
 				: `${theme.tree.vertical}${" ".repeat(Math.max(0, connectorWidth - Bun.stringWidth(theme.tree.vertical)))}`;
+		this.#appendErrorReason(lines, row, `   ${continuation} `);
 		this.#appendUsageRows(lines, usageRows, `   ${continuation} `);
 	}
 
@@ -810,6 +862,28 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				0,
 			),
 		);
+	}
+
+	/**
+	 * A failed read renders as a status row only; without this the card is a red cross and a path,
+	 * with the reason the tool already reported stranded in the transcript data.
+	 */
+	#appendErrorReason(lines: string[], row: ReadSummaryRow, indent: string): void {
+		const seen = new Set<string>();
+		for (const target of row.targets) {
+			const entry = target.entry;
+			if (entry.status !== "error" || seen.has(entry.toolCallId)) continue;
+			seen.add(entry.toolCallId);
+			const reason = (entry.contentText ?? "").replace(/^Error:\s*/, "").trim();
+			if (!reason) continue;
+			const reasonLines = reason.split("\n").filter(line => line.trim().length > 0);
+			const shown = this.#expanded ? reasonLines : reasonLines.slice(0, READ_ERROR_REASON_LINES);
+			for (const line of shown) {
+				lines.push(`${indent}${theme.fg("error", sanitizeSingleLine(line))}`);
+			}
+			const hidden = reasonLines.length - shown.length;
+			if (hidden > 0) lines.push(`${indent}${theme.fg("dim", `… ${hidden} more line${hidden === 1 ? "" : "s"}`)}`);
+		}
 	}
 
 	#shouldRenderPreview(entry: ReadEntry): boolean {

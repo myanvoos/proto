@@ -53,20 +53,24 @@ No checkpoint ID, artifact URI, job handle, file path, or restore token is retur
   - Sets `AgentSession.#checkpointState` in memory.
   - Records the checkpoint boundary as a message count plus the persisted checkpoint tool-result entry ID.
   - The ordinary successful tool-result entry is enough to reconstruct an unfinished checkpoint after resume; there is no separate checkpoint-marker entry.
-  - Enables the later settle guard: if a checkpoint is active and no rewind report is pending, `#enforceRewindBeforeYield()` injects a developer-role warning and schedules another turn.
+  - Enables the later settle guard: if a checkpoint is active and no rewind report is pending, `#enforceRewindBeforeYield()` injects a developer-role warning and schedules another turn. The guard is budgeted: at most `REWIND_REMINDER_CAP = 3` reminders per user turn per checkpoint. A model that ignores all three ends the turn with the checkpoint still open instead of being continued forever.
 - User-visible prompts / interactive UI
   - The tool result tells the model to call `rewind` after the investigation.
   - If the agent tries to `yield` first, `AgentSession` injects:
 
 ```text
 <system-warning>
-You are in an active checkpoint. You MUST call rewind with your investigation findings before yielding. Do NOT yield without completing the checkpoint.
+You are in an active checkpoint. You MUST call rewind with your investigation findings before yielding. Do NOT yield without completing the checkpoint. (Reminder 1 of 3.)
 </system-warning>
 ```
+
+  - The third reminder adds a final line: `This is the final reminder: if you do not call rewind now, the turn ends with the checkpoint still open and your findings unreported.`
+  - When the budget is spent, the user gets a `warning` notice from source `checkpoint` (stderr in headless text mode, a transcript notice in the TUI) saying the checkpoint was left open and is still active.
 
 ## Limits & Caps
 - Availability is gated by `checkpoint.enabled`, default `false`.
 - Only one active checkpoint is allowed per session or subagent.
+- The yield guard is capped at 3 reminders per user turn per checkpoint (`REWIND_REMINDER_CAP` in `packages/coding-agent/src/session/agent-session.ts`). The budget is re-armed by a new user-initiated prompt, never by an auto-continue, so a checkpoint the model refuses to close costs at most three extra requests per turn instead of an unbounded provider storm.
 - Subagents require an explicit requested-tools entry; requesting either checkpoint tool auto-includes its sister.
 - Checkpoint state is not persisted as a dedicated entry. It is reconstructed from the successful checkpoint tool-result entry on the active branch, including after process resume.
 - Session persistence applies to the ordinary checkpoint tool-call/result messages. Global session persistence truncation is `MAX_PERSIST_CHARS = 500_000` in `packages/coding-agent/src/session/session-persistence.ts`.
@@ -76,7 +80,7 @@ You are in an active checkpoint. You MUST call rewind with your investigation fi
 - The tool body has no local `try/catch`; unexpected exceptions propagate.
 
 ## Notes
-- Despite the summary string `Create a git-based checkpoint to save and restore session state`, the implementation does not call git and does not snapshot filesystem state.
+- The summary string is `Mark a context checkpoint that rewind collapses into a short report`: the implementation never calls git and does not snapshot filesystem state.
 - Captured state is conversation/session metadata only:
   - in-memory message count
   - persisted checkpoint tool-result entry ID in the session tree

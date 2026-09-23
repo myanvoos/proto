@@ -115,8 +115,12 @@ function countCollected(refs: WeakRef<object>[]): number {
 	return refs.filter(ref => ref.deref() === undefined).length;
 }
 
-async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
-	for (let attempt = 0; attempt < 20; attempt++) {
+export async function collectWeakRefs(refs: WeakRef<object>[], budgetMs = 5_000): Promise<number> {
+	// Deadline rather than a fixed attempt count: a loaded machine can keep a doomed object
+	// rooted for longer than a short retry budget, which makes the leak assertion flaky
+	// without making it any stricter.
+	const deadline = Bun.nanoseconds() + budgetMs * 1e6;
+	while (Bun.nanoseconds() < deadline) {
 		Bun.gc(true);
 		await Bun.sleep(10);
 		const collected = countCollected(refs);

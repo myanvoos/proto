@@ -5,6 +5,7 @@ import { getProjectDir, isEnoent, readImageMetadata } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatBytes } from "../tools/render-utils";
+import { readDecodedImageDimensions } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 
@@ -61,6 +62,10 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 		}
 
 		if (mimeType) {
+			if (!(await readDecodedImageDimensions(buffer))) {
+				console.error(chalk.red(`Error: Image is corrupt or truncated: ${absolutePath}`));
+				process.exit(1);
+			}
 			const base64Content = buffer.toBase64();
 			let attachment: ImageContent;
 			let dimensionNote: string | undefined;

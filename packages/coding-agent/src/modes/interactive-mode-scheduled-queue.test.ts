@@ -58,6 +58,9 @@ describe("/queue with a delay", () => {
 	}
 
 	it("shows a countdown row for a delayed message and drops it once cancelled", async () => {
+		// Schedule and render against one instant: millisecond drift can legitimately
+		// cross the duration formatter's minute boundary immediately after queuing.
+		vi.spyOn(Date, "now").mockReturnValue(1_750_000_000_000);
 		expect(await executeBuiltinSlashCommand("/queue 3h run the benchmarks", { ctx: mode })).toBe(true);
 
 		const rows = pendingRows();

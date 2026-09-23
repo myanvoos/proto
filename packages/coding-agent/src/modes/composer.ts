@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	Editor,
 	type HistoryBatch,
 	ProcessTerminal,
 	Spacer,
@@ -90,6 +91,22 @@ class ComposerHairline implements Component {
 	invalidate(): void {}
 }
 
+function isBlankRow(row: string): boolean {
+	return !/\S/.test(Bun.stripANSI(row));
+}
+
+/**
+ * Fit `rows` into `budget`, shedding leading blank padding before content. A
+ * compressed block keeps its heading (`Steering · 2`) instead of spending its
+ * single surviving row on the spacer that separates it from the block above.
+ */
+function compressRows(rows: readonly string[], budget: number): string[] {
+	if (rows.length <= budget) return [...rows];
+	let start = 0;
+	while (start < rows.length - budget && !/\S/.test(rows[start]!)) start++;
+	return rows.slice(start, start + budget);
+}
+
 class CardPadRow implements Component {
 	render(): string[] {
 		return [""];
@@ -125,7 +142,8 @@ export class Composer implements TerminalFrameProvider {
 	#headerRetired = false;
 	#historyReplay = false;
 	#historyFlush = false;
-	#retirementChromeFloor: number | undefined;
+	// Whether the last row written to native history is blank.
+	#historyEndsBlank = false;
 	#offeredHistory:
 		| {
 				batch: HistoryBatch;
@@ -136,6 +154,10 @@ export class Composer implements TerminalFrameProvider {
 		  }
 		| undefined;
 	#lastInterruptAt = 0;
+	// Where the live transcript sat in the last painted viewport.
+	#lastLiveFrame:
+		| { transcript: TranscriptContainer; viewportLength: number; liveStart: number; liveRows: number }
+		| undefined;
 	#started = false;
 	#stopped = false;
 	#transferred = false;
@@ -194,8 +216,14 @@ export class Composer implements TerminalFrameProvider {
 		const roots = this.ui.children;
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
+			// Nothing to replay, and this frame already carries the reset that asked
+			// for one. Holding the request would replay it once a transcript attaches
+			// and reset the display a second time — at startup, erasing what the user
+			// had on screen before launch after the first reset deliberately kept it.
+			this.#historyReplay = false;
+			this.#lastLiveFrame = undefined;
 			return {
-				viewport: height > 0 ? this.#renderRoots(roots, width).slice(-height) : [],
+				viewport: height > 0 ? this.#renderComposerRoots(roots, width, height).slice(-height) : [],
 				viewportAnchor: "bottom",
 			};
 		}
@@ -204,20 +232,63 @@ export class Composer implements TerminalFrameProvider {
 			roots.slice(0, transcriptIndex).filter(root => root !== this.#header),
 			width,
 		);
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
-		// Expanded drafts/dialogs may temporarily hide transcript rows, but must
-		// not retire them irreversibly. Bill retirement against persistent chrome.
-		this.#retirementChromeFloor = Math.min(this.#retirementChromeFloor ?? after.length, after.length);
-		const capacity = Math.max(0, height - before.length - this.#retirementChromeFloor);
+		const after = this.#renderComposerRoots(roots.slice(transcriptIndex + 1), width, height);
+		// Height is billed as-is, unlike chrome: a shrunken terminal has already
+		// pushed the live rows it can no longer show into the host's scrollback,
+		// so holding them live would write them a second time when they finally
+		// retire. Shrinking therefore empties the transcript viewport for good —
+		// growing back cannot retract a host push, and only an explicit display
+		// replacement (`beginHistoryReplay`) may repaint the ledger. Pinned by
+		// "a shrink retires the transcript overflow once and only a replay can
+		// bring it back" in composer.test.ts.
+		// Chrome is billed as rendered, not against the smallest chrome ever seen:
+		// a frame may only call rows live when it can actually paint them. Rows
+		// counted as live beyond the paintable space are clipped off the top of
+		// the plan, and the live region is repainted in place rather than
+		// scrolled, so an un-retired block clipped here would never reach native
+		// history — it would simply be overwritten. Expanded drafts and dialogs
+		// therefore retire the transcript they cover instead of hiding it.
+		const capacity = Math.max(0, height - before.length - after.length);
 		const history = this.#offerHistory(transcript, width, capacity);
-		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#header.render(width);
+		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#historyHeader(width);
 		const now = performance.now();
 		const live = transcript.renderViewport(width, Math.max(0, capacity - header.length), {
 			now,
 			tick: Math.floor(now / 80),
 		});
-		const rows = [...header, ...before, ...live, ...after];
-		return { history, viewport: height > 0 ? rows.slice(-height) : [], viewportAnchor: "bottom" };
+		// A retired block leaves the blank that separates it from the next one at
+		// the end of history. With nothing live below it, the chrome's own gap
+		// row would double that blank.
+		const historyEndsBlank = history?.rows.length ? isBlankRow(history.rows.at(-1)!) : this.#historyEndsBlank;
+		const chrome =
+			historyEndsBlank &&
+			header.length + before.length + live.length === 0 &&
+			after.length > 0 &&
+			isBlankRow(after[0]!)
+				? after.slice(1)
+				: after;
+		const rows = [...header, ...before, ...live, ...chrome];
+		const painted = height > 0 ? rows.slice(-height) : [];
+		this.#lastLiveFrame = {
+			transcript,
+			viewportLength: painted.length,
+			liveStart: header.length + before.length - (rows.length - painted.length),
+			liveRows: live.length,
+		};
+		return { history, viewport: painted, viewportAnchor: "bottom" };
+	}
+
+	/**
+	 * Retire the live transcript rows a resize pushed off the top of the last
+	 * painted viewport. Only a viewport that opens on the live transcript can
+	 * do so in order: the welcome header above it would have to reach history
+	 * first, and an in-flight history offer owns the rows it covers.
+	 */
+	retireArchivedRows(rows: number, viewportLength: number): number {
+		const frame = this.#lastLiveFrame;
+		this.#lastLiveFrame = undefined;
+		if (!frame || frame.viewportLength !== viewportLength || frame.liveStart !== 0 || this.#offeredHistory) return 0;
+		return frame.transcript.retireArchivedRows(Math.min(rows, frame.liveRows));
 	}
 
 	acknowledgeHistory(id: number): void {
@@ -225,6 +296,9 @@ export class Composer implements TerminalFrameProvider {
 		if (!offered || offered.batch.id !== id) return;
 		if (offered.transcriptId !== undefined) offered.transcript.acknowledgeFinalizedBatch(offered.transcriptId);
 		if (offered.header) this.#headerRetired = true;
+		const last = offered.batch.rows.at(-1);
+		if (last !== undefined || offered.batch.kind === "replay")
+			this.#historyEndsBlank = last !== undefined && isBlankRow(last);
 		this.#offeredHistory = undefined;
 	}
 
@@ -235,12 +309,19 @@ export class Composer implements TerminalFrameProvider {
 		if (height === 0) return [];
 		const roots = this.ui.children;
 		const index = roots.findIndex(root => root instanceof TranscriptContainer);
-		if (index < 0) return this.#renderRoots(roots, width).slice(-height);
-		const after = this.#renderRoots(roots.slice(index + 1), width);
-		const transcript = roots[index] as TranscriptContainer;
-		const tail = transcript.renderTail(width, Math.max(0, height - after.length));
-		const prefix = tail.length + after.length < height ? this.#renderRoots(roots.slice(0, index), width) : [];
-		return [...prefix, ...tail, ...after].slice(-height);
+		let rows: string[];
+		if (index < 0) {
+			rows = this.#renderComposerRoots(roots, width, height).slice(-height);
+		} else {
+			const after = this.#renderComposerRoots(roots.slice(index + 1), width, height);
+			const transcript = roots[index] as TranscriptContainer;
+			const tail = transcript.renderTail(width, Math.max(0, height - after.length));
+			const prefix = tail.length + after.length < height ? this.#renderRoots(roots.slice(0, index), width) : [];
+			rows = [...prefix, ...tail, ...after].slice(-height);
+		}
+		// The borrowed resize buffer paints from row zero. Pad only this preview,
+		// not the normal history plan, to retain the composer's bottom anchor.
+		return [...Array<string>(height - rows.length).fill(""), ...rows];
 	}
 
 	/** Called only for an explicit display/session replacement, never a resize. */
@@ -310,9 +391,112 @@ export class Composer implements TerminalFrameProvider {
 		return batch;
 	}
 
+	/**
+	 * Header rows ending in exactly one blank separator row, identical live and
+	 * retired: the welcome already closes with a spacer, and adding another at
+	 * retirement doubled the gap above the first prompt in scrollback.
+	 */
 	#historyHeader(width: number): readonly string[] {
 		const rows = this.#header.render(width);
-		return rows.length > 0 ? [...rows, ""] : [];
+		if (rows.length === 0) return rows;
+		return /\S/.test(rows.at(-1)!) ? [...rows, ""] : rows;
+	}
+
+	/** Allocate before rendering: clipping an already-rendered editor can hide its cursor. */
+	#renderComposerRoots(roots: readonly Component[], width: number, height: number): string[] {
+		if (!roots.includes(this.#editorSlot)) {
+			return this.#renderRoots(roots, width);
+		}
+		// Responsive chrome renders once, after its budget is known. Rendering an
+		// image preview just to measure it would acquire graphics that a compact
+		// second pass immediately releases again.
+		const responsiveRoots = roots.filter(root => root !== this.#editorSlot && root.setMaxHeight !== undefined);
+		// Responsive blocks are measured in their compact one-row form: that is the
+		// shape they fall back to anyway, and it never transmits a full preview
+		// image the outer budget would then discard.
+		const rendered = roots.map(root => {
+			if (root === this.#editorSlot) return [];
+			if (root.setMaxHeight === undefined) return Array.from(root.render(width));
+			root.setMaxHeight(1);
+			return Array.from(root.render(width));
+		});
+		let chromeRows = rendered.reduce((sum, rows) => sum + rows.length, 0);
+		// Decoration is expendable before input. Keep the usual card on roomy
+		// terminals, but recover its padding/hairline on short panes.
+		for (const decoration of [
+			this.#bottomMargin,
+			this.#padAboveEditor,
+			this.#padBelowEditor,
+			this.#composerHairline,
+		]) {
+			if (chromeRows + responsiveRoots.length + Math.min(3, height) <= height) break;
+			const index = roots.indexOf(decoration);
+			if (index < 0) continue;
+			chromeRows -= rendered[index]!.length;
+			rendered[index] = [];
+		}
+		// A replacement dialog is modal: reserve enough rows for its identity and
+		// choices before transcript and status chrome keep theirs.
+		const slotChildren = this.#editorSlot.children;
+		const replacement = !slotChildren.includes(this.editor);
+		const minimumEditorRows = Math.min(
+			height,
+			replacement ? 3 : slotChildren.includes(this.editor) && this.editor.isAutocompleteActive() ? 2 : 1,
+		);
+		// Rows are budgeted in two passes. The first walks upwards from the
+		// editor so the newest affordances — the interrupt hint, the status
+		// footer, the busy row — each keep one row before any older block above
+		// them (a queued steering list, a transcript tail) takes a second row.
+		// The second pass then tops blocks up in reading order.
+		const budgeted = roots.map(() => 0);
+		let remaining = Math.max(0, height - minimumEditorRows);
+		const allocatable = roots
+			.map((root, index) => ({ root, index }))
+			.filter(entry => entry.root !== this.#editorSlot);
+		for (const { index } of [...allocatable].reverse()) {
+			if (remaining === 0) break;
+			// Blank padding and blocks with nothing to say never outrank content.
+			if (!rendered[index]!.some(row => /\S/.test(row))) continue;
+			budgeted[index] = 1;
+			remaining--;
+		}
+		for (const { root, index } of allocatable) {
+			if (remaining === 0) break;
+			// A responsive block reports no natural height until it renders, so it
+			// receives the rest of the budget at its own position and clamps itself.
+			const desired =
+				root.setMaxHeight === undefined
+					? rendered[index]!.length
+					: rendered[index]!.length === 0
+						? 0
+						: budgeted[index] + remaining;
+			const extra = Math.min(remaining, Math.max(0, desired - budgeted[index]));
+			budgeted[index] += extra;
+			remaining -= extra;
+		}
+		for (const { root, index } of allocatable) {
+			if (root.setMaxHeight === undefined) {
+				rendered[index] = compressRows(rendered[index]!, budgeted[index]!);
+			} else if (budgeted[index] !== 1) {
+				root.setMaxHeight(budgeted[index]!);
+				rendered[index] = budgeted[index]! > 0 ? Array.from(root.render(width)) : [];
+			}
+		}
+		chromeRows = rendered.reduce((sum, rows) => sum + rows.length, 0);
+		let slotRows = Math.max(1, height - chromeRows);
+		const children = this.#editorSlot.children;
+		// A guarded ask mounts the editable draft last; allocate it first so
+		// clearing the draft remains possible even when only one row survives.
+		const slotLines: string[][] = children.map(() => []);
+		for (let index = children.length - 1; index >= 0 && slotRows > 0; index--) {
+			const child = children[index]!;
+			if (child instanceof Editor) child.setViewportHeight(slotRows);
+			else child.setMaxHeight?.(slotRows);
+			slotLines[index] = Array.from(child.render(width));
+			slotRows = Math.max(0, slotRows - slotLines[index]!.length);
+		}
+		rendered[roots.indexOf(this.#editorSlot)] = slotLines.flat();
+		return rendered.flat();
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {

@@ -695,6 +695,7 @@ Provider credentials and custom model definitions are configured separately — 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `proto config list`. Additional groups include:
 
 - Agent behavior and safety: `ask.*`, `eval.*`, `features.*`, `goal.*`, `loop.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, `tools.*`, and `vault.*`.
+  - `model.toolCallLoopGuard.*` detects consecutive identical tool calls: the corrective steer is injected on every repeat from `threshold` (default 5) onwards, and at `hardLimit` (default 20) the run is stopped outright instead of steered, bounding provider spend. Set `hardLimit` to `0` to keep steering without a ceiling. `exemptTools` (default `fleet`) skips tools whose repetition is normal.
 - Execution and content: `commit.*`, `completion.*`, `edit.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `terminal.*`, and `title.*`.
 - Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `magicKeywords.*`, `mcp.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `checklist.*`, and `workspace.*`.
 - Ungrouped keys: `setupVersion`, `proseOnlyThinking`, `omitThinking`, `externalThinking`, `includeWorkspaceTree`, `autocompleteMaxVisible`, `emojiAutocomplete`, `extendedContext`, `disabledExtensions`, `inlineToolDescriptors`, and `treeFilterMode`.

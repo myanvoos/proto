@@ -6,6 +6,7 @@
  * Each `run` is exactly one frame (or one setLines+render), so the reported
  * median is ms/frame and opsPerSec is frames/sec for that case.
  */
+
 import { ScrollView } from "../packages/tui/src/components/scroll-view";
 import {
 	type Component,
@@ -15,6 +16,8 @@ import {
 	TUI,
 	type ViewportSize,
 } from "../packages/tui/src/tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../packages/tui/src/utils";
+import { Terminal as VTermTerminal } from "../packages/utils/src/vterm";
 import { formatArtifact, labelFromArgv, runSuite } from "./harness";
 
 const WIDTH = 100;
@@ -151,8 +154,8 @@ interface TuiFixture {
 	tui: TUI;
 }
 
-function buildTui(rowCount: number, liveRows: number, extra?: Component): TuiFixture {
-	const terminal = new BenchTerminal(WIDTH, HEIGHT);
+function buildTui(rowCount: number, liveRows: number, extra?: Component, width = WIDTH, height = HEIGHT): TuiFixture {
+	const terminal = new BenchTerminal(width, height);
 	const tui = new TUI(terminal, false, { renderScheduler: immediateScheduler });
 	tui.setFrameProvider(new StreamingFrameProvider(buildRows(rowCount), liveRows, extra));
 	tui.start({ deferInput: true });
@@ -235,7 +238,83 @@ const containerCases = [8, 64, 256].map(childCount => ({
 	run: (fixture: TuiFixture) => frame(fixture),
 }));
 
-const artifact = await runSuite("tui-render", [...tuiCases, ...containerCases, ...scrollCases], {
-	label: labelFromArgv(),
-});
-console.log(formatArtifact(artifact));
+const geometryCases = [
+	[2, 1],
+	[20, 6],
+	[240, 100],
+].map(([width, height]) => ({
+	name: `geometry-${width}x${height}`,
+	setup: () => buildTui(1_000, LIVE_ROWS, undefined, width, height),
+	run: (fixture: TuiFixture) => frame(fixture),
+}));
+
+// Exercise the same parser/reflow surface used by TUI regression fixtures, not
+// just a write sink. Retention is bounded even as the producer keeps appending.
+const reflowCases = [500, 5_000].map(scrollback => ({
+	name: `vterm-reflow-${scrollback}`,
+	setup: () => {
+		const terminal = new VTermTerminal({ cols: 80, rows: 24, scrollback });
+		terminal.write(Array.from({ length: scrollback }, (_, row) => `row-${row} 界`).join("\r\n"));
+		return terminal;
+	},
+	run: (terminal: VTermTerminal) => {
+		terminal.write("\r\nstream 界");
+		for (const [width, height] of [
+			[12, 1],
+			[240, 100],
+			[80, 24],
+		])
+			terminal.resize(width!, height!);
+	},
+}));
+
+// bun bench/tui-render.bench.ts --stress: fixed-capacity terminal plus cache
+// churn, with post-GC measurements rather than a flaky heap-size test threshold.
+function stressMemory(): void {
+	const terminal = new VTermTerminal({ cols: 80, rows: 24, scrollback: 500 });
+	try {
+		for (let epoch = 0; epoch < 6; epoch++) {
+			const start = performance.now();
+			for (let n = 0; n < 10_000; n++) {
+				const id = epoch * 10_000 + n;
+				const text = `\x1b[32mrow-${id} 界 é 👩‍💻 ${"text ".repeat(40)}\x1b[0m`;
+				terminal.write(`row-${id} 界\r\n`);
+				wrapTextWithAnsi(text, 2 + (id % 239));
+				truncateToWidth(text, 2 + (id % 239));
+				visibleWidth(`界-${id}`);
+				if (n % 1_000 === 999) {
+					for (const [width, height] of [
+						[12, 1],
+						[240, 100],
+						[80, 24],
+					])
+						terminal.resize(width!, height!);
+					if (terminal.buffer.normal.length > 524) throw new Error("scrollback exceeded retention limit");
+				}
+			}
+			Bun.gc(true);
+			console.log(
+				JSON.stringify({
+					epoch,
+					rows: terminal.buffer.normal.length,
+					heapMiB: process.memoryUsage().heapUsed / 1_048_576,
+					rssMiB: process.memoryUsage().rss / 1_048_576,
+					milliseconds: performance.now() - start,
+				}),
+			);
+		}
+	} finally {
+		terminal.dispose();
+	}
+}
+
+if (Bun.argv.includes("--stress")) {
+	stressMemory();
+} else {
+	const artifact = await runSuite(
+		"tui-render",
+		[...tuiCases, ...containerCases, ...scrollCases, ...geometryCases, ...reflowCases],
+		{ label: labelFromArgv() },
+	);
+	console.log(formatArtifact(artifact));
+}

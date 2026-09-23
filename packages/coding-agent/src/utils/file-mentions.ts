@@ -6,6 +6,7 @@ import { formatAge, formatBytes, isProbablyBinary, readImageMetadata, truncateHe
 import type { FileMentionMessage } from "../session/messages";
 import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../session/streaming-output";
 import { resolveReadPath } from "../tools/path-utils";
+import { readDecodedImageDimensions } from "./image-loading";
 import { formatDimensionNote, resizeImage } from "./image-resize";
 
 const FILE_MENTION_REGEX = /@(?:"([^"]+)"|'([^']+)'|([^\s@]+))/g;
@@ -253,6 +254,17 @@ export async function generateFileMentionMessages(
 				}
 
 				const base64Content = buffer.toBase64();
+				// An undecodable image is reported instead of being attached: the provider cannot use it
+				// and the user would otherwise see an empty preview.
+				if (!(await readDecodedImageDimensions(buffer))) {
+					files.push({
+						path: resolvedPath,
+						content: "(skipped auto-read: image is corrupt or truncated)",
+						byteSize: stat.size,
+						skippedReason: "undecodableImage",
+					});
+					continue;
+				}
 				let image: ImageContent = { type: "image", mimeType, data: base64Content };
 				let dimensionNote: string | undefined;
 

@@ -590,7 +590,7 @@ export interface DeveloperMessage {
 	timestamp: number;
 }
 
-export type AssistantRetryRecoveryKind = "credential" | "model" | "wait" | "plain";
+export type AssistantRetryRecoveryKind = "credential" | "model" | "wait" | "loop" | "plain";
 
 export type AssistantRetryRecovery =
 	| {

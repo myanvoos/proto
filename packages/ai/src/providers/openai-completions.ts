@@ -550,6 +550,11 @@ const streamOpenAICompletionsOnce = (
 		// Track the protocol terminator independently of the optional observer:
 		// some compatible hosts omit finish_reason and rely on [DONE] alone.
 		let sawDoneSentinel = false;
+		// A 200 response whose body is not an SSE stream yields no chunks at all; that
+		// is a provider/base-url fault, not an empty answer, so it must not look like a
+		// successful turn.
+		let sawStreamChunk = false;
+		let streamResponseDescription: string | undefined;
 		const rawSseObserver = (event: RawSseEvent) => {
 			if (event.data === "[DONE]") sawDoneSentinel = true;
 			if (onSseEvent) {
@@ -657,6 +662,8 @@ const streamOpenAICompletionsOnce = (
 
 						onSseEvent: rawSseObserver,
 					});
+					const responseContentType = response.headers.get("content-type");
+					streamResponseDescription = `HTTP ${response.status}${responseContentType ? `, content-type ${responseContentType}` : ", no content-type"}`;
 					await notifyProviderResponse(options, response, model, requestId);
 					return events;
 				} finally {
@@ -966,6 +973,7 @@ const streamOpenAICompletionsOnce = (
 			});
 			for await (const chunk of terminalAwareStream) {
 				if (!chunk || typeof chunk !== "object") continue;
+				sawStreamChunk = true;
 
 				output.responseId ||= chunk.id;
 
@@ -1178,7 +1186,15 @@ const streamOpenAICompletionsOnce = (
 
 			// [DONE] is a clean protocol termination even when a compatible host
 			// omits finish_reason; only a bare transport EOF is incomplete.
-			if (streamFinishedAt === undefined && !sawDoneSentinel && output.content.length > 0) {
+			if (streamFinishedAt === undefined && !sawDoneSentinel) {
+				if (!sawStreamChunk) {
+					// Nothing parsable ever arrived: retrying cannot help, so fail loudly
+					// with what the endpoint actually returned.
+					throw new AIError.ProviderResponseError(
+						`OpenAI completions response was not a stream (${streamResponseDescription ?? "no response details"}): no stream events were received from ${completionsUrl}`,
+						{ provider: model.provider, kind: "envelope" },
+					);
+				}
 				throw new AIError.ProviderResponseError(
 					"OpenAI completions stream closed before a finish_reason was received",
 					{ provider: model.provider, kind: "incomplete-stream" },

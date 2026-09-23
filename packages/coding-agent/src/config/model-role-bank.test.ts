@@ -27,7 +27,7 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 		});
 		expect(result.patterns).toEqual(["prov/alt-1"]);
 		expect(result.role).toBe("worker");
-		expect(result.bankError).toBeUndefined();
+		expect(result.requestError).toBeUndefined();
 	});
 
 	test("rejects an out-of-bank model, naming the role and its bank entries", () => {
@@ -36,8 +36,8 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			agentModel: "@worker",
 			settings: bankSettings(),
 		});
-		expect(result.bankError).toContain("worker");
-		expect(result.bankError).toContain("prov/alt-1, prov/alt-2");
+		expect(result.requestError).toContain("worker");
+		expect(result.requestError).toContain("prov/alt-1, prov/alt-2");
 	});
 
 	test("accepts any model when the role has no bank", () => {
@@ -47,7 +47,7 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			settings: bankSettings({ modelRoleBank: {} }),
 		});
 		expect(result.patterns).toEqual(["prov/whatever"]);
-		expect(result.bankError).toBeUndefined();
+		expect(result.requestError).toBeUndefined();
 	});
 
 	test("always allows the role alias even when the primary is not a bank entry", () => {
@@ -57,7 +57,7 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			settings: bankSettings(),
 		});
 		expect(result.patterns).toEqual(["prov/primary"]);
-		expect(result.bankError).toBeUndefined();
+		expect(result.requestError).toBeUndefined();
 	});
 
 	test("an explicit role alias in the request selects that role's bank", () => {
@@ -70,7 +70,7 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			settings,
 		});
 		expect(result.role).toBe("smol");
-		expect(result.bankError).toBeUndefined();
+		expect(result.requestError).toBeUndefined();
 	});
 
 	test("thinking suffixes do not affect bank membership", () => {
@@ -80,19 +80,19 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			agentModel: "@worker",
 			settings,
 		});
-		expect(suffixed.bankError).toBeUndefined();
+		expect(suffixed.requestError).toBeUndefined();
 		const entrySuffixed = resolveAgentSpawnModelSelection({
 			requestModel: "prov/alt-2",
 			agentModel: "@worker",
 			settings: bankSettings({ modelRoleBank: { worker: ["prov/alt-2:high"] } }),
 		});
-		expect(entrySuffixed.bankError).toBeUndefined();
+		expect(entrySuffixed.requestError).toBeUndefined();
 		const stillRejected = resolveAgentSpawnModelSelection({
 			requestModel: "prov/other:high",
 			agentModel: "@worker",
 			settings,
 		});
-		expect(stillRejected.bankError).toContain("prov/other");
+		expect(stillRejected.requestError).toContain("prov/other");
 	});
 
 	test("unrestricted spawns without a request model never hit the bank", () => {
@@ -101,7 +101,7 @@ describe("resolveAgentSpawnModelSelection role bank", () => {
 			settings: bankSettings(),
 		});
 		expect(result.patterns).toEqual(["prov/primary"]);
-		expect(result.bankError).toBeUndefined();
+		expect(result.requestError).toBeUndefined();
 	});
 });
 

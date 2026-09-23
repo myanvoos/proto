@@ -142,7 +142,16 @@ export interface ToolSession {
 
 	getSessionFile: () => string | null;
 
-	sessionManager?: Pick<SessionManager, "appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries">;
+	sessionManager?: Pick<
+		SessionManager,
+		| "appendCustomEntry"
+		| "ensureOnDisk"
+		| "flush"
+		| "getBranch"
+		| "getEntries"
+		| "getSubagentUsage"
+		| "recordSubagentUsage"
+	>;
 
 	getEvalKernelOwnerId?: () => string | null;
 

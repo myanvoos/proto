@@ -399,13 +399,13 @@ function bodyLines(
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `IRC ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
+			return `Fleet ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
+			return `Fleet ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
 		case "inbox":
-			return "IRC inbox";
+			return "Fleet inbox";
 		case "list":
-			return "IRC peers";
+			return "Fleet peers";
 		default:
 			return "Fleet";
 	}
@@ -428,10 +428,10 @@ function renderErrorResult(
 	args: FleetRenderArgs | undefined,
 	theme: Theme,
 ): string[] {
-	const text = textContent(result) || "IRC call failed.";
+	const text = textContent(result) || "Fleet call failed.";
 	return [
 		renderStatusLine({ icon: "error", title: callTitle(args, theme), meta: callMeta(args) }, theme),
-		formatErrorDetail(text, theme),
+		...formatErrorDetail(text, theme).split("\n"),
 	];
 }
 
@@ -450,10 +450,10 @@ export function createIrcMessageCard(
 	const from = sanitizeText(card.from?.trim() || "?");
 	const title =
 		card.kind === "incoming"
-			? `IRC ${uiTheme.nav.back} ${from}`
+			? `Fleet ${uiTheme.nav.back} ${from}`
 			: card.kind === "autoreply"
-				? `IRC ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`
-				: `IRC ${from} ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`;
+				? `Fleet ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`
+				: `Fleet ${from} ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
 	if (card.kind === "autoreply") meta.push("auto");
@@ -482,13 +482,15 @@ function renderSendResult(
 ): string[] {
 	const receipts = details.receipts ?? [];
 	const to = sanitizeText(details.id ?? args?.to?.trim() ?? "?");
-	const title = `IRC ${theme.nav.selected} ${to}`;
+	const title = `Fleet ${theme.nav.selected} ${to}`;
 
 	if (receipts.length === 0) {
 		const text = textContent(result) || (result.isError ? "Send failed." : "Nothing to deliver.");
 		return [
 			renderStatusLine({ icon: result.isError ? "error" : "warning", title }, theme),
-			result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
+			...(result.isError
+				? formatErrorDetail(text, theme).split("\n")
+				: [`  ${theme.fg("muted", replaceTabs(text))}`]),
 		];
 	}
 
@@ -574,7 +576,11 @@ function renderWaitResult(
 		const text = textContent(result) || "No message arrived.";
 		return [
 			renderStatusLine(
-				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.from?.trim() || "anyone"}`, meta: ["timed out"] },
+				{
+					icon: "warning",
+					title: `Fleet ${theme.nav.back} ${args?.from?.trim() || "anyone"}`,
+					meta: ["timed out"],
+				},
 				theme,
 			),
 			`  ${theme.fg("muted", replaceTabs(text))}`,
@@ -583,7 +589,7 @@ function renderWaitResult(
 	const meta = [messageAge(waited.ts)];
 	if (waited.replyTo) meta.push("reply");
 	return [
-		renderStatusLine({ iconOverride: ircGlyph(theme), title: `IRC ${theme.nav.back} ${waited.from}`, meta }, theme),
+		renderStatusLine({ iconOverride: ircGlyph(theme), title: `Fleet ${theme.nav.back} ${waited.from}`, meta }, theme),
 		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
 	];
 }
@@ -596,11 +602,11 @@ function renderInboxResult(
 ): string[] {
 	const messages = details.inbox ?? [];
 	if (messages.length === 0) {
-		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta: ["empty"] }, theme)];
+		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: "Fleet inbox", meta: ["empty"] }, theme)];
 	}
 	const meta = [`${messages.length} ${messages.length === 1 ? "message" : "messages"}`];
 	if (args?.peek) meta.push("peek");
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta }, theme);
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "Fleet inbox", meta }, theme);
 	const items = renderTreeList<IrcMessage>(
 		{
 			items: messages,
@@ -626,14 +632,14 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 				(PEER_STATE_ORDER[`${b.lifecycle}/${b.turnState ?? "idle"}`] ?? 9) || b.lastActivity - a.lastActivity,
 	);
 	if (peers.length === 0) {
-		return [renderStatusLine({ icon: "info", title: "IRC peers", meta: ["no other agents"] }, theme)];
+		return [renderStatusLine({ icon: "info", title: "Fleet peers", meta: ["no other agents"] }, theme)];
 	}
 	const counts = new Map<string, number>();
 	for (const peer of peers) counts.set(peer.lifecycle, (counts.get(peer.lifecycle) ?? 0) + 1);
 	const meta = [...counts].map(([status, count]) => `${count} ${status}`);
 	const unreadTotal = peers.reduce((sum, peer) => sum + peer.unread, 0);
 	if (unreadTotal > 0) meta.push(theme.fg("warning", `${unreadTotal} unread`));
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC peers", meta }, theme);
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "Fleet peers", meta }, theme);
 	const items = renderTreeList(
 		{
 			items: peers,
@@ -678,7 +684,9 @@ function buildResultLines(
 			const text = textContent(result) || (result.isError ? "Fleet call failed." : "Done.");
 			return [
 				renderStatusLine({ icon: result.isError ? "error" : "success", title: callTitle(args, theme) }, theme),
-				result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
+				...(result.isError
+					? formatErrorDetail(text, theme).split("\n")
+					: [`  ${theme.fg("muted", replaceTabs(text))}`]),
 			];
 		}
 	}

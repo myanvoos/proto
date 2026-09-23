@@ -59,7 +59,7 @@ Most file tools auto-resolve these to FS paths.
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped CLI flags; `--json '<json>'` passes a raw object); `xd <tool> ?` prints docs + CLI usage. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
+Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped CLI flags; `--json '<json>'` passes a raw object); `xd <tool> ?` prints docs + CLI usage. Array flags: repeat the flag → one literal entry each (commas kept); a single value splits on unescaped commas (`\,` = literal) or is taken verbatim as a JSON array. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
 {{xdevDocs}}
 {{/if}}
 

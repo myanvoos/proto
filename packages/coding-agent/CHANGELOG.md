@@ -2,9 +2,146 @@
 
 ## [Unreleased]
 
+### Added
+
+- Claude saved resets can be spent automatically via the new `claudeResets.*` settings (consent is asked once per provider, independently of `codexResets.*`), and `/usage reset` now covers Claude and Codex accounts with live eligibility and expiry
+
+### Changed
+
+- Anthropic server-side safety fallback now retries on Claude Opus 5.5 instead of Opus 4.8
+- The completion bell now means "your long turn finished while you were away": it stays silent for turns shorter than `completion.notifyMinSeconds` (default 10s) and for turns that end while the terminal has keyboard focus. Terminals that do not report focus still notify. `completion.notifyMinSeconds: 0` and `completion.notifyWhenFocused: true` restore the previous always-ring behaviour.
+- `/setup` now re-runs the whole onboarding walkthrough like `proto setup`; `/setup providers` and `/providers` still open just the sign-in and web-search step, and a single-step run no longer claims to be "step 1 of 1".
+- Large Python kernel outputs use substantially less memory.
+- Monitors stop with an actionable error when a stream line or one poll output stream exceeds 1 MiB, and distinguish output limits from total event counts.
+
 ### Fixed
 
+- Resizing the terminal while a reply streams no longer duplicates lists and code blocks in scrollback: their finished items and lines retire as they stream instead of being held on screen for the terminal to push twice
+- A pane that grows while a frame is being drawn (herdr, tmux) no longer loses the row that frame was retiring
+- Growing a multiplexer pane no longer leaves a band of blank rows in scrollback after the next shrink; the composer holds its place over the new space instead of dropping to the bottom
+- Prompts are separated from the transcript by one blank row, like every other block, instead of two; the gap under the welcome header is one row too
+- A paragraph followed by a streaming list no longer flashes as a heading while the list marker arrives
+- Thinking that contains a code block is no longer written to scrollback twice: the line the hidden code folds into is held back until the fence is complete instead of being retired first and rewritten
+- A paragraph taller than the screen no longer duplicates in scrollback when the pane shrinks mid-stream: once it overflows, it breaks at a word where it already wraps and the rows above retire as it streams
+- After a long reply retires to scrollback, the input box sits one blank row below it instead of two
+- Code blocks without a recognized language keep their code color when the reply finishes instead of switching to plain text
+- The transcript no longer collapses into one-line fragments mid-turn after a tool call is cut off while streaming (kernel preflight, loop guards, stream retries); the rest of the turn now retires to scrollback in full.
+- Launching proto no longer erases what was in your terminal: with `startup.clearScrollback` off (the default) the pre-launch screen stays reachable by scrolling up, as the setting describes.
+
+- Settings rows no longer show a wrong value: the value column keeps its ellipsis and a minimum width, so a boolean reads `false` instead of `fals`, `fa` or nothing as the dialog narrows, and a long label yields the space rather than swallowing the column.
+- The settings tab strip says how many tabs it scrolled out of view (`+8 more`) instead of silently showing two of ten, and the marker never clips the active tab or leaves a half-drawn label clickable.
+- A theme slot lists the themes that fit it first and labels the ones that do not (`light theme` in the Dark Theme picker), classified by the theme's own luminance so unprefixed names like `limestone` and `onyx` sort correctly too.
+- The nested settings picker no longer shows two differently worded hint rows; the dialog footer is the single source.
+- Changing the theme repaints the transcript already on screen instead of leaving it two-toned: the settings dialog commits `theme.dark`/`theme.light`, which the change handler never matched, so nothing asked for the repaint.
+- A worker woken by a `fleet` message now runs a turn the orchestrator can see: its result is delivered by `orchestrate_wait` exactly once, `orchestrate_list` counts the turn, and the next `orchestrate_send` continues from the real turn number. Previously the woken turn ran, yielded, and its result was discarded, so the next send silently skipped a turn's worth of work.
+- `orchestrate_wait` without ids also delivers a turn that settled before the parent got back to waiting, instead of reporting "No turns in flight to wait for" and dropping the result.
+- Steering a busy worker is bounded: a parent may hold at most 32 unread steering messages on a worker (the same ceiling as its follow-up queue), and further sends are refused with a receipt instead of piling unbounded context onto the worker.
+- Print mode no longer ends a run silently while delegated work is still running: worker turns still in flight when the session is disposed are named on stderr instead of being terminated without a word.
+- A worker revived after parking reports the model it was spawned with. Sessions that never chose a thinking level were restored as an explicit `off`, so a parked worker came back as `provider/model:off` and looked like a different configuration than the one that spawned it.
+- The recursion-depth refusal explains the cap it enforces (`orchestrator.maxRecursionDepth=2 allows spawning only from task depth 2 or shallower, so workers run at most 3 levels below the main agent`) instead of claiming a "maximum depth" that contradicted the worker depths the same setting permits.
+- A turn discarded by the repetition guard now says so: the transcript reads `repetition guard: repeated an exact 46-character cycle 25× back-to-back; discarded turn; retried` instead of the unexplained `error; retried`.
+- Cancelling setup with Ctrl+C no longer records setup as complete: nothing is saved, the wizard returns on the next launch, and a notice explains how to finish it. The footer now says "ctrl+c cancel setup" because that is what the key does.
+- Onboarding's provider step is one consistent surface: sign-in and web search are both bare lists instead of one boxed and one borderless, truncated descriptions end in an ellipsis rather than a severed word, the search hint reads as a hint instead of a selectable row, the two Z.AI entries name their sign-in method, and the body text agrees with the Esc key hint.
+- A truncated kernel file diff keeps both sides: an over-budget diff now trims its middle (disclosed as "… N diff lines omitted") instead of its tail, so a whole-file rewrite is no longer rendered as a pure deletion. The cap also bounds rows, not only characters, so one file event can no longer flood the transcript with thousands of short diff rows.
+- Diff rows keep their own line numbers; only the added row of a one-line replacement borrows the removed row's number, so a single diff no longer mixes numbered and blank gutters.
+- Session attachments render Unicode and untrusted output safely at the current terminal width, preserve edited input across fragmented keys and terminal replies, and show usable reattach commands for long paths.
+- Automatic context maintenance and manual compaction append their summary without replaying messages already committed to terminal scrollback.
+- A worker turn that fails at the provider keeps its failure text: `agent://` returns the recorded failure instead of an empty artifact, and `history://` shows the failed response.
+- Resuming a session another live proto process already owns no longer silently persists nothing: startup refuses with the owning pid and a `--fork` hint, `--continue` starts a new session instead of the owned one, and session-file lock contention is reported rather than swallowed.
+- Two proto processes starting on the same session at the same moment can no longer both proceed and lose turns: ownership is claimed before the session file is read.
+- `agents unpack` checks it can write everything before writing anything and reports partial results; an empty `--dir` is refused instead of writing to your profile.
+- `plugin uninstall` refuses unknown names, and `plugin install` validates the package the way `plugin doctor` does instead of linking something that only fails at session start.
+- Stopping a worker from the agents view actually cancels its turn instead of letting it keep calling the provider.
+- Headless runs no longer report success when they failed: a `--max-time` cutoff exits 1 with a stderr notice (in both `text` and `json` modes) instead of exiting 0 with no output, a failed turn keeps any partial answer on stdout, and the run is no longer auto-retried past its own deadline.
+- Concurrent runs can no longer lose turns: session ownership is now claimed with a process-owned lock before the session file is read, so simultaneous `proto -p` resumes of one session no longer all report success while only one turn survives — the losers are refused with the owner's pid and a `--fork` hint, and `--continue`/`autoResume` start their own session instead.
+- A repeated failing tool call can no longer become a provider storm: the tool-call loop steer now fires on every repeat past the threshold instead of only once, and a new `model.toolCallLoopGuard.hardLimit` (default 20) stops the run outright — a measured 2,300-request runaway now ends after 20 requests.
+- A checkpoint the agent never closes with `rewind` can no longer become a provider storm: the pre-yield reminder is capped at 3 per user turn (a measured 831-request runaway now costs 5 requests), and the user gets a warning that the checkpoint was left open instead of silence.
+- An unwritable session directory no longer costs the turn: the run continues unpersisted and says so, naming the directory, the permission fix, `PI_CODING_AGENT_DIR` and `--no-session`, instead of exiting on a bare `EACCES: permission denied, mkdir`. An explicitly requested session path still fails fast, with the same guidance.
+- Deleting the temporary spill directory (`/tmp/proto-session-history-*`) under a running session no longer bricks it: the affected entry degrades to the truncated copy the session file already holds, the directory is re-created for the next oversized entry, and one warning names the entry, the session file and the remedy — instead of every later spawn, compaction or recovery failing with `Raw session entry file is missing for <id>` until a restart. An unidentifiable record is no longer reported as `… invalid for undefined`.
+- Headless text mode writes warning and error notices to stderr instead of dropping them, so conditions the TUI surfaces as a notice are visible in `-p` runs too.
+- An unreachable provider no longer looks hung: connection failures retry twice (`retry.unreachableMaxRetries`) instead of ten times, and print mode reports each retry on stderr, turning a 3-minute silent spin into a ~3s failure with visible progress.
+- `orchestrate_spawn` validates `model` like its sibling arguments: a model id that matches nothing available, or an unknown role alias, is refused at spawn time naming what is available, instead of reporting a spawned worker whose first turn fails one round later with `No model selected` and a stack trace pasted into the caller's context.
+- A worker running in `schemaMode: "strict"` is no longer promised that its schema will be dropped: the retry hints say the turn fails with `schema_violation`, which is what strict mode does. Permissive mode keeps its dropped-constraint wording.
+- Messaging an unknown agent points at the fleet roster (`op:"list"`) instead of an `irc list` command that does not exist.
+- The mounted `xd://checkpoint` device no longer advertises a git-based checkpoint: it records conversation context only and never touches git or the working tree.
+- The Python kernel's stale-write guard no longer has destructive bypasses: `os.replace`/`os.rename`, `os.truncate` and `os.remove` are checked like a write-mode open, so the recommended atomic-write idiom can no longer silently drop an edit made since the kernel read the file (the JS kernel already guarded all of them).
+- A shell command between two kernel cells can no longer disarm that guard: host-side observations only extend it to paths the kernel has never read and never refresh an existing record, so a `cat` or a redirect in between cannot launder an edit the kernel never saw into a silent overwrite.
+- JavaScript and TypeScript kernel cells now print the same compact `<kernel> note:` line per net-mutated path that Python prints; previously their mutations were visible only as status events, so the model never saw them.
+- Setup and authentication keep the active choice or code input visible in narrow and short terminals.
+- Copy and branch selectors retain the selected target after resizing; deep copy-tree gutters and metadata no longer hide the target label.
+- Session trees keep selected entries and label editing visible on short terminals.
+- `/move` keeps the selected destination and path cursor visible, identifies directory-creation targets, and shows concise keyboard hints.
+- Folded paste previews collapse to complete captions on short terminals without hiding the editor or status footer.
+- Command history keeps the query and selected entry visible on short terminals; dialogs render complete frames or drop them entirely instead of half-open boxes.
+- Extension lists keep each extension name visible in narrow panes.
+- Settings tabs stay labeled at every width and under every bundled theme instead of collapsing to blank gaps or bare counts.
+- Agent fleet guidance wraps instead of truncating, so the suggested command stays readable in narrow panels.
+- Opening the agents view in an in-memory session shows an explanation and what to do instead of repeating an error on every keypress.
+- MCP prompts appear in slash completion as soon as they connect, labeled `(mcp)`.
+- Python composer mode shows a `>>>` gutter like bash shows `$`, and `$code` arms the kernel the same way `!cmd` runs bash.
+- `/hotkeys` documents what the double-tap arrow gestures actually open.
+- Hand-edited settings are understood whichever way they are nested, values are coerced using the same vocabulary `config set` accepts, and anything rejected is reported instead of silently ignored.
+- A configuration file that had to be quarantined keeps warning until you merge the backup, and an unreadable legacy settings file is reported rather than swallowed.
+- MCP configuration and connection failures are reported in headless runs and the TUI instead of only reaching the log file.
+- Negative numbers work as option values, so `config set <key> -42` stores -42 instead of reporting an unknown option.
+- `models` warnings go to stderr in both text and JSON modes, and `usage --json` reports failure instead of exiting 0 with an empty report.
+- `PI_CODING_AGENT_DIR` is validated up front, explaining a file, relative, or unwritable value instead of failing later or silently storing state beside your shell.
+- RPC commands with missing or mistyped fields are answered by name instead of leaking an internal type error.
+- ACP reports a failed turn as a JSON-RPC error instead of a successful assistant message, survives a malformed line instead of closing the connection, and validates its requests with proper error codes.
+- Selecting the `onyx` or `light-prism` theme no longer fails to load.
+- Every theme now meets minimum contrast floors, so muted text, comments, and borders stay readable; the bundled defaults ship the corrected colors.
+- The extension dashboard tab strip is bounded and scrolls instead of consuming the panel or disappearing on short terminals.
+- Resumed sessions show their prompts on short terminals instead of blank spacer rows, and restoring the terminal from very few rows repaints the transcript.
+- Queued steering messages no longer hide the streaming indicator or the Esc interrupt hint on short terminals.
+- Tool confirmations always show what is being approved and every answer; on terminals too short to show them, Enter no longer approves blindly.
+- Session delete confirmation and the advisor instructions editor render inside one frame instead of a dialog nested in a dialog, keeping the session name visible on short terminals.
+- Finalized transcript blocks can no longer disappear when composer chrome grows or the terminal shrinks; every block is either kept live or written to scrollback exactly once.
+- Background job results announce failure explicitly, and `fleet` job output is capped like other tool results with an `artifact://` pointer instead of flooding the transcript.
+- Kernel `tool.fleet(...)` calls work instead of failing on the injected intent field.
+- `read` fetches URLs with an explicit port instead of treating the port as a line selector, reports HTTP and connection failures as errors with the response body, and accepts line ranges directly on single-stream compressed files.
+- Tool result images appear under the read that produced them instead of above the tool card.
+- The Python kernel behaves like a real stdout: `sys.stdout.buffer` works, `fileno()` and `encoding` are usable, and subprocess output appears in the order it was written.
+- Kernel output truncation notices stay inside the tool card.
+- Output truncation notices report the same line count as the saved artifact.
+- Resuming a session another running Proto already has open now refuses with the owning process id and a `--fork` hint instead of silently discarding the turn.
+- `proto attach` guidance names the real positional session argument, `--stop` exits instead of hanging, scripted input runs its commands before exit, and a non-interactive attach no longer leaves an orphaned session host behind.
+- Typing over a selection in the editor undoes in a single step.
+- `xd` array flags keep literal commas when repeated, and schema validation errors name the real constraint and value instead of a description and a string length.
+- Automatic and manual context maintenance no longer reprints the entire visible transcript into terminal history.
+- Command help lists available arguments, flags, and examples consistently; invalid render dimensions produce usage errors instead of stack traces.
+- Starting the interactive TUI without a terminal explains what is missing instead of exiting silently or hanging, and a mistyped subcommand suggests the closest command instead of becoming a prompt.
+- Failures print their message and cause instead of dumping source and stack frames; set `PI_DEBUG_ERRORS=1` for the stack.
+- `--mode` and `--thinking` reject unknown values, launcher usage errors exit 1 like every subcommand, and piping output into a closing command exits quietly.
+- Model completion offers your configured models, `--tools` accepts every built-in tool and lists the real set, and `--smol`/`--slow`/`--models` warn when a value matches nothing.
+- `render` honors `NO_COLOR` and keeps shell-integration escapes out of pipes; extension load errors are no longer truncated mid-path.
+- Extra arguments are rejected instead of silently dropped, and the launcher help documents every flag it accepts.
+- A leading `--config` overlay applies to subcommands instead of being dropped before they run.
+- `--model` completion offers models from `models.yml`, not only the bundled catalog, and `--tools` accepts every built-in tool (`bash`, `checkpoint`, `manage_skill`, …) instead of only the ones that survived its own filter.
+- `--smol`, `--slow` and `--models` report values that match no model instead of falling back in silence, and `--yolo`/`--auto-approve` are gone from the flag table that never implemented them while `--fork`, `--session`, `--trusted-extension`, `--plugin-dir`, `--prompt-cache-key` and `--provider-session-id` are documented.
+- Extension load failures print the whole path and reason without internal module plumbing, and `proto models -e <path>` exits non-zero when that extension fails.
+- `proto render` honours `NO_COLOR` and keeps shell-integration escapes out of redirected output.
+- `proto read skill://<name>` and `proto read rule://<name>` resolve the same skills and rules a session sees instead of always reporting `Available: none`.
+- A directory that cannot be listed is reported as unreadable instead of as `(empty directory)`, and a workspace scan that fails says so in the system prompt instead of looking like an empty project.
+- Reading a named pipe or a socket fails immediately with an explanation instead of blocking the read (and the turn) forever.
+- Extra arguments are reported instead of dropped (`proto models find a b c`, `proto completions bash zsh`), and `--add-dir` rejects a missing path or a file like `--cwd` does.
+- `--config` overlays reach subcommands: `proto --config over.yml config get x` and `proto config get x --config over.yml` both answer for the overlay, and `config set` reports the value it stored plus a note that the overlay still masks it.
+- `proto render` includes the complete transcript instead of silently dropping messages outside the interactive history window.
+- Python and JavaScript kernels recover after output-consumer failures, and pre-cancelled JavaScript resets preserve existing state.
+- Daemon attachments preserve fragmented Unicode responses, honor idle deadlines, and release pending requests and probe sockets on disconnect.
+- Background jobs retain correct owner routing after immediate failures and cannot revive delivery queues or update disposed views after shutdown.
+- Compressed archive reads recognize all supported formats, and mounted reads preserve internal URI paths.
+- Browser form interactions work with short Bun stack traces.
+- Browser clicks fall back to the first actionable element instead of always timing out, and a stalled page now fails fast instead of hanging until the run limit.
+- Worker turns that fail in the provider keep their error recoverable through `agent://` and session history.
+- Completed browser runs no longer hang or lose their tab while refreshing metadata behind an open dialog; dialog choices remain explicit.
+- PDF page screenshots render through shared browsers instead of failing on local file paths or returning blank pages.
+- Nested worker outputs remain recoverable through `agent://` after their live registration disappears.
+- Status-line labels cannot inject control sequences or extra rows, and CLI/browser-relay branding consistently uses Proto.
+- Fleet cancellation summaries distinguish cancelled jobs from missing or already-finished jobs.
+- Bash output no longer includes redundant timing footers, and worker-send instructions use the correct `to` field.
 - Long streaming conversations retain committed thinking and answer chunks while prompt growth, tool updates, overlays, and resizes stay confined to the live viewport.
+- Corrupt or truncated images are reported instead of being silently attached: pasted image paths, `@` mentions, `@file` arguments, `read`, and `inspect_media` say the image cannot be decoded rather than sending undecodable data to the model.
+- Worker spend is no longer missing from what a run reports: every settled subagent run is attributed to the session that owns it, so the status line (which now shows `cost` by default), `/usage`, and the session totals report the whole tree instead of the parent alone, and the rollup survives resuming the session. Per-worker tokens and cost now appear on the worker turn result, in `orchestrate_list`, and on every row of the agents view.
 
 ## [18.4.0] - 2026-09-22
 

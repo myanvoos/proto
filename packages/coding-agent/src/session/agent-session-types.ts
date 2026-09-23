@@ -35,6 +35,7 @@ import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
+import type { SubagentUsageTotals } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 export interface AgentSessionDisposeOptions {
@@ -140,7 +141,7 @@ export interface AgentSessionConfig {
 	initialAdvisorCosts?: ReadonlyMap<string, number>;
 
 	preferWebsockets?: boolean;
-
+	/** Shared saved-reset coordinator; defaults process-wide so concurrent Codex/Claude sessions cannot double-spend. Inject a fresh one in tests. */
 	codexResetCoordinator?: CodexAutoRedeemCoordinator;
 
 	onPayload?: SimpleStreamOptions["onPayload"];
@@ -295,6 +296,9 @@ export interface SessionStats {
 	};
 	premiumRequests: number;
 	cost: number;
+
+	/** Spend of the subagents this session owns; not included in `tokens`/`cost`. */
+	subagents: SubagentUsageTotals;
 	contextUsage?: ContextUsage;
 }
 

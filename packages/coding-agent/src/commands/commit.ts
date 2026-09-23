@@ -1,5 +1,5 @@
 import { postmortem } from "@oh-my-pi/pi-utils";
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { commitHelp as commandHelp } from "../cli/command-help";
 import { CommitAbortedError, runCommitCommand } from "../commit";
 import type { CommitCommandArgs } from "../commit/types";
@@ -7,14 +7,7 @@ import { initTheme } from "../modes/theme/theme";
 
 export default class Commit extends Command {
 	static description = commandHelp.description;
-	static flags = {
-		push: Flags.boolean({ description: "Push after committing" }),
-		"dry-run": Flags.boolean({ description: "Preview without committing" }),
-		"no-changelog": Flags.boolean({ description: "Skip changelog updates" }),
-		legacy: Flags.boolean({ description: "Use legacy deterministic pipeline" }),
-		context: Flags.string({ char: "c", description: "Additional context for the model" }),
-		model: Flags.string({ char: "m", description: "Override model selection" }),
-	};
+	static flags = commandHelp.flags;
 
 	async run(): Promise<void> {
 		const { flags } = await this.parse(Commit);

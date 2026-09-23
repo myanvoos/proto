@@ -1,4 +1,8 @@
 import { afterEach, expect, test, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { formatBytes } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../../session/agent-session";
 import * as commandUsage from "../../utils/command-usage";
 import type { InteractiveModeContext } from "../types";
@@ -249,4 +253,198 @@ test("help and its question-mark alias open help without sending a model prompt"
 	expect(harness.helpPanels).toBe(2);
 	expect(harness.statuses).toEqual([]);
 	expect(harness.submitted).toEqual([]);
+});
+
+function composerModeContext(): {
+	context: InteractiveModeContext;
+	editor: { onChange?: (text: string) => void };
+	modes: { bash: boolean; python: boolean };
+} {
+	const editor = {
+		onChange: undefined as ((text: string) => void) | undefined,
+		getText: () => "",
+		setText: () => {},
+		setActionKeys: () => {},
+		clearCustomKeyHandlers: () => {},
+		setCustomKeyHandler: () => {},
+		composerChips: () => [],
+		pasteText: () => {},
+		pendingImages: [],
+		pendingImageLinks: [],
+	};
+	const modes = { bash: false, python: false };
+	const context = {
+		editor,
+		session: { isStreaming: false, isBashRunning: false, isEvalRunning: false, extensionRunner: undefined },
+		viewSession: { isCompacting: false, isRetrying: false },
+		focusedAgentId: undefined,
+		mcpTestEscapeHandlers: new Set<() => void>(),
+		hasActiveSideQuestion: () => false,
+		loadingAnimation: undefined,
+		keybindings: { getKeys: () => [], matches: () => false },
+		ui: {
+			addInputListener: () => {},
+			addStartListener: () => {},
+			hasOverlay: () => false,
+			getFocused: () => editor,
+			requestRender: () => {},
+			terminal: { write: () => {} },
+		},
+		updateEditorBorderColor: () => {},
+		updatePlaceholder: () => {},
+		showStatus: () => {},
+		showError: () => {},
+		get isBashMode() {
+			return modes.bash;
+		},
+		set isBashMode(value: boolean) {
+			modes.bash = value;
+		},
+		get isPythonMode() {
+			return modes.python;
+		},
+		set isPythonMode(value: boolean) {
+			modes.python = value;
+		},
+	} as unknown as InteractiveModeContext;
+	return { context, editor, modes };
+}
+
+function composerModeFor(draft: string): { bash: boolean; python: boolean } {
+	const { context, editor, modes } = composerModeContext();
+	const controller = new InputController(context);
+	controller.setupKeyHandlers();
+	editor.onChange?.(draft);
+	return modes;
+}
+
+test("$code without a space enters python mode, matching !cmd", () => {
+	expect(composerModeFor("!ls")).toEqual({ bash: true, python: false });
+	expect(composerModeFor("$print(1)")).toEqual({ bash: false, python: true });
+	expect(composerModeFor("$$print(1)")).toEqual({ bash: false, python: true });
+	expect(composerModeFor("$ print(1)")).toEqual({ bash: false, python: true });
+});
+
+test("$ stays out of python mode for shell interpolation and pasted shell prompts", () => {
+	const dollar = "$";
+	expect(composerModeFor(`${dollar}{HOME}/bin`)).toEqual({ bash: false, python: false });
+	expect(composerModeFor(`${dollar}${dollar}{HOME}`)).toEqual({ bash: false, python: false });
+	expect(composerModeFor("$ git status")).toEqual({ bash: false, python: false });
+	expect(composerModeFor("$git status")).toEqual({ bash: false, python: false });
+	expect(composerModeFor("plain text")).toEqual({ bash: false, python: false });
+});
+
+function imagePasteHarness() {
+	const statuses: string[] = [];
+	const pastedText: string[] = [];
+	const editor = {
+		pendingImages: [] as unknown[],
+		pendingImageLinks: [] as unknown[],
+		imageLinks: [] as unknown[],
+		pasteText: (text: string) => pastedText.push(text),
+		insertAtom: () => {},
+	};
+	const context = {
+		editor,
+		sessionManager: { getCwd: () => process.cwd(), putBlob: async () => undefined },
+		ui: { requestRender: () => {} },
+		showStatus: (message: string) => statuses.push(message),
+		showWarning: () => {},
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	const clipboard = {
+		readImage: async () => null,
+		readText: async () => "",
+		readMacFileUrls: async () => [],
+	} as unknown as ConstructorParameters<typeof InputController>[1];
+	return { controller: new InputController(context, clipboard), editor, statuses, pastedText };
+}
+
+test("pasting a corrupt image path reports the failure instead of attaching undecodable bytes", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-image-paste-"));
+	try {
+		const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		const body = Buffer.alloc(5000);
+		for (let i = 0; i < body.length; i++) body[i] = (i * 37 + 11) % 251;
+		const corrupt = path.join(directory, "corrupt.png");
+		await Bun.write(corrupt, Buffer.concat([signature, body]));
+
+		const harness = imagePasteHarness();
+		await harness.controller.handleImagePathPaste(corrupt);
+
+		expect(harness.editor.pendingImages).toHaveLength(0);
+		expect(harness.statuses.join("\n")).toContain("corrupt or truncated");
+		expect(harness.pastedText).toEqual([corrupt]);
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});
+
+function largePasteHarness(choose: (title: string, options: Array<{ label: string }>) => Promise<string | undefined>) {
+	const statuses: string[] = [];
+	const attachments: Array<{ content: string; expansion?: string }> = [];
+	const titles: string[] = [];
+	const helpTexts: Array<string | undefined> = [];
+	const editor = {
+		insertTextAttachment: (content: string, expansion?: string) => attachments.push({ content, expansion }),
+		insertText: () => {},
+	};
+	const context = {
+		editor,
+		settings: { get: () => 5 },
+		showHookSelector: (title: string, options: Array<{ label: string }>, dialogOptions?: { helpText?: string }) => {
+			titles.push(title);
+			helpTexts.push(dialogOptions?.helpText);
+			return choose(title, options);
+		},
+		ui: { requestRender: () => {} },
+		showStatus: (message: string) => statuses.push(message),
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	return { controller: new InputController(context), statuses, attachments, titles, helpTexts };
+}
+
+test("cancelling the large-paste menu discards the paste instead of committing it", async () => {
+	const { controller, statuses, attachments, titles, helpTexts } = largePasteHarness(() => Promise.resolve(undefined));
+	const text = Array.from({ length: 221 }, () => "The quick brown fox jumps over the lazy dog").join("\n");
+
+	await controller.presentLargePasteMenu(text, 221);
+
+	expect(attachments).toEqual([]);
+	expect(statuses).toEqual(["Discarded 221 pasted lines"]);
+	expect(helpTexts).toEqual(["Esc to discard the paste"]);
+	// The title carries the payload size, which a line count cannot convey.
+	expect(titles[0]).toBe(`Pasted 221 lines · ${formatBytes(Buffer.byteLength(text))}`);
+	expect(titles[0]).toContain("KB");
+});
+
+test("a large-paste menu that cannot open keeps the pasted text", async () => {
+	const { controller, attachments, statuses } = largePasteHarness(() => Promise.reject(new Error("no dialog")));
+	const text = "line\n".repeat(30);
+
+	await controller.presentLargePasteMenu(text, 30);
+
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
+	expect(statuses).toEqual([]);
+});
+
+test("a paste under the menu threshold attaches without a dialog", () => {
+	const { controller, attachments, titles } = largePasteHarness(() => Promise.reject(new Error("unreachable")));
+	const text = "line\nline\nline";
+
+	expect(controller.handleLargePaste(text, 3)).toBe(true);
+
+	expect(titles).toEqual([]);
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
+});
+
+test("choosing inline still attaches the paste", async () => {
+	const { controller, attachments } = largePasteHarness((_title, options) =>
+		Promise.resolve(options.find(option => option.label === "Paste inline")?.label),
+	);
+	const text = "line\n".repeat(30);
+
+	await controller.presentLargePasteMenu(text, 30);
+
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
 });

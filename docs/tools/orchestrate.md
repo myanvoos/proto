@@ -16,7 +16,8 @@
 - `orchestrate_spawn` starts a persistent worker from a first instruction (`message` — the
   worker's only initial context) and returns canonical `id` + `label`. Optional `label`
   (`[A-Za-z0-9_-]{1,48}`, never rewritten), `agent` type (bundled `worker`/`designer`/
-  `librarian` plus user/project `.proto/agents`), `model` (role alias or id, validated
+  `librarian` plus user/project `.proto/agents`), `model` (role alias or id; refused at spawn
+  time when it names an unknown role or matches no available model, and validated
   against the role's model bank), `schema`/`effort`, and `isolated` (worktree with
   `apply`/`merge` controls).
 - Results **self-deliver** on completion as a message that wakes the caller; workers keep

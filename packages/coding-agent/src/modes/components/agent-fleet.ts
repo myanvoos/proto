@@ -21,7 +21,7 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import { shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { formatCost, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
@@ -44,7 +44,6 @@ import {
 	clampFleetLine,
 	contextGauge,
 	formatChildIds,
-	formatCost,
 	formatMetricDuration,
 	formatMetrics,
 	formatRoleBadge,
@@ -61,6 +60,7 @@ import {
 	bottomBorder,
 	divider,
 	dividerSplit,
+	getDialogViewport,
 	row,
 	splitBodyWidth,
 	splitRow,
@@ -177,6 +177,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#isBuiltInTool: ((name: string) => boolean) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
 	#sessionFile: string | null | undefined;
+	#inMemorySession = false;
 	#hideThinkingBlock: (() => boolean) | undefined;
 	#proseOnlyThinking: (() => boolean) | undefined;
 	#expandKeys: KeyId[];
@@ -207,6 +208,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
 		this.#sessionFile = deps.sessionFile;
+		this.#inMemorySession = deps.sessionFile == null;
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
 		this.#proseOnlyThinking = deps.proseOnlyThinking;
 		this.#expandKeys = deps.expandKeys ?? ["ctrl+o"];
@@ -259,12 +261,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 
 	override render(width: number): readonly string[] {
 		const termHeight = this.#ui.terminal?.rows || process.stdout.rows || 40;
-		const frame = this.#renderTable(width, termHeight).map(line => clampFleetLine(line, width));
-		if (frame.length <= termHeight) return frame;
-
-		const footerLines = Math.min(3, frame.length);
-		const bodyEnd = Math.max(0, termHeight - footerLines);
-		return [...frame.slice(0, bodyEnd), ...frame.slice(-footerLines)].slice(0, termHeight);
+		return this.#renderTable(width, termHeight).map(line => clampFleetLine(line, width));
 	}
 
 	handleInput(keyData: string): void {
@@ -431,9 +428,10 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 
 	#renderTable(width: number, termHeight: number): string[] {
 		this.#hitRows.length = 0;
-		const contentRows = Math.max(1, termHeight - 4);
+		const layout = getDialogViewport(termHeight);
+		const contentRows = layout.bodyRows;
 		const observedById = this.#observedById;
-		const split = this.#splitRosterWidth(width);
+		const split = layout.titleRows ? this.#splitRosterWidth(width) : undefined;
 		this.#lastRenderWasSplit = split !== undefined;
 		this.#lastSplitRosterWidth = split;
 		const selected = this.#rows[this.#selectedRow];
@@ -443,35 +441,39 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			const detailWidth = splitBodyWidth(width, split);
 			const roster = this.#renderRosterPanel(split, contentRows, observedById);
 			const details = this.#renderDetailPanel(selected, detailWidth, contentRows, observedById);
-			lines.push(topBorderSplit(width, this.#frameTitle(), split));
+			if (layout.titleRows) lines.push(topBorderSplit(width, this.#frameTitle(), split));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
 				lines.push(splitRow(roster.lines[i] ?? "", details[i] ?? "", width, split));
 			}
-			lines.push(dividerSplit(width, split));
-			lines.push(row(this.#footer(false, Math.max(1, width - 4)), width));
-			lines.push(bottomBorder(width));
+			if (layout.dividerRows) lines.push(dividerSplit(width, split));
+			if (layout.footerRows)
+				lines.push(
+					row(this.#footer(false, Math.max(1, layout.titleRows ? width - 4 : width)), width, layout.titleRows > 0),
+				);
+			if (layout.bottomRows) lines.push(bottomBorder(width));
 			return lines;
 		}
 
-		const innerWidth = Math.max(1, width - 4);
+		const innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
 		if (this.#narrowDetailsOpen && selected) {
 			const details = this.#renderDetailPanel(selected, innerWidth, contentRows, observedById);
-			lines.push(topBorder(width, `Agent Fleet · ${selected.id}`));
-			for (const detail of details) lines.push(row(detail, width));
+			if (layout.titleRows) lines.push(topBorder(width, `Agent Fleet · ${selected.id}`));
+			for (const detail of details) lines.push(row(detail, width, layout.titleRows > 0));
 		} else {
 			const roster = this.#renderRosterPanel(innerWidth, contentRows, observedById);
-			lines.push(topBorder(width, this.#frameTitle()));
+			if (layout.titleRows) lines.push(topBorder(width, this.#frameTitle()));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
-				lines.push(row(roster.lines[i] ?? "", width));
+				lines.push(row(roster.lines[i] ?? "", width, layout.titleRows > 0));
 			}
 		}
-		lines.push(divider(width));
-		lines.push(row(this.#footer(this.#narrowDetailsOpen, innerWidth), width));
-		lines.push(bottomBorder(width));
+		if (layout.dividerRows) lines.push(divider(width));
+		if (layout.footerRows)
+			lines.push(row(this.#footer(this.#narrowDetailsOpen, innerWidth), width, layout.titleRows > 0));
+		if (layout.bottomRows) lines.push(bottomBorder(width));
 		return lines;
 	}
 
@@ -510,14 +512,18 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	}
 
 	#renderRosterPanel(width: number, rows: number, observedById: ReadonlyMap<string, ObservableSession>): RosterRender {
-		const lines = this.#summaryLines(width);
+		const summary = this.#summaryLines(width);
+		const lines = rows - summary.length >= 3 ? summary : [];
 		const hitRows: Array<number | undefined> = Array.from({ length: lines.length });
 		if (rows >= 8) {
 			lines.push("");
 			hitRows.push(undefined);
 		}
 
-		const noticeLines = this.#notice ? [theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width)))] : [];
+		const noticeLines =
+			this.#notice && rows - lines.length > 1
+				? [theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width)))]
+				: [];
 		const budget = Math.max(0, rows - lines.length - noticeLines.length);
 		if (this.#rows.length === 0) {
 			if (this.#loadingPersistedSubagents) {
@@ -526,11 +532,23 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 					hitRows.push(undefined);
 				}
 			} else {
-				const emptyState = [
-					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold("No agents in this session")}`,
-					theme.fg("dim", "Finished, parked, and killed subagents remain with the session that created them."),
-					theme.fg("dim", "Resume that session with proto-dev --continue, or spawn a worker here."),
+				const glyphIndent = padding(2);
+				const guidance = this.#emptyStateGuidance();
+				const headingLines = this.#wrapGuidance(
+					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold(guidance.heading)}`,
+					width,
+					glyphIndent,
+				);
+				const wrapDim = (text: string) => this.#wrapGuidance(theme.fg("dim", text), width);
+				// Shrinking panels shed the explanation first, then trade the full remedy for its
+				// short form: a truncated half-sentence helps nobody, while the state the user is
+				// in and the command that leaves it still do.
+				const variants = [
+					[...headingLines, ...wrapDim(guidance.cause), ...wrapDim(guidance.remedy)],
+					[...headingLines, ...wrapDim(guidance.remedy)],
+					[...headingLines, ...wrapDim(guidance.remedyShort)],
 				];
+				const emptyState = variants.find(variant => variant.length <= budget) ?? headingLines;
 				for (const line of emptyState.slice(0, budget)) {
 					lines.push(line);
 					hitRows.push(undefined);
@@ -550,6 +568,38 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			hitRows.push(undefined);
 		}
 		return { lines: lines.slice(0, rows), hitRows: hitRows.slice(0, rows) };
+	}
+
+	/**
+	 * Guidance for an empty roster: what the state is, why it happened, and what to do.
+	 * An in-memory session (no session file) has nothing to recover later, so it needs
+	 * its own cause and remedy instead of the resume advice that only fits a session on
+	 * disk. `remedyShort` is the same advice for panels too short to hold a sentence.
+	 */
+	#emptyStateGuidance(): { heading: string; cause: string; remedy: string; remedyShort: string } {
+		if (this.#inMemorySession) {
+			return {
+				heading: "No agents in this in-memory session",
+				cause: "No session file: this session's agents are never saved for later inspection.",
+				remedy: "Spawn a worker to watch it live, or restart without --no-session.",
+				remedyShort: "Restart without --no-session.",
+			};
+		}
+		return {
+			heading: "No agents in this session",
+			cause: "Finished, parked, and killed subagents remain with the session that created them.",
+			remedy: "Resume that session with proto --continue, or spawn a worker here.",
+			remedyShort: "Resume it with proto --continue.",
+		};
+	}
+
+	// Guidance rows must wrap, never truncate: the actionable command in the last row has
+	// to stay readable at narrow widths where the panel still has spare rows.
+	#wrapGuidance(text: string, width: number, continuationIndent = ""): string[] {
+		const indentWidth = visibleWidth(continuationIndent);
+		if (indentWidth === 0 || indentWidth >= width) return wrapTextWithAnsi(text, Math.max(1, width));
+		const [first, ...rest] = wrapTextWithAnsi(text, width - indentWidth);
+		return first === undefined ? [] : [first, ...rest.map(row => continuationIndent + row)];
 	}
 
 	#renderRosterWindow(

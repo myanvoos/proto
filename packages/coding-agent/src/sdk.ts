@@ -52,9 +52,8 @@ import {
 } from "./advisor";
 import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
-import { loadCapability } from "./capability";
-import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
-import { bucketRules } from "./capability/rule-buckets";
+import { type Rule, setActiveRules } from "./capability/rule";
+import { collectActiveRules, discoverRules } from "./capability/rule-buckets";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -158,6 +157,7 @@ import {
 } from "./session/retry-fallback-chains";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
+import { SessionDirectoryError } from "./session/session-paths";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -291,8 +291,11 @@ function collectPendingMCPToolNames(explicitToolNames: readonly string[] | undef
 	return [...names];
 }
 
-function logMCPLoadErrors(errors: MCPLoadResult["errors"]): void {
-	for (const [serverName, error] of errors) {
+function logMCPLoadErrors(result: Pick<MCPLoadResult, "errors" | "configErrors">): void {
+	for (const error of result.configErrors) {
+		logger.error("MCP config load failed", { path: "mcp config", error });
+	}
+	for (const [serverName, error] of result.errors) {
 		logger.error("MCP tool load failed", { path: `mcp:${serverName}`, error });
 	}
 }
@@ -930,6 +933,26 @@ export function createAutoLearnCaptureRunner(
 	};
 }
 
+/**
+ * The default session directory is the harness's own choice, not the user's: if it cannot be
+ * created, losing the turn is worse than losing the transcript. The run continues in memory and
+ * the reason is reported by the modes. An explicitly requested session path still fails fast.
+ */
+function createDefaultSessionManager(cwd: string, agentDir: string): SessionManager {
+	try {
+		return SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir));
+	} catch (error) {
+		if (!(error instanceof SessionDirectoryError)) throw error;
+		logger.warn("Session persistence unavailable; continuing in memory", {
+			directory: error.directory,
+			error: error.message,
+		});
+		const manager = SessionManager.inMemory(cwd);
+		manager.markPersistenceUnavailable(error);
+		return manager;
+	}
+}
+
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const rootMode = options.disableExtensionDiscovery ? "explicit-only" : "merge";
 	return await withOmpExtensionRootScope(options.additionalExtensionPaths ?? [], rootMode, () =>
@@ -1032,10 +1055,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	applyProviderGlobalsFromSettings(settings);
 
 	const sessionManager =
-		options.sessionManager ??
-		logger.time("sessionManager", () =>
-			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
-		);
+		options.sessionManager ?? logger.time("sessionManager", () => createDefaultSessionManager(cwd, agentDir));
 	const configuredDirs = options.additionalDirectories
 		? options.additionalDirectories
 		: settings.get("workspace.additionalDirectories");
@@ -1196,21 +1216,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
 		"discoverTtsrRules",
 		async () => {
-			const { TtsrManager } = await import("./export/ttsr");
-			const ttsrSettings = settings.getGroup("ttsr");
-			const ttsrManager = new TtsrManager(ttsrSettings);
-			const rulesResult =
-				options.rules !== undefined
-					? { items: options.rules, warnings: undefined }
-					: await loadCapability<Rule>(ruleCapability.id, { cwd });
-			const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
-				builtinRules: ttsrSettings.builtinRules,
-				disabledRules: ttsrSettings.disabledRules,
+			const discovered = await discoverRules({
+				cwd,
+				ttsrSettings: settings.getGroup("ttsr"),
+				...(options.rules !== undefined && { rules: options.rules }),
 			});
 			if (existingSession.injectedTtsrRules.length > 0) {
-				ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
+				discovered.ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
 			}
-			return { ttsrManager, rulebookRules, alwaysApplyRules, allRules: rulesResult.items };
+			return discovered;
 		},
 	);
 
@@ -1417,7 +1431,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
 
-			setActiveRules([...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()]);
+			setActiveRules(collectActiveRules({ rulebookRules, alwaysApplyRules }, ttsrManager));
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		const localProtocolOptions = options.localProtocolOptions ?? {
@@ -1464,7 +1478,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let startDeferredMCPDiscovery: ((liveSession: AgentSession) => void) | undefined;
 		const startupQuiet = settings.get("startup.quiet");
 		const onMCPStatus = (event: McpConnectionStatusEvent) => {
-			if (!options.hasUI || startupQuiet) return;
+			const isFailure = event.type === "failed" || event.type === "config-error";
+			if (!isFailure && (!options.hasUI || startupQuiet)) return;
 			if (event.type === "connecting" && event.serverNames.length === 0) return;
 			eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event);
 		};
@@ -1500,7 +1515,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 								return;
 							}
 							applyMCPEnvironment(mcpResult);
-							logMCPLoadErrors(mcpResult.errors);
+							logMCPLoadErrors(mcpResult);
 
 							await liveSession.refreshMCPTools(mcpResult.tools);
 						} catch (error) {
@@ -1594,6 +1609,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to load extension", { path, error });
 			}
+			for (const { path, warning } of extensionsResult.warnings) {
+				logger.warn("Extension load warning", { path, warning });
+			}
 		} else {
 			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
 				discoverSessionExtensionPaths(options, cwd, settings),
@@ -1601,6 +1619,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to load extension", { path, error });
+			}
+			for (const { path, warning } of extensionsResult.warnings) {
+				logger.warn("Extension load warning", { path, warning });
 			}
 		}
 
@@ -2741,17 +2762,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		});
 		hasSession = true;
 		disposeCallbacks.add(session.registerSessionChangeCallback(syncAgentRegistrySessionScope));
+		const orchestratorParent = (): OrchestratorParent => ({
+			cwd: sessionManager.getCwd(),
+			getAgentId: () => resolvedAgentId,
+			getSessionId: () => sessionManager.getSessionId(),
+			getSessionFile: () => sessionManager.getSessionFile() ?? null,
+			sessionManager,
+			asyncJobManager: scopedAsyncJobManager,
+			settings,
+			getActiveModelString,
+		});
 		if (agentKind === "main") {
-			const orchestratorParent = (): OrchestratorParent => ({
-				cwd: sessionManager.getCwd(),
-				getAgentId: () => resolvedAgentId,
-				getSessionId: () => sessionManager.getSessionId(),
-				getSessionFile: () => sessionManager.getSessionFile() ?? null,
-				sessionManager,
-				asyncJobManager: scopedAsyncJobManager,
-				settings,
-				getActiveModelString,
-			});
+			// The agents view stops workers through this same scope, so the session carries it.
+			session.setOrchestratorParent(orchestratorParent);
 			session.setSessionBeforeSwitchReconciler(async () => {
 				const runtime = OrchestratorRuntime.global();
 				const parent = orchestratorParent();
@@ -2901,16 +2924,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					session.beginDispose();
 					if (agentKind === "main") {
 						const orchestrator = OrchestratorRuntime.global();
-						const parentSession = {
-							getAgentId: () => resolvedAgentId,
-							getSessionId: () => sessionManager.getSessionId(),
-							getSessionFile: () => sessionManager.getSessionFile() ?? null,
-							sessionManager,
-							asyncJobManager: scopedAsyncJobManager,
-							settings,
-							getActiveModelString,
-						};
-						await orchestrator.suspendScope(orchestrator.ownerScope(parentSession), scopedAsyncJobManager);
+						await orchestrator.suspendScope(orchestrator.ownerScope(orchestratorParent()), scopedAsyncJobManager);
 						const hasOtherMain =
 							registeredAgentRef !== undefined &&
 							agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef);

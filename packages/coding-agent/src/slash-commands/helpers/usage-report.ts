@@ -1,9 +1,11 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import type { UsageStatistics } from "../../session/session-entries";
+import { summarizeUsageResetCredits } from "../../utils/usage-display";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
-import { formatDuration, renderAsciiBar } from "./format";
+import { formatCoarseDuration, formatDuration, renderAsciiBar } from "./format";
 
 function formatProviderName(provider: string): string {
 	return provider
@@ -87,32 +89,42 @@ function renderUsageReports(
 			lines.push(`  ${sanitizeText(note.replace(/[\r\n]+/g, " ").replace(/\t/g, "  "))}`);
 		for (const report of providerReports) {
 			const inUse = reportMatchesActiveAccount(report, activeAccount);
-			const savedResets = report.resetCredits?.availableCount ?? 0;
-			if (savedResets > 0) {
-				const resetLabel =
+			const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+			if (resets && resets.bankedCount > 0) {
+				const resetIdentity =
 					typeof report.metadata?.email === "string"
 						? report.metadata.email
 						: typeof report.metadata?.accountId === "string"
 							? report.metadata.accountId
 							: "account";
+				const resetOrg =
+					typeof report.metadata?.orgName === "string" && report.metadata.orgName
+						? report.metadata.orgName
+						: typeof report.metadata?.orgId === "string"
+							? report.metadata.orgId
+							: undefined;
+				const rawResetLabel =
+					resetOrg && resetOrg !== resetIdentity ? `${resetIdentity} (${resetOrg})` : resetIdentity;
+				const resetLabel = sanitizeText(rawResetLabel.replace(/[\r\n\t]+/g, " "));
+				const availability =
+					resets.redeemableCount === resets.bankedCount ? "available" : `${resets.redeemableCount} usable now`;
 				lines.push(
-					`- ${resetLabel}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
+					`- ${resetLabel}: ${resets.bankedCount} saved rate-limit reset${resets.bankedCount === 1 ? "" : "s"} — ${availability} — /usage reset to spend`,
 				);
-				const credits = report.resetCredits?.credits;
-				if (credits) {
-					for (const credit of credits) {
-						if (credit.expiresAt) {
-							const expiryMs = Date.parse(credit.expiresAt);
-							if (!Number.isNaN(expiryMs)) {
-								const remaining = expiryMs - nowMs;
-								if (remaining > 0) {
-									lines.push(`  expires in ${formatDuration(remaining)} (${credit.expiresAt.slice(0, 10)})`);
-								} else {
-									lines.push(`  expired (${credit.expiresAt.slice(0, 10)})`);
-								}
-							}
-						}
+				if (resets.soonestExpiry) {
+					const expiryMs = Date.parse(resets.soonestExpiry);
+					const remaining = expiryMs - nowMs;
+					if (remaining > 0) {
+						lines.push(
+							`  soonest expires in ${formatCoarseDuration(remaining)} (${resets.soonestExpiry.slice(0, 10)})`,
+						);
+					} else {
+						lines.push(`  expired (${resets.soonestExpiry.slice(0, 10)})`);
 					}
+				}
+				if (resets.redeemableCount === 0 && resets.unavailableReason) {
+					const reason = sanitizeText(resets.unavailableReason.replace(/[\r\n\t]+/g, " "));
+					lines.push(`  unavailable: ${reason}`);
 				}
 			}
 			if (report.limits.length === 0) {
@@ -173,8 +185,14 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 		}
 	}
 
-	const stats = runtime.session.sessionManager.getUsageStatistics();
+	return renderSessionUsageSummary(runtime.session.sessionManager.getUsageStatistics());
+}
+
+/** What this session has spent, including the subagents it owns. Used when the provider reports no quota. */
+export function renderSessionUsageSummary(stats: UsageStatistics): string {
 	const orchestrationTokens = stats.orchestrationInput + stats.orchestrationOutput + stats.orchestrationCacheRead;
+	const subagent = stats.subagent;
+	const hasSubagentSpend = subagent.runs > 0;
 	return [
 		"Usage",
 		`Input tokens: ${stats.input}`,
@@ -185,5 +203,12 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 		...(orchestrationTokens > 0 ? [`Orchestration tokens: ${orchestrationTokens}`] : []),
 		`Premium requests: ${stats.premiumRequests}`,
 		`Cost: $${stats.cost.toFixed(6)}`,
+		...(hasSubagentSpend
+			? [
+					`Subagent tokens: ${subagent.totalTokens} (${subagent.agents} agent${subagent.agents === 1 ? "" : "s"}, ${subagent.runs} run${subagent.runs === 1 ? "" : "s"})`,
+					`Subagent cost: $${subagent.cost.toFixed(6)}`,
+					`Total cost: $${(stats.cost + subagent.cost).toFixed(6)}`,
+				]
+			: []),
 	].join("\n");
 }

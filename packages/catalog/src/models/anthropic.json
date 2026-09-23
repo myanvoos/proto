@@ -24,7 +24,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -64,7 +63,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -114,7 +112,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -154,7 +151,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -194,7 +190,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -234,7 +229,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -285,7 +279,55 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": true,
+			"supportsLongCacheRetention": true,
+			"supportsMidConversationSystem": true,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-fable-5-1": {
+		"id": "claude-fable-5-1",
+		"name": "Claude Fable 5.1",
+		"api": "anthropic-messages",
+		"provider": "anthropic",
+		"baseUrl": "https://api.anthropic.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": true,
+			"signingEndpoint": true,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -334,7 +376,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -383,7 +424,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -433,7 +473,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -483,7 +522,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -533,7 +571,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -573,7 +610,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -613,7 +649,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -663,7 +698,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -712,7 +746,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -760,7 +793,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -810,7 +842,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -860,7 +891,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -910,7 +940,55 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": true,
+			"supportsLongCacheRetention": true,
+			"supportsMidConversationSystem": true,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-opus-5-5": {
+		"id": "claude-opus-5-5",
+		"name": "Claude Opus 5.5",
+		"api": "anthropic-messages",
+		"provider": "anthropic",
+		"baseUrl": "https://api.anthropic.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": true,
+			"signingEndpoint": true,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -959,7 +1037,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -999,7 +1076,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -1049,7 +1125,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -1098,7 +1173,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -1145,7 +1219,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,
@@ -1195,7 +1268,6 @@
 		"compat": {
 			"officialEndpoint": true,
 			"signingEndpoint": true,
-			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": true,

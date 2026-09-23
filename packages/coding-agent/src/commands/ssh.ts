@@ -1,34 +1,13 @@
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { sshHelp as commandHelp } from "../cli/command-help";
 import { runSSHCommand, type SSHAction, type SSHCommandArgs } from "../cli/ssh-cli";
 import { initTheme } from "../modes/theme/theme";
 
-const ACTIONS: SSHAction[] = ["add", "remove", "list"];
-
 export default class SSH extends Command {
 	static description = commandHelp.description;
-	static args = {
-		action: Args.string({
-			description: "SSH action",
-			required: false,
-			options: ACTIONS,
-		}),
-		targets: Args.string({
-			description: "Host name or arguments",
-			required: false,
-			multiple: true,
-		}),
-	};
+	static args = commandHelp.args;
 
-	static flags = {
-		json: Flags.boolean({ description: "Output JSON" }),
-		host: Flags.string({ description: "Host address" }),
-		user: Flags.string({ description: "Username" }),
-		port: Flags.string({ description: "Port number" }),
-		key: Flags.string({ description: "Identity key path" }),
-		desc: Flags.string({ description: "Host description" }),
-		scope: Flags.string({ description: "Config scope (project|user)", options: ["project", "user"] }),
-	};
+	static flags = commandHelp.flags;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(SSH);

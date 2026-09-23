@@ -298,7 +298,6 @@ export class ChatTranscriptBuilder {
 			proseOnlyThinking,
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
-		assistantComponent.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
 		this.#trackExpandable(assistantComponent);
 		this.container.addChild(assistantComponent);
 
@@ -330,7 +329,6 @@ export class ChatTranscriptBuilder {
 				proseOnlyThinking,
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
-			component.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 		};

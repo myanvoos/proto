@@ -189,6 +189,79 @@ test("healthy sessions still resume, append, and resume again", async () => {
 	}
 });
 
+test("an in-memory session resumes disk content without acquiring a persistence target", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "proto-memory-resume-"));
+	tempDirs.push(cwd);
+	const sessionFile = path.join(cwd, "resumable.jsonl");
+	const original = [
+		JSON.stringify({
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: "disk-resume",
+			cwd,
+			timestamp: "2026-09-22T00:00:00.000Z",
+			title: "Persisted title",
+		}),
+		JSON.stringify({
+			type: "message",
+			id: "user-one",
+			parentId: null,
+			timestamp: "2026-09-22T00:00:00.000Z",
+			message: { role: "user", content: "VISIBLE_RESUMED_MESSAGE", timestamp: 1 },
+		}),
+		"",
+	].join("\n");
+	await Bun.write(sessionFile, original);
+	const before = fs.readdirSync(cwd);
+	const manager = SessionManager.inMemory(cwd);
+	try {
+		await manager.setSessionFile(sessionFile);
+		expect(manager.getSessionId()).toBe("disk-resume");
+		expect(manager.getSessionName()).toBe("Persisted title");
+		expect(JSON.stringify(manager.buildSessionContext({ transcript: true }).messages)).toContain(
+			"VISIBLE_RESUMED_MESSAGE",
+		);
+		expect(manager.getSessionFile()).toBeUndefined();
+		expect(manager.getArtifactsDir()).toBeNull();
+		expect(manager.isSessionOnDisk()).toBe(false);
+		manager.appendMessage({ role: "user", content: "UNSAVED_CONTINUATION", timestamp: 2 });
+		await manager.setSessionName("Unsaved title");
+		expect(manager.getSessionName()).toBe("Unsaved title");
+		await manager.saveDraft("unsaved editor draft");
+		await manager.ensureOnDisk();
+		await manager.flush();
+		expect(JSON.stringify(manager.buildSessionContext({ transcript: true }).messages)).toContain(
+			"UNSAVED_CONTINUATION",
+		);
+		await manager.setSessionFile(sessionFile);
+		expect(JSON.stringify(manager.buildSessionContext({ transcript: true }).messages)).not.toContain(
+			"UNSAVED_CONTINUATION",
+		);
+		expect(manager.getSessionFile()).toBeUndefined();
+	} finally {
+		await manager.close();
+	}
+	expect(await Bun.file(sessionFile).text()).toBe(original);
+	expect(fs.readdirSync(cwd)).toEqual(before);
+});
+
+test("in-memory resume still accepts explicitly supplied memory-backed transcripts", async () => {
+	const storage = new MemorySessionStorage();
+	const file = path.resolve("memory-only-resume.jsonl");
+	storage.writeTextSync(
+		file,
+		`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "memory-source", cwd: process.cwd(), timestamp: "2026-09-22T00:00:00.000Z" })}\n`,
+	);
+	const manager = SessionManager.inMemory(process.cwd(), storage);
+	try {
+		await manager.setSessionFile(file);
+		expect(manager.getSessionId()).toBe("memory-source");
+		expect(manager.getSessionFile()).toBeUndefined();
+	} finally {
+		await manager.close();
+	}
+});
+
 test("close releases retained entries after sealing an in-memory session", async () => {
 	const manager = SessionManager.inMemory();
 	manager.appendCustomEntry("retained", { payload: "x".repeat(100_000) });

@@ -8,20 +8,29 @@ import { restoreTerminalStderr, suppressTerminalStderr } from "@oh-my-pi/pi-util
 import { setKittyProtocolActive } from "./keys";
 import { StdinBuffer } from "./stdin-buffer";
 import {
+	clearTerminalFocusTracking,
 	isInsideTerminalMultiplexer,
 	NotifyProtocol,
 	setCellDimensions,
 	setOsc99Supported,
 	setOutboundWriter,
+	setTerminalFocused,
 	TERMINAL,
 } from "./terminal-capabilities";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
+import { getReportedTerminalHostIdentity, setReportedTerminalHostIdentity } from "./ttyid";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
+/** XTVERSION then secondary device attributes: whichever the host answers names it. */
+const HOST_IDENTITY_QUERY = "\x1b[>0q\x1b[>c";
+const HOST_IDENTITY_REPROBE_MS = 1000;
+let hostIdentityProbedAt = 0;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const IN_BAND_RESIZE_WATCHDOG_MS = 1000;
 const IN_BAND_RESIZE_PREFIX = "\x1b[48;";
+const FOCUS_IN = "\x1b[I";
+const FOCUS_OUT = "\x1b[O";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.SSH_CONNECTION && !env.SSH_TTY && !env.SSH_CLIENT) return true;
@@ -113,6 +122,20 @@ function registerStdoutErrorHandler(handler: (err: Error) => void): () => void {
 	};
 }
 
+/**
+ * Re-ask a host that has not named itself yet. Startup answers arrive in
+ * milliseconds, but a terminal that resizes before the reply — or an app whose
+ * input was attached late — would otherwise run a whole resize burst against
+ * the environment's word alone. One extra query per second costs nothing and
+ * lands long before the settled repaint that depends on the answer.
+ */
+export function refreshTerminalHostIdentity(now: number = Date.now()): void {
+	if (getReportedTerminalHostIdentity() !== null) return;
+	if (now - hostIdentityProbedAt < HOST_IDENTITY_REPROBE_MS) return;
+	hostIdentityProbedAt = now;
+	activeTerminal?.write(HOST_IDENTITY_QUERY);
+}
+
 export function emergencyTerminalRestore(): void {
 	try {
 		restoreTerminalStderr();
@@ -174,6 +197,13 @@ export interface Terminal {
 
 	get columns(): number;
 	get rows(): number;
+
+	/**
+	 * Re-read the window size from the OS now, without waiting for SIGWINCH to
+	 * reach the event loop. When it changed, dispatch the resize callback before
+	 * returning true.
+	 */
+	refreshSize?(): boolean;
 
 	readonly pendingOutputBytes?: number;
 
@@ -473,9 +503,15 @@ export class ProcessTerminal implements Terminal {
 
 		this.#safeWrite("\x1b[?2004h");
 
+		// DEC 1004 focus reporting: hosts that ignore it simply never reply, and
+		// focus stays unknown rather than being assumed.
+		this.#safeWrite("\x1b[?1004h");
+
 		this.#safeWrite("\x1b[?1l\x1b>");
 
 		this.#queryAndEnableKittyProtocol();
+
+		this.#queryTerminalHostIdentity();
 
 		this.#active = true;
 
@@ -510,24 +546,37 @@ export class ProcessTerminal implements Terminal {
 
 		const decrpmResponsePattern = /^\x1b\[\?(\d+);(\d+)\$y$/;
 
+		// XTVERSION (`DCS > | name ST`) and secondary device attributes
+		// (`CSI > id ; version ; keyboard c`) both name the host that owns this
+		// tty, whatever the environment claims.
+		const xtversionResponsePattern = /^\x1bP>\|([^\x1b\x07]*)(?:\x1b\\|\x07)$/;
+		const secondaryDaResponsePattern = /^\x1b\[>(\d*)(?:;[\d;]*)?c$/;
+
 		const inBandResizePattern = /^\x1b\[48;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?t$/;
 
 		const cursorPositionPattern = /^\x1b\[(\d+);(\d+)R$/;
 		const cursorPositionPartialPattern = /^\x1b\[[\d;]*$/;
 
 		this.#stdinBuffer.on("data", (sequence: string) => {
-			if (
-				(sequence.length === 0 || sequence.charCodeAt(0) !== 0x1b) &&
+			const noPendingReply =
 				this.#privateCsiResponseBuffer.length === 0 &&
 				this.#inBandResizeBuffer.length === 0 &&
 				this.#cursorPositionResponseBuffer.length === 0 &&
 				this.#osc11ResponseBuffer.length === 0 &&
-				this.#osc99ResponseBuffer.length === 0
-			) {
-				if (this.#inputHandler) {
-					this.#inputHandler(sequence);
+				this.#osc99ResponseBuffer.length === 0;
+			if (noPendingReply) {
+				// DEC 1004 focus reports are unsolicited CSI I / CSI O; without
+				// this they reach #inputHandler and are typed as stray keys.
+				if (sequence === FOCUS_IN || sequence === FOCUS_OUT) {
+					setTerminalFocused(sequence === FOCUS_IN);
+					return;
 				}
-				return;
+				if (sequence.length === 0 || sequence.charCodeAt(0) !== 0x1b) {
+					if (this.#inputHandler) {
+						this.#inputHandler(sequence);
+					}
+					return;
+				}
 			}
 
 			if (this.#privateCsiResponseBuffer || privateCsiPartialPattern.test(sequence)) {
@@ -648,6 +697,18 @@ export class ProcessTerminal implements Terminal {
 			const decrpmMatch = sequence.match(decrpmResponsePattern);
 			if (decrpmMatch) {
 				this.#handlePrivateModeReport(parseInt(decrpmMatch[1]!, 10), decrpmMatch[2]!);
+				return;
+			}
+
+			const xtversionMatch = sequence.match(xtversionResponsePattern);
+			if (xtversionMatch) {
+				this.#handleHostIdentityReport(xtversionMatch[1]!);
+				return;
+			}
+
+			const secondaryDaMatch = sequence.match(secondaryDaResponsePattern);
+			if (secondaryDaMatch) {
+				this.#handleSecondaryDeviceAttributes(secondaryDaMatch[1]!);
 				return;
 			}
 
@@ -984,6 +1045,38 @@ export class ProcessTerminal implements Terminal {
 		this.#modifyOtherKeysActive = true;
 	}
 
+	/**
+	 * Ask the host to name itself. Environment variables are advisory — a
+	 * multiplexer launched through `env -i` leaves `TMUX`/`STY` unset — while
+	 * these two queries reach the process that actually owns the tty. The answer
+	 * decides whether resize transactions may trust a saved-cursor anchor
+	 * (direct terminals rewrap it with its logical line) or must treat the host
+	 * as clipping and re-lay the pane on its own schedule.
+	 *
+	 * Sent without a DA1 sentinel: terminals that know neither query stay
+	 * silent, and silence means "unknown", which keeps the direct-terminal path.
+	 */
+	#queryTerminalHostIdentity(): void {
+		if (this.#dead) return;
+		hostIdentityProbedAt = Date.now();
+		this.#safeWrite(HOST_IDENTITY_QUERY);
+	}
+
+	#handleHostIdentityReport(identity: string): void {
+		setReportedTerminalHostIdentity(identity);
+	}
+
+	/**
+	 * Secondary device attributes for hosts without XTVERSION: the terminal id
+	 * is the multiplexer's initial, `S` (83) for screen and `T` (84) for tmux.
+	 * Real terminals report DEC model numbers, so these two never collide.
+	 */
+	#handleSecondaryDeviceAttributes(terminalId: string): void {
+		const id = parseInt(terminalId, 10);
+		if (id === 83) setReportedTerminalHostIdentity("screen");
+		else if (id === 84) setReportedTerminalHostIdentity("tmux");
+	}
+
 	#queryAndEnableKittyProtocol(): void {
 		this.#setupStdinBuffer();
 		process.stdin.on("data", this.#stdinDataHandler!);
@@ -1179,6 +1272,7 @@ export class ProcessTerminal implements Terminal {
 		this.#safeWrite("\x1b[?2026l\x1b[?7h");
 		this.#safeWrite("\x1b[?1l\x1b>");
 		this.#safeWrite("\x1b[?2004l");
+		this.#safeWrite("\x1b[?1004l");
 		this.#safeWrite("\x1b[?5522l");
 		this.#safeWrite("\x1b[?1006l\x1b[?1003l\x1b[?1000l");
 		this.#safeWrite("\x1b[?2031l");
@@ -1199,6 +1293,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#teardownObjectState(): void {
+		clearTerminalFocusTracking();
 		this.#xtermScrollToBottomRestoreModes.clear();
 		this.#inBandResizeActive = false;
 		if (this.#mode2031DebounceTimer) {
@@ -1231,6 +1326,9 @@ export class ProcessTerminal implements Terminal {
 		this.#privateModeSupport.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;
+		// The identity belongs to the tty this terminal was attached to; a
+		// restart re-probes whatever host owns the next one.
+		setReportedTerminalHostIdentity(null);
 
 		this.#kittyProtocolActive = false;
 		this.#kittyEnableSeq = null;
@@ -1363,6 +1461,17 @@ export class ProcessTerminal implements Terminal {
 	get rows(): number {
 		if (this.#inBandResizeActive && this.#reportedRows) return this.#reportedRows;
 		return process.stdout.rows || Number(Bun.env.LINES) || 24;
+	}
+
+	refreshSize(): boolean {
+		if (this.#headless || this.#dead || !this.#stdoutResizeListener) return false;
+		// Node and Bun TTY streams re-read TIOCGWINSZ here and emit "resize"
+		// synchronously on a change; the public size getters only update once the
+		// SIGWINCH reaches the event loop.
+		const stdout: NodeJS.WriteStream & { _refreshSize?: () => void } = process.stdout;
+		const { columns, rows } = stdout;
+		stdout._refreshSize?.();
+		return stdout.columns !== columns || stdout.rows !== rows;
 	}
 
 	moveBy(lines: number): void {

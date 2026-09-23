@@ -94,8 +94,13 @@ Settings:
 
 - `retry.enabled` (default `true`)
 - `retry.maxRetries` (default `10`)
+- `retry.unreachableMaxRetries` (default `2`) — budget when the endpoint cannot be reached at all (refused, unresolvable, unroutable). A wrong base URL or a down provider does not recover inside a backoff window, and each attempt costs a full connect cycle, so the full budget only makes the run look hung.
 - `retry.baseDelayMs` (default `500`)
 - `retry.maxDelayMs` (default `300000`, 5 minutes; `<= 0` disables the fail-fast cap)
+
+`fetchWithRetry` applies the same rule one layer down: an unreachable-endpoint error retries once instead of walking the full attempt ladder.
+
+Print mode (`-p`, text) writes one stderr line per retry — `Provider error (retry N/M in Xs): <error>` — so a recovering run is never silently indistinguishable from a hung one. `--mode json` already emits `auto_retry_start`/`auto_retry_end`.
 
 Attempt numbering:
 
@@ -163,6 +168,7 @@ Defined in settings schema under retry group:
 
 - `retry.enabled`
 - `retry.maxRetries`
+- `retry.unreachableMaxRetries`
 - `retry.baseDelayMs`
 - `retry.maxDelayMs`
 - `retry.modelFallback` (default `true`; gates retry model-fallback switching)

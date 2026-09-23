@@ -38,16 +38,19 @@ import {
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
 	type BranchSummaryEntry,
+	buildSubagentUsageEntryData,
 	type CompactionEntry,
 	type CredentialPinEntry,
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
+	emptyUsageStatistics,
 	type FileEntry,
 	type LabelEntry,
 	type ModeChangeEntry,
 	type ModelChangeEntry,
 	type NewSessionOptions,
+	parseSubagentUsageEntry,
 	type ResetBoundaryEntry,
 	type ServiceTierChangeEntry,
 	type SessionEntry,
@@ -56,6 +59,9 @@ import {
 	type SessionMessageEntry,
 	type SessionTitleSource,
 	type SessionTreeNode,
+	SUBAGENT_USAGE_CUSTOM_TYPE,
+	type SubagentUsageEntryData,
+	type SubagentUsageTotals,
 	type ThinkingLevelChangeEntry,
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
@@ -64,6 +70,7 @@ import {
 } from "./session-entries";
 import { recordSessionTitle } from "./session-index";
 import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
+import { claimSessionOwnership, liveSessionOwnerPid } from "./session-liveness";
 import {
 	loadSessionFile,
 	resolveBlobRefsInEntries,
@@ -75,6 +82,8 @@ import {
 	computeDefaultSessionDir,
 	readTerminalBreadcrumbEntry,
 	resolveManagedSessionRoot,
+	type SessionDirectoryError,
+	sessionDirectoryError,
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { prepareEntryForPersistence } from "./session-persistence";
@@ -95,6 +104,11 @@ import {
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
+/** A record loaded from a hand-edited file may carry no id at all; never print "undefined". */
+function describeEntryId(id: unknown): string {
+	return typeof id === "string" && id.length > 0 ? `"${id}"` : "with no id";
+}
+
 const RAW_ENTRY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const RAW_ENTRY_CACHE_MAX_COUNT = 64;
 
@@ -158,25 +172,24 @@ function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
 	return current;
 }
 
-function emptyUsageStatistics(): UsageStatistics {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		orchestrationInput: 0,
-		orchestrationOutput: 0,
-		orchestrationCacheRead: 0,
-		premiumRequests: 0,
-		cost: 0,
-	};
-}
-
 function entryUsage(entry: SessionEntry): Usage | undefined {
 	if (entry.type !== "message") return undefined;
 	const message = entry.message;
 	return message.role === "assistant" ? message.usage : undefined;
+}
+
+function addSubagentUsage(target: UsageStatistics, entry: SubagentUsageEntryData, agents: Set<string>): void {
+	const subagent = target.subagent;
+	subagent.input += entry.input;
+	subagent.output += entry.output;
+	subagent.cacheRead += entry.cacheRead;
+	subagent.cacheWrite += entry.cacheWrite;
+	subagent.totalTokens += entry.totalTokens;
+	subagent.premiumRequests += entry.premiumRequests;
+	subagent.cost += entry.cost;
+	subagent.runs += 1;
+	agents.add(entry.agentId);
+	subagent.agents = agents.size;
 }
 
 function addUsage(target: UsageStatistics, usage: Usage | undefined): void {
@@ -221,6 +234,7 @@ class SessionEntryIndex {
 	#leaf: string | null = null;
 	#leafPath: SessionEntry[] | undefined;
 	#usage = emptyUsageStatistics();
+	#subagentIds = new Set<string>();
 
 	clear(): void {
 		this.#entriesById.clear();
@@ -229,6 +243,7 @@ class SessionEntryIndex {
 		this.#leaf = null;
 		this.#leafPath = undefined;
 		this.#usage = emptyUsageStatistics();
+		this.#subagentIds.clear();
 	}
 
 	rebuild(entries: readonly SessionEntry[]): void {
@@ -252,6 +267,10 @@ class SessionEntryIndex {
 		}
 
 		addUsage(this.#usage, entryUsage(entry));
+		if (entry.type === "custom" && entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE) {
+			const subagentUsage = parseSubagentUsageEntry(entry.data);
+			if (subagentUsage) addSubagentUsage(this.#usage, subagentUsage, this.#subagentIds);
+		}
 	}
 
 	has(id: string): boolean {
@@ -293,7 +312,7 @@ class SessionEntryIndex {
 	}
 
 	usageSnapshot(): UsageStatistics {
-		return { ...this.#usage };
+		return { ...this.#usage, subagent: { ...this.#usage.subagent } };
 	}
 
 	pathTo(id: string | null | undefined = this.#leaf): SessionEntry[] {
@@ -372,6 +391,7 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getUsageStatistics"
+	| "getSubagentUsage"
 	| "putBlob"
 	| "putBlobSync"
 >;
@@ -469,6 +489,7 @@ export class SessionManager {
 	#diskTail: Promise<void> = Promise.resolve();
 	#diskFailure: Error | undefined;
 	#diskFailureLogged = false;
+	#lockContentionReported = false;
 
 	#atomicPersistenceTail: Promise<void> = Promise.resolve();
 
@@ -493,8 +514,11 @@ export class SessionManager {
 	#suppressBreadcrumb = false;
 
 	#breadcrumbFresh = false;
+	#persistenceUnavailable: SessionDirectoryError | undefined;
 	#sessionNameChangedCallbacks = new Set<() => void>();
 	#persistenceErrorCallbacks = new Set<(error: Error) => void>();
+	#historyDegradedCallbacks = new Set<(message: string) => void>();
+	#historyDegradedReported = false;
 
 	private constructor(cwd: string, sessionDir: string, persist: boolean, storage: SessionStorage) {
 		this.#cwd = cwd;
@@ -503,10 +527,17 @@ export class SessionManager {
 		this.#storage = storage;
 		this.#blobs = new BlobStore(getBlobsDir());
 
-		if (persist && sessionDir) this.#storage.ensureDirSync(sessionDir);
+		if (persist && sessionDir) {
+			try {
+				this.#storage.ensureDirSync(sessionDir);
+			} catch (error) {
+				throw sessionDirectoryError(sessionDir, error);
+			}
+		}
 	}
 
 	#rememberBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
+		if (!this.#persist) return;
 		this.#breadcrumbFresh = fresh;
 		if (!this.#suppressBreadcrumb) writeTerminalBreadcrumb(cwd, sessionFile, fresh);
 	}
@@ -523,7 +554,13 @@ export class SessionManager {
 
 	#noteDiskFailure(errorLike: unknown): Error {
 		const error = toError(errorLike);
-		if (error instanceof SessionStorageLockError) return error;
+		// Lock contention is retryable, so it never latches a permanent disk failure —
+		// but it must never be silent either: another live process holding the file
+		// would otherwise drop every entry without a trace.
+		if (error instanceof SessionStorageLockError) {
+			this.#noteLockContention(error);
+			return error;
+		}
 		if (!this.#diskFailure) this.#diskFailure = error;
 
 		if (!this.#diskFailureLogged) {
@@ -793,6 +830,9 @@ export class SessionManager {
 	#retainEntry(entry: SessionEntry): SessionEntry {
 		const retained = prepareEntryForPersistence(entry, this.#retentionBlobStore()) as SessionEntry;
 		if (retained === entry) return retained;
+		// Spill files are keyed by entry id. A record loaded from a hand-edited session file may
+		// have none: keeping it whole in memory is cheaper than a key two such records would share.
+		if (typeof entry.id !== "string" || entry.id.length === 0) return entry;
 
 		const serialized = serialize(entry);
 		const compressed = gzipSync(serialized, { level: 1 });
@@ -802,6 +842,48 @@ export class SessionManager {
 		this.#rawEntryFiles.set(entry.id, { name, bytes: serialized.byteLength });
 		this.#cacheRawEntry(deserialize(serialized) as SessionEntry, serialized.byteLength);
 		return retained;
+	}
+
+	/**
+	 * Oversized entries live in a per-process temp file that the session file on disk does not
+	 * need: it already holds the truncated copy. Losing that cache — a temp cleaner, a corrupt
+	 * file, a released directory — therefore costs fidelity for one entry, never the session.
+	 * Forget the mapping, say so once, and carry on with the retained copy.
+	 */
+	#degradeRawEntry(entry: SessionEntry, file: string | undefined, problem: string, cause?: unknown): SessionEntry {
+		const cached = this.#rawEntryCache.get(entry.id);
+		if (cached) {
+			this.#rawEntryCache.delete(entry.id);
+			this.#rawEntryCacheBytes -= cached.bytes;
+		}
+		this.#rawEntryFiles.delete(entry.id);
+
+		const sessionFile = this.#sessionFile;
+		const where = sessionFile ? ` of session "${sessionFile}"` : "";
+		const located = file ? ` (${file})` : "";
+		const message =
+			`Cannot read back oversized ${entry.type} entry ${describeEntryId(entry.id)}${where}: ${problem}${located}. ` +
+			"The session file was not modified and the session keeps running; that entry is now shown in its " +
+			"truncated form. Full copies of oversized entries live in the system temp directory as " +
+			"proto-session-history-* for the lifetime of the process: exclude that pattern from temp cleanup to " +
+			"keep them.";
+		logger.warn("Oversized session entry cache lost; using the truncated copy", {
+			entryId: entry.id,
+			file,
+			problem,
+			error: cause === undefined ? undefined : toError(cause).message,
+		});
+		if (!this.#historyDegradedReported) {
+			this.#historyDegradedReported = true;
+			for (const callback of this.#historyDegradedCallbacks) {
+				try {
+					callback(message);
+				} catch (callbackError) {
+					logger.warn("Session history degradation observer failed", { error: toError(callbackError).message });
+				}
+			}
+		}
+		return entry;
 	}
 
 	#materializeEntry(entry: SessionEntry, cache = true): SessionEntry {
@@ -818,18 +900,29 @@ export class SessionManager {
 		}
 
 		const directory = this.#rawEntryDirectory;
-		if (!directory) throw new Error(`Raw session entry directory is missing for ${entry.id}`);
+		if (!directory) return this.#degradeRawEntry(entry, undefined, "its temporary copy was already released");
 		const file = path.join(directory, rawFile.name);
 		let compressed: Buffer;
 		try {
 			compressed = fs.readFileSync(file);
 		} catch (error) {
-			throw new Error(`Raw session entry file is missing for ${entry.id}`, { cause: error });
+			return this.#degradeRawEntry(entry, file, "its temporary copy is gone", error);
 		}
-		const serialized = gunzipSync(compressed);
-		const parsed: unknown = deserialize(serialized);
-		if (typeof parsed !== "object" || parsed === null || !("id" in parsed) || parsed.id !== entry.id) {
-			throw new Error(`Raw session entry file is invalid for ${entry.id}`);
+		let parsed: unknown;
+		try {
+			parsed = deserialize(gunzipSync(compressed));
+		} catch (error) {
+			return this.#degradeRawEntry(entry, file, "its temporary copy is corrupt", error);
+		}
+		if (typeof parsed !== "object" || parsed === null || !("id" in parsed)) {
+			return this.#degradeRawEntry(entry, file, "its temporary copy holds no session entry");
+		}
+		if (parsed.id !== entry.id) {
+			return this.#degradeRawEntry(
+				entry,
+				file,
+				`its temporary copy holds a different entry (${describeEntryId(parsed.id)})`,
+			);
 		}
 		const materialized = parsed as SessionEntry;
 		if (cache) this.#cacheRawEntry(materialized, rawFile.bytes);
@@ -914,6 +1007,29 @@ export class SessionManager {
 		return body;
 	}
 
+	#noteLockContention(error: SessionStorageLockError): void {
+		if (this.#lockContentionReported) return;
+		this.#lockContentionReported = true;
+		const ownerPid = this.#sessionFile ? liveSessionOwnerPid(this.#sessionFile) : undefined;
+		logger.warn("Session file is locked by another process; entries stay in memory until it is released.", {
+			sessionFile: this.#sessionFile,
+			ownerPid,
+		});
+		const reported = new Error(
+			ownerPid === undefined
+				? `session file is locked by another process: ${error.message}`
+				: `session file is locked by another proto process (pid ${ownerPid})`,
+			{ cause: error },
+		);
+		for (const callback of this.#persistenceErrorCallbacks) {
+			try {
+				callback(reported);
+			} catch (callbackError) {
+				logger.warn("Session persistence error observer failed", { error: toError(callbackError).message });
+			}
+		}
+	}
+
 	#historyContainsAssistantMessage(): boolean {
 		return this.#entries.some(isAssistantEntry);
 	}
@@ -970,6 +1086,7 @@ export class SessionManager {
 		await this.#scheduleDiskWork(
 			async () => {
 				if (await this.#runFencedAtomicRewrite(startEpoch)) {
+					this.#lockContentionReported = false;
 					this.#fileIsCurrent = true;
 					this.#materializeBreadcrumb();
 					this.#rewriteRequired = false;
@@ -1388,7 +1505,15 @@ export class SessionManager {
 		this.#draftOnlySessionCleanupArmed = false;
 
 		const resolvedSessionFile = path.resolve(sessionFile);
-		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
+		// Nonpersistent sessions may import a selected disk transcript without
+		// changing their write backend or acquiring the source's persistence target.
+		const readStorage =
+			!this.#persist &&
+			this.#storage instanceof MemorySessionStorage &&
+			!this.#storage.existsSync(resolvedSessionFile)
+				? new FileSessionStorage()
+				: this.#storage;
+		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, readStorage));
 		if (loaded.invalidHeader) {
 			throw new Error(
 				`Cannot resume session "${resolvedSessionFile}": the session header is missing or malformed. The file was not modified.`,
@@ -1400,15 +1525,15 @@ export class SessionManager {
 			);
 		}
 
-		this.#sessionFile = resolvedSessionFile;
+		this.#sessionFile = this.#persist ? resolvedSessionFile : undefined;
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
 		const { entries: fileEntries, titleSlot } = loaded;
 		if (fileEntries.length === 0) {
 			this.#resetToNewSession(undefined, resolvedSessionFile);
-			this.#forceFileCreation = true;
+			this.#forceFileCreation = this.#persist;
 			await this.#rewriteAtomically();
-			this.#fileIsCurrent = true;
+			this.#fileIsCurrent = this.#persist;
 			return;
 		}
 
@@ -1428,13 +1553,16 @@ export class SessionManager {
 		this.#additionalDirectories = header.additionalDirectories ?? [];
 		this.#titleUpdatedAt = titleSlot?.updatedAt ?? header.timestamp;
 		this.#hasTitleSlot = titleSlot !== undefined;
-		this.#fileIsCurrent = true;
-		this.#rewriteRequired = migrated || loaded.malformedRecords > 0;
-		this.#forceFileCreation = true;
+		this.#fileIsCurrent = this.#persist;
+		this.#rewriteRequired = this.#persist && (migrated || loaded.malformedRecords > 0);
+		this.#forceFileCreation = this.#persist;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
+		this.#adoptedArtifactManager = null;
+		this.#inMemoryArtifacts = null;
+		this.#inMemoryArtifactCounter = 0;
 
-		if (this.sanitizeLoadedOpenAIResponsesReplayMetadata()) this.#rewriteRequired = true;
+		if (this.sanitizeLoadedOpenAIResponsesReplayMetadata() && this.#persist) this.#rewriteRequired = true;
 	}
 
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
@@ -1859,6 +1987,19 @@ export class SessionManager {
 		return this.#index.usageSnapshot();
 	}
 
+	getSubagentUsage(): SubagentUsageTotals {
+		return this.#index.usageSnapshot().subagent;
+	}
+
+	/**
+	 * Attributes one settled subagent run to this session. The run is appended as a session entry so
+	 * the rollup survives a reload: the owning session is the only place the spend can be summed,
+	 * because subagents write their own transcripts.
+	 */
+	recordSubagentUsage(args: { agentId: string; agent?: string; label?: string; turn?: number; usage: Usage }): void {
+		this.appendCustomEntry(SUBAGENT_USAGE_CUSTOM_TYPE, buildSubagentUsageEntryData(args));
+	}
+
 	beginTurnBudget(total: number | null, hard: boolean): void {
 		this.#turnBudgetTotal = total;
 		this.#turnBudgetHard = hard;
@@ -1984,6 +2125,19 @@ export class SessionManager {
 		this.#sessionNameChangedCallbacks.add(cb);
 		return () => {
 			this.#sessionNameChangedCallbacks.delete(cb);
+		};
+	}
+
+	/** The per-process directory holding full copies of oversized entries, once one has been written. */
+	getRawEntryDirectory(): string | undefined {
+		return this.#rawEntryDirectory;
+	}
+
+	/** Fires once per session when an oversized entry's cached copy was lost and the truncated copy is used. */
+	onHistoryDegraded(cb: (message: string) => void): () => void {
+		this.#historyDegradedCallbacks.add(cb);
+		return () => {
+			this.#historyDegradedCallbacks.delete(cb);
 		};
 	}
 
@@ -2646,17 +2800,25 @@ export class SessionManager {
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
+		options?: { claimOwnership?: (sessionFile: string) => boolean },
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		// Continuing into a session another live proto process owns would write
+		// nothing, so every candidate has to be claimed before it is adopted.
+		const claim = options?.claimOwnership ?? claimSessionOwnership;
+		const newSession = (): SessionManager => {
+			const manager = new SessionManager(cwd, dir, true, storage);
+			manager.#resetToNewSession();
+			claim(manager.getSessionFile() ?? "");
+			return manager;
+		};
 		const resolvedCwd = path.resolve(cwd);
 		const breadcrumb = await readTerminalBreadcrumbEntry();
 		let chosenSession: string | null | undefined;
 
 		if (breadcrumb) {
 			if (breadcrumb.fresh && !breadcrumb.exists) {
-				const manager = new SessionManager(cwd, dir, true, storage);
-				manager.#resetToNewSession();
-				return manager;
+				return newSession();
 			}
 
 			breadcrumb.sessionFile = resolveBreadcrumbToInteractiveRoot(breadcrumb.sessionFile);
@@ -2686,13 +2848,14 @@ export class SessionManager {
 				const looksLikeMovedProject =
 					breadcrumbCwdMissing &&
 					(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
-				if (looksLikeMovedProject) {
+				if (looksLikeMovedProject && claim(breadcrumb.sessionFile)) {
 					logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
 
 					const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage, {
 						initialCwd: breadcrumbCwd,
 					});
 					await manager.moveTo(cwd, sessionDir);
+					claim(manager.getSessionFile() ?? "");
 					return manager;
 				}
 
@@ -2701,11 +2864,30 @@ export class SessionManager {
 		}
 
 		if (chosenSession === undefined) chosenSession = await findMostRecentSession(dir, storage);
+		if (chosenSession && !claim(chosenSession)) {
+			logger.info("Most recent session is open in another proto process; starting a new session", {
+				sessionFile: chosenSession,
+				ownerPid: liveSessionOwnerPid(chosenSession),
+			});
+			chosenSession = null;
+		}
 
+		if (!chosenSession) return newSession();
 		const manager = new SessionManager(cwd, dir, true, storage);
-		if (chosenSession) await manager.setSessionFile(chosenSession);
-		else manager.#resetToNewSession();
+		await manager.setSessionFile(chosenSession);
 		return manager;
+	}
+
+	/**
+	 * Set when history could not be persisted and the run continued in memory, so the
+	 * modes can tell the user why nothing is being saved.
+	 */
+	markPersistenceUnavailable(error: SessionDirectoryError): void {
+		this.#persistenceUnavailable = error;
+	}
+
+	getPersistenceUnavailable(): SessionDirectoryError | undefined {
+		return this.#persistenceUnavailable;
 	}
 
 	static inMemory(
@@ -2722,7 +2904,7 @@ export class SessionManager {
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
-		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		const dir = sessionDir || SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const sessions = await listSessions(dir, storage);
 		return sessions;
 	}

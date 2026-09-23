@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "../config/settings";
 import * as sdkModule from "../sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../session/agent-session";
+import { emptySubagentUsageTotals } from "../session/session-entries";
 import { EventBus } from "../utils/event-bus";
 import { runSubprocess } from "./executor";
 import { type AgentDefinition, type SubagentProgressPayload, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "./types";
@@ -16,7 +17,7 @@ function createMockSession(onPrompt: (emit: (event: AgentSessionEvent) => void) 
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
 		extensionRunner: undefined,
-		sessionManager: { appendSessionInit: () => {} },
+		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async (_toolNames: string[]) => {},

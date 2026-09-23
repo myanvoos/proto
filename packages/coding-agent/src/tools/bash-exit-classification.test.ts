@@ -116,7 +116,9 @@ test("renderer marks hard failures but keeps soft exits out of failure status", 
 		},
 		"exit 2",
 	);
-	expect(hard).toContain("failed");
+	// A failure names the tool and how it failed; a bare "failed" said neither.
+	expect(hard).toContain("Bash");
+	expect(hard).toContain("exit 2");
 });
 
 test("kernel cells exit 1 on a raised exception and must stay failures", async () => {

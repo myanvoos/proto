@@ -34,7 +34,7 @@ import {
 } from "../utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
 import { editorKey } from "./keybinding-hints";
-import { bottomBorder, divider, row, topBorder } from "./overlay-box";
+import { bottomBorder, divider, getDialogViewport, row, topBorder } from "./overlay-box";
 import { handleTabSwitchKey } from "./selector-helpers";
 
 const OTHER_OPTION = "Other (type your own)";
@@ -369,6 +369,12 @@ function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): Exte
 }
 
 export class AskDialogComponent implements Component {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
+
 	#states: QuestionState[];
 	#activeTabIndex = 0;
 	#submitScrollOffset = 0;
@@ -456,26 +462,33 @@ export class AskDialogComponent implements Component {
 
 	render(width: number): readonly string[] {
 		this.options.inputGuard?.syncPresentation?.();
-		const innerWidth = Math.max(1, width - 4);
+		let innerWidth = Math.max(1, width - 4);
 
-		const totalRows = this.#dialogHeight(innerWidth, process.stdout.rows || 40);
+		const totalRows = Math.min(
+			this.#maxHeight,
+			this.#dialogHeight(innerWidth, this.options.tui?.terminal.rows ?? (process.stdout.rows || 40)),
+		);
 		const headerLines = this.#renderHeader(innerWidth);
 
-		const fixedRows = 1 + headerLines.length + 1 + 1 + 1 + 1;
-		const bodyRows = Math.max(MIN_BODY_ROWS, totalRows - fixedRows);
+		const layout = getDialogViewport(totalRows, headerLines.length);
+		innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
+		// On roomy panes retain both dividers; on short panes the active row
+		// takes precedence over the question, preview and keyboard hints.
+		const headerDivider = layout.headerRows > 0 && layout.bodyRows > 1 ? 1 : 0;
+		const bodyRows = layout.bodyRows - headerDivider;
 		this.#bodyRows = bodyRows;
 		const bodyLines = this.#isSubmitTab()
 			? this.#renderSubmitBody(innerWidth, bodyRows)
 			: this.#renderQuestionBody(innerWidth, bodyRows);
 		const footer = this.#footerHintText(bodyLines.indicator);
 		return [
-			topBorder(width, this.#titleText()),
-			...headerLines.map(line => row(line, width)),
-			divider(width),
-			...bodyLines.lines.map(line => row(line, width)),
-			divider(width),
-			row(theme.fg("dim", footer), width),
-			bottomBorder(width),
+			...(layout.titleRows ? [topBorder(width, this.#titleText())] : []),
+			...headerLines.slice(0, layout.headerRows).map(line => row(line, width, layout.titleRows > 0)),
+			...(headerDivider ? [divider(width)] : []),
+			...bodyLines.lines.map(line => row(line, width, layout.titleRows > 0)),
+			...(layout.dividerRows ? [divider(width)] : []),
+			...(layout.footerRows ? [row(theme.fg("dim", footer), width, layout.titleRows > 0)] : []),
+			...(layout.bottomRows ? [bottomBorder(width)] : []),
 		];
 	}
 
@@ -488,7 +501,10 @@ export class AskDialogComponent implements Component {
 	}
 
 	#measureHeight(width: number, termRows: number): number {
-		const maxHeight = Math.max(MIN_DIALOG_ROWS, Math.floor(termRows * DIALOG_HEIGHT_RATIO));
+		const maxHeight = Math.min(
+			Math.max(1, termRows),
+			Math.max(MIN_DIALOG_ROWS, Math.floor(termRows * DIALOG_HEIGHT_RATIO)),
+		);
 		const chrome = 5;
 		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
 		const mdTheme = getMarkdownTheme();
@@ -860,22 +876,22 @@ export class AskDialogComponent implements Component {
 				);
 			}
 		}
-		allLines.push("");
-		allLines.push(theme.fg("accent", `${theme.nav.cursor} ${SUBMIT_OPTION}`));
-		this.#submitScrollOffset = clamp(this.#submitScrollOffset, 0, Math.max(0, allLines.length - rows));
+		const submitLine = theme.fg("accent", `${theme.nav.cursor} ${SUBMIT_OPTION}`);
+		const reviewRows = Math.max(0, rows - 1);
+		if (reviewRows === 0) return { lines: [submitLine], scrollOffset: 0, indicator: "" };
+		this.#submitScrollOffset = clamp(this.#submitScrollOffset, 0, Math.max(0, allLines.length - reviewRows));
 		const scrollView = new ScrollView(allLines, {
-			height: rows,
+			height: reviewRows,
 			scrollbar: "auto",
 			theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
 		});
 		scrollView.setScrollOffset(this.#submitScrollOffset);
-		const rendered = scrollView.render(width);
-		const lines = [...rendered];
-		while (lines.length < rows) lines.push("");
+		const lines = [...scrollView.render(width)];
+		while (lines.length < reviewRows) lines.push("");
 		return {
-			lines: lines.slice(0, rows),
+			lines: [...lines.slice(0, reviewRows), submitLine],
 			scrollOffset: this.#submitScrollOffset,
-			indicator: this.#clipIndicator(this.#submitScrollOffset, rows, allLines.length),
+			indicator: this.#clipIndicator(this.#submitScrollOffset, reviewRows, allLines.length),
 		};
 	}
 

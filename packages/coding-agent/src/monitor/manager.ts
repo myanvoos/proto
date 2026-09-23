@@ -5,6 +5,7 @@ import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import type { MonitorEvent, MonitorEventKind, MonitorSnapshot, MonitorStartSpec, MonitorStopReason } from "./types";
 
 const MAX_EVENT_TEXT_CHARS = 1_200;
+const MAX_CAPTURE_BYTES = 1024 * 1024;
 const STOP_GRACE_MS = 2_000;
 const TERMINATION_TIMEOUT_MS = STOP_GRACE_MS + 1_000;
 const TASK_SETTLE_TIMEOUT_MS = TERMINATION_TIMEOUT_MS + 500;
@@ -226,7 +227,9 @@ export class MonitorManager {
 	}
 
 	async #readStreamText(stream: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<string> {
-		const { bytes } = await readBytesWithLimit(stream, Number.MAX_SAFE_INTEGER, signal);
+		const { bytes, truncated } = await readBytesWithLimit(stream, MAX_CAPTURE_BYTES, signal);
+		if (truncated)
+			throw new Error(`Monitor output exceeds the ${MAX_CAPTURE_BYTES}-byte limit; filter the command output`);
 		return new TextDecoder().decode(bytes);
 	}
 
@@ -281,8 +284,12 @@ export class MonitorManager {
 
 		const decoder = new TextDecoder();
 		const pump = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
-			for await (const bytes of readLines(stream, record.abort.signal)) {
-				this.#onLine(record, decoder.decode(bytes));
+			try {
+				for await (const bytes of readLines(stream, record.abort.signal, MAX_CAPTURE_BYTES)) {
+					this.#onLine(record, decoder.decode(bytes));
+				}
+			} catch (error) {
+				this.#fail(record, `${errorText(error)}; filter the command output`);
 			}
 		};
 
@@ -399,6 +406,7 @@ export class MonitorManager {
 	#finish(record: MonitorRecord, reason: MonitorStopReason, exitCode?: number, errorMessage?: string): void {
 		if (record.snapshot.status !== "running") return;
 		record.snapshot.status = "stopped";
+		record.lastPollOutput = undefined;
 		record.snapshot.stoppedAt = this.#now();
 		record.snapshot.stopReason = reason;
 		if (exitCode !== undefined) record.snapshot.exitCode = exitCode;

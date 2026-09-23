@@ -199,6 +199,23 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 	return { path: urlPath, raw, ranges };
 }
 
+/**
+ * True when `candidate` is the port of `base`'s authority rather than a selector, i.e. the colon
+ * separating them is the `host:port` delimiter: `http://127.0.0.1` + `38051`. A port only exists
+ * while the authority is still the tail of the URL (`http://host:8080/page` has its path after it)
+ * and while the authority carries no port yet (`http://host:8080` + `12` is a line selector).
+ */
+function isAuthorityPortCandidate(base: string, candidate: string): boolean {
+	if (!/^\d{1,5}$/.test(candidate)) return false;
+	const port = Number(candidate);
+	if (port < 1 || port > 65535) return false;
+	const withoutScheme = base.replace(/^https?:\/\//i, "");
+	const authority = withoutScheme.split(/[/?#]/, 1)[0] ?? "";
+	if (withoutScheme.length > authority.length) return false;
+	const afterHost = authority.slice(authority.lastIndexOf("]") + 1);
+	return !afterHost.includes(":");
+}
+
 function tryExtractEmbeddedUrlSelector(readPath: string): { path: string; sels: string[] } | null {
 	let basePath = readPath;
 	const sels: string[] = [];
@@ -210,6 +227,7 @@ function tryExtractEmbeddedUrlSelector(readPath: string): { path: string; sels: 
 		const remainder = basePath.slice(0, lastColonIndex);
 		if (!isReadableUrlPath(remainder)) break;
 		if (!isUrlSelectorToken(candidate)) break;
+		if (isAuthorityPortCandidate(remainder, candidate)) break;
 
 		try {
 			new URL(
@@ -677,6 +695,8 @@ interface FetchImagePayload {
 
 type FetchRenderResult = RenderResult & {
 	image?: FetchImagePayload;
+	/** Set when the request itself failed (HTTP error status or transport error). */
+	failure?: { status?: number; error?: string };
 };
 
 const BINARY_SAMPLE_CHARS = 4096;
@@ -1020,13 +1040,14 @@ async function renderUrl(
 			finalUrl: response.finalUrl || url,
 			contentType: response.contentType || "unknown",
 			method: "failed",
-			content: "",
+			content: response.content,
 			fetchedAt,
-			truncated: false,
+			truncated: Boolean(response.truncated),
 			notes: [
 				response.status ? `Failed to fetch URL (HTTP ${response.status})` : "Failed to fetch URL",
 				...(response.error ? [`Cause: ${response.error}`] : []),
 			],
+			failure: { status: response.status, error: response.error },
 		};
 	}
 
@@ -1522,6 +1543,7 @@ export async function fetchReadUrl(
 		session.fetch,
 		webpExclusionForModel(session.getActiveModel?.()),
 	);
+	if (result.failure) throw fetchFailureError(url, result);
 	const output = buildUrlReadOutput(result, result.content);
 	const artifact = options?.ensureArtifact ? await persistReadUrlArtifact(session, output) : undefined;
 
@@ -1541,6 +1563,25 @@ export async function fetchReadUrl(
 		output,
 		content: result.content,
 	};
+}
+
+const FETCH_FAILURE_BODY_CHARS = 500;
+
+/** Turn a failed request into a tool error that names the status, the URL and what the server sent. */
+function fetchFailureError(requestedUrl: string, result: FetchRenderResult): ToolError {
+	const failure = result.failure ?? {};
+	const where =
+		result.finalUrl && result.finalUrl !== requestedUrl
+			? `${requestedUrl} (redirected to ${result.finalUrl})`
+			: requestedUrl;
+	const status = failure.status !== undefined ? ` (HTTP ${failure.status})` : "";
+	const cause = failure.error ? `: ${failure.error}` : "";
+	const body = result.content.trim();
+	const excerpt =
+		body.length === 0
+			? ""
+			: `\nBody: ${body.length > FETCH_FAILURE_BODY_CHARS ? `${body.slice(0, FETCH_FAILURE_BODY_CHARS)}…` : body}`;
+	return new ToolError(`Failed to fetch ${where}${status}${cause}${excerpt}`);
 }
 
 function buildUrlReadOutput(result: FetchRenderResult, content: string): string {

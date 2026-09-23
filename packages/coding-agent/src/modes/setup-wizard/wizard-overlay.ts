@@ -16,6 +16,9 @@ import type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult
 
 type WizardPhase = "scene" | "done";
 
+/** Why the wizard stopped: `completed` walked every scene, `cancelled` was aborted with ctrl+c. */
+export type SetupWizardOutcome = "completed" | "cancelled";
+
 const SCENE_MARGIN_X = 4;
 const MIN_CONTENT_WIDTH = 20;
 
@@ -40,10 +43,11 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	#phase: WizardPhase = "scene";
 	#sceneIndex = 0;
 	#activeScene: SetupSceneController | undefined;
-	#done = Promise.withResolvers<void>();
+	#done = Promise.withResolvers<SetupWizardOutcome>();
 	#disposed = false;
 
 	#bodyRowStart = 0;
+	#bodyColStart = SCENE_MARGIN_X;
 	#sceneFocusTarget: Component | undefined;
 
 	constructor(
@@ -51,9 +55,9 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		readonly scenes: readonly SetupScene[],
 	) {}
 
-	run(): Promise<void> {
+	run(): Promise<SetupWizardOutcome> {
 		if (this.scenes.length === 0) {
-			this.#complete();
+			this.#finish("completed");
 		} else {
 			this.#mountSceneController("scene");
 		}
@@ -84,7 +88,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 			return;
 		}
 		if (matchesKey(data, "ctrl+c")) {
-			this.#complete();
+			this.#finish("cancelled");
 			return;
 		}
 		this.#activeScene?.handleInput?.(data);
@@ -94,7 +98,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		const scene = this.#activeScene;
 		if (!scene) return;
 		if (scene.routeMouse) {
-			scene.routeMouse(event, event.row - this.#bodyRowStart, event.col - SCENE_MARGIN_X);
+			scene.routeMouse(event, event.row - this.#bodyRowStart, event.col - this.#bodyColStart);
 			return;
 		}
 		if (event.wheel !== null) {
@@ -126,30 +130,45 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		const scene = this.scenes[this.#sceneIndex];
 		const title = this.#activeScene?.title ?? scene?.title ?? "Setup";
 		const subtitle = this.#activeScene?.subtitle;
-		const contentWidth = Math.max(MIN_CONTENT_WIDTH, width - SCENE_MARGIN_X * 2);
+		const margin = Math.min(SCENE_MARGIN_X, Math.max(0, Math.floor((width - MIN_CONTENT_WIDTH) / 2)));
+		this.#bodyColStart = margin;
+		const contentWidth = Math.max(1, width - margin * 2);
 		const info = this.#heroInfo();
-		const header = [
-			"",
-			centerLine(heroWordmark(), width),
-			"",
-			centerLine(heroMeta(info.version, info.modelName, info.providerName), width),
-			centerLine(theme.fg("muted", `Setup step ${this.#sceneIndex + 1} of ${this.scenes.length}`), width),
-			"",
-			indentLine(theme.bold(title), width, SCENE_MARGIN_X),
-		];
-		if (subtitle) {
-			header.push(indentLine(theme.fg("muted", subtitle), width, SCENE_MARGIN_X));
+		const spacious = height >= 22 && width >= 40;
+		// A one-scene run (e.g. `/setup providers`) is not a numbered walkthrough.
+		const step =
+			this.scenes.length > 1
+				? [centerLine(theme.fg("muted", `Setup step ${this.#sceneIndex + 1} of ${this.scenes.length}`), width)]
+				: [];
+		const header = spacious
+			? [
+					"",
+					centerLine(heroWordmark(), width),
+					"",
+					centerLine(heroMeta(info.version, info.modelName, info.providerName), width),
+					...step,
+					"",
+					indentLine(theme.bold(title), width, margin),
+				]
+			: height >= 3
+				? [indentLine(theme.bold(title), width, margin)]
+				: [];
+		if (subtitle && height >= 10) {
+			header.push(indentLine(theme.fg("muted", subtitle), width, margin));
 		}
-		header.push("");
+		if (height >= 14) header.push("");
 		this.#bodyRowStart = header.length;
 
-		const footer = [
-			"",
-			centerLine(theme.fg("dim", "↑/↓ select · enter confirm · esc skip · ctrl+c exit setup"), width),
-		];
+		const hint =
+			width >= 58
+				? "↑/↓ select · enter confirm · esc skip · ctrl+c cancel setup"
+				: width >= 32
+					? "↑↓ select · Enter · Esc skip"
+					: "Enter · Esc skip";
+		const footer = height >= 4 ? [...(spacious ? [""] : []), centerLine(theme.fg("dim", hint), width)] : [];
 		const maxBodyLines = Math.max(0, height - header.length - footer.length);
 		const body = this.#activeScene?.render(contentWidth, maxBodyLines).slice(0, maxBodyLines) ?? [];
-		const lines = [...header, ...body.map(line => indentLine(line, width, SCENE_MARGIN_X))];
+		const lines = [...header, ...body.map(line => indentLine(line, width, margin))];
 		while (lines.length + footer.length < height) {
 			lines.push("");
 		}
@@ -169,7 +188,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		if (this.#disposed) return;
 		this.#unmountActiveScene();
 		if (this.#sceneIndex >= this.scenes.length) {
-			this.#complete();
+			this.#finish("completed");
 			return;
 		}
 		const scene = this.scenes[this.#sceneIndex];
@@ -208,9 +227,9 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 		this.#activeScene = undefined;
 	}
 
-	#complete(): void {
+	#finish(outcome: SetupWizardOutcome): void {
 		if (this.#phase === "done") return;
 		this.#phase = "done";
-		this.#done.resolve();
+		this.#done.resolve(outcome);
 	}
 }

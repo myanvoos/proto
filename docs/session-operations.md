@@ -217,9 +217,10 @@ These callbacks are observational; they do not cancel switch/fork.
 
 When session manager is created with `SessionManager.inMemory()` (`--no-session`):
 
-- Session file path is absent.
-- `/fork` fails because `SessionManager.fork()` requires persistence.
-- CLI resume/continue semantics are bypassed if `--no-session` is set, because manager creation returns in-memory immediately.
+- Session file path remains absent, including after resuming saved history; the source does not become a persistence target or acquire a live-session marker.
+- `/resume`, `--resume <id|path>`, and the startup `--resume` picker load saved history into memory. `--continue` loads the most recent session in the selected session-directory scope.
+- Subsequent messages, title changes, and editor drafts remain ephemeral. Resuming does not rewrite the source transcript or its artifacts, and does not create a terminal resume breadcrumb.
+- `/fork` fails because `SessionManager.fork()` requires persistence. Explicit export/save operations are separate from resuming.
 
 ## Known implementation caveats (as of current code)
 

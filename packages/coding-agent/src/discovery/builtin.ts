@@ -273,6 +273,9 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 			providerId: PROVIDER_ID,
 			level: "project",
 			requireDescription: true,
+			// Project skills ship with whatever repository the user opened; a SKILL.md that symlinks
+			// out of it would read an arbitrary file into the model's context.
+			containRoot: dir,
 		}),
 	);
 

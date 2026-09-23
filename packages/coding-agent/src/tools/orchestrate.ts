@@ -2,7 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
@@ -30,6 +30,7 @@ import type { ToolSession } from "./index";
 import {
 	Ellipsis,
 	formatBadge,
+	formatCost,
 	formatDuration,
 	formatStatusIcon,
 	PREVIEW_LIMITS,
@@ -443,6 +444,7 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 				`parent=${screen.parentSessionId ?? "?"}`,
 			];
 			if (screen.queued > 0) parts.push(`${screen.queued} queued`);
+			if (screen.usage) parts.push(`${formatNumber(screen.usage.tokens)} tok`, formatCost(screen.usage.cost));
 			if (screen.model) parts.push(screen.model);
 			if (screen.lastActivity) parts.push(`last: ${screen.lastActivity}`);
 			if (screen.terminal) parts.push(`reason: ${screen.terminal.reason}`, `history: ${screen.terminal.history}`);

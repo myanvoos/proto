@@ -90,11 +90,12 @@ import {
 	type TextBlockParam,
 } from "./anthropic-wire";
 import {
+	adoptRequiredClaudeCodeVersion,
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
 	claudeCodeSystemInstruction,
-	claudeCodeVersion,
 	claudeToolPrefix,
-	coworkUserAgent,
+	getClaudeCodeVersion,
+	getCoworkUserAgent,
 } from "./claude-code-fingerprint";
 import {
 	buildCopilotDynamicHeaders,
@@ -282,7 +283,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	}
 
 	if (oauthToken) {
-		const userAgent = isClaudeCodeClientUserAgent(incomingUserAgent) ? incomingUserAgent : coworkUserAgent;
+		const userAgent = isClaudeCodeClientUserAgent(incomingUserAgent) ? incomingUserAgent : getCoworkUserAgent();
 		const headers = {
 			...modelHeaders,
 			Accept: acceptHeader,
@@ -501,9 +502,10 @@ const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 
 function createClaudeBillingHeader(firstUserMessageText: string): string {
 	const k = [4, 7, 20].map(i => firstUserMessageText[i] ?? "0").join("");
-	const versionSuffix = Bun.SHA256.hash(`59cf53e54c78${k}${claudeCodeVersion}`, "hex").slice(0, 3);
+	const version = getClaudeCodeVersion();
+	const versionSuffix = Bun.SHA256.hash(`59cf53e54c78${k}${version}`, "hex").slice(0, 3);
 
-	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${claudeCodeVersion}.${versionSuffix}; cc_entrypoint=claude-desktop; ${CCH_PLACEHOLDER_STR};`;
+	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${version}.${versionSuffix}; cc_entrypoint=claude-desktop; ${CCH_PLACEHOLDER_STR};`;
 }
 
 const CCH_SEED = 0x4d659218e32a3268n;
@@ -1605,6 +1607,8 @@ const streamAnthropicOnce = (
 			const zeroOutputCacheRefresh = options?.anthropicCacheRefreshRequest === true;
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
+			// Retained so a Claude Code version bump can rebuild the client fingerprint headers.
+			let clientArgs: AnthropicClientOptionsArgs | undefined;
 
 			if (options?.client) {
 				client = options.client;
@@ -1672,7 +1676,7 @@ const streamAnthropicOnce = (
 					}
 				}
 
-				const created = createClient(model, {
+				clientArgs = {
 					model,
 					apiKey,
 					extraBetas,
@@ -1688,7 +1692,8 @@ const streamAnthropicOnce = (
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					claudeCodeSessionId: options?.sessionId ?? extractClaudeMetadataSessionId(options?.metadata?.user_id),
 					disableStrictTools,
-				});
+				};
+				const created = createClient(model, clientArgs);
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
 			}
@@ -2357,6 +2362,29 @@ const streamAnthropicOnce = (
 					break;
 				} catch (streamError) {
 					const streamFailure = activeAbortTracker.getLocalAbortReason() ?? streamError;
+					if (
+						isOAuthToken &&
+						clientArgs &&
+						firstTokenTime === undefined &&
+						adoptRequiredClaudeCodeVersion(streamFailure)
+					) {
+						logger.warn("anthropic: Claude Code version rejected as too old, retrying with required version", {
+							model: model.id,
+							version: getClaudeCodeVersion(),
+						});
+						client = createClient(model, { ...clientArgs, disableStrictTools }).client;
+						params = await prepareParams();
+						providerRetryAttempt = 0;
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
 					if (
 						!disableStrictTools &&
 						firstTokenTime === undefined &&

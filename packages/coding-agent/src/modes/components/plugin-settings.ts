@@ -585,6 +585,17 @@ interface InputHandler {
 }
 
 export class PluginSettingsComponent extends Container {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
+	}
+
+	override render(width: number): readonly string[] {
+		this.#viewComponent?.setMaxHeight?.(this.#maxHeight);
+		return this.#viewComponent?.render(width) ?? [];
+	}
+
 	#cwd: string;
 	#manager: PluginManager;
 	#viewComponent: (Component & InputHandler) | null = null;

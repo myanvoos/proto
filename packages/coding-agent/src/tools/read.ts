@@ -14,6 +14,7 @@ import {
 	sanitizeText,
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
+import { ARCHIVE_EXTENSION_ALTERNATION } from "@oh-my-pi/pi-utils/ar";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import type { ResolvedArtifactFile } from "../internal-urls/artifact-protocol";
 import type { InternalUrl } from "../internal-urls/types";
@@ -73,6 +74,7 @@ import {
 	splitAddressableFileLines,
 } from "./read-format";
 import {
+	describeUnreadableFileType,
 	findSuffixMatchCached,
 	isNotFoundError,
 	isRemoteMountPath,
@@ -133,8 +135,10 @@ function isPotentialMarkitExtension(extension: string): boolean {
 	);
 }
 
+const ARCHIVE_PATH_HINT = new RegExp(`\\.(?:${ARCHIVE_EXTENSION_ALTERNATION})(?=[:]|$)`, "i");
+
 function hasArchivePathHint(value: string): boolean {
-	return /\.(?:tar\.gz|tgz|zip|tar|gz)(?=[:]|$)/i.test(value);
+	return ARCHIVE_PATH_HINT.test(value);
 }
 
 function hasSqlitePathHint(value: string): boolean {
@@ -921,9 +925,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
 		}
 
-		const { ImageInputTooLargeError, loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } = await import(
-			"../utils/image-loading"
-		);
+		const {
+			ImageDecodeError,
+			ImageInputTooLargeError,
+			loadImageInput,
+			MAX_IMAGE_INPUT_BYTES,
+			webpExclusionForModel,
+		} = await import("../utils/image-loading");
 		if (fileSize > MAX_IMAGE_INPUT_BYTES) {
 			const sizeStr = formatBytes(fileSize);
 			const maxStr = formatBytes(MAX_IMAGE_INPUT_BYTES);
@@ -951,7 +959,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				sourcePath: imageInput.resolvedPath,
 			};
 		} catch (error) {
-			if (error instanceof ImageInputTooLargeError) {
+			if (error instanceof ImageInputTooLargeError || error instanceof ImageDecodeError) {
 				throw new ToolError(error.message);
 			}
 			throw error;
@@ -1365,10 +1373,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		let isDirectory = false;
 		let fileSize = 0;
+		let blockingKind: string | undefined;
 		try {
 			const stat = await Bun.file(absolutePath).stat();
 			fileSize = stat.size;
 			isDirectory = stat.isDirectory();
+			blockingKind = describeUnreadableFileType(stat);
 		} catch (error) {
 			if (isNotFoundError(error)) {
 				if (readPath.includes(";")) {
@@ -1384,6 +1394,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							absolutePath = suffixMatch.absolutePath;
 							fileSize = retryStat.size;
 							isDirectory = retryStat.isDirectory();
+							blockingKind = describeUnreadableFileType(retryStat);
 							suffixResolution = { from: localReadPath, to: suffixMatch.displayPath };
 						} catch {}
 					}
@@ -1397,6 +1408,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			} else {
 				throw error;
 			}
+		}
+
+		if (blockingKind) {
+			throw new ToolError(
+				`Cannot read '${localReadPath}': it is ${blockingKind}. Use the bash tool with a timeout if you need its contents.`,
+			);
 		}
 
 		if (isDirectory) {

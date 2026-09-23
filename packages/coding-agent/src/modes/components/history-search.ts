@@ -1,14 +1,4 @@
-import {
-	type Component,
-	Ellipsis,
-	Input,
-	matchesKey,
-	padding,
-	Spacer,
-	Text,
-	truncateToWidth,
-	visibleWidth,
-} from "@oh-my-pi/pi-tui";
+import { type Component, Ellipsis, Input, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
 import {
 	matchesAppInterrupt,
@@ -19,7 +9,7 @@ import {
 } from "../../modes/utils/keybinding-matchers";
 import type { HistoryEntry, HistoryStorage } from "../../session/history-storage";
 import { rawKeyHint } from "./keybinding-hints";
-import { OverlayPanel } from "./overlay-box";
+import { bottomBorder, getDialogViewport, row, topBorder } from "./overlay-box";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
 const MAX_VISIBLE = 10;
@@ -85,6 +75,10 @@ class HistoryResultsList implements Component {
 		this.#tokens = tokens;
 	}
 
+	setMaxHeight(rows: number): void {
+		this.#maxVisible = Math.max(1, Math.min(MAX_VISIBLE, rows));
+	}
+
 	setSelectedIndex(selectedIndex: number): void {
 		this.#selectedIndex = selectedIndex;
 	}
@@ -96,7 +90,7 @@ class HistoryResultsList implements Component {
 
 		if (this.#results.length === 0) {
 			const message = this.#tokens.length > 0 ? "No matching history" : "No history yet";
-			lines.push(theme.fg("muted", `  ${theme.status.info} ${message}`));
+			lines.push(truncateToWidth(theme.fg("muted", `${theme.status.info} ${message}`), width));
 			return lines;
 		}
 
@@ -114,7 +108,7 @@ class HistoryResultsList implements Component {
 
 			const timeStr = relativeTime(entry.created_at);
 			const timeWidth = visibleWidth(timeStr);
-			const showTime = rowWidth >= gutterWidth + 12 + timeWidth;
+			const showTime = rowWidth >= gutterWidth + 24 + timeWidth + 1;
 
 			const promptBudget = Math.max(4, rowWidth - gutterWidth - (showTime ? timeWidth + 1 : 0));
 			const normalized = entry.prompt.replace(/\s+/g, " ").trim();
@@ -140,7 +134,7 @@ class HistoryResultsList implements Component {
 	}
 }
 
-export class HistorySearchComponent extends OverlayPanel {
+export class HistorySearchComponent implements Component {
 	#historyStorage: HistoryStorage;
 	#searchInput: Input;
 	#results: HistoryEntry[] = [];
@@ -149,9 +143,11 @@ export class HistorySearchComponent extends OverlayPanel {
 	#onSelect: (prompt: string) => void;
 	#onCancel: () => void;
 	#resultLimit = 100;
+	#maxHeight = MAX_VISIBLE + 5;
+	#visibleRows = MAX_VISIBLE;
+	#hint: string;
 
 	constructor(historyStorage: HistoryStorage, onSelect: (prompt: string) => void, onCancel: () => void) {
-		super("History");
 		this.#historyStorage = historyStorage;
 		this.#onSelect = onSelect;
 		this.#onCancel = onCancel;
@@ -170,17 +166,32 @@ export class HistorySearchComponent extends OverlayPanel {
 		this.#resultsList = new HistoryResultsList();
 
 		const dot = theme.fg("dim", theme.sep.dot);
-		const hint = [rawKeyHint("↑↓", "navigate"), rawKeyHint("enter", "select"), rawKeyHint("esc", "cancel")].join(dot);
-
-		this.addChild(new Spacer(1));
-		this.addChild(this.#searchInput);
-		this.addChild(new Spacer(1));
-		this.addChild(this.#resultsList);
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(hint, 0, 0));
-		this.addChild(new Spacer(1));
+		this.#hint = [rawKeyHint("↑↓", "navigate"), rawKeyHint("enter", "select"), rawKeyHint("esc", "cancel")].join(dot);
 
 		this.#updateResults();
+	}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
+
+	invalidate(): void {}
+
+	render(width: number): readonly string[] {
+		// Reserve the query separately: both query and selected result outrank borders/hints.
+		const queryRows = this.#maxHeight >= 2 ? 1 : 0;
+		const layout = getDialogViewport(this.#maxHeight - queryRows);
+		const innerWidth = Math.max(0, layout.titleRows ? width - 4 : width);
+		this.#visibleRows = Math.min(MAX_VISIBLE, layout.bodyRows + layout.dividerRows);
+		this.#resultsList.setMaxHeight(this.#visibleRows);
+		const lines: string[] = [];
+		if (layout.titleRows) lines.push(topBorder(width, "History"));
+		if (queryRows)
+			lines.push(row(this.#searchInput.render(Math.max(1, innerWidth))[0] ?? "", width, layout.titleRows > 0));
+		for (const line of this.#resultsList.render(innerWidth)) lines.push(row(line, width, layout.titleRows > 0));
+		if (layout.footerRows) lines.push(row(width < 40 ? "↑↓ · Enter pick" : this.#hint, width, layout.titleRows > 0));
+		if (layout.bottomRows) lines.push(bottomBorder(width));
+		return lines;
 	}
 
 	handleInput(keyData: string): void {
@@ -200,14 +211,14 @@ export class HistorySearchComponent extends OverlayPanel {
 
 		if (matchesSelectPageUp(keyData)) {
 			if (this.#results.length === 0) return;
-			this.#selectedIndex = Math.max(0, this.#selectedIndex - MAX_VISIBLE);
+			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#visibleRows);
 			this.#resultsList.setSelectedIndex(this.#selectedIndex);
 			return;
 		}
 
 		if (matchesSelectPageDown(keyData)) {
 			if (this.#results.length === 0) return;
-			this.#selectedIndex = Math.min(this.#results.length - 1, this.#selectedIndex + MAX_VISIBLE);
+			this.#selectedIndex = Math.min(this.#results.length - 1, this.#selectedIndex + this.#visibleRows);
 			this.#resultsList.setSelectedIndex(this.#selectedIndex);
 			return;
 		}

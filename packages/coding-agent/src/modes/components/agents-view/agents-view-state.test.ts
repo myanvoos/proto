@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "../../../registry/agent-registry";
 import type { SessionInfo } from "../../../session/session-listing";
-import { buildAgentsViewRows, countAgentsBySection, reconcileAgentsViewRecords } from "./agents-view-state";
+import {
+	buildAgentsViewRows,
+	countAgentsBySection,
+	reconcileAgentsViewRecords,
+	sumAgentsViewUsage,
+} from "./agents-view-state";
 
 function fakeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 	return {
@@ -215,5 +220,41 @@ describe("agents view lineage nesting", () => {
 		const childRow = rows.find(row => row.identity === `file:${childFile}`);
 		expect(childRow?.kind).toBe("agent");
 		expect(childRow?.depth).toBe(0);
+	});
+});
+
+describe("agents view spend", () => {
+	const measured = (id: string, cost: number, tokens: number): AgentRef =>
+		fakeRef({
+			id,
+			label: id,
+			sessionFile: `/tmp/proto-view/${id}.jsonl`,
+			history: { metrics: { tokens, requests: 2, tools: 1, cost, durationMs: 10, durationKind: "span" } },
+		});
+
+	test("each measured agent reports its own tokens and cost", () => {
+		const records = reconcileAgentsViewRecords([measured("c1", 0.08, 12_300)], []);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
+		expect(rows[0]?.usage).toBe("$0.080 · 12K tok");
+	});
+
+	test("an agent with nothing measured reports no spend", () => {
+		const rows = buildAgentsViewRows(
+			reconcileAgentsViewRecords([fakeRef({ id: "fresh" })], []),
+			new Set(),
+			new Set(),
+			new Map(),
+			undefined,
+		);
+		expect(rows[0]?.usage).toBeUndefined();
+	});
+
+	test("the view total counts every listed agent exactly once", () => {
+		const records = reconcileAgentsViewRecords([measured("c1", 0.08, 12_000), measured("c2", 0.08, 8_000)], []);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
+		const total = sumAgentsViewUsage([...rows, ...rows]);
+		expect(total.agents).toBe(2);
+		expect(total.cost).toBeCloseTo(0.16, 10);
+		expect(total.tokens).toBe(20_000);
 	});
 });

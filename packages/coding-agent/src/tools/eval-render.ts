@@ -744,6 +744,9 @@ function formatCellOutputLines(
 	return { lines: visualLines, hiddenCount: skippedCount };
 }
 
+/** Captioned outlines sit one step in from the shell lines that surround them. */
+const OUTLINE_INDENT = "  ";
+
 function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
 	if (language === "python") return renderPythonAstLines(code, theme, width) ?? undefined;
 	if (language === "js") return renderJavaScriptAstLines(code, theme, width) ?? undefined;
@@ -756,6 +759,12 @@ export interface EvalDisplayCell {
 	end: number;
 	code: string;
 	language: EvalLanguage;
+	/**
+	 * Names what the outline summarizes, for cells whose body is not obviously code from the
+	 * surrounding shell line (a heredoc-written file). Captioned outlines are also indented, so the
+	 * summary cannot be misread as commands the shell ran.
+	 */
+	label?: string;
 }
 
 // Shell chunks keep the newline that separated them from the cell body; drop
@@ -792,9 +801,14 @@ export function renderShellWithCellOutlines(
 	for (const cell of cells) {
 		if (cell.start < cursor || cell.end < cell.start || cell.end > source.length) return undefined;
 		lines.push(...shellChunkLines(source.slice(cursor, cell.start), shellLanguage, theme, highlight));
-		const ast = astPreviewLines(cell.code, cell.language, theme, width);
+		const ast = astPreviewLines(cell.code, cell.language, theme, width - (cell.label ? OUTLINE_INDENT.length : 0));
 		if (ast) {
-			lines.push(...ast);
+			if (cell.label) {
+				lines.push(theme.fg("dim", `${OUTLINE_INDENT}\u22ee outline of ${cell.label}`));
+				for (const line of ast) lines.push(`${OUTLINE_INDENT}${line}`);
+			} else {
+				lines.push(...ast);
+			}
 			outlined = true;
 		} else {
 			const cellLines = highlight
@@ -971,6 +985,12 @@ export function renderKernelCellLines(
 		displayCells?: readonly EvalDisplayCell[];
 		/** Embedded-language regions of `displayCode`; each keeps its own syntax coloring while the cell is live. */
 		displayRegions?: readonly EmbeddedCodeRegion[];
+		/**
+		 * Trailing notices (elision, truncation recovery) for the whole call. They render as a final
+		 * section of this card so they sit on the rail with the output they describe instead of
+		 * trailing the card as loose text.
+		 */
+		noticeLines?: readonly string[];
 	},
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
@@ -997,7 +1017,7 @@ export function renderKernelCellLines(
 	const treeScalarLen = cellExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
 	const labelOutputs = jsonOutputs.length > 1;
 	const jsonLines = jsonOutputs.flatMap((value, index) => {
-		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen);
+		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen, width);
 		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
 		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
 	});
@@ -1062,6 +1082,8 @@ export function renderKernelCellLines(
 
 	const extraSections: Array<{ label?: string; lines: readonly string[] }> = [];
 	if (statusLines.length > 0) extraSections.push({ label: theme.fg("toolTitle", "Status"), lines: statusLines });
+	const noticeLines = (opts.noticeLines ?? []).filter(line => line.length > 0);
+	if (noticeLines.length > 0) extraSections.push({ lines: noticeLines });
 	const cellLines = renderCodeCell(
 		{
 			code,
@@ -1184,11 +1206,12 @@ export const evalToolRenderer = {
 		const treeLineCap = treeExpanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
 		const treeScalarLen = treeExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
 		const labelOutputs = jsonOutputs.length > 1;
-		const jsonLines = jsonOutputs.flatMap((value, index) => {
-			const tree = renderJsonTreeLines(value, uiTheme, treeDepth, treeLineCap, treeScalarLen);
-			const body = tree.truncated ? [...tree.lines, uiTheme.fg("dim", "…")] : tree.lines;
-			return labelOutputs ? [uiTheme.fg("dim", `display[${index + 1}]`), ...body] : body;
-		});
+		const renderJsonLines = (width: number): string[] =>
+			jsonOutputs.flatMap((value, index) => {
+				const tree = renderJsonTreeLines(value, uiTheme, treeDepth, treeLineCap, treeScalarLen, width);
+				const body = tree.truncated ? [...tree.lines, uiTheme.fg("dim", "…")] : tree.lines;
+				return labelOutputs ? [truncateToWidth(uiTheme.fg("dim", `display[${index + 1}]`), width), ...body] : body;
+			});
 
 		let warningLine: string | undefined;
 		if (details?.meta?.truncation) {
@@ -1218,6 +1241,7 @@ export const evalToolRenderer = {
 					}
 
 					const lines: string[] = [];
+					const trailingNotices = [noticeLine, warningLine].filter((line): line is string => line !== undefined);
 					for (let i = 0; i < displayCells.length; i++) {
 						const { cell } = displayCells[i];
 						// Shared with the bash kernel bridge so the two surfaces can
@@ -1233,23 +1257,19 @@ export const evalToolRenderer = {
 								width,
 								index: i,
 								total: cellResults.length,
+								noticeLines: i === displayCells.length - 1 ? trailingNotices : undefined,
 							}),
 						);
 						if (i < cellResults.length - 1) {
 							lines.push("");
 						}
 					}
+					const jsonLines = renderJsonLines(width);
 					if (jsonLines.length > 0) {
 						if (lines.length > 0) {
 							lines.push("");
 						}
 						lines.push(...jsonLines);
-					}
-					if (noticeLine) {
-						lines.push(noticeLine);
-					}
-					if (warningLine) {
-						lines.push(warningLine);
 					}
 					cached = { key, width, result: lines };
 					return lines;
@@ -1261,7 +1281,9 @@ export const evalToolRenderer = {
 		}
 
 		const displayOutput = output;
-		const combinedOutput = [displayOutput, ...jsonLines].filter(Boolean).join("\n");
+		const hasOutput = displayOutput.length > 0 || jsonOutputs.length > 0;
+		const combinedOutput = (width: number): string =>
+			[displayOutput, ...renderJsonLines(width)].filter(Boolean).join("\n");
 
 		const statusEvents = details?.statusEvents ?? [];
 		const hasStatusEvents = statusEvents.length > 0;
@@ -1274,12 +1296,12 @@ export const evalToolRenderer = {
 			return { sectionRowBudget: Math.max(0, liveWindow - 1 - EVAL_LIVE_SLACK_ROWS) };
 		};
 
-		if (!combinedOutput && !hasStatusEvents) {
+		if (!hasOutput && !hasStatusEvents) {
 			const lines = [noticeLine, warningLine].filter(Boolean) as string[];
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
-		if (!combinedOutput && hasStatusEvents) {
+		if (!hasOutput && hasStatusEvents) {
 			return widthAwareText(width => {
 				const lines = [
 					uiTheme.fg("dim", "Status"),
@@ -1292,19 +1314,18 @@ export const evalToolRenderer = {
 		}
 
 		if (options.renderContext?.expanded ?? options.expanded) {
-			const styledOutput = combinedOutput
-				.split("\n")
-				.map(line => uiTheme.fg("toolOutput", line))
-				.join("\n");
 			return widthAwareText(width => {
+				const styledOutput = combinedOutput(width)
+					.split("\n")
+					.map(line => uiTheme.fg("toolOutput", line));
 				const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
 					...statusSectionOptions(),
 					sectionRowBudget: isPartialResult
-						? Math.max(0, previewWindowRows() - styledOutput.split("\n").length - 1 - EVAL_LIVE_SLACK_ROWS)
+						? Math.max(0, previewWindowRows() - styledOutput.length - 1 - EVAL_LIVE_SLACK_ROWS)
 						: undefined,
 				});
 				const lines = [
-					styledOutput,
+					...styledOutput,
 					...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
 					noticeLine,
 					warningLine,
@@ -1312,12 +1333,6 @@ export const evalToolRenderer = {
 				return lines;
 			});
 		}
-
-		const styledOutput = combinedOutput
-			.split("\n")
-			.map(line => uiTheme.fg("toolOutput", line))
-			.join("\n");
-		const textContent = `\n${styledOutput}`;
 
 		let cachedWidth: number | undefined;
 		let cachedLines: readonly string[] | undefined;
@@ -1331,7 +1346,11 @@ export const evalToolRenderer = {
 					previewWindowRows(),
 				);
 				if (cachedLines === undefined || cachedWidth !== width || cachedPreviewLines !== previewLines) {
-					const result = truncateToVisualLines(textContent, previewLines, width);
+					const styledOutput = combinedOutput(width)
+						.split("\n")
+						.map(line => uiTheme.fg("toolOutput", line))
+						.join("\n");
+					const result = truncateToVisualLines(`\n${styledOutput}`, previewLines, width);
 					cachedLines = result.visualLines;
 					cachedSkipped = result.skippedCount;
 					cachedWidth = width;

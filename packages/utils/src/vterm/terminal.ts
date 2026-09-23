@@ -81,7 +81,8 @@ export class Terminal {
 	#autowrap = true;
 	#insertMode = false;
 	#pendingWrap = false;
-	#saved: SavedCursor | undefined;
+	#savedNormal: SavedCursor | undefined;
+	#savedAlternate: SavedCursor | undefined;
 	#alternateSavedAttrs: CellAttributes | undefined;
 	#state: "ground" | "escape" | "csi" | "string" = "ground";
 	#sequence = "";
@@ -123,8 +124,19 @@ export class Terminal {
 		const nextColumns = Math.max(2, Math.floor(columns));
 		const nextRows = Math.max(1, Math.floor(rows));
 		if (nextColumns === this.cols && nextRows === this.rows) return;
-		this.#normal = this.#reflow(this.#normal, nextColumns, nextRows, true);
-		this.#alternate = this.#reflow(this.#alternate, nextColumns, nextRows, false);
+		// xterm pads a height grow before width reflow when the cursor is not
+		// on the bottom row. Reflow may then push those padded rows down; adding
+		// padding afterwards incorrectly pulls history into the live viewport.
+		if (
+			nextColumns < this.cols &&
+			nextRows > this.rows &&
+			this.#growPullsHistory === "cursorOnLastRow" &&
+			this.#normal.cursorY < this.rows - 1
+		) {
+			for (let row = this.rows; row < nextRows; row++) this.#normal.lines.push(new BufferLine(this.cols));
+		}
+		this.#normal = this.#reflow(this.#normal, nextColumns, nextRows, true, this.#savedNormal);
+		this.#alternate = this.#reflow(this.#alternate, nextColumns, nextRows, false, this.#savedAlternate);
 		this.cols = nextColumns;
 		this.rows = nextRows;
 		this.#scrollTop = 0;
@@ -326,7 +338,7 @@ export class Terminal {
 				this.#eraseCells(amount);
 				break;
 			case "S":
-				for (let index = 0; index < amount; index++) this.#scrollUp();
+				for (let index = 0; index < amount; index++) this.#scrollUp(false);
 				break;
 			case "T":
 				for (let index = 0; index < amount; index++) this.#scrollDown();
@@ -408,10 +420,10 @@ export class Terminal {
 		if (wrapped) this.#currentLine().isWrapped = true;
 	}
 
-	#scrollUp(): void {
+	#scrollUp(preserveHistory = true): void {
 		const top = this.#active.baseY + this.#scrollTop;
 		const bottom = this.#active.baseY + this.#scrollBottom;
-		if (this.#scrollTop === 0 && this.#scrollBottom === this.rows - 1 && !this.#usingAlternate) {
+		if (preserveHistory && this.#scrollTop === 0 && this.#scrollBottom === this.rows - 1 && !this.#usingAlternate) {
 			const followedBottom = this.#active.viewportY === this.#active.baseY;
 			this.#active.lines.push(new BufferLine(this.cols, this.#attrs));
 			const capacity = this.rows + this.#scrollback;
@@ -642,14 +654,17 @@ export class Terminal {
 	}
 
 	#saveCursor(): void {
-		this.#saved = { x: this.#active.cursorX, y: this.#active.cursorY, attrs: { ...this.#attrs } };
+		const saved = { x: this.#active.cursorX, y: this.#active.cursorY, attrs: { ...this.#attrs } };
+		if (this.#usingAlternate) this.#savedAlternate = saved;
+		else this.#savedNormal = saved;
 	}
 
 	#restoreCursor(): void {
-		if (!this.#saved) return;
-		this.#active.cursorX = Math.min(this.cols - 1, this.#saved.x);
-		this.#active.cursorY = Math.min(this.rows - 1, this.#saved.y);
-		this.#attrs = { ...this.#saved.attrs };
+		const saved = this.#usingAlternate ? this.#savedAlternate : this.#savedNormal;
+		if (!saved) return;
+		this.#active.cursorX = Math.min(this.cols - 1, saved.x);
+		this.#active.cursorY = Math.min(this.rows - 1, saved.y);
+		this.#attrs = { ...saved.attrs };
 		this.#pendingWrap = false;
 	}
 
@@ -678,6 +693,8 @@ export class Terminal {
 	}
 
 	#reset(): void {
+		this.#savedNormal = undefined;
+		this.#savedAlternate = undefined;
 		this.#attrs = defaultAttributes();
 		this.#normal = createState(this.cols, this.rows);
 		this.#alternate = createState(this.cols, this.rows);
@@ -692,22 +709,49 @@ export class Terminal {
 		this.modes.applicationCursorKeysMode = false;
 	}
 
-	#reflow(state: BufferState, columns: number, rows: number, retainHistory: boolean): BufferState {
+	#reflow(
+		state: BufferState,
+		columns: number,
+		rows: number,
+		retainHistory: boolean,
+		saved?: SavedCursor,
+	): BufferState {
 		const absoluteCursor = state.baseY + state.cursorY;
-		const groups: Array<{ cells: CellData[]; cursorOffset?: number }> = [];
+		const absoluteSaved = saved ? state.baseY + saved.y : undefined;
+		const groups: Array<{ cells: CellData[]; cursorOffset?: number; savedOffset?: number }> = [];
 		for (let row = 0; row < state.lines.length; row++) {
 			const line = state.lines[row]!;
 			if (!line.isWrapped || groups.length === 0) groups.push({ cells: [] });
 			const group = groups.at(-1)!;
-			const used = line.isWrapped || state.lines[row + 1]?.isWrapped ? line.cells.length : this.#usedColumns(line);
-			if (row === absoluteCursor) group.cursorOffset = group.cells.length + state.cursorX;
+			const next = state.lines[row + 1];
+			let used = next?.isWrapped ? line.cells.length : this.#usedColumns(line);
+			// A wide glyph that did not fit leaves an unoccupied final cell, not
+			// a logical space. Do not accumulate that padding across resizes.
+			if (
+				next?.isWrapped &&
+				next.cells[0]?.width === 2 &&
+				line.cells[used - 1]?.width === 1 &&
+				!line.cells[used - 1]?.chars
+			)
+				used--;
+			if (row === absoluteCursor) {
+				group.cursorOffset = group.cells.length + state.cursorX;
+				used = Math.max(used, state.cursorX);
+			}
+			if (saved && row === absoluteSaved) group.savedOffset = group.cells.length + saved.x;
 			for (let column = 0; column < used; column++) group.cells.push(cloneCell(line.cells[column]!));
 		}
 		const lines: BufferLine[] = [];
 		let cursorAbsolute = 0;
 		let cursorX = 0;
+		let savedAbsolute = 0;
+		let savedX = 0;
 		for (const group of groups) {
-			const start = lines.length;
+			if (group.savedOffset !== undefined) savedAbsolute = lines.length;
+			if (group.cursorOffset !== undefined) {
+				cursorAbsolute = lines.length;
+				cursorX = 0;
+			}
 			if (group.cells.length === 0) lines.push(new BufferLine(columns));
 			else {
 				let source = 0;
@@ -724,26 +768,40 @@ export class Terminal {
 						if (cell.width === 2 && target === columns - 1) break;
 						line.cells[target] = cloneCell(cell);
 						if (cell.width === 2) line.cells[target + 1] = { chars: "", width: 0, attrs: { ...cell.attrs } };
+						if (group.cursorOffset !== undefined && group.cursorOffset >= source) {
+							// Map the cursor through actual packing, including wide-cell
+							// gaps. Division by columns loses those gaps and can overwrite
+							// text after a resize. Keep column == columns for pending wrap.
+							cursorAbsolute = lines.length;
+							cursorX = target + Math.min(cell.width, group.cursorOffset - source);
+						}
+						if (group.savedOffset !== undefined && group.savedOffset >= source) {
+							savedAbsolute = lines.length;
+							savedX = target + Math.min(cell.width, group.savedOffset - source);
+						}
 						target += cell.width;
 						source += cell.width;
 					}
 					lines.push(line);
 				}
 			}
-			if (group.cursorOffset !== undefined) {
-				const offset = group.cursorOffset;
-				const onBoundary = offset > 0 && offset % columns === 0;
-				cursorAbsolute = start + Math.floor(offset / columns) - Number(onBoundary);
-				cursorX = onBoundary ? columns - 1 : offset % columns;
-			}
 		}
+		// A height-only resize may discard at most the rows being removed.
+		// Trimming the blank tail on growth pulls extra history into the screen
+		// and moves the parked cursor, so subsequent erases can destroy history.
+		// Only a height shrink removes rows. Reflow re-packs wrapped continuations
+		// on its own; trimming extra blank rows here would pull history into the
+		// viewport, which real xterm never does on a width change.
+		let removableBottomRows = Math.max(0, this.rows - rows);
 		while (
+			removableBottomRows > 0 &&
 			lines.length > rows &&
 			cursorAbsolute < lines.length - 1 &&
 			!lines.at(-1)!.isWrapped &&
 			this.#usedColumns(lines.at(-1)!) === 0
 		) {
 			lines.pop();
+			removableBottomRows--;
 		}
 		const padBottomOnGrow =
 			this.#growPullsHistory === "cursorOnLastRow" &&
@@ -759,6 +817,10 @@ export class Terminal {
 		if (removed > 0) lines.splice(0, removed);
 		cursorAbsolute = Math.max(0, cursorAbsolute - removed);
 		const baseY = Math.max(0, lines.length - rows);
+		if (saved) {
+			saved.x = Math.min(columns - 1, savedX);
+			saved.y = Math.min(rows - 1, Math.max(0, savedAbsolute - removed - baseY));
+		}
 		return {
 			lines,
 			baseY,

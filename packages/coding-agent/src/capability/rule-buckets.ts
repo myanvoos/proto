@@ -1,7 +1,9 @@
+import type { TtsrSettings } from "../config/settings-schema";
 import type { TtsrManager } from "../export/ttsr";
-import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "./rule";
+import { loadCapability } from "./index";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule, ruleCapability } from "./rule";
 
-interface RuleBuckets {
+export interface RuleBuckets {
 	rulebookRules: Rule[];
 	alwaysApplyRules: Rule[];
 }
@@ -47,4 +49,34 @@ export function bucketRules(
 	}
 
 	return { rulebookRules, alwaysApplyRules };
+}
+
+export interface DiscoveredRules extends RuleBuckets {
+	ttsrManager: TtsrManager;
+
+	allRules: Rule[];
+}
+
+/** Discover the rules of a workspace and sort them into the buckets a session uses. */
+export async function discoverRules(options: {
+	cwd: string;
+	ttsrSettings?: TtsrSettings;
+
+	rules?: readonly Rule[];
+}): Promise<DiscoveredRules> {
+	const { TtsrManager } = await import("../export/ttsr");
+	const ttsrManager = new TtsrManager(options.ttsrSettings);
+	const allRules = options.rules
+		? [...options.rules]
+		: (await loadCapability<Rule>(ruleCapability.id, { cwd: options.cwd })).items;
+	const buckets = bucketRules(allRules, ttsrManager, {
+		builtinRules: options.ttsrSettings?.builtinRules,
+		disabledRules: options.ttsrSettings?.disabledRules,
+	});
+	return { ...buckets, ttsrManager, allRules };
+}
+
+/** The rules a `rule://` URL can name: every bucket plus the trigger rules the manager claimed. */
+export function collectActiveRules(buckets: RuleBuckets, ttsrManager: TtsrManager): Rule[] {
+	return [...buckets.rulebookRules, ...buckets.alwaysApplyRules, ...ttsrManager.getRules()];
 }

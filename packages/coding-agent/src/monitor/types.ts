@@ -24,7 +24,7 @@ export interface MonitorStartSpec {
 	/** Poll interval in seconds. Omitted selects `stream` mode. */
 	everySeconds?: number;
 
-	/** Events delivered before the monitor stops itself. */
+	/** Matching output events before the monitor stops itself; terminal status does not count. */
 	maxEvents?: number;
 
 	/** Wall-clock lifetime in seconds. */

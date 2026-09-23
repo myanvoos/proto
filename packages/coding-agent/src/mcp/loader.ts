@@ -88,6 +88,9 @@ export async function discoverAndLoadMCPTools(cwd: string, options?: MCPToolsLoa
 	});
 
 	const errors: Array<{ path: string; error: string }> = [];
+	for (const configError of result.configErrors) {
+		errors.push({ path: "mcp config", error: configError });
+	}
 	for (const [serverName, errorMsg] of result.errors) {
 		errors.push({ path: `mcp:${serverName}`, error: errorMsg });
 	}

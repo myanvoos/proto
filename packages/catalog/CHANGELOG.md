@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Default models for anthropic, amazon-bedrock, cloudflare-ai-gateway, kilo, litellm, opencode-zen, vercel-ai-gateway and zenmux now point at Claude Opus 5.5; cursor defaults to claude-opus-5-high
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed

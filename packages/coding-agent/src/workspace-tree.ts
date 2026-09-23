@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { FileType, type GlobMatch, listWorkspace } from "@oh-my-pi/pi-natives";
 import { formatAge, formatBytes } from "@oh-my-pi/pi-utils";
@@ -15,6 +16,9 @@ export interface DirectoryTree {
 	rendered: string;
 	truncated: boolean;
 	totalLines: number;
+
+	/** Set when the directory could not be listed; an unlistable directory is not an empty one. */
+	error?: string;
 }
 
 export interface WorkspaceTree extends DirectoryTree {
@@ -41,20 +45,17 @@ export async function buildDirectoryTree(cwd: string, options: BuildDirectoryTre
 	const perDirLimit = options.perDirLimit === undefined ? null : options.perDirLimit;
 	const rootLimit = options.rootLimit === undefined ? perDirLimit : options.rootLimit;
 
-	let entries: readonly GlobMatch[];
-	let nativeTruncated: boolean;
-	try {
-		const result = await listWorkspace({
-			path: rootPath,
-			maxDepth,
-			hidden: true,
-			gitignore: false,
-		});
-		entries = result.entries;
-		nativeTruncated = result.truncated;
-	} catch {
-		return emptyTree(rootPath);
-	}
+	// A scan that fails must not be reported as an empty directory: the native scan skips entries it
+	// cannot read, so an empty result is re-checked against the filesystem before it is believed.
+	const result = await listWorkspace({
+		path: rootPath,
+		maxDepth,
+		hidden: true,
+		gitignore: false,
+	});
+	const entries: readonly GlobMatch[] = result.entries;
+	const nativeTruncated = result.truncated;
+	if (entries.length === 0) await assertListable(rootPath);
 
 	return assembleTree(rootPath, entries, {
 		perDirLimit,
@@ -77,6 +78,7 @@ export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTre
 			collectAgentsMd: true,
 			timeoutMs: options.timeoutMs,
 		});
+		if (result.entries.length === 0) await assertListable(rootPath);
 		const tree = assembleTree(rootPath, result.entries, {
 			perDirLimit: WORKSPACE_DEFAULTS.perDirLimit,
 			rootLimit: WORKSPACE_DEFAULTS.perDirLimit,
@@ -86,8 +88,10 @@ export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTre
 			ageMode: "absolute",
 		});
 		return { ...tree, agentsMdFiles: result.agentsMdFiles };
-	} catch {
-		return { ...emptyTree(rootPath), agentsMdFiles: [] };
+	} catch (error) {
+		// Startup must survive an unreadable workspace, but the prompt has to say the scan failed:
+		// a silent empty tree reads as "this project has no files".
+		return { ...unlistableTree(rootPath, error), agentsMdFiles: [] };
 	}
 }
 
@@ -263,11 +267,21 @@ function formatLines(lines: readonly RenderedLine[]): string {
 		.join("\n");
 }
 
-function emptyTree(rootPath: string): DirectoryTree {
+/**
+ * Confirm the directory is really empty rather than unreadable; rethrows the filesystem error.
+ * `opendir` is lazy, so the directory has to actually be scanned for EACCES to surface.
+ */
+async function assertListable(rootPath: string): Promise<void> {
+	await fs.readdir(rootPath);
+}
+
+function unlistableTree(rootPath: string, error: unknown): DirectoryTree {
+	const message = error instanceof Error ? error.message : String(error);
 	return {
 		rootPath,
-		rendered: "",
+		rendered: `.\n  (listing unavailable: ${message})`,
 		truncated: false,
-		totalLines: 0,
+		totalLines: 2,
+		error: message,
 	};
 }

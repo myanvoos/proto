@@ -56,11 +56,22 @@ interface TouchedRecord {
 	beforeSha: string | null;
 }
 
+interface ReportMeta {
+	op: "write" | "delete" | "revert";
+	added: number;
+	removed: number;
+	diff: boolean;
+}
+
 interface CellTracking {
 	runId: string;
 	emit: (event: JsStatusEvent) => void;
+	/** Model-visible cell output; the same `<kernel> note:` line the Python kernel prints. */
+	note: (text: string) => void;
+	cwd: string;
 	touched: Map<string, TouchedRecord>;
 	reported: Map<string, string | null>;
+	reportedMeta: Map<string, ReportMeta>;
 	eagerReports: Map<string, number>;
 	pendingReports: Map<string, Promise<void>>;
 	capturedTextBytes: number;
@@ -306,16 +317,66 @@ export function noteTouched(rawPath: unknown): void {
 	tracking.touched.set(absPath, record);
 }
 
-export function beginFileTracking(runId: string, emit: (event: JsStatusEvent) => void): void {
+export function beginFileTracking(
+	runId: string,
+	emit: (event: JsStatusEvent) => void,
+	options: { note?: (text: string) => void; cwd?: string } = {},
+): void {
 	trackingStorage.enterWith({
 		runId,
 		emit,
+		note: options.note ?? (() => {}),
+		cwd: options.cwd ?? process.cwd(),
 		touched: new Map(),
 		reported: new Map(),
+		reportedMeta: new Map(),
 		eagerReports: new Map(),
 		pendingReports: new Map(),
 		capturedTextBytes: 0,
 	});
+}
+
+function setReportMeta(tracking: CellTracking, absPath: string, op: ReportMeta["op"], diff: unknown): void {
+	const rows = typeof diff === "string" && diff.length > 0 ? diff.split("\n") : [];
+	tracking.reportedMeta.set(absPath, {
+		op,
+		diff: rows.length > 0,
+		added: rows.filter(row => row.startsWith("+")).length,
+		removed: rows.filter(row => row.startsWith("-")).length,
+	});
+}
+
+/** Cwd-relative in the compact note when that does not climb out of the cell's cwd. */
+function notePath(tracking: CellTracking, absPath: string): string {
+	const relative = path.relative(tracking.cwd, absPath);
+	if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+		return absPath;
+	}
+	return relative;
+}
+
+/**
+ * One compact `<kernel> note:` line per net-mutated path, in the cell's own
+ * output — the bash tool prompt promises it for every kernel language, and the
+ * status events alone are invisible to the model. Same wording and the same
+ * once-per-path-per-cell timing as _fs_emit_mutation_note in eval/py/prelude.py.
+ */
+function emitMutationNote(tracking: CellTracking, absPath: string, record: TouchedRecord): void {
+	const meta = tracking.reportedMeta.get(absPath);
+	if (!meta) return;
+	let line: string;
+	if (meta.op === "write") {
+		if (!record.existed) {
+			const suffix = meta.diff ? ` (${meta.added} line${meta.added === 1 ? "" : "s"})` : "";
+			line = `created ${notePath(tracking, absPath)}${suffix}`;
+		} else {
+			const suffix = meta.diff ? ` (+${meta.added} \u2212${meta.removed})` : "";
+			line = `wrote ${notePath(tracking, absPath)}${suffix}`;
+		}
+	} else {
+		line = `${meta.op === "delete" ? "deleted" : "reverted"} ${notePath(tracking, absPath)}`;
+	}
+	tracking.note(`<kernel> note: ${line}\n`);
 }
 
 function eventId(tracking: CellTracking, absPath: string): string {
@@ -336,6 +397,7 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 		if (!record.existed) {
 			if (tracking.reported.has(absPath) && tracking.reported.get(absPath) !== null) {
 				tracking.reported.set(absPath, null);
+				setReportMeta(tracking, absPath, "revert", undefined);
 				tracking.emit({ op: "revert", path: absPath, id: eventId(tracking, absPath) });
 				return "emitted";
 			}
@@ -355,6 +417,7 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 			}
 		}
 		tracking.reported.set(absPath, null);
+		setReportMeta(tracking, absPath, "delete", event.diff);
 		tracking.emit(event);
 		return "emitted";
 	}
@@ -365,6 +428,7 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 	if (record.beforeSha === sha) {
 		if (tracking.reported.has(absPath)) {
 			tracking.reported.set(absPath, sha);
+			setReportMeta(tracking, absPath, "revert", undefined);
 			tracking.emit({ op: "revert", path: absPath, id: eventId(tracking, absPath) });
 			return "emitted";
 		}
@@ -389,8 +453,10 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 				if (capped.diffTruncated) event.diffTruncated = true;
 			}
 		}
+		setReportMeta(tracking, absPath, "write", event.diff);
 		tracking.emit(event);
 	} else {
+		setReportMeta(tracking, absPath, "write", undefined);
 		tracking.emit({ op: "write", path: absPath, bytes: stat.size, sha, id: eventId(tracking, absPath) });
 	}
 	return "emitted";
@@ -427,10 +493,12 @@ export async function flushFileTracking(): Promise<void> {
 		let capped = 0;
 		for (const [absPath, record] of entries) {
 			if ((await reportPath(tracking, absPath, record)) === "capped") capped += 1;
+			emitMutationNote(tracking, absPath, record);
 		}
 		if (capped > 0) tracking.emit({ op: "files", count: capped, action: "truncated" });
 	}
 	tracking.reported.clear();
+	tracking.reportedMeta.clear();
 	tracking.eagerReports.clear();
 }
 

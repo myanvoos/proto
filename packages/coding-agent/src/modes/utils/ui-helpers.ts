@@ -33,7 +33,12 @@ import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
 import { formatQueueDue } from "../../modes/queue-input";
 import { theme } from "../../modes/theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
+import type {
+	CompactionQueuedMessage,
+	InteractiveModeContext,
+	RenderInitialMessagesOptions,
+	RenderSessionContextOptions,
+} from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
@@ -60,11 +65,6 @@ import {
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
 import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "./transcript-window";
-
-interface RenderInitialMessagesOptions {
-	preserveExistingChat?: boolean;
-	clearTerminalHistory?: boolean;
-}
 
 export type TranscriptHistoryDirection = "older" | "newer" | "latest";
 
@@ -262,6 +262,22 @@ export function resolvePreservedLiveToolCallIds(params: {
 	return preserved;
 }
 
+/** Maintenance changes model context, not the already-published transcript. */
+export function appendLatestCompactionSummary(ctx: InteractiveModeContext): void {
+	ctx.lastAssistantUsage = undefined;
+	const summary = ctx.viewSession
+		.buildTranscriptSessionContext()
+		.messages.findLast(message => message.role === "compactionSummary");
+	if (!summary) return;
+	if (
+		ctx.chatContainer.children.some(
+			child => child instanceof CompactionSummaryMessageComponent && child.represents(summary),
+		)
+	)
+		return;
+	ctx.addMessageToChat(summary);
+}
+
 export class UiHelpers {
 	#transcriptPageFromLatest = 0;
 	#transcriptRenderQueue: Promise<void> = Promise.resolve();
@@ -274,8 +290,13 @@ export class UiHelpers {
 		return queued;
 	}
 
-	selectVisibleTranscriptContext(fullContext: SessionContext): { context: SessionContext; window: TranscriptWindow } {
-		const window = selectTranscriptWindow(fullContext.messages, this.#transcriptPageFromLatest);
+	selectVisibleTranscriptContext(
+		fullContext: SessionContext,
+		fullHistory = false,
+	): { context: SessionContext; window: TranscriptWindow } {
+		const window = fullHistory
+			? { start: 0, end: fullContext.messages.length, pageFromLatest: 0, totalMessages: fullContext.messages.length }
+			: selectTranscriptWindow(fullContext.messages, this.#transcriptPageFromLatest);
 		this.#transcriptPageFromLatest = window.pageFromLatest;
 		return { context: transcriptWindowContext(fullContext, window), window };
 	}
@@ -505,7 +526,6 @@ export class UiHelpers {
 
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
-		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
@@ -670,15 +690,9 @@ export class UiHelpers {
 							}
 							readGroup.updateArgs(renderArgs, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
-							if (assistantComponent) {
-								readToolCallAssistantComponents.set(content.id, assistantComponent);
-							}
 						} else {
 							const normalizedArgs = normalizeToolArgs(renderArgs);
 							readToolCallArgs.set(content.id, normalizedArgs);
-							if (assistantComponent) {
-								readToolCallAssistantComponents.set(content.id, assistantComponent);
-							}
 						}
 						appendAssistantSegment(afterToolSegment);
 						continue;
@@ -733,19 +747,9 @@ export class UiHelpers {
 					message.toolName === "read" &&
 					(!pendingReadComponent || pendingReadComponent instanceof ReadToolGroupComponent);
 				if (isReadGroupResult) {
-					const assistantComponent = readToolCallAssistantComponents.get(message.toolCallId);
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
-					if (images.length > 0 && assistantComponent) {
-						assistantComponent.setToolResultImages(message.toolCallId, images);
-						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText && settings.get("terminal.showImages")) {
-							readToolCallArgs.delete(message.toolCallId);
-							readToolCallAssistantComponents.delete(message.toolCallId);
-							continue;
-						}
-					}
 					let component = this.ctx.pendingTools.get(message.toolCallId);
 					if (!component) {
 						if (!readGroup) {
@@ -762,10 +766,12 @@ export class UiHelpers {
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
+					if (images.length > 0 && component instanceof ReadToolGroupComponent) {
+						component.setToolResultImages(message.toolCallId, images);
+					}
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
-					readToolCallAssistantComponents.delete(message.toolCallId);
 					continue;
 				}
 
@@ -947,7 +953,7 @@ export class UiHelpers {
 		let fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
-		let selection = this.selectVisibleTranscriptContext(fullContext);
+		let selection = this.selectVisibleTranscriptContext(fullContext, options.fullHistory);
 		let { context, window } = selection;
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
 		const renderOptions = { updateFooter: true };
@@ -977,7 +983,7 @@ export class UiHelpers {
 				fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
-				selection = this.selectVisibleTranscriptContext(fullContext);
+				selection = this.selectVisibleTranscriptContext(fullContext, options.fullHistory);
 				({ context, window } = selection);
 				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
 			}

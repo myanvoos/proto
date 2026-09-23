@@ -5,6 +5,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAndLoadExtensions, ExtensionRunner, emitSessionShutdownEvent } from "../extensibility/extensions";
+import { formatExtensionLoadNotifications, formatExtensionLoadWarnings } from "../extensibility/extensions/load-errors";
 import { discoverAuthStorage } from "../sdk";
 import { SessionManager } from "../session/session-manager";
 import { EventBus } from "../utils/event-bus";
@@ -66,12 +67,14 @@ function writeLine(line = ""): void {
 	process.stdout.write(`${line}\n`);
 }
 
+/** Diagnostics go to stderr in every mode so `--json` stdout stays machine-readable. */
 function writeModelsConfigError(error: Error): void {
-	writeLine(chalk.yellow("Warning: models.yml validation failed — custom providers disabled"));
-	for (const line of error.message.split("\n")) {
-		writeLine(`  ${line}`);
-	}
-	writeLine();
+	const lines = [
+		chalk.yellow("Warning: models.yml validation failed — custom providers disabled"),
+		...error.message.split("\n").map(line => `  ${line}`),
+		"",
+	];
+	process.stderr.write(`${lines.join("\n")}\n`);
 }
 
 function formatLimit(n: number | null): string {
@@ -174,11 +177,7 @@ function renderProviderModels(
 	const configError = modelRegistry.getError();
 
 	if (json) {
-		if (configError) {
-			process.stderr.write(
-				`Warning: models.yml validation failed — custom providers disabled\n${configError.message}\n`,
-			);
-		}
+		if (configError) writeModelsConfigError(configError);
 		const output: ModelsJson = { models: filtered.slice().sort(byProviderThenId).map(toModelJson) };
 		writeLine(JSON.stringify(output));
 		return;
@@ -286,9 +285,16 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 			: undefined;
 
 	try {
-		for (const { path: extPath, error } of extensionsResult.errors) {
-			process.stderr.write(`Failed to load extension: ${extPath}: ${error}\n`);
+		for (const message of [
+			...formatExtensionLoadNotifications(extensionsResult.errors, { truncate: false }),
+			...formatExtensionLoadWarnings(extensionsResult.warnings, { truncate: false }),
+		]) {
+			process.stderr.write(`${message}\n`);
 		}
+		// `-e <path>` is an explicit request: listing models while quietly ignoring the provider the
+		// user asked to load is a success report for a failed run.
+		const explicitPaths = new Set(additionalExtensionPaths);
+		if (extensionsResult.errors.some(item => explicitPaths.has(item.path))) process.exitCode = 1;
 
 		const activeSources = extensionsResult.extensions.map(extension => extension.path);
 		modelRegistry.syncExtensionSources(activeSources);

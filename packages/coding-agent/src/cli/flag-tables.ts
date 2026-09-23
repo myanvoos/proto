@@ -1,10 +1,9 @@
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 import type { ThinkingLevel } from "../thinking";
 import type { Args } from "./args";
-import { CliUsageError } from "./usage-error";
 
 export interface ParseDeps {
-	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
 	parseThinking: (value: string | null | undefined) => ThinkingLevel | undefined;
 	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
@@ -27,6 +26,9 @@ const setExtension: StringSetter = (result, value) => {
 const setResume: OptionalSetter = (result, value) => {
 	result.resume = value !== undefined ? value : true;
 };
+
+/** Output modes accepted by `--mode`; `acp` is set by `proto acp` but stays selectable by hand. */
+const MODE_VALUES = ["text", "json", "rpc", "acp", "rpc-ui"] as const;
 
 const MAX_TIME_DURATION_RE = /^(\d+(?:\.\d+)?)([smh])$/;
 
@@ -57,9 +59,12 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 		result.addDir = [...(result.addDir ?? []), value];
 	},
 	"--mode": (result, value) => {
-		if (value === "text" || value === "json" || value === "rpc" || value === "acp" || value === "rpc-ui") {
-			result.mode = value;
+		if (value !== "text" && value !== "json" && value !== "rpc" && value !== "acp" && value !== "rpc-ui") {
+			throw new CliUsageError(
+				`Invalid --mode value: ${JSON.stringify(value)}. Expected one of: ${MODE_VALUES.join(", ")}.`,
+			);
 		}
+		result.mode = value;
 	},
 	"--fork": (result, value) => {
 		result.fork = value;
@@ -118,19 +123,20 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 				.map(s => s.trim())
 				.filter(Boolean),
 		);
-
+		// An empty list used to mean "no filter", silently doing the opposite of what it says.
+		if (names.length === 0) {
+			throw new CliUsageError("--tools requires at least one tool name (use --no-tools to disable every tool).");
+		}
 		result.tools = names;
 	},
 	"--thinking": (result, value, deps) => {
 		const thinking = deps.parseThinking(value);
-		if (thinking !== undefined) {
-			result.thinking = thinking;
-		} else {
-			deps.logger.warn("Invalid thinking level passed to --thinking", {
-				level: value,
-				validThinkingLevels: deps.thinkingEfforts,
-			});
+		if (thinking === undefined) {
+			throw new CliUsageError(
+				`Invalid --thinking value: ${JSON.stringify(value)}. Expected one of: ${deps.thinkingEfforts.join(", ")}.`,
+			);
 		}
+		result.thinking = thinking;
 	},
 	"--hook": (result, value) => {
 		result.hooks = result.hooks ?? [];
@@ -184,8 +190,6 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-skills",
 	"--no-rules",
 	"--no-title",
-	"--auto-approve",
-	"--yolo",
 ]);
 
 export function isUnknownLongValueCandidate(arg: string): boolean {

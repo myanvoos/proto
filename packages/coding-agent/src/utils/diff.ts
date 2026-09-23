@@ -160,26 +160,53 @@ function addMatchingBracketContextRows(
 }
 
 const MAX_EVENT_DIFF_CHARS = 32000;
+// Characters alone do not bound the transcript: thousands of short rows stay
+// under the char ceiling while flooding the scrollback of a single tool card.
+const MAX_EVENT_DIFF_ROWS = 400;
+
+function omittedRowsMarker(count: number): string {
+	return `… ${count} diff ${count === 1 ? "line" : "lines"} omitted`;
+}
 
 /**
  * Generate the numbered hunk diff for an eval status event and cap it to a
- * character budget. Used by the JS kernel's filesystem tracker
+ * character and row budget. Used by the JS kernel's filesystem tracker
  * (eval/js/shared/fs-tracker.ts); the Python prelude keeps its own copy
  * across the process boundary.
+ *
+ * An over-budget diff keeps its head *and* its tail: a whole-file rewrite
+ * emits every removal before the first addition, so a head-only cut renders a
+ * rewrite as a pure deletion.
  */
 export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
 	const rows = generateDiffString(before, after, 2)
 		.diff.split("\n")
 		.filter(row => row.length > 0);
 	if (rows.length === 0) return undefined;
-	const kept: string[] = [];
-	let used = 0;
-	for (const row of rows) {
-		if (used + row.length + 1 > MAX_EVENT_DIFF_CHARS) break;
-		kept.push(row);
-		used += row.length + 1;
+	const totalChars = rows.reduce((sum, row) => sum + row.length + 1, 0);
+	if (totalChars <= MAX_EVENT_DIFF_CHARS && rows.length <= MAX_EVENT_DIFF_ROWS) return { diff: rows.join("\n") };
+
+	const charsPerSide = Math.floor((MAX_EVENT_DIFF_CHARS - omittedRowsMarker(rows.length).length - 1) / 2);
+	const rowsPerSide = Math.floor((MAX_EVENT_DIFF_ROWS - 1) / 2);
+	const head: string[] = [];
+	let headChars = 0;
+	let first = 0;
+	while (first < rows.length && head.length < rowsPerSide && headChars + rows[first].length + 1 <= charsPerSide) {
+		head.push(rows[first]);
+		headChars += rows[first].length + 1;
+		first++;
 	}
-	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
+	const tail: string[] = [];
+	let tailChars = 0;
+	let last = rows.length - 1;
+	while (last >= first && tail.length < rowsPerSide && tailChars + rows[last].length + 1 <= charsPerSide) {
+		tail.push(rows[last]);
+		tailChars += rows[last].length + 1;
+		last--;
+	}
+	tail.reverse();
+	const omitted = last - first + 1;
+	return { diff: [...head, omittedRowsMarker(omitted), ...tail].join("\n"), diffTruncated: true };
 }
 
 export function generateDiffString(

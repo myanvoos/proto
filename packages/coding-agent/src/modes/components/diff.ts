@@ -123,18 +123,19 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 		return Math.max(width, lineNumber.length);
 	}, 3);
 
-	let prevLineNum = "";
-
+	// Every row prints its own number. Suppression is reserved for the added row
+	// of a one-line replacement (below): keying it off "the previous row had
+	// this number" blanked unrelated rows too, so a single diff came out with
+	// both numbered and blank gutters on the same side.
 	const formatLine = (prefix: CodeFrameMarker, lineNum: string, content: string): string => {
-		if (lineNum.trim().length === 0) {
-			prevLineNum = "";
-			return `${prefix}${content}`;
-		}
 		const trimmed = lineNum.trim();
-		const displayNum = trimmed === prevLineNum ? "" : trimmed;
-		prevLineNum = trimmed;
-		return formatCodeFrameLine(prefix, displayNum, content, lineNumberWidth);
+		if (trimmed.length === 0) return `${prefix}${content}`;
+		return formatCodeFrameLine(prefix, trimmed, content, lineNumberWidth);
 	};
+
+	// A replacement of one line by one line at the same number prints that
+	// number once, on the removed row, so the pair reads as a single edit.
+	const formatPairedAddition = (content: string): string => formatCodeFrameLine("+", "", content, lineNumberWidth);
 
 	let i = 0;
 	while (i < lines.length) {
@@ -142,8 +143,6 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 		const parsed = parseDiffLine(line);
 
 		if (!parsed) {
-			prevLineNum = "";
-
 			const trimmed = line.trim();
 			const isGapRow = trimmed.length === 0 || trimmed === "..." || trimmed === "…";
 			result.push(renderTheme.fg("toolDiffContext", isGapRow ? "…" : replaceTabs(line)));
@@ -174,10 +173,18 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 
 				const { removedLine, addedLine } = renderIntraLineDiff(removed.content, added.content, renderTheme);
 
+				const samePosition = removed.lineNum.trim().length > 0 && removed.lineNum.trim() === added.lineNum.trim();
 				result.push(
 					renderTheme.fg("toolDiffRemoved", formatLine("-", removed.lineNum, visualizeIndent(removedLine))),
 				);
-				result.push(renderTheme.fg("toolDiffAdded", formatLine("+", added.lineNum, visualizeIndent(addedLine))));
+				result.push(
+					renderTheme.fg(
+						"toolDiffAdded",
+						samePosition
+							? formatPairedAddition(visualizeIndent(addedLine))
+							: formatLine("+", added.lineNum, visualizeIndent(addedLine)),
+					),
+				);
 			} else {
 				for (const removed of removedLines) {
 					result.push(

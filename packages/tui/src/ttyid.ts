@@ -7,7 +7,33 @@ export function isInsideHerdr(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	return Boolean(env.HERDR_PANE_ID || env.HERDR_TAB_ID || env.HERDR_WORKSPACE_ID);
 }
 
+/**
+ * Host identity as the terminal itself reported it (XTVERSION name or the
+ * secondary device attributes terminal id), not as the environment advertises
+ * it. A multiplexer entered through `env -i` (or any launcher that scrubs the
+ * environment) still answers these queries, so the reported identity is the
+ * only trustworthy signal that the host clips and rewraps on its own schedule.
+ */
+let reportedHostIdentity: string | null = null;
+
+export function setReportedTerminalHostIdentity(identity: string | null): void {
+	reportedHostIdentity = identity?.trim().toLowerCase() || null;
+}
+
+export function getReportedTerminalHostIdentity(): string | null {
+	return reportedHostIdentity;
+}
+
+function reportedHostIsMultiplexer(): boolean {
+	const identity = reportedHostIdentity;
+	if (!identity) return false;
+	return identity.startsWith("tmux") || identity.startsWith("screen") || identity.startsWith("zellij");
+}
+
 export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	// The probe answer outranks the environment: it describes the host actually
+	// attached to this tty, so a scrubbed environment cannot hide it.
+	if (reportedHostIsMultiplexer()) return true;
 	if (env.TMUX || env.STY || env.ZELLIJ || isInsideHerdr(env)) return true;
 	if (env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID || env.CMUX_REMOTE_TRANSPORT) return true;
 	const term = env.TERM?.toLowerCase() ?? "";

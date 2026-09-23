@@ -3,6 +3,7 @@ import {
 	extractPrintableText,
 	fuzzyFilter,
 	matchesKey,
+	replaceTabs,
 	ScrollView,
 	Spacer,
 	Text,
@@ -25,6 +26,7 @@ class UserMessageList implements Component {
 	onSelect?: (entryId: string) => void;
 	onCancel?: () => void;
 	#maxVisible: number = 10;
+	#maxHeight = Number.POSITIVE_INFINITY;
 
 	constructor(private readonly messages: UserMessageItem[]) {
 		this.#filteredMessages = messages;
@@ -33,6 +35,10 @@ class UserMessageList implements Component {
 	}
 
 	invalidate(): void {}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(0, Math.trunc(rows));
+	}
 
 	#isSearchEnabled(): boolean {
 		return this.messages.length > this.#maxVisible;
@@ -77,6 +83,7 @@ class UserMessageList implements Component {
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
+		if (this.#maxHeight === 0) return lines;
 
 		if (this.messages.length === 0) {
 			lines.push(theme.fg("muted", "  No user messages found"));
@@ -84,14 +91,15 @@ class UserMessageList implements Component {
 		}
 
 		const total = this.#filteredMessages.length;
+		const showSearch = this.#shouldRenderSearchStatus() && this.#maxHeight >= 2;
+		const bodyRows = this.#maxHeight - Number(showSearch);
+		const linesPerItem = bodyRows >= 6 ? 3 : 1;
+		const maxVisible = Math.min(this.#maxVisible, Math.max(1, Math.floor(bodyRows / linesPerItem)));
 
-		const startIndex = Math.max(
-			0,
-			Math.min(this.#selectedIndex - Math.floor(this.#maxVisible / 2), total - this.#maxVisible),
-		);
-		const endIndex = Math.min(startIndex + this.#maxVisible, total);
+		const startIndex = Math.max(0, Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), total - maxVisible));
+		const endIndex = Math.min(startIndex + maxVisible, total);
 
-		const overflow = total > this.#maxVisible;
+		const overflow = total > maxVisible;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 		const messageLines: string[] = [];
 		for (let i = startIndex; i < endIndex; i++) {
@@ -99,27 +107,25 @@ class UserMessageList implements Component {
 			if (!message) continue;
 			const isSelected = i === this.#selectedIndex;
 
-			const normalizedMessage = message.text.replace(/\n/g, " ").trim();
+			const normalizedMessage = replaceTabs(message.text).replace(/\r?\n/g, " ").trim();
 
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
-			const maxMsgWidth = rowWidth - 2;
+			const cursor = isSelected ? theme.fg("accent", `${theme.nav.cursor} `) : "  ";
+			const maxMsgWidth = Math.max(0, rowWidth - 2);
 			const truncatedMsg = truncateToWidth(normalizedMessage, maxMsgWidth);
 			const messageLine = cursor + (isSelected ? theme.bold(truncatedMsg) : truncatedMsg);
 
 			messageLines.push(messageLine);
 
-			const position = this.messages.indexOf(message) + 1;
-			const metadata = `  Message ${position} of ${this.messages.length}`;
-			const metadataLine = theme.fg("muted", metadata);
-			messageLines.push(metadataLine);
-			messageLines.push("");
+			if (linesPerItem > 1) {
+				const position = this.messages.indexOf(message) + 1;
+				const metadata = `  Message ${position} of ${this.messages.length}`;
+				messageLines.push(theme.fg("muted", metadata), "");
+			}
 		}
 
 		if (total === 0) {
 			lines.push(theme.fg("muted", "  No matching messages"));
 		} else {
-			const visibleCount = endIndex - startIndex;
-			const linesPerItem = visibleCount > 0 ? messageLines.length / visibleCount : 1;
 			const sv = new ScrollView(messageLines, {
 				height: messageLines.length,
 				scrollbar: "auto",
@@ -130,7 +136,7 @@ class UserMessageList implements Component {
 			lines.push(...sv.render(width));
 		}
 
-		if (this.#shouldRenderSearchStatus()) {
+		if (showSearch) {
 			lines.push(this.#renderStatusLine(total));
 		}
 

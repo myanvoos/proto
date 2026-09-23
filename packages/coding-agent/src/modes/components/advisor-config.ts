@@ -31,11 +31,13 @@ import {
 	bottomBorder,
 	divider,
 	dividerSplit,
+	getDialogViewport,
 	row,
 	splitBodyWidth,
 	splitRow,
 	topBorder,
 	topBorderSplit,
+	trimBlankEdges,
 } from "./overlay-box";
 
 interface AdvisorConfigCallbacks {
@@ -154,33 +156,43 @@ export class AdvisorConfigOverlayComponent implements Component {
 	render(width: number): readonly string[] {
 		// The overlay renders inside the (possibly injected) TUI terminal, so
 		// its geometry must follow that terminal, not process.stdout.
-		const height = Math.max(14, this.#tui.terminal?.rows || process.stdout.rows || 40);
-		const bodyRows = Math.max(3, height - 4);
+		const layout = getDialogViewport(this.#tui.terminal?.rows || process.stdout.rows || 40);
+		// An empty hint is not worth a chrome row, and a divider above nothing is
+		// just as wasteful: hand both rows back to the body.
+		const footerRows = layout.footerRows > 0 && this.#footerHint.trim() !== "" ? layout.footerRows : 0;
+		const dividerRows = footerRows > 0 ? layout.dividerRows : 0;
+		const bodyRows = layout.bodyRows + (layout.footerRows - footerRows) + (layout.dividerRows - dividerRows);
+		this.#active.setMaxHeight?.(bodyRows);
 		const title = `Advisor configuration · ${this.#scope}${this.#dirty ? "  ● unsaved" : ""}`;
 		const out: string[] = [];
 
-		if (this.#screen === "list") {
+		this.#dividerCol = width;
+		if (layout.titleRows && this.#screen === "list" && width >= 70) {
 			const sidebarWidth = Math.max(22, Math.min(42, Math.floor(width * 0.34)));
 			this.#dividerCol = sidebarWidth + 3;
 			const bodyWidth = splitBodyWidth(width, sidebarWidth);
 			const sidebar = this.#active.render(sidebarWidth);
 			const preview = this.#previewWindow(bodyWidth, bodyRows);
-			out.push(topBorderSplit(width, title, sidebarWidth));
+			if (layout.titleRows) out.push(topBorderSplit(width, title, sidebarWidth));
 			this.#bodyRowStart = out.length;
 			for (let i = 0; i < bodyRows; i++) {
 				out.push(splitRow(sidebar[i] ?? "", preview[i] ?? "", width, sidebarWidth));
 			}
-			out.push(dividerSplit(width, sidebarWidth));
+			if (dividerRows) out.push(dividerSplit(width, sidebarWidth));
 		} else {
-			out.push(topBorder(width, title));
+			if (layout.titleRows) out.push(topBorder(width, title));
 			this.#bodyRowStart = out.length;
-			const lines = this.#active.render(Math.max(1, width - 4));
-			for (let i = 0; i < bodyRows; i++) out.push(row(lines[i] ?? "", width));
-			out.push(divider(width));
+			const lines = this.#active.render(Math.max(1, layout.titleRows ? width - 4 : width));
+			// Editors own their height; only the roster/list screens fill the frame,
+			// so an editor never trails a block of dead rows above the border.
+			const content = this.#screen === "list" ? lines : trimBlankEdges(lines);
+			const painted = this.#screen === "list" ? bodyRows : Math.min(bodyRows, Math.max(1, content.length));
+			for (let i = 0; i < painted; i++) out.push(row(content[i] ?? "", width, layout.titleRows > 0));
+			if (dividerRows) out.push(divider(width));
 		}
 
-		out.push(row(theme.fg("dim", this.#footerHint), width));
-		out.push(bottomBorder(width));
+		if (footerRows) out.push(row(theme.fg("dim", this.#footerHint), width, layout.titleRows > 0));
+		if (layout.bottomRows) out.push(bottomBorder(width));
 		return out;
 	}
 
@@ -300,6 +312,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#setScreen(screen: Screen, active: Component, footerHint: string): void {
+		// Embedded editors and pickers render inside this panel's single frame.
+		(active as { setFramed?: (framed: boolean) => void }).setFramed?.(false);
 		this.#screen = screen;
 		this.#active = active;
 		this.#footerHint = footerHint;

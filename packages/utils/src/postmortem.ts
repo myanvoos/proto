@@ -245,8 +245,12 @@ if (isMainThread) {
 				logger.warn("Ignoring EPIPE from worker IPC send; optional subsystem will self-recover", { err });
 				return;
 			}
-			if (brokenPipeSource === "stdio-write" && stdioDisconnectRegistrations > 0) {
-				logger.warn("Stdio peer disconnected; shutting down gracefully", { err });
+			if (brokenPipeSource === "stdio-write") {
+				// `proto … | head` closes the pipe mid-write; that is the reader's choice, not a fault.
+				logger.warn("Stdio peer disconnected; shutting down gracefully", {
+					err,
+					registered: stdioDisconnectRegistrations > 0,
+				});
 				await runQuit(0, "native");
 				return;
 			}
@@ -333,10 +337,18 @@ async function runQuit(code: number, exitMode: "guarded" | "native", options: Qu
 		return;
 	}
 
-	if (options.drainStdout !== false && process.stdout.writableLength > 0) {
+	if (options.drainStdout !== false && !process.stdout.destroyed && !process.stdout.writableFinished) {
 		const { promise, resolve } = Promise.withResolvers<void>();
-		process.stdout.once("drain", resolve);
-		await Promise.race([promise, Bun.sleep(5000)]);
+		const onError = () => resolve();
+		process.stdout.once("error", onError);
+		try {
+			// Bun may report writableLength === 0 while native pipe writes remain pending.
+			// Closing after cleanup waits for those writes; an empty write callback does not.
+			process.stdout.end(resolve);
+			await Promise.race([promise, Bun.sleep(5000)]);
+		} finally {
+			process.stdout.off("error", onError);
+		}
 	}
 
 	switch (exitMode) {

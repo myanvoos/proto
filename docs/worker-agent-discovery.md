@@ -253,7 +253,7 @@ If denied: `Cannot spawn '...'. Allowed: ...`.
 
 ### Recursion-depth gating
 
-`orchestrator.maxRecursionDepth` defaults to `2`; a negative value disables the cap. The shared policy rejects a spawn when the current worker depth has already reached the cap. When a child reaches the cap, `runSubprocess` also removes the `orchestrate_*` tools from its tool list and sets its spawn policy empty.
+`orchestrator.maxRecursionDepth` defaults to `2`; a negative value disables the cap. It counts levels of worker-spawned workers, as its settings label says (`0` none, `1` single, `2` double), so the shared policy rejects a spawn only once the spawning worker's own task depth has passed the cap. With the default the main agent (depth 0) spawns a worker at depth 1, that worker may spawn at depth 2, and the deepest worker runs at depth 3. `runSubprocess` removes the `orchestrate_*` tools from a child that lands past the cap and sets its spawn policy empty, so a worker that may not spawn is not offered the tools; the shared policy message is what the kernel `agent()` path reports.
 
 For a restricted agent tool list, `runSubprocess` adds the five `orchestrate_*` tools when `spawns` is declared and depth permits it. It retains `fleet` collaboration unless the session explicitly restricts tool names.
 

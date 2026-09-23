@@ -299,6 +299,8 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 						body.push(`_thinking:_ ${block.thinking}`);
 					}
 				}
+				const failure = assistantMsg.stopReason === "error" ? assistantMsg.errorMessage?.trim() : undefined;
+				if (failure) body.push(`_error:_ ${failure}`);
 				if (body.length === 0) break;
 				if (opts?.watchedRoles) {
 					const label = "**agent**:";

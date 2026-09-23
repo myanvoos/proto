@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
 import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	Browser,
@@ -480,26 +480,36 @@ async function targetIdForPage(page: Page): Promise<string> {
 	return await targetIdForTarget(page.target());
 }
 
-async function collectObservationEntries(
+export async function collectObservationEntries(
 	core: WorkerCore,
 	node: SerializedAXNode,
 	entries: ObservationEntry[],
-	options: { viewportOnly: boolean; includeAll: boolean },
+	options: { viewportOnly: boolean; includeAll: boolean; signal?: AbortSignal },
 ): Promise<void> {
 	if (options.includeAll || isInteractiveNode(node)) {
 		const handle = await node.elementHandle();
 		if (handle) {
 			let inViewport = true;
+			let viewportProbeFailed = false;
 			if (options.viewportOnly) {
 				try {
-					inViewport = await handle.isIntersectingViewport();
-				} catch {
-					inViewport = false;
+					inViewport = await untilAborted(options.signal, () => handle.isIntersectingViewport());
+				} catch (error) {
+					throwIfAborted(options.signal);
+					// A failed probe is not evidence of being off-screen: keep the element and say so
+					// instead of dropping a real control with no diagnostic.
+					viewportProbeFailed = true;
+					inViewport = true;
+					logger.debug("Viewport probe failed during observation", {
+						role: node.role,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			}
 			if (inViewport) {
 				const id = core.nextElementId();
 				const states: string[] = [];
+				if (viewportProbeFailed) states.push("viewport-unknown");
 				if (node.disabled) states.push("disabled");
 				if (node.checked !== undefined) states.push(`checked=${String(node.checked)}`);
 				if (node.pressed !== undefined) states.push(`pressed=${String(node.pressed)}`);
@@ -522,7 +532,7 @@ async function collectObservationEntries(
 					states,
 				});
 			} else {
-				await handle.dispose();
+				void handle.dispose().catch(() => undefined);
 			}
 		}
 	}
@@ -531,7 +541,10 @@ async function collectObservationEntries(
 	}
 }
 
-async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]): Promise<ElementHandle | null> {
+async function resolveActionableQueryHandlerClickTarget(
+	handles: ElementHandle[],
+	signal: AbortSignal,
+): Promise<ElementHandle | null> {
 	const candidates: Array<{
 		handle: ElementHandle;
 		rect: { x: number; y: number; w: number; h: number };
@@ -541,29 +554,37 @@ async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]
 		let clickable: ElementHandle = handle;
 		let clickableProxy: ElementHandle | null = null;
 		try {
-			const proxy = await handle.evaluateHandle(el => {
-				const target =
-					(el as Element).closest(
-						'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
-					) ?? el;
-				return target;
-			});
+			const proxy = await untilAborted(signal, () =>
+				handle.evaluateHandle(el => {
+					const target =
+						(el as Element).closest(
+							'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
+						) ?? el;
+					return target;
+				}),
+			);
 			clickableProxy = asElementHandle(proxy.asElement());
 			if (clickableProxy) clickable = clickableProxy;
-		} catch {}
+		} catch {
+			throwIfAborted(signal);
+		}
 		try {
-			const intersecting = await clickable.isIntersectingViewport();
+			const intersecting = await untilAborted(signal, () => clickable.isIntersectingViewport());
 			if (!intersecting) continue;
-			const rect = (await clickable.evaluate(el => {
-				const r = (el as Element).getBoundingClientRect();
-				return { x: r.left, y: r.top, w: r.width, h: r.height };
-			})) as { x: number; y: number; w: number; h: number };
+			const rect = (await untilAborted(signal, () =>
+				clickable.evaluate(el => {
+					const r = (el as Element).getBoundingClientRect();
+					return { x: r.left, y: r.top, w: r.width, h: r.height };
+				}),
+			)) as { x: number; y: number; w: number; h: number };
 			if (rect.w < 1 || rect.h < 1) continue;
 			candidates.push({ handle: clickable, rect, ownedProxy: clickableProxy ?? undefined });
 		} catch {
+			throwIfAborted(signal);
 		} finally {
 			if (clickableProxy && clickableProxy !== handle && clickable !== clickableProxy) {
-				await clickableProxy.dispose().catch(() => undefined);
+				// Never await cleanup: a stalled renderer would hold the abort path open.
+				void clickableProxy.dispose().catch(() => undefined);
 			}
 		}
 	}
@@ -572,34 +593,36 @@ async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]
 	const winner = candidates[0]?.handle ?? null;
 	for (let i = 1; i < candidates.length; i++) {
 		const candidate = candidates[i]!;
-		if (candidate.ownedProxy) await candidate.ownedProxy.dispose().catch(() => undefined);
+		if (candidate.ownedProxy) void candidate.ownedProxy.dispose().catch(() => undefined);
 	}
 	return winner;
 }
 
-async function isClickActionable(handle: ElementHandle): Promise<ActionabilityResult> {
-	return (await handle.evaluate(el => {
-		const element = el as HTMLElement;
-		const style = globalThis.getComputedStyle(element);
-		if (style.display === "none") return { ok: false as const, reason: "display:none" };
-		if (style.visibility === "hidden") return { ok: false as const, reason: "visibility:hidden" };
-		if (style.pointerEvents === "none") return { ok: false as const, reason: "pointer-events:none" };
-		if (Number(style.opacity) === 0) return { ok: false as const, reason: "opacity:0" };
-		const r = element.getBoundingClientRect();
-		if (r.width < 1 || r.height < 1) return { ok: false as const, reason: "zero-size" };
-		const left = Math.max(0, Math.min(globalThis.innerWidth, r.left));
-		const right = Math.max(0, Math.min(globalThis.innerWidth, r.right));
-		const top = Math.max(0, Math.min(globalThis.innerHeight, r.top));
-		const bottom = Math.max(0, Math.min(globalThis.innerHeight, r.bottom));
-		if (right - left < 1 || bottom - top < 1) return { ok: false as const, reason: "off-viewport" };
-		const x = Math.floor((left + right) / 2);
-		const y = Math.floor((top + bottom) / 2);
-		const topEl = globalThis.document.elementFromPoint(x, y);
-		if (!topEl) return { ok: false as const, reason: "elementFromPoint-null" };
-		if (topEl === element || element.contains(topEl) || (topEl as Element).contains(element))
-			return { ok: true as const, x, y };
-		return { ok: false as const, reason: "obscured" };
-	})) as ActionabilityResult;
+async function isClickActionable(handle: ElementHandle, signal: AbortSignal): Promise<ActionabilityResult> {
+	return (await untilAborted(signal, () =>
+		handle.evaluate(el => {
+			const element = el as HTMLElement;
+			const style = globalThis.getComputedStyle(element);
+			if (style.display === "none") return { ok: false as const, reason: "display:none" };
+			if (style.visibility === "hidden") return { ok: false as const, reason: "visibility:hidden" };
+			if (style.pointerEvents === "none") return { ok: false as const, reason: "pointer-events:none" };
+			if (Number(style.opacity) === 0) return { ok: false as const, reason: "opacity:0" };
+			const r = element.getBoundingClientRect();
+			if (r.width < 1 || r.height < 1) return { ok: false as const, reason: "zero-size" };
+			const left = Math.max(0, Math.min(globalThis.innerWidth, r.left));
+			const right = Math.max(0, Math.min(globalThis.innerWidth, r.right));
+			const top = Math.max(0, Math.min(globalThis.innerHeight, r.top));
+			const bottom = Math.max(0, Math.min(globalThis.innerHeight, r.bottom));
+			if (right - left < 1 || bottom - top < 1) return { ok: false as const, reason: "off-viewport" };
+			const x = Math.floor((left + right) / 2);
+			const y = Math.floor((top + bottom) / 2);
+			const topEl = globalThis.document.elementFromPoint(x, y);
+			if (!topEl) return { ok: false as const, reason: "elementFromPoint-null" };
+			if (topEl === element || element.contains(topEl) || (topEl as Element).contains(element))
+				return { ok: true as const, x, y };
+			return { ok: false as const, reason: "obscured" };
+		}),
+	)) as ActionabilityResult;
 }
 
 async function queryTextSelectorAll(page: Page, text: string): Promise<ElementHandle[]> {
@@ -674,7 +697,26 @@ function isTimeoutAbort(reason: unknown): boolean {
 	return reason instanceof Error && reason.name === "TimeoutError";
 }
 
-async function waitForActionableHandle(
+/** First handle that passes the actionability probe, plus the last failure reason otherwise. */
+async function firstActionableHandle(
+	handles: ElementHandle[],
+	signal: AbortSignal,
+): Promise<{ handle: ElementHandle | null; reason: string | null }> {
+	let reason: string | null = null;
+	for (const handle of handles) {
+		try {
+			const actionability = await isClickActionable(handle, signal);
+			if (actionability.ok) return { handle, reason: null };
+			reason = actionability.reason;
+		} catch (error) {
+			throwIfAborted(signal);
+			reason = error instanceof Error ? error.message : String(error);
+		}
+	}
+	return { handle: null, reason };
+}
+
+export async function waitForActionableHandle(
 	page: Page,
 	selector: string,
 	timeoutMs: number,
@@ -691,53 +733,34 @@ async function waitForActionableHandle(
 			const handles = await untilAborted(signal, () => querySelectorAll(page, selector));
 			lastSeen = handles.length;
 			let selected: ElementHandle | null = null;
+			let candidate: ElementHandle | null = null;
 			try {
 				if (clickTarget) {
-					const candidate = await resolveActionableQueryHandlerClickTarget(handles);
+					candidate = await resolveActionableQueryHandlerClickTarget(handles, signal);
 					if (candidate) {
-						const actionability = await isClickActionable(candidate);
+						const actionability = await isClickActionable(candidate, signal);
 						if (actionability.ok) selected = candidate;
-						else {
-							lastReason = actionability.reason;
-							await candidate.dispose().catch(() => undefined);
-						}
+						else lastReason = actionability.reason;
 					} else if (!handles.length) lastReason = "no-matches";
-					else {
-						for (const handle of handles) {
-							try {
-								const actionability = await isClickActionable(handle);
-								if (!actionability.ok) lastReason = actionability.reason;
-							} catch (error) {
-								lastReason = error instanceof Error ? error.message : String(error);
-							}
-						}
-						if (lastReason === "no-matches") lastReason = "no-visible-candidate";
-					}
-				} else {
-					for (const handle of handles) {
-						try {
-							const actionability = await isClickActionable(handle);
-							if (actionability.ok) {
-								selected = handle;
-								break;
-							}
-							lastReason = actionability.reason;
-						} catch (error) {
-							lastReason = error instanceof Error ? error.message : String(error);
-						}
-					}
+				}
+				if (!selected && handles.length > 0) {
+					// The click-target resolver skips anything whose viewport probe fails, so an
+					// actionable match must still win instead of being reported as no candidate.
+					const fallback = await firstActionableHandle(handles, signal);
+					if (fallback.handle) selected = fallback.handle;
+					else if (fallback.reason) lastReason = fallback.reason;
+					else if (lastReason === "no-matches") lastReason = "no-visible-candidate";
 				}
 				if (selected) {
-					await Promise.all(
-						handles
-							.filter(handle => handle !== selected)
-							.map(async handle => handle.dispose().catch(() => undefined)),
-					);
+					for (const handle of handles) {
+						if (handle !== selected) void handle.dispose().catch(() => undefined);
+					}
 					return selected;
 				}
 			} finally {
+				if (candidate && candidate !== selected) void candidate.dispose().catch(() => undefined);
 				if (!selected) {
-					await Promise.all(handles.map(async handle => handle.dispose().catch(() => undefined)));
+					for (const handle of handles) void handle.dispose().catch(() => undefined);
 				}
 			}
 			const remaining = deadline - Date.now();
@@ -758,7 +781,7 @@ async function clickSelector(page: Page, selector: string, timeoutMs: number, si
 	try {
 		await untilAborted(signal, () => handle.click());
 	} finally {
-		await handle.dispose().catch(() => undefined);
+		void handle.dispose().catch(() => undefined);
 	}
 }
 
@@ -826,6 +849,23 @@ export function describeInflight(inflight: Map<number, InflightOp>): string {
 		.sort((a, b) => a.startedAt - b.startedAt)
 		.map(op => `${op.label} (${((now - op.startedAt) / 1000).toFixed(1)}s)`)
 		.join(", ");
+}
+
+export async function collectReadyInfo(
+	page: Pick<Page, "url" | "title" | "viewport">,
+	targetId: string,
+	options: { signal?: AbortSignal; dialogOpen?: boolean } = {},
+): Promise<ReadyInfo> {
+	// Modal dialogs block Runtime.evaluate (including title), not local CDP metadata.
+	const title = options.dialogOpen
+		? undefined
+		: await untilAborted(options.signal, () => page.title()).catch(() => undefined);
+	return {
+		url: redactUrlCredentials(page.url()),
+		title,
+		viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+		targetId,
+	};
 }
 
 export class WorkerCore {
@@ -1048,16 +1088,11 @@ export class WorkerCore {
 		});
 	}
 
-	async #currentReadyInfo(): Promise<ReadyInfo> {
+	async #currentReadyInfo(signal?: AbortSignal): Promise<ReadyInfo> {
 		const page = this.#requirePage();
 		const targetId = this.#targetId ?? (await targetIdForPage(page));
 		this.#targetId = targetId;
-		return {
-			url: redactUrlCredentials(page.url()),
-			title: await page.title().catch(() => undefined),
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
-			targetId,
-		};
+		return collectReadyInfo(page, targetId, { signal, dialogOpen: this.#openDialog !== undefined });
 	}
 
 	#applyDialogPolicy(policy: DialogPolicy): void {
@@ -1082,9 +1117,9 @@ export class WorkerCore {
 		this.#dialogHandler = handler;
 	}
 
-	async #postReadyInfo(): Promise<void> {
+	async #postReadyInfo(signal: AbortSignal): Promise<void> {
 		try {
-			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
+			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo(signal) });
 		} catch (error) {
 			this.#log("debug", "Failed to refresh tab info", {
 				error: error instanceof Error ? error.message : String(error),
@@ -1227,7 +1262,7 @@ export class WorkerCore {
 			return;
 		}
 		if (completed) {
-			await this.#postReadyInfo();
+			await this.#postReadyInfo(timeoutSignal);
 			this.#transport.send({
 				type: "result",
 				id: msg.id,
@@ -1670,7 +1705,7 @@ export class WorkerCore {
 		)) as SerializedAXNode | null;
 		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
 		const entries: ObservationEntry[] = [];
-		await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly });
+		await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly, signal: options.signal });
 		const scroll = (await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {

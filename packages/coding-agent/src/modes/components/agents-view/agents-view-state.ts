@@ -1,7 +1,10 @@
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 import { type AgentRef, MAIN_AGENT_ID } from "../../../registry/agent-registry";
 import type { SessionInfo } from "../../../session/session-listing";
+import { formatCost } from "../../../tools/render-utils";
+import { agentRefMetrics } from "../agent-fleet-projection";
 
 export type AgentsViewSection = "running" | "idle" | "current" | "inactive";
 
@@ -43,6 +46,9 @@ export interface AgentsViewRow {
 	expanded?: boolean;
 
 	hasSpawnTask?: boolean;
+
+	/** Spend of this agent, e.g. `$0.08 · 12.3k tok`; absent when nothing was measured. */
+	usage?: string;
 
 	spawnTask?: string;
 
@@ -406,6 +412,31 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 
 export const DETAILS_COLUMN_WIDTH = 12;
 
+export function formatRecordUsage(record: AgentsViewRecord | undefined): string | undefined {
+	const metrics = agentRefMetrics(record?.ref);
+	if (!metrics) return undefined;
+	if (metrics.cost <= 0 && metrics.tokens <= 0) return undefined;
+	return `${formatCost(metrics.cost)} · ${formatNumber(metrics.tokens)} tok`;
+}
+
+/** Spend of the agents a view is showing; each agent counts once, exactly as it is listed. */
+export function sumAgentsViewUsage(rows: readonly AgentsViewRow[]): { cost: number; tokens: number; agents: number } {
+	const totals = { cost: 0, tokens: 0, agents: 0 };
+	const counted = new Set<string>();
+	for (const row of rows) {
+		if (row.kind === "subagent-summary" || row.kind === "subagent-code") continue;
+		const id = row.record?.ref?.id;
+		if (id === undefined || counted.has(id)) continue;
+		const metrics = agentRefMetrics(row.record?.ref);
+		if (!metrics) continue;
+		counted.add(id);
+		totals.cost += metrics.cost;
+		totals.tokens += metrics.tokens;
+		totals.agents += 1;
+	}
+	return totals;
+}
+
 export function formatRowDetails(row: AgentsViewRow): string {
 	const age = formatRelativeAge(getLastActivity(row.record));
 	switch (row.section) {
@@ -596,6 +627,7 @@ export function buildAgentsViewRows(
 	const baseRows: MutableAgentsViewRow[] = records.map(record => {
 		const spawnTaskSource = getRecordSessionFile(record);
 		const spawnTask = spawnTaskSource ? spawnTasks.get(spawnTaskSource) : undefined;
+		const usage = formatRecordUsage(record);
 		return {
 			kind: "agent" as const,
 			section: record.section,
@@ -609,6 +641,7 @@ export function buildAgentsViewRows(
 			runningSubagentCount: 0,
 			identity: record.identity,
 			...(spawnTask ? { spawnTask } : {}),
+			...(usage ? { usage } : {}),
 		};
 	});
 

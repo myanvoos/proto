@@ -22,6 +22,34 @@ test("readLines yields stable line buffers that later chunks cannot mutate", asy
 	expect(lines).toEqual(["a", "b", "c"]);
 });
 
+test("readLines applies byte limits per line across chunks, including an unterminated tail", async () => {
+	const encoder = new TextEncoder();
+	const decoded: string[] = [];
+	for await (const line of readLines(streamOf([encoder.encode("界"), encoder.encode("x\ny\n1234")]), undefined, 4)) {
+		decoded.push(new TextDecoder().decode(line));
+	}
+	expect(decoded).toEqual(["界x", "y", "1234"]);
+});
+
+for (const chunks of [["abc", "de"], ["abcde\n"]]) {
+	test(`readLines rejects oversized ${chunks.length > 1 ? "fragmented tails" : "complete lines"} and cancels the source`, async () => {
+		let cancelled = false;
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const lines = readLines(stream, undefined, 4);
+		await expect(lines.next()).rejects.toThrow(/line exceeds.*4-byte limit/);
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+}
+
 test("readLines snapshots pooled direct lines before the iterator resumes", async () => {
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();

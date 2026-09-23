@@ -1859,6 +1859,8 @@ interface BashRenderArgs {
 	env?: Record<string, unknown>;
 	timeout?: number;
 	cwd?: string;
+	/** The call's declared intent; shown on failure headers, where the command alone lacks it. */
+	i?: string;
 	__partialJson?: string;
 	[key: string]: unknown;
 }
@@ -1974,7 +1976,15 @@ function bashDisplayCells(command: string): EvalDisplayCell[] {
 	for (const write of findBashFileWrites(command)) {
 		if (write.code.trim().length === 0) continue;
 		const language = writeOutlineLanguage(write.path);
-		if (language) cells.push({ start: write.start, end: write.end, code: write.code, language });
+		if (language) {
+			cells.push({
+				start: write.start,
+				end: write.end,
+				code: write.code,
+				language,
+				label: path.basename(normalizeBashWritePath(write.path)),
+			});
+		}
 	}
 	return cells.sort((a, b) => a.start - b.start);
 }
@@ -2018,6 +2028,8 @@ function kernelCellLines(
 		width: number;
 		/** Full (sanitized) shell source for a mixed call; its kernel cells render as outlines inside it. */
 		displayCode?: string;
+		/** Trailing notices for the call; they render on the card's rail, under its output. */
+		noticeLines?: readonly string[];
 	},
 ): string[] {
 	const cell: EvalCellResult = {
@@ -2041,14 +2053,17 @@ function kernelCellLines(
 		displayLanguage: opts.displayCode === undefined ? undefined : "bash",
 		displayCells: opts.displayCode === undefined ? undefined : bashDisplayCells(opts.displayCode),
 		displayRegions: opts.displayCode === undefined ? undefined : bashEmbeddedRegions(opts.displayCode),
+		noticeLines: opts.noticeLines,
 	});
 }
 
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : undefined;
 	return {
 		command: config.resolveCommand?.(args),
 		cwd: config.resolveCwd?.(args),
 		env: config.resolveEnv?.(args),
+		i: typeof record?.i === "string" ? record.i : undefined,
 		__partialJson: getPartialJson(args),
 	};
 }
@@ -2152,6 +2167,14 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const isRunning = execution?.state === "running";
 			const isTimeout = details?.timedOut === true || execution?.timeout !== undefined;
 			const warningStatus = isTimeout || isUnknown;
+			// A failed card is the one place the command's own text is not enough: it has to name the
+			// tool like every other failure card, say how it failed, and state what was being
+			// attempted, since the shell line alone does not say why the model ran it.
+			const failureMeta: string[] = [];
+			if (warningStatus) failureMeta.push(isTimeout ? "timed out" : "status unknown");
+			else if (execution?.exitCode !== undefined) failureMeta.push(`exit ${execution.exitCode}`);
+			const rawIntent = options.intent ?? (typeof renderArgs.i === "string" ? renderArgs.i : undefined);
+			const intent = rawIntent ? sanitizeText(rawIntent).trim() : "";
 			const header =
 				config.showHeader === false
 					? success || softExit || isPartial || isRunning
@@ -2159,8 +2182,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						: renderStatusLine(
 								{
 									icon: warningStatus ? "warning" : "error",
-									title: warningStatus ? "status unknown" : "failed",
+									title: config.resolveTitle(args, options),
 									titleColor: warningStatus ? "warning" : "error",
+									...(intent ? { description: intent } : {}),
+									meta: failureMeta,
 								},
 								uiTheme,
 							)
@@ -2173,6 +2198,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								: {
 										icon: isPartial || isRunning ? "pending" : warningStatus ? "warning" : "error",
 										title: config.resolveTitle(args, options),
+										...(isPartial || isRunning ? {} : intent ? { description: intent } : {}),
+										meta: isPartial || isRunning ? [] : failureMeta,
 									},
 							uiTheme,
 						);
@@ -2215,6 +2242,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
 					const output = rawOutputArtifact.text;
 					const displayOutput = output.trimEnd();
+					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
+					const warningLine = showingFullOutput
+						? undefined
+						: (formatStyledTruncationWarning(details?.meta, uiTheme) ?? undefined);
 
 					if (kernelCell) {
 						const lines = kernelCellLines(kernelCell, uiTheme, {
@@ -2227,6 +2258,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
 							width,
 							displayCode: mixedKernelCell ? command : undefined,
+							// The model-facing notice was stripped above; restore its recovery
+							// link inside the card, on the same rail as the output it describes.
+							noticeLines: warningLine ? [warningLine] : undefined,
 						});
 						cachedWidth = width;
 						cachedPreviewLines = previewLines;
@@ -2238,37 +2272,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						return lines;
 					}
 
-					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
-
-					const timeoutDisabled = details?.timeoutDisabled === true || renderContext?.timeout === 0;
-					const timeoutSeconds = timeoutDisabled ? undefined : (details?.timeoutSeconds ?? renderContext?.timeout);
-					const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
-					const statsParts: string[] = [];
-					if (details?.wallTimeMs !== undefined) {
-						statsParts.push(`Wall: ${formatWallTimeSeconds(details.wallTimeMs)}s`);
-					}
-					if (timeoutDisabled) {
-						statsParts.push("Timeout: disabled");
-					}
-					if (typeof timeoutSeconds === "number") {
-						statsParts.push(
-							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
-								: `Timeout: ${timeoutSeconds}s`,
-						);
-					}
-					const timeoutLine =
-						statsParts.length > 0
-							? uiTheme.fg(
-									"dim",
-									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-								)
-							: undefined;
 					const backgroundJobId = details?.async?.state === "running" ? details.async.jobId : undefined;
-					let warningLine: string | undefined;
-					if (details?.meta?.truncation && !showingFullOutput) {
-						warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
-					}
 
 					const outputLines: string[] = [];
 					const hasOutput = displayOutput.trim().length > 0;
@@ -2299,7 +2303,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							outputLines.push(...result.visualLines);
 						}
 					}
-					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 					if (backgroundJobId) outputLines.push(uiTheme.fg("dim", `Backgrounded: ${backgroundJobId}`));
 					const artifactId = rawOutputArtifact.artifactId;

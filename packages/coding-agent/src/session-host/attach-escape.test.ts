@@ -54,7 +54,7 @@ test("Escape aborts the turn and detaches under a real TTY", async () => {
 		(_error, chunk) => {
 			output += chunk;
 			for (const waiter of [...waiters]) {
-				if (waiter.needles.every(needle => output.includes(needle))) {
+				if (waiter.needles.every(needle => Bun.stripANSI(output).includes(needle))) {
 					waiters.delete(waiter);
 					waiter.resolve();
 				}
@@ -66,7 +66,7 @@ test("Escape aborts the turn and detaches under a real TTY", async () => {
 	// bounded deadline against a live subprocess, which fake timers cannot
 	// drive (the pty child runs on the platform clock).
 	const waitFor = async (...needles: string[]): Promise<void> => {
-		if (needles.every(needle => output.includes(needle))) return;
+		if (needles.every(needle => Bun.stripANSI(output).includes(needle))) return;
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const waiter: Waiter = { needles, resolve };
 		waiters.add(waiter);
@@ -86,7 +86,7 @@ test("Escape aborts the turn and detaches under a real TTY", async () => {
 	pty.write(`/bash echo ${marker}\n`);
 	// Line-start marker: distinguishes rendered output from the pty echo of
 	// the typed command (where the marker follows "echo ").
-	await waitFor(`\r\n${marker}`);
+	await waitFor(`\n${marker}`);
 	// A lone ESC byte: the attach client must abort and detach in one press.
 	pty.write("\x1b");
 	await waitFor("esc — aborted and detached");

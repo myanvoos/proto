@@ -24,6 +24,7 @@ import inspectMediaDescription from "../prompts/tools/inspect-media.md" with { t
 import inspectMediaSystemPromptTemplate from "../prompts/tools/inspect-media-system.md" with { type: "text" };
 import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
 import {
+	ImageDecodeError,
 	ImageInputTooLargeError,
 	type LoadedImageInput,
 	loadImageAttachmentInput,
@@ -258,7 +259,7 @@ export class InspectMediaTool implements AgentTool<typeof inspectMediaSchema, In
 						: null;
 				}
 			} catch (error) {
-				if (error instanceof ImageInputTooLargeError) {
+				if (error instanceof ImageInputTooLargeError || error instanceof ImageDecodeError) {
 					throw new ToolError(error.message);
 				}
 				throw error;
@@ -343,7 +344,11 @@ export class InspectMediaTool implements AgentTool<typeof inspectMediaSchema, In
 					: null;
 			}
 		} catch (error) {
-			if (error instanceof ImageInputTooLargeError || error instanceof MediaInputTooLargeError) {
+			if (
+				error instanceof ImageInputTooLargeError ||
+				error instanceof MediaInputTooLargeError ||
+				error instanceof ImageDecodeError
+			) {
 				throw new ToolError(error.message);
 			}
 			throw error;

@@ -137,11 +137,19 @@ export class AgentStorage {
 			this.#db = new Database(dbPath);
 		} catch (err) {
 			const dir = path.dirname(dbPath);
-			const dirExists = fs.existsSync(dir);
 			const errMsg = err instanceof Error ? err.message : String(err);
+			// Report what the path actually is: `existsSync` is true for a file too, which sent people
+			// hunting for a corrupt database when the parent was never a directory.
+			let dirState: string;
+			try {
+				const stat = fs.statSync(dir);
+				dirState = stat.isDirectory() ? "exists" : "exists but is not a directory";
+			} catch {
+				dirState = "does not exist";
+			}
 			throw new Error(
 				`Failed to open agent database at '${dbPath}': ${errMsg}\n` +
-					`Directory '${dir}' exists: ${dirExists}\n` +
+					`Directory '${dir}' ${dirState}\n` +
 					`Ensure the directory is writable and not corrupted.`,
 			);
 		}

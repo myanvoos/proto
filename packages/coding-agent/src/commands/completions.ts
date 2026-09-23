@@ -1,11 +1,10 @@
 import { BINARY_NAME, postmortem, VERSION } from "@oh-my-pi/pi-utils";
-import { Args, type CliConfig, Command, type CommandCtor } from "@oh-my-pi/pi-utils/cli";
+import { type CliConfig, CliUsageError, Command, type CommandCtor } from "@oh-my-pi/pi-utils/cli";
 import { completionsHelp as commandHelp } from "../cli/command-help";
 import { buildSpec, generateCompletion, type Shell } from "../cli/completion-gen";
 import { commands } from "../cli-commands";
 
 const ROOT_COMMAND = "launch";
-const SHELLS = ["bash", "zsh", "fish"] as const;
 
 export async function generateLiveCompletion(shell: Shell): Promise<string> {
 	const loaded = await Promise.all(commands.map(async entry => ({ entry, Cmd: await entry.load() })));
@@ -23,26 +22,19 @@ export async function generateLiveCompletion(shell: Shell): Promise<string> {
 
 export default class Completions extends Command {
 	static description = commandHelp.description;
-	static args = {
-		shell: Args.string({
-			description: "Target shell",
-			required: true,
-			options: SHELLS,
-		}),
-	};
+	static args = commandHelp.args;
 
-	static examples = [
-		`# zsh — eval at startup, or write to a file in $fpath\n  eval "$(${BINARY_NAME} completions zsh)"`,
-		`# bash\n  eval "$(${BINARY_NAME} completions bash)"`,
-		`# fish\n  ${BINARY_NAME} completions fish > ~/.config/fish/completions/${BINARY_NAME}.fish`,
-	];
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
-		const shell = this.argv[0];
+		// Parsing (rather than reading argv[0]) is what rejects an unknown shell and a second
+		// positional instead of quietly generating a script for the first one.
+		const { args } = await this.parse(Completions);
+		const shell = args.shell;
 		if (!isShell(shell)) {
-			process.stderr.write(`Usage: ${BINARY_NAME} completions <${SHELLS.join("|")}>\n`);
-			process.exitCode = 1;
-			return;
+			throw new CliUsageError(
+				`Expected shell to be one of: ${commandHelp.args.shell.options!.join(", ")}; got ${JSON.stringify(shell)}`,
+			);
 		}
 
 		await Bun.write(Bun.stdout, await generateLiveCompletion(shell));

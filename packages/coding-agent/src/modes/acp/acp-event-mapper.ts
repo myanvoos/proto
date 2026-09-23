@@ -290,6 +290,22 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		}
 		case "checklist_auto_clear":
 			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries: [] })];
+		// Recovery can hold a turn open for minutes. Print mode narrates it on
+		// stderr; an ACP client has no other way to learn the turn is still alive,
+		// so the same line goes out as agent-side status rather than model output.
+		case "auto_retry_start": {
+			const delaySeconds = Math.max(0, Math.round(event.delayMs / 100) / 10);
+			return [
+				toSessionNotification(sessionId, {
+					sessionUpdate: "agent_thought_chunk",
+					content: {
+						type: "text",
+						text: `Provider error (retry ${event.attempt}/${event.maxAttempts} in ${delaySeconds}s): ${event.errorMessage}`,
+					},
+				}),
+			];
+		}
+
 		default:
 			return [];
 	}
@@ -343,14 +359,10 @@ function mapAssistantMessageUpdate(
 				progress.textEmitted = true;
 			}
 			break;
+		// A failed turn is reported through the session/prompt error response, not
+		// as assistant output the user would read as a model reply.
 		case "error":
-			sessionUpdate = "agent_message_chunk";
-			text = event.assistantMessageEvent.error.errorMessage ?? "Unknown error";
-
-			if (text.length > 0 && progress) {
-				progress.textEmitted = true;
-			}
-			break;
+			return [];
 		default:
 			return [];
 	}

@@ -19,7 +19,6 @@
 		"maxTokens": 16384,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -67,7 +66,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2-0905-preview": {
 		"id": "kimi-k2-0905-preview",
@@ -89,7 +89,6 @@
 		"maxTokens": 262144,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -137,7 +136,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2-thinking": {
 		"id": "kimi-k2-thinking",
@@ -169,7 +169,6 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -217,7 +216,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2-thinking-turbo": {
 		"id": "kimi-k2-thinking-turbo",
@@ -249,7 +249,6 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -297,7 +296,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2-turbo-preview": {
 		"id": "kimi-k2-turbo-preview",
@@ -319,7 +319,6 @@
 		"maxTokens": 262144,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -367,11 +366,12 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "Kimi K2.5",
+		"name": "kimi-k2.5",
 		"api": "openai-completions",
 		"provider": "moonshot",
 		"baseUrl": "https://api.moonshot.ai/v1",
@@ -399,7 +399,6 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -447,7 +446,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"kimi-k2.6": {
 		"id": "kimi-k2.6",

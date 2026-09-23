@@ -239,6 +239,24 @@ function buildAnthropicReferenceMap(
 
 export const ANTHROPIC_CURATED_FALLBACK_MODELS: readonly ModelSpec<"anthropic-messages">[] = [
 	{
+		id: "claude-opus-5-5",
+		name: "Claude Opus 5.5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+		thinking: {
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			supportsDisplay: true,
+		},
+		tokenizer: "claude-v5",
+	},
+	{
 		id: "claude-sonnet-5",
 		name: "Claude Sonnet 5",
 		api: "anthropic-messages",

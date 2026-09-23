@@ -18,8 +18,6 @@
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -71,7 +69,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -99,8 +98,6 @@
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -152,7 +149,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -179,21 +177,6 @@
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
-		"requiresGlyphTokenization": false,
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh"
-			],
-			"effortMap": {
-				"minimal": "low"
-			}
-		},
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -243,16 +226,30 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"effortMap": {
+				"minimal": "low"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
+			"reasoningEffortMap": {
+				"minimal": "low"
+			},
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
 			"supportsImageDetailOriginal": false,
 			"omitReasoningEffort": false,
-			"supportsReasoningEffort": true,
-			"reasoningEffortMap": {
-				"minimal": "low"
-			}
+			"supportsReasoningEffort": true
 		}
 	},
 	"grok-4.3": {
@@ -274,20 +271,6 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 1000000,
-		"requiresGlyphTokenization": false,
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			],
-			"effortMap": {
-				"minimal": "low"
-			}
-		},
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -339,18 +322,31 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			],
+			"effortMap": {
+				"minimal": "low"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
-			"includeEncryptedReasoning": true,
-			"filterReasoningHistory": false,
-			"supportsImageDetailOriginal": false,
-			"omitReasoningEffort": false,
-			"supportsReasoningEffort": true,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
 				"max": "high"
-			}
+			},
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"supportsImageDetailOriginal": false,
+			"omitReasoningEffort": false,
+			"supportsReasoningEffort": true
 		}
 	},
 	"grok-4.5": {
@@ -372,20 +368,6 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
-		"requiresGlyphTokenization": false,
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			],
-			"effortMap": {
-				"minimal": "low"
-			}
-		},
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -437,18 +419,31 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			],
+			"effortMap": {
+				"minimal": "low"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
-			"includeEncryptedReasoning": true,
-			"filterReasoningHistory": false,
-			"supportsImageDetailOriginal": false,
-			"omitReasoningEffort": false,
-			"supportsReasoningEffort": true,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
 				"max": "high"
-			}
+			},
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"supportsImageDetailOriginal": false,
+			"omitReasoningEffort": false,
+			"supportsReasoningEffort": true
 		}
 	},
 	"grok-4.6": {
@@ -470,21 +465,6 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
-		"requiresGlyphTokenization": false,
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh"
-			],
-			"effortMap": {
-				"minimal": "low"
-			}
-		},
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -534,16 +514,30 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"effortMap": {
+				"minimal": "low"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
+			"reasoningEffortMap": {
+				"minimal": "low"
+			},
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
 			"supportsImageDetailOriginal": false,
 			"omitReasoningEffort": false,
-			"supportsReasoningEffort": true,
-			"reasoningEffortMap": {
-				"minimal": "low"
-			}
+			"supportsReasoningEffort": true
 		}
 	},
 	"grok-build": {
@@ -565,8 +559,6 @@
 		},
 		"contextWindow": 512000,
 		"maxTokens": 512000,
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -618,7 +610,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -646,8 +639,6 @@
 		},
 		"contextWindow": 256000,
 		"maxTokens": 256000,
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -699,7 +690,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -726,8 +718,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 200000,
-		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -779,7 +769,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"supportsComputerUseConfig": false,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,

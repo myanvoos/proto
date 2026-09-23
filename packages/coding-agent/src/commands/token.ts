@@ -1,6 +1,6 @@
 import { getProviderRegistry } from "@oh-my-pi/pi-ai";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { tokenHelp as commandHelp } from "../cli/command-help";
 import { isAuthenticated, ModelRegistry } from "../config/model-registry";
 import { discoverAuthStorage } from "../sdk";
@@ -8,40 +8,11 @@ import { getAvailableAuthMethods } from "../web/search/providers/perplexity-auth
 
 export default class Token extends Command {
 	static description = commandHelp.description;
-	static args = {
-		provider: Args.string({
-			description: "Provider ID (e.g. anthropic, openai)",
-			required: true,
-		}),
-	};
+	static args = commandHelp.args;
 
-	static flags = {
-		raw: Flags.boolean({
-			description: "Output the raw credential value without parsing nested JSON structures",
-			default: false,
-		}),
-		"force-refresh": Flags.boolean({
-			description: "Force refresh the OAuth token even if it has not expired",
-			default: false,
-		}),
-		account: Flags.integer({
-			char: "a",
-			description: "Select the Nth OAuth account (1-based) in stored order instead of the round-robin default",
-		}),
-		list: Flags.boolean({
-			char: "l",
-			description: "List the provider's OAuth accounts (index + identity) and exit",
-			default: false,
-		}),
-	};
+	static flags = commandHelp.flags;
 
-	static examples = [
-		"# Get API key for Anthropic\n  proto token anthropic",
-		"# Get raw Copilot credential JSON\n  proto token github-copilot --raw",
-		"# Force refresh and get Gemini CLI token\n  proto token google-gemini-cli --force-refresh",
-		"# List Anthropic OAuth accounts\n  proto token anthropic --list",
-		"# Get the 2nd Anthropic OAuth account's token\n  proto token anthropic --account 2",
-	];
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Token);

@@ -12,6 +12,7 @@ import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { discoverAuthStorage } from "../sdk";
+import { summarizeUsageResetCredits } from "../utils/usage-display";
 
 const BAR_WIDTH = 28;
 
@@ -351,25 +352,25 @@ function formatAccountHeader(
 	}
 	const planType = report.metadata?.planType;
 	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
-	const savedResets = report.resetCredits?.availableCount ?? 0;
-	if (savedResets > 0) {
-		header += chalk.cyan(` · ✦ ${savedResets} saved reset${savedResets === 1 ? "" : "s"}`);
-		const credits = report.resetCredits?.credits;
-		if (credits) {
-			const expiries = credits
-				.filter(c => c.expiresAt)
-				.map(c => ({ date: c.expiresAt!, ms: Date.parse(c.expiresAt!) }))
-				.filter(c => !Number.isNaN(c.ms))
-				.sort((a, b) => a.ms - b.ms);
-			const upcoming = expiries.find(c => c.ms > nowMs);
-			if (upcoming) {
+	const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+	if (resets && resets.bankedCount > 0) {
+		header += chalk.cyan(` · ✦ ${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}`);
+		if (resets.redeemableCount !== resets.bankedCount) {
+			header += chalk.dim(` · ${resets.redeemableCount} usable now`);
+		}
+		if (resets.soonestExpiry) {
+			const expiryMs = Date.parse(resets.soonestExpiry);
+			if (expiryMs > nowMs) {
 				header += chalk.dim(
-					` · soonest expires in ${formatDuration(upcoming.ms - nowMs)} (${upcoming.date.slice(0, 10)})`,
+					` · soonest expires in ${formatDuration(expiryMs - nowMs)} (${resets.soonestExpiry.slice(0, 10)})`,
 				);
 			} else {
-				const lastExpired = expiries.at(-1);
-				if (lastExpired) header += chalk.dim(` · expired (${lastExpired.date.slice(0, 10)})`);
+				header += chalk.dim(` · expired (${resets.soonestExpiry.slice(0, 10)})`);
 			}
+		}
+		if (resets.redeemableCount === 0 && resets.unavailableReason) {
+			const reason = sanitizeText(resets.unavailableReason.replace(/[\r\n\t]+/g, " "));
+			header += chalk.dim(` · unavailable: ${reason}`);
 		}
 	}
 	if (report.fetchedAt && nowMs - report.fetchedAt > 90_000) {
@@ -844,6 +845,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const sinceMs = nowMs - days * 86_400_000;
 			const entries = authStorage.listUsageHistory({ sinceMs, provider: cmd.provider?.toLowerCase() });
 			const redaction = cmd.redact ? buildRedactionMap(collectHistoryIdentityStrings(entries)) : undefined;
+			const emptyHistoryReason =
+				entries.length === 0
+					? `No usage history recorded${cmd.provider ? ` for provider "${cmd.provider}"` : ""} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, proto usage).`
+					: undefined;
 			if (cmd.json) {
 				const masked = redaction
 					? entries.map(entry => ({
@@ -853,16 +858,14 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 							accountId: maskIdentity(redaction, entry.accountId),
 						}))
 					: entries;
-				process.stdout.write(`${JSON.stringify({ generatedAt: nowMs, sinceMs, entries: masked }, null, 2)}\n`);
+				process.stdout.write(
+					`${JSON.stringify({ generatedAt: nowMs, sinceMs, entries: masked, ...(emptyHistoryReason ? { error: emptyHistoryReason } : {}) }, null, 2)}\n`,
+				);
+				if (emptyHistoryReason) process.exitCode = 1;
 				return;
 			}
-			if (entries.length === 0) {
-				const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
-				process.stderr.write(
-					chalk.yellow(
-						`No usage history recorded${scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, proto usage).\n`,
-					),
-				);
+			if (emptyHistoryReason) {
+				process.stderr.write(chalk.yellow(`${emptyHistoryReason}\n`));
 				process.exitCode = 1;
 				return;
 			}
@@ -901,6 +904,14 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			? buildRedactionMap(collectIdentityStrings(filteredReports, accounts, disabled))
 			: undefined;
 
+		// Same verdict on both surfaces: an empty report is a failure, not a silent success.
+		const emptyReason =
+			filteredReports.length === 0 && accounts.length === 0
+				? storedAccounts.length > 0
+					? `No usage data${cmd.provider ? ` for provider "${cmd.provider}"` : ""}. Stored credentials are for providers without a usage endpoint.`
+					: `No credentials found${cmd.provider ? ` for provider "${cmd.provider}"` : ""}. Run \`proto\` and use /login to add accounts.`
+				: undefined;
+
 		if (cmd.json) {
 			let trimmed = filteredReports.map(({ raw: _raw, ...rest }) => rest);
 			let unreportedAccounts = collectUnreportedAccounts(filteredReports, accounts);
@@ -938,19 +949,15 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				accountsWithoutUsage: unreportedAccounts,
 				disabledCredentials: disabledForJson,
 				capacity,
+				...(emptyReason ? { error: emptyReason } : {}),
 			};
 			process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+			if (emptyReason) process.exitCode = 1;
 			return;
 		}
 
-		if (filteredReports.length === 0 && accounts.length === 0) {
-			const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
-
-			const message =
-				storedAccounts.length > 0
-					? `No usage data${scope}. Stored credentials are for providers without a usage endpoint.\n`
-					: `No credentials found${scope}. Run \`proto\` and use /login to add accounts.\n`;
-			process.stderr.write(chalk.yellow(message));
+		if (emptyReason) {
+			process.stderr.write(chalk.yellow(`${emptyReason}\n`));
 			process.exitCode = 1;
 			return;
 		}

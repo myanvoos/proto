@@ -35,6 +35,12 @@ export class ExtensionList implements Component {
 	#hoveredIndex: number | null = null;
 
 	#visibleCount = 0;
+	#searchRows = 2;
+
+	setMaxHeight(rows: number): void {
+		this.#searchRows = rows >= 4 ? 2 : rows >= 2 ? 1 : 0;
+		this.setMaxVisible(Math.max(1, rows - this.#searchRows));
+	}
 
 	constructor(
 		private extensions: Extension[],
@@ -107,8 +113,8 @@ export class ExtensionList implements Component {
 		const searchPrefix = theme.fg("muted", "Search: ");
 		const searchText = this.#searchQuery || (this.#focused ? "" : theme.fg("dim", "type to filter"));
 		const cursor = this.#focused ? theme.fg("accent", "_") : "";
-		lines.push(searchPrefix + searchText + cursor);
-		lines.push("");
+		if (this.#searchRows) lines.push(truncateToWidth(searchPrefix + searchText + cursor, width));
+		if (this.#searchRows > 1) lines.push("");
 
 		if (this.#listItems.length === 0) {
 			lines.push(theme.fg("muted", "  No extensions found for this provider."));
@@ -194,7 +200,8 @@ export class ExtensionList implements Component {
 		// Extension metadata is config/plugin-controlled: strip controls
 		// before the row is measured and truncated.
 		let name = sanitizeText(ext.displayName);
-		const nameWidth = Math.min(24, width - 16);
+		// Identification outranks the trigger column once the row runs out of space.
+		const nameWidth = width - 16 >= 8 ? Math.min(24, width - 16) : Math.max(1, width - 5);
 
 		let line = `   ${stateIcon} `;
 
@@ -391,7 +398,7 @@ export class ExtensionList implements Component {
 	}
 
 	hitTest(line: number): number | null {
-		const rowLine = line - 2;
+		const rowLine = line - this.#searchRows;
 		if (rowLine < 0 || rowLine >= this.#visibleCount) return null;
 		const index = this.#scrollOffset + rowLine;
 		return index < this.#listItems.length ? index : null;

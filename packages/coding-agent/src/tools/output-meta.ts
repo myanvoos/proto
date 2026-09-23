@@ -9,7 +9,13 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { getDefault, type Settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
-import { type OutputSummary, type TruncationResult, truncateMiddle, truncateTail } from "../session/streaming-output";
+import {
+	countLines,
+	type OutputSummary,
+	type TruncationResult,
+	truncateMiddle,
+	truncateTail,
+} from "../session/streaming-output";
 import { formatBytes, wrapBrackets } from "./render-utils";
 import { renderError } from "./tool-errors";
 
@@ -209,7 +215,7 @@ export class OutputMetaBuilder {
 	}
 
 	truncationFromText(text: string, options: TruncationTextOptions): this {
-		const outputLines = text.length > 0 ? text.split("\n").length : 0;
+		const outputLines = countLines(text);
 		const outputBytes = Buffer.byteLength(text, "utf-8");
 		const totalLines = options.totalLines ?? outputLines;
 		const totalBytes = options.totalBytes ?? outputBytes;

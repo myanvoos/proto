@@ -125,6 +125,16 @@ function countNewlines(text: string): number {
 	return count;
 }
 
+/**
+ * Lines in `text`, counted the way every reader of this output counts them: a
+ * trailing newline terminates the last line instead of starting an empty one,
+ * so a notice and the artifact it points at report the same number.
+ */
+export function countLines(text: string): number {
+	if (text.length === 0) return 0;
+	return countNewlines(text) + (text.endsWith(NL) ? 0 : 1);
+}
+
 export function truncateLine(
 	line: string,
 	maxChars: number = DEFAULT_MAX_COLUMN,
@@ -134,7 +144,7 @@ export function truncateLine(
 }
 
 export function noTruncResult(content: string, totalLines?: number, totalBytes?: number): TruncationResult {
-	if (totalLines == null) totalLines = countNewlines(content) + 1;
+	if (totalLines == null) totalLines = countLines(content);
 	if (totalBytes == null) totalBytes = Buffer.byteLength(content, "utf-8");
 	return { content, totalLines, totalBytes };
 }
@@ -144,7 +154,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const totalLines = countNewlines(content) + 1;
+	const totalLines = countLines(content);
 
 	if (totalLines <= maxLines && totalBytes <= maxBytes) {
 		return noTruncResult(content, totalLines, totalBytes);
@@ -280,7 +290,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const totalLines = countNewlines(content) + 1;
+	const totalLines = countLines(content);
 
 	if (totalLines <= maxLines && totalBytes <= maxBytes) {
 		return noTruncResult(content, totalLines, totalBytes);
@@ -387,7 +397,7 @@ export function truncateMiddle(content: string, options: TruncationOptions = {})
 	const tailLines = Math.max(0, maxLines - headLines);
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const totalLines = countNewlines(content) + 1;
+	const totalLines = countLines(content);
 
 	if (totalBytes <= maxBytes && totalLines <= maxLines) {
 		return noTruncResult(content, totalLines, totalBytes);
@@ -675,6 +685,7 @@ export class OutputSink {
 	#headLines = 0;
 	#headRetentionDisabled = false;
 	#totalLines = 0;
+	#endsWithNewline = false;
 	#totalBytes = 0;
 	#sawData = false;
 	#truncated = false;
@@ -951,7 +962,10 @@ export class OutputSink {
 
 		if (chunk.length > 0) {
 			this.#sawData = true;
-			if (accountTotals) this.#totalLines += countNewlines(chunk);
+			if (accountTotals) {
+				this.#totalLines += countNewlines(chunk);
+				this.#endsWithNewline = chunk.endsWith(NL);
+			}
 		}
 
 		const capped = this.#maxColumns > 0 && !atomicSixel ? this.#applyColumnCap(chunk) : chunk;
@@ -1205,6 +1219,7 @@ export class OutputSink {
 		this.#headRetentionDisabled = true;
 		this.#totalBytes = bytes;
 		this.#totalLines = countNewlines(text);
+		this.#endsWithNewline = text.endsWith(NL);
 		this.#sawData = text.length > 0;
 		this.#truncated = false;
 		this.#summarized = options?.summarized === true;
@@ -1291,7 +1306,7 @@ export class OutputSink {
 		const noticeLine = notice ? `[${notice}]\n` : "";
 
 		this.#flushPendingChunk();
-		const totalLines = this.#sawData ? this.#totalLines + 1 : 0;
+		const totalLines = this.#sawData ? this.#totalLines + (this.#endsWithNewline ? 0 : 1) : 0;
 
 		await this.#finalizeFile();
 
@@ -1300,7 +1315,7 @@ export class OutputSink {
 		const headBytes = this.#head.bytes;
 		const tailBytes = this.#buffer.bytes;
 		const headLines = this.#headLines + (headBytes > 0 && !this.#head.endsWith("\n") ? 1 : 0);
-		const tailLines = tailBuf.length > 0 ? countNewlines(tailBuf) + 1 : 0;
+		const tailLines = countLines(tailBuf);
 
 		this.#finishActionableDiagnostics();
 		const effectiveTotalBytes = Math.max(0, this.#totalBytes - this.#columnDroppedBytes);
@@ -1330,7 +1345,7 @@ export class OutputSink {
 		} else if (headBytes > 0) {
 			body = `${headBuf}${tailBuf}`;
 			outputBytes = headBytes + tailBytes;
-			outputLines = body.length > 0 ? countNewlines(body) + 1 : 0;
+			outputLines = countLines(body);
 		} else {
 			body = tailBuf;
 			outputBytes = tailBytes;
@@ -1342,7 +1357,7 @@ export class OutputSink {
 			const diagnosticSection = `[ACTIONABLE DIAGNOSTICS]\n${actionable.join("\n")}`;
 			body = body.length > 0 ? `${body}\n${diagnosticSection}` : diagnosticSection;
 			outputBytes = Buffer.byteLength(body, "utf-8");
-			outputLines = countNewlines(body) + 1;
+			outputLines = countLines(body);
 		}
 
 		return {

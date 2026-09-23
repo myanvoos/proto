@@ -34,13 +34,34 @@ import {
 } from "../../config/settings";
 import type { SettingTab, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
-import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
+import {
+	getCurrentThemeName,
+	getSelectListTheme,
+	getSettingsListTheme,
+	isLightTheme,
+	theme,
+} from "../../modes/theme/theme";
 import { getTabBarTheme } from "../shared";
-import { bottomBorder, divider, row, topBorder } from "./overlay-box";
+import { withIcon } from "../theme/icon-label";
+import {
+	bottomBorder,
+	divider,
+	getDialogViewport,
+	getTabStripRows,
+	renderDialogContent,
+	row,
+	topBorder,
+} from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
 
 class TextInputSubmenu extends Container {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
+	}
+
 	#input: Input;
 	#error: Text;
 
@@ -81,12 +102,22 @@ class TextInputSubmenu extends Container {
 		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to cancel · Clear field to unset"), 0, 0));
 	}
 
+	override render(width: number): readonly string[] {
+		return renderDialogContent(this.children, this.#input, width, this.#maxHeight).lines;
+	}
+
 	handleInput(data: string): void {
 		handleInputOrEscape(data, this.#input, this.onCancel);
 	}
 }
 
 class SelectSubmenu extends Container {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
+	}
+
 	#selectList: SelectList;
 	#previewText: Text | null = null;
 	#previewUpdateRequestId: number = 0;
@@ -95,7 +126,6 @@ class SelectSubmenu extends Container {
 	readonly #description: string;
 	#titleText: Text;
 	#descriptionText: Text | null = null;
-	#hintText: Text;
 
 	constructor(
 		title: string,
@@ -163,10 +193,6 @@ class SelectSubmenu extends Container {
 
 		this.addChild(this.#selectList);
 
-		this.addChild(new Spacer(1));
-		this.#hintText = new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0);
-		this.addChild(this.#hintText);
-
 		if (footer) {
 			this.addChild(new Spacer(1));
 			this.addChild(footer);
@@ -183,20 +209,13 @@ class SelectSubmenu extends Container {
 	setTheme(): void {
 		this.#titleText.setText(theme.bold(theme.fg("accent", this.#title)));
 		this.#descriptionText?.setText(theme.fg("muted", this.#description));
-		this.#hintText.setText(theme.fg("dim", "  Enter to select · Esc to go back"));
 		this.#selectList.setTheme(getSelectListTheme());
 	}
 
 	override render(width: number): readonly string[] {
-		const lines: string[] = [];
-		for (const child of this.children) {
-			const childLines = child.render(Math.max(1, width));
-			if (child === this.#selectList) {
-				this.#selectListLineOffset = lines.length;
-			}
-			lines.push(...childLines);
-		}
-		return lines;
+		const rendered = renderDialogContent(this.children, this.#selectList, Math.max(1, width), this.#maxHeight);
+		this.#selectListLineOffset = rendered.activeRow;
+		return rendered.lines;
 	}
 
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
@@ -209,6 +228,12 @@ class SelectSubmenu extends Container {
 }
 
 class MultiSelectSubmenu extends Container {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
+	}
+
 	#selectList!: SelectList;
 	#value: string[];
 	#cursor = 0;
@@ -308,15 +333,9 @@ class MultiSelectSubmenu extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		const lines: string[] = [];
-		for (const child of this.children) {
-			const childLines = child.render(Math.max(1, width));
-			if (child === this.#selectList) {
-				this.#selectListLineOffset = lines.length;
-			}
-			lines.push(...childLines);
-		}
-		return lines;
+		const rendered = renderDialogContent(this.children, this.#selectList, Math.max(1, width), this.#maxHeight);
+		this.#selectListLineOffset = rendered.activeRow;
+		return rendered.lines;
 	}
 
 	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
@@ -381,6 +400,12 @@ class MultiSelectSubmenu extends Container {
 }
 
 class ProviderLimitsSubmenu extends Container {
+	#maxHeight = Number.POSITIVE_INFINITY;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = rows;
+	}
+
 	#selectList: SelectList | undefined;
 
 	constructor(
@@ -479,6 +504,11 @@ class ProviderLimitsSubmenu extends Container {
 		);
 	}
 
+	override render(width: number): readonly string[] {
+		const active = this.#selectList ?? this.children[0];
+		return active ? renderDialogContent(this.children, active, width, this.#maxHeight).lines : [];
+	}
+
 	handleInput(data: string): void {
 		if (this.#selectList) {
 			this.#selectList.handleInput(data);
@@ -489,6 +519,24 @@ class ProviderLimitsSubmenu extends Container {
 }
 
 let cachedSidebarWidth: number | undefined;
+
+/**
+ * A theme slot only makes sense filled with a theme of that appearance, but the choice
+ * stays open: matching themes come first and a mismatched one says so, so picking a light
+ * theme for the dark slot becomes a decision rather than an accident. Appearance comes
+ * from the theme's own luminance, so unprefixed names (limestone, onyx) classify too.
+ */
+function themeOptionsForSlot(availableThemes: readonly string[], slot: "dark" | "light"): SelectItem[] {
+	const mismatchNote = slot === "dark" ? "light theme" : "dark theme";
+	const options = availableThemes.map(name => {
+		const matches = isLightTheme(name) === (slot === "light");
+		return { value: name, label: name, ...(matches ? {} : { description: mismatchNote }) };
+	});
+	return [
+		...options.filter(option => option.description === undefined),
+		...options.filter(option => option.description !== undefined),
+	];
+}
 
 function settingsSidebarWidth(): number {
 	if (cachedSidebarWidth === undefined) {
@@ -508,9 +556,11 @@ function getSettingsTabs(): Tab[] {
 		...SETTING_TABS.map(id => {
 			const meta = TAB_METADATA[id];
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
-			return { id, label: `${icon} ${meta.label}`, short: icon };
+			// Tab icons are decorative and empty under every bundled theme, so the
+			// text label carries the identity and no collapsed form can drop it.
+			return { id, label: withIcon(icon, meta.label) };
 		}),
-		{ id: "plugins", label: `${theme.icon.package} Plugins`, short: theme.icon.package },
+		{ id: "plugins", label: withIcon(theme.icon.package, "Plugins") },
 	];
 }
 
@@ -574,6 +624,7 @@ export class SettingsSelectorComponent implements Component {
 	#tabRowStart = 0;
 	#tabRowCount = 0;
 	#contentRowStart = 0;
+	#contentColInset = 2;
 	#contentRowCount = 0;
 	/** Inner column budget from the last render; submenus opened afterwards size their preview by it. */
 	#innerWidth = 76;
@@ -668,53 +719,60 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
-		const innerWidth = Math.max(1, width - 4);
-		this.#innerWidth = innerWidth;
-
-		const tabLines = this.#tabBar.render(innerWidth);
+		const height = Math.max(1, process.stdout.rows || 40);
+		let innerWidth = Math.max(1, width - 4);
+		const list = this.#searchList ?? this.#currentList;
 		const searching = this.#searchList !== null;
-		const showPreview = !searching && this.#currentTabId === "appearance";
-		const previewLines = showPreview
+		// Tab labels are text, so a narrow strip wraps; cap it at what the dialog
+		// can spare while the list keeps three rows, scrolled to the active tab.
+		const bare = getDialogViewport(height);
+		const chromeRows = 1 + (searching ? 1 : 0);
+		this.#tabBar.setMaxHeight(getTabStripRows(bare, chromeRows));
+		const tabLines = this.#tabBar.render(innerWidth);
+		const layout = getDialogViewport(height, tabLines.length + 1 + (searching ? 1 : 0));
+		this.#contentColInset = layout.titleRows ? 2 : 0;
+		innerWidth = Math.max(1, width - this.#contentColInset * 2);
+		this.#innerWidth = innerWidth;
+		const showPreview = !searching && !list?.hasOpenSubmenu() && this.#currentTabId === "appearance";
+		const preview = showPreview
 			? ["", theme.fg("muted", "Preview:"), ...this.#getStatusPreviewLines(innerWidth)]
 			: [];
-
-		const fixedRows = 1 + tabLines.length + 1 + (searching ? 1 : 0) + 1 + 1 + 1;
-		const contentRows = Math.max(7, height - fixedRows - previewLines.length);
-
-		const list = this.#searchList ?? this.#currentList;
+		const previewLines = layout.bodyRows - preview.length >= 7 ? preview : [];
+		const contentRows = layout.bodyRows - previewLines.length;
 		let contentLines: readonly string[];
 		if (list) {
-			list.setMaxVisible(contentRows - 4);
+			list.setMaxVisible(contentRows);
+			list.setMaxHeight(contentRows);
 			contentLines = list.render(innerWidth);
 		} else if (this.#pluginComponent) {
+			this.#pluginComponent.setMaxHeight(contentRows);
 			contentLines = this.#pluginComponent.render(innerWidth);
 		} else {
 			contentLines = [];
 		}
-
 		const out: string[] = [];
-		out.push(topBorder(width, "Settings"));
+		if (layout.titleRows) out.push(topBorder(width, "Settings"));
 		this.#tabRowStart = out.length;
-		this.#tabRowCount = tabLines.length;
-		for (const line of tabLines) {
-			out.push(row(line, width));
-		}
-		out.push(divider(width));
-		if (searching) {
-			out.push(row(this.#renderSearchBanner(innerWidth), width));
+		this.#tabRowCount = layout.headerRows ? tabLines.length : 0;
+		if (layout.headerRows) {
+			for (const line of tabLines) out.push(row(line, width, layout.titleRows > 0));
+			out.push(divider(width));
+			if (searching) out.push(row(this.#renderSearchBanner(innerWidth), width, layout.titleRows > 0));
 		}
 		this.#contentRowStart = out.length;
 		this.#contentRowCount = contentRows;
-		for (let i = 0; i < contentRows; i++) {
-			out.push(row(contentLines[i] ?? "", width));
+		for (let i = 0; i < contentRows; i++) out.push(row(contentLines[i] ?? "", width, layout.titleRows > 0));
+		for (const line of previewLines) out.push(row(line, width, layout.titleRows > 0));
+		if (layout.dividerRows) out.push(divider(width));
+		if (layout.footerRows) {
+			const hint = list?.hasOpenSubmenu()
+				? "Esc back · Enter change"
+				: width < 70
+					? "Esc close · Enter change"
+					: this.#footerHintText();
+			out.push(row(theme.fg("dim", hint), width, layout.titleRows > 0));
 		}
-		for (const line of previewLines) {
-			out.push(row(line, width));
-		}
-		out.push(divider(width));
-		out.push(row(theme.fg("dim", this.#footerHintText()), width));
-		out.push(bottomBorder(width));
+		if (layout.bottomRows) out.push(bottomBorder(width));
 		return out;
 	}
 
@@ -725,7 +783,7 @@ export class SettingsSelectorComponent implements Component {
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		const list = this.#searchList ?? this.#currentList;
 
-		const contentColInset = 2;
+		const contentColInset = this.#contentColInset;
 		const innerCol = event.col - contentColInset;
 		const contentLine = event.row - this.#contentRowStart;
 
@@ -834,7 +892,7 @@ export class SettingsSelectorComponent implements Component {
 			const meta = TAB_METADATA[result.tab];
 			items.push({
 				id: `__tab:${result.tab}`,
-				label: `${theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0])} ${meta.label}`,
+				label: withIcon(theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]), meta.label),
 				currentValue: "",
 				heading: true,
 			});
@@ -877,17 +935,18 @@ export class SettingsSelectorComponent implements Component {
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
 			const count = counts.get(id) ?? 0;
 			if (count > 0) {
-				matched.push({ id, label: `${icon} ${meta.label} (${count})`, short: `${icon} ${count}` });
+				// Collapsing drops the match count, never the tab's name.
+				matched.push({ id, label: withIcon(icon, `${meta.label} (${count})`), short: withIcon(icon, meta.label) });
 			}
 		}
 		for (const id of SETTING_TABS) {
 			if (matchedIds.has(id)) continue;
 			const meta = TAB_METADATA[id];
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
-			empty.push({ id, label: `${icon} ${meta.label}`, short: icon, muted: true });
+			empty.push({ id, label: withIcon(icon, meta.label), muted: true });
 		}
 
-		empty.push({ id: "plugins", label: `${theme.icon.package} Plugins`, short: theme.icon.package, muted: true });
+		empty.push({ id: "plugins", label: withIcon(theme.icon.package, "Plugins"), muted: true });
 		return [...matched, ...empty];
 	}
 
@@ -1007,7 +1066,7 @@ export class SettingsSelectorComponent implements Component {
 				return baseOpt || { value: level, label: level };
 			});
 		} else if (def.path === "theme.dark" || def.path === "theme.light") {
-			options = this.context.availableThemes.map(t => ({ value: t, label: t }));
+			options = themeOptionsForSlot(this.context.availableThemes, def.path === "theme.light" ? "light" : "dark");
 		}
 
 		let onPreview: ((value: string) => void | Promise<void>) | undefined;

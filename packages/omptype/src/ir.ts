@@ -1091,13 +1091,13 @@ function parseArrayExpression(def: readonly unknown[], resolve?: AliasResolver):
 	if (def.length >= 3 && def[1] === "@") {
 		const base = parseDef(def[0], resolve);
 		const meta = def[2];
-		if (typeof meta === "string") return { ...base, desc: meta, cfg: { ...base.cfg, expected: meta } };
+		if (typeof meta === "string") return { ...base, desc: meta, cfg: { ...base.cfg, description: meta } };
 		if (typeof meta === "object" && meta !== null) {
 			const config = meta as ErrorConfig & { description?: string };
 			return {
 				...base,
 				cfg: {
-					...(typeof config.description === "string" ? { expected: config.description } : {}),
+					...(typeof config.description === "string" ? { description: config.description } : {}),
 					...config,
 				},
 				...(typeof config.description === "string" ? { desc: config.description } : {}),
@@ -1681,4 +1681,20 @@ export function expectedOf(ir: IR): string {
 		case "sub":
 			return ir.desc ?? ir.schema.description ?? expectedOf(ir.schema.ir);
 	}
+}
+
+/** True for a literal union (an enum), including nested literal unions. */
+function isLiteralUnion(ir: IR): boolean {
+	return ir.k === "lit" || (ir.k === "union" && ir.members.length > 0 && ir.members.every(isLiteralUnion));
+}
+
+/**
+ * Expectation for a value that was *present but wrong*. An enum's member list is the violated
+ * constraint and nothing else in the error carries it, so a `.describe()` must not stand in for it
+ * there. Missing values keep using {@link expectedOf}, whose description reads better in
+ * "is required (…)".
+ */
+export function violatedConstraintOf(ir: IR): string {
+	if (ir.desc === undefined || !isLiteralUnion(ir)) return expectedOf(ir);
+	return expectedOf({ ...ir, desc: undefined });
 }

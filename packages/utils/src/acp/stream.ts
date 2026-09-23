@@ -1,4 +1,4 @@
-import type { AnyMessage } from "./transport";
+import { type AnyMessage, malformedMessage } from "./transport";
 
 export interface Stream {
 	writable: WritableStream<AnyMessage>;
@@ -66,15 +66,33 @@ export function ndJsonStream(output: WritableStream<Uint8Array>, input: Readable
 }
 
 function parseMessage(line: string): AnyMessage {
-	const value: unknown = JSON.parse(line);
-	if (
-		typeof value !== "object" ||
-		value === null ||
-		Array.isArray(value) ||
-		!("jsonrpc" in value) ||
-		value.jsonrpc !== "2.0"
-	) {
-		throw new Error("Invalid JSON-RPC message");
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch (error) {
+		return malformedMessage({
+			code: -32700,
+			message: "Parse error",
+			details: error instanceof Error ? error.message : String(error),
+		});
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value) || !("jsonrpc" in value)) {
+		return malformedMessage({ code: -32600, message: "Invalid request", details: "not a JSON-RPC 2.0 object" });
+	}
+	if (value.jsonrpc !== "2.0") {
+		return malformedMessage({
+			code: -32600,
+			message: "Invalid request",
+			details: `unsupported jsonrpc version: ${JSON.stringify(value.jsonrpc)}`,
+			// An otherwise well-formed request still deserves its id back.
+			id: readJsonRpcId(value),
+		});
 	}
 	return value as AnyMessage;
+}
+
+function readJsonRpcId(value: object): string | number | undefined {
+	if (!("id" in value)) return undefined;
+	const id = (value as { id: unknown }).id;
+	return typeof id === "string" || typeof id === "number" ? id : undefined;
 }

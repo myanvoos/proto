@@ -60,7 +60,7 @@
 		"cost": {
 			"input": 0.22,
 			"output": 0.88,
-			"cacheRead": 0.6,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -202,7 +202,7 @@
 		"cost": {
 			"input": 1.3,
 			"output": 7.8,
-			"cacheRead": 0.26,
+			"cacheRead": 0.13,
 			"cacheWrite": 1.625
 		},
 		"contextWindow": 240000,
@@ -470,7 +470,7 @@
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text"
 		],
@@ -482,24 +482,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh"
-			],
-			"effortRouting": {
-				"off": "alibaba/qwen3-max",
-				"minimal": "alibaba/qwen3-max-thinking",
-				"low": "alibaba/qwen3-max-thinking",
-				"medium": "alibaba/qwen3-max-thinking",
-				"high": "alibaba/qwen3-max-thinking",
-				"xhigh": "alibaba/qwen3-max-thinking"
-			}
-		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -513,7 +495,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": true,
+			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -572,8 +554,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 32768,
+		"contextWindow": 262114,
+		"maxTokens": 262114,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -609,8 +591,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 32768,
+		"contextWindow": 262144,
+		"maxTokens": 262144,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -780,7 +762,7 @@
 		"cost": {
 			"input": 0.09999999999999999,
 			"output": 0.39999999999999997,
-			"cacheRead": 0.001,
+			"cacheRead": 0.01,
 			"cacheWrite": 0.125
 		},
 		"contextWindow": 1000000,
@@ -828,7 +810,7 @@
 		],
 		"cost": {
 			"input": 0.39999999999999997,
-			"output": 2.4,
+			"output": 2.5,
 			"cacheRead": 0.04,
 			"cacheWrite": 0.5
 		},
@@ -866,11 +848,11 @@
 	"alibaba/qwen3.6-27b": {
 		"id": "alibaba/qwen3.6-27b",
 		"requiresGlyphTokenization": false,
-		"name": "Qwen3.6 27B",
+		"name": "Qwen 3.6 27B",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
 			"text",
 			"image"
@@ -884,6 +866,16 @@
 		"contextWindow": 256000,
 		"maxTokens": 256000,
 		"tokenizer": "qwen3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -897,7 +889,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": false,
+			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -917,7 +909,7 @@
 		"cost": {
 			"input": 0.5,
 			"output": 3,
-			"cacheRead": 0.09999999999999999,
+			"cacheRead": 0.049999999999999996,
 			"cacheWrite": 0.625
 		},
 		"contextWindow": 1000000,
@@ -1003,14 +995,13 @@
 	"alibaba/qwen3.7-max": {
 		"id": "alibaba/qwen3.7-max",
 		"requiresGlyphTokenization": false,
-		"name": "Qwen 3.7 Max",
+		"name": "Qwen3.7 Max",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"reasoning": true,
 		"input": [
-			"text",
-			"image"
+			"text"
 		],
 		"cost": {
 			"input": 2.5,
@@ -1052,7 +1043,7 @@
 	"alibaba/qwen3.7-plus": {
 		"id": "alibaba/qwen3.7-plus",
 		"requiresGlyphTokenization": false,
-		"name": "Qwen 3.7 Plus",
+		"name": "Qwen3.7 Plus",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -1113,11 +1104,11 @@
 		"cost": {
 			"input": 2,
 			"output": 6,
-			"cacheRead": 0.19999999999999998,
+			"cacheRead": 0.25,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 131072,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -1160,10 +1151,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.55,
-			"output": 3.3000000000000003,
-			"cacheRead": 0.11,
-			"cacheWrite": 0
+			"input": 0.5,
+			"output": 3,
+			"cacheRead": 0.09999999999999999,
+			"cacheWrite": 0.625
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
@@ -1196,10 +1187,107 @@
 		},
 		"supportsComputerUse": false
 	},
+	"alibaba/qwen3.8-flash": {
+		"id": "alibaba/qwen3.8-flash",
+		"name": "Qwen 3.8 Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.47,
+			"cacheRead": 0.016,
+			"cacheWrite": 0.19999999999999998
+		},
+		"contextWindow": 991000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"alibaba/qwen3.8-max": {
 		"id": "alibaba/qwen3.8-max",
 		"requiresGlyphTokenization": false,
-		"name": "Qwen 3.8 Max",
+		"name": "Qwen3.8 Max",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.25,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "qwen3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"alibaba/qwen3.8-max-0902": {
+		"id": "alibaba/qwen3.8-max-0902",
+		"name": "Qwen3.8 Max 0902",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -1214,8 +1302,10 @@
 			"cacheRead": 0.25,
 			"cacheWrite": 2.5
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 991000,
 		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -1226,7 +1316,55 @@
 				"xhigh"
 			]
 		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"alibaba/qwen3.8-omni-flash": {
+		"id": "alibaba/qwen3.8-omni-flash",
+		"name": "Qwen 3.8 Omni Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.47,
+			"cacheRead": 0.016,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -1665,6 +1803,56 @@
 		},
 		"supportsComputerUse": false
 	},
+	"anthropic/claude-fable-5.1": {
+		"id": "anthropic/claude-fable-5.1",
+		"name": "Claude Fable 5.1",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 0.25,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"anthropic/claude-haiku-4.5": {
 		"id": "anthropic/claude-haiku-4.5",
 		"requiresGlyphTokenization": true,
@@ -1717,11 +1905,11 @@
 	"anthropic/claude-opus-4": {
 		"id": "anthropic/claude-opus-4",
 		"requiresGlyphTokenization": true,
-		"name": "Claude Opus 4",
+		"name": "Claude 4 Opus",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text",
 			"image"
@@ -1734,16 +1922,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 8192,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh"
-			]
-		},
 		"tokenizer": "claude-v3",
 		"compat": {
 			"officialEndpoint": false,
@@ -1758,7 +1936,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": true,
+			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -2064,7 +2242,7 @@
 	"anthropic/claude-opus-4.8-fast": {
 		"id": "anthropic/claude-opus-4.8-fast",
 		"requiresGlyphTokenization": true,
-		"name": "Claude Opus 4.8",
+		"name": "Claude Opus 4.8 (Fast)",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -2164,7 +2342,7 @@
 	"anthropic/claude-opus-5-fast": {
 		"id": "anthropic/claude-opus-5-fast",
 		"requiresGlyphTokenization": true,
-		"name": "Claude Opus 5",
+		"name": "Claude Opus 5 (Fast)",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -2193,6 +2371,106 @@
 			"supportsDisplay": true
 		},
 		"tokenizer": "claude-v5",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-5.5": {
+		"id": "anthropic/claude-opus-5.5",
+		"name": "Claude Opus 5.5",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.19999999999999998,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-5.5-fast": {
+		"id": "anthropic/claude-opus-5.5-fast",
+		"name": "Claude Opus 5.5 (Fast)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 8,
+			"output": 40,
+			"cacheRead": 0.39999999999999997,
+			"cacheWrite": 10
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -2635,6 +2913,54 @@
 		},
 		"supportsComputerUse": false
 	},
+	"bytedance/seed-2.1-turbo": {
+		"id": "bytedance/seed-2.1-turbo",
+		"name": "Seed 2.1 Turbo",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.5,
+			"output": 2.5,
+			"cacheRead": 0.09999999999999999,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 262144,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"cohere/command-a": {
 		"id": "cohere/command-a",
 		"requiresGlyphTokenization": false,
@@ -2866,9 +3192,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.28,
-			"output": 0.42,
-			"cacheRead": 0.028,
+			"input": 0.62,
+			"output": 1.85,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 128000,
@@ -2881,7 +3207,15 @@
 				"medium",
 				"high",
 				"xhigh"
-			]
+			],
+			"effortRouting": {
+				"off": "deepseek/deepseek-v3.2",
+				"minimal": "deepseek/deepseek-v3.2-thinking",
+				"low": "deepseek/deepseek-v3.2-thinking",
+				"medium": "deepseek/deepseek-v3.2-thinking",
+				"high": "deepseek/deepseek-v3.2-thinking",
+				"xhigh": "deepseek/deepseek-v3.2-thinking"
+			}
 		},
 		"tokenizer": "deepseek-v3",
 		"compat": {
@@ -3065,8 +3399,8 @@
 			"cacheRead": 0.007,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"contextWindow": 1048576,
+		"maxTokens": 1048576,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"thinking": {
@@ -3109,13 +3443,13 @@
 			"text"
 		],
 		"cost": {
-			"input": 1.74,
-			"output": 3.48,
-			"cacheRead": 0.14,
+			"input": 0.66,
+			"output": 1.9800000000000002,
+			"cacheRead": 0.022,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1048600,
-		"maxTokens": 1048600,
+		"contextWindow": 1000000,
+		"maxTokens": 384000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -3157,9 +3491,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 1.32,
-			"output": 3.9600000000000004,
-			"cacheRead": 0.13199999999999998,
+			"input": 0.66,
+			"output": 1.9800000000000002,
+			"cacheRead": 0.06599999999999999,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
@@ -3175,6 +3509,55 @@
 			]
 		},
 		"tokenizer": "deepseek-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"deepseek/deepseek-v4.1-flash": {
+		"id": "deepseek/deepseek-v4.1-flash",
+		"name": "DeepSeek V4.1 Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.3,
+			"output": 1.2,
+			"cacheRead": 0.007,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -3694,7 +4077,7 @@
 	"google/gemini-3.1-pro-preview": {
 		"id": "google/gemini-3.1-pro-preview",
 		"requiresGlyphTokenization": false,
-		"name": "Gemini 3.1 Pro (Preview)",
+		"name": "Gemini 3.1 Pro Preview",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -3929,10 +4312,58 @@
 		},
 		"supportsComputerUse": false
 	},
+	"google/gemini-3.8-flash": {
+		"id": "google/gemini-3.8-flash",
+		"name": "Gemini 3.8 Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.75,
+			"output": 3.75,
+			"cacheRead": 0.075,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 65536,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			],
+			"requiresEffort": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"google/gemma-4-26b-a4b-it": {
 		"id": "google/gemma-4-26b-a4b-it",
 		"requiresGlyphTokenization": false,
-		"name": "Gemma 4 26B A4B",
+		"name": "Gemma 4 26B A4B IT",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -3980,7 +4411,7 @@
 	"google/gemma-4-31b-it": {
 		"id": "google/gemma-4-31b-it",
 		"requiresGlyphTokenization": false,
-		"name": "Gemma 4 31B IT",
+		"name": "Gemma 4 31B",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -4072,6 +4503,53 @@
 		},
 		"supportsComputerUse": false
 	},
+	"inception/mercury-2.5": {
+		"id": "inception/mercury-2.5",
+		"name": "Mercury 2.5",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.04,
+			"output": 0.15,
+			"cacheRead": 0.004,
+			"cacheWrite": 0
+		},
+		"contextWindow": 260000,
+		"maxTokens": 65536,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"inception/mercury-coder-small": {
 		"id": "inception/mercury-coder-small",
 		"requiresGlyphTokenization": false,
@@ -4112,7 +4590,7 @@
 	"inclusionai/ling-3.0-flash": {
 		"id": "inclusionai/ling-3.0-flash",
 		"requiresGlyphTokenization": false,
-		"name": "Ling-3.0-flash",
+		"name": "Ling 3.0 Flash",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -4121,13 +4599,107 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.06,
-			"output": 0.18,
-			"cacheRead": 0.012,
+			"input": 0.020999999999999998,
+			"output": 0.063,
+			"cacheRead": 0.004200000000000001,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
 		"maxTokens": 32000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.0-flash-fin": {
+		"id": "inclusionai/ling-3.0-flash-fin",
+		"name": "Ling 3.0 Flash Fin",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.0-flash-fin-free": {
+		"id": "inclusionai/ling-3.0-flash-fin-free",
+		"name": "Ling 3.0 Flash Fin (Free)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4203,6 +4775,196 @@
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUseConfig": false
+	},
+	"inclusionai/ling-3.0-flash-sante": {
+		"id": "inclusionai/ling-3.0-flash-sante",
+		"name": "Ling 3.0 Flash Sante",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.0-flash-sante-free": {
+		"id": "inclusionai/ling-3.0-flash-sante-free",
+		"name": "Ling 3.0 Flash Sante (Free)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.0-flash-vl": {
+		"id": "inclusionai/ling-3.0-flash-vl",
+		"name": "Ling 3.0 Flash VL",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.0-flash-vl-free": {
+		"id": "inclusionai/ling-3.0-flash-vl-free",
+		"name": "Ling 3.0 Flash VL (Free)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 32000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
 	},
 	"inclusionai/ling-3.0-tiny-free": {
 		"id": "inclusionai/ling-3.0-tiny-free",
@@ -5041,6 +5803,102 @@
 		},
 		"supportsComputerUse": false
 	},
+	"meta/muse-spark-1.3": {
+		"id": "meta/muse-spark-1.3",
+		"name": "Muse Spark 1.3",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.25,
+			"output": 4.25,
+			"cacheRead": 0.15,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 1048576,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"meta/muse-spark-1.3-contributor": {
+		"id": "meta/muse-spark-1.3-contributor",
+		"name": "Muse Spark 1.3 Contributor",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.09999999999999999,
+			"output": 0.19999999999999998,
+			"cacheRead": 0.002,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 1048576,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"minimax/minimax-m2": {
 		"id": "minimax/minimax-m2",
 		"requiresGlyphTokenization": false,
@@ -5417,8 +6275,8 @@
 			"cacheRead": 0.06,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1000000,
-		"maxTokens": 1000000,
+		"contextWindow": 512000,
+		"maxTokens": 512000,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -5464,7 +6322,7 @@
 		"cost": {
 			"input": 0.3,
 			"output": 0.8999999999999999,
-			"cacheRead": 0,
+			"cacheRead": 0.03,
 			"cacheWrite": 0
 		},
 		"contextWindow": 128000,
@@ -5711,10 +6569,10 @@
 		"cost": {
 			"input": 0.19999999999999998,
 			"output": 0.19999999999999998,
-			"cacheRead": 0,
+			"cacheRead": 0.02,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
+		"contextWindow": 262144,
 		"maxTokens": 256000,
 		"compat": {
 			"officialEndpoint": false,
@@ -5749,10 +6607,10 @@
 		"cost": {
 			"input": 0.09999999999999999,
 			"output": 0.09999999999999999,
-			"cacheRead": 0,
+			"cacheRead": 0.01,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
+		"contextWindow": 131072,
 		"maxTokens": 4000,
 		"compat": {
 			"officialEndpoint": false,
@@ -5787,10 +6645,10 @@
 		"cost": {
 			"input": 0.15,
 			"output": 0.15,
-			"cacheRead": 0,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
+		"contextWindow": 262144,
 		"maxTokens": 4000,
 		"compat": {
 			"officialEndpoint": false,
@@ -5825,10 +6683,10 @@
 		"cost": {
 			"input": 0.5,
 			"output": 1.5,
-			"cacheRead": 0,
+			"cacheRead": 0.049999999999999996,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
+		"contextWindow": 262144,
 		"maxTokens": 256000,
 		"compat": {
 			"officialEndpoint": false,
@@ -5889,7 +6747,7 @@
 	"mistral/mistral-medium-3.5": {
 		"id": "mistral/mistral-medium-3.5",
 		"requiresGlyphTokenization": false,
-		"name": "Mistral Medium 3.5",
+		"name": "Mistral Medium Latest",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -5901,10 +6759,10 @@
 		"cost": {
 			"input": 1.5,
 			"output": 7.5,
-			"cacheRead": 0,
+			"cacheRead": 0.15,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
+		"contextWindow": 262144,
 		"maxTokens": 256000,
 		"thinking": {
 			"mode": "budget",
@@ -5947,13 +6805,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.15,
-			"output": 0.15,
+			"input": 0.04,
+			"output": 0.16999999999999998,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 128000,
+		"contextWindow": 60288,
+		"maxTokens": 16000,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -5985,12 +6843,12 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.09999999999999999,
-			"output": 0.3,
-			"cacheRead": 0,
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
-		"contextWindow": 32000,
+		"contextWindow": 262144,
 		"maxTokens": 4000,
 		"compat": {
 			"officialEndpoint": false,
@@ -6086,6 +6944,43 @@
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUseConfig": false
+	},
+	"mixedbread/toast-1": {
+		"id": "mixedbread/toast-1",
+		"name": "Toast 1",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.3,
+			"output": 0.72,
+			"cacheRead": 0.036,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131000,
+		"maxTokens": 4000,
+		"requiresGlyphTokenization": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
 	},
 	"moonshotai/kimi-k2": {
 		"id": "moonshotai/kimi-k2",
@@ -6285,11 +7180,11 @@
 		"cost": {
 			"input": 0.6,
 			"output": 3,
-			"cacheRead": 0.09999999999999999,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 262114,
-		"maxTokens": 262114,
+		"contextWindow": 256000,
+		"maxTokens": 256000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -6383,7 +7278,7 @@
 		"cost": {
 			"input": 0.95,
 			"output": 4,
-			"cacheRead": 0.19,
+			"cacheRead": 0.16,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -6577,8 +7472,8 @@
 		],
 		"cost": {
 			"input": 0.049999999999999996,
-			"output": 0.24,
-			"cacheRead": 0,
+			"output": 0.19999999999999998,
+			"cacheRead": 0.024999999999999998,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -8860,7 +9755,7 @@
 			"input": 0.39999999999999997,
 			"output": 2.4,
 			"cacheRead": 0.04,
-			"cacheWrite": 0.25
+			"cacheWrite": 0.5
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
@@ -8905,10 +9800,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 2,
-			"output": 10,
-			"cacheRead": 0.19999999999999998,
-			"cacheWrite": 2.5
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.39999999999999997,
+			"cacheWrite": 5
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
@@ -8953,10 +9848,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 4,
-			"output": 20,
-			"cacheRead": 0.39999999999999997,
-			"cacheWrite": 2.5
+			"input": 8,
+			"output": 40,
+			"cacheRead": 0.7999999999999999,
+			"cacheWrite": 10
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
@@ -9052,10 +9947,298 @@
 			"input": 4,
 			"output": 24,
 			"cacheRead": 0.39999999999999997,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-astra": {
+		"id": "openai/gpt-6-astra",
+		"name": "GPT-6 Astra",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-astra-fast": {
+		"id": "openai/gpt-6-astra-fast",
+		"name": "GPT-6 Astra (Fast)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 20,
+			"output": 100,
+			"cacheRead": 2,
+			"cacheWrite": 25
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-luna": {
+		"id": "openai/gpt-6-luna",
+		"name": "GPT-6 Luna",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.09999999999999999,
+			"output": 0.5,
+			"cacheRead": 0.01,
+			"cacheWrite": 0.125
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-luna-fast": {
+		"id": "openai/gpt-6-luna-fast",
+		"name": "GPT-6 Luna (Fast)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.19999999999999998,
+			"output": 1,
+			"cacheRead": 0.02,
+			"cacheWrite": 0.25
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-sol": {
+		"id": "openai/gpt-6-sol",
+		"name": "GPT-6 Sol",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.19999999999999998,
 			"cacheWrite": 2.5
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6-sol-fast": {
+		"id": "openai/gpt-6-sol-fast",
+		"name": "GPT-6 Sol (Fast)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.39999999999999997,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -9098,7 +10281,7 @@
 		"cost": {
 			"input": 0.09999999999999999,
 			"output": 0.5,
-			"cacheRead": 0.25,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
@@ -9143,13 +10326,60 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.049999999999999996,
-			"output": 0.19999999999999998,
+			"input": 0.03,
+			"output": 0.14,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
 		"maxTokens": 8192,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-oss-safeguard-120b": {
+		"id": "openai/gpt-oss-safeguard-120b",
+		"name": "GPT OSS Safeguard 120B",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16000,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -9190,13 +10420,13 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.075,
-			"output": 0.3,
-			"cacheRead": 0.037,
+			"input": 0.07,
+			"output": 0.19999999999999998,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 65536,
+		"contextWindow": 128000,
+		"maxTokens": 16000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -9836,6 +11066,150 @@
 		},
 		"supportsComputerUseConfig": false
 	},
+	"quiverai/arrow-2": {
+		"id": "quiverai/arrow-2",
+		"name": "Arrow 2",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.39999999999999997,
+			"cacheWrite": 5
+		},
+		"contextWindow": 131072,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"quiverai/arrow-2-telos": {
+		"id": "quiverai/arrow-2-telos",
+		"name": "Arrow 2 Telos",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 6,
+			"output": 30,
+			"cacheRead": 0.6,
+			"cacheWrite": 7.5
+		},
+		"contextWindow": 131072,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"sakana/fugu-max": {
+		"id": "sakana/fugu-max",
+		"name": "Fugu Max",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.25,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 1000000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"sakana/fugu-ultra": {
 		"id": "sakana/fugu-ultra",
 		"requiresGlyphTokenization": false,
@@ -9856,6 +11230,54 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 1000000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"sakana/fugu-ultra-v2": {
+		"id": "sakana/fugu-ultra-v2",
+		"name": "Fugu Ultra v2",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 30,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 1000000,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -10433,6 +11855,54 @@
 		},
 		"supportsComputerUse": false
 	},
+	"spacexai/grok-4.7": {
+		"id": "spacexai/grok-4.7",
+		"name": "Grok 4.7",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.2,
+			"output": 3.5999999999999996,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"spacexai/grok-build-0.1": {
 		"id": "spacexai/grok-build-0.1",
 		"name": "Grok Build 0.1",
@@ -10496,7 +11966,7 @@
 			"input": 0.09,
 			"output": 0.3,
 			"cacheRead": 0.02,
-			"cacheWrite": 0.02
+			"cacheWrite": 0
 		},
 		"contextWindow": 262114,
 		"maxTokens": 262114,
@@ -10579,7 +12049,7 @@
 	"tencent/hy3": {
 		"id": "tencent/hy3",
 		"requiresGlyphTokenization": false,
-		"name": "Tencent Hy3",
+		"name": "Hy3",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -10588,13 +12058,60 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.13199999999999998,
-			"output": 0.5279999999999999,
-			"cacheRead": 0.032999999999999995,
+			"input": 0.14,
+			"output": 0.58,
+			"cacheRead": 0.035,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
-		"maxTokens": 128000,
+		"contextWindow": 262144,
+		"maxTokens": 262144,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"tencent/hy4-preview": {
+		"id": "tencent/hy4-preview",
+		"name": "Hy4 preview",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.834,
+			"output": 2.501,
+			"cacheRead": 0.041999999999999996,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1024000,
+		"maxTokens": 64000,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -11312,7 +12829,7 @@
 	"xai/grok-4.20-non-reasoning": {
 		"id": "xai/grok-4.20-non-reasoning",
 		"requiresGlyphTokenization": false,
-		"name": "Grok 4.20 Non-Reasoning",
+		"name": "Grok 4.20 (Non-Reasoning)",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -11388,7 +12905,7 @@
 	"xai/grok-4.20-reasoning": {
 		"id": "xai/grok-4.20-reasoning",
 		"requiresGlyphTokenization": false,
-		"name": "Grok 4.20 Reasoning",
+		"name": "Grok 4.20 (Reasoning)",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -11914,6 +13431,150 @@
 		},
 		"supportsComputerUse": false
 	},
+	"xiaomi/mimo-v2.6-flash": {
+		"id": "xiaomi/mimo-v2.6-flash",
+		"name": "MiMo-V2.6-Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.14,
+			"output": 0.28,
+			"cacheRead": 0.0028,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"xiaomi/mimo-v2.6-pro": {
+		"id": "xiaomi/mimo-v2.6-pro",
+		"name": "MiMo-V2.6-Pro",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.435,
+			"output": 0.87,
+			"cacheRead": 0.0036,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"xiaomi/mimo-v2.6-pro-ultraspeed": {
+		"id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+		"name": "MiMo-V2.6-Pro-UltraSpeed",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.35,
+			"output": 8.7,
+			"cacheRead": 0.036,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"zai/glm-4.5": {
 		"id": "zai/glm-4.5",
 		"requiresGlyphTokenization": false,
@@ -12356,7 +14017,7 @@
 		"cost": {
 			"input": 1,
 			"output": 3.1999999999999997,
-			"cacheRead": 0.19999999999999998,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 202800,
@@ -12597,11 +14258,11 @@
 		"cost": {
 			"input": 1.4,
 			"output": 4.4,
-			"cacheRead": 0.26,
+			"cacheRead": 0.14,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 12800,
+		"maxTokens": 1000000,
 		"tokenizer": "glm5",
 		"thinking": {
 			"mode": "budget",
@@ -12612,6 +14273,152 @@
 			],
 			"defaultLevel": "max",
 			"requiresEffort": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"zai/glm-5.3-fast": {
+		"id": "zai/glm-5.3-fast",
+		"name": "GLM 5.3 Fast",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 2.0999999999999996,
+			"output": 6.6000000000000005,
+			"cacheRead": 0.21,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 262144,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"zai/glm-5.3-flash": {
+		"id": "zai/glm-5.3-flash",
+		"name": "GLM 5.3 Flash",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.5,
+			"cacheRead": 0.03,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131000,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"zai/glm-5.3-flashx": {
+		"id": "zai/glm-5.3-flashx",
+		"name": "GLM 5.3 FlashX",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.37,
+			"output": 1.25,
+			"cacheRead": 0.075,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
 		},
 		"compat": {
 			"officialEndpoint": false,

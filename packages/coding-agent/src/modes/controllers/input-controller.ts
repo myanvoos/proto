@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatBytes, formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -43,7 +43,14 @@ import {
 import { getSlashCommandUsage, loadSlashCommandUsage, recordSlashCommandUsage } from "../../utils/command-usage";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
-import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
+import {
+	assertDecodableImage,
+	ensureSupportedImageInput,
+	ImageDecodeError,
+	type ImageDimensions,
+	ImageInputTooLargeError,
+	loadImageInput,
+} from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 
 export function shouldSkipHistory(slashText: string): boolean {
@@ -96,12 +103,11 @@ function looksLikePastedShellPrompt(code: string): boolean {
 
 function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
 	if (trimmedText.charCodeAt(0) !== 36) return 0;
-	if (trimmedText.charCodeAt(1) === 123) return 0;
 
 	const prefixLength = trimmedText.charCodeAt(1) === 36 ? 2 : 1;
-	const next = trimmedText.charCodeAt(prefixLength);
-	if (Number.isNaN(next)) return prefixLength;
-	return next === 32 || next === 9 || next === 10 || next === 13 ? prefixLength : 0;
+	// `${…}` / `$${…}` is shell or template interpolation in pasted text, never a kernel cell.
+	if (trimmedText.charCodeAt(prefixLength) === 123) return 0;
+	return prefixLength;
 }
 
 // Commands the focused-agent view answers itself instead of bouncing to the main session: the model
@@ -1264,7 +1270,7 @@ export class InputController {
 		return allQueued.length;
 	}
 
-	async #insertPendingImage(imageData: ImageContent): Promise<void> {
+	async #insertPendingImage(imageData: ImageContent, dims: ImageDimensions): Promise<void> {
 		const image: ImageContent = { type: "image", data: imageData.data, mimeType: imageData.mimeType };
 		const imageLink = (
 			await materializeImageReferenceLinks([image], this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager))
@@ -1273,26 +1279,31 @@ export class InputController {
 		this.ctx.editor.pendingImageLinks.push(imageLink);
 		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		const imageNum = this.ctx.editor.pendingImages.length;
-		const dims = await this.#imageDimensions(imageData);
-		setCachedImageDimensions(image, dims ?? null);
+		setCachedImageDimensions(image, dims);
 
-		const expansion = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
+		const expansion = `[Image #${imageNum}, ${dims.width}x${dims.height}]`;
 		this.ctx.editor.insertAtom(chipLabel("image", imageNum), expansion);
 		this.ctx.ui.requestRender();
 	}
 
-	async #imageDimensions(image: ImageContent): Promise<{ width: number; height: number } | undefined> {
-		try {
-			const { width, height } = await new Bun.Image(Buffer.from(image.data, "base64")).metadata();
-			if (width && height) return { width, height };
-		} catch {}
-		return undefined;
-	}
-
-	async #normalizeAndInsertPastedImage(image: ImageContent, unsupportedMessage: string): Promise<boolean> {
+	async #normalizeAndInsertPastedImage(
+		image: ImageContent,
+		unsupportedMessage: string,
+		source = "Pasted image",
+	): Promise<boolean> {
 		let imageData = await ensureSupportedImageInput(image);
 		if (!imageData) {
 			this.ctx.showStatus(unsupportedMessage);
+			return false;
+		}
+		// A corrupt payload must never reach the composer: it renders as an empty preview and is
+		// sent to the provider as undecodable base64.
+		let dims: ImageDimensions;
+		try {
+			dims = await assertDecodableImage(imageData.data, source);
+		} catch (error) {
+			if (!(error instanceof ImageDecodeError)) throw error;
+			this.ctx.showStatus(`${source} is corrupt or truncated and was not attached`);
 			return false;
 		}
 		if (settings.get("images.autoResize")) {
@@ -1303,9 +1314,10 @@ export class InputController {
 					mimeType: imageData.mimeType,
 				});
 				imageData = { type: "image", data: resized.data, mimeType: resized.mimeType };
+				if (resized.width && resized.height) dims = { width: resized.width, height: resized.height };
 			} catch {}
 		}
-		await this.#insertPendingImage(imageData);
+		await this.#insertPendingImage(imageData, dims);
 		return true;
 	}
 
@@ -1325,6 +1337,17 @@ export class InputController {
 		}
 	}
 
+	#displayImagePath(path: string): string {
+		return truncateToWidth(
+			shortenPath(
+				sanitizeText(path)
+					.replace(/[\r\n\t]+/g, " ")
+					.trim(),
+			),
+			TRUNCATE_LENGTHS.CONTENT,
+		);
+	}
+
 	async handleImagePathPaste(path: string): Promise<void> {
 		try {
 			const image = await loadImageInput({
@@ -1342,8 +1365,15 @@ export class InputController {
 			await this.#normalizeAndInsertPastedImage(
 				{ type: "image", data: image.data, mimeType: image.mimeType },
 				`Unsupported pasted image format: ${image.mimeType}`,
+				`Pasted image ${this.#displayImagePath(path)}`,
 			);
 		} catch (error) {
+			if (error instanceof ImageDecodeError) {
+				this.ctx.editor.pasteText(path);
+				this.ctx.ui.requestRender();
+				this.ctx.showStatus(`Pasted image ${this.#displayImagePath(path)} is corrupt or truncated`);
+				return;
+			}
 			if (error instanceof ImageInputTooLargeError) {
 				this.ctx.editor.pasteText(path);
 				this.ctx.ui.requestRender();
@@ -1355,14 +1385,7 @@ export class InputController {
 
 				const env = process.env;
 				const overSsh = Boolean(env.SSH_CONNECTION || env.SSH_TTY || env.SSH_CLIENT);
-				const displayPath = truncateToWidth(
-					shortenPath(
-						sanitizeText(path)
-							.replace(/[\r\n\t]+/g, " ")
-							.trim(),
-					),
-					TRUNCATE_LENGTHS.CONTENT,
-				);
+				const displayPath = this.#displayImagePath(path);
 				this.ctx.showStatus(
 					overSsh
 						? `Image not found at ${displayPath}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.`
@@ -1461,19 +1484,22 @@ export class InputController {
 		const INLINE = "Paste inline";
 
 		let choice: string | undefined;
+		let failed = false;
 		try {
 			choice = await this.ctx.showHookSelector(
-				`Pasted ${lineCount} lines`,
+				// Line count alone says nothing about a megabyte of minified text, so the size the
+				// paste would add to the prompt is on the title too.
+				`Pasted ${lineCount} lines · ${formatBytes(Buffer.byteLength(text))}`,
 				[
 					{ label: WRAPPED_BLOCK, description: "Wrap the text in <attachment> tags, collapsed to a marker" },
 					{ label: LOCAL_FILE, description: "Save the text to a local://paste file" },
 					{ label: INLINE, description: "Collapse the text to an inline paste marker" },
 				],
-				{ helpText: "Esc to paste inline" },
+				{ helpText: "Esc to discard the paste" },
 			);
 		} catch (error) {
 			logger.warn("large-paste menu failed", { error: error instanceof Error ? error.message : String(error) });
-			choice = undefined;
+			failed = true;
 		}
 
 		switch (choice) {
@@ -1487,7 +1513,9 @@ export class InputController {
 				this.ctx.editor.insertTextAttachment(text);
 				break;
 			default:
-				this.ctx.editor.insertTextAttachment(text);
+				// A dialog that cannot open must not swallow the paste, but cancelling means cancelling.
+				if (failed) this.ctx.editor.insertTextAttachment(text);
+				else this.ctx.showStatus(`Discarded ${lineCount} pasted lines`);
 				break;
 		}
 		this.ctx.ui.requestRender();
@@ -1663,8 +1691,6 @@ export class InputController {
 				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
 			) {
 				child.setExpanded(false);
-			} else if (child instanceof AssistantMessageComponent) {
-				child.setToolResultImagesVisible(!this.ctx.hideToolActivity);
 			}
 		}
 		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);

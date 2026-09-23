@@ -5,6 +5,7 @@ try {
 	delete process.env.MallocStackLoggingNoCompact;
 } catch {}
 
+import * as nodePath from "node:path";
 import { parentPort } from "node:worker_threads";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
 import {
@@ -14,6 +15,7 @@ import {
 	resolveProfileEnv,
 	setProfile,
 	VERSION,
+	validateAgentDirEnv,
 } from "@oh-my-pi/pi-utils/dirs";
 import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
@@ -206,6 +208,15 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
+	const agentDirIssue = validateAgentDirEnv();
+	if (agentDirIssue) {
+		process.stderr.write(`${agentDirIssue.level}: ${agentDirIssue.message}\n`);
+		if (agentDirIssue.level === "error") {
+			process.exitCode = 1;
+			return;
+		}
+	}
+
 	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
@@ -224,7 +235,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			import("./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt", { with: { type: "text" } }),
 		]);
 		process.stdout.write(
-			`PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`,
+			`Proto License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`,
 		);
 		return;
 	}
@@ -259,6 +270,13 @@ export async function runCli(argv: string[]): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
+		if (resolved.configFiles && resolved.configFiles.length > 0) {
+			// Settings merges PI_CONFIG_FILES for every command, including the ones that never
+			// declared a --config flag of their own.
+			const existing = process.env.PI_CONFIG_FILES;
+			const carried = resolved.configFiles.join(nodePath.delimiter);
+			process.env.PI_CONFIG_FILES = existing ? `${existing}${nodePath.delimiter}${carried}` : carried;
+		}
 		await run({
 			bin: BINARY_NAME,
 			version: VERSION,
@@ -273,8 +291,12 @@ export async function runCli(argv: string[]): Promise<void> {
 }
 
 if (isProcessEntry || !Bun.isMainThread) {
-	runCli(process.argv.slice(2)).catch((err: unknown) => {
-		process.stderr.write(`${Bun.inspect(err, { colors: process.stderr.isTTY === true })}\n`);
+	runCli(process.argv.slice(2)).catch(async (err: unknown) => {
+		// Keep the CLI module off the fast path: it is only needed once something has already failed.
+		const { formatCliError } = await import("@oh-my-pi/pi-utils/cli").catch(() => ({
+			formatCliError: (error: unknown) => `error: ${error instanceof Error ? error.message : String(error)}\n`,
+		}));
+		process.stderr.write(formatCliError(err));
 		process.exit(1);
 	});
 }

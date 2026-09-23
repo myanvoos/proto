@@ -3,12 +3,16 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { galleryFixtures } from "../cli/gallery-fixtures";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { EvalStatusEvent } from "../eval/types";
+import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
 import { BashTool, type BashToolDetails } from "./bash";
+import { formatOutputNotice, type OutputMeta } from "./output-meta";
+import { truncateToWidth } from "./render-utils";
 import { toolRenderers } from "./renderers";
 
 await initTheme(false, false, "proto");
@@ -455,4 +459,105 @@ test("a command that writes a source file and runs a kernel cell outlines both",
 	expect(rendered).toContain("└─ def g()");
 	expect(rendered).toContain("cat > src/m.ts <<'EOF'");
 	expect(rendered).toContain("python <<'PY'");
+});
+
+test("narrow kernel displays retain scalar values instead of showing only tree prefixes", () => {
+	const fixture = galleryFixtures.bash_kernel_display;
+	const component = new ToolExecutionComponent(
+		"bash",
+		fixture.args,
+		{ showImages: false, useBuiltInRenderer: true },
+		undefined,
+		{ requestRender() {}, requestComponentRender() {} },
+	);
+	try {
+		component.setArgsComplete();
+		component.setExecutionStarted();
+		component.updateResult(fixture.result, false);
+		component.setExpanded(false);
+		for (const width of [12, 20]) {
+			const lines = component.render(width).map(line => strip(truncateToWidth(line, width, "")));
+			const displayStart = lines.findIndex(line => line.includes("[0]"));
+			expect(displayStart).toBeGreaterThanOrEqual(0);
+			const display = lines.slice(displayStart).join("").replaceAll(" ", "");
+			expect(display).toContain("@ai-sdk/anthropic");
+			expect(display).toContain("@oh-my-pi/pi-ai");
+			if (width === 12) expect(display).toContain("…");
+			else {
+				expect(display).toContain("@oh-my-pi/pi-tui");
+				expect(display).not.toContain("…");
+			}
+		}
+		component.setExpanded(true);
+		const expanded = component.render(12).map(line => strip(truncateToWidth(line, 12, "")));
+		const displayStart = expanded.findIndex(line => line.includes("[0]"));
+		expect(expanded.slice(displayStart).join("").replaceAll(" ", "")).toContain("@oh-my-pi/pi-tui");
+	} finally {
+		component.stopAnimation();
+	}
+});
+
+test("truncated kernel cards retain their artifact recovery reference when collapsed or expanded", () => {
+	// Captured from the real CASE_artifact CLI run: Python prints 2500 rows,
+	// the 152500-byte raw artifact is retained while the middle is elided.
+	const meta: OutputMeta = {
+		truncation: {
+			direction: "middle",
+			truncatedBy: "middle",
+			totalLines: 2501,
+			totalBytes: 152500,
+			outputLines: 842,
+			outputBytes: 51221,
+			headRange: { start: 1, end: 421 },
+			tailRange: { start: 2082, end: 2501 },
+			elidedBytes: 101302,
+			elidedLines: 1660,
+			artifactId: "0",
+		},
+	};
+	const component = new ToolExecutionComponent(
+		"bash",
+		{
+			command:
+				"python <<'PY'\nfor i in range(2500): print(f'ART{i:04d} 日本語 👩🏽‍💻 ABCDEFGHIJKLMNOPQRSTUVWXYZ')\nPY",
+		},
+		{ showImages: false, useBuiltInRenderer: true },
+		undefined,
+		{ requestRender() {}, requestComponentRender() {} },
+	);
+	try {
+		component.setArgsComplete();
+		component.setExecutionStarted();
+		component.updateResult(
+			{
+				content: [{ type: "text", text: `ART0000\n[… 1660 lines elided …]\nART2499\n${formatOutputNotice(meta)}` }],
+				details: { meta, wallTimeMs: 202, timeoutSeconds: 20 },
+			},
+			false,
+		);
+		// The recovery reference renders inside the card, so its rows carry the rail; drop that
+		// chrome before flattening so the reference can be read as one string again.
+		const rail = theme.symbol("block.rail");
+		const derail = (line: string) => line.replace(new RegExp(`^\\s*${rail}\\s?`), "");
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded);
+			const output = component
+				.render(32)
+				.map(line => derail(strip(truncateToWidth(line, 32, ""))))
+				.join(" ")
+				.replace(/\s+/g, " ");
+			expect(output).toContain("Read artifact://0 for full output");
+			expect(output.match(/artifact:\/\/0/g)).toHaveLength(1);
+			expect(output).toContain("Showing lines 1-421 and 2082-2501 of 2501");
+			expect(output).not.toMatch(/Wall:|Timeout:/);
+			const narrow = component
+				.render(12)
+				.map(line => derail(strip(truncateToWidth(line, 12, ""))))
+				.join("")
+				.replace(/\s+/g, "");
+			expect(narrow).toContain("Readartifact://0forfulloutput");
+		}
+	} finally {
+		component.stopAnimation();
+	}
 });

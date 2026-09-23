@@ -1,4 +1,4 @@
-import { Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { type Focusable, Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
@@ -11,8 +11,9 @@ interface HookInputOptions {
 	onTimeout?: () => void;
 }
 
-export class HookInputComponent extends OverlayPanel {
+export class HookInputComponent extends OverlayPanel implements Focusable {
 	#input: Input;
+	focused = false;
 	#onSubmitCallback: (value: string) => void;
 	#onCancelCallback: () => void;
 	#baseTitle: string;
@@ -51,6 +52,11 @@ export class HookInputComponent extends OverlayPanel {
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "enter submit  esc cancel"), 0, 0));
 		this.addChild(new Spacer(1));
+	}
+
+	override render(width: number): readonly string[] {
+		this.#input.focused = this.focused;
+		return super.render(width);
 	}
 
 	handleInput(keyData: string): void {

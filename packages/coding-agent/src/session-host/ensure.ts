@@ -4,6 +4,7 @@ import { daemonClientForProject } from "../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../launch/ensure";
 import { daemonRuntimeDir } from "../launch/paths";
 import { resolveWorkerSpawnCmd } from "../subprocess/worker-client";
+import { connectSessionRpc, type SessionRpcConnection } from "./client";
 import {
 	SESSION_HOST_READY_PATTERN,
 	SESSION_HOST_SOCKET_ENV,
@@ -19,6 +20,8 @@ const ENSURE_ATTEMPTS = 3;
 export interface LiveSessionHost {
 	name: string;
 	socket: string;
+	/** True when this call started the host; false when an existing one was adopted. */
+	created: boolean;
 }
 
 export type SessionHostProbe = "live" | "connecting" | "refused";
@@ -36,58 +39,28 @@ interface NegotiateResult {
  * - "refused": no listener (worker dead or not started yet).
  */
 export async function negotiateSessionHost(socket: string, timeoutMs: number): Promise<NegotiateResult> {
-	const { promise, resolve } = Promise.withResolvers<NegotiateResult>();
-	let settled = false;
-	const finish = (result: NegotiateResult) => {
-		if (settled) return;
-		settled = true;
-		clearTimeout(timer);
-		resolve(result);
-	};
-	const timer = setTimeout(() => finish({ socket: "connecting" }), timeoutMs);
-
+	let connection: SessionRpcConnection | undefined;
+	let connected = false;
 	try {
-		const socket_conn = await Bun.connect({
-			unix: socket,
-			socket: {
-				data(_socket, chunk) {
-					const text = new TextDecoder().decode(chunk);
-					for (const line of text.split("\n")) {
-						const trimmed = line.trim();
-						if (!trimmed) continue;
-						try {
-							const parsed: unknown = JSON.parse(trimmed);
-							if (
-								typeof parsed === "object" &&
-								parsed !== null &&
-								"type" in parsed &&
-								parsed.type === "response"
-							) {
-								finish({ socket: "live", response: parsed });
-							}
-						} catch {
-							// non-JSON line: ignore, keep waiting
-						}
-					}
-				},
-				error() {
-					finish({ socket: "refused" });
-				},
-				close() {
-					finish({ socket: "refused" });
-				},
-			},
-		});
-		socket_conn.write(`${JSON.stringify({ type: "negotiate_protocol", protocolVersion: 2, id: "probe" })}\n`);
+		connection = await connectSessionRpc(socket);
+		connected = true;
+		connection.sendCommand({ type: "negotiate_protocol", protocolVersion: 2, id: "probe" });
+		const response = await connection.frames.findResponse("probe", timeoutMs);
+		return response.type === "response" ? { socket: "live", response } : { socket: "refused" };
 	} catch (error) {
 		logger.debug("session host probe failed", {
 			socket,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		finish({ socket: "refused" });
+		return {
+			socket:
+				connected && error instanceof Error && error.message.startsWith("timed out waiting")
+					? "connecting"
+					: "refused",
+		};
+	} finally {
+		connection?.close();
 	}
-
-	return promise;
 }
 
 export async function probeSessionHost(socket: string): Promise<boolean> {
@@ -117,12 +90,12 @@ export async function ensureSessionHost(
 
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		const first = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
-		if (first.socket === "live") return { name, socket };
+		if (first.socket === "live") return { name, socket, created: false };
 		if (first.socket === "connecting") {
 			// Listener up but the RPC loop is still bootstrapping; give it the full
 			// ready window before concluding the worker is wedged.
 			const retry = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
-			if (retry.socket === "live") return { name, socket };
+			if (retry.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 		}
 
@@ -132,7 +105,7 @@ export async function ensureSessionHost(
 				await waitReady(client, name, "session host", undefined, sessionHostReadyTimeoutMs());
 			}
 			const adopted = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
-			if (adopted.socket === "live") return { name, socket };
+			if (adopted.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 			continue;
 		}
@@ -157,7 +130,7 @@ export async function ensureSessionHost(
 			});
 			if (started.op !== "start") continue;
 			const probe = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
-			if (probe.socket === "live") return { name, socket };
+			if (probe.socket === "live") return { name, socket, created: true };
 			await stopQuietly(client, name, "session host");
 		} catch (error) {
 			logger.debug("session host start contention", {

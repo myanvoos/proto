@@ -7,7 +7,7 @@ import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCel
 import type { BrowserToolDetails } from "../browser";
 import { formatJavaScriptForDisplay } from "../eval-format/javascript";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../output-meta";
-import { replaceTabs, shortenPath } from "../render-utils";
+import { formatErrorDetail, replaceTabs, shortenPath } from "../render-utils";
 
 const BROWSER_DEFAULT_PREVIEW_LINES = 10;
 
@@ -175,8 +175,9 @@ function renderOpenOrCloseLine(
 			? renderStatusLine({ iconOverride: theme.styledSymbol("tool.browser", "accent"), title, meta }, theme)
 			: renderStatusLine({ icon, title, meta }, theme);
 	if (!output) return new Text(header, 0, 0);
-	// Page-controlled output: sanitize before styling (replaceTabs alone does
-	// not strip terminal controls).
+	// Failures share the indented error-detail block every other tool card uses; successful output
+	// is page-controlled, so sanitize before styling (replaceTabs alone does not strip controls).
+	if (isError) return new Text([header, formatErrorDetail(output, theme)].join("\n"), 0, 0);
 	const outputLines = output.split("\n").map(line => theme.fg("toolOutput", replaceTabs(sanitizeText(line))));
 	return new Text([header, ...outputLines].join("\n"), 0, 0);
 }

@@ -1,5 +1,5 @@
 import { MISSING, OmpErrors } from "./errors";
-import { expectedOf, hasAlias, hasMorph, type IR } from "./ir";
+import { expectedOf, hasAlias, hasMorph, type IR, violatedConstraintOf } from "./ir";
 
 const own = Object.prototype.hasOwnProperty;
 
@@ -273,12 +273,14 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 				}
 			}
 			if (targetCount === 1 && targeted !== undefined) return targeted;
-			return ir.members.some(canRefineUnionFailure) ? unionFail(ir, v, path) : fail(path, expectedOf(ir), v);
+			return ir.members.some(canRefineUnionFailure)
+				? unionFail(ir, v, path)
+				: fail(path, violatedConstraintOf(ir), v);
 		}
 		case "array": {
 			if (!Array.isArray(v)) return fail(path, "an array", v);
-			if (ir.min !== undefined && v.length < ir.min) return fail(path, `at least length ${ir.min}`, v.length);
-			if (ir.max !== undefined && v.length > ir.max) return fail(path, `at most length ${ir.max}`, v.length);
+			if (ir.min !== undefined && v.length < ir.min) return fail(path, `at least length ${ir.min}`, v);
+			if (ir.max !== undefined && v.length > ir.max) return fail(path, `at most length ${ir.max}`, v);
 			const morph = hasMorph(ir.el);
 			const out = morph ? new Array<unknown>(v.length) : v;
 			let errors: OmpErrors | undefined;
@@ -492,8 +494,8 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 		}
 		case "string": {
 			if (typeof v !== "string") return fail(path, "a string", v);
-			if (ir.min !== undefined && v.length < ir.min) return fail(path, `at least length ${ir.min}`, v.length);
-			if (ir.max !== undefined && v.length > ir.max) return fail(path, `at most length ${ir.max}`, v.length);
+			if (ir.min !== undefined && v.length < ir.min) return fail(path, `at least length ${ir.min}`, v);
+			if (ir.max !== undefined && v.length > ir.max) return fail(path, `at most length ${ir.max}`, v);
 			if (ir.url && !URL.canParse(v)) return fail(path, "a URL string", v);
 			return v;
 		}

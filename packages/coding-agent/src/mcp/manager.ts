@@ -30,7 +30,7 @@ import {
 	selectMcpOAuthRefreshMaterial,
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
-import type { McpConnectionStatusEvent } from "./startup-events";
+import type { McpConnectionFailure, McpConnectionStatusEvent } from "./startup-events";
 import type { MCPToolDetails } from "./tool-bridge";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
 import type { MCPToolCache } from "./tool-cache";
@@ -71,10 +71,8 @@ type TrackedPromise<T> = {
 
 const STARTUP_TIMEOUT_MS = 250;
 
-function createMcpStartupFailure(serverName: string, error: string, source?: SourceMeta): McpConnectionStatusEvent {
-	return source
-		? { type: "failed", serverName, error, sourcePath: source.path }
-		: { type: "failed", serverName, error };
+function createMcpStartupFailure(serverName: string, error: string, source?: SourceMeta): McpConnectionFailure {
+	return source ? { serverName, error, sourcePath: source.path } : { serverName, error };
 }
 
 const RECONNECT_BURST_WINDOW_MS = 30_000;
@@ -140,10 +138,12 @@ export interface MCPLoadResult {
 	connectedServers: string[];
 
 	exaApiKeys: string[];
+
+	configErrors: string[];
 }
 
 function emptyMcpLoadResult(): MCPLoadResult {
-	return { tools: [], errors: new Map(), connectedServers: [], exaApiKeys: [] };
+	return { tools: [], errors: new Map(), connectedServers: [], exaApiKeys: [], configErrors: [] };
 }
 
 interface MCPDiscoverOptions {
@@ -188,6 +188,10 @@ export class MCPManager {
 	#onPromptsChanged?: (serverName: string) => void;
 	#notificationsEnabled = false;
 	#notificationsEpoch = 0;
+
+	#configErrors: string[] = [];
+
+	#serverFailures = new Map<string, McpConnectionFailure>();
 	#subscribedResources = new Map<string, Set<string>>();
 	#pendingResourceRefresh = new Map<string, { connection: MCPServerConnection; promise: Promise<void> }>();
 	#pendingToolsRefresh = new Map<string, { connection: MCPServerConnection; promise: Promise<void> }>();
@@ -327,13 +331,36 @@ export class MCPManager {
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			options?.onStatus?.({ type: "failed", serverName: ".mcp.json", error: message });
+			this.#recordConfigError(message);
+			options?.onStatus?.({ type: "config-error", error: message });
 			throw error;
 		}
-		const { configs, exaApiKeys, sources } = loadedConfigs;
+		const { configs, exaApiKeys, sources, warnings } = loadedConfigs;
+		for (const warning of warnings) {
+			this.#recordConfigError(warning);
+			options?.onStatus?.({ type: "config-error", error: warning });
+		}
 		const result = await this.connectServers(configs, sources, options?.onStatus);
 		result.exaApiKeys = exaApiKeys;
+		result.configErrors = [...this.#configErrors];
 		return result;
+	}
+
+	#recordConfigError(error: string): void {
+		if (!this.#configErrors.includes(error)) this.#configErrors.push(error);
+	}
+
+	#recordServerFailure(failure: McpConnectionFailure): void {
+		this.#serverFailures.set(failure.serverName, failure);
+	}
+
+	#reportStartupFailure(failure: McpConnectionFailure, onStatus?: (event: McpConnectionStatusEvent) => void): void {
+		this.#recordServerFailure(failure);
+		onStatus?.({ type: "failed", ...failure });
+	}
+
+	getStartupDiagnostics(): { failures: McpConnectionFailure[]; configErrors: string[] } {
+		return { failures: [...this.#serverFailures.values()], configErrors: [...this.#configErrors] };
 	}
 
 	async connectServers(
@@ -487,6 +514,7 @@ export class MCPManager {
 					void this.#onToolsChanged?.(this.#tools);
 					void this.toolCache?.set(name, config, serverTools);
 
+					this.#serverFailures.delete(name);
 					onStatus?.({ type: "connected", serverName: name });
 					await this.#loadServerResourcesAndPrompts(name, connection);
 				})
@@ -498,17 +526,20 @@ export class MCPManager {
 						return;
 					this.#pendingToolLoads.delete(name);
 					const message = error instanceof Error ? error.message : String(error);
-					onStatus?.(createMcpStartupFailure(name, message, sources[name]));
+					this.#reportStartupFailure(createMcpStartupFailure(name, message, sources[name]), onStatus);
 					if (!allowBackgroundLogging || reportedErrors.has(name)) return;
 					logger.error("MCP tool load failed", { path: `mcp:${name}`, error: message });
 				})
 				.finally(() => this.#endConnectAttempt(name, attempt));
 		}
 
+		for (const { name, message } of validationFailures) {
+			this.#recordServerFailure(createMcpStartupFailure(name, message, sources[name]));
+		}
 		if (statusServerNames.length > 0 && onStatus) {
 			onStatus({ type: "connecting", serverNames: statusServerNames });
 			for (const { name, message } of validationFailures) {
-				onStatus(createMcpStartupFailure(name, message, sources[name]));
+				onStatus({ type: "failed", ...createMcpStartupFailure(name, message, sources[name]) });
 			}
 		}
 
@@ -567,6 +598,7 @@ export class MCPManager {
 		return {
 			tools: allTools,
 			errors,
+			configErrors: [...this.#configErrors],
 			connectedServers: Array.from(connectedServers),
 			exaApiKeys: [],
 		};

@@ -74,6 +74,21 @@ test("stream mode stops itself once maxEvents output events are delivered", asyn
 	expect(snapshot?.status).toBe("stopped");
 });
 
+for (const mode of ["stream", "poll"] as const) {
+	test(`${mode} mode stops with an actionable error instead of retaining oversized output`, async () => {
+		const { manager, events } = createManager();
+		const started = manager.start({
+			command: "printf '%2097152s' x",
+			...(mode === "poll" ? { everySeconds: 1 } : {}),
+		});
+		await waitFor(() => events.length > 0);
+		expect(events.map(event => event.kind)).toEqual(["error"]);
+		expect(events[0]?.text).toMatch(/output.*limit|line.*limit/i);
+		expect(manager.get(started.id)?.stopReason).toBe("error");
+		expect(manager.hasActive()).toBe(false);
+	});
+}
+
 test("poll mode reports changed output once and skips identical repeats", async () => {
 	const { manager, events } = createManager();
 	const started = manager.start({ command: "echo steady", everySeconds: 1, label: "ci" });

@@ -338,12 +338,14 @@ test("disposed manager does not start later discovery, connections, or reconnect
 			errors: new Map(),
 			connectedServers: [],
 			exaApiKeys: [],
+			configErrors: [],
 		});
 		expect(await manager.connectServers({ slow: { type: "http", url: server.url } }, {})).toEqual({
 			tools: [],
 			errors: new Map(),
 			connectedServers: [],
 			exaApiKeys: [],
+			configErrors: [],
 		});
 		expect(await manager.reconnectServer("slow")).toBeNull();
 		expect(server.initializeCount()).toBe(0);

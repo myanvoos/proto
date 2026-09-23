@@ -10,8 +10,9 @@ While any monitor runs, incomplete-checklist and goal-continuation nudges are su
 - poll (`every: N`): command re-runs every N seconds; one event per CHANGED matching output. Identical consecutive output is skipped — a stable value delivers once, not forever.
 - `match`: JS `RegExp` source, `u` flag. PCRE inline modifiers like `(?i)` REJECTED — use `[Rr]eady`. Omitted → every line/change qualifies.
 - Every event enters your context. SHOULD supply `match` to filter at the source rather than streaming everything; a chatty command without `match` burns context fast.
-- Defaults: `maxEvents` from settings (50) — the monitor stops ITSELF on reaching it; `timeout` unbounded when omitted; `cwd` the session directory. Long or noisy watches SHOULD set `timeout`.
+- Defaults: `maxEvents` from settings (50) counts matching output events, not terminal status — the monitor stops ITSELF on reaching it; `timeout` unbounded when omitted; `cwd` the session directory. Long or noisy watches SHOULD set `timeout`.
 - Also stops on process exit, on error, and on `op: "stop"` (omit `ids` → stop all). A stopped monitor delivers nothing further; `list` shows status, mode, events delivered, and stop reason.
+- Output safety: a stream line or one poll stdout/stderr exceeding 1 MiB stops with an error. Filter command output before monitoring; use `bash` for bulk output.
 - Session-scoped: monitors die with the session and are main-agent only.
 
 `fleet` vs `monitor`: `fleet op: "start"` supervises a service you later inspect, signal, or feed stdin — you interact with it. `monitor` watches output and wakes you — you react to it. Need both? Run the service under `fleet`, then `monitor` a command that observes it.

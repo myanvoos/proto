@@ -1,41 +1,14 @@
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { usageHelp as commandHelp } from "../cli/command-help";
 import { runUsageCommand } from "../cli/usage-cli";
 
 export default class Usage extends Command {
 	static description = commandHelp.description;
-	static args = {
-		action: Args.string({
-			description: "Optional subcommand to execute",
-			required: false,
-			options: ["invalidate"],
-		}),
-	};
+	static args = commandHelp.args;
 
-	static flags = {
-		json: Flags.boolean({ char: "j", description: "Output usage reports as JSON", default: false }),
-		provider: Flags.string({ char: "p", description: "Only show usage for this provider id (e.g. anthropic)" }),
-		redact: Flags.boolean({
-			char: "r",
-			description: "Redact account emails/ids (shortest unique prefix) for sharing screenshots",
-			default: false,
-		}),
-		history: Flags.boolean({
-			description: "Show recorded usage-limit history (hourly snapshots) instead of a live snapshot",
-			default: false,
-		}),
-		days: Flags.integer({ char: "d", description: "History window in days (with --history)", default: 7 }),
-	};
+	static flags = commandHelp.flags;
 
-	static examples = [
-		"# Detailed per-account usage breakdown across all providers\n  proto usage",
-		"# Only Anthropic accounts\n  proto usage --provider anthropic",
-		"# Redact account identifiers for screenshots\n  proto usage --redact",
-		"# Machine-readable output\n  proto usage --json",
-		"# Usage-limit trend over the last 30 days\n  proto usage --history --days 30",
-		"# Invalidate cached usage reports for all providers\n  proto usage invalidate",
-		"# Invalidate cached usage reports for a specific provider\n  proto usage invalidate --provider anthropic",
-	];
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Usage);

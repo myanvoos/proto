@@ -1,7 +1,8 @@
-import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AssistantMessage, type ImageContent, thinkingLoopDetail } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
+import { type Component, isTerminalFocused, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -13,6 +14,7 @@ import {
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
+import type { RunOutcome } from "../../modes/components/status-line/component";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
@@ -21,6 +23,7 @@ import type { ChecklistPhase, InteractiveModeContext } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { RETRY_BUDGET_EXHAUSTED_PREFIX } from "../../session/turn-recovery";
 import { nextActionableTask } from "../../tools/checklist";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
@@ -34,7 +37,9 @@ import {
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
+import { appendLatestCompactionSummary } from "../utils/ui-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
+import { shouldNotifyCompletion } from "./completion-notification";
 import { StreamingRevealController } from "./streaming-reveal";
 import { decodeStreamedToolArgs, streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -69,6 +74,14 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
+/** How the turn that just ended finished, read from the last assistant message it produced. */
+function runOutcomeOf(messages: readonly AgentMessage[]): RunOutcome {
+	const last = messages.findLast((message): message is AssistantMessage => message.role === "assistant");
+	if (last?.stopReason === "aborted") return "aborted";
+	if (last?.stopReason === "error") return "error";
+	return "ok";
+}
+
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 
@@ -77,7 +90,6 @@ export class EventController {
 
 	#attentionToolCallIds = new Set<string>();
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
-	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
 
 	#streamedToolCallIdByIndex = new Map<number, string>();
@@ -133,6 +145,7 @@ export class EventController {
 	#dispatchTail: Promise<void> = Promise.resolve();
 
 	#dispatchInFlight = false;
+	#disposed = false;
 	#transcriptAnchor = 0;
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
@@ -200,21 +213,10 @@ export class EventController {
 	}
 
 	dispose(): void {
-		if (this.#messageUpdateTimer) {
-			clearTimeout(this.#messageUpdateTimer);
-			this.#messageUpdateTimer = undefined;
-		}
-		this.#pendingMessageUpdate = undefined;
-		this.#streamingReveal.stop();
-		this.#toolArgsReveal.stop();
-		this.#cancelIdleCompaction();
-		this.#cancelIdleRecap();
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.resetTranscriptAnchors();
 		this.#setTerminalProgress(false);
-		for (const timer of this.#ircExpiryTimers.values()) {
-			clearTimeout(timer);
-		}
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
 	}
 
 	#resetStreamingAssistantState(): void {
@@ -335,15 +337,10 @@ export class EventController {
 		const normalizedArgs =
 			args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 		this.#readToolCallArgs.set(toolCallId, normalizedArgs);
-		const assistantComponent = this.ctx.streamingComponent ?? this.#lastAssistantComponent;
-		if (assistantComponent) {
-			this.#readToolCallAssistantComponents.set(toolCallId, assistantComponent);
-		}
 	}
 
 	#clearReadToolCall(toolCallId: string): void {
 		this.#readToolCallArgs.delete(toolCallId);
-		this.#readToolCallAssistantComponents.delete(toolCallId);
 	}
 
 	#retractToolCardEntry(toolCallId: string, component: ToolExecutionHandle): void {
@@ -408,12 +405,6 @@ export class EventController {
 			this.#readToolCallArgs.delete(oldId);
 			this.#readToolCallArgs.set(newId, readArgs);
 		}
-		const readAssistant = this.#readToolCallAssistantComponents.get(oldId);
-		if (readAssistant !== undefined) {
-			this.#readToolCallAssistantComponents.delete(oldId);
-			this.#readToolCallAssistantComponents.set(newId, readAssistant);
-		}
-
 		if (pending instanceof ReadToolGroupComponent) pending.renameEntry(oldId, newId);
 
 		if (pending) {
@@ -425,21 +416,21 @@ export class EventController {
 		}
 	}
 
-	#inlineReadToolImages(
+	/** Hand a read's images to its own card so they paint under that call. */
+	#attachReadToolImages(
+		component: ToolExecutionHandle,
 		toolCallId: string,
 		result: { content: Array<{ type: string; data?: string; mimeType?: string }> },
-	): boolean {
-		const assistantComponent = this.#readToolCallAssistantComponents.get(toolCallId);
-		if (!assistantComponent) return false;
+	): void {
+		if (!(component instanceof ReadToolGroupComponent)) return;
 		const images: ImageContent[] = result.content
 			.filter(
 				(content): content is ImageContent =>
 					content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
 			)
 			.map(content => ({ type: "image", data: content.data, mimeType: content.mimeType }));
-		if (images.length === 0) return false;
-		assistantComponent.setToolResultImages(toolCallId, images);
-		return settings.get("terminal.showImages");
+		if (images.length === 0) return;
+		component.setToolResultImages(toolCallId, images);
 	}
 
 	#insertAfterTranscriptComponent(anchor: Component | undefined, component: Component): boolean {
@@ -496,15 +487,15 @@ export class EventController {
 	}
 
 	async dispatchEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (event.type === "message_update") {
 			this.#enqueueMessageUpdate(event, transcriptAnchor);
 			return;
 		}
 		await this.#runSerialized(async () => {
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 			await this.#flushPendingMessageUpdate(transcriptAnchor);
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 			await this.handleEvent(event, transcriptAnchor);
 		});
 	}
@@ -545,7 +536,7 @@ export class EventController {
 		event: Extract<AgentSessionEvent, { type: "message_update" }>,
 		transcriptAnchor: number,
 	): void {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		this.#pendingMessageUpdate = event;
 		if (this.#messageUpdateTimer) return;
 		const timer = setTimeout(() => {
@@ -553,7 +544,7 @@ export class EventController {
 			this.#messageUpdateTimer = undefined;
 
 			void this.#runSerialized(async () => {
-				if (transcriptAnchor !== this.#transcriptAnchor) return;
+				if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 				await this.#flushPendingMessageUpdate(transcriptAnchor);
 			}).catch(err => {
 				logger.warn("Message update flush rejected", {
@@ -565,7 +556,7 @@ export class EventController {
 	}
 
 	async #flushPendingMessageUpdate(transcriptAnchor: number): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -574,6 +565,31 @@ export class EventController {
 		if (!event) return;
 		this.#pendingMessageUpdate = undefined;
 		await this.handleEvent(event, transcriptAnchor);
+	}
+
+	/**
+	 * A message that ended in an abort or a stream error will never execute the
+	 * tool calls it streamed but had not started. Left pending, such a card never
+	 * receives a result, stays unfinished, and pins transcript retirement: every
+	 * later block is held live behind it and squeezed into the viewport. Guard and
+	 * recovery interrupts (kernel preflight, loop guards, stream retries) continue
+	 * the same turn, so that lasts until the terminal agent_end finally seals it.
+	 * Read groups are shared across calls, so one is sealed only when none of its
+	 * calls has started.
+	 */
+	#sealNeverStartedToolCards(): void {
+		const running = new Set<unknown>();
+		for (const [toolCallId, component] of this.ctx.pendingTools) {
+			if (this.#executionStartedCallIds.has(toolCallId)) running.add(component);
+		}
+		for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
+			if (this.#executionStartedCallIds.has(toolCallId)) continue;
+			this.ctx.pendingTools.delete(toolCallId);
+			if (running.has(component)) continue;
+			if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
+				component.seal();
+			}
+		}
 	}
 
 	hasToolExecutionStarted(toolCallId: string): boolean {
@@ -604,11 +620,12 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#lastAssistantComponent = undefined;
 		this.#pinnedErrorComponent = undefined;
 		this.#pinnedErrorMessage = undefined;
 		this.#restorePinnedErrorInline = true;
+		this.#retrySupersededAssistantComponents.clear();
+		this.#retrySupersededAssistantQueue = [];
 		this.#retryPending = this.ctx.viewSession.isRetrying;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
@@ -626,10 +643,10 @@ export class EventController {
 	}
 
 	async handleEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (!this.ctx.isInitialized) {
 			await this.ctx.init();
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		}
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
@@ -694,7 +711,6 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
 		this.#resolveDisplaceableChecklist();
 		this.#lastAssistantComponent = undefined;
@@ -1202,6 +1218,8 @@ export class EventController {
 							component.seal();
 						}
 					}
+				} else {
+					this.#sealNeverStartedToolCards();
 				}
 
 				this.#resolveDisplaceablePoll();
@@ -1264,7 +1282,7 @@ export class EventController {
 
 			if (event.message.stopReason === "error" && event.message.errorMessage) {
 				const recoverableEmptyOutput =
-					!event.message.errorMessage.startsWith("Retry budget exhausted") &&
+					!event.message.errorMessage.startsWith(RETRY_BUDGET_EXHAUSTED_PREFIX) &&
 					AIError.is(AIError.classifyMessage(event.message), AIError.Flag.EmptyResponse);
 				this.#lastAssistantComponent?.setErrorPinned(true);
 				this.#pinnedErrorComponent = this.#lastAssistantComponent;
@@ -1324,6 +1342,7 @@ export class EventController {
 				this.ctx.ui,
 			);
 			component.setArgsComplete(event.toolCallId);
+			component.setIntent(event.intent);
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
@@ -1338,6 +1357,9 @@ export class EventController {
 				component.updateArgs(event.args, event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
+				}
+				if (typeof component.setIntent === "function") {
+					component.setIntent(event.intent);
 				}
 				if (typeof component.setExecutionStarted === "function") {
 					component.setExecutionStarted(event.toolCallId);
@@ -1403,34 +1425,25 @@ export class EventController {
 			setTerminalTitleState("working");
 		}
 		if (event.toolName === "read") {
-			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
-				const component = this.ctx.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
-					this.ctx.pendingTools.delete(event.toolCallId);
+			let component = this.ctx.pendingTools.get(event.toolCallId);
+			if (!component) {
+				if (this.#toolTimelineComponents.has(event.toolCallId)) {
+					this.#clearReadToolCall(event.toolCallId);
+					return;
 				}
-				this.#clearReadToolCall(event.toolCallId);
-				this.ctx.ui.requestRender();
-			} else {
-				let component = this.ctx.pendingTools.get(event.toolCallId);
-				if (!component) {
-					if (this.#toolTimelineComponents.has(event.toolCallId)) {
-						this.#clearReadToolCall(event.toolCallId);
-						return;
-					}
-					const group = this.#getReadGroup();
-					const args = this.#readToolCallArgs.get(event.toolCallId);
-					if (args) {
-						group.updateArgs(args, event.toolCallId);
-					}
-					component = group;
-					this.ctx.pendingTools.set(event.toolCallId, group);
+				const group = this.#getReadGroup();
+				const args = this.#readToolCallArgs.get(event.toolCallId);
+				if (args) {
+					group.updateArgs(args, event.toolCallId);
 				}
-				component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
-				this.ctx.pendingTools.delete(event.toolCallId);
-				this.#clearReadToolCall(event.toolCallId);
-				this.ctx.ui.requestRender();
+				component = group;
+				this.ctx.pendingTools.set(event.toolCallId, group);
 			}
+			this.#attachReadToolImages(component, event.toolCallId, event.result);
+			component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+			this.ctx.pendingTools.delete(event.toolCallId);
+			this.#clearReadToolCall(event.toolCallId);
+			this.ctx.ui.requestRender();
 		} else {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
@@ -1489,7 +1502,7 @@ export class EventController {
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
 		this.#setTerminalProgress(false);
-		this.ctx.statusLine.markActivityEnd();
+		this.ctx.statusLine.markActivityEnd(runOutcomeOf(event.messages));
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.flushAll();
 		if (this.ctx.loadingAnimation) {
@@ -1511,7 +1524,6 @@ export class EventController {
 		}
 		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#toolTimelineComponents.clear();
 		this.#resetStreamingAssistantState();
 		this.#retractedToolCallIds.clear();
@@ -1567,6 +1579,16 @@ export class EventController {
 		return this.ctx.focusedAgentId ? "" : " (esc to cancel)";
 	}
 
+	/**
+	 * A spent retry budget already writes its report onto the failed turn, and that report is what
+	 * the transcript keeps. Repeating it as a second banner in different words is noise.
+	 */
+	#terminalFailureAlreadyReported(): boolean {
+		const reported =
+			this.#pinnedErrorMessage?.errorMessage ?? this.ctx.viewSession.getLastAssistantMessage()?.errorMessage;
+		return reported?.startsWith(RETRY_BUDGET_EXHAUSTED_PREFIX) === true;
+	}
+
 	async #handleAutoCompactionStart(
 		event: Extract<AgentSessionEvent, { type: "auto_compaction_start" }>,
 	): Promise<void> {
@@ -1610,8 +1632,7 @@ export class EventController {
 				isRemoteAction ? "Auto server compaction cancelled" : "Auto context-full maintenance cancelled",
 			);
 		} else if (event.result) {
-			this.ctx.lastAssistantUsage = undefined;
-			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
+			appendLatestCompactionSummary(this.ctx);
 			this.ctx.statusLine.invalidate();
 
 			this.ctx.ui.requestRender();
@@ -1640,18 +1661,28 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.disposeChildren();
-		if (AIError.is(event.errorId, AIError.Flag.ThinkingLoop)) {
+		// A repetition-guard retry looks exactly like a network retry unless its cause is named, and
+		// the raw guard error is dropped here because the retry line is about to replace it. Carry the
+		// evidence over instead of discarding it.
+		const loopCause = AIError.is(event.errorId, AIError.Flag.ThinkingLoop)
+			? `repetition guard: ${thinkingLoopDetail(event.errorMessage) ?? "the model repeated near-identical content"}`
+			: undefined;
+		if (loopCause !== undefined) {
 			this.#pinnedErrorComponent = undefined;
 			this.#pinnedErrorMessage = undefined;
 			this.#restorePinnedErrorInline = true;
 			this.ctx.clearPinnedError();
 		}
 		const delaySeconds = Math.round(event.delayMs / 1000);
+		// The cancel hint sits before the cause so a narrow terminal truncates evidence, not the key.
+		const retryText = `Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s…${this.#maintenanceEscHint()}${
+			loopCause ? ` · ${loopCause}` : ""
+		}`;
 		this.ctx.retryLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
-			`Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s…${this.#maintenanceEscHint()}`,
+			retryText,
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
@@ -1707,7 +1738,7 @@ export class EventController {
 					: (pinnedError ?? event.finalError);
 				if (terminalError) this.ctx.showPinnedError(terminalError);
 				this.#restorePinnedErrorInline = true;
-			} else {
+			} else if (!this.#terminalFailureAlreadyReported()) {
 				this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 		}
@@ -1889,6 +1920,19 @@ export class EventController {
 
 		const last = event.messages.findLast((message): message is AssistantMessage => message.role === "assistant");
 		if (last?.stopReason === "aborted" || last?.stopReason === "error") return;
+
+		// markActivityEnd() ran earlier in #finishAgentEnd, so lastRunMs is this
+		// turn's wall time.
+		if (
+			!shouldNotifyCompletion({
+				elapsedMs: this.ctx.statusLine.getRunClock().lastRunMs,
+				minSeconds: settings.get("completion.notifyMinSeconds") ?? 0,
+				focused: isTerminalFocused(),
+				notifyWhenFocused: settings.get("completion.notifyWhenFocused") === true,
+			})
+		) {
+			return;
+		}
 
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({

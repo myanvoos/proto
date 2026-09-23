@@ -38,8 +38,6 @@ export interface AuthGatewayCommandArgs {
 	};
 }
 
-const ACTIONS: readonly AuthGatewayAction[] = ["serve", "token", "status", "check"];
-
 function getTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-gateway.token");
 }
@@ -545,5 +543,3 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		storage.close();
 	}
 }
-
-export { ACTIONS as AUTH_GATEWAY_ACTIONS };

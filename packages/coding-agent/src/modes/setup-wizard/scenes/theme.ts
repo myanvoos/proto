@@ -37,10 +37,6 @@ function fitLine(line: string, width: number): string {
 	return truncated + padding(Math.max(0, width - visibleWidth(truncated)));
 }
 
-function fillStyledLine(content: string, width: number): string {
-	return content + padding(Math.max(0, width - visibleWidth(content)));
-}
-
 function renderMockStatusLine(width: number): string {
 	const sep = theme.fg("statusLineSep", ` ${theme.sep.pipe} `);
 	const left = [
@@ -70,13 +66,13 @@ function renderMockEditor(width: number): string[] {
 	return [
 		top,
 		`${theme.fg("borderAccent", box.vertical)}${fitLine(prompt, innerWidth)}${theme.fg("borderAccent", box.vertical)}`,
-		`${theme.fg("borderMuted", box.vertical)}${fillStyledLine(hint, innerWidth)}${theme.fg("borderMuted", box.vertical)}`,
+		`${theme.fg("borderMuted", box.vertical)}${fitLine(hint, innerWidth)}${theme.fg("borderMuted", box.vertical)}`,
 		bottom,
 	];
 }
 
 function renderThemePreview(width: number): string[] {
-	const previewWidth = Math.max(24, Math.min(width, 88));
+	const previewWidth = Math.max(1, Math.min(width, 88));
 	return [
 		theme.bold("Preview"),
 		`${theme.fg("success", `${theme.status.success} success`)}  ${theme.fg("warning", `${theme.status.warning} warning`)}  ${theme.fg("error", `${theme.status.error} error`)}  ${theme.fg("accent", "accent")}`,
@@ -131,14 +127,18 @@ class ThemeSceneController implements SetupSceneController {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
+		if (maxLines !== undefined && maxLines <= 0) return [];
 		const budget = maxLines ?? Number.POSITIVE_INFINITY;
-		const lines = [
-			theme.fg("muted", "Theme changes preview live. Nothing is saved until you press Enter."),
-			this.#mode === "all"
-				? theme.fg("dim", "Browsing all themes · Esc returns to curated choices")
-				: theme.fg("dim", "Esc skips this step"),
-			"",
-		];
+		const lines =
+			budget >= 8
+				? [
+						theme.fg("muted", "Theme changes preview live. Nothing is saved until you press Enter."),
+						this.#mode === "all"
+							? theme.fg("dim", "Browsing all themes · Esc returns to curated choices")
+							: theme.fg("dim", "Esc skips this step"),
+						"",
+					]
+				: [];
 
 		const preview = renderThemePreview(width);
 		if (budget - lines.length - (preview.length + 1) - 1 >= CURATED_ITEMS.length) {
@@ -149,13 +149,12 @@ class ThemeSceneController implements SetupSceneController {
 			lines.push(theme.fg("dim", "Loading themes…"));
 		} else {
 			this.#listRowStart = lines.length;
-			if (maxLines !== undefined) {
-				this.#selectList.setMaxVisible(Math.max(1, Math.min(10, budget - lines.length - 1)));
-			}
+			const messageRows = this.#message && budget - lines.length >= 2 ? 1 : 0;
+			this.#selectList.setMaxHeight(budget - lines.length - messageRows);
 			lines.push(...this.#selectList.render(width));
 		}
-		if (this.#message) {
-			lines.push("", this.#message);
+		if (this.#message && lines.length < budget) {
+			lines.push(this.#message);
 		}
 		return lines;
 	}

@@ -795,7 +795,7 @@ export interface FileMentionMessage {
 
 		byteSize?: number;
 
-		skippedReason?: "tooLarge" | "binary";
+		skippedReason?: "tooLarge" | "binary" | "undecodableImage";
 		image?: ImageContent;
 	}>;
 	timestamp: number;

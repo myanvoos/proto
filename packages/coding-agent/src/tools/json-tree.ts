@@ -1,6 +1,6 @@
 import { INTENT_FIELD, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../modes/theme/theme";
-import { truncateToWidth } from "./render-utils";
+import { truncateToWidth, wrapTextWithAnsi } from "./render-utils";
 
 export const JSON_TREE_MAX_DEPTH_COLLAPSED = 2;
 export const JSON_TREE_MAX_DEPTH_EXPANDED = Number.POSITIVE_INFINITY;
@@ -102,6 +102,7 @@ export function renderJsonTreeLines(
 	maxDepth: number,
 	maxLines: number,
 	maxScalarLen: number,
+	width: number,
 ): { lines: string[]; truncated: boolean } {
 	const lines: string[] = [];
 	let truncated = false;
@@ -115,8 +116,22 @@ export function renderJsonTreeLines(
 			truncated = true;
 			return false;
 		}
-		lines.push(line);
+		const rows = wrapTextWithAnsi(line, Math.max(1, width));
+		const available = Math.max(0, maxLines - lines.length);
+		lines.push(...rows.slice(0, available));
+		if (rows.length > available) {
+			truncated = true;
+			const last = lines.length - 1;
+			lines[last] = `${truncateToWidth(lines[last], Math.max(0, width - 1), "")}${theme.fg("dim", "…")}`;
+			return false;
+		}
 		return true;
+	};
+
+	const pushScalar = (lead: string, scalar: string): boolean => {
+		const first = truncateToWidth(scalar, Math.max(0, width - Bun.stringWidth(lead)), "");
+		if (!pushLine(`${lead}${theme.fg("dim", first)}`)) return false;
+		return first.length === scalar.length || pushLine(theme.fg("dim", scalar.slice(first.length)));
 	};
 
 	const renderNode = (val: unknown, key: string | undefined, ancestors: boolean[], isLast: boolean, depth: number) => {
@@ -131,17 +146,27 @@ export function renderJsonTreeLines(
 		ancestors.push(!isLast);
 		try {
 			if (val === null || val === undefined || typeof val !== "object") {
-				const label = key ? theme.fg("muted", sanitizeTreeKey(key)) : theme.fg("muted", "value");
+				const rawLabel = key ? sanitizeTreeKey(key) : "value";
+				const label = theme.fg("muted", rawLabel);
+				const fullLead = `${prefix}${iconScalar} ${label}: `;
+				// Decoration must not consume the scalar's entire first row. At
+				// narrow widths retain the key/index, then wrap the actual value.
+				const valueReserve = Math.min(8, Math.max(1, Math.floor(width / 3)));
+				const compact = Bun.stringWidth(fullLead) + valueReserve > width;
+				const compactLabel = Number.isFinite(maxLines)
+					? truncateToWidth(rawLabel, Math.max(1, width - valueReserve - 2))
+					: rawLabel;
+				const lead = compact ? `${theme.fg("muted", compactLabel)}: ` : fullLead;
 
 				if (typeof val === "string" && val.includes("\n")) {
 					// Sanitize each physical line before width truncation; otherwise a
 					// prefix of control bytes can consume the entire visible budget.
 					const strLines = val.split("\n").map(sanitizeMultilineValue);
 					const maxStrLines = Math.min(strLines.length, Math.max(1, maxLines - lines.length - 1));
-					const continuePrefix = buildTreePrefix(theme, ancestors);
+					const continuePrefix = compact ? "" : `${buildTreePrefix(theme, ancestors)}   `;
 
 					const firstLine = truncateToWidth(strLines[0], maxScalarLen);
-					pushLine(`${prefix}${iconScalar} ${label}: ${theme.fg("dim", `"${firstLine}`)}`);
+					if (!pushScalar(lead, `"${firstLine}`)) return;
 
 					for (let i = 1; i < maxStrLines; i++) {
 						if (lines.length >= maxLines) {
@@ -149,23 +174,19 @@ export function renderJsonTreeLines(
 							break;
 						}
 						const line = truncateToWidth(strLines[i], maxScalarLen);
-						pushLine(`${continuePrefix}   ${theme.fg("dim", ` ${line}`)}`);
+						const closingQuote = i === strLines.length - 1 ? '"' : "";
+						if (!pushLine(`${continuePrefix}${theme.fg("dim", ` ${line}${closingQuote}`)}`)) return;
 					}
 
 					if (strLines.length > maxStrLines) {
 						truncated = true;
-						pushLine(
-							`${continuePrefix}   ${theme.fg("dim", ` …(${strLines.length - maxStrLines} more lines)"`)}`,
-						);
-					} else {
-						const lastIdx = lines.length - 1;
-						lines[lastIdx] = `${lines[lastIdx]}${theme.fg("dim", '"')}`;
+						pushLine(`${continuePrefix}${theme.fg("dim", ` …(${strLines.length - maxStrLines} more lines)"`)}`);
 					}
 					return;
 				}
 
 				const scalar = formatScalar(val, maxScalarLen);
-				pushLine(`${prefix}${iconScalar} ${label}: ${theme.fg("dim", scalar)}`);
+				pushScalar(lead, scalar);
 				return;
 			}
 
@@ -187,7 +208,7 @@ export function renderJsonTreeLines(
 				for (let i = 0; i < val.length; i++) {
 					renderNode(val[i], `[${i}]`, ancestors, i === val.length - 1, depth + 1);
 					if (lines.length >= maxLines) {
-						truncated = true;
+						truncated ||= i < val.length - 1;
 						return;
 					}
 				}
@@ -214,7 +235,7 @@ export function renderJsonTreeLines(
 				const child = val[childKey];
 				renderNode(child, childKey, ancestors, i === keys.length - 1, depth + 1);
 				if (lines.length >= maxLines) {
-					truncated = true;
+					truncated ||= i < keys.length - 1;
 					return;
 				}
 			}
@@ -228,7 +249,7 @@ export function renderJsonTreeLines(
 		for (let i = 0; i < keys.length; i++) {
 			renderNode(value[keys[i]!], keys[i], [], i === keys.length - 1, 1);
 			if (lines.length >= maxLines) {
-				truncated = true;
+				truncated ||= i < keys.length - 1;
 				break;
 			}
 		}
@@ -236,7 +257,7 @@ export function renderJsonTreeLines(
 		for (let i = 0; i < value.length; i++) {
 			renderNode(value[i], `[${i}]`, [], i === value.length - 1, 1);
 			if (lines.length >= maxLines) {
-				truncated = true;
+				truncated ||= i < value.length - 1;
 				break;
 			}
 		}

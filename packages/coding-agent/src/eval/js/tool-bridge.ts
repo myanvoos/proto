@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
 import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
@@ -54,15 +55,28 @@ function getTool(session: ToolSession, name: string): AgentTool {
 	return tool;
 }
 
-function normalizeArgs(args: unknown): unknown {
+function schemaDeclaresIntent(tool: AgentTool): boolean {
+	const properties = toolWireSchema(tool as AiTool).properties;
+	return !!properties && typeof properties === "object" && Object.hasOwn(properties, INTENT_FIELD);
+}
+
+/**
+ * The agent loop strips the harness intent field before a tool executes, so the bridge passes it
+ * on only to tools that declare `i` themselves; otherwise it is dropped rather than leaked into
+ * argument validation.
+ */
+function normalizeArgs(tool: AgentTool, args: unknown): unknown {
 	if (!args || typeof args !== "object" || Array.isArray(args)) {
 		return args;
 	}
-	const record = { ...(args as Record<string, unknown>) };
-	if (record[INTENT_FIELD] === undefined) {
-		record[INTENT_FIELD] = "js prelude";
+	const record = args as Record<string, unknown>;
+	if (!schemaDeclaresIntent(tool)) {
+		if (!Object.hasOwn(record, INTENT_FIELD)) return args;
+		const { [INTENT_FIELD]: _intent, ...rest } = record;
+		return rest;
 	}
-	return record;
+	if (record[INTENT_FIELD] !== undefined) return args;
+	return { ...record, [INTENT_FIELD]: "js prelude" };
 }
 
 function summarizeToolResult(
@@ -120,7 +134,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 		return runEvalAst(args, options);
 	}
 	const tool = getTool(options.session, name);
-	const normalizedArgs = normalizeArgs(args);
+	const normalizedArgs = normalizeArgs(tool, args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
 	try {
 		const result = await tool.execute(

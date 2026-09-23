@@ -48,6 +48,8 @@ function isSnapshotExtension(previous: readonly StablePart[], current: readonly 
 }
 
 const EMPTY_THINKING_RENDERERS: readonly AssistantThinkingRenderer[] = [];
+// Settled spaces tried, from the stream edge back, for one that already wraps.
+const SPLIT_WRAP_SEARCH = 48;
 
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
 	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
@@ -127,10 +129,8 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
-	#toolImagesByCallId?: Map<string, ImageContent[]>;
 	#convertedKittyImages?: Map<string, ImageContent>;
 	#showImages = true;
-	#showToolResultImages = true;
 	#kittyConversionsInFlight?: Set<string>;
 	#transcriptBlockFinalized: boolean;
 
@@ -146,6 +146,9 @@ export class AssistantMessageComponent extends Container {
 	#fastPathItems:
 		| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
 		| undefined;
+	// Source offsets, per content block, of spaces rendered as hard line breaks
+	// so a paragraph taller than the live viewport can retire in parts.
+	readonly #paragraphCuts = new Map<number, number[]>();
 
 	#thinkingDots: Text | undefined;
 	// The constant "Thinking" heading is reproduced by semantic stable snapshots.
@@ -234,6 +237,65 @@ export class AssistantMessageComponent extends Container {
 		this.#stableRenderCache.clear();
 	}
 
+	/**
+	 * Split the paragraph still streaming at the end of the reply with a hard
+	 * line break at a settled space, so the rows before it can retire while the
+	 * rest streams. The transcript asks only when that paragraph is taller than
+	 * the live viewport; otherwise its top would be clipped, and a resize could
+	 * push the clipped rows into scrollback ahead of their block. The break
+	 * prefers a space where the paragraph already wraps at `width`, so nothing
+	 * moves on screen; it stays in the finished message too, so retired rows
+	 * keep matching the block they came from.
+	 */
+	splitStableTail(width: number): boolean {
+		const item = this.#fastPathItems?.at(-1);
+		if (!item || this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return false;
+		// Offsets are into the text as set; source normalization would shift them.
+		const original = item.lastText;
+		if (item.md.getText() !== original) return false;
+		const candidates = item.md.findParagraphCuts().filter(offset => original[offset] === " ");
+		if (candidates.length === 0) return false;
+		const current = item.md.render(width);
+		let chosen = candidates.at(-1)!;
+		for (const offset of candidates.slice(-SPLIT_WRAP_SEARCH).reverse()) {
+			item.md.setText(`${original.slice(0, offset)}\\\n${original.slice(offset + 1)}`);
+			const rows = item.md.render(width);
+			if (rows.length === current.length && isRowPrefix(rows, current)) {
+				chosen = offset;
+				break;
+			}
+		}
+		const cuts = this.#paragraphCuts.get(item.contentIndex) ?? [];
+		// Each earlier cut widened the display text by one character.
+		const cut = chosen - cuts.filter((offset, index) => offset + index < chosen).length;
+		if (cuts.length > 0 && cut <= cuts.at(-1)!) {
+			item.md.setText(original);
+			return false;
+		}
+		this.#paragraphCuts.set(item.contentIndex, [...cuts, cut]);
+		item.lastText = `${original.slice(0, chosen)}\\\n${original.slice(chosen + 1)}`;
+		item.md.setText(item.lastText);
+		return true;
+	}
+
+	/** Render recorded cuts as hard line breaks, dropping any the text no longer carries. */
+	#withParagraphCuts(contentIndex: number, text: string): string {
+		const cuts = this.#paragraphCuts.get(contentIndex);
+		if (!cuts) return text;
+		let output = "";
+		let from = 0;
+		for (let index = 0; index < cuts.length; index++) {
+			const cut = cuts[index]!;
+			if (text[cut] !== " " || !/\p{L}/u.test(text[cut + 1] ?? "")) {
+				this.#paragraphCuts.set(contentIndex, cuts.slice(0, index));
+				break;
+			}
+			output += `${text.slice(from, cut)}\\\n`;
+			from = cut + 1;
+		}
+		return output + text.slice(from);
+	}
+
 	renderTranscriptStableRows(count: number, width: number): readonly string[] {
 		const requested = Number.isFinite(count) ? Math.trunc(count) : 0;
 		const index = Math.max(0, Math.min(requested, this.#stableSnapshots.length));
@@ -316,7 +378,7 @@ export class AssistantMessageComponent extends Container {
 	#renderStableSnapshot(parts: readonly StablePart[], width: number): readonly string[] {
 		const rows: string[] = [];
 		let renderedThinkingLabel = false;
-		for (const part of parts) {
+		for (const [index, part] of parts.entries()) {
 			if (part.kind === "spacer") {
 				rows.push("");
 				continue;
@@ -336,6 +398,8 @@ export class AssistantMessageComponent extends Container {
 							2,
 						)
 					: new Markdown(part.text.trim(), 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
+			// The last part is cut mid-stream and may end inside an open code fence.
+			if (index === parts.length - 1) markdown.setStreamPrefix(true);
 			rows.push(...markdown.render(width));
 		}
 		return rows;
@@ -505,7 +569,6 @@ export class AssistantMessageComponent extends Container {
 		this.#clearContent();
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2));
-		this.#renderToolImages();
 		super.invalidate();
 	}
 
@@ -550,47 +613,6 @@ export class AssistantMessageComponent extends Container {
 	setImagesVisible(visible: boolean): void {
 		if (this.#showImages === visible) return;
 		this.#showImages = visible;
-		if (this.#lastMessage) {
-			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		} else if (this.#staticTextBlocks !== undefined) {
-			this.#rebuildStaticTextContent();
-		}
-	}
-
-	setToolResultImagesVisible(visible: boolean): void {
-		if (this.#showToolResultImages === visible) return;
-		this.#showToolResultImages = visible;
-		if (this.#lastMessage) {
-			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		} else if (this.#staticTextBlocks !== undefined) {
-			this.#rebuildStaticTextContent();
-		}
-	}
-
-	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
-		if (!toolCallId) return;
-		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
-		for (const key of Array.from(this.#convertedKittyImages?.keys() ?? [])) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#convertedKittyImages?.delete(key);
-			}
-		}
-		for (const key of Array.from(this.#kittyConversionsInFlight ?? [])) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#kittyConversionsInFlight?.delete(key);
-			}
-		}
-		if (this.#convertedKittyImages?.size === 0) this.#convertedKittyImages = undefined;
-		if (validImages.length === 0) {
-			this.#toolImagesByCallId?.delete(toolCallId);
-		} else {
-			const toolImagesByCallId = this.#toolImagesByCallId ?? new Map<string, ImageContent[]>();
-			this.#toolImagesByCallId = toolImagesByCallId;
-			toolImagesByCallId.set(toolCallId, validImages);
-			this.#convertImagesForKitty(validImages.map((image, index) => ({ image, key: `${toolCallId}:${index}` })));
-		}
-		if (this.#toolImagesByCallId?.size === 0) this.#toolImagesByCallId = undefined;
-		if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
 		if (this.#lastMessage) {
 			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		} else if (this.#staticTextBlocks !== undefined) {
@@ -652,14 +674,6 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#renderToolImages(): void {
-		if (!this.#showToolResultImages || !this.#toolImagesByCallId) return;
-		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
-			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
-		);
-		this.#renderImageEntries(entries, true);
-	}
-
 	#appendThinkingExtensions(contentIndex: number, thinkingIndex: number, text: string): void {
 		for (const renderer of this.thinkingRenderers) {
 			try {
@@ -700,7 +714,6 @@ export class AssistantMessageComponent extends Container {
 		for (const content of message.content) {
 			if (content.type === "toolCall" || content.type === "image") return false;
 		}
-		if ((this.#toolImagesByCallId?.size ?? 0) > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		if (errorPresentation.kind === "compact-recovered" || errorPresentation.kind === "interrupted") return false;
 		if (
@@ -716,7 +729,7 @@ export class AssistantMessageComponent extends Container {
 					const content = message.content[item.contentIndex];
 					if (content?.type === "thinking") {
 						const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
-						if (display.text !== item.lastText) return false;
+						if (this.#withParagraphCuts(item.contentIndex, display.text) !== item.lastText) return false;
 					}
 				}
 			}
@@ -749,9 +762,12 @@ export class AssistantMessageComponent extends Container {
 			}
 			let newText: string;
 			if (item.blockType === "text" && content.type === "text") {
-				newText = content.text.trim();
+				newText = this.#withParagraphCuts(item.contentIndex, content.text.trim());
 			} else if (item.blockType === "thinking" && content.type === "thinking") {
-				newText = resolveThinkingDisplay(content, this.proseOnlyThinking).text;
+				newText = this.#withParagraphCuts(
+					item.contentIndex,
+					resolveThinkingDisplay(content, this.proseOnlyThinking).text,
+				);
 			} else {
 				this.#fastPathKey = undefined;
 				this.#fastPathItems = undefined;
@@ -835,7 +851,7 @@ export class AssistantMessageComponent extends Container {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
-				const trimmed = content.text.trim();
+				const trimmed = this.#withParagraphCuts(i, content.text.trim());
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions, 2);
 				this.addChild(md);
@@ -861,10 +877,11 @@ export class AssistantMessageComponent extends Container {
 					this.#thinkingLabel = new Text(theme.fg("muted", "Thinking"), 2, 0);
 					this.addChild(this.#thinkingLabel);
 				}
-				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
+				const displayedText = this.#withParagraphCuts(i, thinkingText);
+				const md = new Markdown(displayedText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.addChild(md);
-				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
+				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: displayedText });
 				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
 				hasRenderedContent = true;
 				thinkingIndex += 1;
@@ -886,7 +903,6 @@ export class AssistantMessageComponent extends Container {
 			this.#stopThinkingAnimation();
 		}
 
-		this.#renderToolImages();
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (errorPresentation.kind === "compact-recovered") {

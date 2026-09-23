@@ -39,7 +39,9 @@ const monitorSchema = type({
 	"cwd?": type("string").describe("start: working directory; defaults to the session directory"),
 	"match?": type("string > 0").describe("start: JS RegExp source; only matching output is reported"),
 	"every?": type("number >= 1").describe("start: poll interval in seconds; omit to stream one long-running process"),
-	"maxEvents?": type("number >= 1").describe("start: events delivered before the monitor stops itself"),
+	"maxEvents?": type("number >= 1").describe(
+		"start: matching output events before the monitor stops itself (terminal status excluded)",
+	),
 	"timeout?": type("number >= 1").describe("start: stop the monitor after this many seconds"),
 	"ids?": type("string[]").describe("stop: monitor ids; omit to stop every running monitor"),
 });
@@ -55,7 +57,7 @@ function describeSnapshotLine(snapshot: MonitorSnapshot): string {
 		`${snapshot.id} [${snapshot.status}]`,
 		snapshot.mode,
 		snapshot.label,
-		`${snapshot.eventCount}/${snapshot.maxEvents} events`,
+		`${snapshot.eventCount} events (limit ${snapshot.maxEvents} outputs)`,
 	];
 	if (snapshot.match !== undefined) parts.push(`match /${snapshot.match}/u`);
 	if (snapshot.everySeconds !== undefined) parts.push(`every ${snapshot.everySeconds}s`);
@@ -79,7 +81,7 @@ function describeStart(snapshot: MonitorSnapshot): string {
 				? `Reporting: each changed output matching /${snapshot.match}/u, re-running every ${snapshot.everySeconds}s.`
 				: `Reporting: each changed output, re-running every ${snapshot.everySeconds}s.`;
 	lines.push(reported);
-	const stops = [`after ${snapshot.maxEvents} events`];
+	const stops = [`after ${snapshot.maxEvents} output events`];
 	if (snapshot.timeoutSeconds !== undefined) stops.push(`after ${snapshot.timeoutSeconds}s`);
 	if (snapshot.mode === "stream") stops.push("on process exit");
 	stops.push('on error, or on `op: "stop"`');
@@ -321,7 +323,7 @@ export const monitorToolRenderer = {
 					const id = uiTheme.fg("muted", snapshot.id);
 					const badge = formatBadge(snapshot.mode, snapshot.status === "running" ? "accent" : "muted", uiTheme);
 					const label = uiTheme.fg("toolOutput", forDisplay(snapshot.label, TRUNCATE_LENGTHS.TITLE));
-					const detail: string[] = [`${snapshot.eventCount}/${snapshot.maxEvents} events`];
+					const detail: string[] = [`${snapshot.eventCount} events (limit ${snapshot.maxEvents} outputs)`];
 					if (snapshot.match !== undefined) detail.push(`/${forDisplay(snapshot.match, TRUNCATE_LENGTHS.SHORT)}/`);
 					if (snapshot.stopReason) detail.push(snapshot.stopReason);
 					const body = [

@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import { adjustHsv, getCustomThemesDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { adjustHsv, colorLuma, getCustomThemesDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { detectColorMode, resolveThemeColors } from "./color";
+import { CANONICAL_BACKGROUND, contrastRatio, liftToContrast, READABILITY_FLOORS } from "./contrast";
 import darkThemeJson from "./dark.json" with { type: "json" };
 import { defaultThemes } from "./defaults";
 import lightThemeJson from "./light.json" with { type: "json" };
@@ -150,6 +151,27 @@ const QUIET_TOKEN_DEFAULTS = {
 	link: "mdLink",
 } as const satisfies Record<string, ThemeColor>;
 
+/**
+ * Raise any colour that misses its readability floor against the canonical
+ * background for the theme's mode. Themes are data — bundled, user-written or
+ * copied from an upstream palette — so the guarantee lives at the one point
+ * every theme passes through rather than in a hundred JSON files. Colours a
+ * terminal owns are left alone: the empty value means "terminal default", and
+ * an ANSI-256 index resolves against the user's own palette, so neither has a
+ * background this process can reason about.
+ */
+function enforceReadabilityFloors(colors: Record<string, ColorValue>): void {
+	const statusLineLuminance = colorLuma(colors.statusLineBg ?? "");
+	const isLight = statusLineLuminance !== undefined && statusLineLuminance > 0.5;
+	const background = isLight ? CANONICAL_BACKGROUND.light : CANONICAL_BACKGROUND.dark;
+	for (const [role, floor] of Object.entries(READABILITY_FLOORS)) {
+		const value = colors[role];
+		if (typeof value !== "string" || !value.startsWith("#")) continue;
+		if (contrastRatio(value, background) >= floor) continue;
+		colors[role] = liftToContrast(value, background, floor);
+	}
+}
+
 export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Theme {
 	const { mode, colorBlindMode } = options;
 	const colorMode = mode ?? detectColorMode();
@@ -160,6 +182,8 @@ export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = 
 			backfillView[token] = backfillView[fallback];
 		}
 	}
+
+	enforceReadabilityFloors(resolvedColors);
 
 	if (colorBlindMode) {
 		const added = resolvedColors.toolDiffAdded;
