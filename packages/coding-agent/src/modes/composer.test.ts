@@ -441,7 +441,10 @@ test("the welcome scene holds the composer against the bottom edge as startup ro
 	}
 });
 
-test("a tall live card settling keeps the real composer on the bottom edge", () => {
+// A card taller than the screen scrolls everything above it into history.
+// Settling to one row must not drop it to the bottom edge under a screen of
+// blank rows: those rows would later scroll into history as a gap.
+test("a tall live card settling stays directly under its history", () => {
 	const { composer, terminal, scheduler, transcript } = createHarness(100, 30, false);
 	try {
 		transcript.addChild(new StaticBlock(["> hello there"]));
@@ -452,9 +455,11 @@ test("a tall live card settling keeps the real composer on the bottom edge", () 
 
 		card.settled = true;
 		render(composer, scheduler);
-		expect(terminal.screen()).toHaveLength(terminal.rows);
 		expectTranscriptAbovePrompt(terminal);
-		expect(countContaining(terminal.tape(), "settled card")).toBe(1);
+		const tape = terminal.tape();
+		expect(countContaining(tape, "settled card")).toBe(1);
+		const hello = tape.indexOf("> hello there");
+		expect(tape.slice(hello, hello + 3)).toEqual(["> hello there", "", "settled card"]);
 	} finally {
 		composer.stop();
 	}

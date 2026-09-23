@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A bottom-anchored frame that shrinks stays directly under the committed history above it instead of dropping to the bottom edge, so no blank band opens between them on screen or later in scrollback.
+
 ## [18.5.0] - 2026-09-23
 
 ### Breaking Changes

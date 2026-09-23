@@ -63,6 +63,69 @@ test("Escape surfaces a streaming abort rejection", async () => {
 	expect(errors).toEqual(["Failed to abort session: abort transaction failed"]);
 });
 
+test("focused-agent gestures: Esc returns to main, ←← hops to the parent, →→ opens the agent's subagents", async () => {
+	const navigation: string[] = [];
+	const inputListeners: Array<(data: string) => { consume?: boolean } | undefined> = [];
+	const editor = {
+		onEscape: undefined as (() => void) | undefined,
+		getText: () => "",
+		setText: () => {},
+		setActionKeys: () => {},
+		clearCustomKeyHandlers: () => {},
+		setCustomKeyHandler: () => {},
+		composerChips: () => [],
+		pasteText: () => {},
+	};
+	const context = {
+		editor,
+		session: { isStreaming: false, isBashRunning: false, isEvalRunning: false, extensionRunner: undefined },
+		focusedAgentId: "Side-1",
+		lastLeftTapTime: 0,
+		lastRightTapTime: 0,
+		mcpTestEscapeHandlers: new Set<() => void>(),
+		hasActiveSideQuestion: () => false,
+		keybindings: { getKeys: () => [], matches: () => false },
+		ui: {
+			addInputListener: (listener: (data: string) => { consume?: boolean } | undefined) =>
+				inputListeners.push(listener),
+			addStartListener: () => {},
+			hasOverlay: () => false,
+			getFocused: () => editor,
+			requestRender: () => {},
+			terminal: { write: () => {} },
+		},
+		unfocusSession: async () => {
+			navigation.push("main");
+		},
+		focusParentSession: async () => {
+			navigation.push("parent");
+		},
+		showAgentsView: async (scope: string) => {
+			navigation.push(`agents:${scope}`);
+		},
+		showStatus: () => {},
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	new InputController(context).setupKeyHandlers();
+	let now = 10_000;
+	vi.spyOn(Date, "now").mockImplementation(() => now);
+	const doubleTap = (data: string) => {
+		for (let tap = 0; tap < 2; tap++) {
+			now += 100;
+			for (const listener of inputListeners) {
+				if (listener(data)?.consume) break;
+			}
+		}
+	};
+
+	editor.onEscape?.();
+	doubleTap("\x1b[D");
+	now += 1_000;
+	doubleTap("\x1b[C");
+
+	expect(navigation).toEqual(["main", "parent", "agents:current"]);
+});
+
 function submitHarness(options: { fileSlashCommands?: string[]; promptTemplates?: string[] } = {}) {
 	vi.spyOn(commandUsage, "recordSlashCommandUsage").mockImplementation(() => {});
 	const statuses: string[] = [];
@@ -214,7 +277,7 @@ test("/model retargets the focused agent while other commands still bounce to th
 	await harness.submit("/compact");
 
 	expect(harness.modelSelectors).toBe(1);
-	expect(harness.statuses).toEqual(["Commands run in the main session — press ←← to return first"]);
+	expect(harness.statuses).toEqual(["Commands run in the main session — press Esc to return first"]);
 	expect(harness.prompted).toEqual([]);
 });
 

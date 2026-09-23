@@ -91,3 +91,60 @@ test("registry-driven unfocus restores the main subscription and surfaces attach
 		controller.dispose();
 	}
 });
+
+test("parent hops walk a side agent's subagent up to the side agent, then back to main", async () => {
+	const sessionFor = (id: string) =>
+		({ id, isStreaming: false, subscribe: () => () => {} }) as unknown as AgentSession;
+	const mainSession = sessionFor(MAIN_AGENT_ID);
+	const sessions: Record<string, AgentSession> = {
+		"Side-1": sessionFor("Side-1"),
+		"Side-1-worker": sessionFor("Side-1-worker"),
+	};
+	const viewed: AgentSession[] = [];
+	const context = {
+		session: mainSession,
+		unsubscribe: undefined,
+		clearTransientSessionUi: () => {},
+		eventController: { resetTranscriptAnchors: () => 1, dispatchEvent: async () => {} },
+		statusLine: { setSession: (session: AgentSession) => viewed.push(session) },
+		renderInitialMessages: async () => {},
+		updateEditorBorderColor: () => {},
+		ui: { requestRender: () => {} },
+		showStatus: () => {},
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	const registry = new AgentRegistry();
+	registry.register({ id: MAIN_AGENT_ID, label: "main", kind: "main", session: mainSession });
+	registry.register({
+		id: "Side-1",
+		label: "side",
+		kind: "side",
+		parentId: MAIN_AGENT_ID,
+		status: "idle",
+		session: sessions["Side-1"],
+	});
+	registry.register({
+		id: "Side-1-worker",
+		label: "worker",
+		kind: "sub",
+		parentId: "Side-1",
+		status: "running",
+		session: sessions["Side-1-worker"],
+	});
+	const lifecycle = {
+		ensureLive: async (id: string) => sessions[id],
+		holdForFocus: () => {},
+	} as unknown as AgentLifecycleManager;
+	const controller = new SessionFocusController(context, registry, () => lifecycle);
+	try {
+		await controller.focusAgent("Side-1-worker");
+		await controller.focusParent();
+		expect(controller.focusedAgentId).toBe("Side-1");
+
+		await controller.focusParent();
+		expect(controller.focusedAgentId).toBeUndefined();
+		expect(viewed).toEqual([sessions["Side-1-worker"], sessions["Side-1"], mainSession]);
+	} finally {
+		controller.dispose();
+	}
+});

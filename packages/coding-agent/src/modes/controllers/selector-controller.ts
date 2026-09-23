@@ -97,6 +97,7 @@ import type { AgentsViewPersistentState } from "../components/agents-view/agents
 import {
 	type AgentsViewScope,
 	buildAgentsViewIndex,
+	getRecordSessionFile,
 	getRecordTitle,
 	reconcileAgentsViewRecords,
 } from "../components/agents-view/agents-view-state";
@@ -416,10 +417,15 @@ export class SelectorController {
 
 			if (currentSessionFile) await registerPersistedSubagents(registry, currentSessionFile);
 			const index = buildAgentsViewIndex(reconcileAgentsViewRecords(registry.list(), sessions));
-			const identity = `file:${path.resolve(currentSessionFile)}`;
-			const root = index.byKey.get(identity);
+			// "Current" is whatever the user is looking at: a focused agent roots the view at its own subtree.
+			const focusedAgentId = this.ctx.focusedAgentId;
+			const root = index.byKey.get(
+				focusedAgentId ? `active:${focusedAgentId}` : `file:${path.resolve(currentSessionFile)}`,
+			);
 			if (root && (index.childrenByParent.get(root)?.length ?? 0) > 0) {
-				initialScopeIdentity = identity;
+				// Scope by transcript path so the view can scan the root's artifact tree for nested agents.
+				const rootFile = getRecordSessionFile(root);
+				initialScopeIdentity = rootFile ? `file:${path.resolve(rootFile)}` : root.identity;
 				initialScopeTitle = getRecordTitle(root);
 			} else {
 				this.ctx.showStatus("No subagents in this session");

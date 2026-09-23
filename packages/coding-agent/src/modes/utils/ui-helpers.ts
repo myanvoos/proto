@@ -316,7 +316,15 @@ export class UiHelpers {
 
 		const styleFn = useDim ? (t: string) => theme.fg("dim", t) : undefined;
 
-		if (last && secondLast && last === this.ctx.lastStatusText && secondLast === this.ctx.lastStatusSpacer) {
+		// Coalesce into the previous status only while it is still live: once committed to native
+		// scrollback its rows can no longer change, so an in-place update would never reach the screen.
+		if (
+			last &&
+			secondLast &&
+			last === this.ctx.lastStatusText &&
+			secondLast === this.ctx.lastStatusSpacer &&
+			this.ctx.chatContainer.canRemoveBlock(last)
+		) {
 			this.ctx.lastStatusText.setStyleFn(styleFn);
 			this.ctx.lastStatusText.setText(message);
 			this.ctx.ui.requestRender();

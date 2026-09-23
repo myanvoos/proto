@@ -232,7 +232,7 @@ test("a frame that scrolls committed history keeps it when the host grew before 
 	tui.stop();
 });
 
-test("bottom anchored viewport grows and shrinks without archiving stale mutable rows", () => {
+test("bottom anchored viewport grows and shrinks without archiving stale mutable rows or leaving a gap under history", () => {
 	const { terminal, scheduler, provider, tui } = makeTui();
 	provider.plan = { history: { id: 1, rows: ["history"] }, viewport: ["old-a", "old-b"], viewportAnchor: "bottom" };
 	tui.start({ deferInput: true });
@@ -244,14 +244,17 @@ test("bottom anchored viewport grows and shrinks without archiving stale mutable
 	expect(terminal.screenRows().slice(-4)).toEqual(["grow-a", "grow-b", "grow-c", "grow-d"]);
 	expect(terminal.allNormalRows().some(row => row === "old-a" || row === "old-b")).toBe(false);
 
+	// The shrunken frame stays directly under the history instead of dropping to
+	// the bottom edge and opening a blank band between them.
 	provider.plan = { viewport: ["small"], viewportAnchor: "bottom" };
 	tui.requestRender();
 	scheduler.flush();
-	expect(terminal.screenRows().at(-1)).toBe("small");
-	expect(terminal.screenRows().some(row => row.startsWith("grow-"))).toBe(false);
+	const shrunk = terminal.screenRows();
+	expect(shrunk[shrunk.indexOf("history") + 1]).toBe("small");
+	expect(shrunk.some(row => row.startsWith("grow-"))).toBe(false);
 	expect(countRow(terminal.allNormalRows(), "history")).toBe(1);
 
-	// Retirement fills the blank space created by the shrink before it scrolls
+	// Retirement fills the blank space below the frame before it scrolls
 	// retained visible history away.
 	provider.plan = {
 		history: { id: 2, rows: ["new-history-1", "new-history-2"] },
@@ -260,8 +263,10 @@ test("bottom anchored viewport grows and shrinks without archiving stale mutable
 	};
 	tui.requestRender();
 	scheduler.flush();
-	expect(terminal.screenRows()).toContain("history");
-	expect(terminal.screenRows().slice(-3)).toEqual(["new-history-1", "new-history-2", "small"]);
+	const retired = terminal.screenRows();
+	const start = retired.indexOf("history");
+	expect(start).toBeGreaterThanOrEqual(0);
+	expect(retired.slice(start, start + 4)).toEqual(["history", "new-history-1", "new-history-2", "small"]);
 	tui.stop();
 });
 
@@ -439,7 +444,13 @@ for (const [columns, rows] of [
 				expect(terminal.allNormalRows().filter(row => /[\u4e00-\u4eff]/u.test(row))).toEqual(expected);
 				expect(terminal.allNormalRows().slice(0, terminal.vt.buffer.normal.baseY)).not.toContain("L");
 				if (viewport.length > 0) {
-					expect(terminal.screenRows().slice(-viewport.length)).toEqual(viewport.map(() => "L"));
+					// The frame is the last content on screen, directly under the newest history.
+					const screen = terminal.screenRows();
+					let end = screen.length;
+					while (end > 0 && screen[end - 1] === "") end--;
+					const top = end - viewport.length;
+					expect(screen.slice(top, end)).toEqual(viewport.map(() => "L"));
+					if (top > 0) expect(screen[top - 1]).toBe(history);
 				}
 				terminal.writes.length = 0;
 			}

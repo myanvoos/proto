@@ -251,8 +251,6 @@ export class InputController {
 		if (!this.#rightTapListenerInstalled) {
 			this.#rightTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
-				if (this.ctx.focusedAgentId) return undefined;
-
 				if (this.ctx.ui.hasOverlay()) return undefined;
 				if (!matchesKey(data, "right")) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
@@ -338,7 +336,7 @@ export class InputController {
 					this.ctx.editor.setText("");
 					this.ctx.ui.requestRender();
 				} else {
-					this.#returnFocusedToAgentBrowser();
+					this.#navigateFocus(this.ctx.unfocusSession());
 				}
 				return;
 			}
@@ -512,12 +510,14 @@ export class InputController {
 
 	#handleFocusedLeftTap(): void {
 		if (this.#detectDoubleTap("left")) {
-			this.#returnFocusedToAgentBrowser();
+			this.#navigateFocus(this.ctx.focusParentSession());
 		}
 	}
 
-	#returnFocusedToAgentBrowser(): void {
-		void this.ctx.showAgentsView("current").then(() => this.ctx.unfocusSession());
+	#navigateFocus(navigation: Promise<void>): void {
+		void navigation.catch(error => {
+			this.ctx.showError(`Failed to switch agent view: ${error instanceof Error ? error.message : String(error)}`);
+		});
 	}
 
 	#detectDoubleTap(direction: "left" | "right"): boolean {
@@ -879,7 +879,7 @@ export class InputController {
 				this.ctx.showModelSelector();
 				return;
 			}
-			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
+			this.ctx.showStatus("Commands run in the main session — press Esc to return first");
 			return;
 		}
 		this.ctx.editor.clearDraft(text);
@@ -1629,7 +1629,7 @@ export class InputController {
 
 	cycleThinkingLevel(): void {
 		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
+			this.ctx.showStatus("Model/thinking apply to the main session — press Esc to return first");
 			return;
 		}
 		const newLevel = this.ctx.session.cycleThinkingLevel();
@@ -1643,7 +1643,7 @@ export class InputController {
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
 		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
+			this.ctx.showStatus("Model/thinking apply to the main session — press Esc to return first");
 			return;
 		}
 		try {

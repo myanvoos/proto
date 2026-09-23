@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- While viewing an agent (side agent or subagent), `Esc` returns straight to the main session and `←←` hops to its parent agent instead of both reopening the agents view; `→→` opens that agent's own subagents
+
+### Fixed
+
+- A status message that follows one already scrolled into terminal history now shows up instead of silently rewriting the old row (e.g. "No subagents in this session" or "Commands run in the main session" while viewing an agent)
+- No more blank bands between blocks while the agent works: when a tool card or reply gets shorter (a command settling into its outline, a card taller than the screen finishing), the input box moves up instead of leaving empty rows between the transcript and the live output, and those rows no longer end up in scrollback
+
 ## [18.5.0] - 2026-09-23
 
 ### Added

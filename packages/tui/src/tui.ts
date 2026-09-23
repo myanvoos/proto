@@ -1057,6 +1057,10 @@ export class TUI extends Container {
 	// frame, and the next shrink pushes that band into scrollback as a gap. The
 	// frame grows downward from here and rejoins the bottom once it reaches it.
 	#viewportFloatTop: number | undefined;
+	// Whether a history batch was committed since the last destructive reset,
+	// so the rows directly above the viewport top hold history, not the blank
+	// screen a fresh start paints below.
+	#historyCommitted = false;
 	// Whether the resize transaction blanked the live viewport before the host
 	// moved anything. When it did, only committed history and blanks can have
 	// crossed the top edge, so the anchor shift alone classifies the rows above
@@ -1130,6 +1134,7 @@ export class TUI extends Container {
 		this.#providerPreparedRows = [];
 		this.#providerHistoryBottom = 0;
 		this.#viewportFloatTop = undefined;
+		this.#historyCommitted = false;
 		this.requestRender(true);
 	}
 
@@ -2907,12 +2912,23 @@ export class TUI extends Container {
 		// A floating bottom-anchored viewport moves down only by the history it
 		// appends and keeps the blank rows below it until it reaches the bottom.
 		const floatTop = viewportAnchor === "bottom" && !destructiveReset ? this.#viewportFloatTop : undefined;
+		// A frame sitting directly below committed history stays there when it
+		// shrinks: dropping to the bottom edge would open a blank band between the
+		// history and the frame. It floats instead, leaving the blank rows below it,
+		// and grows back downward until it reaches the bottom.
+		const hugTop =
+			floatTop ??
+			(viewportAnchor === "bottom" &&
+			!destructiveReset &&
+			geometryStable &&
+			this.#historyCommitted &&
+			oldHistoryBottom === oldTop &&
+			oldTop < height
+				? oldTop
+				: undefined);
 		const newTop =
 			viewportAnchor === "bottom"
-				? Math.max(
-						0,
-						floatTop === undefined ? height - rows : Math.min(height - rows, floatTop + historyRows.length),
-					)
+				? Math.max(0, hugTop === undefined ? height - rows : Math.min(height - rows, hugTop + historyRows.length))
 				: Math.max(0, Math.min(oldTop + historyRows.length, height - rows));
 		// Rows above `oldHistoryBottom` are committed history. A bottom-anchored
 		// viewport that needs more rows than the band below them can only keep
@@ -3148,6 +3164,8 @@ export class TUI extends Container {
 		if (historyRows.length > 0 || destructiveReset) this.#archivedLiveRows = 0;
 		this.#providerViewportTop = mutableTop;
 		this.#viewportFloatTop = floatTop !== undefined && newTop < height - rows ? newTop : undefined;
+		this.#historyCommitted =
+			(this.#historyCommitted && !destructiveReset) || historyRows.length > 0 || replayViewportRows > 0;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
 		this.#resizeBurstGrew = false;

@@ -34,7 +34,7 @@ export class SessionFocusController {
 		this.#attachedSession = session;
 		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
 		await this.#attach(session);
-		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent`);
+		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent, →→ opens its subagents`);
 	}
 
 	async focusParent(): Promise<void> {
