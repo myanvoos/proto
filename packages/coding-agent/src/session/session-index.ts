@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS session_scan (
 );
 `;
 
-const SCAN_PAYLOAD_VERSION = 1;
+// 2: scan payloads cap accumulated search text; v1 rows carry full-transcript copies.
+const SCAN_PAYLOAD_VERSION = 2;
 
 const SCAN_ROW_LIMIT = 4096;
 
