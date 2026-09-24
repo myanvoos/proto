@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { forEachJsonlRecord, getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
@@ -62,6 +63,9 @@ const SESSION_SCAN_CHUNK_BYTES = 64 * 1024;
 const SESSION_SEARCH_TEXT_MAX_CHARS = 16_384;
 
 const SESSION_SCAN_BOUNDARY_BYTES = 512;
+const SESSION_ARCHIVE_MAX_ENCODED_BYTES = 1_048_576;
+const SESSION_ARCHIVE_MAX_DECODED_BYTES = 8 * 1_048_576;
+const SESSION_ARCHIVE_MAX_RECORDS = 20_000;
 
 interface SessionScanAccumulator {
 	messageCount: number;
@@ -468,6 +472,62 @@ async function resumableScanState(
 	return boundaryHash === cached.boundaryHash ? cached : undefined;
 }
 
+async function scanArchivedMessages(
+	file: string,
+	storage: SessionStorage,
+): Promise<SessionScanAccumulator | undefined> {
+	const sessionId = sessionIdFromSessionPath(file);
+	if (!sessionId) return undefined;
+	const archivePath = `${file}.archive.jsonl.gz`;
+	try {
+		const stat = storage.statSync(archivePath);
+		if (stat.size <= 0 || stat.size > SESSION_ARCHIVE_MAX_ENCODED_BYTES) return undefined;
+		const encoded = (await storage.readText(archivePath)).trim();
+		if (encoded.length === 0 || encoded.length > SESSION_ARCHIVE_MAX_ENCODED_BYTES) return undefined;
+		const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
+			maxOutputLength: SESSION_ARCHIVE_MAX_DECODED_BYTES,
+		});
+		const archive: unknown = JSON.parse(decoded.toString("utf8"));
+		if (typeof archive !== "object" || archive === null) return undefined;
+		const candidate = archive as { version?: unknown; sessionId?: unknown; records?: unknown };
+		if (candidate.version !== 1 || candidate.sessionId !== sessionId || !Array.isArray(candidate.records))
+			return undefined;
+		if (candidate.records.length > SESSION_ARCHIVE_MAX_RECORDS) return undefined;
+		const acc: SessionScanAccumulator = {
+			messageCount: 0,
+			assistantTurns: 0,
+			firstMessage: "",
+			searchText: "",
+			hasMessageText: false,
+			shortSummary: undefined,
+		};
+		for (const record of candidate.records) {
+			if (typeof record !== "object" || record === null) return undefined;
+			const row = record as { id?: unknown; line?: unknown };
+			if (typeof row.id !== "string" || typeof row.line !== "string") return undefined;
+			const entry: unknown = JSON.parse(row.line);
+			if (typeof entry !== "object" || entry === null || !("id" in entry) || entry.id !== row.id) return undefined;
+			foldSessionEntry(acc, entry as Record<string, unknown>);
+		}
+		return acc;
+	} catch {
+		return undefined;
+	}
+}
+
+function mergeArchivedMessages(active: SessionScanAccumulator, archived: SessionScanAccumulator): void {
+	active.messageCount += archived.messageCount;
+	active.assistantTurns += archived.assistantTurns;
+	if (!archived.hasMessageText) return;
+	active.searchText = `${archived.searchText}${active.hasMessageText ? ` ${active.searchText}` : ""}`.slice(
+		0,
+		SESSION_SEARCH_TEXT_MAX_CHARS,
+	);
+	active.hasMessageText = true;
+	if (archived.firstMessage) active.firstMessage = archived.firstMessage;
+	active.shortSummary ??= archived.shortSummary;
+}
+
 async function scanSessionFile(file: string, storage: SessionStorage): Promise<SessionInfo | undefined> {
 	let stat: SessionStorageStat;
 	try {
@@ -549,6 +609,13 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 			}
 			header = parsedHeader;
 			acc.firstMessage ||= extractFirstDisplayMessage(headerContent || prefix) ?? firstDisplayFallback ?? "";
+		}
+
+		// Archives are optional legacy metadata; only inspect them for otherwise unnamed, nearly
+		// empty active logs. Healthy sessions retain the existing zero-extra-I/O scan path.
+		if (!header.title && !acc.shortSummary && !acc.hasMessageText && acc.messageCount <= 2) {
+			const archived = await scanArchivedMessages(file, storage);
+			if (archived) mergeArchivedMessages(acc, archived);
 		}
 
 		const info: SessionInfo = {

@@ -33,6 +33,10 @@
 - Blob store gains a conservative mark-and-sweep (24 h mtime grace, idle maintenance) so image blobs orphaned by compaction, forks, or session deletion are reclaimed; the sweep treats compaction-archive sidecars as reference roots (fail-closed on malformed archives) and batches its final reference rechecks
 - Session managers dispose superseded oversized-entry spill directories on session replacement instead of retaining them for the process lifetime; captured rollback states own private copies so restore fidelity is unchanged
 - Session-exit and orchestrator tombstone scans read retained entry metadata directly instead of rehydrating the full spilled history on every check
+- Branching a compacted session now writes the complete kept transcript into the new branch file instead of silently omitting inherited archived rows on reopen
+- Compaction-archive sidecars with duplicate or active-colliding record ids are rejected at load (fail closed) instead of silently erasing rows on a later rewrite
+- Blob GC coordinates with in-flight blob writes via per-hash claims so a concurrent publish can no longer be unlinked mid-sweep, and oversized archive sidecars (>16 MiB) are skipped conservatively instead of blocking the sweep
+- Unnamed compacted sessions with no active conversational rows still surface in recent-session discovery via capped archive-sidecar metadata
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files

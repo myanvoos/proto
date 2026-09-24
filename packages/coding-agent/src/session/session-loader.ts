@@ -115,6 +115,7 @@ export async function loadSessionArchive(
 		if (candidate.sessionId !== sessionId) return undefined;
 		throw new Error(`Session archive is invalid: ${archivePath}`);
 	}
+	const recordIds = new Set<string>();
 	for (const record of candidate.records) {
 		if (
 			typeof record !== "object" ||
@@ -125,8 +126,21 @@ export async function loadSessionArchive(
 		) {
 			throw new Error(`Session archive is invalid: ${archivePath}`);
 		}
+		if (recordIds.has(record.id)) throw new Error(`Session archive has duplicate entry IDs: ${archivePath}`);
+		recordIds.add(record.id);
 	}
 	return candidate as SessionArchive;
+}
+
+function archiveDoesNotCollide(archive: SessionArchive, activeIds: ReadonlySet<string>): boolean {
+	return archive.records.every(record => !activeIds.has(record.id));
+}
+
+function warnInvalidArchive(filePath: string, error: unknown): void {
+	logger.warn("Ignoring invalid session archive", {
+		file: sessionArchivePath(filePath),
+		error: error instanceof Error ? error.message : String(error),
+	});
 }
 
 function parseArchivedEntry(record: SessionArchiveRecord): FileEntry {
@@ -434,10 +448,36 @@ async function loadWithKnownSize(
 	if (loaded.invalidHeader && !options.preserveInvalidHeader) return { ...loaded, entries: [] };
 	const header = loaded.entries[0];
 	if (header?.type !== "session" || typeof header.id !== "string") return loaded;
-	const archive = await loadSessionArchive(filePath, storage, header.id);
+	let archive: SessionArchive | undefined;
+	try {
+		archive = await loadSessionArchive(filePath, storage, header.id);
+		if (
+			archive &&
+			!archiveDoesNotCollide(
+				archive,
+				new Set(
+					loaded.entries.flatMap(entry =>
+						typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string"
+							? [entry.id]
+							: [],
+					),
+				),
+			)
+		) {
+			throw new Error("Session archive entry ID collides with the active transcript");
+		}
+	} catch (error) {
+		warnInvalidArchive(filePath, error);
+		return loaded;
+	}
 	if (!archive || archive.records.length === 0) return loaded;
-	const hydrated = hydrateArchivedEntries(loaded.entries, archive.records);
-	return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids };
+	try {
+		const hydrated = hydrateArchivedEntries(loaded.entries, archive.records);
+		return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids };
+	} catch (error) {
+		warnInvalidArchive(filePath, error);
+		return loaded;
+	}
 }
 
 export async function loadSessionFile(
@@ -487,7 +527,22 @@ export async function visitEntriesFromFile(
 			{ maxRecords: 1 },
 		);
 		if (!isValidSessionHeader(firstEntry)) return;
-		const archive = await loadSessionArchive(filePath, storage, firstEntry.id);
+		let archive: SessionArchive | undefined;
+		try {
+			archive = await loadSessionArchive(filePath, storage, firstEntry.id);
+			if (archive?.records.length) {
+				const activeIds = new Set<string>();
+				await visitEntriesFromFileStream(filePath, entry => {
+					if (typeof entry.id === "string") activeIds.add(entry.id);
+				});
+				if (!archiveDoesNotCollide(archive, activeIds)) {
+					throw new Error("Session archive entry ID collides with the active transcript");
+				}
+			}
+		} catch (error) {
+			warnInvalidArchive(filePath, error);
+			archive = undefined;
+		}
 		if (!archive || archive.records.length === 0) {
 			let sawFirstEntry = false;
 			await visitEntriesFromFileStream(filePath, entry => {

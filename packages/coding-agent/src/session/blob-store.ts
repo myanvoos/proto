@@ -24,6 +24,35 @@ export interface BlobPutResult {
 export type BlobReader = (hash: string) => Promise<Buffer | null>;
 
 const inFlightBlobWrites = new Set<string>();
+const blobClaims = new Map<string, { locked: boolean; waiters: Array<() => void> }>();
+
+function tryClaimBlob(key: string): (() => void) | null {
+	let claim = blobClaims.get(key);
+	if (claim?.locked) return null;
+	if (!claim) {
+		claim = { locked: true, waiters: [] };
+		blobClaims.set(key, claim);
+	}
+	return () => releaseBlobClaim(key, claim!);
+}
+
+async function claimBlob(key: string): Promise<() => void> {
+	const release = tryClaimBlob(key);
+	if (release) return release;
+	const claim = blobClaims.get(key)!;
+	await new Promise<void>(resolve => claim.waiters.push(resolve));
+	return () => releaseBlobClaim(key, claim);
+}
+
+function releaseBlobClaim(key: string, claim: { locked: boolean; waiters: Array<() => void> }): void {
+	const next = claim.waiters.shift();
+	if (next) {
+		next();
+		return;
+	}
+	claim.locked = false;
+	if (blobClaims.get(key) === claim) blobClaims.delete(key);
+}
 
 export interface BlobSweepResult {
 	marked: number;
@@ -33,6 +62,7 @@ export interface BlobSweepResult {
 }
 
 const DEFAULT_BLOB_GRACE_MS = 24 * 60 * 60 * 1000;
+const MAX_ARCHIVE_FILE_BYTES = 16 * 1024 * 1024;
 
 async function collectBlobReferences(sessionsDir: string): Promise<Set<string> | null> {
 	const references = new Set<string>();
@@ -49,10 +79,20 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 				}
 				if (!entry.isFile()) continue;
 				if (entry.name.endsWith(".archive.jsonl.gz")) {
-					const encoded = (await fsp.readFile(entryPath, "utf8")).trim();
+					const archiveStat = await fsp.stat(entryPath);
+					if (!archiveStat.isFile() || archiveStat.size > MAX_ARCHIVE_FILE_BYTES) {
+						logger.warn("Blob sweep skipped because a session archive exceeds the scan limit", {
+							archivePath: entryPath,
+							size: archiveStat.size,
+							limit: MAX_ARCHIVE_FILE_BYTES,
+						});
+						return null;
+					}
+					const encoded = (await fsp.readFile(entryPath)).toString("utf8").trim();
 					let archive: unknown;
 					try {
-						archive = JSON.parse(gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"));
+						const decoded = gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
+						archive = JSON.parse(decoded);
 					} catch {
 						return null;
 					}
@@ -174,20 +214,36 @@ export async function sweepUnreferencedBlobs(
 				break;
 			}
 			for (const candidate of batch) {
-				if (inFlightBlobWrites.has(candidate.path) || currentReferences.has(candidate.name)) {
+				const release = tryClaimBlob(candidate.path);
+				if (!release) {
 					keptYoung++;
 					continue;
 				}
 				try {
-					const current = await fsp.stat(candidate.path);
-					if (!current.isFile() || current.mtimeMs > cutoff) {
+					try {
+						const current = await fsp.stat(candidate.path);
+						if (!current.isFile() || current.mtimeMs > cutoff) {
+							keptYoung++;
+							continue;
+						}
+					} catch (error) {
+						if (!isEnoent(error)) throw error;
+						continue;
+					}
+					const latestReferences = await collectBlobReferences(sessionsDir);
+					if (!latestReferences) {
+						keptYoung++;
+						aborted = true;
+						continue;
+					}
+					if (inFlightBlobWrites.has(candidate.path) || latestReferences.has(candidate.name)) {
 						keptYoung++;
 						continue;
 					}
 					await fsp.unlink(candidate.path);
 					removed++;
-				} catch (error) {
-					if (!isEnoent(error)) throw error;
+				} finally {
+					release();
 				}
 			}
 		}
@@ -312,6 +368,7 @@ export class BlobStore {
 
 	async put(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
 		const result = createBlobPutResult(this.dir, data, options);
+		const release = await claimBlob(result.path);
 		inFlightBlobWrites.add(result.path);
 		try {
 			await writeBlobAtomically(result.path, data);
@@ -319,6 +376,7 @@ export class BlobStore {
 			return result;
 		} finally {
 			inFlightBlobWrites.delete(result.path);
+			release();
 		}
 	}
 

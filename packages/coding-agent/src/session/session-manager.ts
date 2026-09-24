@@ -3137,6 +3137,8 @@ export class SessionManager {
 		}
 
 		this.#header = header;
+		// The branch owns a new transcript without the source archive sidecar; all kept entries are hydrated.
+		this.#archivedEntryIds.clear();
 		this.#replaceEntries([...entriesToKeep, ...labels]);
 		this.#sessionId = newSessionId;
 		this.#sessionName = header.title;
