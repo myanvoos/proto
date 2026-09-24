@@ -40,6 +40,9 @@
 - Blob GC rechecks candidate identity/age after its final reference scan (closing a synchronous-publication race) and bounds archive decompression (16 MiB decoded, 100k records) so a compressed-bomb sidecar fails closed instead of stalling GC
 - Streamed large-session loading validates archive sidecars up front and isolates their failures, so a corrupted sidecar no longer aborts resume of a valid active transcript
 - Branching an archived session no longer risks corrupting the source file if entry retention fails mid-branch (state snapshot/restore around the transition)
+- An incomplete blob-GC reference scan now aborts the entire sweep instead of permitting later candidates to be deleted, and the final validation-to-unlink window is non-yielding so synchronous blob publication cannot race deletion
+- Archive records parse exactly once per load (validated entries reused for hydration and streamed visitation) instead of parsing twice
+- Branch rollback snapshots now cover force-file and artifact-manager state, and restoration failures no longer mask the original branch error
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files

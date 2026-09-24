@@ -577,6 +577,9 @@ export interface SessionManagerStateSnapshot {
 	header: SessionHeader;
 	entries: SessionEntry[];
 	archivedEntryIds: string[];
+	forceFileCreation: boolean;
+	artifactManager: ArtifactManager | null;
+	artifactManagerSessionFile: string | null;
 	rawEntryFiles: Array<readonly [string, RawEntryFile]>;
 	rawEntryDirectory: string | undefined;
 	rawEntryDirectoryContents: Array<readonly [string, Uint8Array]>;
@@ -1168,6 +1171,8 @@ export class SessionManager {
 		this.#disposeRawEntryDirectory();
 		this.#clearRawEntryRetention();
 		this.#entries = [...entries];
+		for (const [id, file] of rawEntryFiles) this.#rawEntryFiles.set(id, { ...file });
+		this.#index.rebuild(this.#entries);
 		if (directoryContents.length > 0) {
 			const targetDirectory = this.#ensureRawEntryDirectory();
 			for (const [relativePath, bytes] of directoryContents) {
@@ -1176,8 +1181,6 @@ export class SessionManager {
 				fs.writeFileSync(target, bytes);
 			}
 		}
-		for (const [id, file] of rawEntryFiles) this.#rawEntryFiles.set(id, { ...file });
-		this.#index.rebuild(this.#entries);
 	}
 
 	#lineFor(entry: FileEntry): string {
@@ -1701,6 +1704,9 @@ export class SessionManager {
 			header: structuredClone(this.#header),
 			entries: [...this.#entries],
 			archivedEntryIds: [...this.#archivedEntryIds],
+			forceFileCreation: this.#forceFileCreation,
+			artifactManager: this.#artifactManager,
+			artifactManagerSessionFile: this.#artifactManagerSessionFile,
 			rawEntryFiles: [...this.#rawEntryFiles].map(([id, file]) => [id, { ...file }]),
 			rawEntryDirectory: this.#rawEntryDirectory,
 			rawEntryDirectoryContents: this.#captureRawEntryDirectoryContents(),
@@ -1712,6 +1718,8 @@ export class SessionManager {
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
 		clone.#suppressBreadcrumb = true;
 		clone.restoreState(this.captureState());
+		clone.#artifactManager = null;
+		clone.#artifactManagerSessionFile = null;
 		if (persist !== this.#persist) clone.#replaceEntries(this.getEntries());
 		if (!persist) {
 			clone.#sessionFile = undefined;
@@ -1734,21 +1742,21 @@ export class SessionManager {
 		this.#expectedDiskSize = snapshot.expectedDiskSize;
 		this.#fileIsCurrent = snapshot.onDisk;
 		this.#rewriteRequired = snapshot.needsRewrite;
-		this.#forceFileCreation = snapshot.onDisk;
+		this.#forceFileCreation = snapshot.forceFileCreation;
 		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
 		this.#header = snapshot.header;
-		this.#sessionId = snapshot.header.id;
-		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectoryContents);
-		this.#archivedEntryIds = new Set(snapshot.archivedEntryIds ?? []);
+		this.#sessionId = snapshot.sessionId;
+		this.#archivedEntryIds = new Set(snapshot.archivedEntryIds);
 		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
 		this.#titleUpdatedAt = snapshot.titleUpdatedAt;
 		this.#hasTitleSlot = snapshot.hasTitleSlot;
-		this.#artifactManager = null;
-		this.#artifactManagerSessionFile = null;
+		this.#artifactManager = snapshot.artifactManager;
+		this.#artifactManagerSessionFile = snapshot.artifactManagerSessionFile;
 		this.#adoptedArtifactManager = null;
+		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectoryContents);
 
 		if (this.#sessionFile) this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 	}
@@ -3142,7 +3150,14 @@ export class SessionManager {
 		} catch (error) {
 			// #replaceEntries drops the old retention generation before retaining each entry. Restore it if a spill fails,
 			// so a caller that continues cannot rewrite the source without its archived rows or original header.
-			this.restoreState(previousState);
+			try {
+				this.restoreState(previousState);
+			} catch (restoreError) {
+				logger.error("SessionManager: branch rollback restoration failed", {
+					branchError: toError(error).message,
+					restoreError: toError(restoreError).message,
+				});
+			}
 			throw error;
 		}
 		this.#header = header;

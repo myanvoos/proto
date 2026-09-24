@@ -46,27 +46,30 @@ test("put racing the final GC recheck cannot lose its published blob", async () 
 	const blob = await store.put(payload);
 	await age(blob.path);
 
-	let releaseUnlink!: () => void;
-	let atUnlink!: () => void;
-	const unlinkGate = new Promise<void>(resolve => (releaseUnlink = resolve));
-	const unlinkReached = new Promise<void>(resolve => (atUnlink = resolve));
-	const originalUnlink = fs.unlink;
-	const unlinkSpy = spyOn(fs, "unlink").mockImplementation(async file => {
-		if (file === blob.path) {
-			atUnlink();
-			await unlinkGate;
+	// The sweep's final validation+unlink is now a non-yielding statSync/unlinkSync
+	// sequence, so the async boundary to race against is the per-candidate stat
+	// before the final reference recheck.
+	let releaseStat!: () => void;
+	let atStat!: () => void;
+	const statGate = new Promise<void>(resolve => (releaseStat = resolve));
+	const statReached = new Promise<void>(resolve => (atStat = resolve));
+	const originalStat = fs.stat;
+	const statSpy = spyOn(fs, "stat").mockImplementation((async (path: unknown, options?: unknown) => {
+		if (path === blob.path) {
+			atStat();
+			await statGate;
 		}
-		return originalUnlink(file);
-	});
+		return originalStat(path as Parameters<typeof fs.stat>[0], options as never);
+	}) as typeof fs.stat);
 	try {
 		const sweep = sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0 });
-		await unlinkReached;
+		await statReached;
 		const put = store.put(payload);
-		releaseUnlink();
+		releaseStat();
 		await Promise.all([sweep, put]);
 	} finally {
-		releaseUnlink();
-		unlinkSpy.mockRestore();
+		releaseStat();
+		statSpy.mockRestore();
 	}
 
 	expect(await store.get(blob.hash)).toEqual(payload);

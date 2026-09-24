@@ -89,11 +89,16 @@ export function sessionArchivePath(sessionFile: string): string {
 	return `${sessionFile}.archive.jsonl.gz`;
 }
 
-export async function loadSessionArchive(
+interface LoadedSessionArchive {
+	archive: SessionArchive;
+	entriesById: Map<string, FileEntry>;
+}
+
+async function loadSessionArchiveWithEntries(
 	filePath: string,
 	storage: SessionStorage,
 	sessionId: string,
-): Promise<SessionArchive | undefined> {
+): Promise<LoadedSessionArchive | undefined> {
 	const archivePath = sessionArchivePath(filePath);
 	if (!(await storage.exists(archivePath))) return undefined;
 	const encoded = (await storage.readText(archivePath)).trim();
@@ -116,6 +121,7 @@ export async function loadSessionArchive(
 		throw new Error(`Session archive is invalid: ${archivePath}`);
 	}
 	const recordIds = new Set<string>();
+	const entriesById = new Map<string, FileEntry>();
 	for (const record of candidate.records) {
 		if (
 			typeof record !== "object" ||
@@ -127,10 +133,19 @@ export async function loadSessionArchive(
 			throw new Error(`Session archive is invalid: ${archivePath}`);
 		}
 		if (recordIds.has(record.id)) throw new Error(`Session archive has duplicate entry IDs: ${archivePath}`);
-		parseArchivedEntry(record as SessionArchiveRecord);
+		const validatedRecord = record as SessionArchiveRecord;
+		entriesById.set(record.id, parseArchivedEntry(validatedRecord));
 		recordIds.add(record.id);
 	}
-	return candidate as SessionArchive;
+	return { archive: candidate as SessionArchive, entriesById };
+}
+
+export async function loadSessionArchive(
+	filePath: string,
+	storage: SessionStorage,
+	sessionId: string,
+): Promise<SessionArchive | undefined> {
+	return (await loadSessionArchiveWithEntries(filePath, storage, sessionId))?.archive;
 }
 
 function archiveDoesNotCollide(archive: SessionArchive, activeIds: ReadonlySet<string>): boolean {
@@ -160,6 +175,7 @@ function parseArchivedEntry(record: SessionArchiveRecord): FileEntry {
 function hydrateArchivedEntries(
 	entries: FileEntry[],
 	records: SessionArchiveRecord[],
+	entriesById: ReadonlyMap<string, FileEntry>,
 ): {
 	entries: FileEntry[];
 	ids: Set<string>;
@@ -180,7 +196,9 @@ function hydrateArchivedEntries(
 	const appendRecords = (anchor: string | null): void => {
 		for (const record of byAnchor.get(anchor) ?? []) {
 			if (activeIds.has(record.id)) continue;
-			result.push(parseArchivedEntry(record));
+			const entry = entriesById.get(record.id);
+			if (!entry) throw new Error(`Session archive entry ${record.id} was not validated`);
+			result.push(entry);
 		}
 		byAnchor.delete(anchor);
 	};
@@ -450,8 +468,11 @@ async function loadWithKnownSize(
 	const header = loaded.entries[0];
 	if (header?.type !== "session" || typeof header.id !== "string") return loaded;
 	let archive: SessionArchive | undefined;
+	let archiveEntriesById = new Map<string, FileEntry>();
 	try {
-		archive = await loadSessionArchive(filePath, storage, header.id);
+		const loadedArchive = await loadSessionArchiveWithEntries(filePath, storage, header.id);
+		archive = loadedArchive?.archive;
+		archiveEntriesById = loadedArchive?.entriesById ?? archiveEntriesById;
 		if (
 			archive &&
 			!archiveDoesNotCollide(
@@ -473,7 +494,7 @@ async function loadWithKnownSize(
 	}
 	if (!archive || archive.records.length === 0) return loaded;
 	try {
-		const hydrated = hydrateArchivedEntries(loaded.entries, archive.records);
+		const hydrated = hydrateArchivedEntries(loaded.entries, archive.records, archiveEntriesById);
 		return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids };
 	} catch (error) {
 		warnInvalidArchive(filePath, error);
@@ -529,8 +550,11 @@ export async function visitEntriesFromFile(
 		);
 		if (!isValidSessionHeader(firstEntry)) return;
 		let archive: SessionArchive | undefined;
+		let archiveEntriesById = new Map<string, FileEntry>();
 		try {
-			archive = await loadSessionArchive(filePath, storage, firstEntry.id);
+			const loadedArchive = await loadSessionArchiveWithEntries(filePath, storage, firstEntry.id);
+			archive = loadedArchive?.archive;
+			archiveEntriesById = loadedArchive?.entriesById ?? archiveEntriesById;
 		} catch (error) {
 			warnInvalidArchive(filePath, error);
 			archive = undefined;
@@ -576,7 +600,9 @@ export async function visitEntriesFromFile(
 		const appendBefore = (anchor: string | null): boolean => {
 			for (const record of byAnchor.get(anchor) ?? []) {
 				if (activeArchivedIds.has(record.id)) continue;
-				if (visit(parseArchivedEntry(record)) === false) return false;
+				const archivedEntry = archiveEntriesById.get(record.id);
+				if (!archivedEntry) throw new Error(`Session archive entry ${record.id} was not validated`);
+				if (visit(archivedEntry) === false) return false;
 			}
 			byAnchor.delete(anchor);
 			return true;

@@ -257,7 +257,7 @@ export async function sweepUnreferencedBlobs(
 					if (!latestReferences) {
 						keptYoung++;
 						aborted = true;
-						continue;
+						break;
 					}
 					if (inFlightBlobWrites.has(candidate.path) || latestReferences.has(candidate.name)) {
 						keptYoung++;
@@ -279,7 +279,10 @@ export async function sweepUnreferencedBlobs(
 							keptYoung++;
 							continue;
 						}
-						await fsp.unlink(candidate.path);
+						// Keep validation and unlink in one non-yielding sequence so putSync
+						// cannot replace this path between the identity check and deletion.
+						// Cross-process replacement needs separate coordination.
+						fs.unlinkSync(candidate.path);
 						removed++;
 					} catch (error) {
 						if (!isEnoent(error)) throw error;
@@ -287,7 +290,9 @@ export async function sweepUnreferencedBlobs(
 				} finally {
 					release();
 				}
+				if (aborted) break;
 			}
+			if (aborted) break;
 		}
 	} catch (error) {
 		if (!isEnoent(error)) {
