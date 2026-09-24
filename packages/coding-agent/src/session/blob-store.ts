@@ -290,6 +290,9 @@ export async function sweepUnreferencedBlobs(
 				} finally {
 					release();
 				}
+				// Yield after the non-yielding validation+unlink window so a large
+				// batch cannot monopolize the event loop on slow filesystems.
+				await Bun.sleep(0);
 				if (aborted) break;
 			}
 			if (aborted) break;
