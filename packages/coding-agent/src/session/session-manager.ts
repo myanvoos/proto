@@ -3107,6 +3107,7 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		const newSessionId = mintSessionId();
+		const previousState = this.captureState();
 		this.#reconcileSessionDirForFallback();
 		const newSessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${newSessionId}.jsonl`);
 		const header: SessionHeader = {
@@ -3136,10 +3137,17 @@ export class SessionManager {
 			parentId = labelEntry.id;
 		}
 
+		try {
+			this.#replaceEntries([...entriesToKeep, ...labels]);
+		} catch (error) {
+			// #replaceEntries drops the old retention generation before retaining each entry. Restore it if a spill fails,
+			// so a caller that continues cannot rewrite the source without its archived rows or original header.
+			this.restoreState(previousState);
+			throw error;
+		}
 		this.#header = header;
 		// The branch owns a new transcript without the source archive sidecar; all kept entries are hydrated.
 		this.#archivedEntryIds.clear();
-		this.#replaceEntries([...entriesToKeep, ...labels]);
 		this.#sessionId = newSessionId;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;

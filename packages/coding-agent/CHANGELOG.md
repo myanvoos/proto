@@ -37,6 +37,9 @@
 - Compaction-archive sidecars with duplicate or active-colliding record ids are rejected at load (fail closed) instead of silently erasing rows on a later rewrite
 - Blob GC coordinates with in-flight blob writes via per-hash claims so a concurrent publish can no longer be unlinked mid-sweep, and oversized archive sidecars (>16 MiB) are skipped conservatively instead of blocking the sweep
 - Unnamed compacted sessions with no active conversational rows still surface in recent-session discovery via capped archive-sidecar metadata
+- Blob GC rechecks candidate identity/age after its final reference scan (closing a synchronous-publication race) and bounds archive decompression (16 MiB decoded, 100k records) so a compressed-bomb sidecar fails closed instead of stalling GC
+- Streamed large-session loading validates archive sidecars up front and isolates their failures, so a corrupted sidecar no longer aborts resume of a valid active transcript
+- Branching an archived session no longer risks corrupting the source file if entry retention fails mid-branch (state snapshot/restore around the transition)
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files

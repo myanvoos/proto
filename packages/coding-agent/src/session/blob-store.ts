@@ -63,6 +63,9 @@ export interface BlobSweepResult {
 
 const DEFAULT_BLOB_GRACE_MS = 24 * 60 * 60 * 1000;
 const MAX_ARCHIVE_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_DECODED_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_RECORDS = 100_000;
+const MAX_ARCHIVE_RECORD_BYTES = 1024 * 1024;
 
 async function collectBlobReferences(sessionsDir: string): Promise<Set<string> | null> {
 	const references = new Set<string>();
@@ -91,7 +94,9 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 					const encoded = (await fsp.readFile(entryPath)).toString("utf8").trim();
 					let archive: unknown;
 					try {
-						const decoded = gunzipSync(Buffer.from(encoded, "base64")).toString("utf8");
+						const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
+							maxOutputLength: MAX_ARCHIVE_DECODED_BYTES,
+						}).toString("utf8");
 						archive = JSON.parse(decoded);
 					} catch {
 						return null;
@@ -107,7 +112,8 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 						envelope.version !== 1 ||
 						typeof envelope.sessionId !== "string" ||
 						typeof envelope.sessionFile !== "string" ||
-						!Array.isArray(envelope.records)
+						!Array.isArray(envelope.records) ||
+						envelope.records.length > MAX_ARCHIVE_RECORDS
 					) {
 						return null;
 					}
@@ -117,7 +123,8 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 							record === null ||
 							typeof record.id !== "string" ||
 							!(record.beforeId === null || typeof record.beforeId === "string") ||
-							typeof record.line !== "string"
+							typeof record.line !== "string" ||
+							Buffer.byteLength(record.line, "utf8") > MAX_ARCHIVE_RECORD_BYTES
 						) {
 							return null;
 						}
@@ -183,7 +190,15 @@ export async function sweepUnreferencedBlobs(
 	let removed = 0;
 	let keptYoung = 0;
 	let aborted = false;
-	const candidates: Array<{ name: string; path: string }> = [];
+	const candidates: Array<{
+		name: string;
+		path: string;
+		dev: number;
+		ino: number;
+		size: number;
+		mtimeMs: number;
+		ctimeMs: number;
+	}> = [];
 	try {
 		for (const entry of await fsp.readdir(blobDir, { withFileTypes: true })) {
 			if (!entry.isFile() || !BLOB_HASH_RE.test(entry.name) || references.has(entry.name)) continue;
@@ -199,7 +214,15 @@ export async function sweepUnreferencedBlobs(
 					keptYoung++;
 					continue;
 				}
-				candidates.push({ name: entry.name, path: candidate });
+				candidates.push({
+					name: entry.name,
+					path: candidate,
+					dev: stat.dev,
+					ino: stat.ino,
+					size: stat.size,
+					mtimeMs: stat.mtimeMs,
+					ctimeMs: stat.ctimeMs,
+				});
 			} catch (error) {
 				if (!isEnoent(error)) throw error;
 			}
@@ -240,8 +263,27 @@ export async function sweepUnreferencedBlobs(
 						keptYoung++;
 						continue;
 					}
-					await fsp.unlink(candidate.path);
-					removed++;
+					// Recheck after the final reference scan; putSync may have atomically
+					// replaced this path while that scan was awaiting filesystem I/O.
+					try {
+						const current = fs.statSync(candidate.path);
+						if (
+							!current.isFile() ||
+							current.dev !== candidate.dev ||
+							current.ino !== candidate.ino ||
+							current.size !== candidate.size ||
+							current.mtimeMs !== candidate.mtimeMs ||
+							current.ctimeMs !== candidate.ctimeMs ||
+							current.mtimeMs > cutoff
+						) {
+							keptYoung++;
+							continue;
+						}
+						await fsp.unlink(candidate.path);
+						removed++;
+					} catch (error) {
+						if (!isEnoent(error)) throw error;
+					}
 				} finally {
 					release();
 				}

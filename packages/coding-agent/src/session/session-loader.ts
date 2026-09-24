@@ -127,6 +127,7 @@ export async function loadSessionArchive(
 			throw new Error(`Session archive is invalid: ${archivePath}`);
 		}
 		if (recordIds.has(record.id)) throw new Error(`Session archive has duplicate entry IDs: ${archivePath}`);
+		parseArchivedEntry(record as SessionArchiveRecord);
 		recordIds.add(record.id);
 	}
 	return candidate as SessionArchive;
@@ -530,18 +531,27 @@ export async function visitEntriesFromFile(
 		let archive: SessionArchive | undefined;
 		try {
 			archive = await loadSessionArchive(filePath, storage, firstEntry.id);
-			if (archive?.records.length) {
-				const activeIds = new Set<string>();
-				await visitEntriesFromFileStream(filePath, entry => {
-					if (typeof entry.id === "string") activeIds.add(entry.id);
-				});
-				if (!archiveDoesNotCollide(archive, activeIds)) {
-					throw new Error("Session archive entry ID collides with the active transcript");
-				}
-			}
 		} catch (error) {
 			warnInvalidArchive(filePath, error);
 			archive = undefined;
+		}
+		if (archive?.records.length) {
+			const activeIds = new Set<string>();
+			// Active-file errors must propagate; only sidecar validation failures are ignored.
+			await visitEntriesFromFileStream(filePath, entry => {
+				if (typeof entry.id === "string") activeIds.add(entry.id);
+			});
+			try {
+				if (!archiveDoesNotCollide(archive, activeIds)) {
+					throw new Error("Session archive entry ID collides with the active transcript");
+				}
+				if (archive.records.some(record => record.beforeId !== null && !activeIds.has(record.beforeId))) {
+					throw new Error("Session archive references an entry missing from the active transcript");
+				}
+			} catch (error) {
+				warnInvalidArchive(filePath, error);
+				archive = undefined;
+			}
 		}
 		if (!archive || archive.records.length === 0) {
 			let sawFirstEntry = false;
