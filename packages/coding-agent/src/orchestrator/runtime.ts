@@ -78,7 +78,8 @@ export interface OrchestratorParent {
 	getAgentId?: () => string | null;
 	getSessionId?: () => string | null;
 	getSessionFile: () => string | null;
-	sessionManager?: ToolSession["sessionManager"] & Partial<Pick<SessionManager, "recoverPersistenceFromCurrentState">>;
+	sessionManager?: ToolSession["sessionManager"] &
+		Partial<Pick<SessionManager, "recoverPersistenceFromCurrentState" | "getCustomEntryDataForMetadata">>;
 	asyncJobManager?: AsyncJobManager;
 	settings: ToolSession["settings"];
 	modelRegistry?: ToolSession["modelRegistry"];
@@ -771,9 +772,9 @@ export class OrchestratorRuntime {
 
 	#hasInMemoryTombstone(session: OrchestratorParent, record: WorkerRecord): boolean {
 		let terminalReason: WorkerTombstoneReason | undefined;
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
-			if (entry.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
-			const event = parseLifecycleEvent(entry.data);
+		for (const data of session.sessionManager?.getCustomEntryDataForMetadata?.(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) ??
+			[]) {
+			const event = parseLifecycleEvent(data);
 			if (
 				!event ||
 				event.id !== record.id ||

@@ -552,6 +552,7 @@ export type ReadonlySessionManager = Pick<
 	| "getBranch"
 	| "getHeader"
 	| "getEntries"
+	| "getCustomEntryDataForMetadata"
 	| "getTree"
 	| "getUsageStatistics"
 	| "getSubagentUsage"
@@ -3003,6 +3004,18 @@ export class SessionManager {
 
 	getEntries(): SessionEntry[] {
 		return this.#materializeEntries(this.#entries);
+	}
+
+	/** Metadata-only presence check; does not hydrate retained payloads or expose retained entries. */
+	hasAssistantMessage(): boolean {
+		return this.#entries.some(entry => entry.type === "message" && entry.message.role === "assistant");
+	}
+
+	/** Returns detached custom-entry data snapshots without hydrating unrelated retained entries. */
+	getCustomEntryDataForMetadata(customType: string): unknown[] {
+		return this.#entries.flatMap(entry =>
+			entry.type === "custom" && entry.customType === customType ? [structuredClone(entry.data)] : [],
+		);
 	}
 
 	getTree(): SessionTreeNode[] {

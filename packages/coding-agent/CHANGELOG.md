@@ -32,6 +32,7 @@
 - Oversized provider replay payloads (signed thinking/text/tool calls, redacted or encrypted reasoning, Anthropic compaction state) spill to content-addressed blobs and hydrate on load instead of bypassing the persistence size cap
 - Blob store gains a conservative mark-and-sweep (24 h mtime grace, idle maintenance) so image blobs orphaned by compaction, forks, or session deletion are reclaimed; the sweep treats compaction-archive sidecars as reference roots (fail-closed on malformed archives) and batches its final reference rechecks
 - Session managers dispose superseded oversized-entry spill directories on session replacement instead of retaining them for the process lifetime; captured rollback states own private copies so restore fidelity is unchanged
+- Session-exit and orchestrator tombstone scans read retained entry metadata directly instead of rehydrating the full spilled history on every check
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files
