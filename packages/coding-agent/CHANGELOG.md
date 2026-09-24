@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.1] - 2026-09-24
+
 ### Added
 
 - `orchestrate_send` accepts `model`: an idle worker resumes onto the requested model, and a running worker is steered and switched mid-turn; the switch persists for the worker's later turns
@@ -20,7 +22,6 @@
 - Recent-session discovery consults the title index first and opens only a bounded newest-candidate set before falling back to a full ordered scan
 - Runner staging cache is bounded (16 entries) with oldest eviction and process-exit cleanup of staged temp directories
 - Session artifact spill logs are capped at 4 MiB by default (3 MiB head + 1 MiB tail) with an explicit elision marker; `artifactMaxBytes: 0` restores unlimited logging
-
 - Bash calls highlight and outline the program of any Python/JS interpreter invocation — `.venv/bin/python - "$f" <<EOF`, `python3.12 -c`, `uv run python -`, `sudo python3`, `ssh host python3 -` — not only kernel-routed `python`/`node`/`bun` calls
 - Kernel cells and heredoc file writes are recognized with the embedded shell's own parser, so quoting, compound commands, and streaming partial commands resolve the way they execute
 - Running `python`/`node`/`bun` cells show their full Status diffs and agent progress instead of a screen-fitted preview, and Ctrl+O expands them immediately instead of waiting for the cell to finish
@@ -43,7 +44,6 @@
 - An incomplete blob-GC reference scan now aborts the entire sweep instead of permitting later candidates to be deleted, and the final validation-to-unlink window is non-yielding so synchronous blob publication cannot race deletion
 - Archive records parse exactly once per load (validated entries reused for hydration and streamed visitation) instead of parsing twice
 - Branch rollback snapshots now cover force-file and artifact-manager state, and restoration failures no longer mask the original branch error
-
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files
 - Unchanged sessions are listed from a derived info row in the session index without opening their files: a warm folder scan drops to single-digit milliseconds and a warm cross-project scan roughly halves

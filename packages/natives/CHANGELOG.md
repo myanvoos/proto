@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.1] - 2026-09-24
+
 ### Added
 
 - `scanShellEmbeddedCode()` returns the interpreter programs (with kernel routing) and heredoc file writes inside a shell command, read with the embedded shell's tokenizer
