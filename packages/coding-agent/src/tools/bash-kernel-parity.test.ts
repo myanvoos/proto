@@ -166,7 +166,7 @@ async function renderSettledCell(label: string, interpreter: string, code: strin
 	}
 }
 
-test("running kernel cell streams status events live (hunks withheld until settle)", async () => {
+test("running kernel cell streams status events and their hunks live", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-"));
 	try {
 		await Bun.write(path.join(dir, "f.txt"), "a\nb\n");
@@ -186,30 +186,24 @@ test("running kernel cell streams status events live (hunks withheld until settl
 
 		// The partial render shows the Status head (⟦+N/-M⟧ stats) AND the hunk
 		// body as soon as the event is delivered — no waiting for the whole call
-		// to settle. Small hunks fit the live window whole; oversized ones are
-		// tail-truncated with a marker (covered in eval-render.test.ts).
-		process.stdout.rows = 60;
-		try {
-			const partial = strip(
-				bashRenderer
-					.renderResult(
-						{
-							content: [{ type: "text", text: "done\n" }],
-							details: { statusEvents: streamed.at(-1)?.statusEvents },
-						},
-						{ isPartial: true },
-						theme,
-						{ command },
-					)
-					.render(90)
-					.join("\n"),
-			);
-			expect(partial).toContain("Status");
-			expect(/⟦[+-]/.test(partial), "partial shows +N/-M stats").toBe(true);
-			expect(/\d+│/.test(partial), "partial reveals the hunk body").toBe(true);
-		} finally {
-			delete (process.stdout as { rows?: number }).rows;
-		}
+		// to settle.
+		const partial = strip(
+			bashRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "done\n" }],
+						details: { statusEvents: streamed.at(-1)?.statusEvents },
+					},
+					{ isPartial: true },
+					theme,
+					{ command },
+				)
+				.render(90)
+				.join("\n"),
+		);
+		expect(partial).toContain("Status");
+		expect(/⟦[+-]/.test(partial), "partial shows +N/-M stats").toBe(true);
+		expect(/\d+│/.test(partial), "partial reveals the hunk body").toBe(true);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -252,20 +246,12 @@ emit("agent", { id: beta, status: "completed", durationMs: 25 });
 			]);
 		}
 
-		let liveRender: string;
-		const originalRows = process.stdout.rows;
-		process.stdout.rows = 60;
-		try {
-			liveRender = strip(
-				bashRenderer
-					.renderResult(live, { expanded: false, isPartial: true }, theme, { command })
-					.render(100)
-					.join("\n"),
-			);
-		} finally {
-			if (originalRows === undefined) delete (process.stdout as { rows?: number }).rows;
-			else process.stdout.rows = originalRows;
-		}
+		const liveRender = strip(
+			bashRenderer
+				.renderResult(live, { expanded: false, isPartial: true }, theme, { command })
+				.render(100)
+				.join("\n"),
+		);
 		const completedRender = renderBashResult(result, command);
 		for (const rendered of [liveRender, completedRender]) {
 			const rows = rendered.split("\n");

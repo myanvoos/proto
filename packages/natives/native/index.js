@@ -252,6 +252,7 @@ export const parseKey = lazyNativeExport("parseKey");
 export const parseKittySequence = lazyNativeExport("parseKittySequence");
 export const pdfToMarkdown = lazyNativeExport("pdfToMarkdown");
 export const readImageFromClipboard = lazyNativeExport("readImageFromClipboard");
+export const scanShellEmbeddedCode = lazyNativeExport("scanShellEmbeddedCode");
 export const search = lazyNativeExport("search");
 export const setHangulCompatJamoWidthOverride = lazyNativeExport("setHangulCompatJamoWidthOverride");
 export const sliceWithWidth = lazyNativeExport("sliceWithWidth");

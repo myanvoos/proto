@@ -74,6 +74,7 @@ mod pushd;
 mod pwd;
 #[cfg(all(any(feature = "util.python", feature = "util.node"), unix))]
 mod kernel_cell;
+mod kernel_route;
 #[cfg(all(feature = "util.node", unix))]
 mod node;
 #[cfg(all(feature = "util.python", unix))]
@@ -114,6 +115,7 @@ mod wait;
 #[cfg(any(feature = "util.grep", feature = "util.sed"))]
 mod bre;
 mod builder;
+mod embedded_code;
 mod factory;
 mod host;
 mod unimp;
@@ -266,6 +268,7 @@ mod xargs;
 mod yes;
 
 pub use builder::ShellBuilderExt;
+pub use embedded_code::{CodeCell, CodeLanguage, EmbeddedCode, FileWrite, scan_embedded_code};
 pub use factory::{BuiltinSet, default_builtins, process_builtins, utility_builtins};
 pub use host::{panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available};
 

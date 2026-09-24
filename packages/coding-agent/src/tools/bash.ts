@@ -56,15 +56,15 @@ import { resizeImage } from "../utils/image-resize";
 import { getLanguageFromPath } from "../utils/lang-from-path";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
-import { findBashFileWrites, normalizeBashWritePath } from "./bash-file-write";
-import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
-import { checkBashInterception } from "./bash-interceptor";
 import {
 	type BashKernelCell,
 	detectBashKernelCell,
-	findBashKernelCells,
+	findBashCodeCells,
+	findBashFileWrites,
 	isBashKernelCellMixed,
-} from "./bash-kernel-cell";
+} from "./bash-embedded-code";
+import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
+import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
@@ -500,15 +500,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	/**
-	 * Source-bearing payload for AST-scoped rules: embedded kernel cells use
-	 * synthetic paths, while heredoc file writes use their written paths so
+	 * Source-bearing payload for AST-scoped rules: embedded interpreter programs
+	 * use synthetic paths, while heredoc file writes use their written paths so
 	 * file extensions drive grammar and per-file rule selection.
 	 */
 	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
 		if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
 		const command = (args as Record<string, unknown>).command;
 		if (typeof command !== "string" || command.length === 0) return undefined;
-		const cells = findBashKernelCells(command);
+		const cells = findBashCodeCells(command);
 		const writes = findBashFileWrites(command);
 		return [
 			...cells.map((cell, index) => ({
@@ -520,7 +520,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				.filter(write => write.code.trim().length > 0)
 				.map(write => ({
 					start: write.start,
-					path: normalizeBashWritePath(write.path),
+					path: write.path,
 					digest: write.code,
 				})),
 		]
@@ -1768,8 +1768,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const wallTimeStart = performance.now();
 		// Stream kernel-cell status events (write/edit hunks) into the live view
 		// so a running `python`/`node`/`bun` cell shows its Status section like an eval
-		// cell — hunks render as soon as their event is delivered, tail-truncated
-		// to the live window (see eval-render's EVAL_STREAMING_SECTION_LINES).
+		// cell — hunks render as soon as their event is delivered.
 		const liveStatusEvents: EvalStatusEvent[] = [];
 		const pushLiveUpdate = (): void => {
 			onUpdate?.({
@@ -1958,16 +1957,16 @@ function formatBashCommandLines(
 // grammar. Anything that is not a JS/TS or Python file (`.md`, `.json`, `.sh`,
 // no extension) has no outline to show and keeps the plain shell rendering.
 function writeOutlineLanguage(writePath: string): EvalLanguage | undefined {
-	const base = path.basename(normalizeBashWritePath(writePath));
+	const base = path.basename(writePath);
 	if (base.lastIndexOf(".") <= 0) return undefined;
 	const language = getLanguageFromPath(base);
 	if (language === "typescript" || language === "tsx" || language === "javascript") return "js";
 	return language === "python" ? "python" : undefined;
 }
 
-/** Every region of a bash command that renders as an AST outline: kernel cell bodies plus heredoc-written source files. */
+/** Every region of a bash command that renders as an AST outline: interpreter programs plus heredoc-written source files. */
 function bashDisplayCells(command: string): EvalDisplayCell[] {
-	const cells: EvalDisplayCell[] = findBashKernelCells(command).map(cell => ({
+	const cells: EvalDisplayCell[] = findBashCodeCells(command).map(cell => ({
 		start: cell.start,
 		end: cell.end,
 		code: cell.code,
@@ -1982,7 +1981,7 @@ function bashDisplayCells(command: string): EvalDisplayCell[] {
 				end: write.end,
 				code: write.code,
 				language,
-				label: path.basename(normalizeBashWritePath(write.path)),
+				label: path.basename(write.path),
 			});
 		}
 	}
@@ -1990,20 +1989,20 @@ function bashDisplayCells(command: string): EvalDisplayCell[] {
 }
 
 /**
- * Every heredoc body in a command whose language the call already names: the
- * interpreter for a kernel cell, the file extension for a written file. The
- * shell grammar can only paint those bodies as one long string, so the live
- * preview highlights each with its own grammar instead.
+ * Every embedded program in a command whose language the call already names:
+ * the interpreter for a `-c`/heredoc program, the file extension for a written
+ * file. The shell grammar can only paint those bodies as one long string, so
+ * the live preview highlights each with its own grammar instead.
  */
 function bashEmbeddedRegions(command: string): EmbeddedCodeRegion[] {
-	const regions: EmbeddedCodeRegion[] = findBashKernelCells(command).map(cell => ({
+	const regions: EmbeddedCodeRegion[] = findBashCodeCells(command).map(cell => ({
 		start: cell.start,
 		end: cell.end,
 		language: cell.language === "js" ? "javascript" : "python",
 	}));
 	for (const write of findBashFileWrites(command)) {
 		if (write.code.trim().length === 0) continue;
-		const language = getLanguageFromPath(normalizeBashWritePath(write.path));
+		const language = getLanguageFromPath(write.path);
 		// An unknown or ungrammared extension keeps the shell's own coloring.
 		if (language && supportsLanguage(language)) {
 			regions.push({ start: write.start, end: write.end, language });

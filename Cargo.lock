@@ -4595,6 +4595,7 @@ dependencies = [
  "pdf-inspector",
  "phf 0.13.1",
  "pi-ast",
+ "pi-builtins",
  "pi-iso",
  "pi-shell",
  "pi-walker",

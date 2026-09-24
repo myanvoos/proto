@@ -3,14 +3,8 @@ import type { EvalCellResult, EvalStatusEvent, EvalToolDetails } from "../eval/t
 import { createTheme, getBuiltinThemes } from "../modes/theme/loader";
 import { initThemeSync, theme } from "../modes/theme/theme";
 import { capEventDiff, generateDiffString } from "../utils/diff";
-import {
-	EVAL_DEFAULT_PREVIEW_LINES,
-	EVAL_LIVE_FLOOR_LINES,
-	evalToolRenderer,
-	renderKernelCellLines,
-} from "./eval-render";
-import { JSON_TREE_MAX_LINES_COLLAPSED } from "./json-tree";
-import { previewWindowRows, truncateToWidth } from "./render-utils";
+import { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer, renderKernelCellLines } from "./eval-render";
+import { truncateToWidth } from "./render-utils";
 
 initThemeSync();
 
@@ -169,7 +163,7 @@ function renderCells(cells: EvalToolDetails["cells"], options: { expanded: boole
 	return component.render(WIDTH).map(strip);
 }
 
-test("a streaming cell reveals delivered hunk bodies within the live window", () => {
+test("a streaming cell renders delivered hunks as completely as the settled cell", () => {
 	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
 	const cells: EvalToolDetails["cells"] = [
 		{
@@ -182,119 +176,36 @@ test("a streaming cell reveals delivered hunk bodies within the live window", ()
 			statusEvents: [diffEvent(FILE, big("old"), big("new"))],
 		},
 	];
-	withTerminalRows(60, () => {
+	withTerminalRows(12, () => {
 		const partial = renderCells(cells, { expanded: false, isPartial: true });
-		// The hunk renders as soon as the write event is delivered — no waiting
-		// for the whole call to settle — tail-truncated into the live window
-		// with a marker for the hidden lines.
-		const diffRows = partial.filter(line => /[+-]\s*\d+│/.test(line));
-		expect(diffRows.length, "hunk rows render while streaming").toBeGreaterThan(0);
-		expect(
-			partial.some(line => line.includes("earlier diff line")),
-			"truncation marker present",
-		).toBe(true);
-		// The write event still shows its summary line with ⟦+N/-M⟧ stats.
-		expect(partial.some(line => line.includes("x.py"))).toBe(true);
-		expect(partial.some(line => /\+\d+\/-\d+/.test(line))).toBe(true);
-		// The whole live block must stay inside the streaming window (the
-		// window is measured from the terminal rows, so a committed mid-stream
-		// block — and the settle-time double print it causes — can't happen).
-		expect(partial.length).toBeLessThanOrEqual(previewWindowRows());
-
-		// Once the call settles, the finalized render keeps the complete diff.
-		const final = renderCells(
+		const settled = renderCells(
 			cells.map(cell => ({ ...cell, status: "complete" as const, durationMs: 5 })),
 			{ expanded: false, isPartial: false },
 		);
-		const finalDiffRows = final.filter(line => /[+-]\s*\d+│/.test(line));
-		expect(finalDiffRows.length).toBeGreaterThan(diffRows.length);
+		const diffRows = (lines: string[]) => lines.filter(line => /[+-]\s*\d+│/.test(line));
+		expect(diffRows(partial).length, "hunk rows render while streaming").toBeGreaterThan(0);
+		expect(diffRows(partial)).toEqual(diffRows(settled));
+		expect(partial.some(line => line.includes("earlier diff line"))).toBe(false);
 	});
 });
 
-test("a tiny live window degrades streaming hunks to the stats line", () => {
-	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
-	const cells: EvalToolDetails["cells"] = [
-		{
-			index: 0,
-			title: "cell",
-			code: "pass",
-			language: "python",
-			output: "running…",
-			status: "running",
-			statusEvents: [diffEvent(FILE, big("old"), big("new"))],
-		},
-	];
-	// 12 rows → previewWindowRows() floors at 6; the reserved code/output
-	// floors consume the entire budget, so no hunk row may render mid-stream
-	// and the summary stats line carries the write.
-	withTerminalRows(12, () => {
-		const partial = renderCells(cells, { expanded: false, isPartial: true });
-		expect(partial.filter(line => /[+-]\s*\d+│/.test(line)).length).toBe(0);
-		expect(partial.some(line => line.includes("x.py"))).toBe(true);
-		expect(partial.some(line => /\+\d+\/-\d+/.test(line))).toBe(true);
-	});
-});
-
-test("ctrl+o expansion is deferred while a cell still streams", () => {
-	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
-	const cells: EvalToolDetails["cells"] = [
-		{
-			index: 0,
-			title: "cell",
-			code: "pass",
-			language: "python",
-			output: "running…",
-			status: "running",
-			statusEvents: [diffEvent(FILE, big("old"), big("new"))],
-		},
-	];
-	withTerminalRows(60, () => {
-		const lines = renderCells(cells, { expanded: true, isPartial: true });
-		// Expanded live cells render like collapsed ones — windowed, with the
-		// hunk tail revealed — and a note that the expansion applies on settle.
-		expect(lines.filter(line => /[+-]\s*\d+│/.test(line)).length).toBeGreaterThan(0);
-		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
-		expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
-
-		// Settling applies the same expanded toggle with no note and no cap.
-		const settled = renderCells(
-			cells.map(cell => ({ ...cell, status: "complete" as const, durationMs: 5 })),
-			{ expanded: true, isPartial: false },
-		);
-		expect(settled.some(line => line.includes("expanded view once the cell settles"))).toBe(false);
-		const settledDiffRows = settled.filter(line => /[+-]\s*\d+│/.test(line)).length;
-		expect(settledDiffRows).toBeGreaterThan(lines.filter(line => /[+-]\s*\d+│/.test(line)).length);
-	});
-});
-
-test("a live cell defers expansion of its display trees too", () => {
+test("ctrl+o expands a cell while it still streams", () => {
+	const code = Array.from({ length: 80 }, (_, i) => `x${i} = ${i}`).join("\n");
 	const jsonOutputs = [Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`key${i}`, i]))];
-	const cell: EvalCellResult = {
-		index: 0,
-		title: "cell",
-		code: "pass",
-		language: "python",
-		output: "…",
-		status: "running",
-	};
-	const rows = (status: EvalCellResult["status"], isPartial: boolean) =>
-		renderKernelCellLines({ ...cell, status }, jsonOutputs, theme, {
-			expanded: true,
-			isPartial,
-			previewLines: EVAL_DEFAULT_PREVIEW_LINES,
-			width: WIDTH,
-		});
-
-	// An uncapped tree under a still-streaming cell would outgrow the viewport
-	// and strand rows out of scrollback, so it stays windowed until settle.
-	const live = rows("running", true).map(strip);
-	expect(live.filter(line => /key\d+/.test(line)).length).toBeLessThanOrEqual(JSON_TREE_MAX_LINES_COLLAPSED);
-
-	const settled = rows("complete", false).map(strip);
-	expect(settled.filter(line => /key\d+/.test(line)).length).toBe(300);
+	const cell: EvalCellResult = { index: 0, title: "cell", code, language: "python", output: "…", status: "running" };
+	const lines = renderKernelCellLines(cell, jsonOutputs, theme, {
+		expanded: true,
+		isPartial: true,
+		previewLines: EVAL_DEFAULT_PREVIEW_LINES,
+		width: WIDTH,
+	}).map(strip);
+	expect(lines.some(line => line.includes("x0 = 0"))).toBe(true);
+	expect(lines.some(line => line.includes("x79 = 79"))).toBe(true);
+	expect(lines.some(line => line.includes("earlier lines"))).toBe(false);
+	expect(lines.filter(line => /key\d+/.test(line)).length).toBe(300);
 });
 
-test("call-phase expansion is deferred while args stream", () => {
+test("ctrl+o expands a call whose arguments still stream", () => {
 	const code = Array.from({ length: 80 }, (_, i) => `x${i} = ${i}`).join("\n");
 	const component = evalToolRenderer.renderCall(
 		{ code, language: "python" },
@@ -302,55 +213,9 @@ test("call-phase expansion is deferred while args stream", () => {
 		theme,
 	);
 	const lines = component.render(WIDTH).map(strip);
-	expect(lines.length, "streaming call block stays windowed").toBeLessThan(30);
+	expect(lines.some(line => line.includes("x0 = 0"))).toBe(true);
 	expect(lines.some(line => line.includes("x79 = 79"))).toBe(true);
-	expect(lines.some(line => line.includes("x0 = 0"))).toBe(false);
-	expect(lines.some(line => line.includes("earlier lines"))).toBe(true);
-	expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
-});
-
-test("completed cells stream their hunks too while a later cell still runs", () => {
-	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
-	const done: NonNullable<EvalToolDetails["cells"]>[number] = {
-		index: 0,
-		title: "done",
-		code: "pass",
-		language: "python",
-		output: "ok",
-		status: "complete",
-		durationMs: 5,
-		statusEvents: [diffEvent(FILE, big("old"), big("new"))],
-	};
-	const running: NonNullable<EvalToolDetails["cells"]>[number] = {
-		index: 1,
-		title: "live",
-		code: "pass",
-		language: "python",
-		output: "running…",
-		status: "running",
-		statusEvents: [diffEvent(FILE.replace("x.py", "y.py"), big("old"), big("new"))],
-	};
-	// Both cells' delivered hunks render while the call streams — the latest
-	// cell gets budget priority and the earlier one uses what remains — each
-	// tail-truncated so the block stays windowable.
-	withTerminalRows(60, () => {
-		const lines = renderCells([done, running], { expanded: false, isPartial: true });
-		const diffRows = lines.filter(line => /[+-]\s*\d+│/.test(line));
-		expect(diffRows.length, "hunks render while the call streams").toBeGreaterThan(0);
-		expect(lines.some(line => line.includes("x.py"))).toBe(true);
-		expect(lines.some(line => line.includes("y.py"))).toBe(true);
-	});
-
-	// Once the call settles, every cell renders its complete diff.
-	const settled = renderCells([done, { ...running, status: "complete" as const, durationMs: 5 }], {
-		expanded: false,
-		isPartial: false,
-	});
-	const perCellDiffRows = String(done.statusEvents?.[0]?.diff ?? "")
-		.split("\n")
-		.filter((row: string) => /^[+-]\d+\|/.test(row)).length;
-	const settledDiffRows = settled.filter(line => /[+-]\s*\d+│/.test(line));
-	expect(settledDiffRows.length).toBeGreaterThanOrEqual(perCellDiffRows * 2);
+	expect(lines.some(line => line.includes("earlier lines"))).toBe(false);
 });
 
 test("status events render under their own label even when the cell has no output", () => {
@@ -424,103 +289,6 @@ test("settled collapsed cells retain outlines while expanded cells show source",
 	const expanded = renderCells(cells, { expanded: true, isPartial: false }).join("\n");
 	expect(expanded).not.toContain("· ast");
 	expect(expanded).toContain("def greet(name):");
-});
-
-test("streaming replacement tails retain the added line number", () => {
-	const diff = generateDiffString("old1\nold2\n", "new1\nnew2\n", 0).diff;
-	const cell: EvalCellResult = {
-		index: 0,
-		title: "cell",
-		code: "pass",
-		language: "python",
-		output: "o\no\no\no\no\no\no\no",
-		status: "running",
-		statusEvents: [{ op: "write", path: FILE, chars: 4, sha: "0", diff }],
-	};
-
-	// 33 rows → a 14-row live window: header, output floor, code floor and the
-	// Status head leave room for the marker plus two hunk rows, so the cut
-	// lands between the removed and added lines of the replacement.
-	withTerminalRows(33, () => {
-		const lines = renderCells([cell], { expanded: false, isPartial: true });
-		expect(lines.some(line => line.includes("2 earlier diff lines"))).toBe(true);
-		expect(lines.some(line => line.includes("+1│new1"))).toBe(true);
-		expect(lines.some(line => line.includes("+│new1"))).toBe(false);
-		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
-	});
-});
-
-test("a live cell gives hunk bodies priority over the output and code tails", () => {
-	const code = Array.from({ length: 30 }, (_, i) => `step_${i} = ${i}`).join("\n");
-	const output = Array.from({ length: 30 }, (_, i) => `out ${i}`).join("\n");
-	// 8 removed + 9 added rows: exactly what a 50-row terminal's live window
-	// leaves once the header, floors and Status head are placed.
-	const diff = generateDiffString(
-		Array.from({ length: 8 }, (_, i) => `old ${i}`).join("\n"),
-		Array.from({ length: 9 }, (_, i) => `new ${i}`).join("\n"),
-		0,
-	).diff;
-	const base: EvalCellResult = { index: 0, title: "cell", code, language: "python", output, status: "running" };
-	withTerminalRows(50, () => {
-		// No writes yet: the output tail fills its preview cap and the code tail
-		// absorbs the rest of the window.
-		const quiet = renderCells([base], { expanded: false, isPartial: true });
-		expect(quiet.filter(line => /^▏\s+out \d+/.test(line)).length).toBe(EVAL_DEFAULT_PREVIEW_LINES);
-		expect(quiet.filter(line => /step_\d+ = /.test(line)).length).toBeGreaterThan(EVAL_LIVE_FLOOR_LINES);
-		expect(quiet.length).toBeLessThanOrEqual(previewWindowRows());
-
-		// A write lands: its hunk renders whole and the output and code tails
-		// shrink toward their floors to make room — the hunk never waits on
-		// the output growing or the cell settling.
-		const writing = renderCells(
-			[{ ...base, statusEvents: [{ op: "write", path: FILE, chars: 1, sha: "0", diff }] }],
-			{
-				expanded: false,
-				isPartial: true,
-			},
-		);
-		expect(writing.filter(line => /[+-]\s*\d+│/.test(line)).length).toBe(17);
-		expect(writing.some(line => line.includes("earlier diff line"))).toBe(false);
-		expect(writing.filter(line => /^▏\s+out \d+/.test(line)).length).toBe(EVAL_LIVE_FLOOR_LINES);
-		expect(
-			writing.some(line => line.includes("out 29")),
-			"output keeps its newest line",
-		).toBe(true);
-		expect(writing.filter(line => /step_\d+ = /.test(line)).length).toBe(EVAL_LIVE_FLOOR_LINES);
-		expect(
-			writing.some(line => line.includes("step_29 = 29")),
-			"code keeps its last line",
-		).toBe(true);
-		expect(writing.length).toBeLessThanOrEqual(previewWindowRows());
-	});
-});
-
-test("a newer write takes hunk rows first and earlier writes keep their heads", () => {
-	const mk = (seed: string, n: number) => Array.from({ length: n }, (_, i) => `${seed} ${i}`).join("\n");
-	const first = diffEvent(FILE.replace("x.py", "a.py"), mk("old-a", 20), mk("new-a", 20));
-	const second = diffEvent(FILE.replace("x.py", "b.py"), mk("old-b", 20), mk("new-b", 20));
-	const cell: EvalCellResult = {
-		index: 0,
-		title: "cell",
-		code: "pass",
-		language: "python",
-		output: "",
-		status: "running",
-	};
-	withTerminalRows(45, () => {
-		const lines = renderCells([{ ...cell, statusEvents: [first, second] }], { expanded: false, isPartial: true });
-		expect(lines.some(line => line.includes("a.py") && line.includes("+20/-20"))).toBe(true);
-		expect(lines.some(line => line.includes("b.py") && line.includes("+20/-20"))).toBe(true);
-		expect(
-			lines.some(line => line.includes("new-b 19")),
-			"newest hunk tail visible",
-		).toBe(true);
-		expect(
-			lines.some(line => line.includes("new-a")),
-			"earlier hunk yields its rows to the newest",
-		).toBe(false);
-		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
-	});
 });
 
 test("multiline status errors are sanitized, indented, and preview-limited", () => {

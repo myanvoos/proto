@@ -6,12 +6,12 @@ use clap::{ArgMatches, Command as ClapCommand};
 use crate::{
 	host::{Host, Utility, matches_parser, util},
 	kernel_cell::{KernelLang, kernel_lang_app, run_kernel_lang},
+	kernel_route::PYTHON_ARGV,
 };
 
 const SPEC: KernelLang = KernelLang {
 	lang:             "py",
-	code_flag:        "-c",
-	passthrough:      &["-u"],
+	argv:             &PYTHON_ARGV,
 	fleet_extensions: &[".py"],
 	interpreters:     &["python3", "python"],
 };

@@ -4,9 +4,9 @@ import * as path from "node:path";
 import { parse as parseJavaScript } from "@babel/parser";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ToolSession } from "../tools";
-import { type BashKernelCell, detectBashKernelCell } from "../tools/bash-kernel-cell";
+import { detectBashKernelCell } from "../tools/bash-embedded-code";
 import type { StreamedKernelFailure as StreamedKernelFailureContract } from "./speculation";
-import { isPythonRawHeredocHeader, parseStandaloneQuotedHeredoc, parseStreamedBashInput } from "./speculation";
+import { isPythonRawHeredocHeader, parseStreamedBashInput } from "./speculation";
 
 /** Languages understood by the assertion preflight. */
 export type PreflightKernelLanguage = "python" | "js";
@@ -218,7 +218,9 @@ export async function preflightStreamedInput(
 		const boundedRaw = rawPartialJson.slice(0, MAX_PARTIAL_JSON_BYTES);
 		const streamedInput = parseStreamedBashInput(boundedRaw);
 		if (typeof streamedInput.command !== "string" || streamedInput.command.length === 0) return undefined;
-		const cell = detectPartialKernelCell(streamedInput.command);
+		// The scan closes an unterminated heredoc or quoted `-c`/`-e` word, so a
+		// half-streamed cell already yields the code written so far.
+		const cell = detectBashKernelCell(streamedInput.command);
 		if (!cell || cell.code.length === 0) return undefined;
 
 		let cwd = options.cwd ?? options.session?.cwd;
@@ -316,59 +318,6 @@ function resolveStreamedCwd(rawCwd: string, sessionCwd: string | undefined): str
 	if (!sessionCwd || !path.isAbsolute(sessionCwd) || sessionCwd.includes("\0") || sessionCwd.includes("://"))
 		return undefined;
 	return path.resolve(sessionCwd, rawCwd);
-}
-
-function detectPartialKernelCell(command: string): BashKernelCell | undefined {
-	const sharedHeredoc = parseStandaloneQuotedHeredoc(command);
-	if (sharedHeredoc) return { language: sharedHeredoc.language, code: sharedHeredoc.code };
-	const complete = detectBashKernelCell(command);
-	if (complete) return complete;
-	// detectBashKernelCell intentionally requires a closed shell word for -c/-e.
-	// During streaming, an otherwise safe quoted word is commonly incomplete.
-	const match = command.match(
-		/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node|bun)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+([\s\S]*)$/u,
-	);
-	if (!match) return undefined;
-	const language: PreflightKernelLanguage = match[1] === "node" || match[1] === "bun" ? "js" : "python";
-	if ((language === "python" && match[3] !== "-c") || (language === "js" && match[3] !== "-e")) return undefined;
-	const parsed = parsePartialShellWord(match[4]!.trimStart());
-	if (!parsed || parsed.word.trim().length === 0) return undefined;
-	if (parsed.complete && parsed.rest.trim().length > 0) return undefined;
-	return { language, code: parsed.word };
-}
-
-interface PartialShellWord {
-	word: string;
-	rest: string;
-	complete: boolean;
-}
-
-function parsePartialShellWord(input: string): PartialShellWord | undefined {
-	const quote = input[0];
-	if (quote === "'") {
-		const end = input.indexOf("'", 1);
-		if (end < 0) return { word: input.slice(1), rest: "", complete: false };
-		return { word: input.slice(1, end), rest: input.slice(end + 1), complete: true };
-	}
-	if (quote === '"') {
-		let word = "";
-		for (let index = 1; index < input.length; index += 1) {
-			const char = input[index]!;
-			if (char === "\\") {
-				const next = input[index + 1];
-				if (next === undefined) return { word: `${word}\\`, rest: "", complete: false };
-				word += '"$`\\'.includes(next) ? next : `\\${next}`;
-				index += 1;
-				continue;
-			}
-			if (char === '"') return { word, rest: input.slice(index + 1), complete: true };
-			word += char;
-		}
-		return { word, rest: "", complete: false };
-	}
-	const end = input.search(/\s/u);
-	if (end < 0) return { word: input, rest: "", complete: false };
-	return { word: input.slice(0, end), rest: input.slice(end), complete: true };
 }
 
 function scanPythonStatements(source: string, maxSourceBytes: number): Statement[] {

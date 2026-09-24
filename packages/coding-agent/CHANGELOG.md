@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bash calls highlight and outline the program of any Python/JS interpreter invocation — `.venv/bin/python - "$f" <<EOF`, `python3.12 -c`, `uv run python -`, `sudo python3`, `ssh host python3 -` — not only kernel-routed `python`/`node`/`bun` calls
+- Kernel cells and heredoc file writes are recognized with the embedded shell's own parser, so quoting, compound commands, and streaming partial commands resolve the way they execute
+- Running `python`/`node`/`bun` cells show their full Status diffs and agent progress instead of a screen-fitted preview, and Ctrl+O expands them immediately instead of waiting for the cell to finish
+
+### Fixed
+
+- `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
+- Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files
+
 ## [18.6.0] - 2026-09-23
 
 ### Added

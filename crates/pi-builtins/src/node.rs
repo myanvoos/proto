@@ -6,20 +6,19 @@ use clap::{ArgMatches, Command as ClapCommand};
 use crate::{
 	host::{Host, Utility, matches_parser, util},
 	kernel_cell::{KernelLang, kernel_lang_app, run_kernel_lang},
+	kernel_route::JS_ARGV,
 };
 
 const NODE_SPEC: KernelLang = KernelLang {
 	lang:             "js",
-	code_flag:        "-e",
-	passthrough:      &[],
+	argv:             &JS_ARGV,
 	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
 	interpreters:     &["node"],
 };
 
 const BUN_SPEC: KernelLang = KernelLang {
 	lang:             "js",
-	code_flag:        "-e",
-	passthrough:      &[],
+	argv:             &JS_ARGV,
 	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
 	interpreters:     &["bun"],
 };

@@ -821,6 +821,13 @@ export interface PtyStartOptions {
 
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
 
+/**
+ * Find the interpreter programs (`python -c …`, `.venv/bin/python - <<EOF`,
+ * `node -e …`) and heredoc file writes in a shell command. Partial
+ * (streaming) commands are closed synthetically before scanning.
+ */
+export declare function scanShellEmbeddedCode(command: string): ShellEmbeddedCode
+
 export declare function search(content: string | Uint8Array, options: SearchOptions): SearchResult
 
 export interface SearchOptions {
@@ -845,6 +852,30 @@ export interface SearchResult {
 
 export declare function setHangulCompatJamoWidthOverride(value: number): void
 
+/** Program text an interpreter invocation carries inline. */
+export interface ShellCodeCell {
+  language: "python" | "js"
+  /** The program as the interpreter receives it. */
+  code: string
+  /**
+   * UTF-16 range of the raw region: heredoc body, or the code word with its
+   * quoting.
+   */
+  start: number
+  end: number
+  /** Executes as a persistent kernel cell rather than a real interpreter. */
+  kernel: boolean
+  /** The command holds shell source besides this interpreter call. */
+  mixed: boolean
+}
+
+export interface ShellEmbeddedCode {
+  /** Interpreter programs in source order. */
+  cells: Array<ShellCodeCell>
+  /** Heredoc file writes in source order. */
+  writes: Array<ShellFileWrite>
+}
+
 export interface ShellExecuteOptions {
   command: string
   cwd?: string
@@ -854,6 +885,16 @@ export interface ShellExecuteOptions {
   snapshotPath?: string
   minimizer?: MinimizerOptions
   signal?: unknown
+}
+
+/** Source a `cat`/`tee` heredoc writes to a file. */
+export interface ShellFileWrite {
+  /** Destination path after shell quote removal. */
+  path: string
+  code: string
+  /** UTF-16 range of the heredoc body. */
+  start: number
+  end: number
 }
 
 export interface ShellOptions {

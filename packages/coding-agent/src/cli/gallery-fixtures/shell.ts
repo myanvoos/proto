@@ -70,6 +70,36 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
+	bash_python_venv: {
+		label: "Bash running a virtualenv interpreter on a stdin program",
+		renderer: "bash",
+		streamingArgs: {
+			command:
+				"for f in data/*.csv; do\n  .venv/bin/python - \"$f\" <<'PY'\nimport csv\nimport sys\n\ndef summarize(path",
+		},
+		args: {
+			command: [
+				"for f in data/*.csv; do",
+				"  .venv/bin/python - \"$f\" <<'PY'",
+				"import csv",
+				"import sys",
+				"",
+				"def summarize(path):",
+				"    with open(path) as handle:",
+				"        rows = list(csv.DictReader(handle))",
+				'    return f"{path}: {len(rows)} rows"',
+				"",
+				"print(summarize(sys.argv[1]))",
+				"PY",
+				"done",
+			].join("\n"),
+		},
+		result: {
+			content: [{ type: "text", text: "data/a.csv: 12 rows\ndata/b.csv: 7 rows\n" }],
+			details: { exitCode: 0, wallTimeMs: 310 },
+		},
+	},
+
 	bash_kernel_display: {
 		label: "Bash kernel cell with display output and a file mutation",
 		renderer: "bash",

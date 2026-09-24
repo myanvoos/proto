@@ -11,7 +11,10 @@ use brush_core::openfiles::OpenFile;
 use clap::{Arg, Command as ClapCommand, builder::ValueParser};
 use serde_json::{Value, json};
 
-use crate::host::Host;
+use crate::{
+	host::Host,
+	kernel_route::{ArgvRoute, KernelArgv, route_argv},
+};
 
 const ADDR_VAR: &str = "PI_KERNEL_BRIDGE_ADDR";
 const TOKEN_VAR: &str = "PI_KERNEL_BRIDGE_TOKEN";
@@ -22,8 +25,7 @@ const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(crate) struct KernelLang {
 	pub lang:             &'static str,
-	pub code_flag:        &'static str,
-	pub passthrough:      &'static [&'static str],
+	pub argv:             &'static KernelArgv,
 	pub fleet_extensions: &'static [&'static str],
 	/// PATH names to try, in order, when the invocation falls through to a real
 	/// interpreter (the invoked builtin name is always tried first). Lets
@@ -66,23 +68,9 @@ enum Plan {
 }
 
 fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
-	let mut index = 0;
-	while index < argv.len() {
-		let Some(arg) = argv[index].to_str() else {
-			return Plan::External { stdin_body: None };
-		};
-		if spec.passthrough.contains(&arg) {
-			index += 1;
-			continue;
-		}
-		if arg == spec.code_flag {
-			let code = argv.get(index + 1).and_then(|value| value.to_str());
-			let Some(code) = code else {
-				return Plan::External { stdin_body: None };
-			};
-			if index + 2 < argv.len() {
-				return Plan::External { stdin_body: None };
-			}
+	let args: Vec<Option<&str>> = argv.iter().map(|arg| arg.to_str()).collect();
+	match route_argv(spec.argv, &args) {
+		ArgvRoute::Code(index) => {
 			// `-c CODE` takes its program text from argv, so stdin belongs to the program,
 			// not to us. A kernel cell runs in the long-lived kernel process and cannot see
 			// this pipeline's stdin, so `curl … | python -c 'json.load(sys.stdin)'` would
@@ -90,29 +78,24 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 			if host.stdin.carries_program_input() {
 				return Plan::External { stdin_body: None };
 			}
-			return Plan::Cell { code: code.to_string(), stdin_body: None };
-		}
-		if arg == "-" {
-			if index + 1 < argv.len() {
+			let code = args[index].unwrap_or_default();
+			Plan::Cell { code: code.to_string(), stdin_body: None }
+		},
+		ArgvRoute::Script(index) => plan_positional(spec, argv, index, host),
+		ArgvRoute::External => Plan::External { stdin_body: None },
+		ArgvRoute::Stdin => {
+			if host.stdin.file().is_terminal() {
 				return Plan::External { stdin_body: None };
 			}
-		} else if arg.starts_with('-') {
-			return Plan::External { stdin_body: None };
-		} else {
-			return plan_positional(spec, argv, index, host);
-		}
-		index += 1;
-	}
-	if host.stdin.file().is_terminal() {
-		return Plan::External { stdin_body: None };
-	}
-	let mut body = Vec::new();
-	if host.stdin.read_to_end(&mut body).is_err() {
-		return Plan::External { stdin_body: Some(body) };
-	}
-	match str::from_utf8(&body) {
-		Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body) },
-		Err(_) => Plan::External { stdin_body: Some(body) },
+			let mut body = Vec::new();
+			if host.stdin.read_to_end(&mut body).is_err() {
+				return Plan::External { stdin_body: Some(body) };
+			}
+			match str::from_utf8(&body) {
+				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body) },
+				Err(_) => Plan::External { stdin_body: Some(body) },
+			}
+		},
 	}
 }
 
