@@ -944,6 +944,11 @@ export class SessionMaintenance {
 
 	async runIdleCompaction(): Promise<void> {
 		if (this.#host.isStreaming() || this.isCompacting) return;
+		try {
+			await this.#host.sessionManager.sweepBlobs();
+		} catch (error) {
+			logger.warn("Idle blob sweep failed", { error: String(error) });
+		}
 		await this.runAutoCompaction("idle", false);
 	}
 

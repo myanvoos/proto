@@ -260,6 +260,8 @@ export class ToolExecutionComponent extends Container {
 	#displayInputVersion = 0;
 
 	#displayBuilt = false;
+	#displayUpdateScheduled = false;
+	#displayUpdateRequested = false;
 
 	#renderedImageCount = 0;
 	#tool?: AgentTool;
@@ -281,6 +283,8 @@ export class ToolExecutionComponent extends Container {
 	#sealed = false;
 
 	#displaceableByToolName: DisplaceableToolName | undefined;
+	/** A sealed card keeps its identity for displacement revival; the transcript container must not compact it. */
+	#everDisplaceable = false;
 
 	#renderState: {
 		spinnerFrame?: number;
@@ -368,13 +372,18 @@ export class ToolExecutionComponent extends Container {
 		this.#resultVersion++;
 		this.#isPartial = isPartial;
 		this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
+		if (this.#displaceableByToolName !== undefined) this.#everDisplaceable = true;
 
 		if (!isPartial) {
 			this.#argsComplete = true;
 		}
 		this.#updateSpinnerAnimation();
 		this.#updateChecklistStrikeAnimation();
-		this.#updateDisplay();
+		if (isPartial) {
+			this.#scheduleDisplayUpdate();
+		} else {
+			this.#updateDisplay();
+		}
 		this.#maybeConvertImagesForKitty();
 	}
 
@@ -524,6 +533,11 @@ export class ToolExecutionComponent extends Container {
 		return this.#displaceableByToolName !== undefined && !this.#sealed;
 	}
 
+	/** True while the displacement surface exists at all (sealed included), unlike {@link isDisplaceableBlock}. */
+	isDisplacementParticipant(): boolean {
+		return this.#everDisplaceable;
+	}
+
 	canBeDisplacedBy(nextToolName: string | undefined): boolean {
 		return (
 			this.#displaceableByToolName !== undefined && this.#displaceableByToolName === nextToolName && !this.#sealed
@@ -565,7 +579,21 @@ export class ToolExecutionComponent extends Container {
 		this.#updateDisplay();
 	}
 
+	#scheduleDisplayUpdate(): void {
+		this.#displayUpdateScheduled = true;
+		if (this.#displayUpdateRequested) return;
+		this.#displayUpdateRequested = true;
+		this.#ui.requestComponentRender(this);
+	}
+
+	#flushScheduledDisplayUpdate(): void {
+		if (!this.#displayUpdateScheduled) return;
+		this.#updateDisplay();
+	}
+
 	#updateDisplay(): void {
+		this.#displayUpdateScheduled = false;
+		this.#displayUpdateRequested = false;
 		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
@@ -575,6 +603,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
+		this.#flushScheduledDisplayUpdate();
 		if (!this.#toolActivityVisible) return [];
 		return super.render(width);
 	}

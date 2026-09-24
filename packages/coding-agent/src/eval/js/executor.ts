@@ -143,6 +143,8 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			runState: {
 				signal,
 				onText: chunk => outputSink.push(chunk),
+				retainedBytes: () => outputSink.retainedBytes(),
+				release: () => outputSink.release(),
 				onDisplay: output => {
 					if (output.type === "status") {
 						options.onStatus?.(output.event);

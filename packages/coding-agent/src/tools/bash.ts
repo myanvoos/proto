@@ -100,6 +100,10 @@ import { XdevUsageError } from "./xdev-cli";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
+// Live output is a best-effort view; keep it responsive while retaining a
+// deterministic trailing update when execution settles.
+const BASH_LIVE_UPDATE_INTERVAL_MS = 33;
+
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function wrapShellLineForClientTerminal(
@@ -1212,7 +1216,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const label = options.command.length > 120 ? `${options.command.slice(0, 117)}...` : options.command;
 		let latestText = "";
+		let latestTextDirty = false;
 		let forwardUpdates = options.forwardUpdates;
+		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 
 		const jobId = manager.register(
@@ -1220,8 +1226,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			label,
 			async ({ jobId, signal: runSignal, reportProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
-				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
+				const progressScheduler = new LatestValueScheduler<void>(
+					async () => {
+						latestText = tailBuffer.text();
+						latestTextDirty = false;
+						await reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
+					},
+					{ delayMs: BASH_LIVE_UPDATE_INTERVAL_MS },
+				);
 				const pyBridge = this.#kernelShellBridge(jobId, {
 					command: options.command,
 					cwd: options.commandCwd,
@@ -1241,8 +1254,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						artifactId,
 						onChunk: chunk => {
 							tailBuffer.append(chunk);
-							latestText = tailBuffer.text();
-							void reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
+							latestTextDirty = true;
+							progressScheduler.enqueue(undefined);
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
@@ -1258,7 +1271,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						jsonOutputs: pyBridge?.drainJsonOutputs(),
 					});
 					const finalText = this.#extractTextResult(finalResult);
+					await progressScheduler.flush();
 					latestText = finalText;
+					latestTextDirty = false;
 
 					completion.resolve({ kind: "completed", result: finalResult });
 					if (finalResult.isError === true) {
@@ -1268,11 +1283,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					return finalText;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
+					await progressScheduler.flush();
 					latestText = message;
+					latestTextDirty = false;
 					completion.resolve({ kind: "failed", error });
 					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
 					throw error;
 				} finally {
+					progressScheduler.cancel();
 					pyBridge?.dispose();
 				}
 			},
@@ -1300,7 +1318,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		return {
 			jobId,
 			completion: completion.promise,
-			getLatestText: () => latestText,
+			getLatestText: () => {
+				if (latestTextDirty) {
+					latestText = tailBuffer.text();
+					latestTextDirty = false;
+				}
+				return latestText;
+			},
 			stopUpdates: () => {
 				forwardUpdates = false;
 			},
@@ -1784,6 +1808,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				},
 			});
 		};
+		const liveUpdateScheduler = new LatestValueScheduler<void>(pushLiveUpdate, {
+			delayMs: BASH_LIVE_UPDATE_INTERVAL_MS,
+		});
 		const pyBridge = interactiveUi
 			? undefined
 			: this.#kernelShellBridge(
@@ -1791,7 +1818,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested },
 					event => {
 						upsertStatusEvent(liveStatusEvents, event);
-						pushLiveUpdate();
+						liveUpdateScheduler.enqueue(undefined);
 					},
 				);
 		try {
@@ -1816,7 +1843,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						artifactId,
 						onChunk: chunk => {
 							tailBuffer.append(chunk);
-							pushLiveUpdate();
+							liveUpdateScheduler.enqueue(undefined);
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
@@ -1848,6 +1875,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				jsonOutputs: pyBridge?.drainJsonOutputs(),
 			});
 		} finally {
+			await liveUpdateScheduler.flush();
+			liveUpdateScheduler.cancel();
 			pyBridge?.dispose();
 		}
 	}

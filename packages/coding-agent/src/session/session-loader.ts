@@ -1,10 +1,17 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { getBlobsDir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
-import { type BlobReader, BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
+import { getBlobsDir, isEnoent, isEnotdir, logger, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import {
+	type BlobReader,
+	BlobStore,
+	isBlobRef,
+	parseBlobRef,
+	resolveImageData,
+	resolveImageDataUrl,
+} from "./blob-store";
 import { buildSessionContext } from "./session-context";
 import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
-import { isImageBlock, isImageDataPayload } from "./session-persistence";
+import { isImageBlock, isImageDataPayload, isPersistedReplayBlobRef } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
 import {
 	parseTitleSlotFromContent,
@@ -439,18 +446,39 @@ async function resolvePersistedBlobRefs(
 	blobStore: BlobStore,
 	readBlob: BlobReader,
 	key?: string,
-): Promise<void> {
+): Promise<unknown> {
+	if (isPersistedReplayBlobRef(value)) {
+		const hash = parseBlobRef(value.__protoReplayBlob);
+		if (!hash) return value;
+		const buffer = await readBlob(hash);
+		if (!buffer) {
+			logger.warn("Blob not found for persisted replay payload", { hash });
+			return value;
+		}
+		try {
+			const parsed: unknown = JSON.parse(buffer.toString("utf8"));
+			return await resolvePersistedBlobRefs(parsed, blobStore, readBlob, key);
+		} catch (error) {
+			logger.warn("Invalid persisted replay payload blob", {
+				hash,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return value;
+		}
+	}
+
 	if (shouldResolveImagePayload(value, key)) {
 		value.data = await resolveImageData(blobStore, value.data, readBlob);
-		return;
+		return value;
 	}
 
 	if (Array.isArray(value)) {
-		await Promise.all(value.map(item => resolvePersistedBlobRefs(item, blobStore, readBlob, key)));
-		return;
+		const hydrated = await Promise.all(value.map(item => resolvePersistedBlobRefs(item, blobStore, readBlob, key)));
+		for (let index = 0; index < hydrated.length; index++) value[index] = hydrated[index];
+		return value;
 	}
 
-	if (typeof value !== "object" || value === null) return;
+	if (typeof value !== "object" || value === null) return value;
 	if (
 		"type" in value &&
 		value.type === "image_generation_call" &&
@@ -466,12 +494,17 @@ async function resolvePersistedBlobRefs(
 	}
 
 	await Promise.all(
-		Object.entries(value).map(([childKey, item]) => resolvePersistedBlobRefs(item, blobStore, readBlob, childKey)),
+		Object.entries(value).map(async ([childKey, item]) => {
+			const hydrated = await resolvePersistedBlobRefs(item, blobStore, readBlob, childKey);
+			(value as Record<string, unknown>)[childKey] = hydrated;
+		}),
 	);
+	return value;
 }
 
 function containsBlobRef(value: unknown, key?: string): boolean {
 	if (typeof value !== "object" || value === null) return false;
+	if (isPersistedReplayBlobRef(value)) return true;
 	if (Array.isArray(value)) {
 		for (const item of value) {
 			if (containsBlobRef(item, key)) return true;
@@ -500,7 +533,7 @@ function containsBlobRef(value: unknown, key?: string): boolean {
 
 async function resolveBlobRefs(values: readonly unknown[], blobStore: BlobStore): Promise<void> {
 	const readBlob = createBoundedBlobReader(blobStore);
-	const pending: Promise<void>[] = [];
+	const pending: Promise<unknown>[] = [];
 	for (const value of values) {
 		if (!containsBlobRef(value)) continue;
 		pending.push(resolvePersistedBlobRefs(value, blobStore, readBlob));

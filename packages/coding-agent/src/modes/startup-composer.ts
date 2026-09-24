@@ -33,6 +33,7 @@ interface PendingComposer {
 	readonly composer: Composer;
 	readonly cwd: string;
 	readonly cache: boolean;
+	handedOff: boolean;
 }
 
 let pendingComposer: PendingComposer | undefined;
@@ -98,7 +99,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		} catch {}
 		throw error;
 	}
-	const pending = { composer, cwd, cache: useCache };
+	const pending = { composer, cwd, cache: useCache, handedOff: false };
 	pendingComposer = pending;
 	void refreshRecentSessions(pending, options.recentSessions);
 }
@@ -106,7 +107,9 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 export function takeStartupComposerLease(): ComposerLease | undefined {
 	const pending = pendingComposer;
 	pendingComposer = undefined;
-	return pending ? new ComposerLease(pending.composer) : undefined;
+	if (!pending) return undefined;
+	pending.handedOff = true;
+	return new ComposerLease(pending.composer);
 }
 
 export function stopPendingStartupComposer(): void {
@@ -141,6 +144,10 @@ async function refreshRecentSessions(
 	pending: PendingComposer,
 	loadOverride: (() => Promise<RecentSession[]>) | undefined,
 ): Promise<void> {
+	// getRecentSessions performs directory/stat work before its first await. Let
+	// the prepaint frame reach the terminal before starting that synchronous
+	// metadata pass.
+	await waitForImmediate();
 	try {
 		const sessions = loadOverride ? await loadOverride() : await loadRecentSessions(pending.cwd);
 		if (pending.cache) {
@@ -148,11 +155,17 @@ async function refreshRecentSessions(
 				logger.debug("composer recent sessions cache write failed", { error });
 			});
 		}
-		if (pendingComposer !== pending) return;
+		if (pendingComposer !== pending && !pending.handedOff) return;
 		pending.composer.updateWelcome({ recentSessions: sessions });
 	} catch (error) {
 		logger.debug("composer recent sessions load failed", { error });
 	}
+}
+
+async function waitForImmediate(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setImmediate(resolve);
+	await promise;
 }
 
 async function loadRecentSessions(cwd: string): Promise<RecentSession[]> {

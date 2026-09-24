@@ -191,6 +191,12 @@ export function computeEditorMaxHeight(terminalRows: number): number {
 	return Math.max(EDITOR_MIN_RENDERED_ROWS, Math.min(comfortable, rows - EDITOR_MIN_CHROME_ROWS));
 }
 
+async function waitForImmediate(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setImmediate(resolve);
+	await promise;
+}
+
 class HookStatusRow implements Component {
 	constructor(private readonly line: (width: number) => readonly string[]) {}
 	render(width: number): readonly string[] {
@@ -802,23 +808,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		const modelName = this.session.model?.name ?? "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
 
-		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
-			getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
-				sessions.map(s => ({
-					name: s.name,
-					timeAgo: s.timeAgo,
-				})),
-			),
-		);
 		const startupQuiet = settings.get("startup.quiet");
 		this.composer.setPreferences({ quiet: startupQuiet });
 		this.composer.updateWelcome({
 			version: this.#version,
 			modelName,
 			providerName,
-			recentSessions,
 		});
 		this.#persistComposerWelcome(modelName, providerName);
+		const refreshRecentSessions = !this.#ownsStartedUi;
 		const headerBefore = this.#buildConfigWarningComponents();
 		const headerAfter: Component[] = [];
 		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
@@ -891,6 +889,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.composer.start({ clearScrollback: true });
 			this.#ownsStartedUi = true;
 		}
+		if (refreshRecentSessions) void this.#refreshRecentSessions();
 		pushTerminalTitle();
 		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
@@ -2697,6 +2696,25 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void {
 		this.#uiHelpers.showWarning(message, options);
+	}
+
+	async #refreshRecentSessions(): Promise<void> {
+		// getRecentSessions performs directory/stat work before its first await.
+		// Defer it until after the mode-owned composer has had a chance to paint.
+		await waitForImmediate();
+		try {
+			const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
+				getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
+					sessions.map(s => ({
+						name: s.name,
+						timeAgo: s.timeAgo,
+					})),
+				),
+			);
+			this.composer.updateWelcome({ recentSessions });
+		} catch (error) {
+			logger.debug("InteractiveMode recent sessions load failed", { error });
+		}
 	}
 
 	#updateWelcomeModel(): void {

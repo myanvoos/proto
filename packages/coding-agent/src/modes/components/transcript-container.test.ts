@@ -542,6 +542,42 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderTail(80, 0)).toEqual([]);
 	});
 
+	it("releases committed component instances while retaining the complete replay ledger", () => {
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 2_000 }, (_, index) => new Block([`settled ${index}`], true));
+		for (const block of blocks) transcript.addChild(block);
+
+		const committed = transcript.peekFlushBatch(80);
+		if (!committed) throw new Error("Expected committed history batch");
+		transcript.acknowledgeFinalizedBatch(committed.id);
+
+		expect(transcript.blockStates()).toEqual(Array.from({ length: blocks.length }, () => "committed"));
+		expect(transcript.children.some(child => blocks.includes(child as Block))).toBe(false);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(80);
+		if (!replay) throw new Error("Expected replay batch");
+		expect(replay.rows).toEqual(committed.rows);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+		expect(transcript.render(80)).toEqual(
+			blocks.flatMap((_, index) => (index === 0 ? [`settled ${index}`] : ["", `settled ${index}`])),
+		);
+	});
+
+	it("keeps committed child deep links after replacing their heavy components", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["first"], true);
+		const second = new Block(["second"], true);
+		transcript.addChild(first);
+		transcript.addChild(second);
+		const batch = transcript.peekFlushBatch(80);
+		if (!batch) throw new Error("Expected committed history batch");
+		transcript.acknowledgeFinalizedBatch(batch.id);
+
+		transcript.render(80);
+		expect(transcript.getChildStartRow(first)).toBe(0);
+		expect(transcript.getChildStartRow(second)).toBe(2);
+	});
+
 	it("cancels a pending replay so shutdown flush emits only un-retired rows", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["committed"], true));
@@ -558,6 +594,31 @@ describe("TranscriptContainer", () => {
 describe("TranscriptContainer viewport pressure", () => {
 	const frame = { now: 0, tick: 0 };
 
+	it("reuses measured 256-block rows and rerenders only changed overflow allocations", () => {
+		class CountedBlock extends Block {
+			renders = 0;
+
+			override render(): readonly string[] {
+				this.renders++;
+				return super.render();
+			}
+		}
+
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from(
+			{ length: 256 },
+			(_, index) => new CountedBlock([`block ${index}`, `detail ${index}`], false),
+		);
+		for (const block of blocks) transcript.addChild(block);
+
+		expect(transcript.liveRowCount(80, frame)).toBe(767);
+		const viewport = transcript.renderViewport(80, 511, frame);
+
+		expect(viewport).toHaveLength(511);
+		expect(blocks.reduce((total, block) => total + block.renders, 0)).toBe(512);
+		expect(transcript.blockStates()).toEqual(Array.from({ length: 256 }, () => "active"));
+	});
+
 	function prompts(count: number): TranscriptContainer {
 		initThemeSync();
 		const transcript = new TranscriptContainer();
@@ -566,6 +627,23 @@ describe("TranscriptContainer viewport pressure", () => {
 		}
 		return transcript;
 	}
+
+	it("keeps measured live rows and history retirement consistent in one frame", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["retire", "detail"], true);
+		transcript.addChild(first);
+		for (let index = 1; index < 256; index++) transcript.addChild(new Block([`live ${index}`], false));
+
+		expect(transcript.liveRowCount(80, frame)).toBe(512);
+		const history = transcript.peekFinalizedBatch(80, 300)!;
+		const viewport = transcript.renderViewport(80, 300, frame);
+
+		expect(history.rows).toEqual(["retire", "detail", ""]);
+		expect(viewport.length).toBeLessThanOrEqual(300);
+		expect(viewport.at(-1)).toBe("live 255");
+		transcript.acknowledgeFinalizedBatch(history.id);
+		expect(transcript.blockStates()[0]).toBe("committed");
+	});
 
 	it("spends a clipped block's rows on its prompt instead of its spacer", () => {
 		const transcript = prompts(6);

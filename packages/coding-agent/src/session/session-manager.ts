@@ -30,7 +30,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
-import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import { type BlobPutOptions, type BlobPutResult, BlobStore, sweepUnreferencedBlobs } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
 import {
 	type BashExecutionMessage,
@@ -590,6 +590,9 @@ interface AtomicEntryBatch {
 	externalLeafChanged: boolean;
 	externalLeafId: string | null;
 }
+
+const BLOB_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let lastBlobSweepAt = 0;
 
 export class SessionPersistenceIndeterminateError extends AggregateError {
 	readonly operationError: Error;
@@ -1638,6 +1641,12 @@ export class SessionManager {
 			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
 			.replace(/ +/g, " ")
 			.trim();
+	}
+
+	async sweepBlobs(): Promise<void> {
+		if (!this.#persist || Date.now() - lastBlobSweepAt < BLOB_SWEEP_INTERVAL_MS) return;
+		lastBlobSweepAt = Date.now();
+		await sweepUnreferencedBlobs(this.#blobs.dir, getSessionsDir());
 	}
 
 	async putBlob(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {

@@ -329,6 +329,21 @@ type DisplayArgsStep = {
 	changed: boolean;
 };
 
+/**
+ * One decode of a cumulative tool-argument prefix. `args` is the classification
+ * view (including already-known full arguments); `displayArgs` is the prefix
+ * view used by the renderer. Keeping both views in the snapshot lets the event
+ * controller classify and paint the same prefix without parsing it twice.
+ */
+export type DecodedStreamedToolArgs = {
+	partialJson: string;
+	rawInput: boolean;
+	parsedArgs: Record<string, unknown>;
+	extractedValues: Record<string, string>;
+	args: Record<string, unknown>;
+	displayArgs: Record<string, unknown>;
+};
+
 function initialDisplayArgs(): Record<string, unknown> {
 	return { __partialJson: "" };
 }
@@ -341,7 +356,22 @@ function resetDisplayState(entry: RevealEntry): void {
 	entry.stringExtractor?.reset();
 }
 
-function displayArgsForPrefix(entry: RevealEntry, prefix: string, forceParse = false): DisplayArgsStep {
+function displayArgsForPrefix(
+	entry: RevealEntry,
+	prefix: string,
+	forceParse = false,
+	snapshot?: DecodedStreamedToolArgs,
+): DisplayArgsStep {
+	if (snapshot && !forceParse && snapshot.partialJson === prefix && snapshot.rawInput === entry.rawInput) {
+		// The event controller already decoded this exact prefix for classification.
+		// Consume its renderer view directly; reveal frames still use the policy below.
+		const changed = entry.displayPrefix !== prefix;
+		entry.parsedArgs = snapshot.displayArgs;
+		entry.parsedLen = prefix.length;
+		entry.displayArgs = snapshot.displayArgs;
+		entry.displayPrefix = prefix;
+		return { args: snapshot.displayArgs, changed };
+	}
 	if (entry.rawInput) {
 		if (prefix === entry.displayPrefix) return { args: entry.displayArgs, changed: false };
 		const args = { input: prefix, __partialJson: prefix };
@@ -393,16 +423,46 @@ type StreamedToolArgsSource = {
 	streamingStringKeys?: readonly string[];
 };
 
-export function decodeStreamedToolArgs(partialJson: string, source: StreamedToolArgsSource): Record<string, unknown> {
+type StreamedToolArgsDecodeOptions =
+	| { parseMode: "fresh" }
+	| { parseMode: "throttled"; parsedLen: number; previousParsedArgs: Record<string, unknown> };
+
+export function decodeStreamedToolArgsSnapshot(
+	partialJson: string,
+	source: StreamedToolArgsSource,
+	options: StreamedToolArgsDecodeOptions = { parseMode: "fresh" },
+): DecodedStreamedToolArgs {
 	if (source.rawInput) {
-		return { input: partialJson, __partialJson: partialJson };
+		const displayArgs = { input: partialJson, __partialJson: partialJson };
+		return {
+			partialJson,
+			rawInput: true,
+			parsedArgs: displayArgs,
+			extractedValues: {},
+			args: displayArgs,
+			displayArgs,
+		};
 	}
-	const parsed = parseStreamingJson<Record<string, unknown>>(partialJson);
-	const args: Record<string, unknown> = source.fullArgs ? { ...source.fullArgs, ...parsed } : { ...parsed };
-	const extracted = createStringExtractor(source.streamingStringKeys)?.update(partialJson);
-	if (extracted) Object.assign(args, extracted.values);
+	let parsedArgs: Record<string, unknown>;
+	if (options.parseMode === "fresh") {
+		parsedArgs = parseStreamingJson<Record<string, unknown>>(partialJson);
+	} else {
+		parsedArgs =
+			parseStreamingJsonThrottled<Record<string, unknown>>(partialJson, options.parsedLen)?.value ??
+			options.previousParsedArgs;
+	}
+	const extractor = createStringExtractor(source.streamingStringKeys);
+	const extractedValues = extractor?.update(partialJson).values ?? {};
+	const displayArgs: Record<string, unknown> = { ...parsedArgs, ...extractedValues, __partialJson: partialJson };
+	const args: Record<string, unknown> = source.fullArgs
+		? { ...source.fullArgs, ...parsedArgs, ...extractedValues }
+		: { ...displayArgs };
 	args.__partialJson = partialJson;
-	return args;
+	return { partialJson, rawInput: false, parsedArgs, extractedValues, args, displayArgs };
+}
+
+export function decodeStreamedToolArgs(partialJson: string, source: StreamedToolArgsSource): Record<string, unknown> {
+	return decodeStreamedToolArgsSnapshot(partialJson, source, { parseMode: "fresh" }).args;
 }
 
 export class ToolArgsRevealController {
@@ -416,7 +476,12 @@ export class ToolArgsRevealController {
 		this.#requestRender = options.requestRender;
 	}
 
-	setTarget(id: string, partialJson: string, target: ToolArgsRevealTarget): Record<string, unknown> {
+	setTarget(
+		id: string,
+		partialJson: string,
+		target: ToolArgsRevealTarget,
+		snapshot?: DecodedStreamedToolArgs,
+	): Record<string, unknown> {
 		const { rawInput, exposeRawPartialJson, streamingStringKeys } = target;
 		let entry = this.#entries.get(id);
 		if (!entry) {
@@ -457,7 +522,7 @@ export class ToolArgsRevealController {
 		if (!this.#getSmoothStreaming()) entry.revealed = entry.target.length;
 		entry.revealed = clampSliceEnd(entry.target, entry.revealed);
 		this.#syncTimer();
-		return displayArgsForPrefix(entry, entry.target.slice(0, entry.revealed)).args;
+		return displayArgsForPrefix(entry, entry.target.slice(0, entry.revealed), false, snapshot).args;
 	}
 
 	bind(id: string, component: ToolArgsRevealComponent): void {

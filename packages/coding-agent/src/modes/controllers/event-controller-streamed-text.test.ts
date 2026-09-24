@@ -344,6 +344,10 @@ class DisplaceableChecklistSnapshot implements Component {
 		return this.#displaceable && !this.sealed;
 	}
 
+	isDisplacementParticipant(): boolean {
+		return true;
+	}
+
 	canBeDisplacedBy(toolName: string | undefined): boolean {
 		return toolName === "checklist" && this.isDisplaceableBlock();
 	}

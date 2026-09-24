@@ -70,6 +70,8 @@ export interface GenericKernel<TEnv> {
 			timeoutMs?: number;
 			onChunk: (text: string) => Promise<void> | void;
 			onDisplay: (output: KernelDisplayOutput) => Promise<void> | void;
+			retainedOutputBytes?: () => number;
+			releaseOutput?: () => void;
 		},
 	): Promise<{
 		status: "ok" | "error";
@@ -495,6 +497,8 @@ export async function executeWithKernelBase<
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,
 			onChunk: text => sink.push(text),
+			retainedOutputBytes: () => sink.retainedBytes(),
+			releaseOutput: () => sink.release(),
 			onDisplay: output => {
 				collectDisplay(output);
 				return options?.onDisplay?.(output);

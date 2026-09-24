@@ -7,7 +7,10 @@ import { UiHelpers } from "./ui-helpers";
 
 await initTheme(false, false, "proto");
 
-const frame = { tick: 0, now: 0 };
+// One unique frame per render pass, mirroring the composer: the live render
+// cache is keyed by frame, so each pass must observe fresh mutations.
+let pass = 0;
+const frame = () => ({ now: pass * 1e6, tick: pass++ });
 
 test("a status after one already committed to scrollback reaches the screen instead of rewriting the frozen row", () => {
 	const chat = new TranscriptContainer();
@@ -19,7 +22,7 @@ test("a status after one already committed to scrollback reaches the screen inst
 		},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
-	const liveText = () => Bun.stripANSI(chat.renderViewport(80, 20, frame).join("\n"));
+	const liveText = () => Bun.stripANSI(chat.renderViewport(80, 20, frame()).join("\n"));
 
 	helpers.showStatus("Viewing agent Side-1");
 	const committed = chat.peekFlushBatch(80);

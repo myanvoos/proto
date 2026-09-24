@@ -276,3 +276,61 @@ describe("session listing incremental rescan", () => {
 		expect(after[0]?.allMessagesText).not.toContain("entry 5");
 	});
 });
+
+test("cold listing streams large JSONL files without reading the full file", async () => {
+	class RangeOnlyStorage extends FileSessionStorage {
+		fullReads = 0;
+		override async readText(file: string): Promise<string> {
+			this.fullReads++;
+			throw new Error(`unexpected full read: ${file}`);
+		}
+	}
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-stream-"));
+	try {
+		const file = writeSessionFile(dir, "large.jsonl", "stream1");
+		const lines = Array.from(
+			{ length: 800 },
+			(_, index) =>
+				`${JSON.stringify({ type: "message", message: { role: "user", content: `message ${index} ${"x".repeat(80)}` } })}\n`,
+		).join("");
+		fs.appendFileSync(file, lines);
+		const sessions = await listSessions(dir, new RangeOnlyStorage());
+		expect(sessions).toHaveLength(1);
+		expect(sessions[0]?.messageCount).toBe(800);
+		expect(sessions[0]?.firstMessage).toContain("message 0");
+		expect(sessions[0]?.allMessagesText).toContain("message 0");
+		expect(sessions[0]?.allMessagesText.length).toBeLessThanOrEqual(16_384);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("session scan cache evicts by retained search bytes, not entry count alone", async () => {
+	class CountingStorage extends FileSessionStorage {
+		rangeReads = new Map<string, number>();
+		override readTextRange(file: string, start: number, end: number): Promise<string> {
+			this.rangeReads.set(file, (this.rangeReads.get(file) ?? 0) + 1);
+			return super.readTextRange(file, start, end);
+		}
+	}
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-cache-budget-"));
+	try {
+		for (let index = 0; index < 270; index++) {
+			const file = writeSessionFile(dir, `session-${String(index).padStart(3, "0")}.jsonl`, `budget${index}`);
+			fs.appendFileSync(
+				file,
+				`${JSON.stringify({ type: "message", message: { role: "user", content: "x".repeat(16_000) } })}\n`,
+			);
+		}
+		const storage = new CountingStorage();
+		const sessions = await listSessions(dir, storage);
+		const oldest = sessions.at(-1)?.path;
+		expect(oldest).toBeDefined();
+		const readsBefore = storage.rangeReads.get(oldest!) ?? 0;
+		expect(readsBefore).toBeGreaterThan(0);
+		await listSessions(dir, storage);
+		expect(storage.rangeReads.get(oldest!)).toBeGreaterThan(readsBefore);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

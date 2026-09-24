@@ -16,7 +16,7 @@ import {
 import { exitProcess } from "@oh-my-pi/pi-utils/postmortem";
 import type { AppKeybinding, KeybindingsManager } from "../config/keybindings";
 import { CustomEditor } from "./components/custom-editor";
-import { isRowPrefix, TranscriptContainer } from "./components/transcript-container";
+import { type AnimationFrame, isRowPrefix, TranscriptContainer } from "./components/transcript-container";
 import { type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
@@ -251,13 +251,11 @@ export class Composer implements TerminalFrameProvider {
 		// history — it would simply be overwritten. Expanded drafts and dialogs
 		// therefore retire the transcript they cover instead of hiding it.
 		const capacity = Math.max(0, height - before.length - after.length);
-		const history = this.#offerHistory(transcript, width, capacity);
-		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#historyHeader(width);
 		const now = performance.now();
-		const live = transcript.renderViewport(width, Math.max(0, capacity - header.length), {
-			now,
-			tick: Math.floor(now / 80),
-		});
+		const frame = { now, tick: Math.floor(now / 80) };
+		const history = this.#offerHistory(transcript, width, capacity, frame);
+		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#historyHeader(width);
+		const live = transcript.renderViewport(width, Math.max(0, capacity - header.length), frame);
 		// A retired block leaves the blank that separates it from the next one at
 		// the end of history. With nothing live below it, the chrome's own gap
 		// row would double that blank.
@@ -343,7 +341,12 @@ export class Composer implements TerminalFrameProvider {
 		}
 	}
 
-	#offerHistory(transcript: TranscriptContainer, width: number, capacity: number): HistoryBatch | undefined {
+	#offerHistory(
+		transcript: TranscriptContainer,
+		width: number,
+		capacity: number,
+		frame: AnimationFrame,
+	): HistoryBatch | undefined {
 		const offered = this.#offeredHistory;
 		if (offered) {
 			// An unwritten old-width offer is withdrawn, never mutated under the
@@ -377,7 +380,8 @@ export class Composer implements TerminalFrameProvider {
 		let header = false;
 		if (!this.#headerRetired) {
 			const headerRows = this.#historyHeader(width);
-			if (!this.#historyFlush && headerRows.length + transcript.liveRowCount(width) <= capacity) return undefined;
+			if (!this.#historyFlush && headerRows.length + transcript.liveRowCount(width, frame) <= capacity)
+				return undefined;
 			header = true;
 		}
 		const retired = this.#historyFlush

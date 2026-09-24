@@ -41,7 +41,11 @@ import { appendLatestCompactionSummary } from "../utils/ui-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { shouldNotifyCompletion } from "./completion-notification";
 import { StreamingRevealController } from "./streaming-reveal";
-import { decodeStreamedToolArgs, streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
+import {
+	decodeStreamedToolArgsSnapshot,
+	streamingStringKeysForTool,
+	ToolArgsRevealController,
+} from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 type AssistantContentBlock = AssistantMessage["content"][number];
@@ -993,16 +997,26 @@ export class EventController {
 		const tool = this.ctx.viewSession.getToolByName(content.name);
 		const streamingStringKeys = streamingStringKeysForTool(content.name, rawInput);
 		if (partialJson !== undefined) {
-			classificationArgs = decodeStreamedToolArgs(partialJson, {
-				rawInput,
-				fullArgs: content.arguments,
-				streamingStringKeys,
-			});
-			renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
-				rawInput,
-				exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
-				streamingStringKeys,
-			});
+			const snapshot = decodeStreamedToolArgsSnapshot(
+				partialJson,
+				{
+					rawInput,
+					fullArgs: content.arguments,
+					streamingStringKeys,
+				},
+				{ parseMode: "fresh" },
+			);
+			classificationArgs = snapshot.args;
+			renderArgs = this.#toolArgsReveal.setTarget(
+				content.id,
+				partialJson,
+				{
+					rawInput,
+					exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
+					streamingStringKeys,
+				},
+				snapshot,
+			);
 		} else {
 			this.#toolArgsReveal.finish(content.id);
 			renderArgs = content.arguments;

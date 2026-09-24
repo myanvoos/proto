@@ -70,6 +70,38 @@ interface FinalizableBlock {
  */
 type BlockState = "active" | "settled" | "committed";
 
+type PostCommitInteractiveComponent = Component & {
+	isDisplaceableBlock?(): boolean;
+	isDisplacementParticipant?(): boolean;
+};
+
+/**
+ * Blocks that remain interactive after commit (displacement, seal-by-identity)
+ * must keep their original component; see {@link TranscriptContainer.#compactCommitted}.
+ * The participant marker is sealed-inclusive: a sealed fleet/checklist card can
+ * still be revived through displacement, so it must never be replaced.
+ */
+function isPostCommitInteractive(component: Component): boolean {
+	const candidate = component as PostCommitInteractiveComponent;
+	return candidate.isDisplacementParticipant?.() === true || candidate.isDisplaceableBlock?.() === true;
+}
+
+/** Retains only the rows required to reproduce an already-committed block. */
+class CommittedTranscriptBlock implements Component {
+	readonly original: WeakRef<Component>;
+
+	constructor(
+		readonly rows: readonly string[],
+		original: Component,
+	) {
+		this.original = new WeakRef(original);
+	}
+
+	render(_width: number): readonly string[] {
+		return this.rows;
+	}
+}
+
 interface TranscriptEntry {
 	component: Component;
 	state: BlockState;
@@ -108,6 +140,12 @@ interface LiveLayoutBlock {
 	rows: readonly string[];
 	emitted: number;
 	stable: number;
+}
+interface LiveRenderCache {
+	width: number;
+	frame: AnimationFrame;
+	generation: number;
+	blocks: Map<Component, { allocation: number; rows: readonly string[] }>;
 }
 type Offered = { width: number } & (
 	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
@@ -198,13 +236,16 @@ export class TranscriptContainer extends Container {
 	#replayPending = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	#liveGeneration = 0;
+	#liveRenderCache: LiveRenderCache | undefined;
 	// Row layout of the last unclipped live viewport: the shown blocks in order,
 	// separated by one blank row, each with the rows it painted and the emitted
 	// stable count it was sliced by. Lets a resize map rows the host pushed into
 	// scrollback back onto whole blocks. Clipped layouts are not recorded.
 	#lastLiveLayout: { width: number; blocks: LiveLayoutBlock[] } | undefined;
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
-	#childStartRows = new Map<Component, number>();
+	#childStartRows = new WeakMap<Component, number>();
+	#compactedEntries = new WeakMap<Component, TranscriptEntry>();
 	// Watchdog for the wedge where an unfinalized frontier block pins pressure
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
@@ -215,12 +256,14 @@ export class TranscriptContainer extends Container {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
 		this.#entries.push(createEntry(component));
+		this.#liveGeneration++;
 	}
 
 	override removeChild(component: Component): void {
 		if (this.children.indexOf(component) < 0 || !this.canRemoveBlock(component)) return;
 		super.removeChild(component);
 		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
+		this.#liveGeneration++;
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 		this.#childStartRows.delete(component);
 	}
@@ -229,8 +272,9 @@ export class TranscriptContainer extends Container {
 		super.clear();
 		this.#entries = [];
 		this.#frontier = 0;
+		this.#liveGeneration++;
 		this.#offered = undefined;
-		this.#childStartRows.clear();
+		this.#childStartRows = new WeakMap<Component, number>();
 		this.#pinnedFrontier = undefined;
 		this.#replayPending = false;
 	}
@@ -238,6 +282,7 @@ export class TranscriptContainer extends Container {
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#toolActivityVisible === visible) return;
 		this.#toolActivityVisible = visible;
+		this.#liveGeneration++;
 		for (const child of this.children) {
 			if (isToolActivityComponent(child)) child.setToolActivityVisible(visible);
 		}
@@ -259,6 +304,7 @@ export class TranscriptContainer extends Container {
 	resetStableEmission(): void {
 		this.#syncEntries();
 		if (this.#offered?.kind === "append") this.#offered = undefined;
+		this.#liveGeneration++;
 		for (const entry of this.#entries) {
 			entry.emitted = 0;
 			entry.stableRows = EMPTY_STABLE_ROWS;
@@ -331,13 +377,12 @@ export class TranscriptContainer extends Container {
 	}
 
 	/** Total rows the live, un-emitted tail occupies at `width`. */
-	liveRowCount(width: number): number {
+	liveRowCount(width: number, frame: AnimationFrame = this.#lastFrame): number {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
 		for (const { entry, index } of this.#liveEntries()) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const rendered = this.#renderEntry(entry, width);
+			const rendered = this.#renderLiveEntry(entry, width, Number.MAX_SAFE_INTEGER, frame);
 			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width, rendered));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
 		}
@@ -361,8 +406,7 @@ export class TranscriptContainer extends Container {
 		const layout: LiveLayoutBlock[] = [];
 		let total = 0;
 		for (const candidate of live) {
-			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
-			const rendered = this.#renderEntry(candidate.entry, width);
+			const rendered = this.#renderLiveEntry(candidate.entry, width, Number.MAX_SAFE_INTEGER, frame);
 			const emitted = this.#projectedEmitted(candidate.entry, candidate.index);
 			const block = rendered.slice(this.#emittedRowCount(candidate.entry, emitted, width, rendered));
 			if (block.length === 0) continue;
@@ -417,8 +461,7 @@ export class TranscriptContainer extends Container {
 		for (let index = 0; index < shown.length; index++) {
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
-			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const full = this.#renderEntry(candidate.entry, width);
+			const full = this.#renderLiveEntry(candidate.entry, width, allocated, frame);
 			const rendered = full.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, full));
 			const content = contentRows(rendered);
 			const visible =
@@ -642,8 +685,7 @@ export class TranscriptContainer extends Container {
 			if (entry === undefined || shown.index !== this.#frontier || entry.emitted !== shown.emitted) return start;
 			const end = start + shown.rows.length;
 			if (entry.state === "settled" && end < budget) {
-				entry.state = "committed";
-				entry.emitted = 0;
+				this.#compactCommitted(entry, layout.width);
 				this.#frontier++;
 				start = end + 1;
 				continue;
@@ -692,9 +734,7 @@ export class TranscriptContainer extends Container {
 			entry.emitted = offered.emittedEnd;
 		} else if (offered.kind === "commit" || offered.kind === "replay") {
 			for (let index = this.#frontier; index < offered.end; index++) {
-				this.#entries[index]!.state = "committed";
-				this.#entries[index]!.emitted = 0;
-				this.#entries[index]!.archived = undefined;
+				this.#compactCommitted(this.#entries[index]!, offered.width);
 			}
 			this.#frontier = offered.end;
 			if (offered.kind === "replay" && this.#entries[offered.end]) {
@@ -729,7 +769,7 @@ export class TranscriptContainer extends Container {
 	/** Full semantic render used by exports and non-terminal commands. */
 	override render(width: number): readonly string[] {
 		this.#syncEntries();
-		this.#childStartRows.clear();
+		this.#childStartRows = new WeakMap<Component, number>();
 		const rows: string[] = [];
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -737,6 +777,10 @@ export class TranscriptContainer extends Container {
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
+			if (entry.component instanceof CommittedTranscriptBlock) {
+				const original = entry.component.original.deref();
+				if (original) this.#childStartRows.set(original, rows.length);
+			}
 			rows.push(...block);
 		}
 		if (rows.length !== this.#renderedRows.length || !isRowPrefix(this.#renderedRows, rows)) {
@@ -757,7 +801,7 @@ export class TranscriptContainer extends Container {
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
-		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
+		if (entry.state === "committed" || entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
 		if (!isStablePrefix(entry.stableRows, stable)) {
@@ -938,6 +982,38 @@ export class TranscriptContainer extends Container {
 		return rows;
 	}
 
+	#compactCommitted(entry: TranscriptEntry, width: number): void {
+		if (entry.state === "committed") return;
+		const original = entry.component;
+		// Displaceable blocks (fleet/checklist snapshots) stay interactive after
+		// commit: a same-tool successor seals — never disposes — them, and chat
+		// transcript building addresses them by identity in `children`. Replacing
+		// them with a row-only replay block would break both, so they keep the
+		// original component and only take the committed bookkeeping transition.
+		if (isPostCommitInteractive(original)) {
+			entry.state = "committed";
+			entry.emitted = 0;
+			entry.archived = undefined;
+			return;
+		}
+		this.#setAllocation(original, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+		const replay = new CommittedTranscriptBlock(trimBlankEdges(original.render(width)), original);
+		original.dispose?.();
+		this.#compactedEntries.set(original, entry);
+		const childIndex = this.children.indexOf(original);
+		if (childIndex >= 0) this.children[childIndex] = replay;
+		entry.component = replay;
+		entry.state = "committed";
+		entry.stableRows = EMPTY_STABLE_ROWS;
+		entry.renderedStableByWidth.clear();
+		entry.stableRowCountByWidth.clear();
+		entry.emitted = 0;
+		entry.stableFrozen = false;
+		entry.archived = undefined;
+		this.#liveRenderCache = undefined;
+		this.#liveGeneration++;
+	}
+
 	#completeFullyEmittedHeads(width: number): void {
 		while (this.#frontier < this.#entries.length) {
 			const entry = this.#entries[this.#frontier]!;
@@ -946,8 +1022,7 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#emittedRowCount(entry, entry.emitted, width, rendered) !== rendered.length) return;
-			entry.state = "committed";
-			entry.emitted = 0;
+			this.#compactCommitted(entry, width);
 			this.#frontier++;
 		}
 	}
@@ -1013,15 +1088,45 @@ export class TranscriptContainer extends Container {
 		return visibleOutput;
 	}
 
+	#renderLiveEntry(
+		entry: TranscriptEntry,
+		width: number,
+		allocation: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		let cache = this.#liveRenderCache;
+		if (
+			cache === undefined ||
+			cache.width !== width ||
+			cache.frame.tick !== frame.tick ||
+			cache.frame.now !== frame.now ||
+			cache.generation !== this.#liveGeneration
+		) {
+			cache = { width, frame, generation: this.#liveGeneration, blocks: new Map() };
+			this.#liveRenderCache = cache;
+		}
+		const cached = cache.blocks.get(entry.component);
+		if (cached?.allocation === allocation) return cached.rows;
+		this.#setAllocation(entry.component, allocation, frame);
+		const rows = this.#renderEntry(entry, width);
+		cache.blocks.set(entry.component, { allocation, rows });
+		return rows;
+	}
+
 	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
 		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
 
 	#settleFinalized(): void {
+		let changed = false;
 		for (let index = this.#frontier; index < this.#entries.length; index++) {
 			const entry = this.#entries[index]!;
-			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";
+			if (entry.state === "active" && isFinalized(entry.component)) {
+				entry.state = "settled";
+				changed = true;
+			}
 		}
+		if (changed) this.#liveGeneration++;
 	}
 
 	#liveEntries(): Array<{ entry: TranscriptEntry; index: number }> {
@@ -1043,7 +1148,13 @@ export class TranscriptContainer extends Container {
 		)
 			return;
 		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
-		this.#entries = this.children.map(component => existing.get(component) ?? createEntry(component));
+		this.#entries = this.children.map(
+			component => existing.get(component) ?? this.#compactedEntries.get(component) ?? createEntry(component),
+		);
+		for (let index = 0; index < this.#entries.length; index++) {
+			this.children[index] = this.#entries[index]!.component;
+		}
+		this.#liveGeneration++;
 		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
 		if (this.#frontier < 0) this.#frontier = this.#entries.length;
 	}

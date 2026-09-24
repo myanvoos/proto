@@ -356,6 +356,70 @@ class _RunnerState:
         self.active_request_id: str | None = None
 
 
+_REQUEST_QUEUE_MAX_COUNT = 128
+_REQUEST_QUEUE_MAX_BYTES = 16 * 1024 * 1024
+
+
+class _BoundedRequestQueue:
+    """Async request queue bounded by both entry count and serialized bytes."""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[tuple[dict, int]] = asyncio.Queue(
+            maxsize=_REQUEST_QUEUE_MAX_COUNT
+        )
+        self._bytes = 0
+        self._reserved_count = 0
+        self._reserved_bytes = 0
+        self._condition = threading.Condition()
+
+    def reserve(self, size: int) -> bool:
+        """Reserve bounded capacity before scheduling a callback from stdin."""
+        if size > _REQUEST_QUEUE_MAX_BYTES:
+            return False
+        with self._condition:
+            while (
+                self._reserved_count >= _REQUEST_QUEUE_MAX_COUNT
+                or self._reserved_bytes + size > _REQUEST_QUEUE_MAX_BYTES
+            ):
+                self._condition.wait()
+            self._reserved_count += 1
+            self._reserved_bytes += size
+        return True
+
+    def put_reserved(self, request: dict, size: int) -> None:
+        self._queue.put_nowait((request, size))
+        self._bytes += size
+
+    def put_nowait(self, request: dict, size: int) -> bool:
+        if size > _REQUEST_QUEUE_MAX_BYTES:
+            return False
+        with self._condition:
+            if (
+                self._reserved_count >= _REQUEST_QUEUE_MAX_COUNT
+                or self._reserved_bytes + size > _REQUEST_QUEUE_MAX_BYTES
+            ):
+                return False
+            self._reserved_count += 1
+            self._reserved_bytes += size
+        self.put_reserved(request, size)
+        return True
+
+    async def get(self) -> tuple[dict, int]:
+        request, size = await self._queue.get()
+        self._bytes -= size
+        with self._condition:
+            self._reserved_count -= 1
+            self._reserved_bytes -= size
+            self._condition.notify()
+        return request, size
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    def task_done(self) -> None:
+        self._queue.task_done()
+
+
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "proto_current_rid", default=None
 )
@@ -1494,10 +1558,62 @@ def _magic_cell_bash(args: str, body: str) -> int:
     return _run_shell_body(body, shell_arg="/bin/bash")
 
 
+_CAPTURE_TRUNCATION_NOTICE = (
+    f"[output truncated: capture exceeded {_SHELL_OUTPUT_MAX_BYTES} bytes "
+    f"or {_SHELL_OUTPUT_MAX_LINES} lines; remaining output discarded]\n"
+)
+
+
+class _BoundedCapture(io.StringIO):
+    """String stream retaining at most the shell helper byte/line limits."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._bytes = 0
+        self._lines = 0
+        self._truncated = False
+
+    def write(self, value: str) -> int:
+        if not isinstance(value, str):
+            raise TypeError(f"write() argument must be str, not {type(value).__name__}")
+        original_length = len(value)
+        if self._truncated or not value:
+            return original_length
+        remaining = _SHELL_OUTPUT_MAX_BYTES - self._bytes
+        prefix = value[:remaining]
+        encoded = prefix.encode("utf-8", "replace")
+        if len(encoded) > remaining:
+            prefix = encoded[:remaining].decode("utf-8", "ignore")
+            encoded = prefix.encode("utf-8")
+        allowed_lines = _SHELL_OUTPUT_MAX_LINES - self._lines
+        if allowed_lines <= 0:
+            prefix = ""
+        else:
+            cursor = 0
+            for _ in range(allowed_lines):
+                newline = prefix.find("\n", cursor)
+                if newline < 0:
+                    break
+                cursor = newline + 1
+            else:
+                prefix = prefix[:cursor]
+        if prefix:
+            super().write(prefix)
+            self._bytes += len(prefix.encode("utf-8"))
+            self._lines += prefix.count("\n")
+        if len(prefix) < len(value):
+            self._truncated = True
+        return original_length
+
+    def getvalue(self) -> str:
+        text = super().getvalue()
+        return text + (_CAPTURE_TRUNCATION_NOTICE if self._truncated else "")
+
+
 @cell_magic("capture")
 def _magic_cell_capture(args: str, body: str) -> str:
     """Capture stdout/stderr of body; bind to ``args`` (a name) if provided."""
-    captured = io.StringIO()
+    captured = _BoundedCapture()
     saved_stdout, saved_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = captured
     try:
@@ -2193,9 +2309,15 @@ def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
         _STATE.prelude_names = set(_STATE.user_ns)
         _STATE.defs.clear()
         return
+    live_names = _STATE.user_ns.keys()
+    for name in tuple(_STATE.defs):
+        if name not in live_names:
+            del _STATE.defs[name]
+    _STATE.shadow_warned.intersection_update(live_names)
     defs, bound = _cell_bound_names(source)
     for name in (*defs, *bound):
-        _STATE.defs[name] = execution_count
+        if name in _STATE.user_ns:
+            _STATE.defs[name] = execution_count
     if _STATE.prelude_names is None:
         return
     for name in bound:
@@ -2379,7 +2501,11 @@ def _emit_error(rid: str, exc: BaseException) -> None:
     )
 
 
-def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) -> None:
+def _request_size(req: dict) -> int:
+    return len(json.dumps(req, ensure_ascii=False, default=_json_default).encode("utf-8"))
+
+
+def _read_stdin(loop: asyncio.AbstractEventLoop, queue: _BoundedRequestQueue, stdin) -> None:
     for raw_line in stdin:
         line = raw_line.strip()
         if not line:
@@ -2397,8 +2523,28 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) ->
                 }
             )
             continue
-        loop.call_soon_threadsafe(queue.put_nowait, req)
-    loop.call_soon_threadsafe(queue.put_nowait, {"type": "exit"})
+        try:
+            size = _request_size(req)
+        except (TypeError, ValueError):
+            size = _REQUEST_QUEUE_MAX_BYTES + 1
+        if not queue.reserve(size):
+            loop.call_soon_threadsafe(_emit_queue_limit_error, req)
+            continue
+        loop.call_soon_threadsafe(queue.put_reserved, req, size)
+    loop.call_soon_threadsafe(_enqueue_exit, queue)
+
+
+def _emit_queue_limit_error(req: dict) -> None:
+    _emit_error(str(req.get("id", "")), ValueError(
+        f"Request queue limit exceeded (max {_REQUEST_QUEUE_MAX_COUNT} queued requests "
+        f"and {_REQUEST_QUEUE_MAX_BYTES} bytes)"
+    ))
+
+
+def _enqueue_exit(queue: _BoundedRequestQueue) -> None:
+    request = {"type": "exit"}
+    if not queue.put_nowait(request, _request_size(request)):
+        asyncio.create_task(queue._queue.put((request, _request_size(request))))
 
 
 def _emit_cancelled_request(req: dict) -> None:
@@ -2415,12 +2561,18 @@ def _emit_cancelled_request(req: dict) -> None:
     )
 
 
-async def _execution_worker(queue: asyncio.Queue) -> None:
+async def _execution_worker(queue: _BoundedRequestQueue) -> None:
     """Run user requests one at a time in stdin arrival order."""
     tasks = _STATE.request_tasks
     while True:
-        req = await queue.get()
+        req, _size = await queue.get()
         rid = str(req.get("id"))
+        if rid in _STATE.cancelled_request_ids:
+            _emit_cancelled_request(req)
+            _STATE.pending_request_ids.discard(rid)
+            _STATE.cancelled_request_ids.discard(rid)
+            queue.task_done()
+            continue
         current = asyncio.current_task()
         if current is None:
             raise RuntimeError("Python execution worker has no asyncio task")
@@ -2456,8 +2608,8 @@ async def _main_async() -> None:
 
     loop = asyncio.get_running_loop()
     _STATE.loop = loop
-    queue: asyncio.Queue = asyncio.Queue()
-    execution_queue: asyncio.Queue = asyncio.Queue()
+    queue = _BoundedRequestQueue()
+    execution_queue = _BoundedRequestQueue()
     reader = threading.Thread(
         target=_read_stdin,
         args=(loop, queue, stdin),
@@ -2469,7 +2621,7 @@ async def _main_async() -> None:
 
     try:
         while True:
-            req = await queue.get()
+            req, size = await queue.get()
             if req.get("type") == "exit":
                 break
             if req.get("type") == "cancel":
@@ -2493,8 +2645,17 @@ async def _main_async() -> None:
                     }
                 )
                 continue
-            _STATE.pending_request_ids.add(str(req.get("id")))
-            execution_queue.put_nowait(req)
+            rid = str(req.get("id"))
+            if rid in _STATE.cancelled_request_ids:
+                _emit_cancelled_request(req)
+                continue
+            if not execution_queue.put_nowait(req, size):
+                _emit_error(rid, ValueError(
+                    f"Execution queue limit exceeded (max {_REQUEST_QUEUE_MAX_COUNT} queued requests "
+                    f"and {_REQUEST_QUEUE_MAX_BYTES} bytes)"
+                ))
+                continue
+            _STATE.pending_request_ids.add(rid)
     finally:
         _STATE.shutting_down = True
         execution_worker.cancel()

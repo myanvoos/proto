@@ -22,6 +22,122 @@ export interface BlobPutResult {
 
 export type BlobReader = (hash: string) => Promise<Buffer | null>;
 
+const inFlightBlobWrites = new Set<string>();
+
+export interface BlobSweepResult {
+	marked: number;
+	removed: number;
+	keptYoung: number;
+	aborted: boolean;
+}
+
+const DEFAULT_BLOB_GRACE_MS = 24 * 60 * 60 * 1000;
+
+async function collectBlobReferences(sessionsDir: string): Promise<Set<string> | null> {
+	const references = new Set<string>();
+	const pending = [sessionsDir];
+	try {
+		while (pending.length > 0) {
+			const directory = pending.pop();
+			if (!directory) continue;
+			for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
+				const entryPath = path.join(directory, entry.name);
+				if (entry.isDirectory()) {
+					pending.push(entryPath);
+					continue;
+				}
+				if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+				const contents = await fsp.readFile(entryPath, "utf8");
+				for (const line of contents.split("\n")) {
+					if (!line.trim()) continue;
+					let value: unknown;
+					try {
+						value = JSON.parse(line);
+					} catch {
+						return null;
+					}
+					collectRefs(value, references);
+				}
+			}
+		}
+	} catch {
+		return null;
+	}
+	return references;
+}
+
+function collectRefs(value: unknown, references: Set<string>): void {
+	if (typeof value === "string") {
+		const hash = parseBlobRef(value);
+		if (hash) references.add(hash);
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (const child of value) collectRefs(child, references);
+		return;
+	}
+	if (typeof value !== "object" || value === null) return;
+	for (const child of Object.values(value)) collectRefs(child, references);
+}
+
+/** Remove only old, hash-addressed blobs absent from every persisted session transcript. */
+export async function sweepUnreferencedBlobs(
+	blobDir: string,
+	sessionsDir: string,
+	options: { graceMs?: number; now?: number } = {},
+): Promise<BlobSweepResult> {
+	const references = await collectBlobReferences(sessionsDir);
+	if (!references) {
+		logger.warn("Blob sweep skipped because the persisted-session reference scan was incomplete", { sessionsDir });
+		return { marked: 0, removed: 0, keptYoung: 0, aborted: true };
+	}
+	const cutoff = (options.now ?? Date.now()) - (options.graceMs ?? DEFAULT_BLOB_GRACE_MS);
+	let marked = 0;
+	let removed = 0;
+	let keptYoung = 0;
+	let aborted = false;
+	try {
+		for (const entry of await fsp.readdir(blobDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !BLOB_HASH_RE.test(entry.name) || references.has(entry.name)) continue;
+			marked++;
+			const candidate = path.join(blobDir, entry.name);
+			if (inFlightBlobWrites.has(candidate)) {
+				keptYoung++;
+				continue;
+			}
+			try {
+				const stat = await fsp.stat(candidate);
+				if (!stat.isFile() || stat.mtimeMs > cutoff) {
+					keptYoung++;
+					continue;
+				}
+				// Recheck references and freshness immediately before unlinking.
+				const currentReferences = await collectBlobReferences(sessionsDir);
+				if (inFlightBlobWrites.has(candidate) || !currentReferences || currentReferences.has(entry.name)) {
+					keptYoung++;
+					continue;
+				}
+				const current = await fsp.stat(candidate);
+				if (current.mtimeMs > cutoff) {
+					keptYoung++;
+					continue;
+				}
+				await fsp.unlink(candidate);
+				removed++;
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+			}
+		}
+	} catch (error) {
+		if (!isEnoent(error)) {
+			logger.warn("Blob sweep stopped after filesystem error", { error: String(error) });
+			aborted = true;
+		}
+	}
+	logger.info("Blob sweep completed", { marked, removed, keptYoung, aborted });
+	return { marked, removed, keptYoung, aborted };
+}
+
 const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
 	"image/png": "png",
 	"image/jpeg": "jpg",
@@ -133,17 +249,27 @@ export class BlobStore {
 
 	async put(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
 		const result = createBlobPutResult(this.dir, data, options);
-		await writeBlobAtomically(result.path, data);
-		await ensureDisplayPath(result.path, result.displayPath, data);
-		return result;
+		inFlightBlobWrites.add(result.path);
+		try {
+			await writeBlobAtomically(result.path, data);
+			await ensureDisplayPath(result.path, result.displayPath, data);
+			return result;
+		} finally {
+			inFlightBlobWrites.delete(result.path);
+		}
 	}
 
 	putSync(data: Buffer, options?: BlobPutOptions): BlobPutResult {
 		const result = createBlobPutResult(this.dir, data, options);
-		fs.mkdirSync(this.dir, { recursive: true });
-		writeBlobAtomicallySync(result.path, data);
-		ensureDisplayPathSync(result.path, result.displayPath, data);
-		return result;
+		inFlightBlobWrites.add(result.path);
+		try {
+			fs.mkdirSync(this.dir, { recursive: true });
+			writeBlobAtomicallySync(result.path, data);
+			ensureDisplayPathSync(result.path, result.displayPath, data);
+			return result;
+		} finally {
+			inFlightBlobWrites.delete(result.path);
+		}
 	}
 
 	async get(hash: string): Promise<Buffer | null> {

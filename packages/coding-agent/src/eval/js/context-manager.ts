@@ -27,6 +27,8 @@ export type { JsDisplayOutput } from "./worker-protocol";
 interface VmRunState {
 	signal?: AbortSignal;
 	onText?: (chunk: string) => void;
+	retainedBytes?: () => number;
+	release?: () => void;
 	onDisplay?: (output: JsDisplayOutput) => void;
 }
 
@@ -59,6 +61,11 @@ interface PendingRun {
 	settled: boolean;
 }
 
+interface CompletedRunSink {
+	runState: VmRunState;
+	timer: NodeJS.Timeout;
+}
+
 interface JsSession {
 	sessionKey: string;
 	sessionId: string;
@@ -66,10 +73,11 @@ interface JsSession {
 	worker: WorkerHandle;
 	state: "alive" | "dead";
 	pending: Map<string, PendingRun>;
-	completedRuns: Map<string, VmRunState>;
+	completedRuns: Map<string, CompletedRunSink>;
 	ownerIds: Set<string>;
 	hasFallbackOwner: boolean;
 	reapTimer?: NodeJS.Timeout;
+	reapShutdownRetries: number;
 }
 
 interface StartingJsSession extends SessionOwners {
@@ -86,7 +94,10 @@ const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
 const MAX_REAP_NOTES = 32;
+const MAX_REAP_SHUTDOWN_RETRIES = 3;
 const MAX_COMPLETED_RUN_SINKS = 256;
+const MAX_COMPLETED_RUN_BYTES = 512 * 1024;
+const COMPLETED_RUN_TTL_MS = 30_000;
 const reapNotes = new Map<string, KernelReapNote>();
 
 function armSessionReap(session: JsSession): void {
@@ -114,8 +125,26 @@ async function reapSessionFire(session: JsSession): Promise<void> {
 		armSessionReap(session);
 		return;
 	}
+	const confirmed = await killSession(session, new ToolError("JS eval context released after idle timeout"), {
+		force: false,
+	});
+	if (!confirmed) {
+		session.reapShutdownRetries += 1;
+		logger.warn("JS eval context idle-reap shutdown not confirmed", {
+			sessionKey: session.sessionKey,
+			sessionId: session.sessionId,
+			retries: session.reapShutdownRetries,
+		});
+		if (sessions.get(session.sessionKey) === session && session.reapShutdownRetries <= MAX_REAP_SHUTDOWN_RETRIES) {
+			const backoff = DEFAULT_KERNEL_IDLE_REAP_MS * Math.min(2 ** session.reapShutdownRetries, 8);
+			const timer = setTimeout(() => void reapSessionFire(session), backoff);
+			timer.unref?.();
+			session.reapTimer = timer;
+		}
+		return;
+	}
+	if (sessions.get(session.sessionKey) !== session) return;
 	sessions.delete(session.sessionKey);
-	await killSession(session, new ToolError("JS eval context released after idle timeout"), { force: false });
 	logger.info("JS eval context released after idle timeout", {
 		sessionKey: session.sessionKey,
 		sessionId: session.sessionId,
@@ -313,12 +342,11 @@ async function runOnce(
 		options.runState.signal?.removeEventListener("abort", onAbort);
 		session.pending.delete(runId);
 		if (!pending.aborted && !pending.outputError && session.state === "alive") {
-			session.completedRuns.delete(runId);
-			session.completedRuns.set(runId, options.runState);
-			if (session.completedRuns.size > MAX_COMPLETED_RUN_SINKS) {
-				const oldest = session.completedRuns.keys().next().value;
-				if (oldest !== undefined) session.completedRuns.delete(oldest);
-			}
+			evictCompletedRun(session, runId);
+			const timer = setTimeout(() => evictCompletedRun(session, runId), COMPLETED_RUN_TTL_MS);
+			timer.unref?.();
+			session.completedRuns.set(runId, { runState: options.runState, timer });
+			trimCompletedRuns(session);
 		}
 	}
 }
@@ -351,6 +379,7 @@ async function acquireSession(
 			cwd: snapshot.cwd,
 			worker,
 			state: "alive",
+			reapShutdownRetries: 0,
 			pending: new Map(),
 			completedRuns: new Map(),
 			ownerIds: new Set(),
@@ -442,23 +471,52 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 	}
 }
 
+function trimCompletedRuns(session: JsSession): void {
+	let retainedBytes = [...session.completedRuns.values()].reduce(
+		(total, entry) => total + Math.max(0, entry.runState.retainedBytes?.() ?? 0),
+		0,
+	);
+	while (session.completedRuns.size > MAX_COMPLETED_RUN_SINKS || retainedBytes > MAX_COMPLETED_RUN_BYTES) {
+		const oldest = session.completedRuns.keys().next().value;
+		if (oldest === undefined) break;
+		const removed = session.completedRuns.get(oldest);
+		evictCompletedRun(session, oldest);
+		retainedBytes -= Math.max(0, removed?.runState.retainedBytes?.() ?? 0);
+	}
+}
+
+function evictCompletedRun(session: JsSession, runId: string): void {
+	const entry = session.completedRuns.get(runId);
+	if (!entry) return;
+	session.completedRuns.delete(runId);
+	clearTimeout(entry.timer);
+	entry.runState.release?.();
+	logger.debug("JS late output attribution expired", { runId });
+}
+
 function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 	switch (msg.type) {
 		case "text":
 		case "display": {
 			const pending = session.pending.get(msg.runId);
 			if (pending?.outputError) return;
-			const runState = pending?.runState ?? session.completedRuns.get(msg.runId);
+			const completed = pending ? undefined : session.completedRuns.get(msg.runId);
+			const runState = pending?.runState ?? completed?.runState;
+			if (!runState) {
+				logger.debug("JS late output has no retained consumer", { runId: msg.runId });
+				return;
+			}
 			try {
-				if (msg.type === "text") runState?.onText?.(msg.chunk);
-				else runState?.onDisplay?.(msg.output);
+				if (msg.type === "text") runState.onText?.(msg.chunk);
+				else runState.onDisplay?.(msg.output);
+				if (completed) trimCompletedRuns(session);
 			} catch (error) {
 				// Finish draining this cell before rejecting it; output failures must
 				// not escape the IPC listener or destroy persistent user state.
 				if (pending) {
 					pending.outputError = error instanceof Error ? error : new Error(String(error));
 				} else {
-					session.completedRuns.delete(msg.runId);
+					evictCompletedRun(session, msg.runId);
 					logger.warn("JS background output consumer failed", { error: String(error) });
 				}
 			}
@@ -572,11 +630,9 @@ async function killSessionFor(session: JsSession, error: Error, options: { force
 	await killSession(session, error, options);
 }
 
-async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
-	if (session.state === "dead") return;
-	session.state = "dead";
+async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<boolean> {
+	if (session.state === "dead") return true;
 	clearSessionReap(session);
-	reapNotes.delete(session.sessionKey);
 	for (const pending of session.pending.values()) {
 		if (pending.settled) continue;
 		pending.settled = true;
@@ -584,13 +640,37 @@ async function killSession(session: JsSession, error: Error, options: { force: b
 		pending.reject(error);
 	}
 	session.pending.clear();
-	session.completedRuns.clear();
-	if (options.force) {
-		await session.worker.terminate().catch(() => undefined);
-		return;
+	for (const runId of session.completedRuns.keys()) evictCompletedRun(session, runId);
+	const confirmed = await shutdownWorker(session.worker, options.force);
+	if (!confirmed) {
+		session.state = "alive";
+		return false;
 	}
-	if (await session.worker.close().catch(() => false)) return;
-	await session.worker.terminate().catch(() => undefined);
+	session.state = "dead";
+	reapNotes.delete(session.sessionKey);
+	return true;
+}
+
+export async function shutdownWorker(worker: WorkerHandle, force: boolean): Promise<boolean> {
+	if (force) {
+		try {
+			await worker.terminate();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	try {
+		if (await worker.close()) return true;
+	} catch {
+		// Fall through to forced termination.
+	}
+	try {
+		await worker.terminate();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function safeSend(session: JsSession, msg: WorkerInbound): void {

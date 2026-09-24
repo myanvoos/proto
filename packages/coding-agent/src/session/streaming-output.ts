@@ -19,7 +19,8 @@ export const DEFAULT_MAX_LINES = 3000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
 export const DEFAULT_MAX_COLUMN = 512;
 
-const ARTIFACT_DEFAULT_MAX_BYTES = 0;
+// Keep artifact spill files bounded by default; pass 0 explicitly for full-log workflows.
+const ARTIFACT_DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 
 const ARTIFACT_DEFAULT_HEAD_BYTES = 3 * 1024 * 1024;
 
@@ -888,6 +889,18 @@ export class OutputSink {
 
 	collectorStatus(): ExecutionCollectorMetadata {
 		return this.#collector();
+	}
+
+	/** Bytes currently retained for the inline head/tail output window. */
+	retainedBytes(): number {
+		return this.#head.bytes + this.#buffer.bytes;
+	}
+
+	/** Release the retained inline output window; future pushes continue normally. */
+	release(): void {
+		this.#head.clear();
+		this.#buffer.clear();
+		this.#headLines = 0;
 	}
 
 	#summaryDisposition(outputBytes: number): ExecutionOutputDisposition {

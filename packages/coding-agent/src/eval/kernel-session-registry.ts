@@ -13,6 +13,7 @@ import {
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
 
 const MAX_REAP_NOTES = 32;
+const MAX_REAP_SHUTDOWN_RETRIES = 3;
 
 export interface KernelSessionRegistryOptions {
 	sessionId?: string;
@@ -148,15 +149,16 @@ export function createKernelSessionRegistry<
 	const resettingSessions = new Map<string, Promise<void>>();
 	const idleReapMs = descriptor.idleReapMs ?? DEFAULT_KERNEL_IDLE_REAP_MS;
 	const reapTimers = new Map<string, NodeJS.Timeout>();
+	const reapShutdownRetries = new Map<string, number>();
 	const executingDepth = new Map<string, number>();
 	const reapedNotes = new LRUCache<string, KernelReapNote>({ max: MAX_REAP_NOTES });
 
-	function armReap(sessionKey: string): void {
+	function armReap(sessionKey: string, delayMs = idleReapMs): void {
 		const existing = reapTimers.get(sessionKey);
 		if (existing) clearTimeout(existing);
 		if (idleReapMs <= 0) return;
 		if (!sessions.has(sessionKey)) return;
-		const timer = setTimeout(() => void reapFire(sessionKey), idleReapMs);
+		const timer = setTimeout(() => void reapFire(sessionKey), delayMs);
 		timer.unref?.();
 		reapTimers.set(sessionKey, timer);
 	}
@@ -166,6 +168,24 @@ export function createKernelSessionRegistry<
 		if (timer) clearTimeout(timer);
 		reapTimers.delete(sessionKey);
 		executingDepth.delete(sessionKey);
+		reapShutdownRetries.delete(sessionKey);
+	}
+
+	async function shutdownThenForget(
+		sessionKey: string,
+		session: TSession,
+	): Promise<{ confirmed: boolean; error?: unknown }> {
+		if (sessions.get(sessionKey) !== session) return { confirmed: false };
+		if (!reapShutdownRetries.has(sessionKey)) descriptor.invalidateSession?.(session);
+		try {
+			const result = await shutdownSession(session, false);
+			if (result?.confirmed === false || sessions.get(sessionKey) !== session) return { confirmed: false };
+			sessions.delete(sessionKey);
+			reapShutdownRetries.delete(sessionKey);
+			return { confirmed: true };
+		} catch (error) {
+			return { confirmed: false, error };
+		}
 	}
 
 	async function reapFire(sessionKey: string): Promise<void> {
@@ -198,22 +218,26 @@ export function createKernelSessionRegistry<
 			armReap(sessionKey);
 			return;
 		}
-		descriptor.invalidateSession?.(session);
-		sessions.delete(sessionKey);
-		const result = await shutdownSession(session, false).catch(() => undefined);
-		if (result?.confirmed === false) {
+		const shutdown = await shutdownThenForget(sessionKey, session);
+		if (!shutdown.confirmed) {
+			const retries = (reapShutdownRetries.get(sessionKey) ?? 0) + 1;
+			reapShutdownRetries.set(sessionKey, retries);
 			logger.warn(`${descriptor.languageLabel} kernel idle-reap shutdown not confirmed`, {
 				sessionKey,
 				sessionId: session.sessionId,
 				cwd: session.cwd,
+				reason: shutdown.error ?? "not confirmed",
 			});
-		} else {
-			logger.info(`${descriptor.languageLabel} kernel released after idle timeout`, {
-				sessionKey,
-				sessionId: session.sessionId,
-				idleReapMs,
-			});
+			if (sessions.get(sessionKey) === session && retries <= MAX_REAP_SHUTDOWN_RETRIES) {
+				armReap(sessionKey, Math.min(idleReapMs * 2 ** retries, idleReapMs * 8));
+			}
+			return;
 		}
+		logger.info(`${descriptor.languageLabel} kernel released after idle timeout`, {
+			sessionKey,
+			sessionId: session.sessionId,
+			idleReapMs,
+		});
 		reapedNotes.set(sessionKey, { idleMs: idleReapMs, reapedAt: Date.now() });
 	}
 

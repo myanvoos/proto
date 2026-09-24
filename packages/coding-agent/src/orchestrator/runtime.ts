@@ -535,6 +535,8 @@ export class OrchestratorRuntime {
 	readonly #recordsByScope = new Map<string, Map<string, WorkerRecord>>();
 	/** Last tool session seen per scope, so an IRC wake can register its turn without one in hand. */
 	readonly #toolSessionByScope = new Map<string, ToolSession>();
+	/** Wake turns can outlive their worker record while the externally driven turn settles. */
+	readonly #pendingWakeScopes = new Set<string>();
 	readonly #terminationTails = new Map<string, Promise<void>>();
 	#turnSemaphoreState: { limit: number; semaphore: Semaphore } | undefined;
 	readonly #waitedJobIds = new Set<string>();
@@ -547,6 +549,11 @@ export class OrchestratorRuntime {
 
 	setTeardownGraceForTesting(timeoutMs: number): void {
 		this.#teardownGraceMs = Math.max(1, timeoutMs);
+	}
+
+	/** Number of cached parent sessions retained for IRC wake bookkeeping. */
+	scopeCacheSizeForTesting(): number {
+		return this.#toolSessionByScope.size;
 	}
 
 	/** Scope of a tool call, remembering the session so wake turns started later can be tracked. */
@@ -606,14 +613,25 @@ export class OrchestratorRuntime {
 		record.wakeTurnCleanup = undefined;
 	}
 
+	#retireScopeIfUnused(key: string): void {
+		if (this.#recordsByScope.has(key) || this.#pendingWakeScopes.has(key)) return;
+		this.#toolSessionByScope.delete(key);
+	}
+
 	#deleteRecord(scope: OwnerScope, id: string): void {
 		const key = scopeKey(scope, "");
 		const records = this.#recordsByScope.get(key);
-		if (!records) return;
+		if (!records) {
+			this.#retireScopeIfUnused(key);
+			return;
+		}
 		const record = records.get(id);
 		if (record) this.#forgetWakeTurnOwner(record);
 		records.delete(id);
-		if (records.size === 0) this.#recordsByScope.delete(key);
+		if (records.size === 0) {
+			this.#recordsByScope.delete(key);
+			this.#retireScopeIfUnused(key);
+		}
 	}
 
 	#scopeForRecord(record: WorkerRecord): OwnerScope {
@@ -2071,6 +2089,7 @@ export class OrchestratorRuntime {
 		let onProgress: ((progress: AgentProgress) => void) | undefined;
 		try {
 			this.#registerTurnJob(session, this.#manager(session), record, task, { first: false, external: promise });
+			this.#pendingWakeScopes.add(scopeKey(scope, ""));
 			const turn = record.turn;
 			if (turn) onProgress = this.#turnProgressHandler(record, turn);
 		} catch (error) {
@@ -2080,10 +2099,24 @@ export class OrchestratorRuntime {
 			});
 			return undefined;
 		}
+		const wakeScopeKey = scopeKey(scope, "");
+		let pending = true;
+		const finishWake = (): void => {
+			if (!pending) return;
+			pending = false;
+			this.#pendingWakeScopes.delete(wakeScopeKey);
+			this.#retireScopeIfUnused(wakeScopeKey);
+		};
 		return {
 			progress: progress => onProgress?.(progress),
-			settle: result => resolve({ ok: true, result }),
-			fail: error => resolve({ ok: false, error }),
+			settle: result => {
+				finishWake();
+				resolve({ ok: true, result });
+			},
+			fail: error => {
+				finishWake();
+				resolve({ ok: false, error });
+			},
 		};
 	}
 

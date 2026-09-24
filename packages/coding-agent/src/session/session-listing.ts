@@ -53,6 +53,8 @@ const SESSION_LIST_PARALLEL_THRESHOLD = 64;
 const SESSION_LIST_MAX_WORKERS = 16;
 
 const SESSION_SCAN_CACHE_MAX = 4096;
+const SESSION_SCAN_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const SESSION_SCAN_CHUNK_BYTES = 64 * 1024;
 
 // Search text is a bounded prefix of the transcript. Unbounded accumulation retained a full copy
 // of every transcript in memory (and in every persisted scan row); the history database's content
@@ -87,7 +89,28 @@ interface SessionScanCacheEntry {
 
 type SessionScanCache = LRUCache<string, SessionScanCacheEntry>;
 
-const fileSessionScanCache: SessionScanCache = new LRUCache({ max: SESSION_SCAN_CACHE_MAX });
+function createSessionScanCache(): SessionScanCache {
+	return new LRUCache({
+		max: SESSION_SCAN_CACHE_MAX,
+		maxSize: SESSION_SCAN_CACHE_MAX_BYTES,
+		sizeCalculation: entry => {
+			const info = entry.info;
+			const resume = entry.resume;
+			return (
+				512 +
+				(info?.allMessagesText.length ?? 0) * 2 +
+				(info?.firstMessage.length ?? 0) * 2 +
+				(resume?.acc.searchText.length ?? 0) * 2 +
+				(resume?.acc.firstMessage.length ?? 0) * 2 +
+				(resume?.header.id.length ?? 0) * 2 +
+				(resume?.header.cwd?.length ?? 0) * 2 +
+				(resume?.header.title?.length ?? 0) * 2
+			);
+		},
+	});
+}
+
+const fileSessionScanCache: SessionScanCache = createSessionScanCache();
 
 const kScanCache = Symbol("session-listing.scanCache");
 
@@ -98,7 +121,7 @@ interface StorageWithScanCache extends SessionStorage {
 function getSessionScanCache(storage: SessionStorage): SessionScanCache {
 	if (storage instanceof FileSessionStorage) return fileSessionScanCache;
 	const holder = storage as StorageWithScanCache;
-	if (!holder[kScanCache]) holder[kScanCache] = new LRUCache({ max: SESSION_SCAN_CACHE_MAX });
+	if (!holder[kScanCache]) holder[kScanCache] = createSessionScanCache();
 	return holder[kScanCache];
 }
 
@@ -484,7 +507,6 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 				scannedDelta = true;
 			}
 		} else {
-			const content = size <= SESSION_LIST_PREFIX_BYTES ? prefix : await storage.readText(file);
 			acc = {
 				messageCount: 0,
 				assistantTurns: 0,
@@ -493,23 +515,40 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 				hasMessageText: false,
 				shortSummary: undefined,
 			};
-			// Fold records as they parse instead of materializing the whole transcript; only the
-			// first two records are retained for header detection. `foldSessionEntry` ignores
-			// session/title records, so folding the header candidates too is a no-op.
+			// Stream complete records in bounded ranges. Keep at most one incomplete record between
+			// reads; the persisted accumulator remains byte-aligned for append resumes.
 			const headerProbe: Record<string, unknown>[] = [];
-			forEachJsonlRecord<Record<string, unknown>>(content, raw => {
-				if (headerProbe.length < 2) headerProbe.push(raw);
-				foldSessionEntry(acc, raw);
-			});
-			const parsedHeader = parseSessionListHeader(content, headerProbe);
+			let firstDisplayFallback: string | undefined;
+			let headerContent = "";
+			scannedBytes = 0;
+			for (let offset = 0; offset < size; ) {
+				let end = Math.min(size, offset + SESSION_SCAN_CHUNK_BYTES);
+				let chunk = await storage.readTextRange(file, offset, end);
+				// End each range at a newline: besides record alignment, this avoids decoding a
+				// UTF-8 code point split across independent range reads.
+				while (end < size && !chunk.endsWith("\n")) {
+					end = Math.min(size, end + SESSION_SCAN_CHUNK_BYTES);
+					chunk = await storage.readTextRange(file, offset, end);
+				}
+				if (headerProbe.length < 2) headerContent += chunk;
+				forEachJsonlRecord<Record<string, unknown>>(chunk, raw => {
+					if (headerProbe.length < 2) headerProbe.push(raw);
+					foldSessionEntry(acc, raw);
+					const message = raw.message as Message | undefined;
+					if (!firstDisplayFallback && (message?.role === "developer" || message?.role === "assistant")) {
+						firstDisplayFallback = extractTextFromContent(message.content);
+					}
+				});
+				scannedBytes += Buffer.byteLength(chunk, "utf8");
+				offset = end;
+			}
+			const parsedHeader = parseSessionListHeader(headerContent || prefix, headerProbe);
 			if (!parsedHeader) {
 				cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
 				return undefined;
 			}
 			header = parsedHeader;
-			const lastBreak = content.lastIndexOf("\n");
-			scannedBytes = lastBreak === -1 ? 0 : Buffer.byteLength(content.slice(0, lastBreak + 1), "utf8");
-			acc.firstMessage ||= extractFirstDisplayMessage(content) ?? "";
+			acc.firstMessage ||= extractFirstDisplayMessage(headerContent || prefix) ?? firstDisplayFallback ?? "";
 		}
 
 		const info: SessionInfo = {

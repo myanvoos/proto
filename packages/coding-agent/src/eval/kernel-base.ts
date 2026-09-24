@@ -14,6 +14,8 @@ export interface KernelExecuteOptions {
 	fsObservations?: FsObservation[];
 	signal?: AbortSignal;
 	onChunk?: (text: string) => Promise<void> | void;
+	retainedOutputBytes?: () => number;
+	releaseOutput?: () => void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	timeoutMs?: number;
 	silent?: boolean;
@@ -96,6 +98,9 @@ type TextFrameKind = "stdout" | "stderr";
 type UnicodeTails = Partial<Record<TextFrameKind, string>>;
 
 interface CompletedOutputSink {
+	retainedOutputBytes?: () => number;
+	releaseOutput?: () => void;
+	timer: NodeJS.Timeout;
 	onChunk?: (text: string) => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	unicodeTails: UnicodeTails;
@@ -219,10 +224,18 @@ export async function terminateDetachedProcessTree(
 	return await waitForProcessGroupExit(proc.pid, timeoutMs);
 }
 
-const MAX_COMPLETED_OUTPUT_SINKS = 256;
 // Text/JSON frames above this are rejected before JSON.parse. Keep enough
 // headroom for the documented 20 MiB decoded-image budget (base64 expands 4/3).
 const MAX_KERNEL_FRAME_CHARS = 32 * 1024 * 1024;
+const MAX_COMPLETED_OUTPUT_SINKS = 256;
+const MAX_COMPLETED_OUTPUT_BYTES = 512 * 1024;
+const COMPLETED_OUTPUT_TTL_MS = 30_000;
+
+function unrefTimeout(callback: () => void, delayMs: number): NodeJS.Timeout {
+	const timer = setTimeout(callback, delayMs);
+	timer.unref?.();
+	return timer;
+}
 
 export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
 	readonly id: string;
@@ -292,16 +305,16 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			pending.settled = true;
 			this.#pending.delete(msgId);
 			if (!pending.cancelled && (pending.options?.onChunk || pending.options?.onDisplay)) {
-				this.#completedOutputSinks.delete(msgId);
+				this.#evictCompletedOutputSink(msgId);
 				this.#completedOutputSinks.set(msgId, {
 					onChunk: pending.options.onChunk,
+					retainedOutputBytes: pending.options.retainedOutputBytes,
+					releaseOutput: pending.options.releaseOutput,
+					timer: unrefTimeout(() => this.#evictCompletedOutputSink(msgId), COMPLETED_OUTPUT_TTL_MS),
 					onDisplay: pending.options.onDisplay,
 					unicodeTails: pending.unicodeTails,
 				});
-				if (this.#completedOutputSinks.size > MAX_COMPLETED_OUTPUT_SINKS) {
-					const oldest = this.#completedOutputSinks.keys().next().value;
-					if (oldest !== undefined) this.#completedOutputSinks.delete(oldest);
-				}
+				this.#trimCompletedOutputSinks();
 			}
 			cleanup();
 			resolve({
@@ -461,7 +474,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		this.#alive = false;
 		this.#abortPendingExecutions(`${this.#options.languageName} kernel shutdown`, { kernelKilled: true });
-		this.#completedOutputSinks.clear();
+		for (const id of this.#completedOutputSinks.keys()) this.#evictCompletedOutputSink(id);
 
 		const timeoutMs = options?.timeoutMs ?? this.#options.shutdownGraceMs;
 		const proc = this.#proc;
@@ -683,6 +696,32 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 	}
 
+	#trimCompletedOutputSinks(): void {
+		let retainedBytes = [...this.#completedOutputSinks.values()].reduce(
+			(total, sink) => total + Math.max(0, sink.retainedOutputBytes?.() ?? 0),
+			0,
+		);
+		while (
+			this.#completedOutputSinks.size > MAX_COMPLETED_OUTPUT_SINKS ||
+			retainedBytes > MAX_COMPLETED_OUTPUT_BYTES
+		) {
+			const oldest = this.#completedOutputSinks.keys().next().value;
+			if (oldest === undefined) break;
+			const removed = this.#completedOutputSinks.get(oldest);
+			this.#evictCompletedOutputSink(oldest);
+			retainedBytes -= Math.max(0, removed?.retainedOutputBytes?.() ?? 0);
+		}
+	}
+
+	#evictCompletedOutputSink(id: string): void {
+		const sink = this.#completedOutputSinks.get(id);
+		if (!sink) return;
+		this.#completedOutputSinks.delete(id);
+		clearTimeout(sink.timer);
+		sink.releaseOutput?.();
+		logger.debug(`${this.#options.languageName} late output attribution expired`, { id });
+	}
+
 	#failOutputConsumer(rid: string | undefined, error: unknown): void {
 		const pending = rid ? this.#pending.get(rid) : undefined;
 		if (pending) {
@@ -694,7 +733,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			};
 			pending.options = { ...pending.options, onChunk: undefined, onDisplay: undefined };
 		} else {
-			if (rid) this.#completedOutputSinks.delete(rid);
+			if (rid) this.#evictCompletedOutputSink(rid);
 			logger.warn("Kernel background output consumer failed", { error: String(error) });
 		}
 	}
@@ -736,15 +775,20 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		const pending = this.#pending.get(rid);
 		if (!pending) {
 			const completed = this.#completedOutputSinks.get(rid);
-			if (!completed) return;
+			if (!completed) {
+				logger.debug(`${this.#options.languageName} late output has no retained consumer`, { id: rid });
+				return;
+			}
 			if (frame.type === "stdout" || frame.type === "stderr") {
 				await this.#forwardTextFrame(completed, frame.type, frame.data ?? "");
+				this.#trimCompletedOutputSinks();
 				return;
 			}
 			if (frame.type === "display" || frame.type === "result") {
 				const { text, outputs } = await renderKernelDisplay(frame.bundle ?? {});
 				if (text) await completed.onChunk?.(text);
 				for (const output of outputs) await completed.onDisplay?.(output);
+				this.#trimCompletedOutputSinks();
 			}
 			return;
 		}

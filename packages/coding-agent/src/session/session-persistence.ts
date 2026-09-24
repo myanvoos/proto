@@ -15,6 +15,22 @@ const TRUNCATION_NOTICE = "\n\n[Session persistence truncated large content]";
 const BLOB_EXTERNALIZE_THRESHOLD = 1024;
 const TEXT_CONTENT_KEY = "content";
 
+/** Marker stored in JSONL for replay-critical payloads too large to inline safely. */
+export const PERSISTED_REPLAY_BLOB_KEY = "__protoReplayBlob";
+
+export interface PersistedReplayBlobRef {
+	readonly [PERSISTED_REPLAY_BLOB_KEY]: string;
+}
+
+export function isPersistedReplayBlobRef(value: unknown): value is PersistedReplayBlobRef {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		PERSISTED_REPLAY_BLOB_KEY in value &&
+		typeof (value as Record<string, unknown>)[PERSISTED_REPLAY_BLOB_KEY] === "string"
+	);
+}
+
 function truncateString(value: string, maxLength: number): string {
 	if (value.length <= maxLength) return value;
 	let truncated = value.slice(0, maxLength);
@@ -63,6 +79,15 @@ function shouldExternalizeImagePayload(
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
+}
+
+function externalizeReplaySubtree(obj: object, blobStore: BlobStore): PersistedReplayBlobRef {
+	const encoded = JSON.stringify(obj);
+	return { [PERSISTED_REPLAY_BLOB_KEY]: blobStore.putSync(Buffer.from(encoded, "utf8")).ref };
+}
+
+function preserveReplaySubtree(obj: object, blobStore: BlobStore): unknown {
+	return JSON.stringify(obj).length > MAX_PERSIST_CHARS ? externalizeReplaySubtree(obj, blobStore) : obj;
 }
 
 function needsPersistenceTraversal(obj: unknown, key?: string): boolean {
@@ -127,7 +152,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 				...("tool_use_id" in block ? { tool_use_id: block.tool_use_id } : {}),
 				...("content" in block ? { content: block.content } : {}),
 			};
-			if (isAnthropicServerToolHistoryBlock(validationView)) return obj;
+			if (isAnthropicServerToolHistoryBlock(validationView)) return preserveReplaySubtree(obj, blobStore);
 		}
 	}
 	// Anthropic server-side compaction state is validated byte-for-byte on replay; persist it whole, both as
@@ -137,7 +162,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 		(("type" in obj && obj.type === "anthropicCompaction") ||
 			(key === "anthropicCompaction" && "content" in obj && typeof obj.content === "string"))
 	) {
-		return obj;
+		return preserveReplaySubtree(obj, blobStore);
 	}
 	if (typeof obj === "object" && "type" in obj) {
 		const signed =
@@ -148,7 +173,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 
 		const encryptedReasoning =
 			obj.type === "reasoning" && "encrypted_content" in obj && isNonEmptyString(obj.encrypted_content);
-		if (signed || redacted || encryptedReasoning) return obj;
+		if (signed || redacted || encryptedReasoning) return preserveReplaySubtree(obj, blobStore);
 	}
 
 	if (typeof obj === "string") {
