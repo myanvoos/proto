@@ -8,11 +8,29 @@
 
 ### Changed
 
+- Bash tool coalesces live output and status updates to ~30 Hz instead of dispatching one update per output chunk; final output, errors, and cancellation still deliver immediately
+- Partial tool-result updates rebuild their renderer once per frame instead of once per delta; final results rebuild synchronously
+- Streamed tool-call arguments decode once per prefix; classification and preview rendering share the decoded snapshot (~2x less parsing work per delta)
+- Recent-session discovery no longer blocks interactive startup — the welcome screen paints first and fills in asynchronously
+- Session listing scans large session files with bounded streaming reads instead of loading each full JSONL into memory, and the scan cache evicts by a 16 MiB retained-byte budget rather than entry count alone
+- Python kernel bounds eval request queues by count and bytes, drops cancelled queued requests at dequeue, reconciles `defs()`/shadow-warning metadata against the live namespace each cell, and caps `%%capture` at 1 MiB / 3000 lines with an explicit truncation notice
+- Eval kernel and JS registries evict completed-output callbacks by a 512 KiB byte budget, 30 s age, and 256-entry cap instead of count alone
+- Transcript committed blocks compact to row-only replay components, releasing the original block instances (heap at 20k blocks: ~180 MB to ~12 MB); displacement-capable fleet/checklist snapshots keep their originals
+- Compaction now reclaims transcript storage: superseded message history moves to a compressed, versioned archive beside the session before an atomic active-file rewrite (200-row bench: 863 KB active shrinks to 87 KB), and loaders hydrate archived rows transparently for resume, forks, branches, and export
+- Recent-session discovery consults the title index first and opens only a bounded newest-candidate set before falling back to a full ordered scan
+- Runner staging cache is bounded (16 entries) with oldest eviction and process-exit cleanup of staged temp directories
+- Session artifact spill logs are capped at 4 MiB by default (3 MiB head + 1 MiB tail) with an explicit elision marker; `artifactMaxBytes: 0` restores unlimited logging
+
 - Bash calls highlight and outline the program of any Python/JS interpreter invocation — `.venv/bin/python - "$f" <<EOF`, `python3.12 -c`, `uv run python -`, `sudo python3`, `ssh host python3 -` — not only kernel-routed `python`/`node`/`bun` calls
 - Kernel cells and heredoc file writes are recognized with the embedded shell's own parser, so quoting, compound commands, and streaming partial commands resolve the way they execute
 - Running `python`/`node`/`bun` cells show their full Status diffs and agent progress instead of a screen-fitted preview, and Ctrl+O expands them immediately instead of waiting for the cell to finish
 
 ### Fixed
+
+- Idle kernel reap no longer drops a session whose shutdown did not confirm; unconfirmed shutdowns retry with capped backoff instead of leaking the kernel process
+- Orchestrator releases its cached parent-session reference once a scope has no workers left, instead of retaining the whole session graph for switched/recreated sessions
+- Oversized provider replay payloads (signed thinking/text/tool calls, redacted or encrypted reasoning, Anthropic compaction state) spill to content-addressed blobs and hydrate on load instead of bypassing the persistence size cap
+- Blob store gains a conservative mark-and-sweep (24 h mtime grace, idle maintenance) so image blobs orphaned by compaction, forks, or session deletion are reclaimed
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files

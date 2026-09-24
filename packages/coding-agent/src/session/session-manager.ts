@@ -86,9 +86,12 @@ import {
 } from "./session-listing";
 import { claimSessionOwnership, liveSessionOwnerPid } from "./session-liveness";
 import {
+	loadSessionArchive,
 	loadSessionFile,
 	resolveBlobRefsInEntries,
+	type SessionArchive,
 	type SessionLoadResult,
+	sessionArchivePath,
 	visitEntriesFromFile,
 } from "./session-loader";
 import { generateId, migrateToCurrentVersion } from "./session-migrations";
@@ -572,6 +575,7 @@ export interface SessionManagerStateSnapshot {
 	fallbackRuntimeOnly: boolean;
 	header: SessionHeader;
 	entries: SessionEntry[];
+	archivedEntryIds: string[];
 	rawEntryFiles: Array<readonly [string, RawEntryFile]>;
 	rawEntryDirectory: string | undefined;
 }
@@ -643,6 +647,7 @@ export class SessionManager {
 	#titleUpdatedAt = "";
 	#hasTitleSlot = true;
 	#entries: SessionEntry[] = [];
+	#archivedEntryIds = new Set<string>();
 	#index = new SessionEntryIndex();
 	#rawEntryFiles = new Map<string, RawEntryFile>();
 	#rawEntryDirectory: string | undefined;
@@ -1200,7 +1205,9 @@ export class SessionManager {
 	#fileBody(): string {
 		let body = this.#titleSlotLine();
 		body += this.#lineFor(this.#header);
-		for (const entry of this.#entries) body += this.#lineFor(entry);
+		for (const entry of this.#entries) {
+			if (!this.#archivedEntryIds.has(entry.id)) body += this.#lineFor(entry);
+		}
 		return body;
 	}
 
@@ -1489,6 +1496,7 @@ export class SessionManager {
 		this.#titleUpdatedAt = timestamp;
 
 		this.#entries = [];
+		this.#archivedEntryIds.clear();
 		this.#index.clear();
 		this.#clearRawEntryRetention();
 		this.#fileIsCurrent = false;
@@ -1548,6 +1556,7 @@ export class SessionManager {
 			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
 			return;
 		}
+		this.#archivedEntryIds.delete(entry.id);
 		const retained = this.#retainEntry(entry);
 		this.#entries.push(retained);
 		this.#index.insert(retained);
@@ -1676,6 +1685,7 @@ export class SessionManager {
 			// reference would let a rollback observe the move it is undoing.
 			header: structuredClone(this.#header),
 			entries: [...this.#entries],
+			archivedEntryIds: [...this.#archivedEntryIds],
 			rawEntryFiles: [...this.#rawEntryFiles].map(([id, file]) => [id, { ...file }]),
 			rawEntryDirectory: this.#rawEntryDirectory,
 		};
@@ -1714,6 +1724,7 @@ export class SessionManager {
 		this.#header = snapshot.header;
 		this.#sessionId = snapshot.header.id;
 		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectory);
+		this.#archivedEntryIds = new Set(snapshot.archivedEntryIds ?? []);
 		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
@@ -1805,6 +1816,7 @@ export class SessionManager {
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
 		const { entries: fileEntries, titleSlot } = loaded;
+		this.#archivedEntryIds = new Set(loaded.archivedEntryIds ?? []);
 		if (fileEntries.length === 0) {
 			this.#resetToNewSession(newSessionOptions, resolvedSessionFile);
 			this.#expectedDiskSize = sourceSize;
@@ -1861,6 +1873,8 @@ export class SessionManager {
 		} catch (err) {
 			if (!isEnoent(err)) throw err;
 		}
+		const archivePath = sessionArchivePath(sessionPath);
+		if (await this.#storage.exists(archivePath)) await this.#storage.unlink(archivePath);
 	}
 
 	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
@@ -1875,6 +1889,7 @@ export class SessionManager {
 		const timestamp = nowIso();
 		this.#sessionId = mintSessionId();
 		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
+		this.#archivedEntryIds.clear();
 		this.#expectedDiskSize = null;
 		this.#header = {
 			type: "session",
@@ -1953,6 +1968,7 @@ export class SessionManager {
 				sessionFileExisted = this.#storage.existsSync(oldSessionFile);
 
 				let sessionMoved = false;
+				let archiveMoved = false;
 				let artifactsRenamed = false;
 
 				try {
@@ -1965,6 +1981,17 @@ export class SessionManager {
 							await moveFileAcrossDevices(oldSessionFile, newSessionFile);
 						}
 						sessionMoved = true;
+					}
+					const oldArchivePath = sessionArchivePath(oldSessionFile);
+					const newArchivePath = sessionArchivePath(newSessionFile);
+					if (sessionPathChanged && (await this.#storage.exists(oldArchivePath))) {
+						try {
+							await fs.promises.rename(oldArchivePath, newArchivePath);
+						} catch (error) {
+							if (!hasFsCode(error, "EXDEV")) throw error;
+							await moveFileAcrossDevices(oldArchivePath, newArchivePath);
+						}
+						archiveMoved = true;
 					}
 
 					if (artifactPathChanged) {
@@ -1982,6 +2009,15 @@ export class SessionManager {
 						}
 					}
 				} catch (err) {
+					if (archiveMoved) {
+						try {
+							await fs.promises.rename(sessionArchivePath(newSessionFile), sessionArchivePath(oldSessionFile));
+						} catch (rollbackErr) {
+							throw new Error(
+								`Failed to move session archive and rollback: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+							);
+						}
+					}
 					if (artifactsRenamed && oldArtifactsDir && newArtifactsDir) {
 						try {
 							await fs.promises.rename(newArtifactsDir, oldArtifactsDir);
@@ -2211,6 +2247,8 @@ export class SessionManager {
 		}
 		try {
 			await this.#storage.deleteSessionWithArtifacts(sessionFile);
+			const archivePath = sessionArchivePath(sessionFile);
+			if (await this.#storage.exists(archivePath)) await this.#storage.unlink(archivePath);
 			this.#fileIsCurrent = false;
 			this.#forceFileCreation = false;
 			this.#hasTitleSlot = false;
@@ -2693,6 +2731,93 @@ export class SessionManager {
 		};
 		this.#recordEntry(entry);
 		return entry.id;
+	}
+
+	/** Archive compacted message rows while keeping them hydrated for branch, rewind, and export APIs. */
+	async archiveCompactedHistory(firstKeptEntryId: string): Promise<void> {
+		if (!this.#persist || !this.#sessionFile || this.#released) return;
+		await this.#withAtomicPersistenceLock(async () => {
+			const epoch = this.#diskEpoch;
+			await this.#scheduleDiskWork(
+				async () => {
+					const sessionFile = this.#sessionFile;
+					if (!sessionFile || this.#released || this.#diskEpoch !== epoch) return;
+					await this.#closeWriterHandle();
+					const activeText = await this.#storage.readText(sessionFile);
+					const actualSize = Buffer.byteLength(activeText, "utf8");
+					if (this.#expectedDiskSize !== null && actualSize !== this.#expectedDiskSize) {
+						throw new Error(`Session file changed before transcript archival: ${sessionFile}`);
+					}
+					const keptIndex = this.#entries.findIndex(entry => entry.id === firstKeptEntryId);
+					if (keptIndex < 0) throw new Error(`Compaction boundary ${firstKeptEntryId} is not in the session`);
+					const eligible = new Set(
+						this.#entries
+							.slice(0, keptIndex)
+							.filter(entry => entry.type === "message")
+							.map(entry => entry.id),
+					);
+					for (const id of this.#archivedEntryIds) eligible.delete(id);
+					if (eligible.size === 0) return;
+					const rows = activeText.split("\n");
+					const parsedRows = rows.map(line => {
+						try {
+							const parsed: unknown = JSON.parse(line);
+							return typeof parsed === "object" &&
+								parsed !== null &&
+								"id" in parsed &&
+								typeof parsed.id === "string"
+								? parsed.id
+								: undefined;
+						} catch {
+							return undefined;
+						}
+					});
+					const toArchive = parsedRows.flatMap((id, index) =>
+						id !== undefined && eligible.has(id) ? [{ id, index, line: rows[index]! }] : [],
+					);
+					if (toArchive.length === 0) return;
+					const archivePath = sessionArchivePath(sessionFile);
+					const existing = await loadSessionArchive(sessionFile, this.#storage, this.#header.id);
+					const archivedIds = new Set(existing?.records.map(record => record.id) ?? []);
+					const records = [...(existing?.records ?? [])];
+					const replacementAnchors = new Map<string, string | null>();
+					for (const item of toArchive) {
+						if (archivedIds.has(item.id)) continue;
+						const beforeId =
+							parsedRows.slice(item.index + 1).find(nextId => nextId !== undefined && !eligible.has(nextId)) ??
+							null;
+						replacementAnchors.set(item.id, beforeId);
+						records.push({ id: item.id, beforeId, line: item.line });
+						archivedIds.add(item.id);
+					}
+					for (const record of records) {
+						while (record.beforeId !== null && replacementAnchors.has(record.beforeId)) {
+							record.beforeId = replacementAnchors.get(record.beforeId) ?? null;
+						}
+					}
+					if (records.length === (existing?.records.length ?? 0)) return;
+					const archive: SessionArchive = {
+						version: 1,
+						sessionId: this.#header.id,
+						sessionFile,
+						records,
+					};
+					const encoded = gzipSync(Buffer.from(JSON.stringify(archive), "utf8")).toString("base64");
+					const archiveSize = (await this.#storage.exists(archivePath))
+						? this.#storage.statSync(archivePath).size
+						: null;
+					await this.#storage.writeTextAtomic(archivePath, encoded, { expectedSize: archiveSize, durable: true });
+					for (const record of records) this.#archivedEntryIds.add(record.id);
+					if (!(await this.#runFencedAtomicRewrite(epoch))) return;
+					this.#lockContentionReported = false;
+					this.#fileIsCurrent = true;
+					this.#materializeBreadcrumb();
+					this.#rewriteRequired = false;
+					this.#hasTitleSlot = true;
+				},
+				{ epoch },
+			);
+		});
 	}
 
 	appendResetBoundary(): string {

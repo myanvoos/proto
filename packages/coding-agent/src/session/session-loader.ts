@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, isEnotdir, logger, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import {
@@ -55,8 +56,22 @@ export interface LoadSessionOptions {
 	throwIfMissing?: boolean;
 }
 
+export interface SessionArchiveRecord {
+	id: string;
+	beforeId: string | null;
+	line: string;
+}
+
+export interface SessionArchive {
+	version: 1;
+	sessionId: string;
+	sessionFile: string;
+	records: SessionArchiveRecord[];
+}
+
 export interface SessionLoadResult {
 	entries: FileEntry[];
+	archivedEntryIds?: Set<string>;
 	titleSlot: SessionTitleUpdate | undefined;
 	malformedRecords: number;
 	/** Malformed newline-terminated records, which are not safe to discard during resume. */
@@ -68,6 +83,101 @@ export interface SessionLoadResult {
 	 * freshness precondition of their next full rewrite.
 	 */
 	sourceSize?: number | null;
+}
+
+export function sessionArchivePath(sessionFile: string): string {
+	return `${sessionFile}.archive.jsonl.gz`;
+}
+
+export async function loadSessionArchive(
+	filePath: string,
+	storage: SessionStorage,
+	sessionId: string,
+): Promise<SessionArchive | undefined> {
+	const archivePath = sessionArchivePath(filePath);
+	if (!(await storage.exists(archivePath))) return undefined;
+	const encoded = (await storage.readText(archivePath)).trim();
+	let archive: unknown;
+	try {
+		archive = JSON.parse(gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"));
+	} catch (error) {
+		throw new Error(`Session archive is corrupt: ${archivePath}`, { cause: error });
+	}
+	if (typeof archive !== "object" || archive === null) throw new Error(`Session archive is invalid: ${archivePath}`);
+	const candidate = archive as Partial<SessionArchive>;
+	if (
+		candidate.version !== 1 ||
+		candidate.sessionId !== sessionId ||
+		typeof candidate.sessionFile !== "string" ||
+		!Array.isArray(candidate.records)
+	) {
+		// A copied artifact directory may carry the source session archive alongside a fork.
+		if (candidate.sessionId !== sessionId) return undefined;
+		throw new Error(`Session archive is invalid: ${archivePath}`);
+	}
+	for (const record of candidate.records) {
+		if (
+			typeof record !== "object" ||
+			record === null ||
+			typeof record.id !== "string" ||
+			!(record.beforeId === null || typeof record.beforeId === "string") ||
+			typeof record.line !== "string"
+		) {
+			throw new Error(`Session archive is invalid: ${archivePath}`);
+		}
+	}
+	return candidate as SessionArchive;
+}
+
+function parseArchivedEntry(record: SessionArchiveRecord): FileEntry {
+	let entry: unknown;
+	try {
+		entry = JSON.parse(record.line);
+	} catch (error) {
+		throw new Error(`Session archive entry ${record.id} is invalid`, { cause: error });
+	}
+	if (typeof entry !== "object" || entry === null || !("id" in entry) || entry.id !== record.id) {
+		throw new Error(`Session archive entry ${record.id} is invalid`);
+	}
+	return entry as FileEntry;
+}
+
+function hydrateArchivedEntries(
+	entries: FileEntry[],
+	records: SessionArchiveRecord[],
+): {
+	entries: FileEntry[];
+	ids: Set<string>;
+} {
+	const byAnchor = new Map<string | null, SessionArchiveRecord[]>();
+	for (const record of records) {
+		const group = byAnchor.get(record.beforeId) ?? [];
+		group.push(record);
+		byAnchor.set(record.beforeId, group);
+	}
+	const ids = new Set(records.map(record => record.id));
+	const activeIds = new Set(
+		entries.flatMap(entry =>
+			typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" ? [entry.id] : [],
+		),
+	);
+	const result: FileEntry[] = [];
+	const appendRecords = (anchor: string | null): void => {
+		for (const record of byAnchor.get(anchor) ?? []) {
+			if (activeIds.has(record.id)) continue;
+			result.push(parseArchivedEntry(record));
+		}
+		byAnchor.delete(anchor);
+	};
+	for (const entry of entries) {
+		if (typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string") {
+			appendRecords(entry.id);
+			result.push(entry);
+		} else result.push(entry);
+	}
+	appendRecords(null);
+	if (byAnchor.size > 0) throw new Error("Session archive references an entry missing from the active transcript");
+	return { entries: result, ids };
 }
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
@@ -321,7 +431,13 @@ async function loadWithKnownSize(
 		const content = await storage.readText(filePath);
 		loaded = { ...parseSessionContent(content), sourceSize: Buffer.byteLength(content, "utf8") };
 	}
-	return loaded.invalidHeader && !options.preserveInvalidHeader ? { ...loaded, entries: [] } : loaded;
+	if (loaded.invalidHeader && !options.preserveInvalidHeader) return { ...loaded, entries: [] };
+	const header = loaded.entries[0];
+	if (header?.type !== "session" || typeof header.id !== "string") return loaded;
+	const archive = await loadSessionArchive(filePath, storage, header.id);
+	if (!archive || archive.records.length === 0) return loaded;
+	const hydrated = hydrateArchivedEntries(loaded.entries, archive.records);
+	return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids };
 }
 
 export async function loadSessionFile(
@@ -361,14 +477,68 @@ export async function visitEntriesFromFile(
 ): Promise<void> {
 	const size = storage.statSync(filePath).size;
 	if (shouldStreamEntries(storage, size)) {
+		let firstEntry: FileEntry | undefined;
+		await visitEntriesFromFileStream(
+			filePath,
+			entry => {
+				firstEntry = entry;
+				return false;
+			},
+			{ maxRecords: 1 },
+		);
+		if (!isValidSessionHeader(firstEntry)) return;
+		const archive = await loadSessionArchive(filePath, storage, firstEntry.id);
+		if (!archive || archive.records.length === 0) {
+			let sawFirstEntry = false;
+			await visitEntriesFromFileStream(filePath, entry => {
+				if (!sawFirstEntry) {
+					sawFirstEntry = true;
+					if (!isValidSessionHeader(entry)) return false;
+				}
+				return visit(entry);
+			});
+			return;
+		}
+		const byAnchor = new Map<string | null, SessionArchiveRecord[]>();
+		const byId = new Map(archive.records.map(record => [record.id, record]));
+		for (const record of archive.records) {
+			const group = byAnchor.get(record.beforeId) ?? [];
+			group.push(record);
+			byAnchor.set(record.beforeId, group);
+		}
+		const activeArchivedIds = new Set<string>();
+		const activeIds = new Set<string>();
+		const appendBefore = (anchor: string | null): boolean => {
+			for (const record of byAnchor.get(anchor) ?? []) {
+				if (activeArchivedIds.has(record.id)) continue;
+				if (visit(parseArchivedEntry(record)) === false) return false;
+			}
+			byAnchor.delete(anchor);
+			return true;
+		};
 		let sawFirstEntry = false;
+		let stopped = false;
 		await visitEntriesFromFileStream(filePath, entry => {
 			if (!sawFirstEntry) {
 				sawFirstEntry = true;
 				if (!isValidSessionHeader(entry)) return false;
 			}
-			return visit(entry);
+			if (typeof entry.id === "string") {
+				activeIds.add(entry.id);
+				if (byId.has(entry.id)) activeArchivedIds.add(entry.id);
+				if (!appendBefore(entry.id)) {
+					stopped = true;
+					return false;
+				}
+			}
+			const keepGoing = visit(entry);
+			if (keepGoing === false) stopped = true;
+			return keepGoing;
 		});
+		if (!stopped && !appendBefore(null)) stopped = true;
+		if (!stopped && [...byAnchor.keys()].some(anchor => anchor !== null && !activeIds.has(anchor))) {
+			throw new Error("Session archive references an entry missing from the active transcript");
+		}
 		return;
 	}
 

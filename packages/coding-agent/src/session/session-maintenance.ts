@@ -1217,6 +1217,15 @@ export class SessionMaintenance {
 				await compactEmit;
 			}
 		}
+		if (savedCompactionEntry) {
+			try {
+				await this.#host.sessionManager.archiveCompactedHistory(args.firstKeptEntryId);
+			} catch (error) {
+				logger.warn("Compacted transcript archival failed; the full session remains available", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 		return savedCompactionEntry;
 	}
 

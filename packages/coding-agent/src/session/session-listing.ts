@@ -778,23 +778,44 @@ export async function getRecentSessions(
 	}
 	byMtime.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 
+	if (limit <= 0) return [];
+
 	const useIndex = storage instanceof FileSessionStorage;
-	const recent: RecentSessionInfo[] = [];
-	for (const { file, stat } of byMtime) {
-		if (recent.length >= limit) break;
-		const id = useIndex ? sessionIdFromSessionPath(file) : undefined;
-		const indexed = id ? lookupSessionTitle(id) : undefined;
-		if (indexed) {
-			recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
-			continue;
+	type RecentCandidate = { file: string; stat: SessionStorageStat; indexed?: string };
+
+	const collectRecent = async (candidates: RecentCandidate[]): Promise<RecentSessionInfo[]> => {
+		const recent: RecentSessionInfo[] = [];
+		for (const { file, stat, indexed } of candidates) {
+			if (recent.length >= limit) break;
+			if (indexed) {
+				recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
+				continue;
+			}
+			const info = await scanSessionFile(file, storage);
+			if (!info || isEmptySession(info)) continue;
+			const title = sanitizeSessionName(info.title);
+			if (useIndex && title && info.id) recordSessionTitle(info.id, title);
+			recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });
 		}
-		const info = await scanSessionFile(file, storage);
-		if (!info || isEmptySession(info)) continue;
-		const title = sanitizeSessionName(info.title);
-		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
-		recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });
+		return recent;
+	};
+
+	const allCandidates: RecentCandidate[] = byMtime.map(({ file, stat }) => {
+		const id = useIndex ? sessionIdFromSessionPath(file) : undefined;
+		return { file, stat, indexed: id ? lookupSessionTitle(id) : undefined };
+	});
+	if (!useIndex) return collectRecent(allCandidates);
+
+	// A title row makes the corresponding result usable without opening its JSONL. Restrict the
+	// initial scan to the newest candidates; if that bounded set cannot fill the request, fall back
+	// to the complete ordered list so stale/missing index rows never hide an older usable session.
+	const candidateLimit = Math.min(allCandidates.length, limit + 8);
+	const boundedCandidates = allCandidates.slice(0, candidateLimit);
+	if (boundedCandidates.some(candidate => candidate.indexed !== undefined)) {
+		const boundedRecent = await collectRecent(boundedCandidates);
+		if (boundedCandidates.length === allCandidates.length || boundedRecent.length >= limit) return boundedRecent;
 	}
-	return recent;
+	return collectRecent(allCandidates);
 }
 
 function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): boolean {

@@ -1,8 +1,33 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { removeSyncWithRetries, removeWithRetries } from "@oh-my-pi/pi-utils";
+
+export const RUNNER_CACHE_MAX_ENTRIES = 16;
 
 const stagedPaths = new Map<string, string>();
+
+async function removeStagedDirectory(target: string): Promise<void> {
+	await removeWithRetries(path.dirname(target)).catch(() => undefined);
+}
+
+function removeStagedDirectoryOnExit(target: string): void {
+	try {
+		removeSyncWithRetries(path.dirname(target));
+	} catch {
+		// Process teardown is best effort; the cache is private and bounded.
+	}
+}
+
+async function evictExcessEntries(): Promise<void> {
+	while (stagedPaths.size > RUNNER_CACHE_MAX_ENTRIES) {
+		const oldest = stagedPaths.entries().next();
+		if (oldest.done) return;
+		const [key, target] = oldest.value;
+		stagedPaths.delete(key);
+		await removeStagedDirectory(target);
+	}
+}
 
 function cacheKey(dirName: string, ext: string, script: string): string {
 	return `${dirName}\0${ext}\0${Bun.hash(script).toString(36)}`;
@@ -36,6 +61,12 @@ async function verifyStagedRunner(target: string, expected?: { dev: number; ino:
 	if (expected && (fileStat.dev !== expected.dev || fileStat.ino !== expected.ino)) {
 		throw new Error(`Staged runner changed before execution: ${target}`);
 	}
+}
+
+export async function disposeRunnerCache(): Promise<void> {
+	const targets = [...stagedPaths.values()];
+	stagedPaths.clear();
+	await Promise.all(targets.map(removeStagedDirectory));
 }
 
 export async function stageRunnerScript(dirName: string, ext: string, script: string): Promise<string> {
@@ -72,9 +103,18 @@ export async function stageRunnerScript(dirName: string, ext: string, script: st
 		}
 		await verifyStagedRunner(target, { dev: openedStat.dev, ino: openedStat.ino });
 		stagedPaths.set(key, target);
+		await evictExcessEntries();
 		return target;
 	} catch (error) {
 		await fs.promises.rm(dir, { recursive: true, force: true });
 		throw error;
 	}
 }
+
+process.once("beforeExit", () => {
+	void disposeRunnerCache();
+});
+process.once("exit", () => {
+	for (const target of stagedPaths.values()) removeStagedDirectoryOnExit(target);
+	stagedPaths.clear();
+});
