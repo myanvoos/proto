@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 
 const BLOB_PREFIX = "blob:sha256:";
@@ -46,7 +47,53 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 					pending.push(entryPath);
 					continue;
 				}
-				if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+				if (!entry.isFile()) continue;
+				if (entry.name.endsWith(".archive.jsonl.gz")) {
+					const encoded = (await fsp.readFile(entryPath, "utf8")).trim();
+					let archive: unknown;
+					try {
+						archive = JSON.parse(gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"));
+					} catch {
+						return null;
+					}
+					if (typeof archive !== "object" || archive === null) return null;
+					const envelope = archive as {
+						version?: unknown;
+						sessionId?: unknown;
+						sessionFile?: unknown;
+						records?: unknown;
+					};
+					if (
+						envelope.version !== 1 ||
+						typeof envelope.sessionId !== "string" ||
+						typeof envelope.sessionFile !== "string" ||
+						!Array.isArray(envelope.records)
+					) {
+						return null;
+					}
+					for (const record of envelope.records) {
+						if (
+							typeof record !== "object" ||
+							record === null ||
+							typeof record.id !== "string" ||
+							!(record.beforeId === null || typeof record.beforeId === "string") ||
+							typeof record.line !== "string"
+						) {
+							return null;
+						}
+						let value: unknown;
+						try {
+							value = JSON.parse(record.line);
+						} catch {
+							return null;
+						}
+						if (typeof value !== "object" || value === null || !("id" in value) || value.id !== record.id)
+							return null;
+						collectRefs(value, references);
+					}
+					continue;
+				}
+				if (!entry.name.endsWith(".jsonl")) continue;
 				const contents = await fsp.readFile(entryPath, "utf8");
 				for (const line of contents.split("\n")) {
 					if (!line.trim()) continue;
@@ -96,6 +143,7 @@ export async function sweepUnreferencedBlobs(
 	let removed = 0;
 	let keptYoung = 0;
 	let aborted = false;
+	const candidates: Array<{ name: string; path: string }> = [];
 	try {
 		for (const entry of await fsp.readdir(blobDir, { withFileTypes: true })) {
 			if (!entry.isFile() || !BLOB_HASH_RE.test(entry.name) || references.has(entry.name)) continue;
@@ -111,21 +159,36 @@ export async function sweepUnreferencedBlobs(
 					keptYoung++;
 					continue;
 				}
-				// Recheck references and freshness immediately before unlinking.
-				const currentReferences = await collectBlobReferences(sessionsDir);
-				if (inFlightBlobWrites.has(candidate) || !currentReferences || currentReferences.has(entry.name)) {
-					keptYoung++;
-					continue;
-				}
-				const current = await fsp.stat(candidate);
-				if (current.mtimeMs > cutoff) {
-					keptYoung++;
-					continue;
-				}
-				await fsp.unlink(candidate);
-				removed++;
+				candidates.push({ name: entry.name, path: candidate });
 			} catch (error) {
 				if (!isEnoent(error)) throw error;
+			}
+		}
+		const batchSize = 32;
+		for (let offset = 0; offset < candidates.length; offset += batchSize) {
+			const batch = candidates.slice(offset, offset + batchSize);
+			const currentReferences = await collectBlobReferences(sessionsDir);
+			if (!currentReferences) {
+				keptYoung += batch.length;
+				aborted = true;
+				break;
+			}
+			for (const candidate of batch) {
+				if (inFlightBlobWrites.has(candidate.path) || currentReferences.has(candidate.name)) {
+					keptYoung++;
+					continue;
+				}
+				try {
+					const current = await fsp.stat(candidate.path);
+					if (!current.isFile() || current.mtimeMs > cutoff) {
+						keptYoung++;
+						continue;
+					}
+					await fsp.unlink(candidate.path);
+					removed++;
+				} catch (error) {
+					if (!isEnoent(error)) throw error;
+				}
 			}
 		}
 	} catch (error) {

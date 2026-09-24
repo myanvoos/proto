@@ -578,6 +578,7 @@ export interface SessionManagerStateSnapshot {
 	archivedEntryIds: string[];
 	rawEntryFiles: Array<readonly [string, RawEntryFile]>;
 	rawEntryDirectory: string | undefined;
+	rawEntryDirectoryContents: Array<readonly [string, Uint8Array]>;
 }
 
 interface DiskQueueOptions {
@@ -1152,6 +1153,7 @@ export class SessionManager {
 	}
 
 	#replaceEntries(entries: readonly SessionEntry[]): void {
+		this.#disposeRawEntryDirectory();
 		this.#clearRawEntryRetention();
 		this.#entries = entries.map(entry => this.#retainEntry(entry));
 		this.#index.rebuild(this.#entries);
@@ -1160,25 +1162,20 @@ export class SessionManager {
 	#restoreRetainedEntries(
 		entries: readonly SessionEntry[],
 		rawEntryFiles: Iterable<readonly [string, RawEntryFile]>,
-		sourceDirectory: string | undefined,
+		directoryContents: readonly (readonly [string, Uint8Array])[],
 	): void {
+		this.#disposeRawEntryDirectory();
 		this.#clearRawEntryRetention();
 		this.#entries = [...entries];
-		const files = [...rawEntryFiles];
-		if (files.length > 0) {
-			if (!sourceDirectory) throw new Error("Raw session entry source directory is missing");
-			if (sourceDirectory === this.#rawEntryDirectory) {
-				this.#rawEntryFiles = new Map(files.map(([id, file]) => [id, { ...file }]));
-			} else {
-				const targetDirectory = this.#ensureRawEntryDirectory();
-				for (const [id, rawFile] of files) {
-					const source = path.join(sourceDirectory, rawFile.name);
-					const target = path.join(targetDirectory, rawFile.name);
-					if (!fs.existsSync(target)) fs.copyFileSync(source, target);
-					this.#rawEntryFiles.set(id, { ...rawFile });
-				}
+		if (directoryContents.length > 0) {
+			const targetDirectory = this.#ensureRawEntryDirectory();
+			for (const [relativePath, bytes] of directoryContents) {
+				const target = path.join(targetDirectory, relativePath);
+				fs.mkdirSync(path.dirname(target), { recursive: true });
+				fs.writeFileSync(target, bytes);
 			}
 		}
+		for (const [id, file] of rawEntryFiles) this.#rawEntryFiles.set(id, { ...file });
 		this.#index.rebuild(this.#entries);
 	}
 
@@ -1498,6 +1495,7 @@ export class SessionManager {
 		this.#entries = [];
 		this.#archivedEntryIds.clear();
 		this.#index.clear();
+		this.#disposeRawEntryDirectory();
 		this.#clearRawEntryRetention();
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
@@ -1666,6 +1664,22 @@ export class SessionManager {
 		return this.#blobs.putSync(data, options);
 	}
 
+	#captureRawEntryDirectoryContents(): Array<readonly [string, Uint8Array]> {
+		const directory = this.#rawEntryDirectory;
+		if (!directory || !fs.existsSync(directory)) return [];
+		const contents: Array<readonly [string, Uint8Array]> = [];
+		const visit = (current: string, relative = ""): void => {
+			for (const item of fs.readdirSync(current, { withFileTypes: true })) {
+				const childRelative = path.join(relative, item.name);
+				const child = path.join(current, item.name);
+				if (item.isDirectory()) visit(child, childRelative);
+				else if (item.isFile()) contents.push([childRelative, fs.readFileSync(child)]);
+			}
+		};
+		visit(directory);
+		return contents;
+	}
+
 	captureState(): SessionManagerStateSnapshot {
 		return {
 			cwd: this.#cwd,
@@ -1688,6 +1702,7 @@ export class SessionManager {
 			archivedEntryIds: [...this.#archivedEntryIds],
 			rawEntryFiles: [...this.#rawEntryFiles].map(([id, file]) => [id, { ...file }]),
 			rawEntryDirectory: this.#rawEntryDirectory,
+			rawEntryDirectoryContents: this.#captureRawEntryDirectoryContents(),
 		};
 	}
 
@@ -1723,7 +1738,7 @@ export class SessionManager {
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
 		this.#header = snapshot.header;
 		this.#sessionId = snapshot.header.id;
-		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectory);
+		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectoryContents);
 		this.#archivedEntryIds = new Set(snapshot.archivedEntryIds ?? []);
 		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
 		this.#sessionName = snapshot.sessionName;
