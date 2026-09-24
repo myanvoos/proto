@@ -46,6 +46,9 @@
 
 - `cmd | python -c …` and `python -c … < file` no longer render as kernel cells; they run a real interpreter
 - Heredoc writes to escaped or partly quoted paths (`cat > "$dir"/new.py <<EOF`, `tee my\ file.py <<EOF`) render as source files
+- Unchanged sessions are listed from a derived info row in the session index without opening their files: a warm folder scan drops to single-digit milliseconds and a warm cross-project scan roughly halves
+- Opening the session selector shows the folder list before the cross-project scan runs: the all-projects preload starts after the first paint and reuses the folder scan's folded sessions, so a cold scan (fresh or invalidated index) no longer delays or stalls the browser
+- Session scanning reads bounded byte ranges and cuts at record boundaries, folding each byte exactly once; scans no longer re-decode the file from the start for every chunk (a 45 MB session: ~4.7 s → ~80 ms)
 
 ## [18.6.0] - 2026-09-23
 

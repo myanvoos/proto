@@ -851,6 +851,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	#onRequestRender?: () => void;
 	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
 	#globalSessionsPromise: Promise<SessionInfo[]> | null = null;
+	#globalLoadStarted = false;
 	#folderSessions: SessionInfo[];
 	#globalSessions: SessionInfo[] | null = null;
 	#scope: "folder" | "all" = "folder";
@@ -879,9 +880,6 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#loadAllSessions = options.loadAllSessions;
 		this.#folderSessions = sessions;
 		this.#globalSessions = options.allSessions ?? null;
-		if (this.#loadAllSessions && !this.#globalSessions) {
-			this.#globalSessionsPromise = this.#startGlobalLoad();
-		}
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
 		this.#title = sanitizeSingleLine(options.title ?? "Resume Session");
@@ -931,6 +929,17 @@ export class SessionSelectorComponent extends OverlayPanel {
 		return `${this.#title} (${sanitizeSingleLine(scopeLabel)})`;
 	}
 
+	/**
+	 * Starts the cross-project preload exactly once. Called from the first render rather
+	 * than the constructor so the folder list paints before the scan folds every
+	 * transcript; with cold scan rows that fold is seconds of work.
+	 */
+	#ensureGlobalLoadStarted(): void {
+		if (this.#globalLoadStarted || this.#globalSessions || !this.#loadAllSessions) return;
+		this.#globalLoadStarted = true;
+		this.#globalSessionsPromise = this.#startGlobalLoad();
+	}
+
 	#startGlobalLoad(): Promise<SessionInfo[]> {
 		const promise = this.#loadAllSessions!();
 		// Failures surface when the user actually switches scope; an abandoned preload
@@ -946,6 +955,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 			if (!global) {
 				if (!this.#globalSessionsPromise) {
 					if (!this.#loadAllSessions) return;
+					this.#globalLoadStarted = true;
 					this.#globalSessionsPromise = this.#startGlobalLoad();
 				}
 				this.#toggling = true;
@@ -1065,6 +1075,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	override render(width: number): readonly string[] {
+		this.#ensureGlobalLoadStarted();
 		const layout = getDialogViewport(this.#getTerminalRows());
 		const innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
 		const marked = this.#sessionList.markedCount();

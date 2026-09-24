@@ -4,7 +4,13 @@ import { gunzipSync } from "node:zlib";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { forEachJsonlRecord, getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
-import { lookupSessionScan, lookupSessionTitle, recordSessionScan, recordSessionTitle } from "./session-index";
+import {
+	lookupSessionInfo,
+	lookupSessionScan,
+	lookupSessionTitle,
+	recordSessionScan,
+	recordSessionTitle,
+} from "./session-index";
 import { readSessionLiveState } from "./session-liveness";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
@@ -47,6 +53,8 @@ export interface RecentSessionInfo {
 	timeAgo: string;
 }
 
+const utf8Decoder = new TextDecoder("utf-8");
+
 const SESSION_LIST_PREFIX_BYTES = 4096;
 
 const SESSION_LIST_SUFFIX_BYTES = 32_768;
@@ -84,7 +92,7 @@ interface SessionScanResumeState {
 	acc: SessionScanAccumulator;
 }
 
-interface SessionScanCacheEntry {
+export interface SessionScanCacheEntry {
 	mtimeMs: number;
 	size: number;
 	info: SessionInfo | undefined;
@@ -93,7 +101,7 @@ interface SessionScanCacheEntry {
 
 type SessionScanCache = LRUCache<string, SessionScanCacheEntry>;
 
-function createSessionScanCache(): SessionScanCache {
+export function createSessionScanCache(): SessionScanCache {
 	return new LRUCache({
 		max: SESSION_SCAN_CACHE_MAX,
 		maxSize: SESSION_SCAN_CACHE_MAX_BYTES,
@@ -448,6 +456,62 @@ async function boundaryFingerprint(file: string, storage: SessionStorage, scanne
 	return Bun.hash(await storage.readTextRange(file, start, scannedBytes)).toString();
 }
 
+/**
+ * Derived listing row persisted beside the resume payload. A file whose size and mtime still
+ * match the row is served from it without opening the file — the same invariant the in-process
+ * cache uses — so warm scans cost one stat and one indexed lookup per session. Rows written
+ * before this column existed carry no info and take the payload path, then backfill.
+ */
+function serializeSessionInfo(info: SessionInfo): string {
+	return JSON.stringify({
+		path: info.path,
+		id: info.id,
+		cwd: info.cwd,
+		title: info.title,
+		parentSessionPath: info.parentSessionPath,
+		createdMs: info.created.getTime(),
+		modifiedMs: info.modified.getTime(),
+		messageCount: info.messageCount,
+		assistantTurns: info.assistantTurns,
+		size: info.size,
+		firstMessage: info.firstMessage,
+		allMessagesText: info.allMessagesText,
+		status: info.status,
+	});
+}
+
+function deserializeSessionInfo(json: string): SessionInfo | undefined {
+	try {
+		const raw = JSON.parse(json) as Record<string, unknown>;
+		if (typeof raw.path !== "string" || typeof raw.id !== "string" || typeof raw.cwd !== "string") return undefined;
+		if (typeof raw.createdMs !== "number" || typeof raw.modifiedMs !== "number") return undefined;
+		if (
+			typeof raw.messageCount !== "number" ||
+			typeof raw.assistantTurns !== "number" ||
+			typeof raw.size !== "number"
+		)
+			return undefined;
+		if (typeof raw.firstMessage !== "string" || typeof raw.allMessagesText !== "string") return undefined;
+		return {
+			path: raw.path,
+			id: raw.id,
+			cwd: raw.cwd,
+			title: typeof raw.title === "string" ? raw.title : undefined,
+			parentSessionPath: typeof raw.parentSessionPath === "string" ? raw.parentSessionPath : undefined,
+			created: new Date(raw.createdMs),
+			modified: new Date(raw.modifiedMs),
+			messageCount: raw.messageCount,
+			assistantTurns: raw.assistantTurns,
+			size: raw.size,
+			firstMessage: raw.firstMessage,
+			allMessagesText: raw.allMessagesText,
+			status: typeof raw.status === "string" ? (raw.status as SessionStatus) : undefined,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 function loadPersistedResume(file: string): SessionScanResumeState | undefined {
 	const row = lookupSessionScan(file);
 	if (!row) return undefined;
@@ -547,6 +611,13 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 		return cached.info ? attachSessionLiveState({ ...cached.info }, storage) : undefined;
 	}
 	try {
+		const persisted = lookupSessionInfo(file);
+		const persistedInfo = persisted ? deserializeSessionInfo(persisted.info) : undefined;
+		const persistedInfoUsable = persisted !== undefined && persistedInfo !== undefined;
+		if (persisted && persistedInfo && persisted.size === stat.size && persisted.mtimeMs === stat.mtimeMs) {
+			cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: persistedInfo });
+			return attachSessionLiveState({ ...persistedInfo }, storage);
+		}
 		const [prefix, suffix] = await storage.readTextSlices(file, SESSION_LIST_PREFIX_BYTES, SESSION_LIST_SUFFIX_BYTES);
 		const { size, mtime } = stat;
 		const prefixHash = Bun.hash(prefix).toString();
@@ -575,23 +646,19 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 				hasMessageText: false,
 				shortSummary: undefined,
 			};
-			// Stream complete records in bounded ranges. Keep at most one incomplete record between
-			// reads; the persisted accumulator remains byte-aligned for append resumes.
+			// Stream complete records in bounded byte ranges. Each consumed range ends on a
+			// record boundary: bytes through the last newline fold immediately and the
+			// incomplete tail is carried into the next range, so no byte is decoded twice and
+			// `scannedBytes` stays byte-aligned for append resumes. Ranges are read as bytes
+			// because a text read at an arbitrary offset can split a UTF-8 code point.
 			const headerProbe: Record<string, unknown>[] = [];
 			let firstDisplayFallback: string | undefined;
 			let headerContent = "";
+			let pending: Uint8Array | undefined;
 			scannedBytes = 0;
-			for (let offset = 0; offset < size; ) {
-				let end = Math.min(size, offset + SESSION_SCAN_CHUNK_BYTES);
-				let chunk = await storage.readTextRange(file, offset, end);
-				// End each range at a newline: besides record alignment, this avoids decoding a
-				// UTF-8 code point split across independent range reads.
-				while (end < size && !chunk.endsWith("\n")) {
-					end = Math.min(size, end + SESSION_SCAN_CHUNK_BYTES);
-					chunk = await storage.readTextRange(file, offset, end);
-				}
-				if (headerProbe.length < 2) headerContent += chunk;
-				forEachJsonlRecord<Record<string, unknown>>(chunk, raw => {
+			const foldChunk = (text: string): void => {
+				if (headerProbe.length < 2) headerContent += text;
+				forEachJsonlRecord<Record<string, unknown>>(text, raw => {
 					if (headerProbe.length < 2) headerProbe.push(raw);
 					foldSessionEntry(acc, raw);
 					const message = raw.message as Message | undefined;
@@ -599,8 +666,37 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 						firstDisplayFallback = extractTextFromContent(message.content);
 					}
 				});
-				scannedBytes += Buffer.byteLength(chunk, "utf8");
+			};
+			for (let offset = 0; offset < size; ) {
+				let end = Math.min(size, offset + SESSION_SCAN_CHUNK_BYTES);
+				let bytes = await storage.readBytesRange(file, offset, end);
+				let breakIndex = bytes.lastIndexOf(0x0a);
+				// No record boundary in the whole range: it sits inside one record. Double the
+				// range from the same start until a newline or EOF bounds it; exponential growth
+				// keeps the re-reads linear in the record size.
+				while (breakIndex === -1 && end < size) {
+					end = Math.min(size, offset + (end - offset) * 2);
+					bytes = await storage.readBytesRange(file, offset, end);
+					breakIndex = bytes.lastIndexOf(0x0a);
+				}
+				if (breakIndex >= 0) {
+					const complete = pending
+						? Buffer.concat([pending, bytes.subarray(0, breakIndex + 1)])
+						: bytes.subarray(0, breakIndex + 1);
+					pending = breakIndex + 1 < bytes.length ? bytes.subarray(breakIndex + 1) : undefined;
+					foldChunk(utf8Decoder.decode(complete));
+					scannedBytes += complete.byteLength;
+				} else if (end >= size) {
+					pending = pending ? Buffer.concat([pending, bytes]) : bytes;
+				}
 				offset = end;
+			}
+			if (pending && pending.byteLength > 0) {
+				// Unterminated final record: parse it for the listing and count it, matching a
+				// whole-file fold, so an append resume still starts past it.
+				foldChunk(utf8Decoder.decode(pending));
+				scannedBytes += pending.byteLength;
+				pending = undefined;
 			}
 			const parsedHeader = parseSessionListHeader(headerContent || prefix, headerProbe);
 			if (!parsedHeader) {
@@ -642,8 +738,8 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 			acc: { ...acc },
 		};
 		cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: { ...info }, resume: nextResume });
-		if (!resume || scannedDelta) {
-			recordSessionScan(file, stat.size, stat.mtimeMs, JSON.stringify(nextResume));
+		if (!resume || scannedDelta || !persistedInfoUsable) {
+			recordSessionScan(file, stat.size, stat.mtimeMs, JSON.stringify(nextResume), serializeSessionInfo(info));
 		}
 		return attachSessionLiveState(info, storage);
 	} catch {

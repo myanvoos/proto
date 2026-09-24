@@ -58,7 +58,7 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
 }
 
 describe("session selector global scope preload", () => {
-	test("loader starts at construction and the scope toggle reuses the same load", async () => {
+	test("loader starts at first render and the scope toggle reuses the same load", async () => {
 		const { promise, resolve } = Promise.withResolvers<SessionInfo[]>();
 		let calls = 0;
 		const loader = () => {
@@ -74,6 +74,9 @@ describe("session selector global scope preload", () => {
 				loadAllSessions: loader,
 			},
 		);
+		expect(calls).toBe(0);
+
+		renderPlain(selector);
 		expect(calls).toBe(1);
 
 		selector.handleInput("\t");

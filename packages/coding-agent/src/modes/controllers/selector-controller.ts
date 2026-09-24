@@ -1498,13 +1498,14 @@ export class SelectorController {
 				showCwd: true,
 			};
 		} else {
-			// Start the cross-project scan before the folder listing so both overlap; the
-			// scope toggle then reuses this promise instead of paying the scan after the fact.
-			const allSessionsPromise = SessionManager.listAllForPicker();
-			allSessionsPromise.catch(() => {});
+			// One storage instance for both scans: the all-projects preload (started by the
+			// selector after its first paint) reuses the folder scan's in-memory scan rows
+			// instead of re-folding the same files.
+			const pickerStorage = new FileSessionStorage();
 			const loadedSessions = await SessionManager.listForPicker(
 				this.ctx.sessionManager.getCwd(),
 				this.ctx.sessionManager.getSessionDir(),
+				pickerStorage,
 			);
 			sessions = loadedSessions;
 			const historyStorage = this.ctx.historyStorage;
@@ -1529,7 +1530,7 @@ export class SelectorController {
 					}
 				},
 				historyMatcher,
-				loadAllSessions: () => allSessionsPromise,
+				loadAllSessions: () => SessionManager.listAllForPicker(pickerStorage),
 			};
 		}
 

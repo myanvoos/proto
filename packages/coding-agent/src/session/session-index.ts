@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS session_scan (
 	mtime_ms REAL NOT NULL,
 	version INTEGER NOT NULL,
 	payload TEXT NOT NULL,
+	info TEXT,
 	updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
 );
 `;
@@ -30,6 +31,13 @@ const SCAN_ROW_LIMIT = 4096;
 const SCAN_PRUNE_INTERVAL = 256;
 
 let scanWritesSincePrune = 0;
+
+/** Derived listing row persisted beside the resume payload so unchanged files need no file reads. */
+export interface PersistedSessionInfo {
+	size: number;
+	mtimeMs: number;
+	info: string;
+}
 
 export interface PersistedSessionScan {
 	size: number;
@@ -44,6 +52,7 @@ interface TitleIndexHandle {
 	select: Statement;
 	scanUpsert: Statement;
 	scanSelect: Statement;
+	scanInfoSelect: Statement;
 }
 
 let handle: TitleIndexHandle | undefined;
@@ -57,6 +66,7 @@ function closeHandle(): void {
 		handle.select.finalize();
 		handle.scanUpsert.finalize();
 		handle.scanSelect.finalize();
+		handle.scanInfoSelect.finalize();
 		handle.db.close();
 	} catch {}
 	handle = undefined;
@@ -73,6 +83,13 @@ function openTitleIndex(): TitleIndexHandle | undefined {
 
 		db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 		db.run(`PRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;\n${TITLE_TABLE_DDL}\n${SCAN_TABLE_DDL}`);
+		try {
+			// Databases created before derived info rows existed lack the column; the DDL above
+			// only covers fresh databases because CREATE TABLE IF NOT EXISTS never alters.
+			db.run("ALTER TABLE session_scan ADD COLUMN info TEXT");
+		} catch (error) {
+			logger.debug("Session scan info column already present", { dbPath, error: String(error) });
+		}
 		handle = {
 			dbPath,
 			db,
@@ -85,17 +102,21 @@ ON CONFLICT(session_id) DO UPDATE SET
 			`),
 			select: db.prepare("SELECT title FROM session_titles WHERE session_id = ?"),
 			scanUpsert: db.prepare(`
-INSERT INTO session_scan (path, size, mtime_ms, version, payload, updated_at)
-VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+INSERT INTO session_scan (path, size, mtime_ms, version, payload, info, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
 ON CONFLICT(path) DO UPDATE SET
 	size = excluded.size,
 	mtime_ms = excluded.mtime_ms,
 	version = excluded.version,
 	payload = excluded.payload,
+	info = excluded.info,
 	updated_at = excluded.updated_at
 			`),
 			scanSelect: db.prepare(
 				`SELECT size, mtime_ms AS mtimeMs, payload FROM session_scan WHERE path = ? AND version = ${SCAN_PAYLOAD_VERSION}`,
+			),
+			scanInfoSelect: db.prepare(
+				`SELECT size, mtime_ms AS mtimeMs, info FROM session_scan WHERE path = ? AND version = ${SCAN_PAYLOAD_VERSION} AND info IS NOT NULL`,
 			),
 		};
 		failedPath = undefined;
@@ -141,11 +162,23 @@ export function lookupSessionScan(file: string): PersistedSessionScan | undefine
 	}
 }
 
-export function recordSessionScan(file: string, size: number, mtimeMs: number, payload: string): void {
+export function lookupSessionInfo(file: string): PersistedSessionInfo | undefined {
+	const index = openTitleIndex();
+	if (!index) return undefined;
+	try {
+		const row = index.scanInfoSelect.get(file) as PersistedSessionInfo | null;
+		return row ?? undefined;
+	} catch (error) {
+		logger.debug("Session scan info lookup failed", { file, error: String(error) });
+		return undefined;
+	}
+}
+
+export function recordSessionScan(file: string, size: number, mtimeMs: number, payload: string, info?: string): void {
 	const index = openTitleIndex();
 	if (!index) return;
 	try {
-		index.scanUpsert.run(file, size, mtimeMs, SCAN_PAYLOAD_VERSION, payload);
+		index.scanUpsert.run(file, size, mtimeMs, SCAN_PAYLOAD_VERSION, payload, info ?? null);
 		if (++scanWritesSincePrune >= SCAN_PRUNE_INTERVAL) {
 			scanWritesSincePrune = 0;
 			index.db.run(

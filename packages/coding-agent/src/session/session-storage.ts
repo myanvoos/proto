@@ -80,6 +80,8 @@ export interface SessionStorage {
 
 	readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]>;
 	readTextRange(path: string, start: number, end: number): Promise<string>;
+	/** Byte-exact range read: decoding a text range at an arbitrary offset can split a UTF-8 code point. */
+	readBytesRange(path: string, start: number, end: number): Promise<Uint8Array>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	rename(path: string, nextPath: string): Promise<void>;
@@ -320,6 +322,10 @@ export class FileSessionStorage implements SessionStorage {
 
 	readTextRange(path: string, start: number, end: number): Promise<string> {
 		return Bun.file(path).slice(start, end).text();
+	}
+
+	readBytesRange(path: string, start: number, end: number): Promise<Uint8Array> {
+		return Bun.file(path).slice(start, end).bytes();
 	}
 
 	async writeText(path: string, content: string): Promise<void> {
@@ -809,6 +815,12 @@ export class MemorySessionStorage implements SessionStorage {
 		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
 		const bytes = Buffer.from(materializeMemoryEntry(entry), "utf8");
 		return Promise.resolve(bytes.subarray(start, end).toString("utf8"));
+	}
+
+	readBytesRange(path: string, start: number, end: number): Promise<Uint8Array> {
+		const entry = this.#files.get(path);
+		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
+		return Promise.resolve(Buffer.from(materializeMemoryEntry(entry), "utf8").subarray(start, end));
 	}
 
 	writeText(path: string, content: string): Promise<void> {

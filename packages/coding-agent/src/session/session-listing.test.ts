@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { listSessions } from "./session-listing";
+import { lookupSessionInfo, recordSessionScan } from "./session-index";
+import type { SessionScanCacheEntry } from "./session-listing";
+import { createSessionScanCache, listSessions } from "./session-listing";
 import { createSessionLiveHeartbeat } from "./session-liveness";
 import { FileSessionStorage } from "./session-storage";
 
@@ -305,32 +307,135 @@ test("cold listing streams large JSONL files without reading the full file", asy
 	}
 });
 
-test("session scan cache evicts by retained search bytes, not entry count alone", async () => {
-	class CountingStorage extends FileSessionStorage {
-		rangeReads = new Map<string, number>();
-		override readTextRange(file: string, start: number, end: number): Promise<string> {
-			this.rangeReads.set(file, (this.rangeReads.get(file) ?? 0) + 1);
-			return super.readTextRange(file, start, end);
-		}
+test("session scan cache evicts by retained search bytes, not entry count alone", () => {
+	// The persisted info row serves unchanged files without reads, so the retention policy
+	// is observed on the cache itself: many small entries must evict long before the 4096
+	// entry cap when their retained text exceeds the 16 MiB byte budget.
+	const cache = createSessionScanCache();
+	const entry = (id: string): SessionScanCacheEntry => ({
+		mtimeMs: 0,
+		size: 1024,
+		info: undefined,
+		resume: {
+			scannedBytes: 1024,
+			prefixHash: id,
+			boundaryHash: "0",
+			header: { type: "session", id },
+			acc: {
+				messageCount: 1,
+				assistantTurns: 0,
+				firstMessage: "",
+				searchText: "x".repeat(16_384),
+				hasMessageText: true,
+				shortSummary: undefined,
+			},
+		},
+	});
+	for (let index = 0; index < 1350; index++) cache.set(`s${index}`, entry(`budget${index}`));
+	expect(cache.size).toBeLessThan(1350);
+	expect(cache.get("s0")).toBeUndefined();
+	// Newest entries survive; the 16 MiB budget, not the 4096 entry cap, decided the cutoff
+	// (~33 KiB retained per entry => a few hundred entries, far below the cap).
+	expect(cache.get("s1349")).toBeDefined();
+	expect(cache.size).toBeLessThan(4096);
+});
+
+/** Counts content reads so tests can assert a warm listing touches no files. */
+class CountingStorage extends FileSessionStorage {
+	readCalls = 0;
+
+	override readText(path: string): Promise<string> {
+		this.readCalls++;
+		return super.readText(path);
 	}
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-cache-budget-"));
-	try {
-		for (let index = 0; index < 270; index++) {
-			const file = writeSessionFile(dir, `session-${String(index).padStart(3, "0")}.jsonl`, `budget${index}`);
-			fs.appendFileSync(
-				file,
-				`${JSON.stringify({ type: "message", message: { role: "user", content: "x".repeat(16_000) } })}\n`,
-			);
-		}
-		const storage = new CountingStorage();
-		const sessions = await listSessions(dir, storage);
-		const oldest = sessions.at(-1)?.path;
-		expect(oldest).toBeDefined();
-		const readsBefore = storage.rangeReads.get(oldest!) ?? 0;
-		expect(readsBefore).toBeGreaterThan(0);
-		await listSessions(dir, storage);
-		expect(storage.rangeReads.get(oldest!)).toBeGreaterThan(readsBefore);
-	} finally {
-		fs.rmSync(dir, { recursive: true, force: true });
+
+	override readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
+		this.readCalls++;
+		return super.readTextSlices(path, prefixBytes, suffixBytes);
 	}
+
+	override readTextRange(path: string, start: number, end: number): Promise<string> {
+		this.readCalls++;
+		return super.readTextRange(path, start, end);
+	}
+
+	override readBytesRange(path: string, start: number, end: number): Promise<Uint8Array> {
+		this.readCalls++;
+		return super.readBytesRange(path, start, end);
+	}
+}
+
+describe("session listing derived scan rows", () => {
+	test("an unchanged file is served from the persisted info row without any file reads", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-inforow-"));
+		const file = writeSessionFile(dir, "abc_session1.jsonl", "session1");
+		fs.appendFileSync(
+			file,
+			`${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "hello" }] } })}\n`,
+		);
+		const cold = new CountingStorage();
+		const first = await listSessions(dir, cold);
+		expect(first[0]?.messageCount).toBe(1);
+		expect(cold.readCalls).toBeGreaterThan(0);
+
+		// Fresh storage instance = new process: only the persisted row can answer, and it
+		// must do so without opening the file.
+		const warm = new CountingStorage();
+		const second = await listSessions(dir, warm);
+		expect(warm.readCalls).toBe(0);
+		expect(second[0]?.id).toBe("session1");
+		expect(second[0]?.messageCount).toBe(1);
+		expect(second[0]?.firstMessage).toBe(first[0]?.firstMessage);
+	});
+
+	test("an appended message invalidates the info row and the delta is folded", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-infoappend-"));
+		const file = writeSessionFile(dir, "abc_session2.jsonl", "session2");
+		const cold = new CountingStorage();
+		const first = await listSessions(dir, cold);
+		expect(first[0]?.messageCount).toBe(0);
+
+		fs.appendFileSync(
+			file,
+			`${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "second" }] } })}\n`,
+		);
+		const warm = new CountingStorage();
+		const second = await listSessions(dir, warm);
+		expect(warm.readCalls).toBeGreaterThan(0);
+		expect(second[0]?.messageCount).toBe(1);
+
+		const after = await listSessions(dir, new CountingStorage());
+		expect(after[0]?.messageCount).toBe(1);
+		expect(after[0]?.firstMessage).toBe("second");
+	});
+
+	test("payload-only rows (pre-info shape) are backfilled and then take the fast path", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-infobackfill-"));
+		const file = writeSessionFile(dir, "abc_session3.jsonl", "session3");
+		const stat = fs.statSync(file);
+		recordSessionScan(
+			file,
+			stat.size,
+			stat.mtimeMs,
+			JSON.stringify({
+				scannedBytes: stat.size,
+				prefixHash: "0",
+				boundaryHash: "0",
+				header: { type: "session", id: "session3" },
+				acc: { messageCount: 0, assistantTurns: 0, firstMessage: "", searchText: "", hasMessageText: false },
+			}),
+		);
+		expect(lookupSessionInfo(file)).toBeUndefined();
+
+		const first = await listSessions(dir, new CountingStorage());
+		expect(first[0]?.id).toBe("session3");
+		const row = lookupSessionInfo(file);
+		expect(row).toBeDefined();
+		expect(row?.size).toBe(stat.size);
+
+		const warm = new CountingStorage();
+		const second = await listSessions(dir, warm);
+		expect(warm.readCalls).toBe(0);
+		expect(second[0]?.id).toBe("session3");
+	});
 });

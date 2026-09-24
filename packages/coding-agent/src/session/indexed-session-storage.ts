@@ -256,6 +256,18 @@ export class IndexedSessionStorage implements SessionStorage {
 		return Buffer.from(prefix, "utf8").subarray(start, end).toString("utf8");
 	}
 
+	async readBytesRange(path: string, start: number, end: number): Promise<Uint8Array> {
+		if (end <= start) return new Uint8Array(0);
+		const entry = this.#index.get(path);
+		if (!entry) throw enoent(path);
+		if (end >= entry.size && start >= SESSION_TITLE_SLOT_BYTES) {
+			const [, suffix] = await this.readTextSlices(path, 0, entry.size - start);
+			return Buffer.from(suffix, "utf8").subarray(0, end - start);
+		}
+		const [prefix] = await this.readTextSlices(path, end, 0);
+		return Buffer.from(prefix, "utf8").subarray(start, end);
+	}
+
 	async readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
 		const entry = this.#index.get(path);
 		if (!entry) throw enoent(path);
