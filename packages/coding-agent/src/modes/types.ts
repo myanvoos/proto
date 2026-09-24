@@ -203,6 +203,8 @@ export interface InteractiveModeContext {
 
 	init(): Promise<void>;
 	shutdown(): Promise<void>;
+	/** Shut down like {@link shutdown}, then update the binary and relaunch resuming this session. */
+	updateAndRestart(): Promise<void>;
 	checkShutdownRequested(): Promise<void>;
 
 	setToolUIContext(uiContext: ExtensionUIContext, hasUI: boolean): void;

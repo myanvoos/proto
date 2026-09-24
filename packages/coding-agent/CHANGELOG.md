@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `orchestrate_send` accepts `model`: an idle worker resumes onto the requested model, and a running worker is steered and switched mid-turn; the switch persists for the worker's later turns
+
 ### Changed
 
 - Bash calls highlight and outline the program of any Python/JS interpreter invocation — `.venv/bin/python - "$f" <<EOF`, `python3.12 -c`, `uv run python -`, `sudo python3`, `ssh host python3 -` — not only kernel-routed `python`/`node`/`bun` calls

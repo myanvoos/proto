@@ -1,5 +1,6 @@
 import { runPauseScreen } from "../modes/components/pause-screen";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
+import { commandConsumed } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -16,5 +17,14 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["q"],
 		description: "Quit the application",
 		handleTui: shutdownHandlerTui,
+	},
+	{
+		name: "update",
+		description: "Update proto, then resume this session in the new version",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			void runtime.ctx.updateAndRestart();
+			return commandConsumed();
+		},
 	},
 ];

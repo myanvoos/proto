@@ -42,6 +42,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
+import { updateAndRelaunch } from "../cli/update-cli";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
@@ -2450,6 +2451,18 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async shutdown(): Promise<void> {
+		await this.#shutdown({ updateRestart: false });
+	}
+
+	/**
+	 * Tear the TUI and session down exactly like shutdown, then update the binary and relaunch
+	 * `${BINARY_NAME}` resuming this session. Used by the `/update` slash command.
+	 */
+	async updateAndRestart(): Promise<void> {
+		await this.#shutdown({ updateRestart: true });
+	}
+
+	async #shutdown(options: { updateRestart: boolean }): Promise<void> {
 		if (this.#isShuttingDown) return;
 		// Session disposal is memoized and has already latched its write failure,
 		// so retrying teardown cannot make progress. Exit without touching the
@@ -2505,6 +2518,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		disposeTerminalTitleState();
 		popTerminalTitle();
 		this.stop();
+
+		if (options.updateRestart) {
+			try {
+				await updateAndRelaunch({
+					sessionFile: this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined,
+					cwd: this.sessionManager.getCwd(),
+				});
+			} catch {
+				// updateAndRelaunch exits the process; a throw means every exit primitive failed.
+				postmortem.exitProcess(1);
+			}
+		}
 
 		// Cleanup callbacks no longer need the live UI/session. Start them before
 		// the synchronous resume hint so their independent I/O can overlap it.

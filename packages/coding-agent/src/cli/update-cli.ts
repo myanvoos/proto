@@ -4,11 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { $env, $which, BINARY_NAME, compareVersions, isEnoent, isTimeoutError, VERSION } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	$which,
+	BINARY_NAME,
+	compareVersions,
+	getActiveProfile,
+	isEnoent,
+	isTimeoutError,
+	postmortem,
+	VERSION,
+} from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
 import { theme } from "../modes/theme/theme";
+import { releaseSessionOwnership } from "../session/session-liveness";
 import { isUnsupportedProxyError, unsupportedProxyMessage, withTimeoutSignal } from "../utils/fetch-timeout";
 
 const REPO = "myanvoos/proto";
@@ -786,15 +797,18 @@ function installerHint(): string {
 	return `curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | sh`;
 }
 
-export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
+/**
+ * Core update flow. Throws with a user-facing message ("Failed to check for updates: …" /
+ * "Update failed: …") instead of exiting, so embedded callers such as `/update` can react.
+ */
+export async function runUpdate(opts: { force: boolean; check: boolean }): Promise<void> {
 	console.log(chalk.dim(`Current version: ${VERSION}`));
 
 	let release: ReleaseInfo;
 	try {
 		release = await getLatestRelease();
 	} catch (err) {
-		console.error(chalk.red(`Failed to check for updates: ${err}`));
-		process.exit(1);
+		throw new Error(`Failed to check for updates: ${err}`);
 	}
 
 	const comparison = compareVersions(release.version, VERSION);
@@ -837,7 +851,88 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			}
 		}
 	} catch (err) {
-		console.error(chalk.red(`Update failed: ${err}`));
+		throw new Error(`Update failed: ${err}`);
+	}
+}
+
+export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
+	try {
+		await runUpdate(opts);
+	} catch (err) {
+		console.error(chalk.red(err instanceof Error ? err.message : String(err)));
 		process.exit(1);
+	}
+}
+
+export interface UpdateRelaunchOptions {
+	/** Session file to resume in the relaunched process; undefined starts a fresh session. */
+	sessionFile?: string;
+	/** Working directory for the relaunched process (the session's workspace). */
+	cwd: string;
+}
+
+/** Launch argv for the restarted process: the active profile plus `--resume` when a session file is given. */
+export function buildRelaunchArgs(sessionFile: string | undefined): string[] {
+	const profile = getActiveProfile();
+	return [...(profile ? ["--profile", profile] : []), ...(sessionFile ? ["--resume", sessionFile] : [])];
+}
+
+function manualResumeHint(sessionFile: string): string {
+	const profile = getActiveProfile();
+	return `${BINARY_NAME} ${profile ? `--profile ${profile} ` : ""}--resume ${sessionFile}`;
+}
+
+/**
+ * Update path behind the `/update` slash command: runs after the TUI and session are fully torn down.
+ * Updates the binary in place, then relaunches `${BINARY_NAME}` as a child inheriting the terminal,
+ * resuming the session the user just quit. Never resolves: every path exits this process with the
+ * relaunched child's exit code (or throws if every exit primitive failed).
+ */
+export async function updateAndRelaunch(options: UpdateRelaunchOptions): Promise<void> {
+	const hardExit: (code: number) => never = postmortem.exitProcess;
+
+	// Release the session claim before the child starts: it re-claims the same file, and the OS-level
+	// ownership lock would still be held by this (still alive) process.
+	releaseSessionOwnership();
+
+	let updateFailed = false;
+	try {
+		await runUpdate({ force: false, check: false });
+	} catch (err) {
+		updateFailed = true;
+		console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+	}
+
+	const { sessionFile, cwd } = options;
+	const binPath = $which(BINARY_NAME);
+	if (!binPath) {
+		console.error(chalk.red(`Could not find ${BINARY_NAME} on PATH to relaunch.`));
+		if (sessionFile) console.error(chalk.dim(`Resume manually with: ${manualResumeHint(sessionFile)}`));
+		hardExit(updateFailed ? 1 : 0);
+	}
+
+	console.log(chalk.dim(sessionFile ? "Restarting to resume this session…" : "Restarting…"));
+
+	// The parent outlives the whole relaunched session, so it must ignore signals meant for the child:
+	// both processes sit in the foreground process group and would otherwise tear down concurrently.
+	const ignored = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map(signal => {
+		const handler = (): void => {};
+		process.on(signal, handler);
+		return [signal, handler] as const;
+	});
+
+	try {
+		const child = Bun.spawn([binPath, ...buildRelaunchArgs(sessionFile)], {
+			cwd,
+			stdio: ["inherit", "inherit", "inherit"],
+		});
+		const code = await child.exited;
+		hardExit(code ?? 1);
+	} catch (err) {
+		console.error(chalk.red(`Failed to relaunch ${BINARY_NAME}: ${err}`));
+		if (sessionFile) console.error(chalk.dim(`Resume manually with: ${manualResumeHint(sessionFile)}`));
+		hardExit(1);
+	} finally {
+		for (const [signal, handler] of ignored) process.off(signal, handler);
 	}
 }

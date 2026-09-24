@@ -74,6 +74,9 @@ const orchestrateSpawnSchema = type({
 const orchestrateSendSchema = type({
 	to: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
 	message: type("string > 0").describe("message for the worker; steers mid-turn, else runs as its next turn"),
+	"model?": type("string > 0").describe(
+		"switch the worker to this model for this message and all later turns: a role alias like `@worker` or a concrete model id; validated like spawn (unknown role or unmatched id rejected, role model bank enforced)",
+	),
 });
 
 const orchestrateWaitSchema = type({
@@ -279,17 +282,22 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		_toolCallId: string,
 		params: typeof orchestrateSendSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		assertKnownParams("orchestrate_send", params, ["to", "message"]);
+		assertKnownParams("orchestrate_send", params, ["to", "message", "model"]);
 		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().send(this.session, {
 			session: params.to,
 			message: params.message,
+			...(params.model !== undefined ? { model: params.model } : {}),
 		});
+		const modelNote =
+			params.model !== undefined
+				? ` Model switch to \`${params.model}\` applies to ${outcome.mode === "steered" ? "the worker's next request" : `turn ${outcome.receipt.turn}`} and all later turns.`
+				: "";
 		const ack =
 			outcome.mode === "turn"
-				? `Accepted turn ${outcome.receipt.turn} for worker \`${outcome.id}\` (label \`${outcome.label}\`, job \`${outcome.jobId}\`). Receipt: accepted; completion will report delivered.`
+				? `Accepted turn ${outcome.receipt.turn} for worker \`${outcome.id}\` (label \`${outcome.label}\`, job \`${outcome.jobId}\`).${modelNote} Receipt: accepted; completion will report delivered.`
 				: outcome.mode === "steered"
-					? `Accepted steer for worker \`${outcome.id}\` (label \`${outcome.label}\`, turn ${outcome.receipt.turn}, job \`${outcome.jobId}\`). Receipt: accepted.`
-					: `Accepted message for worker \`${outcome.id}\` (label \`${outcome.label}\`) as queued turn ${outcome.receipt.turn}; receipt: queued.`;
+					? `Accepted steer for worker \`${outcome.id}\` (label \`${outcome.label}\`, turn ${outcome.receipt.turn}, job \`${outcome.jobId}\`).${modelNote} Receipt: accepted.`
+					: `Accepted message for worker \`${outcome.id}\` (label \`${outcome.label}\`) as queued turn ${outcome.receipt.turn};${modelNote} receipt: queued.`;
 		return textResult(ack, { op: "send", screens: await screensOf(this.session), send: outcome });
 	}
 }
@@ -490,6 +498,7 @@ interface OrchestrateRenderArgs {
 	to?: string;
 	id?: string;
 	message?: string;
+	model?: string;
 	ids?: string[];
 	timeoutMs?: number;
 }
@@ -615,7 +624,7 @@ function describeCall(op: OrchestrateOp, args: OrchestrateRenderArgs | undefined
 		case "spawn":
 			return `spawn ${args?.agent ?? "worker"}${args?.label ? ` · ${frameText(args.label, 40)}` : ""}`;
 		case "send":
-			return `send → ${args?.to ? frameText(args.to, 40) : "?"}`;
+			return `send → ${args?.to ? frameText(args.to, 40) : "?"}${args?.model ? ` · ${frameText(args.model, 36)}` : ""}`;
 		case "wait":
 			return args?.ids?.length ? `wait on ${frameText(args.ids.join(", "), 60)}` : "wait on running workers";
 		case "kill":
@@ -687,7 +696,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				const target =
 					op === "spawn"
 						? `${uiTheme.fg("muted", "orchestrate spawn")} ${formatBadge(details.spawned?.agent ?? args?.agent ?? "worker", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(spawnName, 40))}${spawnId}`
-						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.to ?? "?", 40))}`;
+						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.to ?? "?", 40))}${args?.model ? ` ${uiTheme.fg("dim", frameText(args.model, 36))}` : ""}`;
 				const ack =
 					op === "spawn"
 						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)

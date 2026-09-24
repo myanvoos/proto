@@ -9,7 +9,7 @@ Available agent types:
 - `{{name}}`: {{description}}
 {{/each}}
 {{/if}}
-`model`: role alias (`@worker`) or concrete model id; MUST resolve at spawn time — unknown role or unmatched id rejected, no worker started. Effective role with configured model bank → selection MUST be in-bank; role default always allowed; role alias switches effective role. Selection persists across park/revive.
+`model`: role alias (`@worker`) or concrete model id; MUST resolve at spawn time — unknown role or unmatched id rejected, no worker started. Effective role with configured model bank → selection MUST be in-bank; role default always allowed; role alias switches effective role. Selection persists across park/revive; a later `orchestrate_send` with `model=` switches it.
 
 Results self-deliver on completion; direct other workers meanwhile. Normal completion preserves the worker: continue with `orchestrate_send` passing the returned `id` as `to`. Labels may repeat.
 

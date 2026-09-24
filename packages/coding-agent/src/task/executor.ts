@@ -2201,6 +2201,9 @@ interface FollowUpTurnOptions {
 
 	modelRole?: string;
 
+	/** Model switch to apply to the resumed session before this turn runs (orchestrate_send model=). */
+	modelOverride?: string | string[];
+
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
 	outputSchemaSource?: StructuredSubagentSchemaSource;
@@ -2221,6 +2224,17 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const startTime = Date.now();
 	const session = await AgentLifecycleManager.global().ensureLive(id);
 	if (session.isStreaming) await untilAborted(signal, () => session.waitForStreamingIdle());
+	if (options.modelOverride !== undefined) {
+		const patterns = Array.isArray(options.modelOverride) ? options.modelOverride : [options.modelOverride];
+		const resolved = resolveModelOverride(patterns, session.modelRegistry, session.settings);
+		if (!resolved.model) {
+			throw new Error(`Model \`${patterns.join(", ")}\` did not match any model available to worker "${id}".`);
+		}
+		await session.setModelTemporary(
+			resolved.model,
+			resolved.explicitThinkingLevel ? resolved.thinkingLevel : undefined,
+		);
+	}
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
 	const fleetRoot = ref?.fleetRoot ?? options.fleetRoot;

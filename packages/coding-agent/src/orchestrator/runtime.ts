@@ -17,6 +17,7 @@ import { MCPManager } from "../mcp/manager";
 import workerTurnResultTemplate from "../prompts/tools/worker-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, hasAgentTombstone, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { AgentSession } from "../session/agent-session";
 import {
 	parseSubagentUsageEntry,
 	SUBAGENT_USAGE_CUSTOM_TYPE,
@@ -192,6 +193,9 @@ interface WorkerRecord {
 	modelOverride?: string | string[];
 
 	modelRole?: string;
+
+	/** Override queued by `send(model=)` that the next orchestrator-driven turn must apply to the worker session. */
+	pendingModelOverride?: string | string[];
 
 	effort?: WorkerEffort;
 	outputSchema?: unknown;
@@ -1429,7 +1433,61 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	async send(session: ToolSession, args: { session: string; message: string }): Promise<SendOutcome> {
+	/**
+	 * Validates a `send(model=)` request with spawn parity: role aliases expand, the effective
+	 * role's model bank is enforced, and the pattern must match a model the registry offers.
+	 */
+	#resolveSendModelChange(
+		session: ToolSession,
+		record: WorkerRecord,
+		requestModel: string,
+	): { modelOverride: string | string[]; modelRole?: string } {
+		const agentModelOverrides = session.settings.get("orchestrator.agentModelOverrides");
+		const { patterns, role, requestError } = resolveAgentSpawnModelSelection({
+			requestModel,
+			settingsOverride: agentModelOverrides[record.agentName],
+			agentModel: record.agent?.model,
+			settings: session.settings,
+			activeModelPattern: session.getActiveModelString?.(),
+			fallbackModelPattern: session.getModelString?.(),
+			...(session.modelRegistry ? { modelRegistry: session.modelRegistry } : {}),
+		});
+		if (requestError) throw new ToolError(requestError);
+		return { modelOverride: patterns, ...(role !== undefined ? { modelRole: role } : {}) };
+	}
+
+	/** Persists a model switch on the record so screens and future turns (spawn parity) see it. */
+	#recordModelChange(
+		session: ToolSession,
+		record: WorkerRecord,
+		change: { modelOverride: string | string[]; modelRole?: string },
+	): void {
+		record.modelOverride = change.modelOverride;
+		record.modelRole = change.modelRole;
+		record.pendingModelOverride = change.modelOverride;
+		// Drop the stale resolved string so `#displayModel` re-derives from the new override.
+		record.resolvedModel = undefined;
+		const patterns = Array.isArray(change.modelOverride) ? change.modelOverride : [change.modelOverride];
+		if (session.modelRegistry) {
+			const resolved = resolveModelOverride(patterns, session.modelRegistry, session.settings);
+			if (resolved.model) record.model = resolved.model;
+		}
+	}
+
+	/** Switches a live worker session to the resolved override so its next request runs on it. */
+	async #applyModelChangeToSession(worker: AgentSession, modelOverride: string | string[]): Promise<void> {
+		const patterns = Array.isArray(modelOverride) ? modelOverride : [modelOverride];
+		const resolved = resolveModelOverride(patterns, worker.modelRegistry, worker.settings);
+		if (!resolved.model) {
+			throw new ToolError(`Model \`${patterns.join(", ")}\` did not match any model available to worker sessions.`);
+		}
+		await worker.setModelTemporary(
+			resolved.model,
+			resolved.explicitThinkingLevel ? resolved.thinkingLevel : undefined,
+		);
+	}
+
+	async send(session: ToolSession, args: { session: string; message: string; model?: string }): Promise<SendOutcome> {
 		const scope = this.#activeScope(session);
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead" || record.terminal) {
@@ -1443,6 +1501,12 @@ export class OrchestratorRuntime {
 			throw this.#terminalError(record);
 		}
 
+		// Resolve (and, when the worker is streaming, apply) the model switch before any state
+		// mutation or message delivery, so an invalid request changes nothing.
+		const modelChange =
+			args.model !== undefined ? this.#resolveSendModelChange(session, record, args.model) : undefined;
+		if (modelChange) this.#recordModelChange(session, record, modelChange);
+
 		if (record.turn) {
 			const live = registered?.session;
 			if (live?.isStreaming) {
@@ -1454,6 +1518,12 @@ export class OrchestratorRuntime {
 					throw new ToolError(reason, {
 						receipt: this.#receipt(record, "rejected", record.turnCount, record.turn.jobId, reason),
 					});
+				}
+				if (modelChange) {
+					await this.#applyModelChangeToSession(live, modelChange.modelOverride);
+					// Applied inline: the running session already talks to the new model, so no
+					// follow-up turn may re-apply it (that would reset provider conversation state).
+					record.pendingModelOverride = undefined;
 				}
 				await live.steer(message);
 				record.lastActivityAt = Date.now();
@@ -1845,6 +1915,9 @@ export class OrchestratorRuntime {
 		onProgress: (progress: AgentProgress) => void,
 	): Promise<ExecutorOptions> {
 		const agent = this.#workerAgent(record);
+		// The spawn turn applies the override by construction (it starts from these options);
+		// clear the pending marker so a later follow-up cannot apply it a second time.
+		record.pendingModelOverride = undefined;
 		const sessionFile = session.getSessionFile();
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
 		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `proto-worker-${Snowflake.next()}`);
@@ -1939,12 +2012,17 @@ export class OrchestratorRuntime {
 		if (first) {
 			return runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress));
 		}
+		// Consumed even if the turn fails: a failed application surfaces as that turn's error,
+		// and a succeeded one must not be re-applied (it would reset provider conversation state).
+		const pendingModelOverride = record.pendingModelOverride;
+		record.pendingModelOverride = undefined;
 		return runSubagentFollowUpTurn({
 			id: record.id,
 			agent: this.#workerAgent(record),
 			message,
 			description: `worker ${record.label}`,
 			modelRole: record.modelRole,
+			...(pendingModelOverride !== undefined ? { modelOverride: pendingModelOverride } : {}),
 			outputSchema: record.outputSchema,
 			outputSchemaMode: record.outputSchemaMode,
 			outputSchemaSource: record.outputSchemaSource,

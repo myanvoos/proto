@@ -134,6 +134,40 @@ function multiSubmitProvider(): StreamFn {
 	};
 }
 
+/** Records every request's model id and yields immediately — for asserting model switches. */
+function recordingYieldProvider(requestedModels: string[]): StreamFn {
+	return (model, _context) => {
+		requestedModels.push(model.id);
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() =>
+			pushToolCall(stream, model, call("yield-result", "yield", { result: { data: "controlled turn complete" } })),
+		);
+		return stream;
+	};
+}
+
+/** First request gates and submits a non-terminal yield; later requests yield terminally. */
+function stagedYieldProvider(requestedModels: string[], gates: Map<string, Promise<void>>): StreamFn {
+	let step = 0;
+	return (model, context) => {
+		requestedModels.push(model.id);
+		const stream = createAssistantMessageEventStream();
+		const userMessage = context.messages.findLast(message => message.role === "user");
+		const text = JSON.stringify(userMessage);
+		const gate = [...gates].find(([marker]) => text.includes(marker))?.[1];
+		void (async () => {
+			await gate;
+			step++;
+			const submission =
+				step === 1
+					? call("note", "yield", { type: ["note"], result: { data: "PART_ONE" } })
+					: call("yield-result", "yield", { result: { data: "controlled turn complete" } });
+			pushToolCall(stream, model, submission);
+		})();
+		return stream;
+	};
+}
+
 function cellCommand(language: "py" | "js", code: string): string {
 	const interpreter = language === "js" ? "node" : "python";
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
@@ -952,6 +986,103 @@ test("steering a busy worker is bounded, so a parent cannot bury it in unread me
 		expect(rejection?.message).toContain("32/32 steering messages");
 		// The rejection is a receipt, not a lost worker: the turn is still running and addressable.
 		expect(runtime.screens(session, [worker.id])).toMatchObject([{ turnState: "running", addressable: true }]);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("send model= resumes an idle worker onto the requested model", async () => {
+	const requestedModels: string[] = [];
+	const { runtime, session, manager, authStorage } = await controlledFixture({
+		streamFn: recordingYieldProvider(requestedModels),
+	});
+	authStorage.setRuntimeApiKey("openai", "test-key");
+	const worker = await runtime.spawn(session, { message: "first turn on the spawn model" });
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: [worker.id] });
+	expect(requestedModels).toEqual(["controlled-model"]);
+
+	const sent = await runtime.send(session, {
+		session: worker.id,
+		message: "followup",
+		model: "openai/gpt-4.1-mini",
+	});
+	expect(sent).toMatchObject({ id: worker.id, mode: "turn", receipt: { status: "accepted", turn: 2 } });
+	await manager.waitForAll();
+	const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
+	// The resumed turn issued its request on the switched model, not the spawn model.
+	expect(requestedModels).toEqual(["controlled-model", "gpt-4.1-mini"]);
+	// The switch persists: a plain follow-up after the switch stays on the new model.
+	const again = await runtime.send(session, { session: worker.id, message: "followup" });
+	expect(again).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 3 } });
+	await manager.waitForAll();
+	expect(requestedModels).toEqual(["controlled-model", "gpt-4.1-mini", "gpt-4.1-mini"]);
+}, 30_000);
+
+test("send model= rejects an unmatched model without touching the worker", async () => {
+	const requestedModels: string[] = [];
+	const { runtime, session, manager, authStorage } = await controlledFixture({
+		streamFn: recordingYieldProvider(requestedModels),
+	});
+	authStorage.setRuntimeApiKey("openai", "test-key");
+	const worker = await runtime.spawn(session, { message: "baseline turn" });
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: [worker.id] });
+	const screensBefore = runtime.screens(session, [worker.id]);
+
+	await expect(
+		runtime.send(session, {
+			session: worker.id,
+			message: "followup",
+			model: "no-such-provider/no-such-model",
+		}),
+	).rejects.toThrow("did not match any available model");
+
+	// The rejected request changed nothing: still idle on the spawn model, still addressable.
+	expect(runtime.screens(session, [worker.id])).toMatchObject(screensBefore.map(screen => ({ id: screen.id })));
+	const sent = await runtime.send(session, { session: worker.id, message: "followup" });
+	expect(sent).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 2 } });
+	await manager.waitForAll();
+	expect(requestedModels).toEqual(["controlled-model", "controlled-model"]);
+}, 30_000);
+
+test("send model= on a streaming worker switches the running turn mid-task", async () => {
+	const requestedModels: string[] = [];
+	const blocked = Promise.withResolvers<void>();
+	const gates = new Map<string, Promise<void>>([["hold-model-switch", blocked.promise]]);
+	const { runtime, session, manager, authStorage } = await controlledFixture({
+		streamFn: stagedYieldProvider(requestedModels, gates),
+	});
+	authStorage.setRuntimeApiKey("openai", "test-key");
+	const worker = await runtime.spawn(session, { message: "hold-model-switch" });
+	try {
+		await withTimeout(
+			(async () => {
+				while (AgentRegistry.global().get(worker.id)?.session?.isStreaming !== true) await Bun.sleep(10);
+			})(),
+			5_000,
+			"worker never started streaming",
+		);
+		// Whether the in-flight request had already dispatched (old model) or not yet (new
+		// model) is a scheduling race; the switch itself is not: every request issued after the
+		// steer-and-switch lands must run on the requested model.
+		const requestsBeforeSwitch = requestedModels.length;
+		const sent = await runtime.send(session, {
+			session: worker.id,
+			message: "switch models now",
+			model: "openai/gpt-4.1-mini",
+		});
+		expect(sent.mode).toBe("steered");
+		blocked.resolve();
+		await manager.waitForAll();
+		const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 1 } }]);
+		expect(requestedModels.length).toBeGreaterThan(requestsBeforeSwitch);
+		for (const modelId of requestedModels.slice(requestsBeforeSwitch)) {
+			expect(modelId).toBe("gpt-4.1-mini");
+		}
 	} finally {
 		blocked.resolve();
 		await manager.waitForAll();
