@@ -13,7 +13,7 @@ This page indexes README-only user-facing package CLIs and features that need ro
 
 ### `packages/omptype` — schema validation library
 
-Sources: [`packages/omptype/README.md`](../packages/omptype/README.md), [`packages/omptype/package.json`](../packages/omptype/package.json), and the repository [omptype authoring guide](./omptype-guide.md).
+Sources: [`packages/omptype/package.json`](../packages/omptype/package.json) and the repository [omptype authoring guide](./omptype-guide.md).
 
 - Package: public `@oh-my-pi/omptype`; install with `bun add @oh-my-pi/omptype`; requires Bun 1.3.14 or newer.
 - Feature: callable ArkType-compatible schemas with cheap interpreted startup, lazy hot-path compilation, validation errors, defaults and morphs, and JSON Schema emission.

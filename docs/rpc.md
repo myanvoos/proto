@@ -865,7 +865,7 @@ Current helper characteristics:
 
 ### Python package
 
-The bundled [`proto-rpc`](../python/proto-rpc/pyproject.toml) distribution provides the process-backed Python client. Its import package is `proto_rpc`; the package API, typed commands and events, host-tool/host-URI helpers, and orchestration examples are maintained in the [`proto-rpc` README](../python/proto-rpc/README.md).
+The bundled [`proto-rpc`](../python/proto-rpc/pyproject.toml) distribution provides the process-backed Python client. Its import package is `proto_rpc`; the package API, typed commands and events, host-tool/host-URI helpers, and orchestration examples live in the `python/proto-rpc` package.
 
 ```python
 from proto_rpc import RpcClient

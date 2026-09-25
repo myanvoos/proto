@@ -1,9 +1,0 @@
-{
-	"extends": "../tsconfig.base.json",
-	"compilerOptions": {
-		"noEmit": true,
-		"allowImportingTsExtensions": true
-	},
-	"include": [".", "../packages/*/src/**/*.d.ts"],
-	"exclude": ["results"]
-}

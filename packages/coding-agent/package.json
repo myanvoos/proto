@@ -81,7 +81,6 @@
     "dist/tool-views.generated-*.js",
     "scripts",
     "examples",
-    "README.md",
     "CHANGELOG.md"
   ],
   "exports": {
