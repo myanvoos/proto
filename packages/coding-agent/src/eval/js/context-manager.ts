@@ -26,6 +26,7 @@ import { KernelInputReader } from "../kernel-streams";
 import type { KernelTarget } from "../kernel-target";
 import { kernelTargetCwd, parseKernelTarget } from "../kernel-target";
 import type { KernelInvocation } from "../types";
+import { withNativeInput } from "./native-input";
 import { withNativeOutput } from "./native-output";
 import { decodeNodeKernelMessage, encodeNodeKernelMessage } from "./node-protocol";
 import {
@@ -1079,8 +1080,8 @@ async function spawnJsWorker(runtime: JsKernelRuntime, snapshot: SessionSnapshot
 		// A restored lane may carry the observed launcher path as its interpreter. A compiled
 		// host is not an external Bun CLI: keep using its internal worker entry in that case.
 		if (!snapshot.interpreter || (isCompiledBinary() && snapshot.interpreter === process.execPath))
-			return spawnJsProcess();
-		return spawnStandaloneJsProcess(runtime, snapshot.interpreter, await stageJsKernel());
+			return await spawnJsProcess();
+		return await spawnStandaloneJsProcess(runtime, snapshot.interpreter, await stageJsKernel());
 	} catch (error) {
 		throw new ToolError(
 			"Unable to create an isolated JS eval subprocess; refusing an interpreter with weaker native semantics",
@@ -1091,7 +1092,7 @@ async function spawnJsWorker(runtime: JsKernelRuntime, snapshot: SessionSnapshot
 	}
 }
 
-function spawnJsProcess(): WorkerHandle {
+async function spawnJsProcess(): Promise<WorkerHandle> {
 	const spawnCommand = resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG);
 	const spawned = createWorkerSubprocess<WorkerOutbound>({
 		spawnCommand,
@@ -1105,11 +1106,19 @@ function spawnJsProcess(): WorkerHandle {
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSendIpc(spawned.proc, message, "js-eval"),
 	);
-	return processWorkerHandle("process", withNativeOutput(base, spawned.proc.stdout!), spawned.snapshotDescendants);
+	return processWorkerHandle(
+		"process",
+		await withNativeInput(withNativeOutput(base, spawned.proc.stdout!)),
+		spawned.snapshotDescendants,
+	);
 }
 
 /** Run the staged module in the requested interpreter, never pass an internal CLI selector to it. */
-function spawnStandaloneJsProcess(runtime: JsKernelRuntime, interpreter: string, entry: string): WorkerHandle {
+async function spawnStandaloneJsProcess(
+	runtime: JsKernelRuntime,
+	interpreter: string,
+	entry: string,
+): Promise<WorkerHandle> {
 	const spawned = createWorkerSubprocess<unknown>({
 		// Only Node needs this flag for the local-module loader's vm.SourceTextModule.
 		spawnCommand: {
@@ -1134,7 +1143,7 @@ function spawnStandaloneJsProcess(runtime: JsKernelRuntime, interpreter: string,
 	};
 	return processWorkerHandle(
 		runtime === "node" ? "node" : "process",
-		withNativeOutput(decoded, spawned.proc.stdout!),
+		await withNativeInput(withNativeOutput(decoded, spawned.proc.stdout!)),
 		spawned.snapshotDescendants,
 	);
 }

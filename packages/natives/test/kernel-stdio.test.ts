@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import * as path from "node:path";
 import { getNativeAddonPath } from "../native/loader-state.js";
 
@@ -111,7 +113,20 @@ for (const runtime of runtimes) {
 		test("applies OS backpressure without dropping bytes or waiting for the kernel JS event loop", async () => {
 			const writing = Promise.withResolvers<void>();
 			let written = false;
-			const { child, controls, stderr } = spawnFixture(runtime, "backpressure", control => {
+			// Bun.spawn eagerly buffers unread stdout. A paused Node stream keeps the OS
+			// transport genuinely unread until this test deliberately starts draining it.
+			const child = spawn(runtime, [fixture, "backpressure"], {
+				env: { ...process.env, PROTO_TEST_NATIVE_ADDON: getNativeAddonPath() },
+				stdio: ["ignore", "pipe", "pipe", "ipc"],
+				signal: AbortSignal.timeout(15_000),
+			});
+			const exited = once(child, "close");
+			const controls: Control[] = [];
+			const errors: Buffer[] = [];
+			child.stderr!.on("data", chunk => errors.push(chunk));
+			child.on("message", message => {
+				const control = message as Control;
+				controls.push(control);
 				if (control.type === "writing") writing.resolve();
 				if (control.type === "written") written = true;
 			});
@@ -121,14 +136,16 @@ for (const runtime of runtimes) {
 				// Real-process negative check: fake timers cannot advance native threads or OS pipe writes.
 				await Bun.sleep(100);
 				expect(written).toBe(false);
-				const stdout = await new Response(child.stdout).text();
-				expect(await child.exited, await stderr).toBe(0);
-				const frames = framesFrom(stdout);
+				const chunks: Buffer[] = [];
+				for await (const chunk of child.stdout!) chunks.push(chunk);
+				expect((await exited)[0], Buffer.concat(errors).toString()).toBe(0);
+				const frames = framesFrom(Buffer.concat(chunks).toString());
 				const bytes = bytesFor(frames, "flood", "stdout");
 				expect(bytes).toEqual(Buffer.alloc(8 * 1024 * 1024, 120));
 				expect(controls.find(control => control.type === "written")?.sequence).toBe(frames.at(-1)?.sequence);
 			} finally {
 				child.kill();
+				await exited;
 			}
 		});
 

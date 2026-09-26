@@ -20,6 +20,11 @@ export function runWithBridgeCwd<T>(session: ToolSession, cwd: string | undefine
 	return bridgeCwdScope.run({ session, cwd }, run);
 }
 
+/** The session's project directory, without a calling cell's relative-path overlay. */
+export function sessionProjectCwd(session: ToolSession): string {
+	return bridgeCwdScope.exit(() => session.cwd);
+}
+
 /** The calling cell's cwd while one of `session`'s bridged tool calls runs; other sessions are unaffected. */
 export function bridgeCwdFor(session: ToolSession): string | undefined {
 	const scope = bridgeCwdScope.getStore();

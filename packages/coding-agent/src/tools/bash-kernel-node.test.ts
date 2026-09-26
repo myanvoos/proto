@@ -166,6 +166,64 @@ describe.skipIf(!NODE)("node bash cells", () => {
 		});
 	}, 60_000);
 
+	for (const interpreter of ["node", "bun"]) {
+		test(`${interpreter} shares piped binary stdin across descriptor reads, streams, and inherited children`, async () => {
+			await fixture(async ({ run, cwd }) => {
+				const bytes = Buffer.from(Array.from({ length: 256 }, (_, index) => index));
+				await Bun.write(path.join(cwd, "stdin.bin"), bytes);
+				const source = [
+					'const fs = require("node:fs");',
+					"const prefix = Buffer.alloc(16);",
+					'console.log("prefix", fs.readSync(0, prefix, 0, prefix.length, null), prefix.toString("hex"));',
+					'console.log("rest", fs.readFileSync(0).toString("hex"));',
+				].join(" ");
+				const descriptor = await run(`cat stdin.bin | ${interpreter} -e '${source}'`);
+				expect(descriptor.isError, descriptor.output).toBe(false);
+				expect(descriptor.output).toContain(`prefix 16 ${bytes.subarray(0, 16).toString("hex")}`);
+				expect(descriptor.output).toContain(`rest ${bytes.subarray(16).toString("hex")}`);
+
+				const mixed = await run(
+					`cat stdin.bin | ${interpreter} -e 'const fs = require("node:fs"); const prefix = Buffer.alloc(16); fs.readSync(0, prefix); const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk); console.log(Buffer.concat([prefix, ...chunks]).toString("hex"));'`,
+				);
+				expect(mixed.isError).toBe(false);
+				expect(mixed.output).toContain(bytes.toString("hex"));
+
+				const inherited = await run(
+					`cat stdin.bin | ${interpreter} -e 'const child = require("node:child_process").spawnSync(process.execPath, ["-e", "process.stdout.write(require(\\"node:fs\\").readFileSync(0))"], {stdio:["inherit","pipe","pipe"]}); if (child.status !== 0) throw new Error(child.stderr.toString()); console.log(child.stdout.toString("hex"));'`,
+				);
+				expect(inherited.isError).toBe(false);
+				expect(inherited.output).toContain(bytes.toString("hex"));
+
+				const empty = await run(
+					`${interpreter} -e 'console.log("empty", require("node:fs").readFileSync(0).length)'`,
+				);
+				expect(empty.isError).toBe(false);
+				expect(empty.output).toContain("empty 0");
+			});
+		}, 60_000);
+		test(`${interpreter} streams stdin larger than transport buffers and isolates early-exit input`, async () => {
+			await fixture(async ({ run, cwd }) => {
+				const bytes = Buffer.alloc(1024 * 1024, 0xa5);
+				await Bun.write(path.join(cwd, "large.bin"), bytes);
+				const result = await run(
+					`cat large.bin | ${interpreter} -e 'const input = require("node:fs").readFileSync(0); console.log(input.length, input.every(byte => byte === 165));'`,
+				);
+				expect(result.isError, result.output).toBe(false);
+				expect(result.output).toContain("1048576 true");
+				const early = await run(
+					`cat large.bin | ${interpreter} -e 'const byte = Buffer.alloc(1); require("node:fs").readSync(0, byte); console.log("first", byte[0]);'`,
+				);
+				expect(early.isError, early.output).toBe(false);
+				expect(early.output).toContain("first 165");
+				const next = await run(
+					`printf next-cell | ${interpreter} -e 'console.log(require("node:fs").readFileSync(0, "utf8"));'`,
+				);
+				expect(next.isError, next.output).toBe(false);
+				expect(next.output.split("\n")[0]).toBe("next-cell");
+			});
+		}, 60_000);
+	}
+
 	test("hand host validators the same values bun cells do", async () => {
 		await fixture(async ({ run }) => {
 			// Node crosses a JSON IPC channel, Bun a structured-clone one; lossy or unclonable values must

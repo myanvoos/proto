@@ -444,18 +444,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.output = output;
 	globalThis.agent = agent;
 	globalThis.executions = (id, { limit = 20 } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "executions", id, limit });
-	globalThis.editBatch = async (changes, { apply = false } = {}) => {
-		const resolved = changes.map(entry => ({ ...entry, path: resolvePath(entry.path) }));
-		// Applied files join this cell's mutation tracking, so the flush reports them like any
-		// kernel write: one status event and `<kernel> note:` per path.
-		if (apply) for (const entry of resolved) globalThis.__proto_fs_note_touched__(entry.path);
-		const result = await globalThis.__proto_call_tool__("__runtime__", { op: "edit_batch", changes: resolved, apply });
-		if (result && typeof result === "object") {
-			globalThis.__proto_fs_rearm_reads__(result.stamps);
-			delete result.stamps;
-		}
-		return result;
-	};
 	globalThis.startTool = startTool;
 	globalThis.toolEvents = toolEvents;
 	globalThis.cancelTool = cancelTool;

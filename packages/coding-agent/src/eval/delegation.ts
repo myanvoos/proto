@@ -8,6 +8,7 @@ import type { DaemonSnapshot } from "../launch/protocol";
 import type { ToolSession } from "../tools";
 import { executeLaunch } from "../tools/jobs/launch";
 import { ToolError } from "../tools/tool-errors";
+import { sessionProjectCwd } from "./bridge-cwd";
 import pythonClient from "./delegation/proto_session.py" with { type: "text" };
 import javascriptClient from "./delegation/proto-session.mjs.txt" with { type: "text" };
 import { callSessionToolPromptOnAbort } from "./py/tool-bridge";
@@ -167,7 +168,7 @@ function sessionIdentity(session: ToolSession): string | null {
 async function stopLaunch(state: SessionDelegations, pending: Promise<DaemonSnapshot>): Promise<void> {
 	const launched = await pending.catch(() => undefined);
 	if (!launched) return;
-	const client = await daemonClientForProject(state.session.cwd);
+	const client = await daemonClientForProject(sessionProjectCwd(state.session));
 	const current = await client.request({ op: "describe", name: launched.name });
 	if (current.op !== "describe" || current.daemon.id !== launched.id) return;
 	try {

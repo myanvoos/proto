@@ -34,7 +34,6 @@
 - Selected data and binary binding save/restore across kernel resets and between Python, Node, and Bun kernels, without heap snapshots or code replay
 - Persistent Python and JavaScript kernels in existing Docker/Podman containers and SSH targets, with tool callbacks and explicit artifact transfer
 - Bash execution lanes, queryable command-stage and device results, and safe Python/JavaScript kernel-state inspection with restart notices
-- Checked multi-file edit previews and guarded commits with rollback/conflict reporting
 - Settled batch results, bounded cooperative deadlines/cancellation, streaming pipelines, and explicit checkpoint resumption in kernel orchestration helpers
 
 ### Changed
@@ -47,7 +46,6 @@
 - Source checkouts resolve `harness://` documentation to existing files and directories without creating a cache
 
 - `read_artifact`/`readArtifact` default to UTF-8 (pages end on character boundaries; binary data needs `encoding="base64"`) and accept a bare `artifact://N` the session published
-- `edit_batch`/`editBatch` return `state: "conflict"` with per-path reasons (`stale`, `exists`, `missing`) instead of raising, and write nothing
 - Subagents without an output schema may yield plain text, and their results are the plain final answer instead of a JSON encoding
 - Code range reads return exactly the requested lines; enclosing-block context is marked with `⋮` and the footer reports the requested range
 - Failed background Bash jobs report the failure reason as the error and keep their output separately
@@ -62,6 +60,8 @@
 
 ### Fixed
 
+- Node and Bun kernel pipes reach native stdin descriptor 0, including synchronous `fs` reads and inherited child stdin; input stays streamed and isolated between cells
+- Shell jobs, kernel tool calls, and delegated launches share the session project broker even when a cell runs in another directory; process working directories remain cell-relative
 - Bash internal-URL arguments keep trailing read selectors (`protolens read harness://bash.md:1-40`), and `protolens` arguments such as `agent://` and `history://` reach the device instead of failing
 - Resetting a busy lane reports its active and queued background commands as cancelled rather than failed
 - Python kernel cells import project modules as a fresh `python` would: edits made between or within cells (by the kernel, subprocesses, or host tools) are picked up, a `cd` re-resolves module names, and the cell's own `PYTHONPATH` applies; a note names earlier bindings that still hold old code, and rebuilt C extensions are reported instead of silently kept
@@ -82,7 +82,6 @@
 - `<shell> state lost` notices report when an earlier call's `exit`, timeout, or crash reset a lane's shell
 - Same-lane Bash and kernel calls run in the order they were issued
 - A force-closed or reset kernel cell reports why it was cancelled
-- Kernel `edit_batch` writes emit `<kernel> note:` lines and no longer trigger spurious stale-write errors afterwards
 - Delegated launches keep running after the cell that started them ends
 - Bash-resolved `local://` and `fleet://` paths passed through `env` are writable from a fresh kernel session
 - `read <file>:conflicts` and conflict warnings no longer point to a nonexistent `write` tool

@@ -5,12 +5,15 @@ import * as path from "node:path";
 import { AsyncJobManager } from "../async";
 import { Settings } from "../config/settings";
 import { disposeEvalArtifacts } from "../eval/artifact-values";
+import { bridgeCwdFor } from "../eval/bridge-cwd";
 import { disposeSessionDelegations } from "../eval/delegation";
 import { disposeSessionExecutionEvents } from "../eval/execution-events";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { KERNEL_LANGUAGES } from "../eval/kernel-environment";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { disposeBashSessions } from "../exec/bash-executor";
+import { daemonClientForProject } from "../launch/client";
+import { daemonRuntimeDir } from "../launch/paths";
 import { ArtifactManager } from "../session/artifacts";
 import { createTools, type Tool, type ToolSession } from ".";
 
@@ -20,15 +23,18 @@ async function fixture(run: (tools: Map<string, Tool>, cwd: string) => Promise<v
 	const artifacts = new ArtifactManager(path.join(cwd, "artifacts"));
 	const jobs = new AsyncJobManager({});
 	const session: ToolSession = {
-		cwd,
+		get cwd() {
+			return bridgeCwdFor(session) ?? cwd;
+		},
 		hasUI: false,
 		settings: Settings.isolated({
 			"async.enabled": true,
 			"bash.autoBackground.enabled": false,
-			"tools.xdev": false,
+			"tools.xdev": true,
 			"bash.direnv": "off",
 		}),
 		getSessionId: () => owner,
+		getAsyncJobOwnerId: () => owner,
 		getEvalSessionId: () => owner,
 		getEvalKernelOwnerId: () => owner,
 		getSessionFile: () => null,
@@ -39,7 +45,7 @@ async function fixture(run: (tools: Map<string, Tool>, cwd: string) => Promise<v
 		asyncJobManager: jobs,
 	};
 	try {
-		await createTools(session, ["bash", "context", "read"]);
+		await createTools(session, ["bash", "context", "read", "jobs"]);
 		const tools = session.toolRegistry!;
 		session.getToolByName = name => tools.get(name);
 		session.getToolForEvalBridge = name => tools.get(name);
@@ -60,6 +66,100 @@ async function fixture(run: (tools: Map<string, Tool>, cwd: string) => Promise<v
 }
 
 for (const language of KERNEL_LANGUAGES) {
+	test(`${language} shares supervised process references with shell jobs across cell directories`, async () => {
+		await fixture(async (tools, cwd) => {
+			const bash = tools.get("bash")!;
+			const cellDir = path.join(cwd, "cell");
+			const otherDir = path.join(cwd, "other");
+			await Promise.all([fs.mkdir(cellDir), fs.mkdir(otherDir)]);
+			const run = async (command: string, runCwd = cellDir, env?: Record<string, string>) => {
+				const result = await bash.execute("process-route", { command, cwd: runCwd, env });
+				const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+				expect(result.isError, text).not.toBe(true);
+				return text;
+			};
+			const cell = (source: string, runCwd = cellDir) => run(`${language} <<'CELL'\n${source}\nCELL`, runCwd);
+			const shellJobs = (args: Record<string, unknown>) =>
+				run('protolens jobs --json "$JOBS_ARGS"', cellDir, { JOBS_ARGS: JSON.stringify(args) });
+			const kernelJobs = async (args: Record<string, unknown>, runCwd = cellDir) => {
+				const input = JSON.stringify(args);
+				const output = await cell(
+					language === "python"
+						? `result = tool.jobs(json.loads(${JSON.stringify(input)}))\nassert not result.get("hasError"), result\nprint("RESULT=" + json.dumps({"ref": result["details"].get("ref"), "cwd": result["details"].get("process", {}).get("spec", {}).get("cwd"), "text": result["text"] if ${JSON.stringify(String(args.op))} == "logs" else ""}))`
+						: `var result = await tool.jobs(${input}); if (result.hasError) throw new Error(JSON.stringify(result)); console.log("RESULT=" + JSON.stringify({ref: result.details.ref, cwd: result.details.process?.spec?.cwd, text: ${JSON.stringify(args.op)} === "logs" ? result.text : ""}));`,
+					runCwd,
+				);
+				return JSON.parse(output.match(/^RESULT=(.+)$/m)![1]!);
+			};
+			const script =
+				'console.log("READY:" + process.cwd()); for await (const line of console) { console.log("echo:" + line); if (line === "exit") break; }';
+			const start = { application: process.execPath, args: ["-e", script], cwd: cellDir, pty: false };
+			try {
+				// Shell launch and kernel tools must use one broker even though cell cwd != session cwd.
+				const started = await shellJobs({
+					op: "start",
+					name: "shell-service",
+					...start,
+					ready: { log: "READY:", timeoutMs: 10_000 },
+				});
+				const shellRef = JSON.parse(started.match(/Ref: (\{[^\n]+\})/)![1]!);
+				const inspected = await kernelJobs({ op: "inspect", target: shellRef });
+				expect(inspected.ref).toEqual(shellRef);
+				expect(inspected.cwd).toBe(cellDir);
+				const watched = await kernelJobs({ op: "watch", source: shellRef, match: "echo:exit" });
+				await kernelJobs({ op: "input", target: shellRef, text: "exit" }, otherDir);
+				await kernelJobs({ op: "wait", targets: [shellRef], timeoutMs: 10_000 });
+				const logs = await kernelJobs({ op: "logs", target: shellRef }, otherDir);
+				expect(logs.text).toContain("echo:exit");
+				await kernelJobs({ op: "unwatch", target: watched.ref });
+
+				// Kernel start must also be visible and controllable from the shell by its exact ref.
+				const kernelStarted = await kernelJobs({
+					op: "start",
+					name: "kernel-service",
+					...start,
+					ready: { log: "READY:", timeoutMs: 10_000 },
+				});
+				const kernelRef = kernelStarted.ref;
+				expect(await shellJobs({ op: "inspect", target: kernelRef })).toContain(kernelRef.id);
+				await shellJobs({ op: "cancel", target: kernelRef });
+				await shellJobs({ op: "wait", targets: [kernelRef], timeoutMs: 10_000 });
+				expect(await shellJobs({ op: "logs", target: kernelRef })).toContain(`READY:${cellDir}`);
+
+				const delegated = await cell(
+					language === "python"
+						? `lease = delegate([{"tool":"__runtime__","operations":["artifact_publish"]}], ttl_ms=60000)\nlaunched = launch_delegated(lease, name="delegated-service", application=${JSON.stringify(process.execPath)}, args=${JSON.stringify(start.args)}, cwd=${JSON.stringify(cellDir)})\nprint("PROCESS=" + json.dumps({key: launched["process"][key] for key in ["id", "name"]}))`
+						: `var lease = await delegate([{tool:"__runtime__",operations:["artifact_publish"]}], {ttlMs:60000}); var launched = await launchDelegated(lease, {name:"delegated-service",application:${JSON.stringify(process.execPath)},args:${JSON.stringify(start.args)},cwd:${JSON.stringify(cellDir)}}); console.log("PROCESS=" + JSON.stringify({id: launched.process.id, name: launched.process.name}));`,
+				);
+				const processInfo = JSON.parse(delegated.match(/^PROCESS=(.+)$/m)![1]!);
+				const delegatedRef = { kind: "process", id: processInfo.id, name: processInfo.name };
+				expect(await shellJobs({ op: "inspect", target: delegatedRef })).toContain(delegatedRef.id);
+				await shellJobs({ op: "input", target: delegatedRef, text: "exit" });
+				await shellJobs({ op: "wait", targets: [delegatedRef], timeoutMs: 10_000 });
+				expect(await shellJobs({ op: "logs", target: delegatedRef })).toContain("echo:exit");
+				// Default process cwd follows the current cell, but lease cleanup keeps the session broker.
+				const active = await cell(
+					language === "python"
+						? `active = launch_delegated(lease, name="delegated-active", application=${JSON.stringify(process.execPath)}, args=${JSON.stringify(start.args)})\nprint("PROCESS=" + json.dumps({key: active["process"][key] for key in ["id", "name"]}))`
+						: `var active = await launchDelegated(lease, {name:"delegated-active",application:${JSON.stringify(process.execPath)},args:${JSON.stringify(start.args)}}); console.log("PROCESS=" + JSON.stringify({id: active.process.id, name: active.process.name}));`,
+					otherDir,
+				);
+				const activeInfo = JSON.parse(active.match(/^PROCESS=(.+)$/m)![1]!);
+				const activeRef = { kind: "process", id: activeInfo.id, name: activeInfo.name };
+				expect((await kernelJobs({ op: "inspect", target: activeRef })).cwd).toBe(otherDir);
+				await cell(language === "python" ? "revoke_delegation(lease)" : "await revokeDelegation(lease);", cwd);
+				expect(await shellJobs({ op: "inspect", target: activeRef })).toContain("exited");
+			} finally {
+				// A broken implementation may have started a broker under either cell cwd.
+				for (const project of [cwd, cellDir, otherDir]) {
+					const client = await daemonClientForProject(project);
+					await client.request({ op: "shutdown" }).finally(() => client.close());
+					await fs.rm(daemonRuntimeDir(project), { recursive: true, force: true });
+				}
+			}
+		});
+	}, 60_000);
+
 	test(`${language} delegates an ordinary interpreter client and revokes its lease without exporting the parent bridge`, async () => {
 		await fixture(async tools => {
 			const source =

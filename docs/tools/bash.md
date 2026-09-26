@@ -59,7 +59,7 @@ Supported interpreter commands are a strict-upgrade interface: native language s
 
 Final-expression values, `display(...)`, and harness notes remain visible even when stdout/stderr are redirected, but never enter pipes, files, or command substitutions. Unassigned byte writes need no `_ =` or `void` workaround. Explicitly retained work and process-lifetime resources are the intentional boundary from a fresh process; see [the full compatibility contract](../bash-tool-runtime.md#compatibility-philosophy).
 
-## Kernel inspection and recovery
+## Kernel inspection and orchestration
 
 Kernel cells inherit the shell environment, including `env` overrides and inline assignments. `printf 41 | python -c 'import sys; print(int(sys.stdin.read()) + 1)'` stays in the retained Python kernel; `node`/`bun -e` similarly expose program input through `process.stdin`. Source-on-stdin still supplies code, not program input.
 
@@ -73,7 +73,7 @@ Use `kernel_state()` / `kernelState()` for bounded, side-effect-avoiding binding
 
 History is per tool session, capped at 128 records and 8 MiB. `resultOmitted` explains oversized/unserializable payloads or history-query results, which are intentionally not recursively stored. Managed jobs also record their final results under the job ID. Trace capture is not available for external PTY/client-terminal execution.
 
-For checked multi-file edits and resumable orchestration, see [Kernel recovery helpers](../bash-tool-runtime.md#kernel-recovery-helpers).
+For resumable orchestration, see [Kernel orchestration helpers](../bash-tool-runtime.md#kernel-orchestration-helpers).
 
 ## Dedicated-tool routing
 

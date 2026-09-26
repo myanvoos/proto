@@ -1,5 +1,5 @@
 Preloaded globals, in Python notation{{#if py}}; `help(fn)` shows details. Python helpers are synchronous; options are kwargs{{/if}}.
-{{#if js}}JS cells: same helpers in camelCase, `await`ed, options in ONE trailing object — `edit_batch(c, apply=True)` → `await editBatch(c, {apply: true})`. Renamed options: `timeout` (s) → `timeoutMs`, `cancel` → `signal` (thunks receive an `AbortSignal`), `on_result` → `onResult`; `budget.total` → `await budget.total()`.
+{{#if js}}JS cells: same helpers in camelCase, `await`ed, options in ONE trailing object — Renamed options: `timeout` (s) → `timeoutMs`, `cancel` → `signal` (thunks receive an `AbortSignal`), `on_result` → `onResult`; `budget.total` → `await budget.total()`.
 {{/if}}
 
 ### Files and code
@@ -9,10 +9,7 @@ File APIs and path-taking helpers use filesystem paths. Internal resources → `
 ```
 symbols(path=None, code=None, lang=None) → str    declarations outline; bodies ≥4 lines and block comments ≥6 lines fold to `N-M: <elided>`; `code=` outlines an unwritten string (`lang` required) to check structure BEFORE writing
 block_range(path, line) → (start, end) | None    1-based inclusive lines of the syntactic block containing `line`
-edit_batch([{path, before, after}], apply=False) → {state, files, conflicts, error}
 ```
-
-`edit_batch`: `before` = the file's full current text (`None` = create). Default previews diffs; `apply=True` writes. Any stale/missing/existing `before` → `state:"conflict"`, nothing written. Each file is written atomically, the batch is NOT: check `state` (`applied`/`partial`/`rolled-back`) and `conflicts` before continuing.
 
 ### Tools, models, agents
 

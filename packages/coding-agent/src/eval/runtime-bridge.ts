@@ -4,7 +4,6 @@ import { atomicWriteFile, isEnoent } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
 import { type EvalArtifactResult, runEvalArtifact } from "./artifact-values";
-import { type CheckedEditResult, checkedEdits } from "./checked-edits";
 import { type EvalDelegationResult, runEvalDelegation } from "./delegation";
 import { type ExecutionEventsResult, runExecutionEvents } from "./execution-events";
 import type { EvalStatusEvent } from "./types";
@@ -97,7 +96,6 @@ export function recordExecution(session: ToolSession, record: ExecutionRecord): 
 }
 
 export type RuntimeBridgeResult =
-	| CheckedEditResult
 	| ExecutionEventsResult
 	| EvalArtifactResult
 	| EvalDelegationResult
@@ -157,11 +155,6 @@ export async function runEvalRuntime(
 			records: limit === 0 ? [] : records.slice(-limit).map(entry => JSON.parse(entry.json) as ExecutionRecord),
 			evicted: store?.evicted ?? 0,
 		};
-	}
-	if (request.op === "edit_batch") {
-		if (request.apply !== undefined && typeof request.apply !== "boolean")
-			throw new Error("edit_batch apply must be a boolean");
-		return checkedEdits(request.changes, { ...options, apply: request.apply === true });
 	}
 	if (request.op === "checkpoint_load" || request.op === "checkpoint_save") {
 		if (

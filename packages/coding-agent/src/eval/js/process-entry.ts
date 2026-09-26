@@ -6,6 +6,7 @@ import {
 	workerEnvFromParent,
 } from "../../subprocess/worker-client";
 import { safeSend } from "../../utils/ipc";
+import { withNativeInput } from "./native-input";
 import { withNativeOutput } from "./native-output";
 import { decodeJsKernelFrame, JsKernelFrameWriter, MAX_JS_KERNEL_WIRE_BYTES } from "./stdio-protocol";
 import { type RejectionInterceptor, WorkerCore } from "./worker-core";
@@ -54,7 +55,7 @@ export async function startJsEvalStdioProcess(): Promise<void> {
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSend(spawned.proc, message, "remote-js-eval"),
 	);
-	const worker = withNativeOutput(base, spawned.proc.stdout!);
+	const worker = await withNativeInput(withNativeOutput(base, spawned.proc.stdout!));
 	const writer = new JsKernelFrameWriter(Bun.stdout.writer(), () => exitHost(1));
 	let closing = false;
 	worker.onMessage(message => {

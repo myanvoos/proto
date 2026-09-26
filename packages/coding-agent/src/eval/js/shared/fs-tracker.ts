@@ -231,27 +231,6 @@ function rememberRead(absPath: string, stamp: ReadStamp): void {
 	readSeen.set(absPath, stamp);
 }
 
-/**
- * Re-arm the stale-write guard at the host-verified stamps of files a checked
- * edit batch (`editBatch`) left holding content this kernel supplied — the
- * batch's `after`, or its `before` once rolled back. The kernel knows that
- * content, so it counts as read. Files the batch did not leave that way carry
- * no stamp and keep their old record, so external edits still trip the guard.
- * Mirrors _fs_rearm_stamps in eval/py/prelude.py.
- */
-export function rearmReadStamps(stamps: unknown): void {
-	if (!Array.isArray(stamps)) return;
-	for (const entry of stamps) {
-		if (!entry || typeof entry !== "object") continue;
-		const { path: rawPath, mtimeNs, size, sha } = entry as Record<string, unknown>;
-		const absPath = resolveTrackedPath(rawPath);
-		if (!absPath || looksPruned(absPath)) continue;
-		if (typeof mtimeNs !== "string" || !/^\d+$/.test(mtimeNs)) continue;
-		if (typeof size !== "number" || !Number.isSafeInteger(size) || typeof sha !== "string") continue;
-		rememberRead(absPath, { mtimeNs: BigInt(mtimeNs), size: BigInt(size), sha });
-	}
-}
-
 function forgetRead(rawPath: unknown): void {
 	const absPath = resolveTrackedPath(rawPath);
 	if (absPath) readSeen.delete(absPath);
@@ -312,7 +291,7 @@ async function shaOfFileAsync(absPath: string): Promise<string | null> {
 	}
 }
 
-export function noteTouched(rawPath: unknown): void {
+function noteTouched(rawPath: unknown): void {
 	const tracking = trackingStorage.getStore();
 	if (!tracking) return;
 	const absPath = resolveTrackedPath(rawPath);

@@ -13,6 +13,8 @@ export interface SessionSnapshot {
 	interpreter?: string;
 	shellEnv?: Record<string, string>;
 	stdin?: boolean;
+	/** Target-local input socket installed by the immediate worker supervisor. */
+	stdinSocket?: string;
 	sessionId: string;
 }
 

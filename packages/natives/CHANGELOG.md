@@ -8,6 +8,7 @@
 
 ### Added
 
+- Native kernel stdin scopes install a per-cell, descriptor-backed input stream independent of the interpreter event loop, then restore the original stdin on teardown
 - `ShellRunResult.sessionEnded` reports when a command ended the persistent shell session
 - Interpreter kernel pipes stream program input before EOF and preserve binary stdout/stderr under backpressure
 - Shell results expose bounded per-command records with exit/signal status, separate output captures, and correlated structured device results

@@ -4,7 +4,7 @@ import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../../subprocess/wor
 import { decodeJsKernelFrame, encodeJsKernelFrame } from "./stdio-protocol";
 import type { WorkerInbound, WorkerOutbound } from "./worker-protocol";
 
-test("remote stdio supervisor forwards native bytes through an isolated interpreter and closes cleanly", async () => {
+test("remote stdio supervisor streams descriptor stdin and native output through an isolated interpreter", async () => {
 	using directory = TempDir.createSync("@js-stdio-native-");
 	const command = resolveWorkerSpawnCmd("__proto_worker_js_eval_process");
 	const proc = Bun.spawn([...command.cmd, "--stdio"], {
@@ -18,6 +18,8 @@ test("remote stdio supervisor forwards native bytes through an isolated interpre
 	const ready = Promise.withResolvers<void>();
 	const result = Promise.withResolvers<Extract<WorkerOutbound, { type: "result" }>>();
 	const closed = Promise.withResolvers<void>();
+	const input = Buffer.from(Array.from({ length: 65536 + 257 }, (_, index) => index % 256));
+	let inputOffset = 0;
 	const stdout: Buffer[] = [];
 	const stderr = new Response(proc.stderr).text();
 	const send = (message: WorkerInbound): void => {
@@ -33,17 +35,28 @@ test("remote stdio supervisor forwards native bytes through an isolated interpre
 					stdout.push(message.type === "text" ? Buffer.from(message.chunk) : Buffer.from(message.data, "base64"));
 				if (message.id) send({ type: "output-ack", id: message.id });
 			}
+			if (message.type === "stdin-request") {
+				const chunk = input.subarray(inputOffset, inputOffset + 8192);
+				inputOffset += chunk.length;
+				send({
+					type: "stdin",
+					runId: message.runId,
+					data: chunk.toString("base64"),
+					eof: inputOffset === input.length,
+				});
+			}
 			if (message.type === "result") result.resolve(message);
 			if (message.type === "closed") closed.resolve();
 		}
 	})();
 	try {
-		const snapshot = { cwd: directory.path(), sessionId: "native-stdio-test" };
+		const snapshot = { cwd: directory.path(), sessionId: "native-stdio-test", stdin: true };
 		send({ type: "init", snapshot });
 		await ready.promise;
-		const code = `process.stdout.write(Buffer.from([0,255])); console.log({native: "remote"}); require("node:child_process").spawn(process.execPath, ["-e", "console.log('descendant')"], {stdio: "inherit"});`;
+		const code = `process.stdout.write(require("node:fs").readFileSync(0)); process.stdout.write(Buffer.from([0,255])); console.log({native: "remote"}); require("node:child_process").spawn(process.execPath, ["-e", "console.log('descendant')"], {stdio: "inherit"});`;
 		const native = Bun.spawn([process.execPath, "-e", code], {
 			cwd: directory.path(),
+			stdin: input,
 			stdout: "pipe",
 			stderr: "pipe",
 		});
@@ -58,6 +71,7 @@ test("remote stdio supervisor forwards native bytes through an isolated interpre
 			snapshot,
 		});
 		expect(await result.promise).toMatchObject({ ok: true });
+		expect(inputOffset).toBe(input.length);
 		expect(Buffer.concat(stdout)).toEqual(Buffer.from(expected));
 		send({ type: "close" });
 		await closed.promise;

@@ -160,7 +160,7 @@ protolens context '{"resource":"kernel","op":"start","language":"bun","lane":"re
 
 Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.
 
-**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)`, `block_range`, and `edit_batch` also address the parent; pass target source as `symbols(code=...)` for structural analysis. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
+**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)` and `block_range` also address the parent; pass target source as `symbols(code=...)` for structural analysis. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
 
 ## Live tool and background-job events
 
@@ -244,24 +244,7 @@ JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `
 
 Snapshots are versioned, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata; the recorded language and interpreter are provenance only. Python, Node, and Bun kernels restore each other's snapshots. Within a language every byte type round-trips; across languages Python `bytes`/`bytearray` restore as a JavaScript `Buffer`, and `Buffer`/`Uint8Array`/`ArrayBuffer` restore as Python `bytes`. Python integers beyond ±(2^53−1) restore exactly in Python and fail to load in JavaScript instead of rounding. Binding names must be valid, non-reserved identifiers in the loading language. Selection addresses published top-level kernel bindings, including JavaScript lexical bindings; it cannot address variables local to user-defined functions. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and malformed metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
 
-## Kernel recovery helpers
-
-### Checked edit batches
-
-Python `edit_batch(changes, apply=False)` and JavaScript `await editBatch(changes, {apply:false})` accept 1–100 `{path,before,after}` entries. `before` is the exact expected text, or `None`/`null` for a new file. They validate all snapshots before writing; preview returns diffs without mutations. Apply locks cooperating writers in stable order and replaces each file atomically while preserving its mode.
-
-```python
-p = Path("settings.json")
-before = p.read_text()
-assert before.count('"enabled": false') == 1
-after = before.replace('"enabled": false', '"enabled": true')
-changes = [{"path": str(p), "before": before, "after": after}]
-display(edit_batch(changes))
-# After checking the preview:
-display(edit_batch(changes, apply=True))
-```
-
-Results expose `state` (`preview`, `conflict`, `applied`, `rolled-back`, `partial`), `files`, `applied`, `conflicts` (`{path, reason}`; `stale`/`exists`/`missing` when validation fails, in which case nothing is written; `changed`/`rollback-failed` after a partial rollback), and optional `error`. Applied files are reported like any kernel write (status event and `<kernel> note:`), and the stale-write guard is re-armed at the content the batch left. `applied` records writes attempted, including subsequently reverted ones. Mid-commit failure or cancellation attempts rollback, but never overwrites a newer edit it observes. Atomicity is per file, not across the batch; noncooperating external writers can race validation/replacement. Symlink targets, canonical duplicate paths and hardlink aliases are rejected. Limits: 8 MiB per file/replacement, 16 MiB total batch content.
+## Kernel orchestration helpers
 
 ### Settled and streaming orchestration
 

@@ -192,12 +192,7 @@ test("execution byte eviction counts complete records and replacement updates ac
 	expect((await query({ id: "9" })).records[0].resultOmitted).toBe("executions query");
 });
 test("invalid runtime flags and unknown operations fail without mutations", async () => {
-	for (const args of [
-		{ op: "unknown" },
-		{ op: "executions", limit: -1 },
-		{ op: "executions", limit: 129 },
-		{ op: "edit_batch", apply: "true", changes: [{ path: "new", before: null, after: "x" }] },
-	]) {
+	for (const args of [{ op: "unknown" }, { op: "executions", limit: -1 }, { op: "executions", limit: 129 }]) {
 		await expect(runEvalRuntime(args, { session })).rejects.toThrow();
 	}
 	expect(await fs.readdir(root)).toEqual([]);

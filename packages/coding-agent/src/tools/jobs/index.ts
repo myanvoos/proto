@@ -5,6 +5,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob } from "../../async";
+import { sessionProjectCwd } from "../../eval/bridge-cwd";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { ExecutionRef, JobRef, ProcessRef, WatchRef } from "../../jobs/contracts";
 import { daemonClientForProject } from "../../launch/client";
@@ -533,7 +534,7 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 			const disabled = this.#launchDisabled("watch");
 			if (disabled) return disabled;
 			const ref: ProcessRef = { kind: "process", id: requested.id, name: requested.name! };
-			const client = await daemonClientForProject(this.session.cwd);
+			const client = await daemonClientForProject(sessionProjectCwd(this.session));
 			try {
 				const described = await client.request({ op: "describe", name: ref.name, expectedId: ref.id }, signal);
 				if (described.op !== "describe") throw new Error(`Unexpected broker result ${described.op}`);

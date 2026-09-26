@@ -1,6 +1,7 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobEvent, AsyncJobManager } from "../../async";
+import { sessionProjectCwd } from "../../eval/bridge-cwd";
 import { IrcBus, type IrcMessage } from "../../irc/bus";
 import type { JobsWaitRequest, ProcessRef, WaitParticipant } from "../../jobs/contracts";
 import { withJobWait } from "../../jobs/wait";
@@ -108,7 +109,7 @@ export async function executeWait(
 			"wait",
 		);
 	}
-	const client = processes.length > 0 ? await daemonClientForProject(session.cwd) : undefined;
+	const client = processes.length > 0 ? await daemonClientForProject(sessionProjectCwd(session)) : undefined;
 	for (const ref of processes) {
 		try {
 			await client!.request({ op: "describe", name: ref.name, expectedId: ref.id }, signal);

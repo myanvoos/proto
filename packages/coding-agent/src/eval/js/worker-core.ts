@@ -410,6 +410,7 @@ export class WorkerCore {
 				invocation,
 				drain: this.#transport.setReferenced ? () => this.#drainEventLoop(active) : undefined,
 				stdin: active.input,
+				stdinSocket: snapshot.stdinSocket,
 				stop: active.exit.promise,
 			});
 			runtime.displayValue(value, hooks);

@@ -1,12 +1,16 @@
-//! Child-interpreter stdio capture. The host reads framed bytes on the child's original stdout;
-//! IPC stays on its own descriptor. Only native threads drain captured pipes, so a synchronous
-//! interpreter write can apply real backpressure without waiting for that interpreter's event loop.
+//! Child-interpreter stdio capture.
+//!
+//! The host reads framed bytes on the child's
+//! original stdout; IPC stays on its own descriptor. Only native threads drain
+//! captured pipes, so a synchronous interpreter write can apply real
+//! backpressure without waiting for that interpreter's event loop.
 
 use napi::{Error, Result};
 use napi_derive::napi;
 
-/// Scoped, nestable fd 1/2 capture for a dedicated kernel child, not an in-process host console.
-/// stdout must be a pipe/socket to the host. A second live instance is rejected.
+/// Scoped fd 0 input and nestable fd 1/2 capture for a dedicated kernel child,
+/// not an in-process host console. stdout must be a pipe/socket to the host. A
+/// second live instance is rejected.
 #[napi]
 pub struct KernelStdio {
 	#[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -25,13 +29,19 @@ impl KernelStdio {
 		Err(unsupported())
 	}
 
-	/// Install a fresh run's pipes, or nest without replacing pipes when this run is already active.
-	/// Descendants inherit the installed write ends, never the reserved frame transport.
+	/// Install a fresh run's pipes, or nest without replacing pipes when this
+	/// run is already active. Descendants inherit the installed write ends,
+	/// never the reserved frame transport.
 	#[napi(catch_unwind)]
 	pub fn start(&mut self, run_id: String) -> Result<()> {
 		#[cfg(any(target_os = "linux", target_os = "macos"))]
 		{
-			self.inner.as_mut().ok_or_else(closed)?.start(run_id).map_err(native_error)
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.start(run_id)
+				.map_err(native_error)
 		}
 		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 		{
@@ -40,37 +50,102 @@ impl KernelStdio {
 		}
 	}
 
-	/// Drain every byte accepted before the reader's barrier snapshot. The host must consume this
-	/// sequence before publishing a result/display on its separate control channel.
+	/// Connect a cell's input directly to fd 0. The host feeds it independently
+	/// of the interpreter event loop, so synchronous reads and inherited stdin
+	/// cannot deadlock IPC. Returns an owned duplicate for the interpreter's
+	/// lazily-created stdin stream.
+	#[napi(catch_unwind)]
+	pub fn start_input(&mut self, run_id: String, socket_path: Option<String>) -> Result<u32> {
+		#[cfg(any(target_os = "linux", target_os = "macos"))]
+		{
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.start_input(&run_id, socket_path.as_deref())
+				.map_err(native_error)
+		}
+		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+		{
+			let _ = (run_id, socket_path);
+			Err(unsupported())
+		}
+	}
+
+	/// Restore the original stdin after the cell has closed its stream
+	/// duplicate.
+	#[napi(catch_unwind)]
+	pub fn finish_input(&mut self) -> Result<()> {
+		#[cfg(any(target_os = "linux", target_os = "macos"))]
+		{
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.finish_input()
+				.map_err(native_error)
+		}
+		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+		Err(unsupported())
+	}
+
+	/// Drain every byte accepted before the reader's barrier snapshot. The host
+	/// must consume this sequence before publishing a result/display on its
+	/// separate control channel.
 	#[napi(catch_unwind)]
 	pub fn flush(&mut self) -> Result<f64> {
 		#[cfg(any(target_os = "linux", target_os = "macos"))]
 		{
-			self.inner.as_mut().ok_or_else(closed)?.flush().map(|n| n as f64).map_err(native_error)
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.flush()
+				.map(|n| n as f64)
+				.map_err(native_error)
 		}
 		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 		Err(unsupported())
 	}
 
-	/// Flush and restore the enclosing scope's descriptors (a discard sink outside all scopes).
-	/// Child processes retaining this scope's pipes continue to emit frames with its original run id.
+	/// Flush and restore the enclosing scope's descriptors (a discard sink
+	/// outside all scopes). Child processes retaining this scope's pipes
+	/// continue to emit frames with its original run id.
 	#[napi(catch_unwind)]
 	pub fn finish(&mut self) -> Result<f64> {
 		#[cfg(any(target_os = "linux", target_os = "macos"))]
 		{
-			self.inner.as_mut().ok_or_else(closed)?.finish().map(|n| n as f64).map_err(native_error)
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.finish()
+				.map(|n| n as f64)
+				.map_err(native_error)
 		}
 		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 		Err(unsupported())
 	}
 
-	/// Synchronously route a retained callback's stream write, preserving its original run owner.
-	/// This does not enqueue a libuv write that could outlive the temporary descriptor scope.
+	/// Synchronously route a retained callback's stream write, preserving its
+	/// original run owner. This does not enqueue a libuv write that could
+	/// outlive the temporary descriptor scope.
 	#[napi(catch_unwind)]
-	pub fn write(&mut self, run_id: String, stream: String, data: napi::bindgen_prelude::Buffer) -> Result<f64> {
+	pub fn write(
+		&mut self,
+		run_id: String,
+		stream: String,
+		data: napi::bindgen_prelude::Buffer,
+	) -> Result<f64> {
 		#[cfg(any(target_os = "linux", target_os = "macos"))]
 		{
-			self.inner.as_mut().ok_or_else(closed)?.write(run_id, &stream, &data).map(|n| n as f64).map_err(native_error)
+			self
+				.inner
+				.as_mut()
+				.ok_or_else(closed)?
+				.write(run_id, &stream, &data)
+				.map(|n| n as f64)
+				.map_err(native_error)
 		}
 		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 		{
@@ -79,8 +154,9 @@ impl KernelStdio {
 		}
 	}
 
-	/// Restore owned descriptors and cancel/join the reader without waiting for descendant EOF.
-	/// Pending bytes are discarded on shutdown; use finish/flush for a delivery fence first.
+	/// Restore owned descriptors and cancel/join the reader without waiting for
+	/// descendant EOF. Pending bytes are discarded on shutdown; use
+	/// finish/flush for a delivery fence first.
 	#[napi(catch_unwind)]
 	pub fn close(&mut self) {
 		#[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -107,7 +183,10 @@ fn unsupported() -> Error {
 mod posix {
 	use std::{
 		io,
-		os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+		os::{
+			fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
+			unix::net::UnixStream,
+		},
 		sync::{
 			Arc,
 			atomic::{AtomicBool, Ordering},
@@ -119,7 +198,8 @@ mod posix {
 	use base64::{Engine, engine::general_purpose::STANDARD};
 	use serde::Serialize;
 
-	// Explicit resource ceilings fail new captures rather than evicting/truncating live writers.
+	// Explicit resource ceilings fail new captures rather than evicting/truncating
+	// live writers.
 	const MAX_STREAMS: usize = 256;
 	const MAX_SCOPES: usize = 128;
 	const MAX_RUN_ID_BYTES: usize = 1024;
@@ -131,8 +211,11 @@ mod posix {
 
 	impl Ownership {
 		fn claim() -> io::Result<Self> {
-			CLAIMED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-				.map_err(|_| io::Error::other("another kernel stdio capture already owns this process"))?;
+			CLAIMED
+				.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+				.map_err(|_| {
+					io::Error::other("another kernel stdio capture already owns this process")
+				})?;
 			Ok(Self)
 		}
 	}
@@ -152,7 +235,7 @@ mod posix {
 	struct ReadStream {
 		run_id: Arc<str>,
 		stream: &'static str,
-		fd: OwnedFd,
+		fd:     OwnedFd,
 	}
 
 	enum Command {
@@ -162,55 +245,65 @@ mod posix {
 
 	struct Request {
 		command: Command,
-		reply: SyncSender<io::Result<u64>>,
+		reply:   SyncSender<io::Result<u64>>,
 	}
 
 	#[derive(Serialize)]
 	struct Frame<'a> {
 		#[serde(rename = "type")]
-		kind: &'static str,
+		kind:     &'static str,
 		#[serde(rename = "runId")]
-		run_id: &'a str,
-		stream: &'static str,
-		data: String,
+		run_id:   &'a str,
+		stream:   &'static str,
+		data:     String,
 		sequence: u64,
 	}
 
 	pub(super) struct Capture {
-		original_stdout: OwnedFd,
-		original_stderr: OwnedFd,
+		original_stdin:        OwnedFd,
+		input:                 Option<OwnedFd>,
+		original_stdout:       OwnedFd,
+		original_stderr:       OwnedFd,
 		original_stdout_flags: i32,
-		idle: OwnedFd,
-		scopes: Vec<Scope>,
-		requests: SyncSender<Request>,
-		wake: OwnedFd,
-		cancel: Option<OwnedFd>,
-		reader: Option<JoinHandle<io::Result<()>>>,
+		idle:                  OwnedFd,
+		scopes:                Vec<Scope>,
+		requests:              SyncSender<Request>,
+		wake:                  OwnedFd,
+		cancel:                Option<OwnedFd>,
+		reader:                Option<JoinHandle<io::Result<()>>>,
 		// Released only after the descriptors and reader are restored/stopped.
-		_ownership: Ownership,
+		_ownership:            Ownership,
 	}
 
 	impl Capture {
 		pub(super) fn new() -> io::Result<Self> {
 			let ownership = Ownership::claim()?;
+			let original_stdin = duplicate(libc::STDIN_FILENO)?;
 			let original_stdout = duplicate(libc::STDOUT_FILENO)?;
 			let original_stderr = duplicate(libc::STDERR_FILENO)?;
 			let kind = stat(original_stdout.as_raw_fd())?.st_mode & libc::S_IFMT;
 			if kind != libc::S_IFIFO && kind != libc::S_IFSOCK {
-				return Err(io::Error::other("dedicated kernel child stdout must be a host-readable pipe or socket"));
+				return Err(io::Error::other(
+					"dedicated kernel child stdout must be a host-readable pipe or socket",
+				));
 			}
 			let original_stdout_flags = descriptor_flags(original_stdout.as_raw_fd())?;
 			let transport = duplicate(original_stdout.as_raw_fd())?;
-			let idle = std::fs::OpenOptions::new().write(true).open("/dev/null")?.into();
+			let idle = std::fs::OpenOptions::new()
+				.write(true)
+				.open("/dev/null")?
+				.into();
 			let (wake_read, wake) = pipe()?;
 			let (cancel_read, cancel) = pipe()?;
 			let (requests, receiver) = mpsc::sync_channel(1);
-			// dup shares file-status flags. The child owns this output description; restore its
-			// flags at close. Captured fd 1/2 are separate, blocking pipe write descriptions.
+			// dup shares file-status flags. The child owns this output description; restore
+			// its flags at close. Captured fd 1/2 are separate, blocking pipe write
+			// descriptions.
 			set_flags(transport.as_raw_fd(), original_stdout_flags | libc::O_NONBLOCK)?;
-			let reader = match thread::Builder::new().name("kernel-stdio".into()).spawn(move || {
-				pump(transport, wake_read, cancel_read, receiver)
-			}) {
+			let reader = match thread::Builder::new()
+				.name("kernel-stdio".into())
+				.spawn(move || pump(transport, wake_read, cancel_read, receiver))
+			{
 				Ok(reader) => reader,
 				Err(error) => {
 					let _ = set_flags(original_stdout.as_raw_fd(), original_stdout_flags);
@@ -218,6 +311,8 @@ mod posix {
 				},
 			};
 			let capture = Self {
+				original_stdin,
+				input: None,
 				original_stdout,
 				original_stderr,
 				original_stdout_flags,
@@ -256,7 +351,11 @@ mod posix {
 			let run_id: Arc<str> = run_id.into();
 			let (stdout_read, stdout) = pipe()?;
 			let (stderr_read, stderr) = pipe()?;
-			self.request(Command::Add { run_id: Arc::clone(&run_id), stdout: stdout_read, stderr: stderr_read })?;
+			self.request(Command::Add {
+				run_id: Arc::clone(&run_id),
+				stdout: stdout_read,
+				stderr: stderr_read,
+			})?;
 			let (previous_stdout, _) = self.current();
 			replace(stdout.as_raw_fd(), libc::STDOUT_FILENO)?;
 			if let Err(error) = replace(stderr.as_raw_fd(), libc::STDERR_FILENO) {
@@ -264,6 +363,40 @@ mod posix {
 				return Err(error);
 			}
 			self.scopes.push(Scope { run_id, stdout, stderr });
+			Ok(())
+		}
+
+		pub(super) fn start_input(
+			&mut self,
+			run_id: &str,
+			socket_path: Option<&str>,
+		) -> io::Result<u32> {
+			if self.input.is_some() {
+				return Err(io::Error::other("kernel stdin already has an active cell"));
+			}
+			if run_id.is_empty() || run_id.len() > MAX_RUN_ID_BYTES || run_id.contains('\n') {
+				return Err(io::Error::other("invalid stdin run id"));
+			}
+			let input: OwnedFd = match socket_path {
+				Some(path) => {
+					let socket = UnixStream::connect(path)?;
+					write_bytes(socket.as_raw_fd(), run_id.as_bytes())?;
+					write_bytes(socket.as_raw_fd(), b"\n")?;
+					socket.into()
+				},
+				None => std::fs::File::open("/dev/null")?.into(),
+			};
+			let stream = duplicate(input.as_raw_fd())?;
+			replace(input.as_raw_fd(), libc::STDIN_FILENO)?;
+			self.input = Some(input);
+			Ok(stream.into_raw_fd() as u32)
+		}
+
+		pub(super) fn finish_input(&mut self) -> io::Result<()> {
+			if self.input.is_some() {
+				replace(self.original_stdin.as_raw_fd(), libc::STDIN_FILENO)?;
+				self.input = None;
+			}
 			Ok(())
 		}
 
@@ -283,8 +416,10 @@ mod posix {
 			self.check_owned()?;
 			let sequence = self.flush()?;
 			let previous = self.scopes.get(self.scopes.len().wrapping_sub(2));
-			let stdout = previous.map_or(self.idle.as_raw_fd(), |scope| scope.stdout.as_raw_fd());
-			let stderr = previous.map_or(self.idle.as_raw_fd(), |scope| scope.stderr.as_raw_fd());
+			let stdout =
+				previous.map_or_else(|| self.idle.as_raw_fd(), |scope| scope.stdout.as_raw_fd());
+			let stderr =
+				previous.map_or_else(|| self.idle.as_raw_fd(), |scope| scope.stderr.as_raw_fd());
 			replace(stdout, libc::STDOUT_FILENO)?;
 			if let Err(error) = replace(stderr, libc::STDERR_FILENO) {
 				let _ = replace(self.scopes.last().unwrap().stdout.as_raw_fd(), libc::STDOUT_FILENO);
@@ -308,30 +443,40 @@ mod posix {
 		}
 
 		fn current(&self) -> (RawFd, RawFd) {
-			self.scopes.last().map_or(
-				(self.idle.as_raw_fd(), self.idle.as_raw_fd()),
+			self.scopes.last().map_or_else(
+				|| (self.idle.as_raw_fd(), self.idle.as_raw_fd()),
 				|scope| (scope.stdout.as_raw_fd(), scope.stderr.as_raw_fd()),
 			)
 		}
 
 		fn check_owned(&self) -> io::Result<()> {
 			let (stdout, stderr) = self.current();
-			if !same_descriptor(libc::STDOUT_FILENO, stdout) || !same_descriptor(libc::STDERR_FILENO, stderr) {
-				return Err(io::Error::other("kernel stdout/stderr descriptors were replaced outside their capture owner"));
+			if !same_descriptor(libc::STDOUT_FILENO, stdout)
+				|| !same_descriptor(libc::STDERR_FILENO, stderr)
+			{
+				return Err(io::Error::other(
+					"kernel stdout/stderr descriptors were replaced outside their capture owner",
+				));
 			}
 			Ok(())
 		}
 
 		fn request(&self, command: Command) -> io::Result<u64> {
 			let (reply, receive) = mpsc::sync_channel(1);
-			self.requests.send(Request { command, reply }).map_err(|_| io::Error::other("kernel stdio reader stopped"))?;
+			self
+				.requests
+				.send(Request { command, reply })
+				.map_err(|_| io::Error::other("kernel stdio reader stopped"))?;
 			write_bytes(self.wake.as_raw_fd(), &[1])?;
-			receive.recv().map_err(|_| io::Error::other("kernel stdio reader stopped before its barrier"))?
+			receive
+				.recv()
+				.map_err(|_| io::Error::other("kernel stdio reader stopped before its barrier"))?
 		}
 	}
 
 	impl Drop for Capture {
 		fn drop(&mut self) {
+			let _ = self.finish_input();
 			let (stdout, stderr) = self.current();
 			if same_descriptor(libc::STDOUT_FILENO, stdout) {
 				let _ = replace(self.original_stdout.as_raw_fd(), libc::STDOUT_FILENO);
@@ -340,7 +485,8 @@ mod posix {
 				let _ = replace(self.original_stderr.as_raw_fd(), libc::STDERR_FILENO);
 			}
 			self.scopes.clear();
-			// Closing this write end wakes poll even when the host transport is backpressured.
+			// Closing this write end wakes poll even when the host transport is
+			// backpressured.
 			drop(self.cancel.take());
 			if let Some(reader) = self.reader.take() {
 				let _ = reader.join();
@@ -349,7 +495,12 @@ mod posix {
 		}
 	}
 
-	fn pump(transport: OwnedFd, wake: OwnedFd, cancel: OwnedFd, requests: Receiver<Request>) -> io::Result<()> {
+	fn pump(
+		transport: OwnedFd,
+		wake: OwnedFd,
+		cancel: OwnedFd,
+		requests: Receiver<Request>,
+	) -> io::Result<()> {
 		let mut streams: Vec<ReadStream> = Vec::new();
 		let mut sequence = 0;
 		let mut buffer = [0_u8; CHUNK_BYTES];
@@ -357,7 +508,11 @@ mod posix {
 			let mut fds = Vec::with_capacity(streams.len() + 2);
 			fds.push(poll_entry(cancel.as_raw_fd(), libc::POLLIN));
 			fds.push(poll_entry(wake.as_raw_fd(), libc::POLLIN));
-			fds.extend(streams.iter().map(|stream| poll_entry(stream.fd.as_raw_fd(), libc::POLLIN)));
+			fds.extend(
+				streams
+					.iter()
+					.map(|stream| poll_entry(stream.fd.as_raw_fd(), libc::POLLIN)),
+			);
 			poll(&mut fds)?;
 			if fds[0].revents != 0 {
 				return Ok(());
@@ -370,14 +525,26 @@ mod posix {
 							// Retire only EOF pipes. Live inherited writers are never evicted.
 							streams.retain(|stream| !at_eof(stream.fd.as_raw_fd()));
 							if streams.len() + 2 > MAX_STREAMS {
-								Err(io::Error::other("too many live kernel stdio captures; close inherited child writers"))
+								Err(io::Error::other(
+									"too many live kernel stdio captures; close inherited child writers",
+								))
 							} else {
-								streams.push(ReadStream { run_id: Arc::clone(&run_id), stream: "stdout", fd: stdout });
+								streams.push(ReadStream {
+									run_id: Arc::clone(&run_id),
+									stream: "stdout",
+									fd:     stdout,
+								});
 								streams.push(ReadStream { run_id, stream: "stderr", fd: stderr });
 								Ok(sequence)
 							}
 						},
-						Command::Barrier => barrier(&streams, transport.as_raw_fd(), cancel.as_raw_fd(), &mut sequence, &mut buffer),
+						Command::Barrier => barrier(
+							&streams,
+							transport.as_raw_fd(),
+							cancel.as_raw_fd(),
+							&mut sequence,
+							&mut buffer,
+						),
 					};
 					let _ = request.reply.send(result);
 				}
@@ -389,8 +556,16 @@ mod posix {
 				}
 				let stream = &streams[index];
 				match read_bytes(stream.fd.as_raw_fd(), &mut buffer) {
-					Ok(0) => { streams.swap_remove(index); },
-					Ok(count) => emit(transport.as_raw_fd(), cancel.as_raw_fd(), stream, &buffer[..count], &mut sequence)?,
+					Ok(0) => {
+						streams.swap_remove(index);
+					},
+					Ok(count) => emit(
+						transport.as_raw_fd(),
+						cancel.as_raw_fd(),
+						stream,
+						&buffer[..count],
+						&mut sequence,
+					)?,
 					Err(error) if error.kind() == io::ErrorKind::WouldBlock => {},
 					Err(error) => return Err(error),
 				}
@@ -398,17 +573,30 @@ mod posix {
 		}
 	}
 
-	fn barrier(streams: &[ReadStream], transport: RawFd, cancel: RawFd, sequence: &mut u64, buffer: &mut [u8]) -> io::Result<u64> {
-		// The pump is the only reader. Snapshot the unread counts before draining any stream;
-		// this side-channel fence cannot collide with arbitrary user bytes and cannot starve
-		// when descendants keep writing. FIONREAD on pipes is available on Linux and Darwin.
-		let counts = streams.iter().map(|stream| pending_bytes(stream.fd.as_raw_fd())).collect::<io::Result<Vec<_>>>()?;
+	fn barrier(
+		streams: &[ReadStream],
+		transport: RawFd,
+		cancel: RawFd,
+		sequence: &mut u64,
+		buffer: &mut [u8],
+	) -> io::Result<u64> {
+		// The pump is the only reader. Snapshot the unread counts before draining any
+		// stream; this side-channel fence cannot collide with arbitrary user bytes
+		// and cannot starve when descendants keep writing. FIONREAD on pipes is
+		// available on Linux and Darwin.
+		let counts = streams
+			.iter()
+			.map(|stream| pending_bytes(stream.fd.as_raw_fd()))
+			.collect::<io::Result<Vec<_>>>()?;
 		for (stream, mut remaining) in streams.iter().zip(counts) {
 			while remaining > 0 {
 				let limit = remaining.min(buffer.len());
 				let count = read_bytes(stream.fd.as_raw_fd(), &mut buffer[..limit])?;
 				if count == 0 {
-					return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "capture pipe closed before its barrier"));
+					return Err(io::Error::new(
+						io::ErrorKind::UnexpectedEof,
+						"capture pipe closed before its barrier",
+					));
 				}
 				emit(transport, cancel, stream, &buffer[..count], sequence)?;
 				remaining -= count;
@@ -417,11 +605,23 @@ mod posix {
 		Ok(*sequence)
 	}
 
-	fn emit(transport: RawFd, cancel: RawFd, stream: &ReadStream, bytes: &[u8], sequence: &mut u64) -> io::Result<()> {
+	fn emit(
+		transport: RawFd,
+		cancel: RawFd,
+		stream: &ReadStream,
+		bytes: &[u8],
+		sequence: &mut u64,
+	) -> io::Result<()> {
 		if *sequence == MAX_SEQUENCE {
 			return Err(io::Error::other("kernel stdio sequence exhausted"));
 		}
-		let frame = Frame { kind: "native-stdio", run_id: &stream.run_id, stream: stream.stream, data: STANDARD.encode(bytes), sequence: *sequence + 1 };
+		let frame = Frame {
+			kind:     "native-stdio",
+			run_id:   &stream.run_id,
+			stream:   stream.stream,
+			data:     STANDARD.encode(bytes),
+			sequence: *sequence + 1,
+		};
 		let mut data = serde_json::to_vec(&frame)?;
 		data.push(b'\n');
 		let mut remaining = data.as_slice();
@@ -432,7 +632,10 @@ mod posix {
 				return Err(io::Error::new(io::ErrorKind::Interrupted, "kernel stdio closed"));
 			}
 			if fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-				return Err(io::Error::new(io::ErrorKind::BrokenPipe, "kernel stdio host transport closed"));
+				return Err(io::Error::new(
+					io::ErrorKind::BrokenPipe,
+					"kernel stdio host transport closed",
+				));
 			}
 			match write_once(transport, remaining) {
 				Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
@@ -447,13 +650,17 @@ mod posix {
 
 	fn duplicate(fd: RawFd) -> io::Result<OwnedFd> {
 		let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-		if duplicated < 0 { return Err(io::Error::last_os_error()); }
+		if duplicated < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
 	}
 
 	fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 		let mut fds = [0; 2];
-		if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error()); }
+		if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
 		let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 		for fd in [&read, &write] {
@@ -467,26 +674,36 @@ mod posix {
 
 	fn descriptor_flags(fd: RawFd) -> io::Result<i32> {
 		let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-		if flags < 0 { return Err(io::Error::last_os_error()); }
+		if flags < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		Ok(flags)
 	}
 
 	fn set_flags(fd: RawFd, flags: i32) -> io::Result<()> {
-		if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 { return Err(io::Error::last_os_error()); }
+		if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		Ok(())
 	}
 
 	fn replace(from: RawFd, to: RawFd) -> io::Result<()> {
 		loop {
-			if unsafe { libc::dup2(from, to) } >= 0 { return Ok(()); }
+			if unsafe { libc::dup2(from, to) } >= 0 {
+				return Ok(());
+			}
 			let error = io::Error::last_os_error();
-			if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+			if error.kind() != io::ErrorKind::Interrupted {
+				return Err(error);
+			}
 		}
 	}
 
 	fn stat(fd: RawFd) -> io::Result<libc::stat> {
 		let mut result = std::mem::MaybeUninit::uninit();
-		if unsafe { libc::fstat(fd, result.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error()); }
+		if unsafe { libc::fstat(fd, result.as_mut_ptr()) } < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		Ok(unsafe { result.assume_init() })
 	}
 
@@ -499,7 +716,9 @@ mod posix {
 
 	fn pending_bytes(fd: RawFd) -> io::Result<usize> {
 		let mut count: libc::c_int = 0;
-		if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut count) } < 0 { return Err(io::Error::last_os_error()); }
+		if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut count) } < 0 {
+			return Err(io::Error::last_os_error());
+		}
 		Ok(count as usize)
 	}
 
@@ -510,40 +729,54 @@ mod posix {
 			&& pending_bytes(fd).is_ok_and(|count| count == 0)
 	}
 
-	fn poll_entry(fd: RawFd, events: i16) -> libc::pollfd {
+	const fn poll_entry(fd: RawFd, events: i16) -> libc::pollfd {
 		libc::pollfd { fd, events, revents: 0 }
 	}
 
 	fn poll(fds: &mut [libc::pollfd]) -> io::Result<()> {
 		loop {
-			if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } >= 0 { return Ok(()); }
+			if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } >= 0 {
+				return Ok(());
+			}
 			let error = io::Error::last_os_error();
-			if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+			if error.kind() != io::ErrorKind::Interrupted {
+				return Err(error);
+			}
 		}
 	}
 
 	fn read_bytes(fd: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
 		loop {
 			let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-			if count >= 0 { return Ok(count as usize); }
+			if count >= 0 {
+				return Ok(count as usize);
+			}
 			let error = io::Error::last_os_error();
-			if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+			if error.kind() != io::ErrorKind::Interrupted {
+				return Err(error);
+			}
 		}
 	}
 
 	fn write_once(fd: RawFd, bytes: &[u8]) -> io::Result<usize> {
 		loop {
 			let count = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-			if count >= 0 { return Ok(count as usize); }
+			if count >= 0 {
+				return Ok(count as usize);
+			}
 			let error = io::Error::last_os_error();
-			if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+			if error.kind() != io::ErrorKind::Interrupted {
+				return Err(error);
+			}
 		}
 	}
 
 	fn write_bytes(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
 		while !bytes.is_empty() {
 			let count = write_once(fd, bytes)?;
-			if count == 0 { return Err(io::ErrorKind::WriteZero.into()); }
+			if count == 0 {
+				return Err(io::ErrorKind::WriteZero.into());
+			}
 			bytes = &bytes[count..];
 		}
 		Ok(())

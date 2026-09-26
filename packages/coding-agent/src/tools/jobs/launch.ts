@@ -3,6 +3,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { sessionProjectCwd } from "../../eval/bridge-cwd";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { type DaemonBrokerClient, daemonClientForProject } from "../../launch/client";
 import type {
@@ -459,7 +460,7 @@ export async function executeLaunch(
 	params: LaunchParams,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<LaunchToolDetails>> {
-	const client = await daemonClientForProject(session.cwd);
+	const client = await daemonClientForProject(sessionProjectCwd(session));
 	const operation = operationFor(params, session);
 	// Refuse before any side effect when the broker cannot honor immutable process references.
 	if (params.op !== "list") await client.ensureCapability(DAEMON_CAPABILITY_PROCESS_IDENTITY, signal);

@@ -15,8 +15,6 @@ import {
 	flushFileTracking,
 	installBunWriteTracking,
 	maybeTrackedModule,
-	noteTouched,
-	rearmReadStamps,
 	trackedFsModule,
 } from "./fs-tracker";
 import { createHelpers, type HelperBundle } from "./helpers";
@@ -83,7 +81,6 @@ const DECIMAL_CSV_RE = /^\d{1,3}(?:,\d{1,3})*$/;
 const PRELUDE_GLOBAL_KEYS = [
 	"BatchError",
 	"executions",
-	"editBatch",
 	"saveState",
 	"loadState",
 	"startTool",
@@ -261,6 +258,7 @@ export class JsRuntime {
 			invocation?: KernelInvocation;
 			drain?: () => Promise<void>;
 			stdin?: Readable;
+			stdinSocket?: string;
 			/** Rejecting it ends the run at once with its reason; work the cell left pending runs on detached. */
 			stop?: Promise<never>;
 		} = {},
@@ -292,7 +290,7 @@ export class JsRuntime {
 		process.argv = options.invocation?.argv.slice() ?? [process.execPath];
 		const savedStdin = Object.getOwnPropertyDescriptor(process, "stdin");
 		const stdin = options.stdin ?? Readable.from([]);
-		Object.defineProperty(process, "stdin", { configurable: true, get: () => stdin });
+		Object.defineProperty(process, "stdin", { configurable: true, get: () => this.#nativeStdio?.stdin ?? stdin });
 		const context: RunContext = {
 			runId: options.runId ?? crypto.randomUUID(),
 			hooks,
@@ -309,6 +307,7 @@ export class JsRuntime {
 			cwd: context.cwd,
 		});
 		try {
+			this.#nativeStdio?.startInput(context.runId, options.stdinSocket);
 			const evaluation = this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code, Object.keys(this.#scope));
 				this.#nativeStdio?.start(context.runId);
@@ -360,6 +359,7 @@ export class JsRuntime {
 			process.exitCode = savedExitCode ?? (typeof Bun === "undefined" ? undefined : 0);
 			process.argv = savedArgv;
 			stdin.destroy();
+			this.#nativeStdio?.finishInput();
 			if (savedStdin) Object.defineProperty(process, "stdin", savedStdin);
 			for (const [key, value] of savedEnv) {
 				if (process.env[key] === shellEnv[key]) {
@@ -711,9 +711,6 @@ export class JsRuntime {
 			__proto_get_require__: (moduleUrl?: string) => this.#activeRequire(moduleUrl),
 			__proto_get_filename__: (moduleUrl?: string) => this.#moduleFilename(moduleUrl),
 			__proto_get_dirname__: (moduleUrl?: string) => this.#moduleDirname(moduleUrl),
-			// editBatch: host-applied files join the cell's mutation tracking and re-arm the stale-write guard.
-			__proto_fs_note_touched__: noteTouched,
-			__proto_fs_rearm_reads__: rearmReadStamps,
 			__proto_emit_status__: (op: string, data: Record<string, unknown> = {}) => {
 				const event: JsStatusEvent = { op, ...data };
 				this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event });

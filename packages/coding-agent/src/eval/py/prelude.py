@@ -26,7 +26,6 @@ __all__ = [
     "publish_artifact",
     "read_artifact",
     "resolve_artifact",
-    "edit_batch",
     "log",
     "phase",
     "budget",
@@ -257,24 +256,6 @@ if "__proto_prelude_loaded__" not in globals():
         ap = _fs_norm_path(path)
         if ap is not None:
             _FS_STATE["read_seen"].pop(ap, None)
-
-    def _fs_rearm_stamps(stamps) -> None:
-        """Re-arm the stale-write guard at the host-verified stamps of files a
-        checked edit batch left holding content this kernel supplied (the
-        batch's `after`, or its `before` once rolled back). Unlike host
-        observations these replace an existing record: the kernel knows that
-        content, so it counts as read. Files the batch did not leave that way
-        carry no stamp and keep their old record, so external edits still trip."""
-        for entry in stamps or ():
-            if not isinstance(entry, dict):
-                continue
-            ap = _fs_norm_path(entry.get("path"))
-            if ap is None:
-                continue
-            try:
-                _fs_remember_seen(ap, (int(entry["mtimeNs"]), int(entry["size"]), str(entry["sha"])))
-            except (KeyError, TypeError, ValueError):
-                continue
 
     def _fs_check_stale_raw(path) -> None:
         """Abort a write-mode open of a path that changed since the kernel last
@@ -1609,19 +1590,6 @@ if "__proto_prelude_loaded__" not in globals():
     def resolve_artifact(ref):
         """Validate an artifact ref this session published and return it."""
         return _bridge_call("__runtime__", {"op": "artifact_resolve", "ref": ref})
-
-    def edit_batch(changes, *, apply=False):
-        """Validate (and with apply=True commit) a checked batch on the host.
-        Applied files join this cell's mutation tracking, so the flush reports
-        them like any kernel write: one status event and `<kernel> note:` per path."""
-        resolved = [{**entry, "path": str(_filesystem_path(entry["path"]))} for entry in changes]
-        if apply:
-            for entry in resolved:
-                _fs_record(entry["path"])
-        result = _bridge_call("__runtime__", {"op": "edit_batch", "changes": resolved, "apply": apply})
-        if isinstance(result, dict):
-            _fs_rearm_stamps(result.pop("stamps", None))
-        return result
 
     def log(message):
         """Emit a status ``log`` event for TUI rendering."""

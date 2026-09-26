@@ -41,34 +41,52 @@ export declare class HighlightStream {
 }
 
 /**
- * Scoped, nestable fd 1/2 capture for a dedicated kernel child, not an in-process host console.
- * stdout must be a pipe/socket to the host. A second live instance is rejected.
+ * Scoped fd 0 input and nestable fd 1/2 capture for a dedicated kernel child,
+ * not an in-process host console. stdout must be a pipe/socket to the host. A
+ * second live instance is rejected.
  */
 export declare class KernelStdio {
   constructor()
   /**
-   * Install a fresh run's pipes, or nest without replacing pipes when this run is already active.
-   * Descendants inherit the installed write ends, never the reserved frame transport.
+   * Install a fresh run's pipes, or nest without replacing pipes when this
+   * run is already active. Descendants inherit the installed write ends,
+   * never the reserved frame transport.
    */
   start(runId: string): void
   /**
-   * Drain every byte accepted before the reader's barrier snapshot. The host must consume this
-   * sequence before publishing a result/display on its separate control channel.
+   * Connect a cell's input directly to fd 0. The host feeds it independently
+   * of the interpreter event loop, so synchronous reads and inherited stdin
+   * cannot deadlock IPC. Returns an owned duplicate for the interpreter's
+   * lazily-created stdin stream.
+   */
+  startInput(runId: string, socketPath?: string | undefined | null): number
+  /**
+   * Restore the original stdin after the cell has closed its stream
+   * duplicate.
+   */
+  finishInput(): void
+  /**
+   * Drain every byte accepted before the reader's barrier snapshot. The host
+   * must consume this sequence before publishing a result/display on its
+   * separate control channel.
    */
   flush(): number
   /**
-   * Flush and restore the enclosing scope's descriptors (a discard sink outside all scopes).
-   * Child processes retaining this scope's pipes continue to emit frames with its original run id.
+   * Flush and restore the enclosing scope's descriptors (a discard sink
+   * outside all scopes). Child processes retaining this scope's pipes
+   * continue to emit frames with its original run id.
    */
   finish(): number
   /**
-   * Synchronously route a retained callback's stream write, preserving its original run owner.
-   * This does not enqueue a libuv write that could outlive the temporary descriptor scope.
+   * Synchronously route a retained callback's stream write, preserving its
+   * original run owner. This does not enqueue a libuv write that could
+   * outlive the temporary descriptor scope.
    */
   write(runId: string, stream: string, data: Buffer): number
   /**
-   * Restore owned descriptors and cancel/join the reader without waiting for descendant EOF.
-   * Pending bytes are discarded on shutdown; use finish/flush for a delivery fence first.
+   * Restore owned descriptors and cancel/join the reader without waiting for
+   * descendant EOF. Pending bytes are discarded on shutdown; use
+   * finish/flush for a delivery fence first.
    */
   close(): void
 }

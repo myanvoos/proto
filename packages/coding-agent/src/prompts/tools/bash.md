@@ -31,20 +31,20 @@ Output is already captured. AVOID `head`/`tail`/`| tail -n` just to shorten it: 
 
 **Ordinary interpreter code, retained state, additive tools.** Preserve native language semantics, program arguments, stdout/stderr bytes, and exit status within a cell; persistence and the prelude add capabilities rather than a different programming language. Use normal interpreter idioms.
 
-- Rich displays, final-expression values, and harness notes are presentation sidebands: visible in the tool result, never inserted into pipes, redirects, or command substitutions. A write's return value cannot corrupt its output.
+- Rich displays, final-expression values, and harness notes are presentation sidebands: visible in the tool result, never inserted into pipes, redirects, or command substitutions. A write's return value cannot corrupt its output; no `_ =` / `void` suppression is needed.
 - Persistence is not a fresh OS process: bindings and explicitly retained work survive cells; interpreter-shutdown hooks and Python thread/executor lifetimes belong to the kernel process. Use a real subprocess when process isolation or interpreter teardown is part of the program's contract. Never retry a failed cell automatically in a fresh process: its side effects may already have happened.
 
 Routing (non-PTY):
 
 |Command|Runs as|
 |---|---|
-{{#if py}}| `python` with `-c CODE [args...]`, `- [args...]`, or code on stdin | Python kernel cell on the interpreter the shell resolves (`python3.N`, `.venv/bin/python`, an activated venv); one kernel per interpreter per lane |
-|`python fleet://<name>.py [args...]`|Python kernel cell running that file|
-{{/if}}{{#if js}}| `node`/`nodejs`/`bun` with `-e CODE [args...]`, `- [args...]`, or code on stdin | JS kernel cell: `node` = Node.js on PATH, `bun` = Bun; separate heaps |
-|`node`/`bun` `fleet://<name>.{js,mjs,ts} [args...]`|JS kernel cell running that file|
+{{#if py}}| `python` with `-c CODE [args…]`, `- [args…]`, or code on stdin | Python kernel cell on the interpreter the shell resolves (`python3.N`, `.venv/bin/python`, an activated venv); one kernel per interpreter per lane |
+|`python fleet://<name>.py [args…]`|Python kernel cell running that file|
+{{/if}}{{#if js}}| `node`/`nodejs`/`bun` with `-e CODE [args…]`, `- [args…]`, or code on stdin | JS kernel cell: `node` = Node.js on PATH, `bun` = Bun; separate heaps |
+|`node`/`bun` `fleet://<name>.{js,mjs,ts} [args…]`|JS kernel cell running that file|
 {{/if}}| Anything else | Fresh process |
 
-Routing holds wherever the agent shell runs the command itself: pipelines, `&&` lists, `$(…)`. Program arguments stay in the kernel; for JS arguments starting with `-`, use `-e CODE -- args...` so they are not interpreter options.
+Routing holds wherever the agent shell runs the command itself: pipelines, `&&` lists, `$(…)`. Program arguments stay in the kernel; for JS arguments starting with `-`, use `-e CODE -- args…` so they are not interpreter options.
 
 Cells → file edits, multi-step logic, data processing, tool calls in loops, orchestration. Shell → programs, builds, tests, git.
 
@@ -61,7 +61,7 @@ JS{{/if}}
 {{#if py}}- Ordinary synchronous Python cells support `asyncio.run()`; top-level `await` is an additive option.
 - Python imports resolve like a fresh interpreter in the cell's cwd and `PYTHONPATH`: edited project modules re-import from disk; names bound in earlier cells keep the old objects.
 {{/if}}- A bare final expression displays its value beside program output, like a notebook. {{#if py}}`retain_task(task)` keeps an asyncio task beyond the cell; {{/if}}{{#if js}}`retainTask(resource)` keeps an unref-capable JS resource beyond the cell; {{/if}}retained work still ends when the kernel closes.
-- Shell exports and `env` reach cells. Stdin piped into {{#if py}}`python -c CODE`{{/if}}{{#ifAll py js}} / {{/ifAll}}{{#if js}}`node -e CODE`{{/if}} is program input; stdout/stderr are binary-safe{{#if py}} (`sys.stdin.buffer`, `sys.stdout.buffer`){{/if}}.
+- Shell exports and `env` reach cells. Stdin piped into {{#if py}}`python -c CODE`{{/if}}{{#ifAll py js}} / {{/ifAll}}{{#if js}}`node -e CODE`{{/if}} is program input; stdout/stderr are binary-safe{{#if py}} (`sys.stdin.buffer`, `sys.stdout.buffer`){{/if}}.{{#if js}} Node/Bun input also reaches descriptor 0 (`fs.readFileSync(0)`, `fs.readSync`) and children inheriting stdin.{{/if}}
 - Orchestration (`agent()`, `parallel()`, `pipeline()`) → write the script to `fleet://<name>.{{#if py}}py{{else}}mjs{{/if}}` (session scratch dir), run `{{#if py}}python{{else}}node{{/if}} fleet://<name>.{{#if py}}py{{else}}mjs{{/if}}`. Fix and re-run the file instead of resending code; with `checkpoint` + `resume`, finished items are skipped.
 - `protolens context --resource kernel` inspects, resets, closes, or retargets interpreters (local, container, or SSH); configuration changes need a reset.{{#if py}} `--op start --language python --interpreter <path>` makes that interpreter the lane's bare `python`.{{/if}} Use `--resource lane` for whole-lane lifecycle control from another lane.
 
@@ -82,9 +82,8 @@ assert source.count(old) == 1
 new = r'PATTERN = r"/v2/\d+"'
 path.write_text(source.replace(old, new))
 ```
-- Multi-line anchor or payload → `r'''…'''`; payload containing both quote styles → build it from parts or write it with `edit_batch`.
+- Multi-line anchor or payload → `r'''…'''`; build the replacement from parts when it contains both quote styles.
 - Whole function or class → `block_range(path, line)` gives its 1-based inclusive lines; splice those.
-- Several files that must change together → `edit_batch`: previews diffs; writes nothing if any file changed.
 {{else}}
 Canonical replace: read, assert, write:
 ```js
@@ -94,7 +93,6 @@ if (source.split(old).length !== 2) throw new Error("anchor count != 1");
 fs.writeFileSync("src/route.js", source.replace(old, String.raw`const PATTERN = /v2/;`));
 ```
 - Whole function or class → `blockRange(path, line)` gives its 1-based inclusive lines; splice those.
-- Several files that must change together → `editBatch`: previews diffs; writes nothing if any file changed.
 {{/if}}
 
 ## Cell API

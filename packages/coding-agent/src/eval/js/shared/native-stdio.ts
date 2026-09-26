@@ -1,3 +1,5 @@
+import { closeSync, createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 import { KernelStdio } from "@oh-my-pi/pi-natives";
 
 /** The native pump forwards bytes on its reserved pipe, independently of the JS event loop. */
@@ -6,6 +8,9 @@ export class NativeStdio {
 	#capture = new KernelStdio();
 	#methods = new Map<string, PropertyDescriptor>();
 	#activeRun: string | undefined;
+	#inputFd: number | undefined;
+	#input: Readable | undefined;
+	#hasInput = false;
 	sequence = 0;
 
 	constructor(readonly owner: () => string | undefined) {
@@ -19,6 +24,36 @@ export class NativeStdio {
 				value: (...args: unknown[]) => this.route(() => Reflect.apply(original, this.console, args)),
 			});
 		}
+	}
+
+	startInput(runId: string, socketPath?: string): void {
+		this.#inputFd = this.#capture.startInput(runId, socketPath);
+		this.#hasInput = socketPath !== undefined;
+	}
+
+	get stdin(): Readable {
+		if (this.#input) return this.#input;
+		if (this.#inputFd === undefined) throw new Error("No active kernel stdin");
+		const fd = this.#inputFd;
+		if (this.#hasInput) {
+			// The private duplicate is owned by the file stream; the public stdin descriptor
+			// stays 0. Both descriptions consume the same bytes, including inherited readers.
+			this.#input = Readable.from(createReadStream("", { fd, autoClose: true }), { objectMode: false });
+		} else {
+			closeSync(fd);
+			this.#input = Readable.from([]);
+		}
+		this.#inputFd = undefined;
+		Object.defineProperty(this.#input, "fd", { value: 0 });
+		return this.#input;
+	}
+
+	finishInput(): void {
+		this.#input?.destroy();
+		this.#input = undefined;
+		if (this.#inputFd !== undefined) closeSync(this.#inputFd);
+		this.#inputFd = undefined;
+		this.#capture.finishInput();
 	}
 
 	start(runId: string): void {
@@ -74,6 +109,7 @@ export class NativeStdio {
 	dispose(): void {
 		for (const [name, descriptor] of this.#methods) Object.defineProperty(this.console, name, descriptor);
 		this.#methods.clear();
+		this.finishInput();
 		this.#capture.close();
 	}
 }

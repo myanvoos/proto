@@ -5,6 +5,8 @@ References are typed and immutable — pass them back exactly as returned, never
 - `{"kind":"process","id":…,"name":…}` — one incarnation of a supervised process.
 - `{"kind":"watch","id":…}` — a watch subscription.
 
+Process references use the session project broker across shell calls, kernel tools, and delegated launches. A cell or process `cwd` changes its working directory, not its process namespace.
+
 Ops:
 - `list`: snapshot your jobs, watches and this session's processes (`scope:"project"` for every process in the project; `kind` filters). Observation only — it never marks results as seen; unread results still arrive automatically.
 - `inspect` `target`: one reference in detail. For a watch, `afterEvent` pages retained events by event sequence; expired sequences are reported as a gap. Never consumes.
