@@ -186,7 +186,7 @@ print(reference)
 
 ## Selected data persistence
 
-Save only explicit bindings, then restore them into a later kernel of the same language:
+Save only explicit bindings, then restore them into a later Python, Node, or Bun kernel:
 
 ```python
 summary = {"passed": 12, "failed": 0}
@@ -202,7 +202,7 @@ load_state("local://report-state.json")
 
 JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `load_state(path, collision="reject")`; explicit `"overwrite"` permits replacing colliding user bindings. Prelude/reserved bindings cannot be replaced.
 
-Snapshots are versioned, language/interpreter-described, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata. Interpreter implementation and major version must match; minor/patch versions and executable paths may differ. Selection addresses published kernel globals, not variables local to a function or JavaScript async-cell closure. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and incompatible metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
+Snapshots are versioned, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata; the recorded language and interpreter are provenance only. Python, Node, and Bun kernels restore each other's snapshots. Within a language every byte type round-trips; across languages Python `bytes`/`bytearray` restore as a JavaScript `Buffer`, and `Buffer`/`Uint8Array`/`ArrayBuffer` restore as Python `bytes`. Python integers beyond ±(2^53−1) restore exactly in Python and fail to load in JavaScript instead of rounding. Binding names must be valid, non-reserved identifiers in the loading language. Selection addresses published kernel globals, not variables local to a function or JavaScript async-cell closure. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and malformed metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
 
 ## Kernel recovery helpers
 

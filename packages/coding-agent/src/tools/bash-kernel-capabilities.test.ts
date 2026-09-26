@@ -192,3 +192,65 @@ await disposeTool(work);
 		});
 	}, 30_000);
 }
+
+test("Python, Node, and Bun kernels restore each other's state snapshots", async () => {
+	await fixture(async tools => {
+		const bash = tools.get("bash")!;
+		const cell = async (language: string, source: string) => {
+			const result = await bash.execute(`state-${language}`, {
+				lane: "state",
+				command: `${language} <<'CELL'\n${source}\nCELL`,
+			});
+			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("");
+			expect(result.isError, text).not.toBe(true);
+			return text;
+		};
+		await cell(
+			"python",
+			`
+blob = publish_artifact(bytes([0, 128, 255]), kind="binary")
+shared = {"values": [3, 5], "label": "雪", "zero": -0.0, "payload": b"\\x00\\xff", "mutable": bytearray(b"ab"), "blob": blob}
+huge = 2**64
+save_state("python.json", ["shared"])
+save_state("huge.json", ["huge"])
+`,
+		);
+		await cell(
+			"node",
+			`
+await loadState("python.json");
+if (!Buffer.isBuffer(shared.payload) || shared.payload[1] !== 255 || shared.mutable.toString() !== "ab") throw new Error("Python bytes are unusable in Node");
+if (!Object.is(shared.zero, -0) || shared.label !== "雪" || shared.values[0] + shared.values[1] !== 8) throw new Error("Python values changed in Node");
+if ((await readArtifact(shared.blob, {encoding: "base64"})).data !== "AID/") throw new Error("Python artifact ref is unreadable in Node");
+let hugeError = "";
+try { await loadState("huge.json"); } catch (error) { hugeError = error.message; }
+if (!hugeError.includes("safe integer") || "huge" in globalThis) throw new Error("unsafe Python integer was not rejected: " + hugeError);
+const relay = {...shared, bytes: new Uint8Array([1, 2]), raw: new Uint8Array([3]).buffer, bare: Object.assign(Object.create(null), {key: 7})};
+await saveState("node.json", ["relay"]);
+`,
+		);
+		await cell(
+			"bun",
+			`
+await loadState("node.json");
+if (!(relay.bytes instanceof Uint8Array) || Buffer.isBuffer(relay.bytes) || !(relay.raw instanceof ArrayBuffer)) throw new Error("Node byte kinds changed in Bun");
+if (Object.getPrototypeOf(relay.bare) !== null || relay.bare.key !== 7 || !Object.is(relay.zero, -0)) throw new Error("Node values changed in Bun");
+await saveState("bun.json", ["relay"]);
+`,
+		);
+		const restored = await cell(
+			"python",
+			`
+import math
+del huge
+load_state("bun.json")
+load_state("huge.json")
+assert huge == 2**64
+assert all(type(relay[key]) is bytes for key in ("payload", "mutable", "bytes", "raw"))
+assert relay["bare"] == {"key": 7} and math.copysign(1, relay["zero"]) < 0
+print(json.dumps({"payload": list(relay["payload"]), "mutable": relay["mutable"].decode(), "bytes": list(relay["bytes"] + relay["raw"]), "artifact": read_artifact(relay["blob"], encoding="base64")["data"]}, separators=(",", ":")))
+`,
+		);
+		expect(restored).toContain('{"payload":[0,255],"mutable":"ab","bytes":[1,2,3],"artifact":"AID/"}');
+	});
+}, 60_000);

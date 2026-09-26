@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import { types } from "node:util";
 import { atomicWriteFile } from "@oh-my-pi/pi-utils/atomic-write";
 
+// Shared with the Python kernel (eval/py/state.py): Python, Node, and Bun restore each other's snapshots.
 const FORMAT = "proto.kernel-state";
 const VERSION = 1;
 const MAX_BYTES = 16 * 1024 * 1024;
@@ -15,6 +16,9 @@ const RESERVED: Record<string, true> = Object.fromEntries(
 		.map(name => [name, true]),
 );
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const LANGUAGES = ["python", "javascript"];
+// Python byte kinds restore as Buffer.
+const BYTE_KINDS = ["buffer", "uint8array", "arraybuffer", "bytes", "bytearray"];
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const typedBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")!.get!;
 const typedOffset = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset")!.get!;
@@ -26,11 +30,13 @@ export interface StateInterpreter {
 	executable: string;
 }
 
+export type StateLanguage = "python" | "javascript";
+
 export interface StateResult {
 	path: string;
 	names: string[];
 	version: number;
-	language: "javascript";
+	language: StateLanguage;
 	interpreter: StateInterpreter;
 }
 
@@ -47,7 +53,7 @@ type Encoded =
 interface Snapshot {
 	format: string;
 	version: number;
-	language: "javascript";
+	language: StateLanguage;
 	interpreter: StateInterpreter;
 	bindings: { name: string; value: Encoded }[];
 }
@@ -182,18 +188,21 @@ function decode(value: unknown, budget: Budget, depth = 0): unknown {
 			typeof encoded.value !== "string" ||
 			!BASE64.test(encoded.value) ||
 			typeof encoded.kind !== "string" ||
-			!["buffer", "uint8array", "arraybuffer"].includes(encoded.kind)
+			!BYTE_KINDS.includes(encoded.kind)
 		)
 			throw new Error("invalid state bytes encoding");
 		budget.visit(depth, encoded.value.length);
 		const bytes = Buffer.from(encoded.value, "base64");
 		if (bytes.toString("base64") !== encoded.value) throw new Error("invalid state bytes encoding");
-		if (encoded.kind === "buffer") return bytes;
-		const copied = new Uint8Array(bytes);
-		return encoded.kind === "arraybuffer" ? copied.buffer : copied;
+		if (encoded.kind === "uint8array") return new Uint8Array(bytes);
+		if (encoded.kind === "arraybuffer") return new Uint8Array(bytes).buffer;
+		return bytes;
 	}
 	const encoded = fields(value, ["type", "value"]);
 	if (tag === "negative-zero" && encoded.value === "") return -0;
+	// Python tags only integers a JavaScript number would round.
+	if (tag === "integer")
+		throw new Error("state integer exceeds JavaScript's safe integer range; save it as a string instead");
 	if (!Array.isArray(encoded.value)) throw new Error("invalid encoded state container");
 	if (tag === "array") return encoded.value.map(item => decode(item, budget, depth + 1));
 	if (tag === "object" || tag === "null-object") {
@@ -221,18 +230,11 @@ function validate(
 	const state = fields(snapshot, ["format", "version", "language", "interpreter", "bindings"]);
 	if (state.format !== FORMAT) throw new Error("invalid state snapshot format");
 	if (state.version !== VERSION) throw new Error("unsupported state snapshot version");
-	if (state.language !== "javascript") throw new Error("state snapshot language mismatch: expected javascript");
+	if (!LANGUAGES.includes(state.language as string)) throw new Error("unsupported state snapshot language");
+	// Provenance only: plain data is portable across languages and interpreters.
 	const saved = fields(state.interpreter, ["implementation", "version", "executable"]);
 	if (Object.values(saved).some(value => typeof value !== "string" || value.length === 0))
 		throw new Error("invalid state interpreter metadata");
-	if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(saved.version as string))
-		throw new Error("invalid state interpreter version");
-	const current = runtimeInterpreter();
-	if (
-		saved.implementation !== current.implementation ||
-		(saved.version as string).split(".")[0] !== current.version.split(".")[0]
-	)
-		throw new Error("state interpreter implementation or major version mismatch");
 	if (!Array.isArray(state.bindings) || state.bindings.length === 0 || state.bindings.length > MAX_BINDINGS)
 		throw new Error("invalid state bindings");
 	const restored = new Map<string, unknown>();
@@ -251,7 +253,7 @@ function summary(path: string, snapshot: Snapshot): StateResult {
 		path,
 		names: snapshot.bindings.map(binding => binding.name),
 		version: VERSION,
-		language: "javascript",
+		language: snapshot.language,
 		interpreter: snapshot.interpreter,
 	};
 }

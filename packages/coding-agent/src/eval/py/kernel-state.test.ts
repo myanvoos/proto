@@ -101,17 +101,19 @@ def rejected(snapshot, expected):
     else:
         raise AssertionError("invalid snapshot was accepted")
     assert "first" not in globals() and "second" not in globals()
-for key, value, expected in [("version", 2, "version"), ("version", True, "version"), ("language", "javascript", "language"), ("format", "other", "format")]:
+for key, value, expected in [("version", 2, "version"), ("version", True, "version"), ("language", "other", "language"), ("format", "other", "format")]:
     snapshot = json.loads(original)
     snapshot[key] = value
     rejected(snapshot, expected)
-for key, value, expected in [("version", "broken", "version"), ("version", "99.1.0", "mismatch"), ("implementation", "other", "mismatch"), ("executable", None, "metadata")]:
-    snapshot = json.loads(original)
-    snapshot["interpreter"][key] = value
-    rejected(snapshot, expected)
+snapshot = json.loads(original)
+snapshot["interpreter"]["executable"] = None
+rejected(snapshot, "metadata")
 snapshot = json.loads(original)
 snapshot["bindings"][1]["value"]["value"] = "%%%"
 rejected(snapshot, "bytes")
+snapshot = json.loads(original)
+snapshot["bindings"][0]["value"] = {"type": "integer", "value": "+18446744073709551616"}
+rejected(snapshot, "integer")
 snapshot = json.loads(original)
 snapshot["bindings"].append(snapshot["bindings"][0])
 rejected(snapshot, "duplicate")
@@ -133,12 +135,6 @@ for policy in [True, None, "replace"]:
         pass
     else:
         raise AssertionError("invalid collision policy accepted")
-snapshot = json.loads(original)
-snapshot["interpreter"]["version"] = snapshot["interpreter"]["version"].split(".")[0] + ".999.999"
-snapshot["interpreter"]["executable"] = "/other/python"
-Path("compatible.json").write_text(json.dumps(snapshot))
-load_state("compatible.json")
-assert first == 1 and second == b"ok"
 print("validation was atomic")`,
 			options,
 		);

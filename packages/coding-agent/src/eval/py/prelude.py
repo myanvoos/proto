@@ -1648,7 +1648,8 @@ if "__proto_prelude_loaded__" not in globals():
     _ARTIFACT_VALUE_MISSING = object()
 
     def publish_artifact(value=_ARTIFACT_VALUE_MISSING, *, kind="json", path=None, mime_type=None, encoding=None):
-        """Publish immutable data as an `artifact://N` ref.
+        """Publish immutable data; returns a ref dict
+        {type, version, uri: "artifact://N", owner, mimeType, bytes, sha256}.
 
         kind: "json" (default), "text", or "binary" (required for bytes).
         `path` publishes a host file (not a remote kernel target's file).

@@ -38,13 +38,13 @@ budget.total (None = no ceiling); budget.spent(); budget.remaining()    ceiling 
 defs() → {name: cell}        kernel_state(limit=200) → {generation, cwd, variables, tasks}
 save_state(path, names); load_state(path, collision="reject"|"overwrite")
 executions(id=None, limit=20) → {records, evicted}
-publish_artifact(value, kind="json"|"text"|"binary", path=None) → "artifact://N"
+publish_artifact(value, kind="json"|"text"|"binary", path=None) → ref {uri: "artifact://N", mimeType, bytes, sha256, …}
 read_artifact(ref, offset=0, length=None, encoding="utf8"|"base64"|"json") → {data, offset, bytes, eof}
 display(value)    images (PIL, matplotlib), DataFrames, JSON render in the TUI
 env(key=None, value=None) → str | None | dict
 ```
 
-- `save_state`/`load_state` move named plain values (JSON-like data, bytes, artifact refs) across lanes, languages, and restarts — not objects, handles, or closures.
+- `save_state`/`load_state` move named plain values (JSON-like data, bytes, artifact refs) across lanes, languages, and restarts — not objects, handles, or closures. Python bytes ↔ JS `Buffer`; ints beyond ±2^53−1 load only in Python.
 - `executions`: recent bash calls with status and captured streams; post-process earlier output without re-running. Capture is bounded: check `evicted` and each stream's `truncated`.
 - `read_artifact` reads only artifacts this kernel published. Bash/tool output artifacts → `tool.read({"path": "artifact://N"})`.
 - Remote (SSH/container) kernels: file APIs address the target; tools, `proto_path`, and artifact `path` address this host. Move target bytes with `publish_artifact`.

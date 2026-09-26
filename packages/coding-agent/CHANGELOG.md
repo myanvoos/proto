@@ -11,7 +11,7 @@
 - A discoverable `kernel` tool for named runtime startup, inspection, reset, close, interpreter selection, and bounded keepalive
 - Immutable artifact values and validated image, audio, and video inputs for kernel completions
 - Explicit, expiring session-tool delegation for ordinary Python and JavaScript scripts, with revocation and managed launches
-- Selected data and binary binding save/restore across kernel resets without heap snapshots or code replay
+- Selected data and binary binding save/restore across kernel resets and between Python, Node, and Bun kernels, without heap snapshots or code replay
 - Persistent Python and JavaScript kernels in existing Docker/Podman containers and SSH targets, with tool callbacks and explicit artifact transfer
 - Bash execution lanes, queryable command-stage and device results, and safe Python/JavaScript kernel-state inspection with restart notices
 - Checked multi-file edit previews and guarded commits with rollback/conflict reporting

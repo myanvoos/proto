@@ -1,4 +1,8 @@
-"""Selected, data-only kernel bindings. No pickle, constructors, or replay."""
+"""Selected, data-only kernel bindings. No pickle, constructors, or replay.
+
+The snapshot format is shared with the JavaScript kernels (eval/js/shared/state.ts):
+Python, Node, and Bun restore each other's snapshots.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,11 @@ MAX_BYTES = 16 * 1024 * 1024
 MAX_NODES = 100_000
 MAX_DEPTH = 64
 MAX_BINDINGS = 4096
+# Larger integers are tagged so JavaScript rejects them instead of rounding.
+MAX_SAFE_INTEGER = 2**53 - 1
+LANGUAGES = ("python", "javascript")
+# JavaScript byte kinds restore as immutable bytes.
+BYTE_KINDS = ("bytes", "bytearray", "buffer", "uint8array", "arraybuffer")
 
 
 def _interpreter():
@@ -65,9 +74,16 @@ def _encode(value, active, budget, depth=0):
         budget.visit(depth, len(value))
         return value
     if kind is int:
+        if -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+            return value
         if value.bit_length() > MAX_BYTES * 8:
             raise ValueError("state integer exceeds the size limit")
-        return value
+        try:
+            digits = str(value)
+        except ValueError:  # Python's integer string-conversion digit limit
+            raise ValueError("state integer exceeds the size limit") from None
+        budget.visit(depth, len(digits))
+        return {"type": "integer", "value": digits}
     if kind is float:
         if not math.isfinite(value):
             raise ValueError("state numbers must be finite")
@@ -119,7 +135,7 @@ def _decode(value, budget, depth=0):
     if tag == "bytes":
         _fields(value, ("type", "kind", "value"))
         data = value["value"]
-        if value["kind"] not in ("bytes", "bytearray") or type(data) is not str:
+        if value["kind"] not in BYTE_KINDS or type(data) is not str:
             raise ValueError("invalid state bytes")
         budget.visit(depth, len(data))
         try:
@@ -128,14 +144,28 @@ def _decode(value, budget, depth=0):
             raise ValueError("invalid state bytes encoding") from None
         if base64.b64encode(decoded).decode("ascii") != data:
             raise ValueError("invalid state bytes encoding")
-        return decoded if value["kind"] == "bytes" else bytearray(decoded)
+        return bytearray(decoded) if value["kind"] == "bytearray" else decoded
     _fields(value, ("type", "value"))
+    if tag == "integer":
+        digits = value["value"]
+        if type(digits) is not str:
+            raise ValueError("invalid state integer")
+        budget.visit(depth, len(digits))
+        try:
+            number = int(digits)
+        except ValueError:
+            raise ValueError("invalid state integer") from None
+        if str(number) != digits:
+            raise ValueError("invalid state integer")
+        return number
+    if tag == "negative-zero" and value["value"] == "":
+        return -0.0
     entries = value["value"]
     if type(entries) is not list:
         raise ValueError("invalid encoded state container")
     if tag == "array":
         return [_decode(item, budget, depth + 1) for item in entries]
-    if tag == "object":
+    if tag == "object" or tag == "null-object":
         result = {}
         for pair in entries:
             if type(pair) is not list or len(pair) != 2 or type(pair[0]) is not str or pair[0] in result:
@@ -165,19 +195,13 @@ def _validate(snapshot, reserved):
         raise ValueError("invalid state snapshot format")
     if type(snapshot["version"]) is not int or snapshot["version"] != VERSION:
         raise ValueError("unsupported state snapshot version")
-    if snapshot["language"] != "python":
-        raise ValueError("state snapshot language mismatch: expected python")
+    if snapshot["language"] not in LANGUAGES:
+        raise ValueError("unsupported state snapshot language")
+    # Provenance only: plain data is portable across languages and interpreters.
     interpreter = snapshot["interpreter"]
     _fields(interpreter, ("implementation", "version", "executable"))
     if any(type(value) is not str or not value for value in interpreter.values()):
         raise ValueError("invalid state interpreter metadata")
-    parts = interpreter["version"].split(".")
-    if len(parts) != 3 or any(not part.isascii() or not part.isdecimal() for part in parts):
-        raise ValueError("invalid state interpreter version")
-    # Plain data is portable across executable paths and minor/patch releases.
-    current = _interpreter()
-    if interpreter["implementation"] != current["implementation"] or parts[0] != current["version"].split(".")[0]:
-        raise ValueError("state interpreter implementation or major version mismatch")
     bindings = snapshot["bindings"]
     if type(bindings) is not list or not 1 <= len(bindings) <= MAX_BINDINGS:
         raise ValueError("invalid state bindings")
@@ -194,7 +218,7 @@ def _validate(snapshot, reserved):
 
 def _summary(path, snapshot):
     return {"path": path, "names": [binding["name"] for binding in snapshot["bindings"]],
-            "version": VERSION, "language": "python", "interpreter": snapshot["interpreter"]}
+            "version": VERSION, "language": snapshot["language"], "interpreter": snapshot["interpreter"]}
 
 
 def save_state(path, names, namespace, reserved):
