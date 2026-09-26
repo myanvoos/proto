@@ -36,7 +36,7 @@ use std::{
 	path::{Path, PathBuf},
 	time::Duration,
 	sync::{
-		Arc,
+		Arc, LazyLock,
 		atomic::{AtomicBool, Ordering},
 	},
 };
@@ -47,6 +47,7 @@ use brush_core::{
 	Error, ExecutionContext, ExecutionResult, ShellExtensions,
 	builtins::{self, Registration},
 	fsobserve::FsObservationLog,
+	heldfiles::HeldFiles,
 	openfiles::{self, OpenFile, OpenFiles},
 };
 
@@ -110,6 +111,7 @@ pub(crate) struct Host {
 	exit_code:             i32,
 	stdin_is_search_input: bool,
 	observations:          FsObservationLog,
+	held_files:            LazyLock<HeldFiles>,
 
 	merged_out: Option<Arc<Mutex<StreamWriter>>>,
 	sigpipe:    Arc<Sigpipe>,
@@ -239,11 +241,16 @@ impl Host {
 
 	pub fn open_read(&self, path: impl AsRef<Path>) -> io::Result<std::fs::File> {
 		let resolved = self.resolve(path);
-		let file = std::fs::File::open(&resolved)?;
+		let file = self.held_files().open_read(&resolved)?;
 		if let Ok(metadata) = file.metadata() {
 			self.observations.record_read_of(resolved, &metadata);
 		}
 		Ok(file)
+	}
+
+	/// Files this invocation must not open in-process, snapshotted on first use.
+	pub fn held_files(&self) -> &HeldFiles {
+		&self.held_files
 	}
 
 	pub fn note_read(&self, path: impl AsRef<Path>) {
@@ -1050,6 +1057,7 @@ fn build_host<SE: ShellExtensions>(
 		exit_code: 0,
 		stdin_is_search_input,
 		observations: context.shell.fs_observations().clone(),
+		held_files: LazyLock::new(HeldFiles::snapshot),
 		merged_out,
 		sigpipe,
 	})
@@ -1194,6 +1202,7 @@ mod tests {
 			exit_code: 0,
 			stdin_is_search_input: false,
 			observations: FsObservationLog::default(),
+			held_files: LazyLock::new(HeldFiles::snapshot),
 			merged_out: None,
 			sigpipe,
 		};

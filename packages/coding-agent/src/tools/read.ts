@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { isHeldSqliteStore } from "@oh-my-pi/pi-natives";
 import {
 	BINARY_SNIFF_BYTES,
 	type ImageMetadata,
@@ -1409,6 +1410,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (blockingKind) {
 			throw new ToolError(
 				`Cannot read '${localReadPath}': it is ${blockingKind}. Use the bash tool with a timeout if you need its contents.`,
+			);
+		}
+		if (!isDirectory && isHeldSqliteStore(absolutePath)) {
+			throw new ToolError(
+				`Cannot read '${localReadPath}': it is a SQLite store this process holds open, and reading its bytes would release the process's locks on it. Query the database with \`sqlite3\` through the bash tool.`,
 			);
 		}
 

@@ -11,6 +11,7 @@ use std::{
 	},
 };
 
+use brush_core::heldfiles::HeldFiles;
 use grep_matcher::Matcher;
 use grep_pcre2::{RegexMatcher as PcreMatcher, RegexMatcherBuilder as PcreMatcherBuilder};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
@@ -655,19 +656,23 @@ fn read_owned_prefix(
 	Ok(())
 }
 
-fn read_file_bytes(path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
-	read_file_bytes_with_size(path, None, buffer)
+fn read_file_bytes(held: &HeldFiles, path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
+	read_file_bytes_with_size(held, path, None, buffer)
 }
 
 fn read_file_bytes_with_size(
+	held: &HeldFiles,
 	path: &Path,
 	size_hint: Option<u64>,
 	buffer: &mut Vec<u8>,
 ) -> io::Result<ReadFile> {
-	let file = match File::open(path) {
+	let file = match held.open_read(path) {
 		Ok(file) => file,
 		Err(err)
-			if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) =>
+			if matches!(
+				err.kind(),
+				io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied | io::ErrorKind::ResourceBusy
+			) =>
 		{
 			return Ok(ReadFile::Skipped);
 		},
@@ -1096,20 +1101,36 @@ enum FileOutcome {
 	Skipped,
 }
 
-#[derive(Default)]
 struct PassState {
 	results:           Mutex<Vec<FileSearchResult>>,
 	deferred:          Mutex<Vec<pi_walker::FileCandidate>>,
 	files_searched:    AtomicU64,
 	skipped_oversized: AtomicU64,
 	emitted:           AtomicU64,
+	held:              HeldFiles,
 }
 
-fn read_file_prefix(path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
-	let file = match File::open(path) {
+impl PassState {
+	fn new() -> Self {
+		Self {
+			results:           Mutex::default(),
+			deferred:          Mutex::default(),
+			files_searched:    AtomicU64::default(),
+			skipped_oversized: AtomicU64::default(),
+			emitted:           AtomicU64::default(),
+			held:              HeldFiles::snapshot(),
+		}
+	}
+}
+
+fn read_file_prefix(held: &HeldFiles, path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
+	let file = match held.open_read(path) {
 		Ok(file) => file,
 		Err(err)
-			if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) =>
+			if matches!(
+				err.kind(),
+				io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied | io::ErrorKind::ResourceBusy
+			) =>
 		{
 			return Ok(ReadFile::Skipped);
 		},
@@ -1135,12 +1156,13 @@ fn search_one_file<M: Matcher + Sync>(
 	file: &pi_walker::FileCandidate,
 	file_params: SearchParams,
 	policy: ReadPolicy,
+	held: &HeldFiles,
 ) -> FileOutcome {
 	let read = match policy {
 		ReadPolicy::Full => {
-			read_file_bytes_with_size(&file.path, file_size_hint(file.size), &mut worker.buffer)
+			read_file_bytes_with_size(held, &file.path, file_size_hint(file.size), &mut worker.buffer)
 		},
-		ReadPolicy::Prefix => read_file_prefix(&file.path, &mut worker.buffer),
+		ReadPolicy::Prefix => read_file_prefix(held, &file.path, &mut worker.buffer),
 	};
 	match read {
 		Ok(ReadFile::Read) => {},
@@ -1180,7 +1202,7 @@ fn handle_file<M: Matcher + Sync>(
 	{
 		return Ok(());
 	}
-	match search_one_file(worker, matcher, file, file_params, policy) {
+	match search_one_file(worker, matcher, file, file_params, policy, &state.held) {
 		FileOutcome::Defer => {
 			state.deferred.lock().push(file.clone());
 		},
@@ -1276,7 +1298,7 @@ fn run_sequential_grep<M: Matcher + Sync>(
 		pi_walker::WalkOrder::Path,
 	)?;
 	let file_params = per_file_params(params);
-	let state = PassState::default();
+	let state = PassState::new();
 	let mut worker = SearchWorker::new(file_params);
 	let mut oversized_hinted = Vec::new();
 
@@ -1378,7 +1400,7 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 		pi_walker::WalkOrder::Unordered,
 	)?;
 	let file_params = per_file_params(params);
-	let state = PassState::default();
+	let state = PassState::new();
 
 	request
 		.for_each_file_candidate_parallel(
@@ -1469,7 +1491,7 @@ fn run_windowed_streaming_grep<M: Matcher + Sync>(
 		pi_walker::WalkOrder::Path,
 	)?;
 	let file_params = per_file_params(params);
-	let state = PassState::default();
+	let state = PassState::new();
 	let mut window = Vec::with_capacity(GREP_STREAM_WINDOW);
 	let mut results = Vec::new();
 
@@ -1853,10 +1875,11 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 			});
 		}
 
+		let held = HeldFiles::snapshot();
 		let mut buffer = Vec::new();
-		let (bytes, prefix_only) = match read_file_bytes(&search_path, &mut buffer) {
+		let (bytes, prefix_only) = match read_file_bytes(&held, &search_path, &mut buffer) {
 			Ok(ReadFile::Read) => (&buffer, false),
-			Ok(ReadFile::Oversized) => match read_file_prefix(&search_path, &mut buffer) {
+			Ok(ReadFile::Oversized) => match read_file_prefix(&held, &search_path, &mut buffer) {
 				Ok(ReadFile::Read) => (&buffer, true),
 				_ => {
 					return Ok(GrepResult {

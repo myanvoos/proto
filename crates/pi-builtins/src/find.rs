@@ -3626,7 +3626,7 @@ pub mod matchers {
 
 
 	fn get_or_create_file(path: &str, host: &Host) -> Result<File, Box<dyn Error>> {
-		let file = File::create(host.resolve(path))?;
+		let file = brush_core::heldfiles::open(host.resolve(path), std::fs::OpenOptions::new().write(true).create(true).truncate(true))?;
 		host.note_write(path);
 		Ok(file)
 	}
@@ -4142,7 +4142,7 @@ pub mod matchers {
 		if mode == "-" {
 			host.stdin.read_to_end(&mut buffer)?;
 		} else {
-			let mut file = File::open(host.resolve(mode))
+			let mut file = brush_core::heldfiles::open_read(host.resolve(mode))
 				.map_err(|e| format!("cannot open '{}' for reading: {}", mode, e))?;
 			file.read_to_end(&mut buffer)?;
 		}

@@ -15,6 +15,7 @@ mod extendedtests;
 pub mod extensions;
 pub mod fsobserve;
 pub mod functions;
+pub mod heldfiles;
 pub mod history;
 pub mod int_utils;
 pub mod interfaces;

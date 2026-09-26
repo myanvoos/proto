@@ -5,10 +5,12 @@
 ### Added
 
 - Shell results expose bounded per-command records with exit/signal status, separate output captures, and correlated structured device results
+- `isHeldSqliteStore()` reports whether a path is a SQLite store the current process holds open
 
 ### Fixed
 
 - Persistent interpreter cells preserve shell environment, program stdin, and stdout/stderr routing
+- In-process shell builtins, redirections, and `grep()` refuse SQLite databases and `-shm` indexes the host process holds open instead of silently releasing its SQLite locks
 
 ## [18.6.1] - 2026-09-24
 

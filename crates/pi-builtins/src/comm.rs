@@ -5,7 +5,7 @@
 use std::{
 	cmp::Ordering,
 	ffi::{OsStr, OsString},
-	fs::{self, File},
+	fs,
 	io::{self, BufRead, BufReader, Read, Write},
 	path::Path,
 };
@@ -97,8 +97,8 @@ fn files_identical(path1: &Path, path2: &Path) -> io::Result<bool> {
 	if !m1.is_file() || !m2.is_file() || m1.len() != m2.len() {
 		return Ok(false);
 	}
-	let mut a = BufReader::new(File::open(path1)?);
-	let mut b = BufReader::new(File::open(path2)?);
+	let mut a = BufReader::new(brush_core::heldfiles::open_read(path1)?);
+	let mut b = BufReader::new(brush_core::heldfiles::open_read(path2)?);
 	let mut ba = [0; 8192];
 	let mut bb = [0; 8192];
 	loop {
@@ -238,7 +238,7 @@ fn open_file<'a>(
 	if fs::metadata(resolved)?.is_dir() {
 		return Err(io::Error::other("is a directory"));
 	}
-	Ok(LineReader::new(Box::new(BufReader::new(File::open(resolved)?)), ending))
+	Ok(LineReader::new(Box::new(BufReader::new(brush_core::heldfiles::open_read(resolved)?)), ending))
 }
 
 

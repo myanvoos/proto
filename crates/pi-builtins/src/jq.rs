@@ -644,10 +644,10 @@ mod read {
 
 	pub fn load_file(path: impl AsRef<Path>) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
 		let path = path.as_ref();
-		let file = std::fs::File::open(path)?;
+		let file = brush_core::heldfiles::open_read(path)?;
 		match unsafe { memmap2::Mmap::map(&file) } {
 			Ok(mmap) => Ok(Box::new(mmap)),
-			Err(_) => Ok(Box::new(std::fs::read(path)?)),
+			Err(_) => Ok(Box::new(brush_core::heldfiles::read(path)?)),
 		}
 	}
 
@@ -1041,7 +1041,7 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 		return Ok(match test_files.last() {
 			Some(file) => {
 				run_tests(
-					io::BufReader::new(std::fs::File::open(file)?),
+					io::BufReader::new(brush_core::heldfiles::open_read(file)?),
 					&mut host.stdout,
 					&mut host.stderr,
 				)
@@ -1061,7 +1061,7 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 		Some(filter) => {
 			let (path, code) = match filter {
 				cli::Filter::FromFile(path) => {
-					(path.into(), std::fs::read_to_string(path)?)
+					(path.into(), brush_core::heldfiles::read_to_string(path)?)
 				},
 				cli::Filter::Inline(filter) => ("<inline>".into(), filter.clone()),
 			};
@@ -1133,7 +1133,7 @@ fn binds(cli: &Cli, host: &Host) -> Result<Vec<(String, Val)>, Error> {
 		Ok((k.to_owned(), lexer.exactly_one(Val::parse).map_err(err)?))
 	});
 	let rawfile = cli.rawfile.iter().map(|(k, path)| {
-		let s = std::fs::read_to_string(path)
+		let s = brush_core::heldfiles::read_to_string(path)
 			.map_err(|e| Error::Io(Some(format!("{path:?}")), e));
 		Ok((k.to_owned(), Val::Str(s?.into())))
 	});

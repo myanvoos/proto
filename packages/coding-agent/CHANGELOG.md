@@ -28,6 +28,7 @@
 - Closing interpreter owners stops owned subprocess descendants and releases stale bridge, runtime, and callback state
 - Daemon pipes keep draining when log storage stalls, with visible omission notices and consistent follow cursors
 - Missing temporary history copies can no longer cause saved transcripts to be overwritten with incomplete previews
+- Reading, grepping, or redirecting proto's own SQLite stores (for example `rg` over `~/.proto`) no longer corrupts `agent.db` and wipes saved logins; the bash tool, `grep`, and `read` now refuse those files while proto holds them open
 - Output artifacts preserve unwritten tails when consumers release results during finalization
 - Kernel cells receive shell environment overrides, preserve stderr redirection, and keep state when inline code consumes piped input
 - Overlapping Bash calls in the same lane queue without silently losing shell state

@@ -11,7 +11,6 @@
 
 use std::{
 	ffi::{OsStr, OsString},
-	fs::File,
 	io::{self, Read, Write},
 	path::{Path, PathBuf},
 };
@@ -991,7 +990,7 @@ fn read_pattern_file(host: &mut Host, path: &OsStr) -> Result<Vec<String>, Strin
 			.map_err(|err| format!("rg: -: {err}"))?;
 	} else {
 		let resolved = host.resolve(path);
-		File::open(&resolved)
+		brush_core::heldfiles::open_read(&resolved)
 			.and_then(|mut file| file.read_to_string(&mut text))
 			.map_err(|err| format!("rg: {}: {err}", path.to_string_lossy()))?;
 	}
@@ -1333,11 +1332,11 @@ fn process_file<M: Matcher, W: Write>(
 				.map_err(|error| io::Error::other(error.to_string()))
 				.and_then(|reader| process_reader(matcher, searcher, reader, display, opts, stats, out))
 		} else {
-			File::open(path)
+			host.held_files().open_read(path)
 				.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
 		}
 	} else {
-		File::open(path)
+		host.held_files().open_read(path)
 			.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
 	};
 	match result {

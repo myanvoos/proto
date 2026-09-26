@@ -430,7 +430,7 @@ use std::{
 	borrow::Cow,
 	cmp::max,
 	ffi::{OsStr, OsString},
-	fs::{self, File},
+	fs,
 	io::{self, Write},
 	iter,
 	path::{Path, PathBuf},
@@ -1158,7 +1158,7 @@ fn files0_iter_file(
 	path: &Path,
 	host: &Host,
 ) -> Result<impl Iterator<Item = InputIterItem>, WcError> {
-	let file = File::open(host.resolve(path)).map_err(|source| WcError::Io {
+	let file = brush_core::heldfiles::open_read(host.resolve(path)).map_err(|source| WcError::Io {
 		context: format!(
 			"cannot open {} for reading",
 			quoting_style::locale_aware_escape_name(

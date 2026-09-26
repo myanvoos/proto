@@ -163,7 +163,7 @@ fn open(name: &OsString, path: &std::path::Path, append: bool) -> io::Result<Nam
 	} else {
 		options.truncate(true);
 	}
-	let file = options.write(true).create(true).open(path)?;
+	let file = brush_core::heldfiles::open(path, options.write(true).create(true))?;
 	Ok(NamedWriter { inner: Writer::File(file), name: name.clone() })
 }
 

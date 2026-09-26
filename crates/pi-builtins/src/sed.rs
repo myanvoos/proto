@@ -2807,7 +2807,7 @@ impl OutputBuffer {
 			self.flush_mmap(WriteRange::Complete)?;
 		}
 
-		let Ok(file) = File::open(path) else {
+		let Ok(file) = brush_core::heldfiles::open_read(path) else {
 
 			return Ok(());
 		};
@@ -3626,11 +3626,7 @@ impl NamedWriter {
 
 	pub fn new(path: PathBuf, location: ScriptLocation) -> SedResult<Rc<RefCell<Self>>> {
 
-		let file = OpenOptions::new()
-			.create(true)
-			.write(true)
-			.truncate(true)
-			.open(&path)
+		let file = brush_core::heldfiles::open(&path, OpenOptions::new().create(true).write(true).truncate(true))
 			.map_err(|e| {
 				runtime_error::<()>(&location, format!("creating file {}: {}", path.quote(), e))
 					.unwrap_err()
@@ -4538,7 +4534,6 @@ pub mod script_line_provider {
 
 use std::{
 	fmt,
-	fs::File,
 	io::{BufRead, BufReader},
 	path::PathBuf,
 };
@@ -4664,7 +4659,7 @@ impl ScriptLineProvider {
 					} else {
 						self.cwd.join(normalized)
 					};
-					let file = File::open(resolved)
+					let file = brush_core::heldfiles::open_read(resolved)
 						.map_err_context(|| format!("error opening script file {}", p.quote()))?;
 					self.state = State::Active {
 						index:       next_index,

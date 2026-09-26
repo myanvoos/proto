@@ -45,6 +45,7 @@ serde_json.workspace = true
 pdf-inspector.workspace = true
 phf.workspace = true
 flume.workspace = true
+brush-core.workspace = true
 pi-ast.workspace = true
 pi-builtins.workspace = true
 pi-iso.workspace = true

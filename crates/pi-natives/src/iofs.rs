@@ -58,6 +58,14 @@ pub(crate) fn map_walker_error<E: std::fmt::Display>(err: pi_walker::WalkError<E
 	walker_error_to_napi(err)
 }
 
+/// Whether `path` is a SQLite database or `-shm` index this process holds open.
+/// Reading its bytes in-process and closing the handle would release the
+/// process's SQLite locks.
+#[napi(catch_unwind)]
+pub fn is_held_sqlite_store(path: String) -> bool {
+	brush_core::heldfiles::is_held_sqlite_store(path)
+}
+
 #[napi(catch_unwind)]
 pub fn invalidate_fs_scan_cache(path: Option<JsString>) -> Result<()> {
 	match path {

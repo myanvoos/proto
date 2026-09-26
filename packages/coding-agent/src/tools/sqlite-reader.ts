@@ -1,4 +1,5 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { isHeldSqliteStore } from "@oh-my-pi/pi-natives";
 import { formatBytes, replaceTabs, truncateToWidth } from "./render-utils";
 import { ToolError } from "./tool-errors";
 
@@ -19,6 +20,9 @@ function isSqliteCantOpen(error: unknown): boolean {
 }
 
 async function requiresWalSidecarInitialization(filePath: string): Promise<boolean> {
+	// A store this process holds open already has its sidecars, and reading its header through a
+	// separate handle would release the process's SQLite locks.
+	if (isHeldSqliteStore(filePath)) return false;
 	const formatVersions = await Bun.file(filePath).slice(18, 20).bytes();
 	if (formatVersions[0] !== 2 && formatVersions[1] !== 2) return false;
 	const [walExists, shmExists] = await Promise.all([
@@ -503,6 +507,7 @@ export function parseSqlitePathCandidates(filePath: string): SqlitePathCandidate
 }
 
 export async function isSqliteFile(absolutePath: string): Promise<boolean> {
+	if (isHeldSqliteStore(absolutePath)) return true;
 	try {
 		return looksLikeSqlite(await Bun.file(absolutePath).slice(0, SQLITE_MAGIC.byteLength).bytes());
 	} catch {

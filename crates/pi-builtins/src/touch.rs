@@ -8,7 +8,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::{
 	borrow::Cow,
 	ffi::{OsStr, OsString},
-	fs::{self, File},
+	fs,
 	io::{Error, ErrorKind},
 	path::{Path, PathBuf},
 	time::SystemTime,
@@ -507,7 +507,7 @@ fn touch_file(
 			return Ok(());
 		}
 
-		if let Err(error) = File::create(&resolved) {
+		if let Err(error) = brush_core::heldfiles::open(&resolved, OpenOptions::new().write(true).create(true).truncate(true)) {
 
 
 			let is_directory = path
@@ -614,11 +614,7 @@ fn update_times(
 
 
 fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> std::io::Result<()> {
-	let file = OpenOptions::new()
-		.write(true)
-
-		.custom_flags(O_NONBLOCK)
-		.open(path)?;
+	let file = brush_core::heldfiles::open(path, OpenOptions::new().write(true).custom_flags(O_NONBLOCK))?;
 
 	let timestamps = Timestamps {
 		last_access:       rustix::fs::Timespec {

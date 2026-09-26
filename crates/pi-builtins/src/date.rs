@@ -364,7 +364,6 @@ use std::{
 	borrow::Cow,
 	collections::HashMap,
 	ffi::OsString,
-	fs::File,
 	io::{BufRead, BufReader, Read, Write},
 	path::{Path, PathBuf},
 	sync::LazyLock,
@@ -1212,7 +1211,7 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 					format!("expected file, got directory {}", path.quote()),
 				));
 			}
-			let file = File::open(&resolved).map_err(|error| {
+			let file = brush_core::heldfiles::open_read(&resolved).map_err(|error| {
 				DateError::new(1, format!("{}: {error}", path.as_os_str().maybe_quote()))
 			})?;
 			parse_dates_from_reader(

@@ -230,6 +230,7 @@ export const hasMatch = lazyNativeExport("hasMatch");
 export const highlightCode = lazyNativeExport("highlightCode");
 export const htmlToMarkdown = lazyNativeExport("htmlToMarkdown");
 export const invalidateFsScanCache = lazyNativeExport("invalidateFsScanCache");
+export const isHeldSqliteStore = lazyNativeExport("isHeldSqliteStore");
 export const isoBackend = lazyNativeExport("isoBackend");
 export const isoDiff = lazyNativeExport("isoDiff");
 export const isoIsUnavailableError = lazyNativeExport("isoIsUnavailableError");

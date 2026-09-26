@@ -566,6 +566,13 @@ export interface HtmlToMarkdownOptions {
 
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
+/**
+ * Whether `path` is a SQLite database or `-shm` index this process holds open.
+ * Reading its bytes in-process and closing the handle would release the
+ * process's SQLite locks.
+ */
+export declare function isHeldSqliteStore(path: string): boolean
+
 export declare function isoBackend(): IsoBackendKind
 
 export declare enum IsoBackendKind {

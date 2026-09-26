@@ -238,7 +238,7 @@ fn file_truncate(
 	}
 
 	let create = !no_create;
-	let file = match OpenOptions::new().write(true).create(create).open(&resolved) {
+	let file = match brush_core::heldfiles::open(&resolved, OpenOptions::new().write(true).create(create)) {
 		Ok(file) => {
 			host.note_write(&resolved);
 			file

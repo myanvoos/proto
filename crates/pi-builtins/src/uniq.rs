@@ -4,7 +4,6 @@
 
 use std::{
 	ffi::OsString,
-	fs::File,
 	io::{BufRead, BufReader, BufWriter, Write},
 	num::IntErrorKind,
 	path::PathBuf,
@@ -827,7 +826,7 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 	let input_file = input_path
 		.as_ref()
 		.map(|path| {
-			File::open(path).map_err(|error| {
+			brush_core::heldfiles::open_read(path).map_err(|error| {
 				io_error(
 					&format!(
 						"Could not open {}",
@@ -841,7 +840,7 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 	let output_file = output_path
 		.as_ref()
 		.map(|path| {
-			File::create(path).map_err(|error| {
+			brush_core::heldfiles::open(path, std::fs::OpenOptions::new().write(true).create(true).truncate(true)).map_err(|error| {
 				io_error(
 					&format!(
 						"Could not open {}",

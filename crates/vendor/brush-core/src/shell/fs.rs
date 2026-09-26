@@ -210,7 +210,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			return open_file.try_clone();
 		}
 
-		Ok(options.open(path_to_open)?.into())
+		Ok(crate::heldfiles::open(path_to_open, options)?.into())
 	}
 
 

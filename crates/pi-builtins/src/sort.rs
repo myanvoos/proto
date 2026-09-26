@@ -2431,10 +2431,7 @@ impl Output {
 			let path = Path::new(name.as_ref());
 
 
-			let file = OpenOptions::new()
-				.write(true)
-				.create(true)
-				.open(path)
+			let file = brush_core::heldfiles::open(path, OpenOptions::new().write(true).create(true))
 				.map_err(|error| SortError::OpenFailed { path: path.to_owned(), error })?;
 			Some((name.as_ref().to_owned(), file))
 		} else {
@@ -5304,7 +5301,7 @@ fn print_sorted<'a, T: Iterator<Item = &'a Line<'a>>>(
 
 fn open(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
 	let path = Path::new(path.as_ref());
-	match File::open(path) {
+	match brush_core::heldfiles::open_read(path) {
 		Ok(file) => Ok(Box::new(file)),
 		Err(error) => Err(SortError::ReadFailed { path: path.to_owned(), error }),
 	}
@@ -5313,7 +5310,7 @@ fn open(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
 fn open_with_open_failed_error(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
 
 	let path = Path::new(path.as_ref());
-	match File::open(path) {
+	match brush_core::heldfiles::open_read(path) {
 		Ok(file) => Ok(Box::new(file)),
 		Err(error) => Err(SortError::OpenFailed { path: path.to_owned(), error }),
 	}

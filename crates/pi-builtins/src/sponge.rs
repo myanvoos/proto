@@ -122,7 +122,7 @@ fn soak_stdin(host: &mut Host) -> Result<Vec<u8>, SoakError> {
 }
 
 fn append_to(target: &Path, buffer: &[u8]) -> io::Result<()> {
-	let mut file = OpenOptions::new().append(true).create(true).open(target)?;
+	let mut file = brush_core::heldfiles::open(target, OpenOptions::new().append(true).create(true))?;
 	file.write_all(buffer)?;
 	file.flush()
 }

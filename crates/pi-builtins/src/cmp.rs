@@ -362,7 +362,7 @@ fn open_input<'a>(name: &OsStr, path: &Path, no_follow: bool) -> Result<Input<'a
 		return Err(format!("{}: Is a directory", display_name(name)));
 	}
 	let regular_len = metadata.is_file().then_some(metadata.len());
-	let file = File::open(path).map_err(|err| input_error(name, &err))?;
+	let file = brush_core::heldfiles::open_read(path).map_err(|err| input_error(name, &err))?;
 	Ok(Input { reader: BufReader::with_capacity(BUFFER_SIZE, InputReader::File(file)), regular_len })
 }
 

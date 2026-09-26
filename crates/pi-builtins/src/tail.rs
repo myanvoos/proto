@@ -861,7 +861,7 @@ mod follow {
 
 		use std::{
 			collections::{HashMap, hash_map::Keys},
-			fs::{File, Metadata},
+			fs::Metadata,
 			io::{BufRead, BufReader, Write},
 			path::{Path, PathBuf},
 		};
@@ -973,7 +973,7 @@ mod follow {
 				self
 					.get_mut(path)
 					.reader
-					.replace(Box::new(BufReader::new(File::open(path)?)));
+					.replace(Box::new(BufReader::new(brush_core::heldfiles::open_read(path)?)));
 				Ok(())
 			}
 
@@ -1050,7 +1050,7 @@ mod follow {
 				let reader = if old_reader.is_some() {
 
 					old_reader
-				} else if let Ok(file) = File::open(path) {
+				} else if let Ok(file) = brush_core::heldfiles::open_read(path) {
 
 					Some(Box::new(BufReader::new(file)) as Box<dyn BufRead>)
 				} else {
@@ -2577,7 +2577,7 @@ fn tail_file(
 		#[cfg(unix)]
 		let open_result = open_file(&fs_path, settings.pid != 0);
 		#[cfg(not(unix))]
-		let open_result = File::open(&fs_path);
+		let open_result = brush_core::heldfiles::open_read(&fs_path);
 
 		match open_result {
 			Ok(mut file) => {
@@ -2645,10 +2645,7 @@ fn open_file(path: &Path, use_nonblock_for_fifo: bool) -> io::Result<File> {
 		.is_some_and(|m| m.file_type().is_fifo());
 
 	if is_fifo && use_nonblock_for_fifo {
-		let file = OpenOptions::new()
-			.read(true)
-			.custom_flags(libc::O_NONBLOCK)
-			.open(path)?;
+		let file = brush_core::heldfiles::open(path, OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK))?;
 
 
 		let flags = fcntl_getfl(file.as_fd())?;
@@ -2657,7 +2654,7 @@ fn open_file(path: &Path, use_nonblock_for_fifo: bool) -> io::Result<File> {
 
 		Ok(file)
 	} else {
-		File::open(path)
+		brush_core::heldfiles::open_read(path)
 	}
 }
 
