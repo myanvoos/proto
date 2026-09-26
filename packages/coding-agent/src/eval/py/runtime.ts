@@ -115,6 +115,26 @@ function detectExplicitVenv(pythonPath: string): { venvPath: string; binDir: str
 	return undefined;
 }
 
+/**
+ * What makes two interpreter paths the same Python environment: the binary
+ * they run and the virtual environment they start in. A venv's `bin/python`
+ * symlinks to its base interpreter, so the resolved binary alone would
+ * conflate the venv with its base.
+ */
+export function pythonEnvironmentIdentity(pythonPath: string): string {
+	const venv = detectExplicitVenv(pythonPath);
+	const binary = realpathOr(pythonPath);
+	return venv ? `${realpathOr(venv.venvPath)}\0${binary}` : binary;
+}
+
+function realpathOr(filePath: string): string {
+	try {
+		return fs.realpathSync.native(filePath);
+	} catch {
+		return filePath;
+	}
+}
+
 export function resolveExplicitPythonRuntime(
 	interpreter: string,
 	cwd: string,

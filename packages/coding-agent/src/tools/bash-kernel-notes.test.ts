@@ -134,6 +134,55 @@ test("js and python kernels word overwrite and delete notes identically", async 
 	}
 }, 180000);
 
+test("notes count every changed line when the status-event diff is capped", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-capped-"));
+	try {
+		const tool = new BashTool(stubSession(dir));
+		// 1000 rows exceed the diff row cap; 150 rewritten 250-char lines exceed only the char cap.
+		const wide = (tag: string) =>
+			`${Array.from({ length: 150 }, (_, i) => `${tag}${i}`.padEnd(250, "x")).join("\n")}\n`;
+		await Bun.write(path.join(dir, "js-wide.txt"), wide("old"));
+		await Bun.write(path.join(dir, "py-wide.txt"), wide("old"));
+
+		const jsOutput = await runCommand(
+			tool,
+			"js-capped",
+			heredoc(
+				"node",
+				[
+					"const fs = require('node:fs');",
+					"fs.writeFileSync('js-rows.txt', Array.from({ length: 1000 }, (_, i) => 'row ' + i + '\\n').join(''));",
+					"fs.readFileSync('js-wide.txt', 'utf8');",
+					"fs.writeFileSync('js-wide.txt', Array.from({ length: 150 }, (_, i) => ('new' + i).padEnd(250, 'x') + '\\n').join(''));",
+				].join("\n"),
+			),
+		);
+		const pyOutput = await runCommand(
+			tool,
+			"py-capped",
+			heredoc(
+				"python",
+				[
+					"from pathlib import Path",
+					"Path('py-rows.txt').write_text(''.join(f'row {i}\\n' for i in range(1000)))",
+					"Path('py-wide.txt').read_text()",
+					"Path('py-wide.txt').write_text(''.join(f'new{i}'.ljust(250, 'x') + '\\n' for i in range(150)))",
+				].join("\n"),
+			),
+		);
+		expect(noteLines(jsOutput).sort()).toEqual([
+			"<kernel> note: created js-rows.txt (1000 lines)",
+			"<kernel> note: wrote js-wide.txt (+150 −150)",
+		]);
+		expect(noteLines(pyOutput).sort()).toEqual([
+			"<kernel> note: created py-rows.txt (1000 lines)",
+			"<kernel> note: wrote py-wide.txt (+150 −150)",
+		]);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 180000);
+
 test("a js cell whose net effect is nothing emits no note at all", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-revert-"));
 	try {

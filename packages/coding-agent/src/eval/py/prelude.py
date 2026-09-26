@@ -360,12 +360,12 @@ if "__proto_prelude_loaded__" not in globals():
         run_id = getter() if callable(getter) else None
         return f"{run_id}:{ap}"
 
-    def _fs_set_report_meta(ap: str, op: str, rows: list[str] | None = None) -> None:
-        """Keep compact status metadata for the flush-time kernel note."""
-        meta = {"op": op, "diff": rows is not None and bool(rows)}
-        if rows:
-            meta["added"] = sum(row.startswith("+") for row in rows)
-            meta["removed"] = sum(row.startswith("-") for row in rows)
+    def _fs_set_report_meta(ap: str, op: str, counts: tuple[int, int] | None = None) -> None:
+        """Keep compact status metadata for the flush-time kernel note. `counts` is the
+        (added, removed) line tally of the whole diff, not of its capped status rows."""
+        meta = {"op": op, "diff": counts is not None and any(counts)}
+        if meta["diff"]:
+            meta["added"], meta["removed"] = counts
         _FS_STATE["reported_meta"][ap] = meta
 
     def _fs_report_path(ap: str, rec: dict) -> str:
@@ -396,13 +396,13 @@ if "__proto_prelude_loaded__" not in globals():
             elif len(reported) >= _FS_MAX_EVENTS:
                 return "capped"
             data = {"op": "delete", "path": ap, "id": _fs_event_id(ap)}
-            rows = None
+            counts = None
             if rec["before"] is not None:
-                rows, _ = _capped_numbered_diff(rec["before"], "")
+                rows, _, counts = _capped_numbered_diff(rec["before"], "")
                 if rows:
                     data["diff"] = "\n".join(rows)
             reported[ap] = None
-            _fs_set_report_meta(ap, "delete", rows)
+            _fs_set_report_meta(ap, "delete", counts)
             _emit_status(data.pop("op"), **data)
             return "emitted"
         if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
@@ -659,15 +659,18 @@ if "__proto_prelude_loaded__" not in globals():
     def _omitted_rows_marker(count: int) -> str:
         return f"… {count} diff {'line' if count == 1 else 'lines'} omitted"
 
-    def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool]:
+    def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool, tuple[int, int]]:
         """Diff rows capped for status events by characters and by rows; an
         over-budget diff keeps its head and its tail, because a whole-file
         rewrite emits every removal before the first addition and a head-only
-        cut would render that rewrite as a pure deletion."""
+        cut would render that rewrite as a pure deletion. Also returns the
+        (added, removed) line counts of the whole diff, which capped rows no
+        longer show."""
         rows = _numbered_diff(before, after)
+        counts = (sum(row.startswith("+") for row in rows), sum(row.startswith("-") for row in rows))
         total = sum(len(row) + 1 for row in rows)
         if total <= _MAX_DIFF_CHARS and len(rows) <= _MAX_DIFF_ROWS:
-            return rows, False
+            return rows, False, counts
         chars_per_side = (_MAX_DIFF_CHARS - len(_omitted_rows_marker(len(rows))) - 1) // 2
         rows_per_side = (_MAX_DIFF_ROWS - 1) // 2
         head: list[str] = []
@@ -685,7 +688,7 @@ if "__proto_prelude_loaded__" not in globals():
             tail_chars += len(rows[last]) + 1
             last -= 1
         tail.reverse()
-        return head + [_omitted_rows_marker(last - first + 1)] + tail, True
+        return head + [_omitted_rows_marker(last - first + 1)] + tail, True, counts
 
     def _emit_file_status(op: str, path, *, before: str | None, after: str) -> None:
         """Emit a file-op status event, attaching a capped hunk diff when content changed."""
@@ -697,14 +700,14 @@ if "__proto_prelude_loaded__" not in globals():
             "id": _fs_event_id(path_str),
         }
         _FS_STATE["reported"][path_str] = data["sha"]
-        rows = None
+        counts = None
         if before is not None and before != after:
-            rows, truncated = _capped_numbered_diff(before, after)
+            rows, truncated, counts = _capped_numbered_diff(before, after)
             if rows:
                 data["diff"] = "\n".join(rows)
                 if truncated:
                     data["diffTruncated"] = True
-        _fs_set_report_meta(path_str, op, rows)
+        _fs_set_report_meta(path_str, op, counts)
         _emit_status(op, **data)
 
     def env(key: str | None = None, value: str | None = None):
@@ -1115,6 +1118,16 @@ if "__proto_prelude_loaded__" not in globals():
 
     def _bridge_call(name: str, args: dict, completion_invocation_id=None):
         """Invoke the active scoped host transport and return its value."""
+        try:
+            return _bridge_invoke(name, args, completion_invocation_id)
+        finally:
+            # Host tools (edits, bash, subagents) can rewrite project source;
+            # the kernel re-checks loaded project modules at the next import.
+            sources_changed = globals().get("__proto_sources_may_have_changed")
+            if callable(sources_changed):
+                sources_changed()
+
+    def _bridge_invoke(name: str, args: dict, completion_invocation_id):
         transport = globals().get("__proto_bridge_call__")
         if callable(transport):
             task_signal().check()
@@ -1469,6 +1482,16 @@ if "__proto_prelude_loaded__" not in globals():
         return results if settled else _AwaitableList(row["value"] for row in results)
 
     def parallel(thunks, **options):
+        """Run zero-argument callables concurrently; results keep input order.
+
+        Options (shared with pipeline): concurrency=N caps workers; settled=True
+        returns {status, index, stage, value|error} rows instead of raising
+        BatchError (whose .results keeps every row); timeout=seconds per item;
+        cancel=threading.Event; on_result=callback(row). Deadlines are
+        cooperative: long loops call task_signal().check(). checkpoint=dir +
+        key=str save each successful JSON result, resume=True reuses them, and
+        keys=[unique str per item] is required with checkpoint. No retries.
+        """
         thunks = list(thunks)
         if any(not callable(thunk) for thunk in thunks):
             raise TypeError("parallel expects zero-argument callables")
@@ -1477,6 +1500,12 @@ if "__proto_prelude_loaded__" not in globals():
         return _pool_map(thunks, lambda thunk, index, state: thunk(), **options)
 
     def pipeline(items, *stages, streaming=False, **options):
+        """Map items through stages (value -> value), keeping input order.
+
+        Each stage waits for every item before the next starts; streaming=True
+        advances each item independently. Options match parallel(); with
+        checkpoint, keys default to a hash of each item.
+        """
         if any(not callable(stage) for stage in stages):
             raise TypeError("pipeline stages must be callables")
         items = list(items)
@@ -1530,6 +1559,11 @@ if "__proto_prelude_loaded__" not in globals():
         return _AwaitableList(outcomes if settled else (row["value"] for row in outcomes))
 
     def executions(id=None, *, limit=20):
+        """Recent bash calls of this session: command, lane, timing, status, and
+        per-stage captured streams. Captures are bounded: check `evicted`,
+        `omittedAfter`, and each stream's `truncated`/`complete`. Stream
+        artifacts hold captured previews; result artifacts hold the full output.
+        """
         return _bridge_call("__runtime__", {"op": "executions", "limit": limit, **({"id": id} if id is not None else {})})
 
     def _tool_execution_id(execution):
@@ -1544,7 +1578,12 @@ if "__proto_prelude_loaded__" not in globals():
                                            "args": {} if args is None else args})
 
     def tool_events(execution, *, cursor=0, limit=128, wait_ms=30000):
-        """Yield retained and live events, including gaps and final completion."""
+        """Yield {executionId, sequence, kind, data, terminal} events from `cursor`.
+
+        A `gap` event marks evicted history; bounded payloads carry `omitted`.
+        `result` holds the tool output; the terminal event ends iteration.
+        Breaking out does not stop the tool: cancel_tool(), then dispose_tool().
+        """
         identifier = _tool_execution_id(execution)
         while True:
             batch = _bridge_call("__runtime__", {"op": "events_read", "id": identifier,
@@ -1559,10 +1598,12 @@ if "__proto_prelude_loaded__" not in globals():
                 return
 
     def cancel_tool(execution, *, wait_ms=30000):
+        """Cancel a start_tool() execution, waiting up to wait_ms for it to settle."""
         return _bridge_call("__runtime__", {"op": "events_cancel", "id": _tool_execution_id(execution),
                                            "waitMs": wait_ms})
 
     def dispose_tool(execution):
+        """Release a settled start_tool() execution and its retained events."""
         return _bridge_call("__runtime__", {"op": "events_dispose", "id": _tool_execution_id(execution)})
 
     def _delegation_id(delegation):
@@ -1576,7 +1617,13 @@ if "__proto_prelude_loaded__" not in globals():
         return identifier
 
     def delegate(grants, *, ttl_ms=None, max_concurrent=None, max_requests=None, expose=False):
-        """Create a bounded, explicitly scoped lease for external clients."""
+        """Create a bounded, explicitly scoped lease for external clients.
+
+        grants = [{"tool": name, "operations": [exact op values]}]; omit
+        operations to grant every op. Not a sandbox. Launch the returned clients
+        with launch_delegated(); expose=True only for manual launches. Never
+        print capability files or tokens.
+        """
         args = {"op": "delegation_create", "grants": grants, "expose": expose}
         for key, value in (("ttlMs", ttl_ms), ("maxConcurrent", max_concurrent), ("maxRequests", max_requests)):
             if value is not None:
@@ -1590,6 +1637,7 @@ if "__proto_prelude_loaded__" not in globals():
         return _bridge_call("__runtime__", {"op": "delegation_revoke", "id": _delegation_id(delegation)})
 
     def launch_delegated(delegation, *, name, application, args=None, cwd=None, env=None):
+        """Start a supervised process that receives only this lease's capability."""
         request = {"op": "delegation_launch", "id": _delegation_id(delegation),
                    "name": name, "application": application}
         for key, value in (("args", args), ("cwd", cwd), ("env", env)):
@@ -1600,7 +1648,12 @@ if "__proto_prelude_loaded__" not in globals():
     _ARTIFACT_VALUE_MISSING = object()
 
     def publish_artifact(value=_ARTIFACT_VALUE_MISSING, *, kind="json", path=None, mime_type=None, encoding=None):
-        """Publish immutable data; path addresses the host, not a remote target."""
+        """Publish immutable data as an `artifact://N` ref.
+
+        kind: "json" (default), "text", or "binary" (required for bytes).
+        `path` publishes a host file (not a remote kernel target's file).
+        Handles survive kernel resets; session disposal revokes them.
+        """
         request = {"op": "artifact_publish", "kind": kind}
         if value is not _ARTIFACT_VALUE_MISSING:
             if isinstance(value, (bytes, bytearray, memoryview)):
@@ -1615,6 +1668,12 @@ if "__proto_prelude_loaded__" not in globals():
         return _bridge_call("__runtime__", request)
 
     def read_artifact(ref, *, offset=0, length=None, encoding=None):
+        """Page an artifact this kernel published: {data, offset, bytes, eof, encoding, ref}.
+
+        utf8 pages end on a character boundary; continue at offset + bytes.
+        Non-UTF-8 content needs encoding="base64"; encoding="json" parses it.
+        Bash/tool output artifacts: tool.read({"path": "artifact://N"}).
+        """
         request = {"op": "artifact_read", "ref": ref, "offset": offset}
         if length is not None:
             request["length"] = length
@@ -1623,6 +1682,7 @@ if "__proto_prelude_loaded__" not in globals():
         return _bridge_call("__runtime__", request)
 
     def resolve_artifact(ref):
+        """Validate an artifact ref this session published and return it."""
         return _bridge_call("__runtime__", {"op": "artifact_resolve", "ref": ref})
 
     def edit_batch(changes, *, apply=False):

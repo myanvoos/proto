@@ -1,5 +1,3 @@
-import * as fs from "node:fs";
-
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { ExecutionMetadata } from "../../session/execution-metadata";
 import type { ToolSession } from "../../tools";
@@ -39,7 +37,7 @@ import {
 	type KernelShutdownResult,
 	PythonKernel,
 } from "./kernel";
-import { resolveExplicitPythonRuntime } from "./runtime";
+import { pythonEnvironmentIdentity, resolveExplicitPythonRuntime } from "./runtime";
 import { ensurePyToolBridge } from "./tool-bridge";
 
 export type PythonKernelMode = "session" | "per-call";
@@ -86,6 +84,8 @@ export interface PythonExecutorOptions {
 	localRoots?: Record<string, string>;
 
 	toolSession?: ToolSession;
+	/** Host-side cwd for tool-bridge calls; omit for remote targets. */
+	bridgeCwd?: string;
 
 	emitStatus?: (event: JsStatusEvent) => void;
 
@@ -154,12 +154,7 @@ interface PythonSession extends KernelSession<PythonKernel> {
 
 function normalizeExplicitInterpreter(cwd: string, interpreter: string | undefined): string {
 	if (interpreter === undefined) return "";
-	const resolved = resolveExplicitPythonRuntime(interpreter, cwd, {}).pythonPath;
-	try {
-		return fs.realpathSync.native(resolved);
-	} catch {
-		return resolved;
-	}
+	return pythonEnvironmentIdentity(resolveExplicitPythonRuntime(interpreter, cwd, {}).pythonPath);
 }
 
 class PythonExecutionCancelledError extends Error {

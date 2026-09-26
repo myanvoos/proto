@@ -75,7 +75,7 @@ test("owner disposal waits for descendants from a previous cell even after the J
 				ownerId: owner,
 				cwd: process.cwd(),
 				session,
-				code: "process.exit(17)",
+				code: 'process.kill(process.pid, "SIGKILL")',
 				filename: "crash.js",
 				runState: {},
 			}),

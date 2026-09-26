@@ -53,6 +53,8 @@ Recognized cell forms are:
 - `python fleet://<name>.py` for a script staged under the internal `fleet://` URL.
 - Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without a bridge use an external interpreter.
 
+A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `xd kernel start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
+
 For example:
 
 ```bash

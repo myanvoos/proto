@@ -774,6 +774,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
 			INSPECT_MEDIA_ENABLED: this.#inspectMediaActive,
 			IMAGES_INLINE: modelSupportsImageInput(this.session.getActiveModel?.()),
+			SUMMARIZE: this.session.settings.get("read.summarize.enabled"),
+			SUMMARY_MIN_LINES: this.session.settings.get("read.summarize.minTotalLines"),
+			SUMMARY_BODY_LINES: this.session.settings.get("read.summarize.minBodyLines"),
+			SUMMARY_COMMENT_LINES: this.session.settings.get("read.summarize.minCommentLines"),
 		});
 	}
 

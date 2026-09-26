@@ -26,6 +26,7 @@ import {
 	listPythonKernelSessions,
 	startPythonKernelSession,
 } from "./py/executor";
+import { pythonEnvironmentIdentity } from "./py/runtime";
 import { defaultEvalSessionId } from "./session-id";
 
 export interface KernelControlArgs {
@@ -93,14 +94,20 @@ export function parseKernelControlArgs(value: unknown): KernelControlArgs {
 			throw new Error("ttlMs is only valid for start, reset, or keepalive");
 	}
 	if (args.op === "keepalive" && args.ttlMs === undefined) throw new Error("keepalive requires ttlMs");
-	for (const key of ["interpreter", "cwd", "target"]) {
+	for (const key of ["cwd", "target"]) {
 		if (args[key] !== undefined && args.op !== "start" && args.op !== "reset")
 			throw new Error(`${key} is only valid for start or reset`);
 	}
+	if (args.interpreter !== undefined && args.op === "list")
+		throw new Error("interpreter selects one kernel of a lane; list reports every interpreter");
 	return {
 		...args,
 		...(args.target !== undefined ? { target: parseKernelTarget(args.target) } : {}),
 	} as unknown as KernelControlArgs;
+}
+
+function interpreterIdentity(language: KernelLanguage, interpreter: string): string {
+	return language === "python" ? pythonEnvironmentIdentity(interpreter) : interpreter;
 }
 
 export function kernelLaneSessionId(session: ToolSession, lane = "main"): string {
@@ -229,11 +236,23 @@ export async function handleKernelControl(
 	const lane = args.lane ?? "main";
 	const sessionId = languageSessionId(session, language, lane);
 	const ownerId = session.getEvalKernelOwnerId?.() ?? sessionId;
-	const candidates = scopedSessions(session, language).filter(info => info.sessionId === sessionId);
+	let candidates = scopedSessions(session, language).filter(info => info.sessionId === sessionId);
+	// A lane holds one Python kernel per interpreter; `interpreter` picks one of them.
+	if (args.interpreter !== undefined && candidates.length > 1) {
+		const wanted = interpreterIdentity(language, path.resolve(session.cwd, args.interpreter));
+		const matching = candidates.filter(
+			info => info.interpreter !== undefined && interpreterIdentity(language, info.interpreter) === wanted,
+		);
+		if (matching.length > 0) candidates = matching;
+	}
 	const current = candidates.find(info => info.sessionKey.endsWith(`\0fork\0${ownerId}`)) ?? candidates[0];
 	if (!current && args.op !== "start") throw new Error(`Unknown ${language} kernel lane: ${lane}`);
-	if (candidates.length > 1 && !current?.sessionKey.endsWith(`\0fork\0${ownerId}`))
-		throw new Error(`Ambiguous ${language} kernel lane: ${lane}; use a distinct lane per environment`);
+	if (candidates.length > 1 && !current?.sessionKey.endsWith(`\0fork\0${ownerId}`)) {
+		const interpreters = candidates.map(info => info.interpreter ?? "default").join(", ");
+		throw new Error(
+			`Ambiguous ${language} kernel lane: ${lane} has kernels for ${interpreters}; pass interpreter to choose one`,
+		);
+	}
 	if (args.op === "inspect") return { op: args.op, kernel: snapshot(session, language, current!) };
 	if (args.op === "keepalive") {
 		const updated =

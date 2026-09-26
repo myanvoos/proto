@@ -480,16 +480,22 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly loadMode = "essential";
 	get description(): string {
 		const evalBackends = resolveEvalBackends(this.session);
-		const isToolActive = (name: string, fallback: boolean): boolean => this.session.isToolActive?.(name) ?? fallback;
 		const bridge = kernelBridgeAvailable(this.session);
+		const xdev = this.session.xdev;
+		// Fleet is reachable as a top-level tool or, once demoted, as an `xd fleet` device.
+		const launchEnabled = this.session.settings.get("launch.enabled");
+		const fleetTool = this.session.isToolActive?.("fleet") ?? launchEnabled;
+		const fleetDevice = xdev?.mountedNames.has("fleet") === true;
 		const spawnPolicy = resolveSpawnPolicy(this.session.getSessionSpawns?.() ?? "*");
 		return prompt.render(bashDescription, {
 			asyncEnabled: this.#asyncEnabled,
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
-			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
+			hasLaunch: launchEnabled && (fleetTool || fleetDevice),
+			launchViaXd: !fleetTool && fleetDevice,
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
 			hasKernelBridge: bridge,
+			hasXdev: xdev !== undefined,
 			py: bridge && evalBackends.python,
 			js: bridge && evalBackends.js,
 			spawns: spawnPolicy.enabled,

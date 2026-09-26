@@ -33,10 +33,21 @@
 - Interactive redraws keep a bounded recent transcript; older saved messages remain available through paged history and full exports
 - Fleets, interpreter requests, background results, rich displays, and editor attachments now enforce byte-aware admission limits with explicit overflow feedback
 - Monitors appear as background jobs, and `fleet wait` returns their next event without stopping the watch
+- Bash tool docs are reorganized around what agents decide: per-lane ordering and state, `async` cells starting without kernel state, routing inside pipelines vs `bash -c`/`xargs`, and an edit example whose anchor assertion runs before the replacement streams; rarely used kernel helpers are condensed, with Python details available through `help(fn)`
+- `xd` usage (flags, arrays, stdin payloads, exit codes) is documented once in the bash tool docs instead of also in the system prompt
+- The system prompt says when to use `orchestrate_spawn` workers versus kernel `agent()`/`parallel()` fan-out
+- Python commands run as kernel cells on the interpreter the shell would run: `.venv/bin/python` and `python3.13` are kernel cells too, bare `python` follows an activated venv or exported `PATH`, and a lane keeps one Python kernel per interpreter
+- `xd kernel` `interpreter` picks one of a lane's Python kernels for `inspect`, `close`, and `keepalive`
 
 ### Fixed
 
+- Python kernel cells import project modules as a fresh `python` would: edits made between or within cells (by the kernel, subprocesses, or host tools) are picked up, a `cd` re-resolves module names, and the cell's own `PYTHONPATH` applies; a note names earlier bindings that still hold old code, and rebuilt C extensions are reported instead of silently kept
+- Python kernel `sys.path` no longer accumulates every earlier cell's working directory
+- Python cell tracebacks no longer include kernel runner frames
+- A Python older than 3.10 runs a `python` command as a plain process with a one-time note instead of failing the cell
+- A virtual environment's `python` and its base interpreter no longer share one kernel
 - `xd monitor start …` and other single-literal flags parse in flag and positional form
+- Bash tool docs tell agents to run services under `xd fleet --op start` when fleet is mounted as an `xd` device, and drop the fleet rule when process supervision is disabled
 - `xd` boolean flags followed by `true`/`false` take it as their value instead of shifting positionals (`--pty false` was silently ignored)
 - MCP device docs show only the JSON argument forms the devices accept
 - `xd fleet list`, `xd fleet jobs`, and other leading op words select the fleet operation
@@ -93,6 +104,20 @@
 - Resuming a session from the session view or picker shows that session's subagent activity instead of the previous session's
 - A session parked during its first reply is listed in the session view right away instead of only after that reply finishes
 - Session entries appended while the session file is being rewritten are no longer left unsaved until the next write
+- Python kernel cells that call `sys.exit()` end with its exit status like `python3` (`sys.exit(0)` succeeds without a traceback; a message argument goes to stderr with status 1) and keep kernel state
+- `process.exit(code)` in `node`/`bun` kernel cells ends the cell with that exit status instead of killing the kernel and its state
+- Relative paths in kernel tool calls (`tool.read(...)`, `publish_artifact(path=...)`) resolve against the cell's working directory instead of the session directory
+- `<kernel> note:` lines count lines and changes from the whole write instead of its capped preview, which reported large files as 398 lines or fewer
+- Bash truncation footers name the lines actually shown before and after a middle elision instead of assuming an even head/tail split
+- Streamed output that fills the head window partway through a multibyte character keeps its original order
+- `agent://<id>` keeps a worker's last answer when `orchestrate_kill` cancels a turn that had produced nothing yet
+- After an interrupt pauses the active goal, the next user prompt tells the model the goal is paused and how to resume it
+- `fleet restart` waits for the retained readiness conditions and reports readiness like `start`, instead of returning while the process is still starting
+- MCP tool calls that hit the client-side request timeout name the server and how to raise the limit (per-server `timeout` or `PROTO_MCP_TIMEOUT_MS`)
+- Subagent MCP calls honor the configured request timeout (including `0` and `PROTO_MCP_TIMEOUT_MS`) instead of a fixed 60-second cap
+- Bash tool docs name common utilities as shell builtins (a backgrounded builtin's `$!` is not an OS PID) and document that `python3` routes to the kernel like `python`
+- Kernel tool docs state that idle kernels are released after 15 minutes
+- Read tool docs state the structural-summary size threshold and that `:N` reads from line N; read and kernel `symbols()` docs say only block comments fold (runs of `#` or `//` line comments stay)
 
 ## [18.6.1] - 2026-09-24
 

@@ -871,17 +871,21 @@ class DaemonBroker {
 			this.#startingNames.delete(spec.name);
 		}
 		await this.#launch(record);
-		let readyTimedOut = false;
-		if (spec.ready && !terminalState(record.snapshot.state)) {
-			const ready = await this.#waitUntil(
-				record,
-				() => record.snapshot.readyAt !== undefined || terminalState(record.snapshot.state),
-				spec.ready.timeoutMs,
-			);
-			readyTimedOut = !ready;
-		}
+		const readyTimedOut = await this.#readinessTimedOut(record);
 		await record.persistQueue;
 		return { op: "start", daemon: record.snapshot, readyTimedOut };
+	}
+
+	/** Waits up to the spec's readiness timeout; true when the process neither became ready nor exited in time. */
+	async #readinessTimedOut(record: ManagedDaemon): Promise<boolean> {
+		const ready = record.spec.ready;
+		if (!ready || terminalState(record.snapshot.state)) return false;
+		const settled = await this.#waitUntil(
+			record,
+			() => record.snapshot.readyAt !== undefined || terminalState(record.snapshot.state),
+			ready.timeoutMs,
+		);
+		return !settled;
 	}
 
 	#openLog(record: ManagedDaemon): Promise<DaemonLog> {
@@ -1414,8 +1418,9 @@ class DaemonBroker {
 		}
 		record.stopRequested = false;
 		await this.#launch(record);
+		const readyTimedOut = await this.#readinessTimedOut(record);
 		await record.persistQueue;
-		return { op: "restart", daemon: record.snapshot };
+		return { op: "restart", daemon: record.snapshot, readyTimedOut, ready: record.spec.ready };
 	}
 
 	async #waitUntil(

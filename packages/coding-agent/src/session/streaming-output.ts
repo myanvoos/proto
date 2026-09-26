@@ -51,6 +51,12 @@ export interface OutputSummary {
 	elidedBytes?: number;
 
 	elidedLines?: number;
+	/**
+	 * Source lines at least partly visible before/after the middle elision marker, counted from
+	 * the first and the last line; set only when the middle was elided.
+	 */
+	headLines?: number;
+	tailLines?: number;
 
 	columnDroppedBytes?: number;
 
@@ -1084,6 +1090,9 @@ export class OutputSink {
 				tailChunk = capped.substring(headSlice.text.length);
 				tailBytes = cappedBytes - headSlice.bytes;
 			}
+			// Output has passed the head; close it so it stays a prefix of the stream even when
+			// the room left was too small for the next character.
+			this.#headRetentionDisabled = true;
 		}
 
 		this.#pushTail(tailChunk, tailBytes);
@@ -1399,8 +1408,6 @@ export class OutputSink {
 		const tailBuf = this.#buffer.materialize();
 		const headBytes = this.#head.bytes;
 		const tailBytes = this.#buffer.bytes;
-		const headLines = this.#headLines + (headBytes > 0 && !this.#head.endsWith("\n") ? 1 : 0);
-		const tailLines = countLines(tailBuf);
 
 		this.#finishActionableDiagnostics();
 		const effectiveTotalBytes = Math.max(0, this.#totalBytes - this.#columnDroppedBytes);
@@ -1410,14 +1417,23 @@ export class OutputSink {
 		let outputLines: number;
 		let elidedBytes: number | undefined;
 		let elidedLines: number | undefined;
+		let headLines: number | undefined;
+		let tailLines: number | undefined;
 
 		if (headBytes > 0 && effectiveTotalBytes > headBytes + tailBytes) {
+			// Count the lines each window shows. A head ending inside a line shows part of it; a
+			// tail opening on a newline kept only the terminator of a line whose text was elided,
+			// and that newline ends the marker line instead.
+			const headEndsInsideLine = !this.#head.endsWith("\n");
+			const tailOpensOnNewline = tailBuf.startsWith("\n");
+			headLines = this.#headLines + (headEndsInsideLine ? 1 : 0);
+			tailLines = countLines(tailBuf) - (tailOpensOnNewline ? 1 : 0);
 			elidedBytes = Math.max(0, effectiveTotalBytes - headBytes - tailBytes);
 			elidedLines = Math.max(0, totalLines - headLines - tailLines);
 			const marker = formatMiddleElisionMarker(elidedLines, elidedBytes);
 			const markerBytes = Buffer.byteLength(marker, "utf-8");
-			const headSep = this.#head.endsWith("\n") ? "" : "\n";
-			const tailSep = tailBuf.startsWith("\n") ? "" : "\n";
+			const headSep = headEndsInsideLine ? "\n" : "";
+			const tailSep = tailOpensOnNewline ? "" : "\n";
 			body = `${headBuf}${headSep}${marker}${tailSep}${tailBuf}`;
 			outputBytes =
 				headBytes +
@@ -1434,7 +1450,7 @@ export class OutputSink {
 		} else {
 			body = tailBuf;
 			outputBytes = tailBytes;
-			outputLines = tailLines;
+			outputLines = countLines(tailBuf);
 		}
 
 		const actionable = this.#actionableDiagnostics.filter(line => !body.includes(line));
@@ -1454,6 +1470,8 @@ export class OutputSink {
 			outputBytes,
 			elidedBytes,
 			elidedLines,
+			headLines,
+			tailLines,
 			columnDroppedBytes: this.#columnDroppedBytes > 0 ? this.#columnDroppedBytes : undefined,
 			columnTruncatedLines: this.#columnTruncatedLines > 0 ? this.#columnTruncatedLines : undefined,
 			columnMax: this.#columnTruncatedLines > 0 ? this.#maxColumns : undefined,

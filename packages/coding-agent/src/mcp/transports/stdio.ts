@@ -11,7 +11,7 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { RequestIdAllocator } from "../request-id";
-import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
+import { isMCPTimeoutEnabled, MCPRequestTimeoutError, resolveMCPTimeoutMs } from "../timeout";
 
 interface StdioSpawnCommand {
 	cmd: string[];
@@ -470,7 +470,7 @@ export class StdioTransport implements MCPTransport {
 
 		if (isMCPTimeoutEnabled(timeout)) {
 			timer = setTimeout(() => {
-				const timeoutError = new Error(`Request timeout after ${timeout}ms`);
+				const timeoutError = new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
 				cleanup();
 				reject(timeoutError);
 				// A request that outlives its timeout means the server stopped

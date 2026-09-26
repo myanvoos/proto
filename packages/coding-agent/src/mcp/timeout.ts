@@ -17,6 +17,14 @@ export function resolveMCPTimeoutMs(configTimeout?: number): number {
 	return configTimeout ?? DEFAULT_MCP_TIMEOUT_MS;
 }
 
+/** A request abandoned because its client-side MCP timeout elapsed, as opposed to a caller abort or server error. */
+export class MCPRequestTimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "MCPRequestTimeoutError";
+	}
+}
+
 export function isMCPTimeoutEnabled(timeoutMs: number): boolean {
 	return timeoutMs > 0;
 }

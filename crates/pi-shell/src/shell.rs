@@ -96,6 +96,10 @@ struct XdShellExtensions;
 
 impl ShellExtensions for XdShellExtensions {
 	type ErrorFormatter = XdErrorFormatter;
+
+	fn builtin_alias(command_name: &str) -> Option<&'static str> {
+		pi_builtins::kernel_builtin_alias(command_name)
+	}
 }
 
 const XD_STDIN_LIMIT: usize = 1024 * 1024;

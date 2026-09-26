@@ -1,7 +1,7 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeSchemaForMCP, schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema";
-import { INTENT_FIELD, logger, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, logger, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import type {
 	CustomTool,
@@ -11,12 +11,14 @@ import type {
 } from "../extensibility/custom-tools/types";
 import { resolveLocalUrlToFile } from "../internal-urls/local-protocol";
 import type { Theme } from "../modes/theme/theme";
+import mcpRequestTimeoutHint from "../prompts/tools/mcp-request-timeout.md" with { type: "text" };
 import type { OutputMeta } from "../tools/output-meta";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { callTool } from "./client";
 import { sanitizeMCPDiagnostic } from "./errors";
 import { renderMCPCall, renderMCPResult } from "./render";
+import { MCPRequestTimeoutError } from "./timeout";
 import type {
 	MCPAuthChallenge,
 	MCPContent,
@@ -230,8 +232,11 @@ function buildErrorResult(
 	providerName?: string,
 ): CustomToolResult<MCPToolDetails> {
 	const message = sanitizeMCPDiagnostic(error instanceof Error ? error.message : String(error));
+	const lines = [`MCP error: ${message}`];
+	if (error instanceof MCPRequestTimeoutError)
+		lines.push(prompt.render(mcpRequestTimeoutHint, { server: serverName }));
 	return {
-		content: [{ type: "text", text: `MCP error: ${message}` }],
+		content: [{ type: "text", text: lines.join("\n") }],
 		details: { serverName, mcpToolName, isError: true, provider, providerName },
 		isError: true,
 	};

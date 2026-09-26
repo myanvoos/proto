@@ -92,7 +92,7 @@ var probe_cell = kernelState().executionCount;`);
 		}
 		await run("delete globalThis.probe_value; delete globalThis.probe_getter;");
 		expect((await run('Object.hasOwn(defs(), "probe_value")')).value).toBe("false");
-		await expect(run("process.exit(17)")).rejects.toThrow("completion is uncertain");
+		await expect(run('process.kill(process.pid, "SIGKILL")')).rejects.toThrow("completion is uncertain");
 		const restarted = JSON.parse(String((await run("JSON.stringify(kernelState())")).value)) as State;
 		expect(restarted.generation).not.toBe(state.generation);
 		expect(restarted.variables.some(v => v.name === "probe_large")).toBe(false);

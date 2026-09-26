@@ -28,6 +28,8 @@ interface ActiveRun {
 	pendingTools: Map<string, PendingTool>;
 
 	floatingRejections: unknown[];
+	/** Rejected with the cell's CellExit when its code calls `process.exit()`. */
+	exit: PromiseWithResolvers<never>;
 }
 
 type RunMessage = Extract<WorkerInbound, { type: "run" }>;
@@ -41,9 +43,36 @@ interface WorkerCoreOptions {
 	chdir?: (cwd: string) => void;
 
 	interceptUnhandledRejections?: RejectionInterceptor;
+
+	/**
+	 * Hosts whose uncaught exceptions postmortem handles (the Bun CLI host) pass its non-fatal marker for cell-exit
+	 * throws; other hosts get the core's own listener, which ignores those throws and keeps the rest fatal.
+	 */
+	markNonFatal?: <T extends object>(error: T) => T;
 }
 
 const RECENT_CELL_FILES_MAX = 256;
+
+/**
+ * `process.exit()` in cell code throws this to unwind the caller: the cell ends at the call with `status`, while the
+ * kernel and its state live on. Work the cell left pending (timers, listeners, unawaited promises) keeps running like
+ * any finished cell's; an exit from such work after its cell ended only unwinds that callback.
+ */
+class CellExit extends Error {
+	constructor(readonly status: number) {
+		super(`process.exit(${status})`);
+		this.name = "CellExit";
+	}
+}
+
+/** The status `process.exit(code)` gives a process (default `process.exitCode`, else 0): an integer, low byte kept. */
+function exitStatus(code: unknown): number {
+	const value = code ?? process.exitCode ?? 0;
+	const status = typeof value === "string" && value !== "" ? Number(value) : value;
+	if (typeof status !== "number" || !Number.isSafeInteger(status))
+		throw new TypeError(`process.exit() code must be an integer, got ${String(value)}`);
+	return status & 0xff;
+}
 
 function errorPayload(error: unknown): RunErrorPayload {
 	if (error instanceof Error) {
@@ -71,7 +100,8 @@ function foldFloatingRejections(active: ActiveRun, result: RunResult, hooks: Run
 	if (rejections.length === 0) return result;
 	let folded = result;
 	let reported = rejections;
-	if (result.ok) {
+	// An explicit process.exit() status stands; the rejections are only reported.
+	if (result.ok && result.exitCode === undefined) {
 		const error = errorPayload(rejections[0]);
 		error.message = `Unhandled rejection (missing await?): ${error.message}`;
 		folded = { type: "result", runId: active.runId, ok: false, error };
@@ -96,6 +126,7 @@ export class WorkerCore {
 	#recentCellFiles = new Set<string>();
 	#unsubscribe: () => void;
 	#uninstallRejectionGuard: () => void;
+	#uninstallExitGuard: () => void;
 	#options: WorkerCoreOptions;
 
 	constructor(transport: Transport, options: WorkerCoreOptions) {
@@ -103,6 +134,34 @@ export class WorkerCore {
 		this.#options = options;
 		this.#unsubscribe = transport.onMessage(msg => this.#handle(msg));
 		this.#uninstallRejectionGuard = this.#installRejectionGuard();
+		this.#uninstallExitGuard = this.#installExitGuard();
+	}
+
+	/** Routes `process.exit()` from cell code to CellExit; the host's own exits (no cell running them) still exit. */
+	#installExitGuard(): () => void {
+		const exit = process.exit;
+		const exitCell = ((code?: number | string | null): never => {
+			const runId = this.#runtime?.currentRunId();
+			if (runId === undefined) return exit.call(process, code);
+			const cellExit = new CellExit(exitStatus(code));
+			// Printed by a cell that catches it, the stack starts at the cell's own `process.exit()` call.
+			Error.captureStackTrace(cellExit, exitCell);
+			this.#options.markNonFatal?.(cellExit);
+			this.#runs.get(runId)?.exit.reject(cellExit);
+			throw cellExit;
+		}) as typeof process.exit;
+		process.exit = exitCell;
+		// Thrown from a timer or listener, the exit escapes as an uncaught exception after it already ended its cell.
+		const onUncaught = (error: unknown): void => {
+			if (error instanceof CellExit) return;
+			// A listener disables the runtime's default crash; rethrowing restores it for everything else.
+			throw error;
+		};
+		if (!this.#options.markNonFatal) process.on("uncaughtException", onUncaught);
+		return () => {
+			if (process.exit === exitCell) process.exit = exit;
+			process.off("uncaughtException", onUncaught);
+		};
 	}
 
 	#installRejectionGuard(): () => void {
@@ -123,6 +182,8 @@ export class WorkerCore {
 	}
 
 	#consumeRejection(reason: unknown): boolean {
+		// A process.exit() unwinding through a promise chain; the exit already ended its cell.
+		if (reason instanceof CellExit) return true;
 		const stack = reason instanceof Error && typeof reason.stack === "string" ? reason.stack : undefined;
 		if (stack) {
 			let owner: ActiveRun | undefined;
@@ -295,6 +356,7 @@ export class WorkerCore {
 			pendingTools: new Map(),
 			floatingRejections: [],
 			input: new WorkerInput(runId, this.#transport, snapshot.stdin === true),
+			exit: Promise.withResolvers<never>(),
 		};
 		this.#runs.set(runId, active);
 		const displayBudget = new PythonDisplayBudget();
@@ -337,11 +399,15 @@ export class WorkerCore {
 				cwd: snapshot.cwd,
 				shellEnv: snapshot.shellEnv,
 				stdin: active.input,
+				stop: active.exit.promise,
 			});
 			runtime.displayValue(value, hooks);
 			result = { type: "result", runId, ok: true };
 		} catch (error) {
-			result = { type: "result", runId, ok: false, error: errorPayload(error) };
+			result =
+				error instanceof CellExit
+					? { type: "result", runId, ok: true, exitCode: error.status }
+					: { type: "result", runId, ok: false, error: errorPayload(error) };
 		}
 		try {
 			await sleep(0);
@@ -425,6 +491,7 @@ export class WorkerCore {
 		this.#runtime = null;
 		if (sendAck) this.#transport.send({ type: "closed" });
 		this.#uninstallRejectionGuard();
+		this.#uninstallExitGuard();
 		this.#unsubscribe();
 		this.#transport.close();
 	}

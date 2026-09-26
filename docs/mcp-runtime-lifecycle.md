@@ -147,7 +147,7 @@ Server and tool name components are lowercased and sanitized to letters/undersco
 - Both attempt a reconnect + single retry for retriable connection failures.
 - A structured tool-result auth challenge can trigger the configured auth handler, reconnect, and one retry. Interactive mode wires this to the `/mcp` OAuth controller; without a handler the challenge remains an MCP error.
 
-Both return structured tool output and convert remaining transport/tool errors into `MCP error: ...` tool content (abort remains abort).
+Both return structured tool output and convert remaining transport/tool errors into `MCP error: ...` tool content (abort remains abort). When the client-side request timeout fired, that content also names the server and how to raise the limit: its `timeout` config field or the process-wide `PROTO_MCP_TIMEOUT_MS`.
 
 ## Refresh/reload paths (startup vs live reload)
 

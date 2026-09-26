@@ -7,25 +7,26 @@ import { Settings } from "../config/settings";
 import { AgentProtocolHandler } from "../internal-urls/agent-protocol";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import type { InternalUrl } from "../internal-urls/types";
+import { registerWakeTurnOwner } from "../orchestrator/wake-turns";
 import * as sdkModule from "../sdk";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
+import type { CustomMessage } from "../session/messages";
 import { emptySubagentUsageTotals } from "../session/session-entries";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { EventBus } from "../utils/event-bus";
 import { runSubprocess } from "./executor";
-import type { AgentDefinition } from "./types";
+import type { AgentDefinition, SingleResult } from "./types";
 
 const PROVIDER_FAILURE = "usage_limit_reached: monthly quota exhausted";
 
-function failingSession(failure: Partial<AssistantMessage>): AgentSession {
-	const listeners: Array<(event: AgentSessionEvent) => void> = [];
-	const message = {
+function assistantMessage(fields: Partial<AssistantMessage>): AssistantMessage {
+	return {
 		role: "assistant",
 		content: [],
 		api: "openai-responses",
 		provider: "fixture",
 		model: "fixture",
-		stopReason: "error",
+		stopReason: "stop",
 		timestamp: 1,
 		usage: {
 			input: 1,
@@ -35,8 +36,13 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 			totalTokens: 1,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		...failure,
+		...fields,
 	} as AssistantMessage;
+}
+
+function failingSession(failure: Partial<AssistantMessage>): AgentSession {
+	const listeners: Array<(event: AgentSessionEvent) => void> = [];
+	const message = assistantMessage({ stopReason: "error", ...failure });
 	return {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
@@ -151,6 +157,113 @@ test("an aborted turn keeps its cancellation reason instead of a failure notice"
 		expect(result.output).not.toContain("SYSTEM ERROR");
 		expect(await Bun.file(result.outputPath!).text()).not.toContain("SYSTEM ERROR");
 	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// Regression: a worker answered, a fleet message then woke it, and `orchestrate_kill` cancelled that turn before it
+// produced anything. The empty turn overwrote `<id>.md`, so `agent://<id>` came back empty.
+test("a killed turn that produced nothing keeps the previous answer at agent://<id>", async () => {
+	const id = "killed-wake-turn";
+	const listeners: Array<(event: AgentSessionEvent) => void> = [];
+	const emit = (event: AgentSessionEvent): void => {
+		for (const listener of [...listeners]) listener(event);
+	};
+	let wakeObserver:
+		| ((records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
+		| undefined;
+	const yieldCall = assistantMessage({
+		content: [{ type: "toolCall", id: "yield-1", name: "yield", arguments: { result: { data: "PONG-1" } } }],
+		stopReason: "toolUse",
+	});
+	let lastAssistant = yieldCall;
+	const session = {
+		state: { messages: [] },
+		agent: { state: { systemPrompt: ["test"] } },
+		model: undefined,
+		extensionRunner: undefined,
+		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
+		getActiveToolNames: () => ["yield"],
+		getEnabledToolNames: () => ["yield"],
+		setActiveToolsByName: async () => {},
+		subscribe: (listener: (event: AgentSessionEvent) => void) => {
+			listeners.push(listener);
+			return () => listeners.splice(listeners.indexOf(listener), 1);
+		},
+		prompt: async () => {
+			emit({ type: "message_end", message: yieldCall } as AgentSessionEvent);
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "yield-1",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: "PONG-1" },
+				},
+				isError: false,
+			} as AgentSessionEvent);
+			emit({ type: "agent_end", messages: [yieldCall] } as AgentSessionEvent);
+		},
+		waitForIdle: async () => {},
+		getLastAssistantMessage: () => lastAssistant,
+		abort: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
+		dispose: async () => {},
+		setWakeTurnObserver: (observer: typeof wakeObserver) => {
+			wakeObserver = observer;
+		},
+		getAsyncJobOwnerId: () => undefined,
+		subscribeRunState: () => () => {},
+	} as unknown as AgentSession;
+	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(sessionResult(session));
+	const wakeTurn = Promise.withResolvers<SingleResult>();
+	using _owner = {
+		[Symbol.dispose]: registerWakeTurnOwner(id, () => ({
+			progress: () => {},
+			settle: result => wakeTurn.resolve(result),
+			fail: error => wakeTurn.reject(error),
+		})),
+	};
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-killed-turn-"));
+	const unregister = registerArtifactsDir(dir);
+	try {
+		const answered = await runSubprocess({
+			cwd: "/tmp",
+			agent,
+			task: "Reply PONG-1",
+			index: 0,
+			id,
+			settings: Settings.isolated(),
+			modelRegistry: { refresh: async () => {} } as never,
+			eventBus: new EventBus(),
+			artifactsDir: dir,
+		});
+		expect(answered.output).toBe("PONG-1");
+
+		const finishWakeTurn = wakeObserver?.([
+			{ role: "custom", customType: "irc:incoming", content: "ping", display: true, timestamp: 2 },
+		] as CustomMessage[]);
+		expect(finishWakeTurn).toBeDefined();
+		const killed = assistantMessage({ stopReason: "aborted", errorMessage: "Request was aborted" });
+		lastAssistant = killed;
+		emit({ type: "message_end", message: killed } as AgentSessionEvent);
+		emit({ type: "agent_end", messages: [killed] } as AgentSessionEvent);
+		await finishWakeTurn?.();
+		const killedTurn = await wakeTurn.promise;
+
+		const url = Object.assign(new URL(`agent://${id}`), { rawHost: id }) satisfies InternalUrl;
+		const resource = await new AgentProtocolHandler().resolve(url);
+		expect(resource.content).toBe("PONG-1");
+		expect(resource.sourcePath).toBe(answered.outputPath);
+		// The killed turn reports itself truthfully: aborted, no output of its own, no counts for a write that
+		// did not happen, and a path to the output that was kept.
+		expect(killedTurn.aborted).toBe(true);
+		expect(killedTurn.output).toBe("");
+		expect(killedTurn.outputPath).toBe(answered.outputPath);
+		expect(killedTurn.outputMeta).toBeUndefined();
+	} finally {
+		unregister();
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });

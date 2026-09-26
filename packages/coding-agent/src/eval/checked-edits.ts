@@ -110,7 +110,13 @@ export async function checkedEdits(
 	edits.sort((a, b) => a.path.localeCompare(b.path));
 	const result: CheckedEditResult = {
 		state: "preview",
-		files: edits.map(edit => ({ path: edit.path, ...capEventDiff(edit.before ?? "", edit.after) })),
+		files: edits.map(edit => {
+			const capped = capEventDiff(edit.before ?? "", edit.after);
+			if (!capped) return { path: edit.path };
+			return capped.diffTruncated
+				? { path: edit.path, diff: capped.diff, diffTruncated: true }
+				: { path: edit.path, diff: capped.diff };
+		}),
 		applied: [],
 		conflicts: [],
 	};

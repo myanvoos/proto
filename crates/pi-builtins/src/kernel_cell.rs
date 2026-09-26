@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
 	host::Host,
-	kernel_route::{ArgvRoute, KernelArgv, route_argv},
+	kernel_route::{ArgvRoute, KernelArgv, kernel_builtin_alias, route_argv},
 };
 
 const ADDR_VAR: &str = "PI_KERNEL_BRIDGE_ADDR";
@@ -49,16 +49,27 @@ pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
 }
 
 pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> i32 {
+	let interpreter = resolve_interpreter(spec, host);
+	if interpreter.is_none() && kernel_builtin_alias(host.name()).is_some() {
+		// A named interpreter that does not exist: report it exactly as the shell would.
+		return spawn_external(spec, host, argv, None);
+	}
 	if let Some(observation) = &host.command_observation { observation.route(spec.lang); }
 	match plan(spec, argv, host) {
-		Plan::Cell { code, stdin_body, program_input } => match run_kernel_cell(spec, host, &code, program_input) {
-			CellOutcome::Exit(code) => code,
-			CellOutcome::FallThrough => spawn_external(spec, host, argv, stdin_body),
+		Plan::Cell { code, stdin_body, program_input } => {
+			match run_kernel_cell(spec, host, &code, program_input, interpreter.as_deref()) {
+				CellOutcome::Exit(code) => code,
+				CellOutcome::FallThrough(note) => {
+					if let Some(note) = note {
+						let _ = writeln!(host.stderr, "{note}");
+					}
+					spawn_external(spec, host, argv, stdin_body)
+				},
+			}
 		},
 		Plan::External { stdin_body } => spawn_external(spec, host, argv, stdin_body),
 	}
 }
-
 enum Plan {
 	Cell {
 		code:       String,
@@ -145,29 +156,38 @@ fn under_root(candidate: &Path, root: &Path) -> bool {
 
 enum CellOutcome {
 	Exit(i32),
-	FallThrough,
+	/// Run a real interpreter instead, after printing the kernel's note (if any).
+	FallThrough(Option<String>),
 }
 
-fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: bool) -> CellOutcome {
+fn run_kernel_cell(
+	spec: &KernelLang,
+	host: &mut Host,
+	code: &str,
+	stdin: bool,
+	interpreter: Option<&Path>,
+) -> CellOutcome {
 	let (Some(addr), Some(token)) = (host.var(ADDR_VAR), host.var(TOKEN_VAR)) else {
-		return CellOutcome::FallThrough;
+		return CellOutcome::FallThrough(None);
 	};
 	let Ok(mut stream) = TcpStream::connect(addr) else {
-		return CellOutcome::FallThrough;
+		return CellOutcome::FallThrough(None);
 	};
 	let _ = stream.set_nodelay(true);
 	let request = json!({
 		"token": token,
 		"lang": spec.lang,
 		"code": code,
-		"cwd": host.cwd().to_string_lossy(),
+		// The command word as typed and the executable the shell would run for it.
+		"program": host.name(),
+		"interpreter": interpreter.map(|path| path.to_string_lossy()),		"cwd": host.cwd().to_string_lossy(),
 		"shellEnv": host.env().map(|(key, value)| (key.to_string(), Value::String(value.to_string()))).collect::<serde_json::Map<String, Value>>(),
 		"stdin": stdin,
 	});
 	let mut payload = request.to_string();
 	payload.push('\n');
 	if stream.write_all(payload.as_bytes()).is_err() {
-		return CellOutcome::FallThrough;
+		return CellOutcome::FallThrough(None);
 	}
 	let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
 
@@ -227,7 +247,7 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: bool) 
 					host.error("kernel bridge connection closed unexpectedly", 1);
 					CellOutcome::Exit(1)
 				} else {
-					CellOutcome::FallThrough
+					CellOutcome::FallThrough(None)
 				};
 			},
 			Ok(read) => {
@@ -241,11 +261,11 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: bool) 
 						FrameOutcome::Continue => {},
 						FrameOutcome::Input => { streamed = true; input_requested = stdin; },
 						FrameOutcome::Exit(code) => return CellOutcome::Exit(code),
-						FrameOutcome::FallThrough => {
+						FrameOutcome::FallThrough(note) => {
 							return if streamed {
 								CellOutcome::Exit(1)
 							} else {
-								CellOutcome::FallThrough
+								CellOutcome::FallThrough(note)
 							};
 						},
 					}
@@ -263,7 +283,7 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: bool) 
 					host.error(format!("kernel bridge: {err}"), 1);
 					return CellOutcome::Exit(1);
 				}
-				return CellOutcome::FallThrough;
+				return CellOutcome::FallThrough(None);
 			},
 		}
 	}
@@ -273,7 +293,7 @@ enum FrameOutcome {
 	Continue,
 	Input,
 	Exit(i32),
-	FallThrough,
+	FallThrough(Option<String>),
 }
 
 fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutcome {
@@ -305,7 +325,7 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 			let code = frame.get("c").and_then(Value::as_i64).unwrap_or(0);
 			FrameOutcome::Exit(code as i32)
 		},
-		Some("f") => FrameOutcome::FallThrough,
+		Some("f") => FrameOutcome::FallThrough(frame.get("note").and_then(Value::as_str).map(str::to_string)),
 		_ => FrameOutcome::Continue,
 	}
 }
@@ -313,12 +333,20 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_body: Option<Vec<u8>>) -> i32 {
 	if let Some(observation) = &host.command_observation { observation.route("external"); }
 	let program = host.name().to_string();
-	let Some(resolved) = interpreter_candidates(spec, &program).find_map(|name| resolve_on_path(host, name)) else {
+	let Some(resolved) = resolve_interpreter(spec, host) else {
+		if program.contains('/') {
+			let (message, code) = if host.resolve(&program).exists() {
+				("Permission denied", 126)
+			} else {
+				("No such file or directory", 127)
+			};
+			host.error(message, code);
+			return code;
+		}
 		let tried = interpreter_candidates(spec, &program).collect::<Vec<_>>().join(" or ");
 		host.error(format!("command not found (no {tried} on PATH)"), 127);
 		return 127;
-	};
-	let mut command = ProcessCommand::new(resolved);
+	};	let mut command = ProcessCommand::new(resolved);
 	command
 		.args(argv)
 		.current_dir(host.cwd())
@@ -382,11 +410,23 @@ fn stdio_of(file: &OpenFile) -> Option<Stdio> {
 	Some(Stdio::from(owned))
 }
 
-/// The invoked name first, then the spec's alternates (`python` → `python3`).
-fn interpreter_candidates<'a>(spec: &'a KernelLang, program: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-	std::iter::once(program).chain(spec.interpreters.iter().copied().filter(move |name| *name != program))
+/// The executable the shell would run for this command word: a path as
+/// given, otherwise a PATH lookup of the name (then its alternates).
+fn resolve_interpreter(spec: &KernelLang, host: &Host) -> Option<PathBuf> {
+	let program = host.name();
+	if program.contains('/') {
+		let path = host.resolve(program);
+		return is_executable_file(&path).then_some(path);
+	}
+	interpreter_candidates(spec, program).find_map(|name| resolve_on_path(host, name))
 }
 
+/// The invoked name first, then the spec's alternates (`python` → `python3`).
+/// A version-specific name (`python3.13`) has none: nothing else stands in for it.
+fn interpreter_candidates<'a>(spec: &'a KernelLang, program: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+	let alternates = if spec.interpreters.contains(&program) { spec.interpreters } else { &[] };
+	std::iter::once(program).chain(alternates.iter().copied().filter(move |name| *name != program))
+}
 fn resolve_on_path(host: &Host, program: &str) -> Option<PathBuf> {
 	for dir in std::env::split_paths(host.var("PATH").unwrap_or_default()) {
 		let base = if dir.is_absolute() { dir } else { host.cwd().join(dir) };

@@ -5,6 +5,7 @@ import type { Socket, TCPSocketListener } from "bun";
 import { resolveFleetRoot } from "../internal-urls";
 import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
+import { readInterpreterSetting } from "./backend-helpers";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
 import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import { formatDisplayOutputForText } from "./display-text";
@@ -15,7 +16,9 @@ import { kernelLaneSessionId, resolveKernelLaneConfiguration } from "./kernel-co
 import { takeKernelCellTermination } from "./kernel-session-registry";
 import { KERNEL_INPUT_CHUNK_BYTES } from "./kernel-streams";
 import pythonBackend, { namespaceSessionId as pythonSessionId } from "./py";
+import { type PythonCellRoute, routePythonCell } from "./py/cell-interpreter";
 import { PythonDisplayBudget } from "./py/display";
+import { MIN_KERNEL_PYTHON } from "./py/kernel";
 import { findLiteralCompletionCalls } from "./speculation";
 import { statusEventKey, upsertStatusEvent } from "./status-events";
 import type { EvalDisplayOutput, EvalStatusEvent } from "./types";
@@ -87,6 +90,10 @@ interface CellRequest {
 	cwd?: string;
 	shellEnv?: Record<string, string>;
 	stdin?: boolean;
+	/** The command word as typed (`python`, `.venv/bin/python`). */
+	program?: string;
+	/** The executable the shell resolves `program` to. */
+	interpreter?: string;
 }
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -96,6 +103,29 @@ const OUTPUT_HIGH_WATER_BYTES = 256 * 1024;
 
 const runs = new Map<string, RunContext>();
 const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
+/** Interpreters a session was already told are too old for kernel cells. */
+const tooOldNoted = new WeakMap<ToolSession, Set<string>>();
+
+/** The fallthrough frame for a python command no kernel can run; says once per interpreter why. */
+function pythonFallThrough(
+	session: ToolSession,
+	route: PythonCellRoute,
+	request: CellRequest,
+): Record<string, unknown> {
+	if (route.kind !== "external" || !route.tooOld) return { t: "f" };
+	const label = request.interpreter ?? request.program ?? "python";
+	let noted = tooOldNoted.get(session);
+	if (!noted) {
+		noted = new Set();
+		tooOldNoted.set(session, noted);
+	}
+	if (noted.has(label)) return { t: "f" };
+	noted.add(label);
+	return {
+		t: "f",
+		note: `<kernel> note: ${label} is older than Python ${MIN_KERNEL_PYTHON}, which kernel cells need; it runs as a plain process (no kernel state or helpers)`,
+	};
+}
 let listener: TCPSocketListener<SocketState> | undefined;
 
 export function registerKernelShellRun(
@@ -466,13 +496,17 @@ function parseRequest(line: string): CellRequest | undefined {
 	)
 		return undefined;
 	if (parsed.stdin !== undefined && typeof parsed.stdin !== "boolean") return undefined;
+	const text = (value: unknown): string | undefined =>
+		typeof value === "string" && value.length > 0 ? value : undefined;
 	return {
 		token: parsed.token,
 		code: parsed.code,
 		lang: parsed.lang,
 		shellEnv: parsed.shellEnv as Record<string, string> | undefined,
 		stdin: parsed.stdin === true,
-		cwd: typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? parsed.cwd : undefined,
+		cwd: text(parsed.cwd),
+		program: text(parsed.program),
+		interpreter: text(parsed.interpreter),
 	};
 }
 
@@ -501,11 +535,30 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			request.lang === "py" ? "python" : request.lang,
 			context.completionContext?.lane,
 		);
+		const remoteTarget = configuration?.target !== undefined && configuration.target.kind !== "local";
+		// A python command runs on the interpreter the shell would pick for it (see routePythonCell).
+		const pythonRoute =
+			enabled && request.lang === "py" && !remoteTarget
+				? await untilAborted(abort.signal, () =>
+						routePythonCell(request, {
+							cwd: configuration?.cwd ?? session.cwd,
+							laneInterpreter: configuration?.interpreter,
+							settingInterpreter: readInterpreterSetting(session, "python.interpreter"),
+							signal: abort.signal,
+						}),
+					)
+				: undefined;
+		abort.signal.throwIfAborted();
+		if (pythonRoute?.kind === "external") {
+			finish(socket, pythonFallThrough(session, pythonRoute, request));
+			return;
+		}
+		// Set only when a python command picked a kernel apart from the lane's default one.
+		const routedInterpreter = pythonRoute?.kind === "kernel" ? pythonRoute.interpreter : undefined;
+		const interpreter = routedInterpreter ?? configuration?.interpreter;
 		// An explicitly selected interpreter/remote environment is validated at
 		// launch, not against this host's unrelated default Python executable.
-		const selectedRuntime = Boolean(
-			configuration?.interpreter || (configuration?.target && configuration.target.kind !== "local"),
-		);
+		const selectedRuntime = Boolean(interpreter || remoteTarget);
 		// `node` runs the Node the cell's own PATH names, as the shell would; with none there, the cell
 		// falls through and the builtin reports command-not-found exactly like the shell.
 		const available =
@@ -548,7 +601,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		const result = await backend.execute(request.code, {
 			cwd: configuration?.cwd ?? session.cwd,
 			runCwd: configuration?.cwd ?? request.cwd,
-			interpreter: configuration?.interpreter,
+			interpreter,
 			target: configuration?.target,
 			shellEnv: request.shellEnv,
 			stdin: request.stdin ? createInput(socket) : undefined,
@@ -578,7 +631,9 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 						known = new LRUCache({ max: 32 });
 						generations.set(session, known);
 					}
-					const key = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
+					// A lane holds one python kernel per interpreter; each has its own generation.
+					const lane = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
+					const key = routedInterpreter ? `${lane} (${routedInterpreter})` : lane;
 					const previous = known.get(key);
 					if (previous && previous !== event.generation)
 						sendOutput(

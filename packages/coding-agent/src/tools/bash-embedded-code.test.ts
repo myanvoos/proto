@@ -62,14 +62,17 @@ test("interpreter options the bridge passes through still route to a cell", () =
 	expect(detectBashKernelCell("bun - <<'JS'\nconsole.log(3)\nJS")).toEqual({ language: "js", code: "console.log(3)" });
 });
 
-test("real interpreters still expose their program as code", () => {
-	// Paths, versions and implementations are all interpreters; none dispatch to the kernel.
+test("a Python 3 named by path or version is a kernel cell; other interpreters only expose code", () => {
 	for (const command of [
 		".venv/bin/python <<'EOF'\nprint(1)\nEOF",
 		"/usr/bin/python3.12 -c 'print(1)'",
-		"pypy3 - <<EOF\nprint(1)\nEOF",
-		"python -i -c 'print(1)'",
+		"python3.13 -c 'print(1)'",
 	]) {
+		expect(findBashCodeCells(command).map(cell => [cell.language, cell.code, cell.kernel])).toEqual([
+			["python", "print(1)", true],
+		]);
+	}
+	for (const command of ["pypy3 - <<EOF\nprint(1)\nEOF", "python -i -c 'print(1)'", "python2.7 -c 'print(1)'"]) {
 		expect(findBashCodeCells(command).map(cell => [cell.language, cell.code, cell.kernel])).toEqual([
 			["python", "print(1)", false],
 		]);

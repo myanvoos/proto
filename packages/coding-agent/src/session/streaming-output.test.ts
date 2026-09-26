@@ -4,7 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { formatBytes, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
 import { formatOutputNotice, formatTruncationMetaNotice, outputMeta } from "../tools/output-meta";
-import { formatTailTruncationNotice, OutputSink, truncateMiddle, truncateTail } from "./streaming-output";
+import {
+	formatTailTruncationNotice,
+	OutputSink,
+	type OutputSinkOptions,
+	truncateMiddle,
+	truncateTail,
+} from "./streaming-output";
 
 interface ReferenceCappedBuffers {
 	output: string;
@@ -29,6 +35,7 @@ function referenceCurrentCappedBuffers(
 	let head = "";
 	let headBytes = 0;
 	let headNewlines = 0;
+	let headClosed = false;
 	let tail = "";
 	let tailBytes = 0;
 	let totalBytes = 0;
@@ -49,7 +56,7 @@ function referenceCurrentCappedBuffers(
 
 		let tailChunk = chunk;
 		let tailChunkBytes = chunkBytes;
-		if (headBytes < headLimit) {
+		if (!headClosed && headBytes < headLimit) {
 			const room = headLimit - headBytes;
 			if (chunkBytes <= room) {
 				head += chunk;
@@ -64,6 +71,7 @@ function referenceCurrentCappedBuffers(
 				headNewlines += countReferenceNewlines(headSlice.text);
 				tailChunk = chunk.substring(headSlice.text.length);
 				tailChunkBytes = chunkBytes - headSlice.bytes;
+				headClosed = true;
 			}
 		}
 
@@ -117,7 +125,7 @@ function referenceCurrentCappedBuffers(
 
 	const totalLines = chunks.length > 0 ? totalNewlines + 1 : 0;
 	const headLines = headNewlines + (headBytes > 0 && !head.endsWith("\n") ? 1 : 0);
-	const tailLines = tail.length > 0 ? countReferenceNewlines(tail) + 1 : 0;
+	const tailLines = tail.length > 0 ? countReferenceNewlines(tail) + (tail.startsWith("\n") ? 0 : 1) : 0;
 	let output = head + tail;
 	if (headBytes > 0 && totalBytes > headBytes + tailBytes) {
 		const elidedLines = Math.max(0, totalLines - headLines - tailLines);
@@ -549,6 +557,119 @@ describe("tail and middle truncation windows", () => {
 		const meta = outputMeta().truncation(result, { direction: "middle" }).get();
 		expect(meta?.truncation?.headRange).toEqual({ start: 1, end: 3 });
 		expect(meta?.truncation?.tailRange).toEqual({ start: 194, end: 200 });
+	});
+});
+
+test("output within budget keeps its order when the head has no room for the next character", async () => {
+	// Nine bytes leave one byte of head room: too little for 日, enough for the x after it.
+	const sink = new OutputSink({ headBytes: 10, spillThreshold: 64 });
+	for (const chunk of ["12345678\n", "日本\n", "x\n"]) sink.push(chunk);
+	expect((await sink.dump()).output).toBe("12345678\n日本\nx\n");
+});
+
+describe("streamed middle elision notices", () => {
+	interface ElidedBody {
+		head: string[];
+		marker: string;
+		tail: string[];
+		notice: string;
+	}
+
+	/** Streams `chunks` through a real sink; splits the body around its elision marker. */
+	async function elide(chunks: string[], options: OutputSinkOptions): Promise<ElidedBody> {
+		const sink = new OutputSink(options);
+		for (const chunk of chunks) sink.push(chunk);
+		const summary = await sink.dump();
+		const notice = formatOutputNotice(outputMeta().truncationFromSummary(summary, { direction: "tail" }).get());
+		const lines = summary.output.split("\n");
+		if (lines.at(-1) === "") lines.pop();
+		const markerIndex = lines.findIndex(line => /^\[….+ elided…\]$/.test(line));
+		if (markerIndex < 1) throw new Error(`expected an elided middle, got:\n${summary.output}`);
+		return {
+			head: lines.slice(0, markerIndex),
+			marker: lines[markerIndex],
+			tail: lines.slice(markerIndex + 1),
+			notice,
+		};
+	}
+
+	/** The marker and the notice must name exactly the source lines the body shows around the marker. */
+	function expectNoticeMatchesBody(source: string[], { head, marker, tail, notice }: ElidedBody): void {
+		const headEnd = head.length;
+		const tailStart = source.length - tail.length + 1;
+		// Shown lines are their source lines, except that the elision may cut into a boundary line.
+		expect(head.slice(0, -1)).toEqual(source.slice(0, headEnd - 1));
+		expect(source[headEnd - 1].startsWith(head[headEnd - 1])).toBe(true);
+		expect(tail.slice(1)).toEqual(source.slice(tailStart));
+		expect(source[tailStart - 1].endsWith(tail[0])).toBe(true);
+
+		const elided = tailStart - headEnd - 1;
+		expect(marker).toBe(`[…${elided}ln elided…]`);
+		expect(notice).toContain(
+			`Showing lines 1-${headEnd} and ${tailStart}-${source.length} of ${source.length}; ${elided.toLocaleString()} middle lines`,
+		);
+	}
+
+	// `seq 1 30000`, read in uneven chunks so the head fills partway through one.
+	const seq = Array.from({ length: 30_000 }, (_, index) => String(index + 1));
+	const seqText = `${seq.join("\n")}\n`;
+	const seqChunks = Array.from({ length: Math.ceil(seqText.length / 3000) }, (_, index) =>
+		seqText.slice(index * 3000, (index + 1) * 3000),
+	);
+
+	test.each([
+		{
+			// The default 20 KiB head and 30 KiB tail: the head ends inside line 4318.
+			shape: "head ends inside a line",
+			headBytes: 20 * 1024,
+			tailBytes: 30 * 1024,
+			lines: "1-4318 and 24881-30000",
+		},
+		{
+			shape: "tail opens on the newline of an elided line",
+			headBytes: 20 * 1024,
+			tailBytes: 30 * 1024 + 1,
+			lines: "1-4318 and 24881-30000",
+		},
+		{
+			shape: "tail opens inside a line",
+			headBytes: 20 * 1024,
+			tailBytes: 30 * 1024 + 3,
+			lines: "1-4318 and 24880-30000",
+		},
+		{
+			shape: "head ends on a line boundary",
+			headBytes: 20 * 1024 - 2,
+			tailBytes: 30 * 1024,
+			lines: "1-4317 and 24881-30000",
+		},
+	])(
+		"unequal head and tail budgets report the shown lines when the $shape",
+		async ({ headBytes, tailBytes, lines }) => {
+			const body = await elide(seqChunks, { headBytes, spillThreshold: headBytes + tailBytes });
+			expect(body.notice).toContain(`Showing lines ${lines} of 30000;`);
+			expectNoticeMatchesBody(seq, body);
+		},
+	);
+
+	test("a head without room for the next character never takes a later line's bytes", async () => {
+		// Nine bytes leave one byte of head room: too little for 日, enough for the x a line later.
+		const source = ["12345678", "日本", "x", ...Array.from({ length: 20 }, (_, index) => `line ${index + 4}`)];
+		const body = await elide(
+			source.map(line => `${line}\n`),
+			{ headBytes: 10, spillThreshold: 64 },
+		);
+		expect(body.head).toEqual(["12345678"]);
+		expectNoticeMatchesBody(source, body);
+	});
+
+	test("a line split between the head and the tail gets no line ranges", async () => {
+		const sink = new OutputSink({ headBytes: 16, spillThreshold: 48 });
+		sink.push(`${"a".repeat(40)}${"b".repeat(40)}\n`);
+		const summary = await sink.dump();
+		expect(summary.output).toBe(`${"a".repeat(16)}\n[…33B elided…]\n${"b".repeat(31)}\n`);
+		const notice = formatOutputNotice(outputMeta().truncationFromSummary(summary, { direction: "tail" }).get());
+		expect(notice).toContain("Showing head and tail bytes of 1 line; 33B elided");
 	});
 });
 

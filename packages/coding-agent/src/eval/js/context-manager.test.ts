@@ -26,7 +26,7 @@ test("reports uncertain completion without replaying a cell after the JS worker 
 		`const effectsPath = ${JSON.stringify(effectsPath)};`,
 		'const previous = await Bun.file(effectsPath).text().catch(() => "");',
 		'await Bun.write(effectsPath, previous + "once\\n");',
-		"process.exit(17);",
+		'process.kill(process.pid, "SIGKILL");',
 	].join("\n");
 
 	try {
@@ -398,7 +398,7 @@ test("interrupts an active JS cell and starts a clean worker for the next cell",
 				filename: "healthy-cell.js",
 				runState: {},
 			}),
-		).resolves.toEqual({ value: undefined });
+		).resolves.toEqual({ value: undefined, exitCode: 0 });
 		expect(await Bun.file(nextCellPath).text()).toBe("healthy");
 	} finally {
 		controller.abort();
@@ -472,7 +472,7 @@ test("reset rejects the active and queued JS cells before starting a fresh worke
 		for (const result of interrupted) {
 			if (result.status === "rejected") expect(String(result.reason)).toContain("JS context reset");
 		}
-		await expect(reset).resolves.toEqual({ value: undefined });
+		await expect(reset).resolves.toEqual({ value: undefined, exitCode: 0 });
 		expect(await Bun.file(queuedPath).exists()).toBe(false);
 		expect(await Bun.file(resetPath).text()).toBe("fresh");
 	} finally {

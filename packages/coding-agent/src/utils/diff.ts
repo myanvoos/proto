@@ -164,6 +164,14 @@ const MAX_EVENT_DIFF_CHARS = 32000;
 // under the char ceiling while flooding the scrollback of a single tool card.
 const MAX_EVENT_DIFF_ROWS = 400;
 
+export interface CappedEventDiff {
+	diff: string;
+	diffTruncated?: true;
+	/** Line tally of the whole diff; a capped `diff` no longer shows every row. */
+	added: number;
+	removed: number;
+}
+
 function omittedRowsMarker(count: number): string {
 	return `… ${count} diff ${count === 1 ? "line" : "lines"} omitted`;
 }
@@ -178,13 +186,17 @@ function omittedRowsMarker(count: number): string {
  * emits every removal before the first addition, so a head-only cut renders a
  * rewrite as a pure deletion.
  */
-export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
+export function capEventDiff(before: string, after: string): CappedEventDiff | undefined {
 	const rows = generateDiffString(before, after, 2)
 		.diff.split("\n")
 		.filter(row => row.length > 0);
 	if (rows.length === 0) return undefined;
+	const added = rows.filter(row => row.startsWith("+")).length;
+	const removed = rows.filter(row => row.startsWith("-")).length;
 	const totalChars = rows.reduce((sum, row) => sum + row.length + 1, 0);
-	if (totalChars <= MAX_EVENT_DIFF_CHARS && rows.length <= MAX_EVENT_DIFF_ROWS) return { diff: rows.join("\n") };
+	if (totalChars <= MAX_EVENT_DIFF_CHARS && rows.length <= MAX_EVENT_DIFF_ROWS) {
+		return { diff: rows.join("\n"), added, removed };
+	}
 
 	const charsPerSide = Math.floor((MAX_EVENT_DIFF_CHARS - omittedRowsMarker(rows.length).length - 1) / 2);
 	const rowsPerSide = Math.floor((MAX_EVENT_DIFF_ROWS - 1) / 2);
@@ -206,7 +218,7 @@ export function capEventDiff(before: string, after: string): { diff: string; dif
 	}
 	tail.reverse();
 	const omitted = last - first + 1;
-	return { diff: [...head, omittedRowsMarker(omitted), ...tail].join("\n"), diffTruncated: true };
+	return { diff: [...head, omittedRowsMarker(omitted), ...tail].join("\n"), diffTruncated: true, added, removed };
 }
 
 export function generateDiffString(

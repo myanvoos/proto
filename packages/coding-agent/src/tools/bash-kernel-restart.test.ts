@@ -45,7 +45,7 @@ for (const lang of ["python", "node"] as const) {
 			const previous = /generation=([^\s]+)/.exec(seededText)?.[1];
 			expect(previous).toBeString();
 
-			const crashCode = lang === "python" ? "import os; os._exit(17)" : "process.exit(17)";
+			const crashCode = lang === "python" ? "import os; os._exit(17)" : 'process.kill(process.pid, "SIGKILL")';
 			const crashed = await bash.execute("restart-crash", {
 				command: `printf "native-crash\\n"; ${lang} ${flag} '${crashCode}'`,
 			});

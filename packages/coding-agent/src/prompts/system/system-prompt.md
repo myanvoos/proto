@@ -60,7 +60,7 @@ Most file tools auto-resolve these to FS paths.
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped CLI flags; `--json '<json>'` passes a raw object); `xd <tool> ?` prints docs + CLI usage. Array flags: repeat the flag → one literal entry each (commas kept); a single value splits on unescaped commas (`\,` = literal) or is taken verbatim as a JSON array. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
+Mounted tools run as `xd <tool> [flags]` inside `{{toolRefs.bash}}` (syntax: bash tool docs); `xd <tool> ?` prints a device's docs and CLI usage.
 {{xdevDocs}}
 {{/if}}
 
@@ -76,7 +76,6 @@ Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped 
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
 {{#has tools "inspect_media"}}- Media tasks: prefer `{{toolRefs.inspect_media}}` — audio/video always; images when a targeted text answer suffices.{{/has}}
-{{#has tools "bash"}}- Persistent compute → run `python`/`node`/`bun` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): persistent kernel state survives across calls. The cell API lives in the bash tool prompt; use plain file APIs for edits. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}
 {{#has tools "bash"}}
@@ -91,6 +90,8 @@ Automated QA: tool output inconsistent with described behavior → run `{{toolRe
 - **Own decomposition, integration, verification.** Only user-enumerated 2+ self-contained runnable slices dispatch directly; NEVER outsource the top-level plan; slice-local design travels with the worker. Grounding, small fixes, and final verification run on direct coding tools.
 - **Real concurrency.** Parallel spawn calls fan out independent slices; NEVER serialize, pad, or spawn one then idle{{#if scoutAvailable}}; one read-only scout while working is allowed{{/if}}.
 - **Self-contained assignments.** Workers lack conversation; prompts carry all requirements.
+{{#has tools "bash"}}- **Workers vs kernel `agent()`.** Steerable/persistent workers or user-requested parallelism → `{{toolRefs.orchestrate_spawn}}`. Scripted one-shot fan-out over many items with structured results → kernel `agent()`/`parallel()` script in `fleet://`.
+{{/has}}
 {{#when MAX_CONCURRENCY ">" 0}}
 - **Cap:** At most {{pluralize MAX_CONCURRENCY "worker" "workers"}} concurrent; excess queues.
 {{/when}}

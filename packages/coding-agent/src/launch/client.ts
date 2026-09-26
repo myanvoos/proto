@@ -7,6 +7,7 @@ import { canonicalProjectDir, daemonBrokerEndpoint, daemonRuntimeDir } from "./p
 import {
 	DAEMON_BROKER_WORKER_ARG,
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_MAX_TIMEOUT_MS,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
 	DaemonBrokerRejectedError,
@@ -91,6 +92,9 @@ function requestTimeoutMs(operation: DaemonOperation): number {
 		case "logs":
 		case "stop":
 			return operation.timeoutMs + 5_000;
+		case "restart":
+			// The broker also waits out the retained spec's readiness timeout, which this request does not carry.
+			return DAEMON_MAX_TIMEOUT_MS + 30_000;
 		default:
 			return 30_000;
 	}

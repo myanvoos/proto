@@ -4,8 +4,15 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { type DaemonBrokerClient, daemonClientForProject } from "../../launch/client";
-import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
-import { DaemonBrokerRejectedError } from "../../launch/protocol";
+import type {
+	DaemonOperation,
+	DaemonReadySpec,
+	DaemonRpcResult,
+	DaemonSnapshot,
+	DaemonSpec,
+	DaemonState,
+} from "../../launch/protocol";
+import { DAEMON_MAX_TIMEOUT_MS, DaemonBrokerRejectedError } from "../../launch/protocol";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import type { ToolSession } from "..";
@@ -171,6 +178,8 @@ export interface LaunchToolDetails {
 	matched?: string;
 
 	spec?: DaemonSpec;
+	/** `restart`: the retained readiness conditions it waited on. */
+	ready?: DaemonReadySpec;
 }
 
 function requiredName(params: LaunchParams): string {
@@ -179,7 +188,7 @@ function requiredName(params: LaunchParams): string {
 }
 
 function boundedTimeoutMs(value: number | undefined, fallbackMs: number): number {
-	return Math.round(Math.max(50, Math.min(3_600_000, value ?? fallbackMs)));
+	return Math.round(Math.max(50, Math.min(DAEMON_MAX_TIMEOUT_MS, value ?? fallbackMs)));
 }
 
 function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
@@ -304,27 +313,40 @@ function readyPendingSummary(daemon: DaemonSnapshot, ready?: LaunchParams["ready
 	return parts;
 }
 
+/** Result text for `start` and `restart`, which both wait for the launch spec's readiness conditions. */
+function launchOutcome(
+	headline: string,
+	daemon: DaemonSnapshot,
+	readyTimedOut: boolean,
+	ready: LaunchParams["ready"],
+): string {
+	const lines = [`${headline} ${daemonLabel(daemon)}`];
+	if (daemon.state === "failed" && daemon.exitReason) lines.push(`Reason: ${daemon.exitReason}`);
+	if (daemon.readyMatch) lines.push(`Ready log matched: ${daemon.readyMatch}`);
+	if (readyTimedOut) {
+		const pending = readyPendingSummary(daemon, ready);
+		const cause = pending.length > 0 ? `: ${pending.join("; ")}` : "";
+		lines.push(
+			`NOT ready — readiness timed out after ${formatDuration(ready?.timeoutMs ?? 30_000)}${cause}. The process is still running (state: ${daemon.state}); follow its logs or stop it.`,
+		);
+	} else if (ready && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
+		lines.push("Process exited before readiness was observed.");
+	}
+	return lines.join("\n");
+}
+
 function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	switch (result.op) {
 		case "ping":
 		case "shutdown":
 			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
-		case "start": {
-			const daemon = result.daemon;
-			const lines = [`${daemon.state === "failed" ? "Failed to launch" : "Started"} ${daemonLabel(daemon)}`];
-			if (daemon.state === "failed" && daemon.exitReason) lines.push(`Reason: ${daemon.exitReason}`);
-			if (daemon.readyMatch) lines.push(`Ready log matched: ${daemon.readyMatch}`);
-			if (result.readyTimedOut) {
-				const pending = readyPendingSummary(daemon, params.ready);
-				const cause = pending.length > 0 ? `: ${pending.join("; ")}` : "";
-				lines.push(
-					`NOT ready — readiness timed out after ${formatDuration(params.ready?.timeoutMs ?? 30_000)}${cause}. The process is still running (state: ${daemon.state}); follow its logs or stop it.`,
-				);
-			} else if (params.ready && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
-				lines.push("Process exited before readiness was observed.");
-			}
-			return lines.join("\n");
-		}
+		case "start":
+			return launchOutcome(
+				result.daemon.state === "failed" ? "Failed to launch" : "Started",
+				result.daemon,
+				result.readyTimedOut,
+				params.ready,
+			);
 		case "list":
 			return result.daemons.length
 				? result.daemons.map(daemon => `- ${daemonLabel(daemon)}`).join("\n")
@@ -347,7 +369,12 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 		case "stop":
 			return `Stopped ${daemonLabel(result.daemon)}`;
 		case "restart":
-			return `Restarted ${daemonLabel(result.daemon)}`;
+			return launchOutcome(
+				result.daemon.state === "failed" ? "Failed to restart" : "Restarted",
+				result.daemon,
+				result.readyTimedOut,
+				result.ready,
+			);
 		case "describe":
 			return [
 				daemonLabel(result.daemon),
@@ -378,7 +405,7 @@ async function toolDetails(result: DaemonRpcResult): Promise<LaunchToolDetails> 
 		case "stop":
 			return { op: "stop", daemon: result.daemon };
 		case "restart":
-			return { op: "restart", daemon: result.daemon };
+			return { op: "restart", daemon: result.daemon, timedOut: result.readyTimedOut, ready: result.ready };
 		case "describe":
 			return { op: "describe", daemon: result.daemon, spec: result.spec };
 		case "ping":
@@ -536,15 +563,17 @@ export function launchRenderResult(
 		for (const line of replaceTabs(sanitizeText(text.trimEnd())).split("\n")) body.push(theme.fg("error", line));
 	} else {
 		switch (op) {
-			case "start": {
+			case "start":
+			case "restart": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
+				const ready = op === "restart" ? details?.ready : params.ready;
 				if (daemon?.readyMatch)
 					body.push(theme.fg("dim", `log matched: ${replaceTabs(sanitizeText(daemon.readyMatch))}`));
 				if (daemon?.state === "failed" && daemon.exitReason)
 					body.push(theme.fg("error", replaceTabs(sanitizeText(daemon.exitReason))));
 				if (details?.timedOut) {
-					const pending = daemon ? readyPendingSummary(daemon, params.ready) : [];
+					const pending = daemon ? readyPendingSummary(daemon, ready) : [];
 					body.push(
 						theme.fg(
 							"warning",
@@ -553,7 +582,7 @@ export function launchRenderResult(
 								: "Readiness timed out; the process is still running.",
 						),
 					);
-				} else if (params.ready && daemon && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
+				} else if (ready && daemon && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
 					body.push(theme.fg("warning", "Process exited before readiness was observed."));
 				}
 				break;
@@ -563,7 +592,6 @@ export function launchRenderResult(
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
 				break;
 			case "stop":
-			case "restart":
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
 				break;
 			case "wait": {

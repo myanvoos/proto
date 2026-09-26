@@ -148,7 +148,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 	};
 
 	try {
-		await executeInVmContext({
+		const { exitCode } = await executeInVmContext({
 			runtime: options.runtime,
 			sessionKey: options.sessionId,
 			sessionId: options.sessionId,
@@ -186,7 +186,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			},
 		});
 		const summary = await outputSink.dump();
-		return resultWithSummary(summary, { exitCode: 0, cancelled: false });
+		return resultWithSummary(summary, { exitCode, cancelled: false });
 	} catch (error) {
 		// A kernel close/reset under the cell cancels it; the shell bridge reports the lifecycle cause.
 		if (signal?.aborted || isAbortError(error) || error instanceof JsKernelTerminatedError) {

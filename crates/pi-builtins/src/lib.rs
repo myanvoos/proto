@@ -271,6 +271,7 @@ pub use builder::ShellBuilderExt;
 pub use embedded_code::{CodeCell, CodeLanguage, EmbeddedCode, FileWrite, scan_embedded_code};
 pub use factory::{BuiltinSet, default_builtins, process_builtins, utility_builtins};
 pub use host::{panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available};
+pub use kernel_route::kernel_builtin_alias;
 
 
 

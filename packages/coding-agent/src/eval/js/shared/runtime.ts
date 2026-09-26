@@ -220,6 +220,11 @@ export class JsRuntime {
 		return this.#cwd;
 	}
 
+	/** Id of the run whose cell code — or work that cell left pending — is executing now. */
+	currentRunId(): string | undefined {
+		return this.#als.getStore()?.runId;
+	}
+
 	setCwd(cwd: string): void {
 		if (this.#disposed) throw new Error("Cannot set cwd on a disposed JS runtime");
 
@@ -244,7 +249,14 @@ export class JsRuntime {
 		code: string,
 		filename: string | undefined,
 		hooks: RuntimeHooks,
-		options: { runId?: string; cwd?: string; shellEnv?: Record<string, string>; stdin?: Readable } = {},
+		options: {
+			runId?: string;
+			cwd?: string;
+			shellEnv?: Record<string, string>;
+			stdin?: Readable;
+			/** Rejecting it ends the run at once with its reason; work the cell left pending runs on detached. */
+			stop?: Promise<never>;
+		} = {},
 	): Promise<unknown> {
 		this.#activateGlobals("run code");
 		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
@@ -283,7 +295,7 @@ export class JsRuntime {
 			cwd: context.cwd,
 		});
 		try {
-			return await this.#als.run(context, async () => {
+			const evaluation = this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
 				const value = indirectEval(wrapped.source, filename);
 				if (wrapped.finalExpressionReturned) {
@@ -298,6 +310,7 @@ export class JsRuntime {
 				}
 				return await awaitMaybePromise(value);
 			});
+			return await (options.stop ? Promise.race([evaluation, options.stop]) : evaluation);
 		} finally {
 			for (const name of this.#definitions.keys()) {
 				if (!Object.hasOwn(globalThis, name)) this.#definitions.delete(name);

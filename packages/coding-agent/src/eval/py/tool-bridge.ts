@@ -5,6 +5,8 @@ import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
 export interface PyToolBridgeEntry {
 	toolSession: ToolSession;
+	/** Host-side cwd of the cell that owns this run; absent for remote kernel targets. */
+	cwd?: string;
 
 	signal?: AbortSignal;
 
@@ -40,6 +42,7 @@ export async function callSessionToolPromptOnAbort(
 	}
 	const call = callSessionTool(name, args, {
 		session: entry.toolSession,
+		cwd: entry.cwd,
 		signal: entry.signal,
 		emitStatus: entry.emitStatus,
 		completionContext: entry.completionContext,

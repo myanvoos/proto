@@ -21,7 +21,7 @@ The model reaches this runtime through supported `python`/`python3` Bash invocat
 
 ## What Bash's Python kernel is
 
-A supported Bash invocation executes one Python cell inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
+A supported Bash invocation executes one Python cell inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+; the availability probe checks the version, and an older interpreter selected by a Bash command runs that command as a plain process instead. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
 
 Supported forms include:
 
@@ -46,7 +46,7 @@ Kernel startup sequence:
 
 1. Availability check (`checkPythonKernelAvailability`) — verifies that a Python interpreter resolves and runs.
 2. Spawn `python -u runner.py` with filtered env and `cwd`.
-3. Send an init request that runs `os.chdir(cwd)`, injects env entries, and adds `cwd` to `sys.path`.
+3. Send an init request that runs `os.chdir(cwd)`, injects env entries, and puts `cwd` first on `sys.path` (see [Imports](#imports)).
 4. Execute `PYTHON_PRELUDE` (idempotent — only initializes once per process).
 
 Kernel shutdown:
@@ -84,8 +84,10 @@ Runner → host:
 {"type": "display",  "id": "<reqId>", "bundle": {<mime>: <value>}}
 {"type": "result",   "id": "<reqId>", "bundle": {<mime>: <value>}}
 {"type": "error",    "id": "<reqId>", "ename": "...", "evalue": "...", "traceback": ["..."]}
-{"type": "done",     "id": "<reqId>", "status": "ok"|"error", "executionCount": N, "cancelled": false}
+{"type": "done",     "id": "<reqId>", "status": "ok"|"error", "executionCount": N, "cancelled": false, "exitCode": N?}
 ```
+
+`exitCode` is present when the cell raised `SystemExit`, mapped the way CPython maps it at process exit: `None` → 0, an integer → its low byte, anything else → printed to stderr and 1. The cell ends with that status (`status` is `"error"` for a non-zero one) and the kernel keeps its state.
 
 Status events the prelude emits (e.g. `_emit_status("find", count=…)`) ship inside display bundles under `application/x-proto-status` so the existing TUI status renderer keeps working.
 
@@ -120,7 +122,7 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
 `python.kernelMode` controls retained kernel reuse:
 
 - `session` (default)
-  - Reuses kernel sessions keyed by a namespaced session id, normalized cwd, and interpreter.
+  - Reuses kernel sessions keyed by a namespaced session id, normalized cwd, and interpreter environment (resolved binary plus virtual environment). Bash picks the interpreter per command as described in [Bash tool runtime](bash-tool-runtime.md#cell-forms-and-api), so one lane can hold a kernel per interpreter.
   - Bash kernel-cell invocations in one session reuse that retained Python kernel; independent orchestrator workers receive distinct session ids and do not share the parent or sibling kernel.
   - Explicit callers may intentionally pass the same kernel session id to preserve shared-state delegation.
   - Parallel Bash calls must not be used for dependent cells; their execution order is not guaranteed.
@@ -137,6 +139,16 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
 Each recognized interpreter invocation is one cell; a Bash command may contain multiple cells. Later cells reuse the selected retained kernel in `session` mode, while separate Python and JavaScript runtimes never share state. Put dependent cells in one ordered Bash command rather than relying on parallel Bash calls.
 
 If a cell fails, definitions and mutations completed before the error can remain in kernel memory. Python `%reset` clears the user namespace and re-injects the prelude. Bash has no structured per-cell `reset` field; runtime disposal, idle reap, or forced shutdown starts a fresh kernel.
+
+## Imports
+
+A cell stands in for a fresh `python` process, so its imports resolve the way that process would, while variables persist:
+
+- **Search path.** Every cell starts `sys.path` with its working directory, then the `PYTHONPATH` of its own shell environment. The previous cell's entries are replaced, not accumulated, so after a `cd` a module from the old directory no longer resolves.
+- **Changed source.** Project modules (source loaded from outside the interpreter's stdlib and site-packages) are stamped as their loader executes them. Before each cell, and before the first import after the cell writes a `.py` file, spawns a process, or calls a host tool, the kernel checks those stamps and re-resolves top-level names found on `sys.path`. If any project module changed, was deleted, or now resolves to another file, every project module is evicted from `sys.modules` (dependents may hold objects from the changed one), and the next `import` re-executes the source.
+- **Earlier bindings.** Names bound in earlier cells keep the objects they hold. When an eviction leaves such names pointing at old code, the cell prints `<kernel> note: … names from earlier cells still hold the old code: …`; names the cell rebinds itself are not listed. `importlib.reload(module)` on an evicted module re-executes it in place.
+- **Libraries** are never evicted. A rebuilt project C extension cannot be reloaded by CPython; the kernel reports it once and keeps the old build until the kernel is reset.
+- Tracebacks omit the runner's own frames, so a failed import reads like plain-interpreter output.
 
 ## Environment filtering and runtime resolution
 

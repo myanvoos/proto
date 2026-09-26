@@ -170,9 +170,10 @@ export class OutputMetaBuilder {
 
 		if (summary.elidedBytes != null && summary.elidedBytes > 0) {
 			const elidedLines = summary.elidedLines ?? Math.max(0, totalLines - summary.outputLines);
-			const keptLines = Math.max(0, summary.outputLines - 1);
-			const headLines = Math.ceil(keptLines / 2);
-			const tailLines = keptLines - headLines;
+			// Only the producer knows how many lines each window shows. Windows that split one line
+			// between them both show part of it, and no pair of whole-line ranges describes that.
+			const { headLines = 0, tailLines = 0 } = summary;
+			const disjoint = headLines + tailLines <= totalLines;
 			this.#meta.truncation = {
 				direction: "middle",
 				truncatedBy: "middle",
@@ -180,8 +181,8 @@ export class OutputMetaBuilder {
 				totalBytes: summary.totalBytes,
 				outputLines: summary.outputLines,
 				outputBytes: summary.outputBytes,
-				headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
-				tailRange: tailLines > 0 ? { start: totalLines - tailLines + 1, end: totalLines } : undefined,
+				headRange: disjoint && headLines > 0 ? { start: 1, end: headLines } : undefined,
+				tailRange: disjoint && tailLines > 0 ? { start: totalLines - tailLines + 1, end: totalLines } : undefined,
 				elidedBytes: summary.elidedBytes,
 				elidedLines,
 				artifactId: summary.artifactId,

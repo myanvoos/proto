@@ -7,6 +7,14 @@ use crate::{Shell, error, extensions};
 pub trait ShellExtensions: Clone + Default + Send + Sync + 'static {
 
 	type ErrorFormatter: ErrorFormatter;
+
+	/// The registered builtin that serves a command word no builtin is named
+	/// after (an interpreter invoked by path or version, say). Functions and
+	/// same-named builtins still take precedence.
+	fn builtin_alias(command_name: &str) -> Option<&'static str> {
+		let _ = command_name;
+		None
+	}
 }
 
 

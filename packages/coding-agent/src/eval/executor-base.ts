@@ -35,6 +35,8 @@ interface KernelExecutorBaseOptions {
 	onStatus?: (event: JsStatusEvent) => void;
 	emitStatus?: (event: JsStatusEvent) => void;
 	toolSession?: ToolSession;
+	/** Host-side cwd for tool-bridge calls from this run; omit for remote targets (paths there name target files). */
+	bridgeCwd?: string;
 	bridgeSessionId?: string;
 	artifactId?: string;
 	artifactPath?: string;
@@ -83,6 +85,7 @@ export interface GenericKernel<TEnv> {
 		},
 	): Promise<{
 		status: "ok" | "error";
+		exitCode?: number;
 		cancelled: boolean;
 		timedOut: boolean;
 		kernelKilled?: boolean;
@@ -488,6 +491,7 @@ export async function executeWithKernelBase<
 		options?.toolSession && options?.bridgeSessionId
 			? registerPyToolBridge(options.bridgeSessionId, runId, {
 					toolSession: options.toolSession,
+					cwd: options.bridgeCwd,
 					signal: options.signal,
 					shieldedSignal: abortShield.signal,
 					emitStatus,
@@ -550,7 +554,7 @@ export async function executeWithKernelBase<
 			return resultWithDumpedOutput({ exitCode: 1, cancelled: false, stdinRequested: true }, dumped);
 		}
 
-		const exitCode = result.status === "ok" ? 0 : 1;
+		const exitCode = result.exitCode ?? (result.status === "ok" ? 0 : 1);
 		const dumped = await sink.dump();
 		return resultWithDumpedOutput({ exitCode, cancelled: false, stdinRequested: false }, dumped);
 	} catch (err) {

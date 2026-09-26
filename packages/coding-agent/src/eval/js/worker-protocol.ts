@@ -50,7 +50,8 @@ export type WorkerOutbound =
 	| { type: "stdin-request"; runId: string }
 	| { type: "display"; runId: string; output: JsDisplayOutput }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown; completionInvocationId?: string }
-	| { type: "result"; runId: string; ok: true }
+	// `exitCode`: the cell called `process.exit()`, which ends the cell — not the kernel — with that status.
+	| { type: "result"; runId: string; ok: true; exitCode?: number }
 	| { type: "result"; runId: string; ok: false; error: RunErrorPayload }
 	| { type: "log"; level: "debug" | "warn" | "error"; msg: string; meta?: Record<string, unknown> }
 	| { type: "closed" };

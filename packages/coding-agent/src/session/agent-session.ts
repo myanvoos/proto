@@ -4732,6 +4732,20 @@ export class AgentSession {
 			if (this.#promptGeneration !== generation) {
 				return false;
 			}
+			// Taken past the last abort check so an aborted setup leaves this one-shot notice for the next user turn.
+			const goalPausePrompt = isUserQueuedMessage(message)
+				? this.#goalRuntime.takeInterruptPausePrompt()
+				: undefined;
+			if (goalPausePrompt) {
+				messages.unshift({
+					role: "custom",
+					customType: "goal-interrupt-paused",
+					content: goalPausePrompt,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
 			const nonMessageTokens = computeNonMessageTokens(this, this.agent.tokenizer);

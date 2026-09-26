@@ -79,6 +79,7 @@ import { createImageUrlServiceFromSettings } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { initializeWithSettings } from "./discovery";
 import { withOmpExtensionRootScope } from "./discovery/proto-extension-roots";
+import { bridgeCwdFor } from "./eval/bridge-cwd";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
 import { defaultEvalSessionId } from "./eval/session-id";
@@ -1338,7 +1339,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		};
 		const toolSession: ToolSession = {
 			get cwd() {
-				return sessionManager.getCwd();
+				return bridgeCwdFor(toolSession) ?? sessionManager.getCwd();
 			},
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,

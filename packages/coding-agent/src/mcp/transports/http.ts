@@ -18,6 +18,7 @@ import {
 	createMCPTimeout,
 	getNeverAbortSignal,
 	isMCPTimeoutEnabled,
+	MCPRequestTimeoutError,
 	type MCPTimeoutOperation,
 	resolveMCPTimeoutMs,
 } from "../timeout";
@@ -551,7 +552,7 @@ export class HttpTransport implements MCPTransport {
 		} catch (error) {
 			if (error instanceof SSEResumeError) throw error;
 			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
-				throw new Error(`Request timeout after ${timeout}ms`);
+				throw new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
 			}
 			throw error;
 		} finally {

@@ -84,7 +84,6 @@ import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 
 export type { YieldItem } from "./types";
 
-const MCP_CALL_TIMEOUT_MS = 60_000;
 const WORKER_ABORT_CLEANUP_GRACE_MS = 10_000;
 
 const SOFT_REQUEST_BUDGET: Record<string, number> = {
@@ -254,42 +253,17 @@ function renderIrcPeerRoster(selfId: string): string {
 	return lines.join("\n");
 }
 
-function withAbortTimeout<T>(
-	promise: Promise<T>,
-	timeoutMs: number,
-	signal?: AbortSignal,
-	timeoutController?: AbortController,
-): Promise<T> {
+/** Settle with `promise`, or with `ToolAbortError` as soon as the caller aborts. */
+function raceCallerAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (signal?.aborted) {
 		return Promise.reject(new ToolAbortError());
 	}
+	if (!signal) return promise;
 
 	const { promise: wrappedPromise, resolve, reject } = Promise.withResolvers<T>();
-	let settled = false;
-	const timeoutId = setTimeout(() => {
-		if (settled) return;
-		settled = true;
-		timeoutController?.abort(new DOMException(`MCP tool call timed out after ${timeoutMs}ms`, "TimeoutError"));
-		reject(new Error(`MCP tool call timed out after ${timeoutMs}ms`));
-	}, timeoutMs);
-
-	const onAbort = () => {
-		if (settled) return;
-		settled = true;
-		clearTimeout(timeoutId);
-		timeoutController?.abort();
-		reject(new ToolAbortError());
-	};
-
-	if (signal) {
-		signal.addEventListener("abort", onAbort, { once: true });
-	}
-
-	promise.then(resolve, reject).finally(() => {
-		if (signal) signal.removeEventListener("abort", onAbort);
-		clearTimeout(timeoutId);
-	});
-
+	const onAbort = () => reject(new ToolAbortError());
+	signal.addEventListener("abort", onAbort, { once: true });
+	promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
 	return wrappedPromise;
 }
 
@@ -705,14 +679,11 @@ export function createMCPProxyTools(mcpManager: MCPManager): CustomTool[] {
 					};
 				}
 				try {
-					const timeoutController = new AbortController();
-					const timeoutSignal = timeoutController.signal;
-					const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-					return await withAbortTimeout(
-						Promise.resolve(source.execute(toolCallId, params, onUpdate, ctx, combinedSignal)),
-						MCP_CALL_TIMEOUT_MS,
+					// The server's configured request timeout (or PROTO_MCP_TIMEOUT_MS) bounds the call, as it does
+					// for the parent session.
+					return await raceCallerAbort(
+						Promise.resolve(source.execute(toolCallId, params, onUpdate, ctx, signal)),
 						signal,
-						timeoutController,
 					);
 				} catch (error) {
 					if (error instanceof ToolAbortError) {
@@ -1877,6 +1848,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		maxBytes: MAX_OUTPUT_BYTES,
 		maxLines: MAX_OUTPUT_LINES,
 	});
+	const runtimeLimitExceeded = monitor.runtimeLimitExceeded();
+	const wasAborted =
+		runtimeLimitExceeded || Boolean(done.aborted) || abortedViaYield || (!hasYield && Boolean(signal?.aborted));
 
 	let outputMeta: { lineCount: number; charCount: number } | undefined;
 	let outputPath: string | undefined;
@@ -1887,29 +1861,32 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			droppedBytes > 0
 				? `[${droppedBytes} earlier bytes of output dropped; only the most recent output was retained]\n${rawOutput}`
 				: rawOutput;
-		try {
-			await Bun.write(candidatePath, artifactContent);
-			// Publish the path only once the artifact exists; a failed write must not leave an unreadable link.
+		if (wasAborted && !artifactContent.trim() && Bun.file(candidatePath).size > 0) {
+			// An aborted turn that produced nothing (e.g. a wake turn cut short by `orchestrate_kill`) keeps the
+			// previous turn's output, which `agent://<id>` serves; no counts for a write that did not happen.
 			outputPath = candidatePath;
-			outputMeta = {
-				lineCount: artifactContent.split("\n").length,
-				charCount: artifactContent.length,
-			};
-		} catch (error) {
-			logger.warn("Failed to persist subagent output artifact", {
-				agentId: id,
-				path: candidatePath,
-				error: error instanceof Error ? error.message : String(error),
-			});
+		} else {
+			try {
+				await Bun.write(candidatePath, artifactContent);
+				// Publish the path only once the artifact exists; a failed write must not leave an unreadable link.
+				outputPath = candidatePath;
+				outputMeta = {
+					lineCount: artifactContent.split("\n").length,
+					charCount: artifactContent.length,
+				};
+			} catch (error) {
+				logger.warn("Failed to persist subagent output artifact", {
+					agentId: id,
+					path: candidatePath,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 
-	const runtimeLimitExceeded = monitor.runtimeLimitExceeded();
 	if (runtimeLimitExceeded && exitCode === 0) {
 		exitCode = 1;
 	}
-	const wasAborted =
-		runtimeLimitExceeded || Boolean(done.aborted) || abortedViaYield || (!hasYield && Boolean(signal?.aborted));
 	const finalAbortReason = wasAborted
 		? runtimeLimitExceeded
 			? monitor.resolveAbortReasonText()

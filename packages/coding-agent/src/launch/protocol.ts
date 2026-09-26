@@ -11,6 +11,9 @@ export const DAEMON_IDLE_GRACE_ENV = "PROTO_DAEMON_IDLE_GRACE_MS";
 
 export const DAEMON_MAX_REQUEST_BYTES = 1024 * 1024;
 
+/** Upper bound on every timeout the fleet tool hands the broker, readiness waits included. */
+export const DAEMON_MAX_TIMEOUT_MS = 3_600_000;
+
 export class DaemonBrokerRejectedError extends Error {
 	constructor(
 		message: string,
@@ -119,7 +122,7 @@ export type DaemonRpcResult =
 	| { op: "wait"; daemon: DaemonSnapshot; matched?: string; timedOut: boolean }
 	| { op: "send"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
-	| { op: "restart"; daemon: DaemonSnapshot }
+	| { op: "restart"; daemon: DaemonSnapshot; readyTimedOut: boolean; ready?: DaemonReadySpec }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "shutdown" };
 
@@ -467,7 +470,12 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 		case "stop":
 			return { op: "stop", daemon: parseDaemonSnapshot(source.daemon) };
 		case "restart":
-			return { op: "restart", daemon: parseDaemonSnapshot(source.daemon) };
+			return {
+				op: "restart",
+				daemon: parseDaemonSnapshot(source.daemon),
+				readyTimedOut: booleanValue(source.readyTimedOut, "result.readyTimedOut"),
+				ready: source.ready === undefined ? undefined : readySpec(source.ready),
+			};
 		case "describe":
 			return {
 				op: "describe",

@@ -47,5 +47,7 @@ const transport: Transport = {
 	close: () => {},
 };
 
-process.on("disconnect", () => process.exit(0));
+// Taken before the kernel routes `process.exit()` to the calling cell: losing the host must end this process.
+const exitHost = process.exit.bind(process);
+process.on("disconnect", () => exitHost(0));
 new WorkerCore(transport, { mode: "isolated", chdir: cwd => process.chdir(cwd) });

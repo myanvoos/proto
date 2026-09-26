@@ -22,7 +22,8 @@ Wrapper -> host:
   {"type": "result",      "id": ..., "bundle": {<mime>: <value>}}
   {"type": "error",       "id": ..., "ename": str, "evalue": str, "traceback": [str]}
   {"type": "done",        "id": ..., "status": "ok"|"error",
-                              "executionCount": int, "cancelled": bool}
+                              "executionCount": int, "cancelled": bool,
+                              "exitCode": int?}          # set when the cell raised SystemExit
 
 Binary stdout/stderr frames use encoding:"base64", data:<base64>, text:<preview>.
 Code requests set stdin:true to enable program input, independent of this control pipe.
@@ -43,6 +44,7 @@ import builtins
 import codecs
 import contextvars
 import importlib
+import importlib.machinery
 import inspect
 import io
 import json
@@ -54,8 +56,10 @@ import runpy
 import shlex
 import select
 import signal
+import site
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 import tokenize
@@ -460,6 +464,13 @@ class _RunnerState:
         self.pending_request_ids: set[str] = set()
         self.cancelled_request_ids: set[str] = set()
         self.active_request_id: str | None = None
+        # Set when something may have rewritten project source mid-cell; the
+        # next import re-checks loaded project modules.
+        self.sources_dirty: bool = False
+        # The sys.path entries the current cell's cwd and PYTHONPATH put first.
+        self.import_path_prefix: list[str] = []
+        # Names the executing cell binds itself; not reported as stale.
+        self.cell_bindings: frozenset[str] = frozenset()
 
 
 _REQUEST_QUEUE_MAX_COUNT = 128
@@ -700,19 +711,300 @@ _CHILD_SPAWN_AUDIT_EVENTS = frozenset(
 )
 
 
-def _audit_child_spawn(event: str, _args: tuple) -> None:
-    if event not in _CHILD_SPAWN_AUDIT_EVENTS:
-        return
-    capture = _CAPTURE_STATE
-    if capture is not None:
-        capture.child_started = True
+_OPEN_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+_MODULE_FILE_SUFFIXES = tuple(
+    importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.EXTENSION_SUFFIXES
+)
 
 
-def _install_child_spawn_audit() -> None:
+def _is_module_file(path: Any) -> bool:
+    if isinstance(path, int):
+        return False
     try:
-        sys.addaudithook(_audit_child_spawn)
+        return os.fsdecode(path).endswith(_MODULE_FILE_SUFFIXES)
+    except TypeError:
+        return False
+
+
+def _audit_runner_event(event: str, args: tuple) -> None:
+    if event in _CHILD_SPAWN_AUDIT_EVENTS:
+        # A child can rewrite project source before the cell's next import.
+        _STATE.sources_dirty = True
+        capture = _CAPTURE_STATE
+        if capture is not None:
+            capture.child_started = True
+    elif event == "open":
+        if (
+            len(args) > 2
+            and isinstance(args[2], int)
+            and args[2] & _OPEN_WRITE_FLAGS
+            and _is_module_file(args[0])
+        ):
+            _STATE.sources_dirty = True
+    elif event in ("os.rename", "os.remove", "os.truncate"):  # os.replace audits as os.rename
+        if any(_is_module_file(arg) for arg in args[:2]):
+            _STATE.sources_dirty = True
+
+
+def _install_runner_audit() -> None:
+    try:
+        sys.addaudithook(_audit_runner_event)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Import freshness
+#
+# A cell stands in for a fresh `python` process, so an import must see project
+# source as it is on disk now, not as an earlier cell loaded it. Project
+# modules are those loaded from outside the interpreter's stdlib and
+# site-packages: the code being edited. Library modules are never evicted;
+# C extensions and global registries rarely survive re-execution.
+# ---------------------------------------------------------------------------
+
+
+def _library_roots() -> tuple[str, ...]:
+    roots: set[str] = set()
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        try:
+            roots.add(sysconfig.get_path(key))
+        except KeyError:
+            pass
+    try:
+        roots.update(site.getsitepackages())
+        roots.add(site.getusersitepackages())
+    except AttributeError:  # site.py of an old virtualenv
+        pass
+    # Raw and resolved forms: origins arrive unresolved; resolving each one is not free.
+    forms = {form for root in roots if root for form in (root, os.path.realpath(root))}
+    return tuple(os.path.join(form, "") for form in forms)
+
+
+_LIBRARY_ROOTS = _library_roots()
+_LIBRARY_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
+
+
+def _is_project_file(path: str) -> bool:
+    return not path.startswith(_LIBRARY_ROOTS) and _LIBRARY_DIR_NAMES.isdisjoint(path.split(os.sep))
+
+
+class _ProjectModule:
+    """A loaded project module: its file's stamp at load time, and whether a
+    plain ``import name`` found it on ``sys.path`` (so a cwd or PYTHONPATH
+    change can make the same name resolve to a different file)."""
+
+    __slots__ = ("module", "path", "stamp", "native", "by_name")
+
+    def __init__(
+        self,
+        module: types.ModuleType,
+        path: str,
+        stamp: tuple[int, int],
+        native: bool,
+        by_name: bool,
+    ) -> None:
+        self.module = weakref.ref(module)
+        self.path = path
+        self.stamp: tuple[int, int] | None = stamp
+        self.native = native
+        self.by_name = by_name
+
+
+_PROJECT_MODULES: dict[str, _ProjectModule] = {}
+_PROJECT_MODULES_LOCK = threading.RLock()
+_EVICTED_MODULES: "weakref.WeakSet[types.ModuleType]" = weakref.WeakSet()
+
+
+def _file_stamp(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _track_module_load(module: types.ModuleType, native: bool) -> None:
+    spec = getattr(module, "__spec__", None)
+    origin = getattr(spec, "origin", None)
+    if not isinstance(origin, str) or not getattr(spec, "has_location", False):
+        return
+    if not _is_project_file(origin):
+        return
+    path = os.path.realpath(origin)
+    stamp = _file_stamp(path)
+    if stamp is None or not _is_project_file(path):
+        return
+    by_name = False
+    if "." not in spec.name:
+        home = os.path.dirname(path)
+        if spec.submodule_search_locations is not None:
+            home = os.path.dirname(home)
+        by_name = any(
+            isinstance(entry, str) and os.path.realpath(entry or os.curdir) == home
+            for entry in sys.path
+        )
+    with _PROJECT_MODULES_LOCK:
+        _PROJECT_MODULES[spec.name] = _ProjectModule(module, path, stamp, native, by_name)
+
+
+def _install_module_load_tracking() -> None:
+    """Stamp every module as its loader executes it: the stamp must describe
+    the source that was loaded, not the file as a later check finds it."""
+    for loader_class, native in (
+        (importlib.machinery.SourceFileLoader, False),
+        (importlib.machinery.ExtensionFileLoader, True),
+    ):
+        load = loader_class.exec_module
+
+        def exec_module(self, module, _load=load, _native=native):
+            try:
+                _track_module_load(module, _native)
+            except Exception:
+                pass
+            return _load(self, module)
+
+        loader_class.exec_module = exec_module
+
+
+def _project_module_changed(name: str, entry: _ProjectModule) -> bool:
+    if _file_stamp(entry.path) != entry.stamp:
+        return True
+    if not entry.by_name:
+        return False
+    spec = importlib.machinery.PathFinder.find_spec(name)
+    origin = getattr(spec, "origin", None)
+    return not isinstance(origin, str) or os.path.realpath(origin) != entry.path
+
+
+def _name_list(names: list[str]) -> str:
+    names = sorted(names)
+    shown = ", ".join(names[:4])
+    return f"{shown} +{len(names) - 4} more" if len(names) > 4 else shown
+
+
+def _stale_bindings(evicted: set[str]) -> list[str]:
+    """Kernel names bound by earlier cells that still hold evicted code."""
+    stale = []
+    for name, value in list(_STATE.user_ns.items()):
+        if name.startswith("__") or name in _STATE.cell_bindings:
+            continue
+        try:
+            if isinstance(value, types.ModuleType):
+                owner = value.__name__
+            else:
+                owner = getattr(value, "__module__", None)
+                if not isinstance(owner, str):
+                    owner = type(value).__module__
+        except Exception:
+            continue
+        if owner in evicted:
+            stale.append(name)
+    return stale
+
+
+def _refresh_project_modules() -> None:
+    """Evict project modules whose source changed, or whose name now resolves
+    to another file, since they were loaded; the next import re-reads them as
+    a fresh interpreter would."""
+    _STATE.sources_dirty = False
+    changed: list[str] = []
+    rebuilt: list[str] = []
+    evicted: set[str] = set()
+    with _PROJECT_MODULES_LOCK:
+        for name, entry in list(_PROJECT_MODULES.items()):
+            module = entry.module()
+            if module is None or sys.modules.get(name) is not module:
+                del _PROJECT_MODULES[name]
+                continue
+            try:
+                if not _project_module_changed(name, entry):
+                    continue
+            except Exception:
+                continue
+            if entry.native:
+                # CPython cannot re-initialize an extension in place; report each build once.
+                rebuilt.append(name)
+                entry.stamp = _file_stamp(entry.path)
+                entry.by_name = False
+            else:
+                changed.append(name)
+        if changed:
+            # Unchanged modules can hold objects from changed ones (`from m import f`)
+            # and nothing records who imported whom, so every project module goes.
+            for name, entry in list(_PROJECT_MODULES.items()):
+                if entry.native:
+                    continue
+                module = entry.module()
+                if module is not None and sys.modules.get(name) is module:
+                    del sys.modules[name]
+                    _EVICTED_MODULES.add(module)
+                    evicted.add(name)
+                del _PROJECT_MODULES[name]
+            importlib.invalidate_caches()
+    if changed:
+        stale = _stale_bindings(evicted)
+        if stale:
+            _emit_kernel_note(
+                f"{_name_list(changed)} changed on disk; imports load the new source, but "
+                f"names from earlier cells still hold the old code: {_name_list(stale)}"
+            )
+    if rebuilt:
+        _emit_kernel_note(
+            f"native module {_name_list(rebuilt)} changed on disk; CPython cannot reload an "
+            "extension in place, so this kernel keeps the old build until it is reset"
+        )
+
+
+def _mark_sources_dirty() -> None:
+    _STATE.sources_dirty = True
+
+
+_BUILTIN_IMPORT = builtins.__import__
+_IMPORTLIB_RELOAD = importlib.reload
+
+
+def _import_with_fresh_sources(name, globals=None, locals=None, fromlist=(), level=0):
+    if _STATE.sources_dirty:
+        _refresh_project_modules()
+    return _BUILTIN_IMPORT(name, globals, locals, fromlist, level)
+
+
+def _reload_in_place(module):
+    """``importlib.reload`` of a module the kernel evicted re-executes it in
+    place, exactly as if the kernel had kept it in ``sys.modules``."""
+    if module in _EVICTED_MODULES:
+        spec = getattr(module, "__spec__", None)
+        name = getattr(spec, "name", None) or getattr(module, "__name__", None)
+        if isinstance(name, str) and sys.modules.get(name) is not module:
+            sys.modules[name] = module
+    return _IMPORTLIB_RELOAD(module)
+
+
+def _set_import_path_prefix(cwd: str) -> None:
+    """Start ``sys.path`` the way a fresh ``python -c`` here would: the
+    working directory, then PYTHONPATH. The previous cell's entries are
+    replaced, not accumulated, so modules from an old cwd stop resolving."""
+    pythonpath = os.environ.get("PYTHONPATH", "")
+    extra = [os.path.abspath(entry) for entry in pythonpath.split(os.pathsep) if entry]
+    entries = list(dict.fromkeys([cwd, *extra]))
+    for entry in (*_STATE.import_path_prefix, *entries):
+        try:
+            sys.path.remove(entry)
+        except ValueError:
+            pass
+    sys.path[0:0] = entries
+    _STATE.import_path_prefix = entries
+
+
+def _install_import_freshness() -> None:
+    _install_module_load_tracking()
+    builtins.__import__ = _import_with_fresh_sources
+    importlib.reload = _reload_in_place
+    # `python runner.py` put the runner's own directory first; the first cell's cwd replaces it.
+    runner_dir = os.path.dirname(os.path.realpath(__file__))
+    if sys.path and os.path.realpath(sys.path[0] or os.curdir) == runner_dir:
+        _STATE.import_path_prefix = [sys.path[0]]
 
 
 def _drain_capture_before_frame(rid: str | None) -> None:
@@ -2260,6 +2552,7 @@ def _load_prelude(source: str) -> None:
         "__builtins__": builtins,
         "__proto_display": __proto_display,
         "__proto_kernel_note": _emit_kernel_note,
+        "__proto_sources_may_have_changed": _mark_sources_dirty,
         "__proto_current_run_id__": _current_run_id,
         "__proto_next_completion_invocation__": _next_completion_invocation_id,
     }
@@ -2455,11 +2748,7 @@ def _apply_request_runtime(req: dict) -> None:
     cwd = req.get("cwd")
     if isinstance(cwd, str) and cwd:
         os.chdir(cwd)
-        try:
-            sys.path.remove(cwd)
-        except ValueError:
-            pass
-        sys.path.insert(0, cwd)
+    _set_import_path_prefix(os.getcwd())
 
     env = req.get("env")
     if isinstance(env, dict):
@@ -2621,6 +2910,7 @@ async def _handle_request_async(req: dict) -> None:
 
     status: str = "ok"
     cancelled = False
+    exit_code: int | None = None
     is_prelude = bool(req.get("prelude"))
 
     try:
@@ -2683,6 +2973,8 @@ async def _handle_request_async(req: dict) -> None:
             if is_prelude:
                 _load_prelude(transformed)
             else:
+                _STATE.cell_bindings = frozenset(_cell_bound_names(transformed)[1])
+                _refresh_project_modules()
                 await _exec_source_async(transformed, _STATE.user_ns)
         except KeyboardInterrupt:
             cancelled = True
@@ -2699,8 +2991,12 @@ async def _handle_request_async(req: dict) -> None:
             if callable(uncancel):
                 uncancel()
         except SystemExit as exc:
-            status = "error"
-            _emit_error(rid, exc)
+            exit_code, message = _system_exit_outcome(exc)
+            if message is not None:
+                _sync_before_frame(rid)
+                _emit({"type": "stderr", "id": rid, "data": f"{message}\n"})
+            if exit_code != 0:
+                status = "error"
         except BaseException as exc:
             status = "error"
             _emit_error(rid, exc)
@@ -2729,15 +3025,16 @@ async def _handle_request_async(req: dict) -> None:
             cancelled = True
             status = "error"
         _sync_fd_capture(capture)
-        _emit(
-            {
-                "type": "done",
-                "id": rid,
-                "status": status,
-                "executionCount": execution_count,
-                "cancelled": cancelled,
-            }
-        )
+        done: dict = {
+            "type": "done",
+            "id": rid,
+            "status": status,
+            "executionCount": execution_count,
+            "cancelled": cancelled,
+        }
+        if exit_code is not None and not cancelled:
+            done["exitCode"] = exit_code
+        _emit(done)
     finally:
         _flush_stream_proxies(rid)
         _sync_fd_capture(capture)
@@ -2760,17 +3057,43 @@ async def _handle_request_async(req: dict) -> None:
                 os.environ[key] = value
 
 
+def _system_exit_outcome(exc: SystemExit) -> tuple[int, str | None]:
+    """Map SystemExit the way the CPython interpreter does at process exit:
+    None -> 0, an int -> its low 8 bits, anything else -> printed to stderr, 1."""
+    code = exc.code
+    if code is None:
+        return 0, None
+    if isinstance(code, int):
+        return code & 0xFF, None
+    return 1, str(code)
+
+
+def _drop_runner_frames(report: traceback.TracebackException) -> None:
+    """Hide the runner's own frames (cell execution, import hooks) so a cell's
+    traceback reads like the same code run by a plain interpreter. A traceback
+    made only of runner frames is a runner bug and keeps them."""
+    pending = [report]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        user_frames = [frame for frame in current.stack if frame.filename != __file__]
+        if user_frames:
+            current.stack = traceback.StackSummary.from_list(user_frames)
+        pending.extend(chained for chained in (current.__cause__, current.__context__) if chained is not None)
+        pending.extend(getattr(current, "exceptions", None) or ())
+
+
 def _emit_error(rid: str, exc: BaseException) -> None:
     _sync_before_frame(rid)
     if isinstance(exc, SyntaxError) and exc.filename == "<cell>":
         tb_lines = traceback.format_exception_only(type(exc), exc)
     else:
-        tb = exc.__traceback__
-        while tb is not None and tb.tb_frame.f_code.co_filename == __file__:
-            tb = tb.tb_next
-        tb_lines = traceback.format_exception(
-            type(exc), exc, tb if tb is not None else exc.__traceback__
-        )
+        report = traceback.TracebackException(type(exc), exc, exc.__traceback__, compact=True)
+        _drop_runner_frames(report)
+        tb_lines = list(report.format())
     _emit(
         {
             "type": "error",
@@ -2903,7 +3226,8 @@ async def _main_async() -> None:
     sys.stdout = _StreamProxy("stdout")
     sys.stderr = _StreamProxy("stderr")
     _install_idle_sigint()
-    _install_child_spawn_audit()
+    _install_runner_audit()
+    _install_import_freshness()
     _start_parent_watchdog()
 
     stdin = sys.__stdin__

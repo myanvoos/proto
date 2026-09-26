@@ -11,7 +11,7 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { RequestIdAllocator } from "../request-id";
-import { createMCPTimeout, getNeverAbortSignal, resolveMCPTimeoutMs } from "../timeout";
+import { createMCPTimeout, getNeverAbortSignal, MCPRequestTimeoutError, resolveMCPTimeoutMs } from "../timeout";
 import { type MCPFetchInit, mcpFetch } from "./header-policy";
 
 interface MCPTimeoutOperation {
@@ -257,11 +257,12 @@ export class LegacySseTransport implements MCPTransport {
 			pending.abortHandler = () => {
 				this.#pending.delete(id);
 				operation.clear();
-				deferred.reject(
-					options?.signal?.aborted && options.signal.reason instanceof Error
-						? options.signal.reason
-						: new Error(`Legacy SSE response timeout after ${timeout}ms`),
-				);
+				if (options?.signal?.aborted && options.signal.reason instanceof Error) {
+					deferred.reject(options.signal.reason);
+					return;
+				}
+				const message = `Legacy SSE response timeout after ${timeout}ms`;
+				deferred.reject(operation.timedOut() ? new MCPRequestTimeoutError(message) : new Error(message));
 			};
 			operation.signal.addEventListener("abort", pending.abortHandler, { once: true });
 		}
@@ -280,7 +281,7 @@ export class LegacySseTransport implements MCPTransport {
 			operation.clear();
 			if (pending.abortHandler) operation.signal?.removeEventListener("abort", pending.abortHandler);
 			if (operation.isTimeoutAbort(error)) {
-				throw new Error(`Request timeout after ${timeout}ms`);
+				throw new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
 			}
 			throw error;
 		}

@@ -203,7 +203,7 @@ assume that every field present in the model-generated call reaches the server.
 - returns structured details (`serverName`, `mcpToolName`, provider metadata)
 - maps server-reported `isError` to `Error: ...` text result
 - attempts reconnect + one retry for retriable connection errors
-- maps remaining thrown transport/runtime failures to `MCP error: ...`
+- maps remaining thrown transport/runtime failures to `MCP error: ...`; a client-side request timeout also names the server and how to raise the limit (per-server `timeout` or `PROTO_MCP_TIMEOUT_MS`)
 - preserves abort semantics by translating AbortError into `ToolAbortError`
 
 ## 5) Operator lifecycle: add/edit/remove and live updates

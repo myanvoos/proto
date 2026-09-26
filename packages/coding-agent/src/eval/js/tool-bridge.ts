@@ -6,6 +6,7 @@ import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
 import { type EvalArtifactRef, publishEvalArtifact } from "../artifact-values";
 import { EVAL_AST_BRIDGE_NAME, type EvalAstBlockRange, type EvalAstSymbols, runEvalAst } from "../ast-bridge";
+import { runWithBridgeCwd } from "../bridge-cwd";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
 import {
 	EVAL_COMPLETION_BRIDGE_NAME,
@@ -44,6 +45,8 @@ function acquireNestedLane(session: ToolSession): { lane: string; release(): voi
 
 export interface ToolBridgeOptions {
 	session: ToolSession;
+	/** Host-side cwd of the calling kernel cell; bridged tools resolve relative paths against it. */
+	cwd?: string;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
@@ -160,6 +163,10 @@ function summarizeToolResult(
 }
 
 export async function callSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
+	return await runWithBridgeCwd(options.session, options.cwd, () => dispatchSessionTool(name, args, options));
+}
+
+async function dispatchSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
 	if (name === EVAL_COMPLETION_BRIDGE_NAME) {
 		return await runEvalCompletion(args, options);
 	}

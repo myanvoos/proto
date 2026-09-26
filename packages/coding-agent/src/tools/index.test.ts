@@ -5,7 +5,7 @@ import { Settings } from "../config/settings";
 import { BUILTIN_TOOLS, createTools, type ToolSession } from ".";
 
 const EXPECTED_SCHEMA_HASHES = {
-	kernel: "9d3fcd0ca9be920de6ecfbf2de6e704258573cade45ed8d48169c9911c67116f",
+	kernel: "afd9139ccd0fa5d5d936902db028420a23d3fa41f67b06338deb0f5461a9000e",
 	bash: "a090be2f47d17b7fd240e81a2f6b5f66407a382f10d2c3d0bbda1a373ddfe878",
 	ask: "f6461da4127dda24ee2a896b5ef5fee810976e783139aa3de9ac8a681d2825bb",
 	inspect_media: "c27e6e1252710dab5ffc41b493a847af4fe6e47d25168e664a9f3e3f6a1a9f49",

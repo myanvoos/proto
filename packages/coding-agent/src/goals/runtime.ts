@@ -1,6 +1,7 @@
 import { escapeXmlText, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import goalBudgetLimitPrompt from "../prompts/goals/goal-budget-limit.md" with { type: "text" };
 import goalContinuationPrompt from "../prompts/goals/goal-continuation.md" with { type: "text" };
+import goalInterruptPausedPrompt from "../prompts/goals/goal-interrupt-paused.md" with { type: "text" };
 import goalModeActivePrompt from "../prompts/goals/goal-mode-active.md" with { type: "text" };
 import type { Goal, GoalBudgetSteering, GoalModeState, GoalRuntimeEvent, GoalTokenUsage } from "./state";
 
@@ -35,7 +36,14 @@ interface GoalRuntimeSnapshot {
 	budgetReportedFor?: string;
 }
 
-type GoalPromptKind = "active" | "continuation" | "budget-limit";
+type GoalPromptKind = "active" | "continuation" | "budget-limit" | "interrupt-paused";
+
+const GOAL_PROMPT_TEMPLATES: Record<GoalPromptKind, string> = {
+	active: goalModeActivePrompt,
+	continuation: goalContinuationPrompt,
+	"budget-limit": goalBudgetLimitPrompt,
+	"interrupt-paused": goalInterruptPausedPrompt,
+};
 
 function cloneGoal(goal: Goal): Goal {
 	return { ...goal };
@@ -71,13 +79,7 @@ export function goalTokenDelta(current: GoalTokenUsage, baseline: GoalTokenUsage
 }
 
 export function renderGoalPrompt(kind: GoalPromptKind, goal: Goal): string {
-	const template =
-		kind === "active"
-			? goalModeActivePrompt
-			: kind === "continuation"
-				? goalContinuationPrompt
-				: goalBudgetLimitPrompt;
-	return prompt.render(template, {
+	return prompt.render(GOAL_PROMPT_TEMPLATES[kind], {
 		objective: escapeXmlText(goal.objective),
 		tokensUsed: String(goal.tokensUsed),
 		tokenBudget: budgetValue(goal),
@@ -113,6 +115,8 @@ export class GoalRuntime {
 	#turnSnapshot: GoalTurnSnapshot | undefined;
 	#wallClock: GoalWallClockSnapshot;
 	#budgetReportedFor: string | undefined;
+	/** Goal an interrupt paused whose pause the model has not been told about yet. */
+	#interruptPauseNoticeFor: string | undefined;
 	#accountingTail: Promise<void> = Promise.resolve();
 
 	constructor(host: GoalRuntimeHost) {
@@ -245,6 +249,7 @@ export class GoalRuntime {
 			cloned.goal.updatedAt = this.#now();
 			this.#clearActiveAccounting();
 			this.#budgetReportedFor = undefined;
+			this.#interruptPauseNoticeFor = cloned.goal.id;
 			await this.#commitState(cloned, { persist: "goal_paused" });
 		});
 	}
@@ -420,6 +425,7 @@ export class GoalRuntime {
 			state.goal.status = "active";
 			state.goal.updatedAt = this.#now();
 			this.#budgetReportedFor = undefined;
+			this.#interruptPauseNoticeFor = undefined;
 			this.#markActiveAccounting(state.goal);
 			await this.#commitState(state, { persist: "goal" });
 			return state;
@@ -504,6 +510,18 @@ export class GoalRuntime {
 		return state?.enabled && state.goal.status === "active"
 			? renderGoalPrompt("continuation", state.goal)
 			: undefined;
+	}
+
+	/**
+	 * One-shot reminder for the first user turn after an interrupt paused the goal. Undefined once taken, or once that
+	 * goal is no longer paused (resumed, completed, dropped, or swapped out by a session switch).
+	 */
+	takeInterruptPausePrompt(): string | undefined {
+		const goalId = this.#interruptPauseNoticeFor;
+		this.#interruptPauseNoticeFor = undefined;
+		const state = this.#host.getState();
+		if (!goalId || state?.goal.id !== goalId || state.goal.status !== "paused") return undefined;
+		return renderGoalPrompt("interrupt-paused", state.goal);
 	}
 
 	async #sendBudgetLimitSteer(goal: Goal): Promise<void> {

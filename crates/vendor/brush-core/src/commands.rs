@@ -366,7 +366,9 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	#[allow(clippy::missing_panics_doc, reason = "these unwrap calls should not panic")]
 	pub async fn execute(mut self) -> Result<ExecutionSpawnResult, error::Error> {
 
-		let builtin = self.shell.builtins().get(&self.command_name).cloned();
+		let builtin = self.shell.builtins().get(&self.command_name).cloned().or_else(|| {
+			SE::builtin_alias(&self.command_name).and_then(|alias| self.shell.builtins().get(alias).cloned())
+		});
 
 
 

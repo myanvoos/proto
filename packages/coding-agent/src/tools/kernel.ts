@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { DEFAULT_KERNEL_IDLE_REAP_MS } from "../eval/idle-timeout";
 import { handleKernelControl, type KernelControlResult } from "../eval/kernel-control";
 import kernelDescription from "../prompts/tools/kernel.md" with { type: "text" };
 import type { ToolSession } from ".";
@@ -21,7 +22,9 @@ export const kernelSchema = type({
 	),
 	"language?": type("'python' | 'node' | 'bun'").describe("Required except when listing every language"),
 	"lane?": type("1 <= string <= 128").describe("Kernel lane; defaults to main, or all lanes for list"),
-	"interpreter?": type("string > 0").describe("Interpreter executable; start/reset only"),
+	"interpreter?": type("string > 0").describe(
+		"Interpreter executable: start/reset make it the lane default; other ops pick that interpreter's kernel",
+	),
 	"cwd?": type("string > 0").describe("Lane working directory; start/reset only"),
 	"target?": targetSchema.describe("Execution environment; defaults to local; start/reset only"),
 	"ttlMs?": type("1 <= number <= 3600000").describe(
@@ -46,7 +49,7 @@ export class KernelTool implements AgentTool<typeof kernelSchema, KernelToolDeta
 		`${args.op ?? "inspecting"} kernel ${args.lane ?? "main"}`;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(kernelDescription);
+		this.description = prompt.render(kernelDescription, { idleReapMinutes: DEFAULT_KERNEL_IDLE_REAP_MS / 60_000 });
 	}
 
 	static createIf(session: ToolSession): KernelTool {

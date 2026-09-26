@@ -35,6 +35,8 @@ export interface KernelExecuteOptions {
 
 export interface KernelExecuteResult {
 	status: "ok" | "error";
+	/** Exit status the cell requested explicitly; absent means derive it from `status`. */
+	exitCode?: number;
 	executionCount?: number;
 	error?: { name: string; value: string; traceback: string[] };
 	cancelled: boolean;
@@ -107,6 +109,8 @@ export interface Frame {
 	evalue?: string;
 	traceback?: string[];
 	status?: "ok" | "error";
+	/** Done frames only: exit status requested by the cell (e.g. Python `sys.exit(n)`). */
+	exitCode?: number;
 	executionCount?: number;
 	cancelled?: boolean;
 	busy?: number;
@@ -139,6 +143,7 @@ interface PendingExecution {
 	resolve: (result: KernelExecuteResult) => void;
 	options?: KernelExecuteOptions;
 	status: "ok" | "error";
+	exitCode?: number;
 	executionCount?: number;
 	error?: { name: string; value: string; traceback: string[] };
 	cancelled: boolean;
@@ -362,6 +367,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			cleanup();
 			resolve({
 				status: pending.status,
+				exitCode: pending.exitCode,
 				executionCount: pending.executionCount,
 				error: pending.error,
 				cancelled: pending.cancelled,
@@ -968,6 +974,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				}
 				if (typeof frame.executionCount === "number") {
 					pending.executionCount = frame.executionCount;
+				}
+				if (typeof frame.exitCode === "number") {
+					pending.exitCode = frame.exitCode;
 				}
 				if (frame.status === "error" && pending.status === "ok") {
 					pending.status = "error";

@@ -1,0 +1,1 @@
+MCP server "{{server}}" exceeded the client-side request timeout. To allow longer calls, raise `timeout` (milliseconds; `0` disables) on its entry in the MCP config, or set the `PROTO_MCP_TIMEOUT_MS` environment variable, which takes precedence over every server's `timeout`.

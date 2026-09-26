@@ -52,6 +52,12 @@ interface VmRunState {
 	onDisplay?: (output: JsDisplayOutput) => void;
 }
 
+/** A settled cell; `exitCode` is the status its `process.exit()` asked for, else 0. */
+interface VmRunResult {
+	value: unknown;
+	exitCode: number;
+}
+
 interface WorkerHandle {
 	mode: "process" | "worker" | "target" | "node";
 	send(msg: WorkerInbound): void;
@@ -67,7 +73,9 @@ interface PendingRun {
 	runId: string;
 	runState: VmRunState;
 	toolSession: ToolSession;
-	resolve(value: { value: unknown }): void;
+	/** Host-side cwd for this run's tool-bridge calls; absent for remote targets. */
+	bridgeCwd?: string;
+	resolve(value: VmRunResult): void;
 	reject(error: Error): void;
 	toolCalls: Map<string, AbortController>;
 	completionContext?: EvalCompletionInvocationContext;
@@ -240,7 +248,7 @@ export async function executeInVmContext(options: {
 	filename: string;
 	timeoutMs?: number;
 	runState: VmRunState;
-}): Promise<{ value: unknown }> {
+}): Promise<VmRunResult> {
 	if (options.runState.signal?.aborted) {
 		throw reasonToError(options.runState.signal.reason, "Execution aborted");
 	}
@@ -471,20 +479,21 @@ async function runOnce(
 		filename: string;
 		runState: VmRunState;
 	},
-): Promise<{ value: unknown }> {
+): Promise<VmRunResult> {
 	// Acquisition can finish after cancellation. Do not dispatch the cell or
 	// kill a shared worker that the cancelled request never started using.
 	if (options.runState.signal?.aborted) {
 		throw reasonToError(options.runState.signal.reason, "Execution aborted");
 	}
 	const runId = `r-${Snowflake.next()}`;
-	const { promise, resolve, reject } = Promise.withResolvers<{ value: unknown }>();
+	const { promise, resolve, reject } = Promise.withResolvers<VmRunResult>();
 	const pending: PendingRun = {
 		input: new KernelInputReader(options.stdin),
 		decoders: { stdout: new TextDecoder(), stderr: new TextDecoder() },
 		runId,
 		runState: options.runState,
 		toolSession: options.session,
+		bridgeCwd: session.info.target.kind === "local" ? options.cwd : undefined,
 		resolve,
 		reject,
 		toolCalls: new Map(),
@@ -884,6 +893,7 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 	try {
 		const value = await callSessionTool(msg.name, msg.args, {
 			session: pending.toolSession,
+			cwd: pending.bridgeCwd,
 			signal: ctrl.signal,
 			completionContext: pending.completionContext,
 			completionInvocationId: msg.completionInvocationId,
@@ -921,7 +931,7 @@ async function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, {
 		return;
 	}
 	if (msg.ok) {
-		pending.resolve({ value: undefined });
+		pending.resolve({ value: undefined, exitCode: msg.exitCode ?? 0 });
 		return;
 	}
 	const error = errorFromPayload(msg.error);

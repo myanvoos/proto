@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { callTool, connectToServer, disconnectServer } from "./client";
+import { connectToServer, disconnectServer } from "./client";
 import { createMCPToolName, deduplicateMCPToolsByName, MCPTool, parseMCPToolName } from "./tool-bridge";
 import { HttpTransport } from "./transports/http";
 import type { MCPServerConnection, MCPTransport } from "./types";
@@ -121,7 +121,7 @@ describe("MCP tool execution across a wedged server", () => {
 		}
 	});
 
-	test("an unanswered tools/call fails through the normal error result path", async () => {
+	test("an unanswered tools/call fails through the error result, naming the server and how to raise the timeout", async () => {
 		const wedged = await connectToServer("wedged", {
 			type: "stdio",
 			command: process.execPath,
@@ -129,9 +129,29 @@ describe("MCP tool execution across a wedged server", () => {
 			timeout: 300,
 		});
 		try {
-			await expect(callTool(wedged, "echo", {})).rejects.toThrow("Request timeout after 300ms");
+			const tool = MCPTool.fromTools(wedged, [{ name: "echo", inputSchema: { type: "object" } }])[0];
+			if (!tool) throw new Error("fixture tool missing");
+			const result = await tool.execute("call-1", {}, undefined, {} as Parameters<MCPTool["execute"]>[3]);
+			expect(result.isError).toBe(true);
+			const text = result.content.find(block => block.type === "text");
+			const message = text && "text" in text ? text.text : "";
+			expect(message).toContain("Request timeout after 300ms");
+			expect(message).toContain('"wedged"');
+			expect(message).toContain("`timeout`");
+			expect(message).toContain("PROTO_MCP_TIMEOUT_MS");
 		} finally {
 			await disconnectServer(wedged);
 		}
+	});
+
+	test("failures other than the request timeout carry no timeout hint", async () => {
+		const tool = MCPTool.fromTools(namedConnection("down"), [{ name: "echo", inputSchema: { type: "object" } }])[0];
+		if (!tool) throw new Error("fixture tool missing");
+		const result = await tool.execute("call-1", {}, undefined, {} as Parameters<MCPTool["execute"]>[3]);
+		expect(result.isError).toBe(true);
+		const text = result.content.find(block => block.type === "text");
+		const message = text && "text" in text ? text.text : "";
+		expect(message).toContain("Transport not connected");
+		expect(message).not.toContain("PROTO_MCP_TIMEOUT_MS");
 	});
 });

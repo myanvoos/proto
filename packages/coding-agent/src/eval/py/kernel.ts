@@ -49,10 +49,17 @@ const INTERRUPT_ESCALATION_MS = 5_000;
 const AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 const AVAILABILITY_PROBE_KILL_GRACE_MS = 250;
 
+/** The runner (and so every kernel cell) needs this Python or newer; keep PROBE_SOURCE in step. */
+export const MIN_KERNEL_PYTHON = "3.10";
+const TOO_OLD_EXIT_CODE = 3;
+const PROBE_SOURCE = "import sys;sys.exit(0 if sys.version_info >= (3, 10) else 3)";
+
 interface PythonKernelAvailability {
 	ok: boolean;
 	pythonPath?: string;
 	reason?: string;
+	/** Every interpreter tried runs, but is older than {@link MIN_KERNEL_PYTHON}. */
+	tooOld?: boolean;
 
 	runtime?: PythonRuntime;
 }
@@ -91,7 +98,9 @@ export async function checkPythonKernelAvailability(
 		availabilityCache.set(key, entry);
 		void promise.then(
 			result => {
-				if ((result.timedOut || !result.availability.ok) && availabilityCache.get(key) === entry) {
+				// A version never changes under the same path; other failures may be transient.
+				const settled = result.availability.ok || result.availability.tooOld;
+				if ((result.timedOut || !settled) && availabilityCache.get(key) === entry) {
 					availabilityCache.delete(key);
 				}
 			},
@@ -138,6 +147,7 @@ async function probePythonKernelAvailability(
 		}
 
 		const failures: string[] = [];
+		let tooOld = 0;
 		for (const runtime of runtimes) {
 			throwIfAborted(signal, "Python availability check aborted");
 			try {
@@ -150,6 +160,11 @@ async function probePythonKernelAvailability(
 				if (outcome.exitCode === 0) {
 					return { availability: { ok: true, pythonPath: runtime.pythonPath, runtime }, timedOut };
 				}
+				if (outcome.exitCode === TOO_OLD_EXIT_CODE) {
+					tooOld++;
+					failures.push(`${runtime.pythonPath} (older than Python ${MIN_KERNEL_PYTHON})`);
+					continue;
+				}
 				failures.push(`${runtime.pythonPath} (exit code ${outcome.exitCode})`);
 			} catch (error) {
 				throwIfAborted(signal, "Python availability check aborted");
@@ -161,6 +176,7 @@ async function probePythonKernelAvailability(
 				ok: false,
 				pythonPath: runtimes[0].pythonPath,
 				reason: `No working Python interpreter found. Tried: ${failures.join("; ")}`,
+				tooOld: tooOld === runtimes.length,
 			},
 			timedOut,
 		};
@@ -181,7 +197,7 @@ async function probePythonRuntime(
 	throwIfAborted(callerSignal, "Python availability check aborted");
 	const timeoutSignal = AbortSignal.timeout(AVAILABILITY_PROBE_TIMEOUT_MS);
 	const stopSignal = AbortSignal.any([callerSignal, timeoutSignal]);
-	const proc = Bun.spawn([runtime.pythonPath, "-c", "import sys;sys.exit(0)"], {
+	const proc = Bun.spawn([runtime.pythonPath, "-c", PROBE_SOURCE], {
 		cwd,
 		detached: true,
 		env: runtime.env,

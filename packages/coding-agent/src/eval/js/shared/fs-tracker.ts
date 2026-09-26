@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as url from "node:url";
 
-import { capEventDiff } from "../../../utils/diff";
+import { type CappedEventDiff, capEventDiff } from "../../../utils/diff";
 import { PRUNED_DIRS, SKIPPED_SUFFIXES } from "../../fs-policy";
 import type { JsStatusEvent } from "./types";
 
@@ -363,13 +363,18 @@ export function beginFileTracking(
 	});
 }
 
-function setReportMeta(tracking: CellTracking, absPath: string, op: ReportMeta["op"], diff: unknown): void {
-	const rows = typeof diff === "string" && diff.length > 0 ? diff.split("\n") : [];
+/** `capped` carries the whole diff's line tally; its capped rows would undercount a large change. */
+function setReportMeta(
+	tracking: CellTracking,
+	absPath: string,
+	op: ReportMeta["op"],
+	capped: CappedEventDiff | undefined,
+): void {
 	tracking.reportedMeta.set(absPath, {
 		op,
-		diff: rows.length > 0,
-		added: rows.filter(row => row.startsWith("+")).length,
-		removed: rows.filter(row => row.startsWith("-")).length,
+		diff: capped !== undefined,
+		added: capped?.added ?? 0,
+		removed: capped?.removed ?? 0,
 	});
 }
 
@@ -436,15 +441,13 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 			return "capped";
 		}
 		const event: JsStatusEvent = { op: "delete", path: absPath, id: eventId(tracking, absPath) };
-		if (record.before !== null) {
-			const capped = capEventDiff(record.before, "");
-			if (capped) {
-				event.diff = capped.diff;
-				if (capped.diffTruncated) event.diffTruncated = true;
-			}
+		const capped = record.before !== null ? capEventDiff(record.before, "") : undefined;
+		if (capped) {
+			event.diff = capped.diff;
+			if (capped.diffTruncated) event.diffTruncated = true;
 		}
 		tracking.reported.set(absPath, null);
-		setReportMeta(tracking, absPath, "delete", event.diff);
+		setReportMeta(tracking, absPath, "delete", capped);
 		tracking.emit(event);
 		return "emitted";
 	}
@@ -473,14 +476,12 @@ async function reportPath(tracking: CellTracking, absPath: string, record: Touch
 			id: eventId(tracking, absPath),
 		};
 		const beforeText = record.existed ? record.before : "";
-		if (beforeText !== null) {
-			const capped = capEventDiff(beforeText, text);
-			if (capped) {
-				event.diff = capped.diff;
-				if (capped.diffTruncated) event.diffTruncated = true;
-			}
+		const capped = beforeText !== null ? capEventDiff(beforeText, text) : undefined;
+		if (capped) {
+			event.diff = capped.diff;
+			if (capped.diffTruncated) event.diffTruncated = true;
 		}
-		setReportMeta(tracking, absPath, "write", event.diff);
+		setReportMeta(tracking, absPath, "write", capped);
 		tracking.emit(event);
 	} else {
 		setReportMeta(tracking, absPath, "write", undefined);

@@ -43,6 +43,7 @@ export default {
 			target,
 			cwd: remote ? kernelTargetCwd(target, opts.cwd) : opts.cwd,
 			runCwd: remote ? kernelTargetCwd(target, opts.runCwd ?? opts.cwd) : opts.runCwd,
+			bridgeCwd: remote ? undefined : (opts.runCwd ?? opts.cwd),
 			idleTimeoutMs: opts.idleTimeoutMs,
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
