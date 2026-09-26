@@ -1,6 +1,6 @@
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type FsObservation, type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
-import { logger, postmortem, withTimeout } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import type { ExecutionMetadata } from "../session/execution-metadata";
@@ -20,6 +20,7 @@ interface BashExecutorOptions {
 	signal?: AbortSignal;
 
 	sessionKey?: string;
+	lane?: string;
 	sessionOwner?: BashSessionOwner;
 
 	env?: Record<string, string>;
@@ -57,6 +58,7 @@ export interface BashResult {
 	workingDir?: string;
 	fsObservations?: FsObservation[];
 	xdDispatches?: string[];
+	stageRecords?: string[];
 	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
 	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
 	summarized?: boolean;
@@ -119,7 +121,7 @@ interface QuarantinedShellSession {
 }
 
 const shellSessionQuarantines = new Map<string, QuarantinedShellSession>();
-const shellSessionsInUse = new Set<string>();
+const shellLanes = new Map<string, Promise<void>>();
 
 interface RetainedShell {
 	shell: Shell;
@@ -157,8 +159,7 @@ function shellOwnerId(sessionKey: string): string | undefined {
 	const separator = sessionKey.indexOf("\n");
 	const owner = separator === -1 ? sessionKey : sessionKey.slice(0, separator);
 	if (!owner) return undefined;
-	const asyncSeparator = owner.indexOf(":async:");
-	return asyncSeparator === -1 ? owner : owner.slice(0, asyncSeparator);
+	return owner.split(/:async:|:lane:/, 1)[0];
 }
 
 function belongsToSession(sessionKey: string, sessionId: string): boolean {
@@ -331,7 +332,6 @@ function collectShellsForSession(sessionId: string): Set<Shell> {
 	for (const [sessionKey, shell] of shellSessions) {
 		if (!belongsToSession(sessionKey, sessionId)) continue;
 		shellSessions.delete(sessionKey);
-		shellSessionsInUse.delete(sessionKey);
 		shells.add(shell);
 	}
 	for (const [sessionKey, record] of shellSessionQuarantines) {
@@ -403,7 +403,6 @@ export async function disposeAllBashSessions(): Promise<void> {
 	shellSessions.clear();
 	for (const active of activeShells.values()) active.abortController.abort();
 	activeShells.clear();
-	shellSessionsInUse.clear();
 	brokenShellSessions.clear();
 	shellSessionQuarantines.clear();
 	for (const record of retainedShells.values()) removeRetainedShell(record);
@@ -419,7 +418,6 @@ function forceDisposeAllBashSessions(): void {
 	shellSessions.clear();
 	for (const active of activeShells.values()) active.abortController.abort();
 	activeShells.clear();
-	shellSessionsInUse.clear();
 	brokenShellSessions.clear();
 	shellSessionQuarantines.clear();
 	for (const record of retainedShells.values()) removeRetainedShell(record);
@@ -572,6 +570,36 @@ function resolveUserShellConfig(settings: Settings, baseConfig: ShellConfig): Sh
 }
 
 export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
+	if (options?.lane !== undefined && (options.lane.length === 0 || options.lane.length > 128)) {
+		throw new Error("lane must contain 1–128 characters");
+	}
+	const key = JSON.stringify([options?.sessionKey ?? "", options?.lane ?? "main"]);
+	const previous = shellLanes.get(key) ?? Promise.resolve();
+	const gate = Promise.withResolvers<void>();
+	const queued = previous.then(() => gate.promise);
+	shellLanes.set(key, queued);
+	try {
+		if (options?.signal) await untilAborted(options.signal, () => previous);
+		else await previous;
+		options?.signal?.throwIfAborted();
+		return await executeBashInLane(command, options);
+	} catch (error) {
+		if (!options?.signal?.aborted) throw error;
+		const result: BashResult = {
+			exitCode: undefined,
+			cancelled: true,
+			...(await new OutputSink({}).dump("Command cancelled")),
+		};
+		return { ...result, execution: executionMetadataForResult(result, { summary: result }) };
+	} finally {
+		gate.resolve();
+		void queued.then(() => {
+			if (shellLanes.get(key) === queued) shellLanes.delete(key);
+		});
+	}
+}
+
+async function executeBashInLane(command: string, options?: BashExecutorOptions): Promise<BashResult> {
 	const executionStartedAt = performance.now();
 	const withExecutionMetadata = (result: BashResult): BashResult => ({
 		...result,
@@ -637,7 +665,11 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		snapshotPath: snapshotPath ?? undefined,
 		minimizer,
 	};
-	const sessionKey = buildSessionKey(shell, prefix, snapshotPath, shellEnv, options?.sessionKey, minimizer);
+	const laneSessionKey =
+		options?.lane && options.lane !== "main"
+			? `${options.sessionKey ?? ""}:lane:${encodeURIComponent(options.lane)}`
+			: options?.sessionKey;
+	const sessionKey = buildSessionKey(shell, prefix, snapshotPath, shellEnv, laneSessionKey, minimizer);
 	const sessionOwnerId = shellOwnerId(sessionKey);
 	const sessionOwner =
 		options?.sessionOwner ?? (sessionOwnerId ? getOrCreateBashSessionOwner(sessionOwnerId) : undefined);
@@ -651,18 +683,13 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		shellSessions.delete(sessionKey);
 	}
 
-	const sessionBusy = shellSessionsInUse.has(sessionKey);
-	let shellSession =
-		persistentSessionBroken || sessionBusy || sessionDisposed ? undefined : shellSessions.get(sessionKey);
-	if (!shellSession && !persistentSessionBroken && !sessionBusy && !sessionDisposed) {
+	let shellSession = persistentSessionBroken || sessionDisposed ? undefined : shellSessions.get(sessionKey);
+	if (!shellSession && !persistentSessionBroken && !sessionDisposed) {
 		shellSession = new Shell(shellOptions);
 		shellSessions.set(sessionKey, shellSession);
 	}
 	const executionShell = shellSession ?? new Shell(shellOptions);
 	const ownsPersistentSession = shellSession !== undefined;
-	if (ownsPersistentSession) {
-		shellSessionsInUse.add(sessionKey);
-	}
 	const userSignal = options?.signal;
 	const runAbortController = new AbortController();
 	activeShells.set(executionShell, { sessionKey, abortController: runAbortController });
@@ -743,9 +770,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
 			}
+			const interrupted = await withTimeout(runPromise, 250, "Timed out collecting interrupted shell records").catch(
+				() => undefined,
+			);
 			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
+				stageRecords: interrupted?.stageRecords,
+				xdDispatches: interrupted?.xdDispatches,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
 				...(await sink.dump(
 					winner.kind === "timeout" && deadlineTimeoutMs !== undefined
@@ -771,6 +803,8 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				exitCode: undefined,
 				cancelled: true,
 				timedOut: true,
+				stageRecords: winner.result.stageRecords,
+				xdDispatches: winner.result.xdDispatches,
 				...(await sink.dump(annotation)),
 			});
 		}
@@ -783,6 +817,8 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
+				stageRecords: winner.result.stageRecords,
+				xdDispatches: winner.result.xdDispatches,
 				...(await sink.dump("Command cancelled")),
 			});
 		}
@@ -809,6 +845,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			workingDir: winner.result.workingDir,
 			fsObservations: winner.result.fsObservations,
 			xdDispatches: winner.result.xdDispatches,
+			stageRecords: winner.result.stageRecords,
 			...(await sink.dump()),
 		});
 	} catch (err) {
@@ -827,7 +864,6 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			userSignal.removeEventListener("abort", abortHandler);
 		}
 		if (ownsPersistentSession) {
-			if (shellSessions.get(sessionKey) === executionShell) shellSessionsInUse.delete(sessionKey);
 			const disposed = isDisposedSessionKey(sessionKey, sessionOwner);
 			const asynchronous = options?.sessionKey?.includes(":async:") === true;
 			if (resetSession || asynchronous || disposed) {

@@ -3,7 +3,7 @@ import { Console } from "node:console";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import * as util from "node:util";
 
 import * as logger from "@oh-my-pi/pi-utils/logger";
@@ -23,7 +23,7 @@ import { wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeHooks {
-	onText(chunk: string): void;
+	onText(chunk: string, stream?: "stdout" | "stderr"): void;
 	onDisplay(output: JsDisplayOutput): void;
 	callTool(name: string, args: unknown, completionInvocationId?: string): Promise<unknown>;
 }
@@ -69,6 +69,9 @@ const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const DECIMAL_CSV_RE = /^\d{1,3}(?:,\d{1,3})*$/;
 
 const PRELUDE_GLOBAL_KEYS = [
+	"BatchError",
+	"executions",
+	"editBatch",
 	"__proto_js_prelude_loaded__",
 	"console",
 	"print",
@@ -159,6 +162,11 @@ export class JsRuntime {
 	#cwd: string;
 	#session: { cwd: string; sessionId: string };
 	readonly sessionId: string;
+	readonly #generation = crypto.randomUUID();
+	#executionCount = 0;
+	#definitions = new Map<string, number>();
+	#tasks = new Map<string, { id: string; kind: "cell" | "tool"; state: "running"; cell: number }>();
+	#baseline = new Set<string>();
 	#env: Map<string, string>;
 	#als = new AsyncLocalStorage<RunContext>();
 	#moduleLoader: LocalModuleLoader;
@@ -179,6 +187,7 @@ export class JsRuntime {
 		});
 		if (opts.trackFileWrites) installBunWriteTracking();
 		this.#install(opts.extraGlobals);
+		this.#baseline = new Set(Object.getOwnPropertyNames(globalThis));
 	}
 
 	get cwd(): string {
@@ -209,10 +218,31 @@ export class JsRuntime {
 		code: string,
 		filename: string | undefined,
 		hooks: RuntimeHooks,
-		options: { runId?: string; cwd?: string } = {},
+		options: { runId?: string; cwd?: string; shellEnv?: Record<string, string>; stdin?: number[] } = {},
 	): Promise<unknown> {
 		this.#activateGlobals("run code");
 		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
+		const cell = ++this.#executionCount;
+		const before = Object.getOwnPropertyDescriptors(globalThis);
+		hooks.onDisplay({
+			type: "status",
+			event: {
+				op: "kernel-state",
+				generation: this.#generation,
+				language: "javascript",
+				executionCount: this.#executionCount,
+			},
+		});
+		const shellEnv = options.shellEnv ?? {};
+		const savedEnv = new Map(Object.keys(shellEnv).map(key => [key, process.env[key]]));
+		const savedHelpers = new Map(Object.keys(shellEnv).map(key => [key, this.#env.get(key)]));
+		for (const [key, value] of Object.entries(shellEnv)) {
+			process.env[key] = value;
+			this.#env.set(key, value);
+		}
+		const savedStdin = Object.getOwnPropertyDescriptor(process, "stdin");
+		const stdin = Readable.from([Buffer.from(options.stdin ?? [])]);
+		Object.defineProperty(process, "stdin", { configurable: true, get: () => stdin });
 		const context: RunContext = {
 			runId: options.runId ?? crypto.randomUUID(),
 			hooks,
@@ -221,6 +251,7 @@ export class JsRuntime {
 			finalExpressionValue: undefined,
 			completionInvocationCount: 0,
 		};
+		this.#tasks.set(context.runId, { id: context.runId, kind: "cell", state: "running", cell });
 		beginFileTracking(context.runId, event => hooks.onDisplay({ type: "status", event }), {
 			note: text => hooks.onText(text),
 			cwd: context.cwd,
@@ -242,8 +273,36 @@ export class JsRuntime {
 				return await awaitMaybePromise(value);
 			});
 		} finally {
-			leaveRun();
+			for (const name of this.#definitions.keys()) {
+				if (!Object.hasOwn(globalThis, name)) this.#definitions.delete(name);
+			}
+			for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(globalThis))) {
+				if (name.startsWith("__proto_")) continue;
+				const previous = before[name];
+				if (
+					!previous ||
+					!Object.is(previous.value, descriptor.value) ||
+					previous.get !== descriptor.get ||
+					previous.set !== descriptor.set
+				)
+					this.#definitions.set(name, cell);
+			}
 			await flushFileTracking();
+			stdin.destroy();
+			if (savedStdin) Object.defineProperty(process, "stdin", savedStdin);
+			for (const [key, value] of savedEnv) {
+				if (process.env[key] === shellEnv[key]) {
+					if (value === undefined) delete process.env[key];
+					else process.env[key] = value;
+				}
+				if (this.#env.get(key) === shellEnv[key]) {
+					const previous = savedHelpers.get(key);
+					if (previous === undefined) this.#env.delete(key);
+					else this.#env.set(key, previous);
+				}
+			}
+			this.#tasks.delete(context.runId);
+			leaveRun();
 		}
 	}
 
@@ -330,15 +389,67 @@ export class JsRuntime {
 		return dynamicRequire;
 	}
 
+	kernelState(options: { limit?: number } = {}): Record<string, unknown> {
+		const limit = options.limit ?? 200;
+		if (!Number.isInteger(limit) || limit < 0 || limit > 1000)
+			throw new RangeError("kernelState limit must be an integer from 0 to 1000");
+		const variables = [];
+		let totalVariables = 0;
+		for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(globalThis)).sort(([a], [b]) =>
+			a.localeCompare(b),
+		)) {
+			if (name.startsWith("__proto_") || (this.#baseline.has(name) && !this.#definitions.has(name))) continue;
+			totalVariables++;
+			if (variables.length >= limit) continue;
+			// Descriptors and typeof never evaluate user getters, proxy traps or inspection hooks.
+			const value: unknown = descriptor.value;
+			const type = !("value" in descriptor) ? "accessor" : value === null ? "null" : typeof value;
+			let preview: string;
+			if (typeof value === "string") preview = JSON.stringify(value.slice(0, 160)).slice(0, 200);
+			else if (value === null || ["number", "boolean", "undefined"].includes(type)) preview = String(value);
+			else preview = `<${type}>`;
+			variables.push({
+				name: name.slice(0, 200),
+				nameTruncated: name.length > 200,
+				type,
+				preview,
+				cell: this.#definitions.get(name) ?? this.#executionCount,
+				provenance: "cell",
+			});
+		}
+		return {
+			generation: this.#generation,
+			language: "javascript",
+			interpreter: process.execPath,
+			cwd: this.#activeCwd(),
+			executionCount: this.#executionCount,
+			active: [...this.#tasks.values()].filter(task => task.kind === "cell").length,
+			queued: null,
+			variables,
+			totalVariables,
+			tasks: [...this.#tasks.values()].slice(0, limit),
+			totalTasks: this.#tasks.size,
+			taskScope: "kernel cells and tool calls",
+		};
+	}
+
 	#install(extraGlobals: Record<string, unknown> | undefined): void {
 		assertCanUseGlobalOwner(this.#globalOwner, "initialize a JS runtime");
 		const injected: Record<string, unknown> = {
 			__proto_session__: this.#session,
 			__proto_helpers__: this.helpers,
+			kernelState: (options?: { limit?: number }) => this.kernelState(options),
+			defs: () => Object.fromEntries([...this.#definitions].filter(([name]) => Object.hasOwn(globalThis, name))),
 			__proto_call_tool__: async (name: string, args: unknown, completionInvocationId?: string) => {
 				const hooks = this.#activeHooks("tool");
 				if (!hooks) return undefined;
-				return surfaceBridgedToolImages(await hooks.callTool(name, args, completionInvocationId), hooks);
+				const id = crypto.randomUUID();
+				this.#tasks.set(id, { id, kind: "tool", state: "running", cell: this.#executionCount });
+				try {
+					return surfaceBridgedToolImages(await hooks.callTool(name, args, completionInvocationId), hooks);
+				} finally {
+					this.#tasks.delete(id);
+				}
 			},
 			__proto_next_completion_invocation__: () => {
 				const context = this.#als.getStore();
@@ -369,7 +480,10 @@ export class JsRuntime {
 			__proto_log__: (level: string, ...args: unknown[]) => {
 				const prefix = level === "error" ? "[error] " : level === "warn" ? "[warn] " : "";
 				const text = `${prefix}${formatConsoleArgs(args)}`;
-				this.#activeHooks("log")?.onText(text.endsWith("\n") ? text : `${text}\n`);
+				this.#activeHooks("log")?.onText(
+					text.endsWith("\n") ? text : `${text}\n`,
+					level === "error" || level === "warn" ? "stderr" : "stdout",
+				);
 			},
 			__proto_table__: (...args: unknown[]) => {
 				const hooks = this.#activeHooks("table");
@@ -550,7 +664,7 @@ function patchStdioOnce(): void {
 			if (!hooks) return original(chunk, encoding, callback);
 			const cb = typeof encoding === "function" ? encoding : callback;
 			const enc = typeof encoding === "string" ? (encoding as BufferEncoding) : undefined;
-			hooks.onText(chunkToString(chunk, enc));
+			hooks.onText(chunkToString(chunk, enc), stream === process.stderr ? "stderr" : "stdout");
 			if (typeof cb === "function") (cb as (error?: Error | null) => void)();
 			return true;
 		};

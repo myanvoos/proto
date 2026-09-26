@@ -24,6 +24,7 @@ import { LatestValueScheduler, parseStreamedInputForCompletion, type StreamedKer
 import { upsertStatusEvent } from "../eval/status-events";
 import {
 	type ExecutionMetadata,
+	type ExecutionStageMetadata,
 	type ExecutionTimeoutMetadata,
 	executionMetadataForResult,
 	isHardFailureExit,
@@ -43,6 +44,7 @@ import type { Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import "./kernel-prelude";
+import { type ExecutionRecord, recordExecution } from "../eval/runtime-bridge";
 import type {
 	ClientBridgeTerminalExitStatus,
 	ClientBridgeTerminalHandle,
@@ -151,9 +153,13 @@ export function kernelBridgeAvailable(session: ToolSession): boolean {
 	return backends.python || backends.js;
 }
 
-async function saveBashOriginalArtifact(session: ToolSession, originalText: string): Promise<string | undefined> {
+async function saveBashOriginalArtifact(
+	session: ToolSession,
+	originalText: string,
+	kind = "bash-original",
+): Promise<string | undefined> {
 	try {
-		const alloc = await session.allocateOutputArtifact?.("bash-original");
+		const alloc = await session.allocateOutputArtifact?.(kind);
 		if (!alloc?.path || !alloc.id) return undefined;
 		await Bun.write(alloc.path, originalText);
 		return alloc.id;
@@ -169,6 +175,9 @@ const bashSchemaFields = {
 	"env?": type({ "[string]": "string" }).describe("extra env vars"),
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": type("string").describe("working directory"),
+	"lane?": type("string").describe(
+		"persistent execution lane; same lane queues, different names isolate shell and kernel state",
+	),
 	"pty?": type("boolean").describe("run in pty mode"),
 };
 
@@ -183,6 +192,7 @@ type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
 
 export interface BashToolInput {
 	command: string;
+	lane?: string;
 	env?: Record<string, string>;
 	timeout?: number;
 	cwd?: string;
@@ -192,6 +202,8 @@ export interface BashToolInput {
 }
 
 export interface BashToolDetails {
+	deviceResults?: XdDispatchRecord[];
+	executionRecordOmitted?: string;
 	xdev?: unknown;
 	meta?: OutputMeta;
 	execution?: ExecutionMetadata;
@@ -254,9 +266,11 @@ interface PendingStreamedObservation {
 	resolve: (failure: StreamedKernelFailure | undefined) => void;
 }
 
-interface XdDispatchRecord {
+export interface XdDispatchRecord {
+	stageIndex?: number;
 	xdev?: unknown;
-	details?: { jsonOutputs?: unknown[] };
+	details?: Record<string, unknown>;
+	recordError?: string;
 	content?: unknown[];
 	isError?: boolean;
 }
@@ -276,10 +290,10 @@ function parseXdDispatches(dispatches: readonly string[] | undefined): {
 			const parsed: unknown = JSON.parse(raw);
 			if (!isRecord(parsed)) return { records, error: `xd dispatch record ${index + 1} is not an object` };
 			records.push({
+				stageIndex: typeof parsed.stageIndex === "number" ? parsed.stageIndex : undefined,
 				xdev: parsed.xdev,
-				details: isRecord(parsed.details)
-					? { jsonOutputs: Array.isArray(parsed.details.jsonOutputs) ? parsed.details.jsonOutputs : undefined }
-					: undefined,
+				details: isRecord(parsed.details) ? parsed.details : undefined,
+				recordError: typeof parsed.recordError === "string" ? parsed.recordError : undefined,
 				content: Array.isArray(parsed.content) ? parsed.content : undefined,
 				isError: parsed.isError === true,
 			});
@@ -788,6 +802,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				cwd?: string;
 				stdin?: string;
 				stdinTruncated?: boolean;
+				stageIndex?: number;
 			};
 			try {
 				const parsed: unknown = JSON.parse(requestText);
@@ -865,9 +880,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const isError = result.isError === true;
 			let record: string | undefined;
 			try {
-				record = JSON.stringify({ xdev: result.details?.xdev, details: result.details, content: nonText, isError });
+				record = JSON.stringify({
+					stageIndex: request.stageIndex,
+					xdev: result.details?.xdev,
+					details: result.details,
+					content: nonText,
+					isError,
+				});
 			} catch {
 				record = JSON.stringify({
+					stageIndex: request.stageIndex,
 					content: [],
 					isError,
 					recordError: "non-text result was not serializable",
@@ -910,7 +932,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 	#kernelShellBridge(
 		toolCallId: string,
-		finalInput: { command: string; cwd?: string; env?: Record<string, string>; pty: boolean; async: boolean },
+		finalInput: {
+			command: string;
+			cwd?: string;
+			env?: Record<string, string>;
+			pty: boolean;
+			async: boolean;
+			lane?: string;
+		},
 		onStatusEvent?: (event: EvalStatusEvent) => void,
 	): KernelShellBridgeHandle | undefined {
 		if (!kernelBridgeAvailable(this.session)) return undefined;
@@ -934,6 +963,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				sameEnv;
 		}
 		return registerKernelShellRun(this.session, onStatusEvent, {
+			lane: finalInput.lane,
 			toolCallId: claimable ? toolCallId : undefined,
 			generation: claimable ? state?.generation : undefined,
 		});
@@ -974,6 +1004,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			images?: readonly ImageContent[];
 			statusEvents?: readonly EvalStatusEvent[];
 			jsonOutputs?: readonly unknown[];
+			queriedExecutions?: boolean;
 			xdDispatches?: readonly string[];
 			kernelRouted?: boolean;
 		} = {},
@@ -1008,6 +1039,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			softExit: softExit || undefined,
 		};
 
+		if ("stageRecords" in result && result.stageRecords?.length) {
+			execution.stages = result.stageRecords.map(raw => JSON.parse(raw) as ExecutionStageMetadata);
+			for (const stage of execution.stages) {
+				if (isTimeout && stage.state !== "exited") stage.timeout = executionTimeout;
+				for (const stream of ["stdout", "stderr"] as const) {
+					const output = stage[stream];
+					if (output?.text)
+						output.artifactId = await saveBashOriginalArtifact(this.session, output.text, `bash-stage-${stream}`);
+				}
+			}
+		}
 		const xdResult = parseXdDispatches(options.xdDispatches ?? readXdDispatches(result));
 		const xdImages: ImageContent[] = [];
 		const xdJsonOutputs: unknown[] = [];
@@ -1020,7 +1062,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				);
 			}
 			// A failed intermediate xd tool is data; final shell status remains authoritative.
-			for (const value of record.details?.jsonOutputs ?? []) xdJsonOutputs.push(value);
+			if (Array.isArray(record.details?.jsonOutputs)) xdJsonOutputs.push(...record.details.jsonOutputs);
 			for (const block of record.content ?? []) {
 				if (
 					isRecord(block) &&
@@ -1053,7 +1095,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (failedExit) outputLines.push("", formatExitCodeNotice(exitCode));
 		const outputText = outputLines.join("\n");
 
-		const details: BashToolDetails = { execution };
+		const details: BashToolDetails = {
+			execution,
+			deviceResults: xdResult.records.length ? xdResult.records : undefined,
+		};
+		if (options.queriedExecutions) details.executionRecordOmitted = "executions query";
 		const fsObservations = "fsObservations" in result ? result.fsObservations : undefined;
 		const mutatedPaths = fsObservations
 			?.filter(observation => observation.kind === "write" && path.isAbsolute(observation.path))
@@ -1195,6 +1241,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 	#startManagedBashJob(options: {
 		command: string;
+		lane?: string;
 		commandCwd: string;
 		timeoutMs: number | undefined;
 		timeoutSec: number | undefined;
@@ -1227,6 +1274,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			async ({ jobId, signal: runSignal, reportProgress }) => {
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const wallTimeStart = performance.now();
+				const lane = options.lane ?? `async:${jobId}`;
+				const record: ExecutionRecord = { id: jobId, command: options.command, lane, startedAt: Date.now() };
+				recordExecution(this.session, record);
 				const progressScheduler = new LatestValueScheduler<void>(
 					async () => {
 						latestText = tailBuffer.text();
@@ -1237,15 +1287,18 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				);
 				const pyBridge = this.#kernelShellBridge(jobId, {
 					command: options.command,
+					lane,
 					cwd: options.commandCwd,
 					env: options.resolvedEnv,
 					pty: false,
 					async: true,
 				});
+				let resultRecorded = false;
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
-						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						sessionKey: this.session.getSessionId?.() ?? undefined,
+						lane,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						env: pyBridge ? { ...options.resolvedEnv, ...pyBridge.env } : options.resolvedEnv,
@@ -1269,7 +1322,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						images: await this.#drainBridgeImages(pyBridge),
 						statusEvents: pyBridge?.drainStatusEvents(),
 						jsonOutputs: pyBridge?.drainJsonOutputs(),
+						queriedExecutions: pyBridge?.queriedExecutions(),
 					});
+					recordExecution(this.session, {
+						...record,
+						finishedAt: Date.now(),
+						...(finalResult.details?.executionRecordOmitted
+							? { resultOmitted: finalResult.details.executionRecordOmitted }
+							: { result: finalResult }),
+					});
+					resultRecorded = true;
 					const finalText = this.#extractTextResult(finalResult);
 					await progressScheduler.flush();
 					latestText = finalText;
@@ -1286,6 +1348,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					await progressScheduler.flush();
 					latestText = message;
 					latestTextDirty = false;
+					if (!resultRecorded)
+						recordExecution(this.session, { ...record, finishedAt: Date.now(), error: message });
 					completion.resolve({ kind: "failed", error });
 					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
 					throw error;
@@ -1332,12 +1396,47 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	async execute(
+		toolCallId: string,
+		input: BashToolInput,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
+		ctx?: AgentToolContext,
+	): Promise<AgentToolResult<BashToolDetails>> {
+		const record: ExecutionRecord = {
+			id: toolCallId,
+			command: input.command,
+			lane: input.lane ?? "main",
+			startedAt: Date.now(),
+		};
+		recordExecution(this.session, record);
+		try {
+			const result = await this.#execute(toolCallId, input, signal, onUpdate, ctx);
+			recordExecution(this.session, {
+				...record,
+				finishedAt: Date.now(),
+				...(result.details?.executionRecordOmitted
+					? { resultOmitted: result.details.executionRecordOmitted }
+					: { result }),
+			});
+			return result;
+		} catch (error) {
+			recordExecution(this.session, {
+				...record,
+				finishedAt: Date.now(),
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+	}
+
+	async #execute(
 		_toolCallId: string,
 		{
 			command: rawCommand,
 			env: rawEnv,
 			timeout: rawTimeout = 300,
 			cwd,
+			lane,
 
 			async: asyncRequested = false,
 			pty = false,
@@ -1442,6 +1541,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 			const job = this.#startManagedBashJob({
 				command,
+				lane,
 				commandCwd,
 				timeoutMs,
 				timeoutSec,
@@ -1477,6 +1577,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
 				command,
+				lane,
 				commandCwd,
 				timeoutMs,
 				timeoutSec,
@@ -1805,7 +1906,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			? undefined
 			: this.#kernelShellBridge(
 					_toolCallId,
-					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested },
+					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested, lane },
 					event => {
 						upsertStatusEvent(liveStatusEvents, event);
 						liveUpdateScheduler.enqueue(undefined);
@@ -1825,6 +1926,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				: await executeBash(command, {
 						cwd: commandCwd,
 						sessionKey: this.session.getSessionId?.() ?? undefined,
+						lane,
 						timeout: timeoutMs ?? 0,
 						signal,
 						env: pyBridge ? { ...resolvedEnv, ...pyBridge.env } : resolvedEnv,
@@ -1863,6 +1965,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				images: await this.#drainBridgeImages(pyBridge),
 				statusEvents: pyBridge?.drainStatusEvents(),
 				jsonOutputs: pyBridge?.drainJsonOutputs(),
+				queriedExecutions: pyBridge?.queriedExecutions(),
 			});
 		} finally {
 			await liveUpdateScheduler.flush();

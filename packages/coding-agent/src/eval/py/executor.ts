@@ -43,6 +43,8 @@ export interface PythonExecutorOptions {
 	cwd?: string;
 
 	runCwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 
 	timeoutMs?: number;
 
@@ -51,6 +53,7 @@ export interface PythonExecutorOptions {
 	idleTimeoutMs?: number;
 
 	onChunk?: (chunk: string) => Promise<void> | void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 

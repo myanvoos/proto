@@ -9,11 +9,14 @@ export interface KernelExecuteOptions {
 	id?: string;
 
 	cwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 
 	env?: Record<string, string | undefined> | Record<string, string | null>;
 	fsObservations?: FsObservation[];
 	signal?: AbortSignal;
 	onChunk?: (text: string) => Promise<void> | void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 	retainedOutputBytes?: () => number;
 	releaseOutput?: () => void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
@@ -102,6 +105,7 @@ interface CompletedOutputSink {
 	releaseOutput?: () => void;
 	timer: NodeJS.Timeout;
 	onChunk?: (text: string) => Promise<void> | void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	unicodeTails: UnicodeTails;
 }
@@ -308,6 +312,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				this.#evictCompletedOutputSink(msgId);
 				this.#completedOutputSinks.set(msgId, {
 					onChunk: pending.options.onChunk,
+					onStream: pending.options.onStream,
 					retainedOutputBytes: pending.options.retainedOutputBytes,
 					releaseOutput: pending.options.releaseOutput,
 					timer: unrefTimeout(() => this.#evictCompletedOutputSink(msgId), COMPLETED_OUTPUT_TTL_MS),
@@ -731,7 +736,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				value: error instanceof Error ? error.message : String(error),
 				traceback: [],
 			};
-			pending.options = { ...pending.options, onChunk: undefined, onDisplay: undefined };
+			pending.options = { ...pending.options, onChunk: undefined, onStream: undefined, onDisplay: undefined };
 		} else {
 			if (rid) this.#evictCompletedOutputSink(rid);
 			logger.warn("Kernel background output consumer failed", { error: String(error) });
@@ -739,7 +744,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	}
 
 	async #forwardTextFrame(
-		sink: { onChunk?: (text: string) => Promise<void> | void; unicodeTails: UnicodeTails },
+		sink: {
+			onChunk?: (text: string) => Promise<void> | void;
+			onStream?: (text: string, stream: TextFrameKind) => Promise<void> | void;
+			unicodeTails: UnicodeTails;
+		},
 		kind: TextFrameKind,
 		text: string,
 	): Promise<void> {
@@ -751,7 +760,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			combined = combined.slice(0, -1);
 		}
 		const repaired = combined.toWellFormed();
-		if (repaired) await sink.onChunk?.(repaired);
+		if (repaired) {
+			await sink.onChunk?.(repaired);
+			await sink.onStream?.(repaired, kind);
+		}
 		if (repaired !== combined) {
 			await sink.onChunk?.(
 				"\n[kernel] output contained an unrecoverable unpaired UTF-16 surrogate; replaced with U+FFFD.\n",
@@ -786,7 +798,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			}
 			if (frame.type === "display" || frame.type === "result") {
 				const { text, outputs } = await renderKernelDisplay(frame.bundle ?? {});
-				if (text) await completed.onChunk?.(text);
+				if (text) {
+					await completed.onChunk?.(text);
+					await completed.onStream?.(text, "stdout");
+				}
 				for (const output of outputs) await completed.onDisplay?.(output);
 				this.#trimCompletedOutputSinks();
 			}
@@ -801,7 +816,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			case "stdout":
 			case "stderr": {
 				await this.#forwardTextFrame(
-					{ onChunk: pending.options?.onChunk, unicodeTails: pending.unicodeTails },
+					{
+						onChunk: pending.options?.onChunk,
+						onStream: pending.options?.onStream,
+						unicodeTails: pending.unicodeTails,
+					},
 					frame.type,
 					frame.data ?? "",
 				);
@@ -814,6 +833,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				if (text && pending.options?.onChunk) {
 					await pending.options.onChunk(text);
 				}
+				if (text) await pending.options?.onStream?.(text, "stdout");
 				if (outputs.length > 0 && pending.options?.onDisplay) {
 					for (const output of outputs) {
 						await pending.options.onDisplay(output);
@@ -834,6 +854,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				if (pending.options?.onChunk) {
 					await pending.options.onChunk(message);
 				}
+				await pending.options?.onStream?.(message, "stderr");
 				return;
 			}
 			case "done": {

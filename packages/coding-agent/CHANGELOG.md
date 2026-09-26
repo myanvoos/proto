@@ -2,7 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Bash execution lanes, queryable command-stage and device results, and safe Python/JavaScript kernel-state inspection with restart notices
+- Checked multi-file edit previews and guarded commits with rollback/conflict reporting
+- Settled batch results, bounded cooperative deadlines/cancellation, streaming pipelines, and explicit checkpoint resumption in kernel orchestration helpers
+
 ### Fixed
+
+- Kernel cells receive shell environment overrides, preserve stderr redirection, and keep state when inline code consumes piped input
+- Overlapping Bash calls in the same lane queue without silently losing shell state
 
 - Retrying a failed session-storage write no longer uses an incorrect cached file size
 - Path-scoped model and provider restrictions apply inside valid directories beginning with `..`

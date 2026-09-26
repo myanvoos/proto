@@ -26,7 +26,7 @@ export type { JsDisplayOutput } from "./worker-protocol";
 
 interface VmRunState {
 	signal?: AbortSignal;
-	onText?: (chunk: string) => void;
+	onText?: (chunk: string, stream?: "stdout" | "stderr") => void;
 	retainedBytes?: () => number;
 	release?: () => void;
 	onDisplay?: (output: JsDisplayOutput) => void;
@@ -166,6 +166,8 @@ export async function executeInVmContext(options: {
 	cwd: string;
 	session: ToolSession;
 	localRoots?: Record<string, string>;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 	reset?: boolean;
 	onStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
@@ -210,7 +212,13 @@ export async function executeInVmContext(options: {
 	}
 	const session = await acquireSession(
 		sessionKey,
-		{ cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
+		{
+			cwd: options.cwd,
+			sessionId: options.sessionId,
+			localRoots: options.localRoots,
+			shellEnv: options.shellEnv,
+			stdin: options.stdin,
+		},
 		options.timeoutMs,
 		options.ownerId,
 	);
@@ -284,6 +292,8 @@ async function runOnce(
 		cwd: string;
 		session: ToolSession;
 		localRoots?: Record<string, string>;
+		shellEnv?: Record<string, string>;
+		stdin?: number[];
 		completionContext?: EvalCompletionInvocationContext;
 		code: string;
 		filename: string;
@@ -334,7 +344,13 @@ async function runOnce(
 			runId,
 			code: options.code,
 			filename: options.filename,
-			snapshot: { cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
+			snapshot: {
+				cwd: options.cwd,
+				sessionId: options.sessionId,
+				localRoots: options.localRoots,
+				shellEnv: options.shellEnv,
+				stdin: options.stdin,
+			},
 			completionContext: options.completionContext,
 		});
 		return await promise;
@@ -507,7 +523,7 @@ function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 				return;
 			}
 			try {
-				if (msg.type === "text") runState.onText?.(msg.chunk);
+				if (msg.type === "text") runState.onText?.(msg.chunk, msg.stream);
 				else runState.onDisplay?.(msg.output);
 				if (completed) trimCompletedRuns(session);
 			} catch (error) {

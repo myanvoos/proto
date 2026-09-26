@@ -5,6 +5,8 @@ export type { JsDisplayOutput } from "./shared/types";
 
 export interface SessionSnapshot {
 	cwd: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 	sessionId: string;
 
 	localRoots?: Record<string, string>;
@@ -36,7 +38,7 @@ export type WorkerInbound =
 export type WorkerOutbound =
 	| { type: "ready" }
 	| { type: "init-failed"; error: RunErrorPayload }
-	| { type: "text"; runId: string; chunk: string }
+	| { type: "text"; runId: string; chunk: string; stream?: "stdout" | "stderr" }
 	| { type: "display"; runId: string; output: JsDisplayOutput }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown; completionInvocationId?: string }
 	| { type: "result"; runId: string; ok: true }

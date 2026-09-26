@@ -224,6 +224,7 @@ pub struct ShellRunResult {
 	pub fs_observations: Vec<FsObservation>,
 
 	pub xd_dispatches: Vec<String>,
+	pub stage_records: Vec<String>,
 }
 
 impl From<CoreShellRunResult> for ShellRunResult {
@@ -236,6 +237,7 @@ impl From<CoreShellRunResult> for ShellRunResult {
 			working_dir:     value.working_dir,
 			fs_observations: value.fs_observations.into_iter().map(Into::into).collect(),
 			xd_dispatches:   value.xd_dispatches,
+			stage_records:   value.stage_records,
 		}
 	}
 }
@@ -423,6 +425,7 @@ mod tests {
 			working_dir: None,
 			fs_observations: Vec::new(),
 			xd_dispatches: Vec::new(),
+			stage_records: Vec::new(),
 		}
 	}
 

@@ -55,7 +55,7 @@ pub use commands::{CommandArg, ExecutionContext};
 pub use error::{BuiltinError, Error, ErrorKind};
 pub use extensions::ShellExtensions;
 pub use interp::{
-	ExecutionParameters, ExternalCommandInfo, ExternalCommandOutputMarker,
+	CommandObserver, CommandObservation, ExecutionParameters, ExternalCommandInfo, ExternalCommandOutputMarker,
 	ExternalCommandOutputMarkers, ProcessGroupPolicy, SpawnObserver,
 };
 pub use parser::{SourcePosition, SourcePositionOffset, SourceSpan};

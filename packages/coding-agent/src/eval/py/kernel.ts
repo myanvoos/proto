@@ -212,6 +212,8 @@ export class PythonKernel extends BaseKernel {
 					code,
 					cwd: opts?.cwd,
 					env: opts?.env,
+					shellEnv: opts?.shellEnv,
+					stdin: opts?.stdin,
 					fsObservations: opts?.fsObservations,
 					silent: opts?.silent ?? false,
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),

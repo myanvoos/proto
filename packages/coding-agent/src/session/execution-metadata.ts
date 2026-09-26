@@ -42,8 +42,26 @@ export interface ExecutionOutputMetadata {
 	actionableDiagnostics?: string[];
 }
 
+export interface ExecutionStageOutputMetadata {
+	text: string;
+	bytes: number;
+	truncated: boolean;
+	complete: boolean;
+	/** Artifact contains the captured preview, not omitted bytes. */
+	artifactId?: string;
+}
+
 export interface ExecutionStageMetadata {
 	index: number;
+	parent?: number;
+	command?: string;
+	commandTruncated?: boolean;
+	route?: string;
+	/** Unicode character offsets; absent for reconstructed or nested sources. */
+	sourceSpan?: [number, number];
+	stdout?: ExecutionStageOutputMetadata;
+	stderr?: ExecutionStageOutputMetadata;
+	omittedAfter?: number;
 	state: ExecutionState;
 	exitCode?: number;
 	signal?: string | number;

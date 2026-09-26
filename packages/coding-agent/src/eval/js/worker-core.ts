@@ -275,7 +275,7 @@ export class WorkerCore {
 		const active: ActiveRun = { runId, filename, completionContext, pendingTools: new Map(), floatingRejections: [] };
 		this.#runs.set(runId, active);
 		const hooks: RuntimeHooks = {
-			onText: chunk => this.#transport.send({ type: "text", runId, chunk }),
+			onText: (chunk, stream) => this.#transport.send({ type: "text", runId, chunk, stream }),
 			onDisplay: output => this.#transport.send({ type: "display", runId, output }),
 			callTool: (name, args, completionInvocationId) => this.#callTool(active, name, args, completionInvocationId),
 		};
@@ -283,7 +283,12 @@ export class WorkerCore {
 		try {
 			const runtime = this.#ensureRuntime(snapshot, runId);
 			runtime.setCwd(snapshot.cwd);
-			const value = await runtime.run(code, filename, hooks, { runId, cwd: snapshot.cwd });
+			const value = await runtime.run(code, filename, hooks, {
+				runId,
+				cwd: snapshot.cwd,
+				shellEnv: snapshot.shellEnv,
+				stdin: snapshot.stdin,
+			});
 			runtime.displayValue(value, hooks);
 			result = { type: "result", runId, ok: true };
 		} catch (error) {

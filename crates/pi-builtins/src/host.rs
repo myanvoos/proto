@@ -88,6 +88,7 @@ pub(crate) trait Utility: clap::Parser + Send + Sync + 'static {
 
 
 pub(crate) struct Host {
+	pub command_observation: Option<brush_core::CommandObservation>,
 
 
 	pub stdin:  Stdin,
@@ -1033,6 +1034,7 @@ fn build_host<SE: ShellExtensions>(
 	let stdout = SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe);
 
 	Ok(Host {
+		command_observation: context.params.command_observation.clone(),
 		stdin: Stdin {
 			file:   or_null(stdin)?,
 			fd:     stdin_fd,
@@ -1172,6 +1174,7 @@ mod tests {
 		let stderr_file = OpenFile::File(stderr.reopen().expect("reopen stderr"));
 		let cancel = Arc::new(AtomicBool::new(false));
 		let host = Host {
+			command_observation: None,
 			stdin: Stdin {
 				file: openfiles::null().expect("null stdin"),
 				fd: None,

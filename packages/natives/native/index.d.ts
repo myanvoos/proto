@@ -920,6 +920,7 @@ export interface ShellRunResult {
   workingDir?: string
   fsObservations: Array<FsObservation>
   xdDispatches: Array<string>
+  stageRecords: Array<string>
 }
 
 export interface SliceResult {

@@ -13,10 +13,23 @@ completion(prompt, model?="default"|"smol"|"slow"|<pool model id>, system?=None,
 {{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, schema{{#if js}}Mode{{else}}_mode{{/if}}?="permissive", isolated?=None, apply?=None, merge?=None, handle?=False) → str | dict
     Subagent → final output; omit `agent` → `{{spawnDefaultAgent}}`.{{#if spawnAllowedAgentsText}} Allowed: {{spawnAllowedAgentsText}}.{{/if}} `isolated` = worktree; `apply`/`merge` control its changes. Background via `local://` files named in the prompt. `handle` → { text, output, handle: "agent://<id>", id, agent }; `schema` overrides agent/session schemas → parsed data; `model` overrides the worker's model (bank-validated).
 {{#if js}}    JS: ONE trailing object — agent(prompt, { agent, model, label, schema, schemaMode, isolated, apply, merge, handle }).{{/if}}
-{{/if}}parallel(thunks) → list     pipeline(items, ...stages) → list
+{{/if}}parallel(thunks, options) → list     pipeline(items, ...stages, options) → list
+executions(id?, limit?=20) → {records, evicted}    recent Bash results, per-stage status/streams, structured deviceResults; JS executions(id, {limit})
+{{#if py}}kernel_state(limit?=200) → dict    generation, bindings/types/previews/provenance, tasks; no heap snapshot
+edit_batch(changes, apply?=False) → dict    [{path,before,after}]; before=None requires new file; preview by default
+{{/if}}{{#if js}}defs() → object    kernel-defined names → cell number
+kernelState({limit:200}) → object    JS state inspection; queued=null means unavailable
+editBatch(changes, {apply:false}) → object    [{path,before,after}]; before=null requires new file; preview by default
+{{/if}}
 log(message) → None         phase(title) → None
 budget → {{#if py}}`budget.total` (ceiling or None), `budget.spent()`, `budget.remaining()`{{/if}}{{#if js}}`await budget.total()`, `await budget.spent()`, `await budget.remaining()`{{/if}}{{#if rb}}`budget.total`, `budget.spent`, `budget.remaining`{{/if}}{{#if jl}}`budget.total`, `budget.spent()`, `budget.remaining()`{{/if}}; ceiling `+Nk` advisory, `+Nk!` hard.
 ```
+
+Orchestration options: Python kwargs; JS trailing object. `settled` → ordered `{status,index,stage,value|error}` rows (`fulfilled|rejected|timed_out|cancelled`); otherwise failure throws `BatchError` retaining `.results`. `concurrency` caps work; pipeline `streaming` advances each item without a batch barrier.
+- Python `timeout` seconds, `cancel` event, `on_result`; cooperative loops call `task_signal().check()`. JS `timeoutMs`, `signal`, `onResult`; callbacks receive an `AbortSignal`. Helpers drain callbacks before returning; noncooperative work can exceed its deadline.
+- `checkpoint` directory + workflow `key` save successful JSON results. `resume` REQUIRED to reuse them; change `key` when code changes. Checkpointed `parallel` also requires unique stable string `keys`. No implicit retries; no heap/closure snapshots.
+- Checked batches validate every `before` first. `apply` commits each file atomically; batch failure attempts rollback, reports `partial` conflicts, NEVER guarantees cross-file atomicity. Inspect returned `state`, `error`, `conflicts` before continuing.
+- Execution history and stage captures bounded; check `evicted`, `omittedAfter`, stream `truncated`/`complete`. Stream artifacts contain captured previews; result output artifacts retain normal Bash output. History-query results are omitted from history to prevent recursive retention.
 
 {{#if py}}
 Python heredoc assignments: quote-hostile literal payloads without interpolation. Custom kernel syntax only; invalid in standalone Python.

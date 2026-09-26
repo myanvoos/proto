@@ -3,6 +3,7 @@ Runs commands in a persistent shell.
 Tool results are text-only: trailing `Command exited with code N`, `[Command timed out after N seconds]`, `Backgrounded as job <id>…`, and `[Showing lines … Read artifact://N …]` are the authoritative lifecycle/disposition signals. Program text such as `timeout: 60` or `all checks passed` is data, not status.
 - Set `cwd` instead of `cd`; use `env` for multiline/quote-heavy values. `pty: true` only for terminal interaction (`sudo`, `ssh`).
 - Order-dependent commands go in one call; independent calls may run concurrently.
+- Non-PTY Brush calls share `lane:"main"` by default; one lane queues, different names isolate shell + kernel state. Background jobs without an explicit lane use their own lane.
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
 {{#if hasShellBuiltins}}- Many aux utils on PATH (mkdir, jq, sed, xargs, sha256sum, mktemp, … incl. `errno`) — no need to check availability.{{/if}}
 {{#if asyncEnabled}}- `async: true` does not extend `timeout`.{{/if}}
@@ -19,7 +20,7 @@ printf '%s' 'return await tab.observe();' | xd browser --action run --name main 
 {{#if hasKernelBridge}}
 <kernel>
 `python`{{#if js}}/`node`/`bun`{{/if}} with code on **stdin** (heredoc — prefer a quoted `<<'EOF'` delimiter) or bare {{#if js}}`-c`/`-e` {{else}}`-c` {{/if}}CODE run in the **persistent eval kernel**, NOT a fresh interpreter: top-level state (vars, imports, defs, running tasks) survives across bash calls, and cells expose the helpers below. `python file.py`, `-m`, or any extra argv runs a real fresh interpreter instead.
-Kernel cells issued as parallel bash calls run unordered — put dependent cells in one call (or chain them in one script).
+Shell exports, inline assignments, and `env` reach cells; stdout/stderr honor shell redirects. Piping into `python -c`{{#if js}} or `node`/`bun -e`{{/if}} supplies program stdin without losing kernel state. Different lanes may run unordered; keep dependent work in one lane. Kernel restart notices mean earlier variables are gone — inspect state before continuing.
 
 Read first; localized replacements MUST assert anchors and occurrence counts before writing. Every mutation is tracked and diffed; stale writes raise `StaleWriteError` before truncation, so re-read and redo the edit. Net-mutated paths emit one compact `<kernel> note:` line per path in cell output.
 

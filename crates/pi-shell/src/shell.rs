@@ -42,6 +42,7 @@ pub struct XdDispatchRequest {
 	pub args:            Vec<String>,
 	pub stdin:           String,
 	pub stdin_truncated: bool,
+	pub stage_index:     Option<usize>,
 	pub cwd:             String,
 	pub call_id:         Option<String>,
 }
@@ -128,6 +129,9 @@ fn xd_execute(
 	args: Vec<CommandArg>,
 ) -> builtins::BoxFuture<'_, Result<ExecutionResult, brush_core::error::Error>> {
 	Box::pin(async move {
+		if let Some(observation) = &context.params.command_observation {
+			observation.route("xd");
+		}
 		let mut plain_args: Vec<String> = args.into_iter().map(|arg| arg.to_string()).collect();
 		if plain_args.first().is_some_and(|arg| arg == "xd") {
 			plain_args.remove(0);
@@ -164,6 +168,11 @@ fn xd_execute(
 			args,
 			stdin: String::from_utf8_lossy(&input).into_owned(),
 			stdin_truncated,
+			stage_index: context
+				.params
+				.command_observation
+				.as_ref()
+				.map(|observation| observation.id),
 			cwd: context.shell.working_dir().to_string_lossy().into_owned(),
 			call_id,
 		};
@@ -226,6 +235,7 @@ fn xd_registration() -> Registration<XdShellExtensions> {
 
 struct ShellSessionCore {
 	shell: BrushShell<XdShellExtensions>,
+	trace: crate::execution_trace::CommandTrace,
 }
 
 impl Drop for ShellSessionCore {
@@ -351,6 +361,7 @@ pub struct ShellRunResult {
 	pub working_dir:     Option<String>,
 	pub fs_observations: Vec<FsObservation>,
 	pub xd_dispatches:   Vec<String>,
+	pub stage_records:   Vec<String>,
 }
 
 struct CommandOutcome {
@@ -359,6 +370,7 @@ struct CommandOutcome {
 	working_dir:     Option<String>,
 	fs_observations: Vec<FsObservation>,
 	xd_dispatches:   Vec<String>,
+	stage_records:   Vec<String>,
 }
 
 impl CommandOutcome {
@@ -379,6 +391,7 @@ impl CommandOutcome {
 				.map(Into::into)
 				.collect(),
 			xd_dispatches: session.shell.error_formatter().take_records(),
+			stage_records: session.trace.records(),
 		}
 	}
 
@@ -391,6 +404,7 @@ impl CommandOutcome {
 			working_dir:     self.working_dir,
 			fs_observations: self.fs_observations,
 			xd_dispatches:   self.xd_dispatches,
+			stage_records:   self.stage_records,
 		}
 	}
 }
@@ -405,6 +419,7 @@ impl ShellRunResult {
 			working_dir:     None,
 			fs_observations: Vec::new(),
 			xd_dispatches:   Vec::new(),
+			stage_records:   Vec::new(),
 		}
 	}
 }
@@ -673,11 +688,17 @@ async fn run_shell_session(
 
 
 
+			let mut aborted = ShellRunResult::aborted(reason);
 			if let Ok(mut guard) = session.try_lock() {
+				if let Some(session) = guard.as_ref() {
+					session.trace.interrupt();
+					aborted.stage_records = session.trace.records();
+					aborted.xd_dispatches = session.shell.error_formatter().take_records();
+				}
 				*guard = None;
 			}
 			let _ = process_cancel_bridge.await;
-			return Ok(ShellRunResult::aborted(reason));
+			return Ok(aborted);
 		}
 	};
 	let res =
@@ -942,7 +963,7 @@ async fn create_session_for_run(
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;
 	}
 
-	Ok(ShellSessionCore { shell })
+	Ok(ShellSessionCore { shell, trace: crate::execution_trace::CommandTrace::default() })
 }
 
 async fn source_snapshot(
@@ -1019,6 +1040,7 @@ async fn run_shell_command(
 		set_shell_working_dir_if_changed(&mut session.shell, cwd)?;
 	}
 
+	session.trace = crate::execution_trace::CommandTrace::default();
 	let env_scope_pushed = apply_command_env(&mut session.shell, options.env.as_ref())?;
 
 	let minimizer_mode = if let Some(config) = options.minimizer.as_ref() {
@@ -1175,6 +1197,7 @@ async fn run_shell_command_segmented_chain(
 	};
 
 	let params = session.shell.default_exec_params();
+	session.trace.omit_source_spans();
 	let mut aggregate = Some(ChainCapture::new());
 	let mut previous_succeeded = true;
 	let mut last_result = None;
@@ -1287,6 +1310,7 @@ async fn run_shell_command_once(
 	params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
 	params.set_cancel_token(cancel_token.clone());
 	params.set_spawn_observer(spawn_registry.clone());
+	params.command_observer = Some(Arc::new(session.trace.clone()));
 	let reader_cancel = CancellationToken::new();
 	let (activity_tx, activity_rx) = flume::bounded::<()>(1);
 	let reader_callback = on_chunk;
@@ -1399,6 +1423,7 @@ async fn run_shell_command_streams(
 		set_shell_working_dir_if_changed(&mut session.shell, cwd)?;
 	}
 
+	session.trace = crate::execution_trace::CommandTrace::default();
 	let env_scope_pushed = apply_command_env(&mut session.shell, options.env.as_ref())?;
 
 	let (stdout_reader, stdout_writer) = pipe_to_files("stdout")?;
@@ -1414,6 +1439,7 @@ async fn run_shell_command_streams(
 	params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
 	params.set_cancel_token(cancel_token.clone());
 	params.set_spawn_observer(spawn_registry.clone());
+	params.command_observer = Some(Arc::new(session.trace.clone()));
 	let reader_cancel = CancellationToken::new();
 	let (activity_tx, activity_rx) = flume::bounded::<()>(1);
 

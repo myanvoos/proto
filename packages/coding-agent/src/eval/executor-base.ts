@@ -22,10 +22,13 @@ type KernelEnvPatch = Record<string, string | null | undefined>;
 interface KernelExecutorBaseOptions {
 	cwd?: string;
 	runCwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 	timeoutMs?: number;
 	deadlineMs?: number;
 	idleTimeoutMs?: number;
 	onChunk?: (chunk: string) => Promise<void> | void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	signal?: AbortSignal;
 	onStatus?: (event: JsStatusEvent) => void;
@@ -64,6 +67,9 @@ export interface GenericKernel<TEnv> {
 		options: {
 			cwd?: string;
 			env?: TEnv;
+			shellEnv?: Record<string, string>;
+			stdin?: number[];
+			onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 			fsObservations?: FsObservation[];
 			id: string;
 			signal?: AbortSignal;
@@ -493,6 +499,9 @@ export async function executeWithKernelBase<
 			cwd: options?.runCwd ?? options?.cwd,
 			env: buildKernelEnvPatch(options ?? ({} as TOptions)),
 			fsObservations: options?.fsObservations,
+			shellEnv: options?.shellEnv,
+			stdin: options?.stdin,
+			onStream: options?.onStream,
 			id: runId,
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,

@@ -10,7 +10,7 @@ There are two different bash execution surfaces in coding-agent:
 
 1. **Tool-call surface** (`toolName: "bash"`): used when the model calls the bash tool.
    - Entry point: `BashTool.execute()`.
-   - Parameters include `command`, optional `env`, `timeout`, `cwd`, `pty`, and, when `async.enabled` is true, `async`.
+   - Parameters include `command`, optional `env`, `timeout`, `cwd`, `lane`, `pty`, and, when `async.enabled` is true, `async`.
 2. **User bang-command surface** (`!cmd` from interactive input or RPC `bash` command): session-level helper path.
    - Entry point: `AgentSession.executeBash()`.
 
@@ -36,7 +36,7 @@ The kernel bridge handles supported `python`/`python3`, `node`, and `bun` stdin 
 
 A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
 
-Kernel stdout, display text, and the final exit frame share one ordered response stream. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
+Kernel stdout, stderr, display text, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
 
 ## Kernel-cell reference
 
@@ -67,7 +67,7 @@ Every enabled runtime receives the cell prelude. Python helpers are synchronous 
 - `display(value)` and `print(...)` for ordinary and rich output.
 - `env(...)`, `output(...)`, and `tool.<name>(args)` for environment, agent/task-output, and normal session-tool access. `output()` reads agent/task outputs; use `read artifact://...` for Bash artifacts.
 - `proto_path(path)` (Python) and `protoPath(path)` (JavaScript) to resolve plain paths and supported internal URLs for filesystem APIs.
-- Python `symbols(path?, code?=None, lang?=None)`, `defs()`, and `block_range(path, line)` for bounded source inspection.
+- Python `symbols(path?, code?=None, lang?=None)`, `defs()`, and `block_range(path, line)` for bounded source inspection. Both runtimes expose `defs()` and `kernel_state()` / `kernelState()` for binding provenance and safe runtime inspection.
 - `completion(...)` for a stateless tool-free model call; `agent(...)` for a policy-checked subagent; and `parallel(...)`/`pipeline(...)` for bounded fan-out.
 - `log(message)`, `phase(title)`, and `budget` for progress and the live turn budget.
 
@@ -84,13 +84,60 @@ Text output follows the Bash output stream. JSON values, images, and kernel stat
 - Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
 - Variables, imports, definitions, and running tasks survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
 - Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM.
-- Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution, and a subprocess death during execution is retried once where the backend can do so.
+- Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution; death during execution leaves completion uncertain and does not replay the cell. Check partial side effects before retrying. The next cell reports the changed generation and lost state.
 
-Interactive `input()` is not supported by routed Python cells; pass data through files, environment variables, or explicit code instead.
+Interactive terminal input is not supported by routed cells. For inline-code invocations, pipe or redirect program data and read `sys.stdin` / `process.stdin`; stdin-only invocations still interpret their stdin as code. Shell exports, inline assignments and tool `env` overrides reach the cell, and stderr remains redirectable separately.
 
 ### Timeouts and cancellation
 
 The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd-validation-and-timeout-resolution)) is the only model-facing deadline for a kernel cell; a cell has no separate structured timeout field. If the command deadline or caller abort interrupts a Python cell, the runner receives `SIGINT` and normally remains reusable; if it cannot settle, the kernel is shut down and recreated. Interrupting JavaScript force-kills its VM, so variables from earlier cells are lost. The Bash shell session is likewise quarantined after a cancelled or timed-out run.
+
+## Kernel recovery helpers
+
+### Checked edit batches
+
+Python `edit_batch(changes, apply=False)` and JavaScript `await editBatch(changes, {apply:false})` accept 1–100 `{path,before,after}` entries. `before` is the exact expected text, or `None`/`null` for a new file. They validate all snapshots before writing; preview returns diffs without mutations. Apply locks cooperating writers in stable order and replaces each file atomically while preserving its mode.
+
+```python
+p = Path("settings.json")
+before = p.read_text()
+assert before.count('"enabled": false') == 1
+after = before.replace('"enabled": false', '"enabled": true')
+changes = [{"path": str(p), "before": before, "after": after}]
+display(edit_batch(changes))
+# After checking the preview:
+display(edit_batch(changes, apply=True))
+```
+
+Results expose `state` (`preview`, `applied`, `rolled-back`, `partial`), `files`, `applied`, `conflicts`, and optional `error`. `applied` records writes attempted, including subsequently reverted ones. Mid-commit failure or cancellation attempts rollback, but never overwrites a newer edit it observes. Atomicity is per file, not across the batch; noncooperating external writers can race validation/replacement. Symlink targets, canonical duplicate paths and hardlink aliases are rejected. Limits: 8 MiB per file/replacement, 16 MiB total batch content.
+
+### Settled and streaming orchestration
+
+`parallel(thunks, ...)` and `pipeline(items, ...stages, ...)` accept Python keyword options or one trailing JavaScript options object:
+
+| Contract | Python | JavaScript |
+| --- | --- | --- |
+| Return each outcome | `settled=True` | `settled:true` |
+| Concurrency ceiling | `concurrency=N` | `concurrency:N` |
+| Cooperative deadline | `timeout=seconds` | `timeoutMs:milliseconds` |
+| Cancellation | `cancel=threading.Event()` | `signal:AbortSignal` |
+| Observe completion | `on_result=callback` | `onResult:callback` |
+| Advance items without barriers | `streaming=True` on pipeline | `streaming:true` on pipeline |
+| Save successful JSON results | `checkpoint=directory, key=workflow_version` | `checkpoint:directory, key:workflowVersion` |
+| Reuse saved results explicitly | `resume=True` | `resume:true` |
+
+Settled rows retain input ordering and contain `status`, `index`, actual `stage`, and either `value` or `error` (`name`, `message`, `stack`). Status is `fulfilled`, `rejected`, `timed_out`, or `cancelled`. Without `settled`, failure throws `BatchError` with all `.results`; observer failures are retained in `.callback_errors` / `.callbackErrors`. Successful sibling results are not discarded.
+
+Python callbacks are zero-argument thunks or single-value stages; call `task_signal().check()` inside cooperative loops. JavaScript thunks receive `(index, signal)` and stages `(value, index, signal)`. Helpers drain work and observers before returning: a noncooperative callback can overrun its deadline, but is not falsely reported stopped while side effects continue. Streaming deadlines cover the whole item across stages; barrier deadlines apply separately to each stage-item. Host concurrency ceilings still apply.
+
+```python
+rows = pipeline([1, 2, 3], lambda n: n * 2, lambda n: {"answer": n + 1},
+                streaming=True, settled=True, concurrency=2,
+                checkpoint="local://example-workflow", key="double-plus-one-v1", resume=True)
+display(rows)
+```
+
+Checkpoints contain only completed, strictly JSON-compatible results, not interpreter heaps, closures, open resources, errors, or running callbacks. Checkpointed `parallel` requires unique stable string `keys`; `pipeline` can derive keys from canonical JSON input. Change the workflow `key` when code or semantics change. Failed stages rerun only on an explicitly requested subsequent invocation; there is no automatic retry. Resume survives kernel restarts, but is not an exactly-once side-effect transaction. Each item/stage checkpoint uses atomic file replacement and a versioned identity envelope; corrupt or oversized checkpoints produce errors.
 
 ## Streamed kernel preflight and speculation
 
@@ -244,7 +291,7 @@ That means print mode and non-UI RPC/tool contexts always use non-PTY.
 Session-level bang-command executions pass `sessionKey: this.sessionId`.
 
 Tool-call executions pass `sessionKey: this.session.getSessionId?.()`, when available. In both surfaces, a session key isolates shell reuse per session; without one, reuse falls back to shell config/snapshot/env.
-Concurrent calls never share one `Shell`: the native session runs one command at a time and `Shell.abort()` kills every in-flight run on it. `executeBash()` tracks in-flight keys in `shellSessionsInUse`; while a key is busy, overlapping calls skip the cache and run through one-shot `executeShell()` (same isolation as quarantined sessions). Only the owning call releases the in-use flag or deletes the cached session in its `finally`.
+Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Overlap no longer silently switches to a fresh shell. Named lanes isolate shell and Python/JavaScript state while allowing independent execution. A cancelled queued caller never executes its command. Managed background jobs default to `async:<jobId>`; explicit lanes are respected. Kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid waiting on their own calling cell. Do not request the calling lane from a nested tool call.
 
 ## Bundled `jq` compatibility
 

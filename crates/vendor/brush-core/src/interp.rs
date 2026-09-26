@@ -83,6 +83,26 @@ pub trait SpawnObserver: Send + Sync {
 }
 
 
+/// Observer for actual command invocations, including pipeline members and nested commands.
+pub trait CommandObserver: Send + Sync {
+	fn start(&self, command: String, span: Option<brush_parser::SourceSpan>, parent: Option<usize>) -> Option<usize>;
+	fn route(&self, id: usize, route: &str);
+	fn finish(&self, id: usize, exit_code: Option<i32>, signal: Option<i32>) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+	fn capture(&self, id: usize, fd: u32, output: openfiles::OpenFile) -> openfiles::OpenFile;
+}
+
+#[derive(Clone)]
+pub struct CommandObservation {
+	pub observer: Arc<dyn CommandObserver>,
+	pub id: usize,
+}
+impl CommandObservation {
+	pub async fn finish(&self, exit_code: Option<i32>, signal: Option<i32>) {
+		self.observer.finish(self.id, exit_code, signal).await;
+	}
+	pub fn route(&self, route: &str) { self.observer.route(self.id, route); }
+}
+
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
 
@@ -106,6 +126,8 @@ pub struct ExecutionParameters {
 	pub suppress_errexit:     bool,
 
 	spawn_observer:           Option<Arc<dyn SpawnObserver>>,
+	pub command_observer: Option<Arc<dyn CommandObserver>>,
+	pub command_observation: Option<CommandObservation>,
 }
 
 impl ExecutionParameters {
@@ -816,9 +838,37 @@ async fn spawn_pipeline_processes(
 			}
 		};
 
-		let spawn_result = command
-			.execute_in_pipeline(pipeline_context, cmd_params)
-			.await?;
+        use brush_parser::ast::SourceLocation;
+		let observation = cmd_params.command_observer.as_ref().and_then(|observer| {
+			observer.start(command.to_string(), command.location(), cmd_params.command_observation.as_ref().map(|entry| entry.id))
+				.map(|id| CommandObservation { observer: observer.clone(), id })
+		});
+		cmd_params.command_observation = observation.clone();
+		let spawned = command.execute_in_pipeline(pipeline_context, cmd_params).await;
+		let mut spawn_result = match spawned {
+			Ok(result) => result,
+			Err(error) => {
+				if let Some(observation) = observation { observation.finish(None, None).await; }
+				return Err(error);
+			}
+		};
+		if let Some(observation) = observation {
+			spawn_result = match spawn_result {
+				ExecutionSpawnResult::Completed(result) => {
+					observation.finish(Some(i32::from(u8::from(result.exit_code))), None).await;
+					ExecutionSpawnResult::Completed(result)
+				},
+				ExecutionSpawnResult::StartedProcess(mut child) => {
+					child.set_command_observation(observation);
+					ExecutionSpawnResult::StartedProcess(child)
+				},
+				ExecutionSpawnResult::StartedTask(task) => ExecutionSpawnResult::StartedTask(tokio::spawn(async move {
+					let result = task.await?;
+					observation.finish(result.as_ref().ok().map(|result| i32::from(u8::from(result.exit_code))), None).await;
+					result
+				})),
+			};
+		}
 
 
 		if let ExecutionSpawnResult::StartedProcess(child) = &spawn_result {
@@ -1609,6 +1659,13 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 		}
 
 
+        if let Some(observation) = params.command_observation.clone() {
+			for fd in [OpenFiles::STDOUT_FD, OpenFiles::STDERR_FD] {
+				if let Some(output) = params.try_fd(&context.shell, fd) {
+					params.set_fd(fd, observation.observer.capture(observation.id, fd as u32, output));
+				}
+			}
+		}
 		if let Some(CommandArg::String(cmd_name)) = args.first().cloned() {
 			let mut stderr = params.stderr(&context.shell);
 

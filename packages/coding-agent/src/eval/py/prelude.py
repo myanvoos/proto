@@ -13,6 +13,10 @@ __all__ = [
     "agent",
     "parallel",
     "pipeline",
+    "BatchError",
+    "task_signal",
+    "executions",
+    "edit_batch",
     "log",
     "phase",
     "budget",
@@ -26,7 +30,7 @@ __all__ = [
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
-    import os, json, math, re, hashlib, stat, sys, threading, weakref
+    import os, json, math, re, hashlib, stat, sys, threading, weakref, time
     from urllib.parse import unquote
 
     INTENT_FIELD = "i"
@@ -1071,7 +1075,9 @@ if "__proto_prelude_loaded__" not in globals():
             },
         )
         try:
-            with _BRIDGE_OPENER.open(req) as resp:
+            signal = task_signal()
+            signal.check()
+            with _BRIDGE_OPENER.open(req, timeout=signal.remaining()) as resp:
                 body = resp.read()
         except urllib.error.HTTPError as exc:
             body = exc.read()
@@ -1261,69 +1267,219 @@ if "__proto_prelude_loaded__" not in globals():
             return self
 
 
-    def _pool_map(items, fn):
-        """Run ``fn`` over ``items`` through a bounded thread pool.
+    import concurrent.futures, contextvars
 
-        Preserves input order, barriers until every task settles, and raises the
-        lowest-index exception if any task failed. Each task runs inside a copy
-        of the submitting thread's context so the ``_CURRENT_RID`` ContextVar
-        propagates and bridge calls (agent(), tool.*, etc.) keep working. The
-        pool width tracks ``orchestrator.maxConcurrency`` (0 = run every item at once).
-        """
-        import concurrent.futures, contextvars
+    _ITEM_SIGNAL = contextvars.ContextVar("proto_item_signal", default=None)
 
+    class _ItemSignal:
+        def __init__(self, parent=None, timeout=None):
+            self.parent = parent
+            self.deadline = time.monotonic() + timeout if timeout is not None else None
+
+        def is_set(self):
+            return bool(self.parent and self.parent.is_set()) or self.expired()
+
+        def expired(self):
+            return self.deadline is not None and time.monotonic() >= self.deadline
+
+        def check(self):
+            if self.parent and self.parent.is_set():
+                raise concurrent.futures.CancelledError("Workflow item cancelled")
+            if self.expired():
+                raise TimeoutError("Workflow item deadline exceeded; cancellation is cooperative")
+
+        def remaining(self):
+            return max(0.001, self.deadline - time.monotonic()) if self.deadline is not None else None
+
+    def task_signal():
+        """Cooperative current-item cancellation/deadline; call .check() in loops."""
+        return _ITEM_SIGNAL.get() or _ItemSignal()
+
+    def _workflow_error(error):
+        import traceback
+        return {"name": type(error).__name__, "message": str(error),
+                "stack": "".join(traceback.format_exception(type(error), error, error.__traceback__))}
+
+    class BatchError(RuntimeError):
+        def __init__(self, results, callback_errors=None):
+            self.results = results
+            self.callback_errors = callback_errors or []
+            failures = [row for row in results if row["status"] != "fulfilled"]
+            super().__init__((failures or self.callback_errors)[0]["error"]["message"])
+
+    def _checkpoint_json(value):
+        # JSON round trips must preserve types/keys, not coerce tuples or dict keys.
+        active = set()
+        def visit(item):
+            if item is None or type(item) in (str, bool):
+                return
+            if type(item) is int:
+                if abs(item) > 9007199254740991:
+                    raise TypeError("Checkpoint integers must be exactly representable by the JSON bridge")
+                return
+            if type(item) is float and math.isfinite(item):
+                return
+            if type(item) not in (list, dict) or id(item) in active:
+                raise TypeError("Checkpoint results must be acyclic JSON values")
+            active.add(id(item))
+            try:
+                if isinstance(item, dict):
+                    if any(type(key) is not str for key in item):
+                        raise TypeError("Checkpoint object keys must be strings")
+                    children = item.values()
+                else:
+                    children = item
+                for child in children:
+                    visit(child)
+            finally:
+                active.remove(id(item))
+        visit(value)
+        return json.dumps(value, sort_keys=True, allow_nan=False, separators=(",", ":"))
+
+    def _checkpoint(path, key, value=None, *, save=False):
+        if save:
+            _checkpoint_json(value)
+        return _bridge_call("__runtime__", {"op": "checkpoint_save" if save else "checkpoint_load",
+            "path": str(proto_path(path)), "key": key, **({"value": value} if save else {})})
+
+    def _workflow_options(items, *, concurrency=None, timeout=None, checkpoint=None, key=None,
+                          keys=None, resume=False, **unused):
+        if concurrency is not None and (type(concurrency) is not int or concurrency < 1):
+            raise ValueError("concurrency must be a positive integer")
+        if timeout is not None and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError("timeout must be positive finite seconds")
+        if checkpoint is not None and (not isinstance(key, str) or not key):
+            raise ValueError("checkpoint requires a non-empty workflow key; change it when code changes")
+        if resume and checkpoint is None:
+            raise ValueError("resume requires checkpoint")
+        if keys is not None and (not isinstance(keys, (list, tuple)) or len(keys) != len(items)
+                                or any(not isinstance(key, str) for key in keys) or len(set(keys)) != len(keys)):
+            raise ValueError("keys must contain one unique string per item")
+
+    def _pool_map(items, fn, *, settled=False, concurrency=None, timeout=None, cancel=None,
+                  checkpoint=None, key=None, keys=None, resume=False, on_result=None, stage=0):
+        """Drain running callbacks before return; deadlines require cooperative work."""
         items = list(items)
+        _workflow_options(items, concurrency=concurrency, timeout=timeout, checkpoint=checkpoint,
+                          key=key, keys=keys, resume=resume)
         if not items:
             return _AwaitableList()
-        limit = _concurrency_limit()
-        workers = min(limit, len(items)) if limit > 0 else len(items)
+        ceiling = _concurrency_limit()
+        width = min(concurrency or len(items), ceiling or len(items), len(items))
         results = _AwaitableList(None for _ in items)
-        errors = {}
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-        try:
-            futures = {}
-            for i, item in enumerate(items):
-                ctx = contextvars.copy_context()
-                futures[pool.submit(ctx.run, fn, item)] = i
-            for fut in concurrent.futures.as_completed(futures):
-                i = futures[fut]
+        parent = cancel if cancel is not None else _ITEM_SIGNAL.get()
+
+        def invoke(index, item):
+            signal = _ItemSignal(parent, timeout)
+            token = _ITEM_SIGNAL.set(signal)
+            state = {"stage": stage}
+            identity = json.dumps([key, keys[index] if keys is not None else index, stage], separators=(",", ":"))
+            try:
+                signal.check()
+                cached = _checkpoint(checkpoint, identity) if checkpoint is not None and resume else {"found": False}
+                if cached["found"]:
+                    value = cached["value"]
+                    state["resumed"] = True
+                else:
+                    value = fn(item, index, state)
+                    signal.check()
+                    if checkpoint is not None:
+                        _checkpoint(checkpoint, identity, value, save=True)
+                signal.check()
+                result = {"status": "fulfilled", "value": value, "index": index, **state}
+            except BaseException as error:
                 try:
-                    results[i] = fut.result()
-                except BaseException as exc:
-                    errors[i] = exc
-        except BaseException:
-            pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        pool.shutdown(wait=True)
-        if errors:
-            raise errors[min(errors)]
-        return results
+                    signal.check()
+                except (TimeoutError, concurrent.futures.CancelledError) as reason:
+                    error = reason
+                status = "timed_out" if isinstance(error, TimeoutError) else "cancelled" if isinstance(error, concurrent.futures.CancelledError) else "rejected"
+                result = {"status": status, "error": _workflow_error(error), "index": index, "stage": state["stage"]}
+            finally:
+                _ITEM_SIGNAL.reset(token)
+            return result
 
-    def parallel(thunks):
-        """Run zero-arg callables through a bounded pool, preserving input order.
+        callback_errors = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=width) as pool:
+            futures = {pool.submit(contextvars.copy_context().run, invoke, index, item): index for index, item in enumerate(items)}
+            for future in concurrent.futures.as_completed(futures):
+                index = futures[future]
+                result = results[index] = future.result()
+                if on_result is not None:
+                    try:
+                        on_result(result)
+                    except BaseException as error:
+                        callback_errors.append({"index": index, "stage": result["stage"], "error": _workflow_error(error)})
+        if callback_errors or (not settled and any(row["status"] != "fulfilled" for row in results)):
+            raise BatchError(results, callback_errors)
+        return results if settled else _AwaitableList(row["value"] for row in results)
 
-        Barriers until all finish; re-raises the lowest-index exception if any
-        thunk raised. Pool width tracks the task tool's ``orchestrator.maxConcurrency``.
-        """
+    def parallel(thunks, **options):
         thunks = list(thunks)
-        for t in thunks:
-            if not callable(t):
-                raise TypeError("parallel() expects an iterable of zero-arg callables")
-        return _pool_map(thunks, lambda t: t())
+        if any(not callable(thunk) for thunk in thunks):
+            raise TypeError("parallel expects zero-argument callables")
+        if options.get("checkpoint") is not None and options.get("keys") is None:
+            raise ValueError("checkpointed parallel requires stable per-item keys")
+        return _pool_map(thunks, lambda thunk, index, state: thunk(), **options)
 
-    def pipeline(items, *stages):
-        """Map items left-to-right through one-arg stage callables.
+    def pipeline(items, *stages, streaming=False, **options):
+        if any(not callable(stage) for stage in stages):
+            raise TypeError("pipeline stages must be callables")
+        items = list(items)
+        _workflow_options(items, **options)
+        keys = options.pop("keys", None)
+        if options.get("checkpoint") is not None and keys is None:
+            keys = [hashlib.sha256(_checkpoint_json([index, item]).encode()).hexdigest() for index, item in enumerate(items)]
+        settled = options.pop("settled", False)
+        if streaming:
+            def run_item(item, index, state):
+                value = item
+                for stage_index, stage_fn in enumerate(stages):
+                    state["stage"] = stage_index
+                    state.pop("resumed", None)
+                    task_signal().check()
+                    identity = json.dumps([options.get("key"), keys[index] if keys is not None else index, stage_index], separators=(",", ":"))
+                    root = options.get("checkpoint")
+                    cached = _checkpoint(root, identity) if root is not None and options.get("resume") else {"found": False}
+                    if cached["found"]:
+                        value = cached["value"]
+                        state["resumed"] = True
+                    else:
+                        value = stage_fn(value)
+                        task_signal().check()
+                        if root is not None:
+                            _checkpoint(root, identity, value, save=True)
+                return value
+            # Per-stage checkpoints, shared with barrier mode.
+            inner = {name: value for name, value in options.items() if name not in ("checkpoint", "key", "resume")}
+            return _pool_map(items, run_item, settled=settled, keys=keys, **inner)
+        on_result = options.pop("on_result", None)
+        callback_errors = []
+        outcomes = [{"status": "fulfilled", "value": item, "index": index} for index, item in enumerate(items)]
+        for stage_index, stage_fn in enumerate(stages):
+            live = [row for row in outcomes if row["status"] == "fulfilled"]
+            indices = [row["index"] for row in live]
+            def notify(row):
+                mapped = {**row, "index": indices[row["index"]]}
+                if on_result is not None:
+                    try:
+                        on_result(mapped)
+                    except BaseException as error:
+                        callback_errors.append({"index": mapped["index"], "stage": stage_index, "error": _workflow_error(error)})
+            batch = _pool_map([row["value"] for row in live], lambda value, index, state: stage_fn(value), settled=True,
+                             keys=[keys[index] for index in indices] if keys is not None else None,
+                             on_result=notify, stage=stage_index, **options)
+            for index, row in zip(indices, batch):
+                outcomes[index] = {**row, "index": index}
+        if callback_errors or (not settled and any(row["status"] != "fulfilled" for row in outcomes)):
+            raise BatchError(outcomes, callback_errors)
+        return _AwaitableList(outcomes if settled else (row["value"] for row in outcomes))
 
-        Every item clears stage N before any item enters stage N+1 (barrier per
-        stage). Stage 1 receives the original item; later stages receive the
-        previous stage's result. Pool width tracks ``orchestrator.maxConcurrency``.
-        """
-        current = _AwaitableList(items)
-        for stage in stages:
-            if not callable(stage):
-                raise TypeError("pipeline() stages must be callables")
-            current = _pool_map(current, stage)
-        return current
+    def executions(id=None, *, limit=20):
+        return _bridge_call("__runtime__", {"op": "executions", "limit": limit, **({"id": id} if id is not None else {})})
+
+    def edit_batch(changes, *, apply=False):
+        resolved = [{**entry, "path": str(proto_path(entry["path"]))} for entry in changes]
+        return _bridge_call("__runtime__", {"op": "edit_batch", "changes": resolved, "apply": apply})
 
     def log(message):
         """Emit a status ``log`` event for TUI rendering."""

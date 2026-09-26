@@ -7,6 +7,8 @@ import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
 export interface ExecutorBackendExecOptions {
 	cwd: string;
 	runCwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 	sessionId: string;
 	sessionFile: string | undefined;
 	kernelOwnerId: string | undefined;
@@ -16,6 +18,7 @@ export interface ExecutorBackendExecOptions {
 	idleTimeoutMs?: number;
 	reset: boolean;
 	onChunk: (chunk: string) => void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 
 	onStatus?: (event: EvalStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;

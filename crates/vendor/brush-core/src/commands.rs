@@ -377,6 +377,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 		{
 			#[allow(clippy::unwrap_used, reason = "we just checked that builtin is Some")]
 			let builtin = builtin.unwrap();
+			if let Some(observation) = &self.params.command_observation { observation.route("builtin"); }
 			return self.execute_via_builtin(builtin).await;
 		}
 
@@ -386,7 +387,8 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 			if let Some(func_registration) =
 				self.shell.funcs().get(self.command_name.as_str()).cloned()
 			{
-				return self.execute_via_function(func_registration).await;
+				if let Some(observation) = &self.params.command_observation { observation.route("function"); }
+			return self.execute_via_function(func_registration).await;
 			}
 		}
 
@@ -394,12 +396,14 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 
 		if let Some(builtin) = builtin {
 			if !builtin.disabled {
-				return self.execute_via_builtin(builtin).await;
+				if let Some(observation) = &self.params.command_observation { observation.route("builtin"); }
+			return self.execute_via_builtin(builtin).await;
 			}
 		}
 
 
 
+		if let Some(observation) = &self.params.command_observation { observation.route("external"); }
 		if !sys::fs::contains_path_separator(&self.command_name) {
 
 

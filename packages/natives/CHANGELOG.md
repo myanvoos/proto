@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Shell results expose bounded per-command records with exit/signal status, separate output captures, and correlated structured device results
+
+### Fixed
+
+- Persistent interpreter cells preserve shell environment, program stdin, and stdout/stderr routing
+
 ## [18.6.1] - 2026-09-24
 
 ### Added

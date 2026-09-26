@@ -13,11 +13,14 @@ import type { JsStatusEvent } from "./shared/types";
 
 interface JsExecutorOptions {
 	cwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 	timeoutMs?: number;
 	deadlineMs?: number;
 
 	idleTimeoutMs?: number;
 	onChunk?: (chunk: string) => Promise<void> | void;
+	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 	onStatus?: (event: JsStatusEvent) => void;
 	signal?: AbortSignal;
 	sessionId: string;
@@ -134,6 +137,8 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			cwd: options.cwd ?? options.session.cwd,
 			session: options.session,
 			localRoots: options.localRoots,
+			shellEnv: options.shellEnv,
+			stdin: options.stdin,
 			completionContext: options.completionContext,
 			reset: options.reset,
 			onStatus: options.onStatus,
@@ -142,7 +147,10 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			timeoutMs: acquireBudgetMs,
 			runState: {
 				signal,
-				onText: chunk => outputSink.push(chunk),
+				onText: (chunk, stream = "stdout") => {
+					outputSink.push(chunk);
+					void options.onStream?.(chunk, stream);
+				},
 				retainedBytes: () => outputSink.retainedBytes(),
 				release: () => outputSink.release(),
 				onDisplay: output => {
@@ -167,6 +175,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 		}
 		const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
 		outputSink.push(message);
+		await options.onStream?.(`${message}\n`, "stderr");
 		const summary = await outputSink.dump();
 		return resultWithSummary(summary, { exitCode: 1, cancelled: false });
 	} finally {

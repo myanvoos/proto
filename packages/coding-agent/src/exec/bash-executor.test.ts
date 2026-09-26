@@ -87,6 +87,7 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 			workingDir: process.cwd(),
 			fsObservations: [],
 			xdDispatches: [],
+			stageRecords: [],
 			minimized: {
 				filter: "lint",
 				text: "src/event-cache.ts:281-405 multiple ... errors\n",

@@ -48,19 +48,23 @@ pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
 }
 
 pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> i32 {
+	if let Some(observation) = &host.command_observation { observation.route(spec.lang); }
 	match plan(spec, argv, host) {
-		Plan::Cell { code, stdin_body } => match run_kernel_cell(spec, host, &code) {
+		Plan::Cell { code, stdin_body, program_input } => match run_kernel_cell(spec, host, &code, program_input.as_deref()) {
 			CellOutcome::Exit(code) => code,
 			CellOutcome::FallThrough => spawn_external(spec, host, argv, stdin_body),
 		},
 		Plan::External { stdin_body } => spawn_external(spec, host, argv, stdin_body),
+		Plan::Failure(message) => { host.error(&message, 1); 1 },
 	}
 }
 
 enum Plan {
+	Failure(String),
 	Cell {
 		code:       String,
 		stdin_body: Option<Vec<u8>>,
+		program_input: Option<Vec<u8>>,
 	},
 	External {
 		stdin_body: Option<Vec<u8>>,
@@ -71,15 +75,19 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 	let args: Vec<Option<&str>> = argv.iter().map(|arg| arg.to_str()).collect();
 	match route_argv(spec.argv, &args) {
 		ArgvRoute::Code(index) => {
-			// `-c CODE` takes its program text from argv, so stdin belongs to the program,
-			// not to us. A kernel cell runs in the long-lived kernel process and cannot see
-			// this pipeline's stdin, so `curl … | python -c 'json.load(sys.stdin)'` would
-			// read the kernel's own idle stdin and block until the command deadline.
-			if host.stdin.carries_program_input() {
-				return Plan::External { stdin_body: None };
-			}
+			let program_input = if host.stdin.carries_program_input() {
+				// Finite program input is separate from source and the kernel's control pipe.
+				let mut input = Vec::new();
+				if let Err(error) = host.stdin.by_ref().take(1024 * 1024 + 1).read_to_end(&mut input) {
+					return Plan::Failure(format!("cannot read cell stdin: {error}"));
+				}
+				if input.len() > 1024 * 1024 {
+					return Plan::Failure("cell stdin exceeds 1 MiB; use an explicit external interpreter for streaming input".into());
+				}
+				Some(input)
+			} else { None };
 			let code = args[index].unwrap_or_default();
-			Plan::Cell { code: code.to_string(), stdin_body: None }
+			Plan::Cell { code: code.to_string(), stdin_body: program_input.clone(), program_input }
 		},
 		ArgvRoute::Script(index) => plan_positional(spec, argv, index, host),
 		ArgvRoute::External => Plan::External { stdin_body: None },
@@ -92,7 +100,7 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 				return Plan::External { stdin_body: Some(body) };
 			}
 			match str::from_utf8(&body) {
-				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body) },
+				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body), program_input: None },
 				Err(_) => Plan::External { stdin_body: Some(body) },
 			}
 		},
@@ -117,7 +125,7 @@ fn plan_positional(spec: &KernelLang, argv: &[OsString], index: usize, host: &mu
 	if index + 1 < argv.len() {
 		host.error("extra argv after a fleet script is ignored (kernel cells have no argv)", 0);
 	}
-	Plan::Cell { code, stdin_body: None }
+	Plan::Cell { code, stdin_body: None, program_input: None }
 }
 
 fn is_fleet_script(spec: &KernelLang, host: &Host, candidate: &Path) -> bool {
@@ -151,7 +159,7 @@ enum CellOutcome {
 	FallThrough,
 }
 
-fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str) -> CellOutcome {
+fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option<&[u8]>) -> CellOutcome {
 	let (Some(addr), Some(token)) = (host.var(ADDR_VAR), host.var(TOKEN_VAR)) else {
 		return CellOutcome::FallThrough;
 	};
@@ -164,6 +172,8 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str) -> CellOutcom
 		"lang": spec.lang,
 		"code": code,
 		"cwd": host.cwd().to_string_lossy(),
+		"shellEnv": host.env().map(|(key, value)| (key.to_string(), Value::String(value.to_string()))).collect::<serde_json::Map<String, Value>>(),
+		"stdin": stdin,
 	});
 	let mut payload = request.to_string();
 	payload.push('\n');
@@ -280,6 +290,7 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 }
 
 fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_body: Option<Vec<u8>>) -> i32 {
+	if let Some(observation) = &host.command_observation { observation.route("external"); }
 	let program = host.name().to_string();
 	let Some(resolved) = interpreter_candidates(spec, &program).find_map(|name| resolve_on_path(host, name)) else {
 		let tried = interpreter_candidates(spec, &program).collect::<Vec<_>>().join(" or ");

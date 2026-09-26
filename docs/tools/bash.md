@@ -24,6 +24,7 @@
 | `env` | `Record<string, string>` | No | Extra environment variables. Keys must match `^[A-Za-z_][A-Za-z0-9_]*$` or the tool throws. Values go through internal-URL expansion and are passed as environment values, not shell text. |
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Positive values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory. Absolute paths, including `/`, remain absolute; relative paths resolve against `session.cwd`, and `~` expands to the home directory. Must exist and be a directory. |
+| `lane` | `string` | No | Persistent non-PTY Brush state lane (1–128 characters). Omitted/`main` share state and queue; other names isolate shell and both language kernels. Managed background jobs default to their own lane. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
 
@@ -50,7 +51,23 @@ The tool returns a single `text` content block plus optional `details`.
 - Failure:
   - cancellation, missing exit status, validation failures, intercepted commands, and client-terminal-bridge timeouts throw `ToolError` / `ToolAbortError`.
 
-Stdout and stderr are merged before the model sees them. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
+Stdout and stderr remain distinct for shell redirection and stage records; uncaptured terminal output is merged for the model. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
+
+## Kernel inspection and recovery
+
+Kernel cells inherit the shell environment, including `env` overrides and inline assignments. `printf 41 | python -c 'import sys; print(int(sys.stdin.read()) + 1)'` stays in the retained Python kernel; `node`/`bun -e` similarly expose program input through `process.stdin`. Source-on-stdin still supplies code, not program input.
+
+Use `kernel_state()` / `kernelState()` for bounded, side-effect-avoiding binding previews, provenance, tasks, and runtime generation. A runtime restart emits a state-loss notice once; prior variables are not restored. JavaScript reports `queued: null` and explicitly limits its task inventory to active cells/tool calls.
+
+`executions(id?, limit=20)` (JS: `await executions(id, {limit:20})`) returns `{records, evicted}`. Each record identifies the command, lane, timestamps and result/error. Results include:
+
+- `details.execution.stages`: actual executed commands, parent indices, route, status, exit code/signal, elapsed time, source spans when available, stdout/stderr captures. Skipped shell branches produce no records.
+- Each stream carries `text`, original byte count, `truncated`, `complete`, and an optional artifact containing that captured preview. Captures are limited to 16 KiB per stream, with 128 retained stages; the final retained stage reports `omittedAfter` when further commands were omitted.
+- `details.deviceResults`: structured `xd` results, including `stageIndex`, independent of shell pipes or text truncation.
+
+History is per tool session, capped at 128 records and 8 MiB. `resultOmitted` explains oversized/unserializable payloads or history-query results, which are intentionally not recursively stored. Managed jobs also record their final results under the job ID. Trace capture is not available for external PTY/client-terminal execution.
+
+For checked multi-file edits and resumable orchestration, see [Kernel recovery helpers](../bash-tool-runtime.md#kernel-recovery-helpers).
 
 ## Dedicated-tool routing
 

@@ -114,47 +114,141 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		}
 	};
 
-	const __pool = async (items, fn) => {
+	const workflowError = error => ({ name: error?.name ?? "Error", message: error?.message ?? String(error), stack: error?.stack ?? String(error) });
+	class BatchError extends AggregateError {
+		constructor(results, callbackErrors = []) {
+			const failures = results.filter(row => row.status !== "fulfilled").concat(callbackErrors);
+			super(failures.map(row => row.error), failures[0]?.error.message ?? "Workflow failed");
+			this.name = "BatchError";
+			this.results = results;
+			this.callbackErrors = callbackErrors;
+		}
+	}
+	const checkpointJson = value => {
+		const active = new Set();
+		const visit = item => {
+			if (item === null || typeof item === "string" || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) return item;
+			const plain = item !== null && typeof item === "object" && [null, Object.prototype].includes(Object.getPrototypeOf(item));
+			if ((!Array.isArray(item) && !plain) || active.has(item)) throw new TypeError("Checkpoint results must be acyclic JSON values");
+			active.add(item);
+			try {
+				if (Array.isArray(item)) return Array.from(item, visit);
+				if (Object.getOwnPropertySymbols(item).length) throw new TypeError("Checkpoint object keys must be strings");
+				return Object.fromEntries(Object.keys(item).sort().map(key => [key, visit(item[key])]));
+			} finally { active.delete(item); }
+		};
+		return JSON.stringify(visit(value));
+	};
+	const checkpointCall = (path, key, value, save = false) => {
+		if (save) checkpointJson(value);
+		return globalThis.__proto_call_tool__("__runtime__", {
+			op: save ? "checkpoint_save" : "checkpoint_load", path: protoPath(path), key, ...(save ? { value } : {}),
+		});
+	};
+	const workflowOptions = (list, { concurrency, timeoutMs, checkpoint, key, keys, resume } = {}) => {
+		if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) throw new RangeError("concurrency must be a positive integer");
+		if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new RangeError("timeoutMs must be positive and finite");
+		if (checkpoint !== undefined && (typeof key !== "string" || !key)) throw new TypeError("checkpoint requires a workflow key; change it when code changes");
+		if (resume && checkpoint === undefined) throw new TypeError("resume requires checkpoint");
+		if (keys !== undefined && (!Array.isArray(keys) || keys.length !== list.length || keys.some(key => typeof key !== "string") || new Set(keys).size !== keys.length)) throw new TypeError("keys must contain one unique string per item");
+	};
+	const __pool = async (items, fn, opts = {}) => {
 		const list = Array.from(items ?? []);
+		const { settled = false, concurrency, timeoutMs, signal, checkpoint, key, keys, resume = false, onResult, stage = 0 } = opts;
+		workflowOptions(list, opts);
 		if (list.length === 0) return [];
-		const limit = await __concurrencyLimit();
-		const concurrency = limit > 0 ? Math.min(limit, list.length) : list.length;
+		const ceiling = await __concurrencyLimit();
+		const width = Math.min(concurrency ?? list.length, ceiling || list.length, list.length);
 		const results = new Array(list.length);
-		// Barrier semantics (mirrors the Python _pool_map): every item settles
-		// before we return or throw, then the lowest-index error propagates.
-		// Early-rejecting would orphan in-flight thunks (e.g. live agent()
-		// subagents) whose worker-side promises would never be observed.
-		const errors = new Map();
 		let next = 0;
+		const callbackErrors = [];
 		const worker = async () => {
 			while (true) {
 				const index = next++;
 				if (index >= list.length) return;
+				const controller = new AbortController();
+				const deadline = timeoutMs === undefined ? undefined : performance.now() + timeoutMs;
+				const expire = () => controller.abort(new DOMException("Workflow item deadline exceeded; cancellation is cooperative", "TimeoutError"));
+				const timer = timeoutMs === undefined ? undefined : setTimeout(expire, timeoutMs);
+				const itemSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+				const check = () => {
+					if (deadline !== undefined && performance.now() >= deadline && !controller.signal.aborted) expire();
+					itemSignal.throwIfAborted();
+				};
+				const state = { stage };
+				const identity = JSON.stringify([key, keys?.[index] ?? index, stage]);
+				let row;
 				try {
-					results[index] = await fn(list[index], index);
+					check();
+					const cached = checkpoint !== undefined && resume ? await checkpointCall(checkpoint, identity) : { found: false };
+					let value;
+					if (cached.found) { value = cached.value; state.resumed = true; }
+					else {
+						value = await fn(list[index], index, itemSignal, state, check);
+						check();
+						if (checkpoint !== undefined) await checkpointCall(checkpoint, identity, value, true);
+					}
+					check();
+					row = { status: "fulfilled", value, index, ...state };
 				} catch (error) {
-					errors.set(index, error);
-				}
+					try { check(); } catch { /* The signal supplies the cancellation reason. */ }
+					const reason = itemSignal.aborted ? itemSignal.reason : error;
+					row = { status: itemSignal.aborted ? reason?.name === "TimeoutError" ? "timed_out" : "cancelled" : "rejected", error: workflowError(reason), index, stage: state.stage };
+				} finally { if (timer !== undefined) clearTimeout(timer); }
+				results[index] = row;
+				try { await onResult?.(row); } catch (error) { callbackErrors.push({ index, stage: row.stage, error: workflowError(error) }); }
 			}
 		};
-		await Promise.all(Array.from({ length: concurrency }, () => worker()));
-		if (errors.size > 0) throw errors.get(Math.min(...errors.keys()));
-		return results;
+		// Await work and observers, never race callbacks against cancellation.
+		await Promise.all(Array.from({ length: width }, () => worker()));
+		if (callbackErrors.length || (!settled && results.some(row => row.status !== "fulfilled"))) throw new BatchError(results, callbackErrors);
+		return settled ? results : results.map(row => row.value);
 	};
-
-	const parallel = async thunks =>
-		__pool(thunks, (thunk, index) => {
-			if (typeof thunk !== "function") throw new TypeError("parallel() expects an iterable of functions");
-			return thunk(index);
-		});
-
+	const parallel = async (thunks, opts = {}) => {
+		const items = Array.from(thunks);
+		if (items.some(thunk => typeof thunk !== "function")) throw new TypeError("parallel expects callables");
+		if (opts.checkpoint !== undefined && !opts.keys) throw new TypeError("checkpointed parallel requires stable per-item keys");
+		return __pool(items, (thunk, index, signal) => thunk(index, signal), opts);
+	};
 	const pipeline = async (items, ...stages) => {
-		let current = Array.from(items ?? []);
-		for (const stage of stages) {
-			if (typeof stage !== "function") throw new TypeError("pipeline() stages must be functions");
-			current = await __pool(current, stage);
+		const opts = isPlainObject(stages.at(-1)) ? stages.pop() : {};
+		if (stages.some(stage => typeof stage !== "function")) throw new TypeError("pipeline stages must be functions");
+		const list = Array.from(items ?? []);
+		workflowOptions(list, opts);
+		const keys = opts.keys ?? (opts.checkpoint !== undefined ? list.map((value, index) => checkpointJson([index, value])) : undefined);
+		const { streaming = false, settled = false } = opts;
+		if (streaming) {
+			const { checkpoint, key, resume, ...inner } = opts;
+			return __pool(list, async (value, index, signal, state, check) => {
+				for (let stage = 0; stage < stages.length; stage++) {
+					state.stage = stage;
+					delete state.resumed;
+					check();
+					const identity = JSON.stringify([key, keys?.[index] ?? index, stage]);
+					const cached = checkpoint !== undefined && resume ? await checkpointCall(checkpoint, identity) : { found: false };
+					if (cached.found) { value = cached.value; state.resumed = true; }
+					else {
+						value = await stages[stage](value, index, signal);
+						check();
+						if (checkpoint !== undefined) await checkpointCall(checkpoint, identity, value, true);
+					}
+				}
+				return value;
+			}, { ...inner, keys, settled });
 		}
-		return current;
+		const outcomes = list.map((value, index) => ({ status: "fulfilled", value, index }));
+		const callbackErrors = [];
+		for (let stage = 0; stage < stages.length; stage++) {
+			const live = outcomes.filter(row => row.status === "fulfilled");
+			const onResult = async row => {
+				const mapped = { ...row, index: live[row.index].index };
+				try { await opts.onResult?.(mapped); } catch (error) { callbackErrors.push({ index: mapped.index, stage, error: workflowError(error) }); }
+			};
+			const batch = await __pool(live.map(row => row.value), (value, index, signal) => stages[stage](value, live[index].index, signal), { ...opts, keys: keys ? live.map(row => keys[row.index]) : undefined, stage, settled: true, onResult });
+			for (let index = 0; index < batch.length; index++) outcomes[live[index].index] = { ...batch[index], index: live[index].index };
+		}
+		if (callbackErrors.length || (!settled && outcomes.some(row => row.status !== "fulfilled"))) throw new BatchError(outcomes, callbackErrors);
+		return settled ? outcomes : outcomes.map(row => row.value);
 	};
 
 	const log = message => globalThis.__proto_emit_status__("log", { message: String(message) });
@@ -258,6 +352,9 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.completion = completion;
 	globalThis.output = output;
 	globalThis.agent = agent;
+	globalThis.executions = (id, { limit = 20 } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "executions", id, limit });
+	globalThis.editBatch = (changes, { apply = false } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "edit_batch", changes: changes.map(entry => ({ ...entry, path: protoPath(entry.path) })), apply });
+	globalThis.BatchError = BatchError;
 	globalThis.parallel = parallel;
 	globalThis.pipeline = pipeline;
 	globalThis.log = log;

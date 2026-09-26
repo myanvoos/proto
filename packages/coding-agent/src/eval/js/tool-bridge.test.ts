@@ -82,3 +82,67 @@ test("kernel checkpoint and rewind calls are rejected instead of silently succee
 	expect(checkpointExecute).not.toHaveBeenCalled();
 	expect(rewindExecute).not.toHaveBeenCalled();
 });
+
+test("nested shell calls reuse idle lanes, never reuse ancestors, and reject saturated recursion", async () => {
+	const entered: string[] = [];
+	let nested = false;
+	let depth = 0;
+	const tool = {
+		name: "bash",
+		label: "bash",
+		description: "",
+		parameters: { type: "object", properties: {} },
+		execute: async (_id: string, args: unknown) => {
+			entered.push((args as { lane: string }).lane);
+			if (nested && ++depth < 9) await callSessionTool("bash", {}, { session });
+			return { content: [{ type: "text" as const, text: "done" }] };
+		},
+	};
+	const session = { getToolByName: () => tool } as unknown as ToolSession;
+	for (let index = 0; index < 20; index++) await callSessionTool("bash", {}, { session });
+	expect(new Set(entered).size).toBe(1);
+	entered.length = 0;
+	nested = true;
+	await expect(callSessionTool("bash", {}, { session })).rejects.toThrow("Nested shell lane limit");
+	expect(entered).toHaveLength(8);
+	expect(new Set(entered).size).toBe(8);
+	nested = false;
+	expect(await callSessionTool("bash", {}, { session })).toBe("done");
+	expect(entered[8]).toBe(entered[0]);
+});
+
+test("cancelled nested async calls keep their lane until their callback actually settles", async () => {
+	const manager = new AsyncJobManager({ maxRunningJobs: 8 });
+	const finish = Promise.withResolvers<void>();
+	const lanes: string[] = [];
+	const jobs: string[] = [];
+	const tool = {
+		name: "bash",
+		label: "bash",
+		description: "",
+		parameters: { type: "object", properties: {} },
+		execute: async (_id: string, args: unknown) => {
+			lanes.push((args as { lane: string }).lane);
+			const jobId = manager.register("bash", "nested", async () => {
+				await finish.promise;
+				return "done";
+			});
+			jobs.push(jobId);
+			return { content: [{ type: "text" as const, text: "backgrounded" }], details: { async: { jobId } } };
+		},
+	};
+	const session = { getToolByName: () => tool, asyncJobManager: manager } as unknown as ToolSession;
+	try {
+		for (let index = 0; index < 8; index++) await callSessionTool("bash", {}, { session });
+		expect(new Set(lanes).size).toBe(8);
+		manager.cancel(jobs[0]);
+		await expect(callSessionTool("bash", {}, { session })).rejects.toThrow("Nested shell lane limit");
+		finish.resolve();
+		await Promise.all(jobs.map(id => manager.getJob(id)!.promise));
+		await callSessionTool("bash", {}, { session });
+		expect(lanes[8]).toBe(lanes[0]);
+	} finally {
+		finish.resolve();
+		await manager.dispose();
+	}
+});

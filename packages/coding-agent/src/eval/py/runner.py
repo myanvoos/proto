@@ -1967,6 +1967,51 @@ def _flush_matplotlib_figures() -> None:
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 
+_KERNEL_GENERATION = os.urandom(16).hex()
+
+
+def __proto_kernel_state(*, limit: int = 200) -> dict:
+    if type(limit) is not int or not 0 <= limit <= 1000:
+        raise ValueError("kernel_state limit must be an integer from 0 to 1000")
+    variables = []
+    total = 0
+    hidden = set(_runner_exports()) | set(_STATE.prelude_exports)
+    for name in sorted(name for name in _STATE.user_ns if type(name) is str):
+        value = _STATE.user_ns[name]
+        if name.startswith("__") or (name in hidden and name not in _STATE.defs):
+            continue
+        total += 1
+        if len(variables) >= limit:
+            continue
+        kind = type(value)
+        # Bypass custom metaclass attributes as well as value repr/iteration.
+        kind_name = type.__dict__["__name__"].__get__(kind)[:160]
+        if kind is str:
+            preview = repr(value[:160])[:200]
+        elif any(kind is builtin for builtin in (int, float, bool, type(None))):
+            preview = str(value)[:160] if kind is not int or value.bit_length() < 512 else "<large integer>"
+        elif any(kind is builtin for builtin in (list, tuple, dict, set, frozenset, bytes, bytearray)):
+            preview = f"<{kind_name}: {len(value)} items>"
+        else:
+            preview = f"<{kind_name}>"
+        variables.append({"name": name[:200], "nameTruncated": len(name) > 200,
+                          "type": kind_name, "preview": preview,
+                          "cell": _STATE.defs.get(name, _STATE.execution_count), "provenance": "cell"})
+    # asyncio owns these tasks; do not call user task repr, names or coroutine getters.
+    live_tasks = asyncio.all_tasks()
+    tasks = []
+    for task in sorted(live_tasks, key=id)[:limit]:
+        request = task in _STATE.request_tasks
+        tasks.append({"id": str(id(task)), "kind": "cell" if request else "asyncio",
+                      "state": "running", "cell": _STATE.execution_count if request else None})
+    return {"generation": _KERNEL_GENERATION, "language": "python", "interpreter": sys.executable,
+            "cwd": os.getcwd(), "executionCount": _STATE.execution_count,
+            "active": _STATE.active_executions,
+            "queued": max(0, len(_STATE.pending_request_ids) - len(_STATE.request_tasks)),
+            "variables": variables, "totalVariables": total,
+            "tasks": tasks, "totalTasks": len(live_tasks), "taskScope": "asyncio"}
+
+
 def __proto_defs_view() -> dict[str, int]:
     return dict(_STATE.defs)
 
@@ -1979,6 +2024,7 @@ def _runner_exports() -> dict[str, Any]:
     return {
         "display": __proto_display,
         "defs": __proto_defs_view,
+        "kernel_state": __proto_kernel_state,
     }
 
 
@@ -2345,6 +2391,13 @@ async def _handle_request_async(req: dict) -> None:
         _ensure_matplotlib_saved_hook()
     except Exception:
         pass
+    shell_env = req.get("shellEnv")
+    scoped_env = {key: value for key, value in (shell_env or {}).items()
+                  if key not in _MANAGED_ENV_KEYS and not key.startswith("PI_KERNEL_")}
+    saved_env = {key: os.environ.get(key) for key in scoped_env}
+    os.environ.update(scoped_env)
+    saved_stdin = sys.stdin
+    sys.stdin = io.TextIOWrapper(io.BytesIO(bytes(req.get("stdin") or [])), encoding="utf-8")
     capture = _begin_fd_capture(rid)
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
@@ -2354,6 +2407,7 @@ async def _handle_request_async(req: dict) -> None:
     except Exception:
         pass
     execution_count = _STATE.execution_count
+    bindings_before = dict(_STATE.user_ns)
 
     status: str = "ok"
     cancelled = False
@@ -2414,6 +2468,8 @@ async def _handle_request_async(req: dict) -> None:
         _begin_exec_sigint()
         try:
             _emit({"type": "started", "id": rid})
+            if not is_prelude:
+                _emit_status("kernel-state", generation=_KERNEL_GENERATION, language="python", executionCount=execution_count)
             if is_prelude:
                 _load_prelude(transformed)
             else:
@@ -2451,6 +2507,9 @@ async def _handle_request_async(req: dict) -> None:
 
         try:
             if not is_prelude:
+                for name, value in _STATE.user_ns.items():
+                    if type(name) is str and not name.startswith("__") and (name not in bindings_before or bindings_before[name] is not value):
+                        _STATE.defs[name] = execution_count
                 _track_cell_defs(transformed, rid, execution_count)
             _flush_stream_proxies(rid)
         except BaseException as exc:
@@ -2477,6 +2536,14 @@ async def _handle_request_async(req: dict) -> None:
         _CURRENT_RID.reset(token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
         _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
+        sys.stdin = saved_stdin
+        for key, value in saved_env.items():
+            if os.environ.get(key) != scoped_env[key]:
+                continue  # Intentional user changes remain kernel-local.
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _emit_error(rid: str, exc: BaseException) -> None:

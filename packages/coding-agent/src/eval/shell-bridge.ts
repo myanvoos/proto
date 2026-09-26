@@ -1,5 +1,6 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Socket, TCPSocketListener } from "bun";
 import { resolveFleetRoot } from "../internal-urls";
 import type { ToolSession } from "../tools";
@@ -16,6 +17,7 @@ import { upsertStatusEvent } from "./status-events";
 import type { EvalStatusEvent } from "./types";
 
 export interface KernelShellBridgeOptions {
+	lane?: string;
 	toolCallId?: string;
 	generation?: number;
 }
@@ -25,10 +27,12 @@ export interface KernelShellBridgeHandle {
 	drainImages(): ImageContent[];
 	drainStatusEvents(): EvalStatusEvent[];
 	drainJsonOutputs(): unknown[];
+	queriedExecutions(): boolean;
 	dispose(): void;
 }
 
 interface RunContext {
+	queriedExecutions: boolean;
 	session: ToolSession;
 	images: ImageContent[];
 	statusEvents: EvalStatusEvent[];
@@ -58,6 +62,8 @@ interface CellRequest {
 	code: string;
 	lang: "py" | "js";
 	cwd?: string;
+	shellEnv?: Record<string, string>;
+	stdin?: number[];
 }
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -65,6 +71,7 @@ const MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024;
 const OUTPUT_CHUNK_CHARS = 1024 * 1024;
 
 const runs = new Map<string, RunContext>();
+const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
 let listener: TCPSocketListener<SocketState> | undefined;
 
 export function registerKernelShellRun(
@@ -75,6 +82,7 @@ export function registerKernelShellRun(
 	const server = ensureListener();
 	const token = crypto.randomUUID();
 	const context: RunContext = {
+		queriedExecutions: false,
 		session,
 		images: [],
 		statusEvents: [],
@@ -99,6 +107,7 @@ export function registerKernelShellRun(
 		drainImages: () => context.images.splice(0),
 		drainStatusEvents: () => context.statusEvents.splice(0),
 		drainJsonOutputs: () => context.jsonOutputs.splice(0),
+		queriedExecutions: () => context.queriedExecutions,
 		dispose: () => {
 			if (disposed) return;
 			disposed = true;
@@ -265,9 +274,9 @@ function send(socket: Socket<SocketState>, frame: Record<string, unknown>): bool
 	return true;
 }
 
-function sendOutput(socket: Socket<SocketState>, output: string): void {
+function sendOutput(socket: Socket<SocketState>, output: string, stream: "stdout" | "stderr" = "stdout"): void {
 	for (let offset = 0; offset < output.length && !socket.data.ending; offset += OUTPUT_CHUNK_CHARS) {
-		send(socket, { t: "o", d: output.slice(offset, offset + OUTPUT_CHUNK_CHARS) });
+		send(socket, { t: stream === "stderr" ? "e" : "o", d: output.slice(offset, offset + OUTPUT_CHUNK_CHARS) });
 	}
 }
 
@@ -314,10 +323,27 @@ function parseRequest(line: string): CellRequest | undefined {
 	const parsed = parseLine(line);
 	if (!parsed || typeof parsed.token !== "string" || typeof parsed.code !== "string") return undefined;
 	if (parsed.lang !== "py" && parsed.lang !== "js") return undefined;
+	if (
+		parsed.shellEnv !== undefined &&
+		(parsed.shellEnv === null ||
+			typeof parsed.shellEnv !== "object" ||
+			Array.isArray(parsed.shellEnv) ||
+			Object.values(parsed.shellEnv).some(value => typeof value !== "string"))
+	)
+		return undefined;
+	if (
+		parsed.stdin != null &&
+		(!Array.isArray(parsed.stdin) ||
+			parsed.stdin.length > 1024 * 1024 ||
+			parsed.stdin.some(value => !Number.isInteger(value) || value < 0 || value > 255))
+	)
+		return undefined;
 	return {
 		token: parsed.token,
 		code: parsed.code,
 		lang: parsed.lang,
+		shellEnv: parsed.shellEnv as Record<string, string> | undefined,
+		stdin: (parsed.stdin ?? undefined) as number[] | undefined,
 		cwd: typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? parsed.cwd : undefined,
 	};
 }
@@ -367,16 +393,39 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		const result = await backend.execute(request.code, {
 			cwd: session.cwd,
 			runCwd: request.cwd,
-			sessionId: session.getEvalSessionId?.() ?? defaultEvalSessionId(session),
+			shellEnv: request.shellEnv,
+			stdin: request.stdin,
+			sessionId: `${session.getEvalSessionId?.() ?? defaultEvalSessionId(session)}${context.completionContext?.lane && context.completionContext.lane !== "main" ? `:lane:${encodeURIComponent(context.completionContext.lane)}` : ""}`,
 			sessionFile: session.getSessionFile?.() ?? undefined,
 			kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
 			completionContext,
 			signal: abort.signal,
 			session,
 			reset: false,
-			onChunk: chunk => sendOutput(socket, chunk),
+			onChunk: () => {},
+			onStream: (chunk, stream) => sendOutput(socket, chunk, stream),
 			onStatus: event => {
 				if (isEvalTimeoutControlEvent(event)) return;
+				if (event.op === "execution-query") {
+					context.queriedExecutions = true;
+					return;
+				}
+				if (event.op === "kernel-state" && typeof event.generation === "string") {
+					let known = generations.get(session);
+					if (!known) {
+						known = new LRUCache({ max: 32 });
+						generations.set(session, known);
+					}
+					const key = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
+					const previous = known.get(key);
+					if (previous && previous !== event.generation)
+						sendOutput(
+							socket,
+							`<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.\n`,
+							"stderr",
+						);
+					known.set(key, event.generation);
+				}
 				upsertStatusEvent(cellStatusEvents, event);
 				upsertStatusEvent(context.statusEvents, event);
 				context.onStatusEvent?.(event);

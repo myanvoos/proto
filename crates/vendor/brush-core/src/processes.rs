@@ -31,6 +31,7 @@ pub struct ChildProcess {
 	pgid:        Option<sys::process::ProcessId>,
 
 	completion_marker: Option<CompletionMarker>,
+	command_observation: Option<crate::CommandObservation>,
 }
 
 impl ChildProcess {
@@ -46,9 +47,14 @@ impl ChildProcess {
 			pgid,
 			reaped: false,
 			completion_marker: None,
+			command_observation: None,
 		}
 	}
 
+
+    pub fn set_command_observation(&mut self, observation: crate::CommandObservation) {
+		self.command_observation = Some(observation);
+	}
 
 	pub const fn pid(&self) -> Option<sys::process::ProcessId> {
 		self.pid
@@ -96,11 +102,19 @@ impl ChildProcess {
 					let marker_exit_code = completion_exit_code(&output.status);
 					self.reaped = true;
 					self.write_completion_marker(marker_exit_code);
+					if let Some(observation) = self.command_observation.take() {
+						#[cfg(unix)]
+						let signal = { use std::os::unix::process::ExitStatusExt; output.status.signal() };
+						#[cfg(not(unix))]
+						let signal = None;
+						observation.finish(Some(marker_exit_code), signal).await;
+					}
 					break Ok(ProcessWaitResult::Completed(output))
 				},
 				_ = &mut cancelled => {
 					self.kill();
 					self.write_completion_marker(130);
+					if let Some(observation) = self.command_observation.take() { observation.finish(None, None).await; }
 					break Ok(ProcessWaitResult::Cancelled)
 				},
 				_ = sigtstp.recv() => {

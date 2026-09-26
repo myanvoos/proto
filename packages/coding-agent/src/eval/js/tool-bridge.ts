@@ -12,9 +12,34 @@ import {
 	runEvalCompletion,
 } from "../completion-bridge";
 import { EVAL_CONCURRENCY_BRIDGE_NAME, type EvalConcurrencyResult, runEvalConcurrency } from "../concurrency-bridge";
+import { EVAL_RUNTIME_BRIDGE_NAME, type RuntimeBridgeResult, runEvalRuntime } from "../runtime-bridge";
 import type { JsStatusEvent } from "./shared/types";
 
 export type { JsStatusEvent } from "./shared/types";
+
+const MAX_NESTED_LANES = 8;
+const nestedLanes = new WeakMap<ToolSession, Set<number>>();
+
+function acquireNestedLane(session: ToolSession): { lane: string; release(): void } {
+	let active = nestedLanes.get(session);
+	if (!active) {
+		active = new Set();
+		nestedLanes.set(session, active);
+	}
+	for (let index = 0; index < MAX_NESTED_LANES; index++) {
+		if (active.has(index)) continue;
+		active.add(index);
+		return {
+			lane: `bridge-${index}`,
+			release: () => {
+				active.delete(index);
+			},
+		};
+	}
+	throw new ToolError(
+		`Nested shell lane limit reached (${MAX_NESTED_LANES}); await an active nested call before starting another.`,
+	);
+}
 
 interface ToolBridgeOptions {
 	session: ToolSession;
@@ -25,6 +50,7 @@ interface ToolBridgeOptions {
 }
 
 type ToolValue =
+	| RuntimeBridgeResult
 	| string
 	| EvalBudgetResult
 	| EvalConcurrencyResult
@@ -130,6 +156,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	if (name === EVAL_CONCURRENCY_BRIDGE_NAME) {
 		return runEvalConcurrency(args, options);
 	}
+	if (name === EVAL_RUNTIME_BRIDGE_NAME) return runEvalRuntime(args, options);
 	if (name === EVAL_AST_BRIDGE_NAME) {
 		return runEvalAst(args, options);
 	}
@@ -139,7 +166,16 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const tool = getTool(options.session, name);
-	const normalizedArgs = normalizeArgs(tool, args);
+	let normalizedArgs = normalizeArgs(tool, args);
+	let lease: { lane: string; release(): void } | undefined;
+	// Nested shell calls cannot wait for the lane held by their calling cell.
+	if (name === "bash" && normalizedArgs && typeof normalizedArgs === "object" && !Array.isArray(normalizedArgs)) {
+		const record = normalizedArgs as Record<string, unknown>;
+		if (record.lane === undefined) {
+			lease = acquireNestedLane(options.session);
+			normalizedArgs = { ...record, lane: lease.lane };
+		}
+	}
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
 	try {
 		const result = await tool.execute(
@@ -149,6 +185,18 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			undefined,
 			options.session.getToolContext?.(),
 		);
+		// Async bash returns before its shell lane is free. Hold the lease through
+		// callback settlement, including cancellation cleanup, not just admission.
+		const details = result.details as { async?: { jobId?: string } } | undefined;
+		const job = details?.async?.jobId ? options.session.asyncJobManager?.getJob(details.async.jobId) : undefined;
+		if (lease && job) {
+			const held = lease;
+			lease = undefined;
+			void job.promise.then(
+				() => held.release(),
+				() => held.release(),
+			);
+		}
 		const textBlocks = result.content.filter(
 			(content): content is { type: "text"; text: string } =>
 				content.type === "text" && typeof content.text === "string",
@@ -183,5 +231,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			error: error instanceof Error ? error.message : String(error),
 		});
 		throw error;
+	} finally {
+		lease?.release();
 	}
 }

@@ -51,6 +51,7 @@ function sessionWithProbe(
 			return {
 				content: [{ type: "text" as const, text: `probe:${args.value}\n` }],
 				...(args.value === "fail" ? { isError: true } : {}),
+				...(args.value === "structured" ? { details: { answer: 42, nested: { ready: false } } } : {}),
 			};
 		},
 	} as unknown as Tool;
@@ -849,5 +850,16 @@ test("xd CLI renders flag-style calls through device renderers", async () => {
 		expect(rendered).toContain("Probe");
 		expect(rendered).toContain('value="cli"');
 		expect(rendered).toContain("probe:cli");
+	});
+});
+
+test("device results retain typed payloads outside pipelines and correlate to native stages", async () => {
+	await withBash(async bash => {
+		const result = await bash.execute("device-record", { command: `xd probe --json '{"value":"structured"}' | cat` });
+		const device = result.details?.deviceResults?.[0];
+		expect(device?.stageIndex).toBeNumber();
+		expect(device?.xdev).toMatchObject({ tool: "probe", inner: { answer: 42, nested: { ready: false } } });
+		expect(result.details?.execution?.stages?.[device!.stageIndex!]?.route).toBe("xd");
+		expect(textOf(result)).toContain("probe:structured");
 	});
 });

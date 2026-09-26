@@ -113,7 +113,7 @@ test("aborts a noisy cell when pending output exceeds its budget and reports the
 	spyOn(jsBackend, "execute").mockImplementation(async (_code, options) => {
 		let emissions = 0;
 		while (emissions < 128 && !options.signal?.aborted) {
-			options.onChunk(outputChunk);
+			options.onStream?.(outputChunk, "stdout");
 			emissions++;
 		}
 		emitted.resolve({ emissions, aborted: options.signal?.aborted ?? false });
@@ -234,3 +234,50 @@ test("disposing one shell run cancels its pending cell without closing another r
 		survivingBridge.dispose();
 	}
 });
+
+test("successive shell runs on one lane retain interpreter state without allocating fresh lanes", async () => {
+	const session = stubSession();
+	try {
+		for (let index = 1; index <= 20; index++) {
+			const bridge = registerKernelShellRun(session, undefined, { lane: "bridge-0" });
+			const client = await connectBridge(bridge);
+			try {
+				client.socket.write(
+					client.request(
+						"globalThis.laneCounter = (globalThis.laneCounter ?? 0) + 1; console.log(globalThis.laneCounter)",
+					),
+				);
+				const frames = (await within(client.response, 5_000))
+					.trim()
+					.split("\n")
+					.map(line => JSON.parse(line));
+				expect(frames).toEqual([
+					{ t: "o", d: `${index}\n` },
+					{ t: "x", c: 0 },
+				]);
+			} finally {
+				client.socket.destroy();
+				bridge.dispose();
+			}
+		}
+		const bridge = registerKernelShellRun(session, undefined, { lane: "bridge-1" });
+		const client = await connectBridge(bridge);
+		try {
+			client.socket.write(client.request("console.log(typeof globalThis.laneCounter)"));
+			expect(
+				(await client.response)
+					.trim()
+					.split("\n")
+					.map(line => JSON.parse(line)),
+			).toEqual([
+				{ t: "o", d: "undefined\n" },
+				{ t: "x", c: 0 },
+			]);
+		} finally {
+			client.socket.destroy();
+			bridge.dispose();
+		}
+	} finally {
+		await disposeVmContextsByOwner(KERNEL_OWNER);
+	}
+}, 30_000);
