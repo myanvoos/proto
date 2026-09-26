@@ -278,7 +278,6 @@ export class AgentLifecycleManager {
 			}
 			if (revive) {
 				adoption = { ref, idleTtlMs: this.#persistedReviveTtlMs, revive };
-				this.#adopted.set(id, adoption);
 				coldAdopted = true;
 			}
 		}
@@ -290,6 +289,7 @@ export class AgentLifecycleManager {
 				`Agent "${id}" is ${ref.status} and cannot be revived${revive ? "" : " (no reviver registered)"}. Its transcript remains readable at history://${id}.`,
 			);
 		}
+		if (coldAdopted) this.#adopted.set(id, adoption);
 		try {
 			return await this.#revive(id, revive, ref, adoption);
 		} catch (error) {
@@ -335,10 +335,11 @@ export class AgentLifecycleManager {
 		return true;
 	}
 
-	async #releaseWithinDeadline(ids: string[], deadlineAt: number): Promise<void> {
+	async #releaseWithinDeadline(refs: AgentRef[], deadlineAt: number): Promise<void> {
 		await Promise.all(
-			ids.map(async id => {
-				const release = this.release(id).then(() => {});
+			refs.map(async ref => {
+				const { id } = ref;
+				const release = this.release(id, ref).then(() => {});
 				try {
 					await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
 				} catch (error) {
@@ -355,11 +356,13 @@ export class AgentLifecycleManager {
 	}
 
 	disposeFleet(fleetRoot: string, deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
-		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])].filter(id => {
-			const ref = this.#adopted.get(id)?.ref ?? this.#parks.get(id)?.ref;
-			return ref?.fleetRoot === fleetRoot;
-		});
-		return this.#releaseWithinDeadline(ids, deadlineAt);
+		const refs = new Set(
+			[...this.#adopted.values(), ...this.#parks.values(), ...this.#revivals.values()].map(pending => pending.ref),
+		);
+		return this.#releaseWithinDeadline(
+			[...refs].filter(ref => ref.fleetRoot === fleetRoot),
+			deadlineAt,
+		);
 	}
 
 	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
@@ -367,8 +370,10 @@ export class AgentLifecycleManager {
 		this.#disposed = true;
 		this.#focusHeldId = undefined;
 		this.#unsubscribe = undefined;
-		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
-		await this.#releaseWithinDeadline(ids, deadlineAt);
+		const refs = new Set(
+			[...this.#adopted.values(), ...this.#parks.values(), ...this.#revivals.values()].map(pending => pending.ref),
+		);
+		await this.#releaseWithinDeadline([...refs], deadlineAt);
 		this.#revivals.clear();
 		this.#parks.clear();
 		this.#persistedReviverFactory = undefined;

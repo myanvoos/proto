@@ -129,6 +129,53 @@ test("python kernel: the same destructive ops still run once the cell re-reads t
 	}
 }, 120000);
 
+test("js kernel: a retained FileHandle cannot clobber an external edit from a later cell", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-stale-handle-"));
+	const tool = new BashTool(stubSession(dir));
+	const target = path.join(dir, "target.txt");
+	try {
+		await fs.writeFile(target, "original");
+		const opened = await runCell(
+			tool,
+			"handle-open",
+			"node",
+			"const fs = require('node:fs'); const h = await fs.promises.open('target.txt', 'r+'); console.log('OPEN ok');",
+		);
+		expect(opened).toContain("OPEN ok");
+		const read = await runCell(
+			tool,
+			"handle-read",
+			"node",
+			"console.log(await fs.promises.readFile('target.txt', 'utf8'));",
+		);
+		expect(read).toContain("original");
+		await fs.writeFile(target, "external-edit");
+
+		const rejected = await runCell(
+			tool,
+			"handle-reject",
+			"node",
+			"try { await h.writeFile('kernel-version'); console.log('NO-GUARD'); } catch (error) { console.log(error.name); }",
+		);
+		expect(rejected).toContain("StaleWriteError");
+		expect(rejected).not.toContain("NO-GUARD");
+		expect(await fs.readFile(target, "utf8")).toBe("external-edit");
+
+		const accepted = await runCell(
+			tool,
+			"handle-reread",
+			"node",
+			"console.log(await h.readFile('utf8')); await h.truncate(0); console.log('TRUNCATE ok');",
+		);
+		expect(accepted).toContain("external-edit");
+		expect(accepted).toContain("TRUNCATE ok");
+		expect(await fs.readFile(target, "utf8")).toBe("");
+	} finally {
+		await runCell(tool, "handle-close", "node", "if (typeof h !== 'undefined') await h.close();");
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 120000);
+
 test("js kernel: rename, truncate and unlink refuse the same unseen edit (parity reference)", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-stale-js-"));
 	try {

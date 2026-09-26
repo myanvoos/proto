@@ -17,6 +17,7 @@ import { formatBytes } from "./render-utils";
 import { toolResult } from "./tool-result";
 
 export function splitAddressableFileLines(text: string): string[] {
+	if (text.length === 0) return [];
 	const lines = text.split("\n");
 	if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
 	return lines;

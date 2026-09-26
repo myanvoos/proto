@@ -41,19 +41,24 @@ function findLastDelimiter(text: string): number {
 }
 
 function findUnclosedQuoteStart(text: string): number | null {
-	let inQuotes = false;
+	let quote = "";
 	let quoteStart = -1;
 
 	for (let i = 0; i < text.length; i += 1) {
-		if (text[i] === '"') {
-			inQuotes = !inQuotes;
-			if (inQuotes) {
-				quoteStart = i;
-			}
+		const character = text[i];
+		if (quote) {
+			if (character === quote) quote = "";
+		} else if (
+			character === '"' ||
+			(character === "'" && (isTokenStart(text, i) || (text[i - 1] === "@" && isTokenStart(text, i - 1))))
+		) {
+			// Apostrophes inside prose are not the start of a quoted path.
+			quote = character;
+			quoteStart = i;
 		}
 	}
 
-	return inQuotes ? quoteStart : null;
+	return quote ? quoteStart : null;
 }
 
 function isTokenStart(text: string, index: number): boolean {
@@ -94,10 +99,10 @@ function extractQuotedPrefix(text: string): string | null {
 }
 
 function parsePathPrefix(prefix: string): { rawPrefix: string; isAtPrefix: boolean; isQuotedPrefix: boolean } {
-	if (prefix.startsWith('@"')) {
+	if (prefix.startsWith('@"') || prefix.startsWith("@'")) {
 		return { rawPrefix: prefix.slice(2), isAtPrefix: true, isQuotedPrefix: true };
 	}
-	if (prefix.startsWith('"')) {
+	if (prefix.startsWith('"') || prefix.startsWith("'")) {
 		return { rawPrefix: prefix.slice(1), isAtPrefix: false, isQuotedPrefix: true };
 	}
 	if (prefix.startsWith("@")) {
@@ -715,7 +720,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 	#extractAtPrefix(text: string): string | null {
 		const quotedPrefix = extractQuotedPrefix(text);
-		if (quotedPrefix?.startsWith('@"')) {
+		if (quotedPrefix?.startsWith("@")) {
 			return quotedPrefix;
 		}
 

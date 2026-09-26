@@ -2,8 +2,10 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { MCPManager } from "../mcp/manager";
 import type { McpConnectionStatusEvent } from "../mcp/startup-events";
+import { resolveAllowedModels } from "./model-resolver";
 import { Settings } from "./settings";
 
 const CLI = path.resolve(import.meta.dir, "../cli.ts");
@@ -201,3 +203,29 @@ test("a legacy boolean unexpected-stop setting keeps its behavior as the enum mo
 	);
 	expect(mixed.get("features.unexpectedStopDetection")).toBe("mechanical");
 });
+
+for (const relative of [".", "normal", "..project", "..project/nested", "..", "../sibling"]) {
+	test(`path-scoped model restrictions respect containment for ${relative}`, async () => {
+		const { cwd } = await makeFixture();
+		const settings = Settings.isolated({ enabledModels: [{ path: cwd, models: ["probe/allowed"] }] });
+		await settings.reloadForCwd(path.resolve(cwd, relative));
+		const models = ["allowed", "excluded"].map(id =>
+			buildModel({
+				id,
+				name: id,
+				provider: "probe",
+				api: "openai-completions",
+				baseUrl: "https://example.invalid",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 1024,
+			}),
+		);
+		const allowed = await resolveAllowedModels({ getAvailable: () => models }, settings);
+		expect(allowed.map(model => model.id)).toEqual(
+			relative === ".." || relative === "../sibling" ? ["allowed", "excluded"] : ["allowed"],
+		);
+	});
+}

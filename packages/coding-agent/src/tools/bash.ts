@@ -1367,25 +1367,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			: undefined;
 
-		if (!cwd) {
-			const cd = extractLeadingCdTarget(command);
-			if (cd) {
-				cwd = cd.path;
-				command = cd.rest;
-			}
-		}
 		if (asyncRequested && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
 		}
 
 		if (this.session.settings.get("bashInterceptor.enabled")) {
 			const rules = this.session.settings.getBashInterceptorRules();
-			const commandsToCheck = rawCommand === command ? [command] : [rawCommand, command];
-			for (const commandToCheck of commandsToCheck) {
-				const interception = checkBashInterception(commandToCheck, ctx?.toolNames ?? [], rules, rawCommand);
-				if (interception.block) {
-					throw new ToolError(interception.message ?? "Command blocked");
-				}
+			const interception = checkBashInterception(command, ctx?.toolNames ?? [], rules, rawCommand);
+			if (interception.block) {
+				throw new ToolError(interception.message ?? "Command blocked");
 			}
 		}
 
@@ -1948,7 +1938,7 @@ function formatBashCommandLines(
 	let displayCommand = command;
 	if (displayWorkdir && args.cwd !== undefined) {
 		// The prefix already announces the workdir; execution keeps the
-		// command's own leading `cd` as a no-op, but rendering it twice reads
+		// command's own leading `cd`, but rendering it twice reads
 		// as `cd X && cd X && …`. Drop it when it targets the same directory.
 		const leading = extractLeadingCdTarget(command);
 		const startDir = path.resolve(cwd, args.cwd);

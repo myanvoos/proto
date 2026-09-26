@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./autocomplete";
 
 const COMMANDS: SlashCommand[] = [
@@ -86,4 +89,29 @@ describe("leading-slash skill breakout", () => {
 		expect(items).toContain("skill:");
 		expect(items).not.toContain("skill:humanizer");
 	});
+});
+
+test("single-quoted paths and file mentions complete and replace the whole quoted prefix", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-autocomplete-quotes-"));
+	try {
+		await Bun.write(path.join(directory, "foo bar.txt"), "");
+		const provider = new CombinedAutocompleteProvider([], directory);
+		for (const [text, prefix, expected] of [
+			["'foo", "'foo", '"foo bar.txt"'],
+			["@'foo", "@'foo", '@"foo bar.txt" '],
+			["Read @'foo", "@'foo", 'Read @"foo bar.txt" '],
+			['"foo', '"foo', '"foo bar.txt"'],
+			["It's @\"foo", '@"foo', 'It\'s @"foo bar.txt" '],
+		] as const) {
+			const suggestions = await provider.getSuggestions([text], 0, text.length);
+			expect(suggestions?.prefix).toBe(prefix);
+			const item = suggestions?.items.find(candidate => candidate.label === "foo bar.txt");
+			expect(item).toBeDefined();
+			if (!item || !suggestions) throw new Error(`Missing file suggestion for ${text}`);
+			const applied = provider.applyCompletion([`${text} suffix`], 0, text.length, item, suggestions.prefix);
+			expect(applied).toEqual({ lines: [`${expected} suffix`], cursorLine: 0, cursorCol: expected.length });
+		}
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
 });

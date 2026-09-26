@@ -176,8 +176,8 @@ function deriveBufferedFileText(bytes: Buffer): BufferedFileText {
 	const { text: strippedText } = stripBom(rawText);
 
 	const normalizedText = strippedText.includes("\r") ? normalizeToLF(strippedText) : strippedText;
-	const rawSegments = rawText.split("\n");
-	const normalizedSegments = normalizedText.split("\n");
+	const rawSegments = rawText.length > 0 ? rawText.split("\n") : [];
+	const normalizedSegments = normalizedText.length > 0 ? normalizedText.split("\n") : [];
 	const addressableLines = splitAddressableFileLines(normalizedText);
 	return {
 		bytes,
@@ -310,7 +310,6 @@ async function streamLinesFromFile(
 	let fileHandle: fs.FileHandle | null = null;
 	let currentLineLength = 0;
 	let currentLineChunks: Buffer[] = [];
-	let sawAnyByte = false;
 	let endedWithNewline = false;
 	let firstLinePreviewBytes = 0;
 	const firstLinePreviewChunks: Buffer[] = [];
@@ -416,7 +415,6 @@ async function streamLinesFromFile(
 			const { bytesRead } = await fileHandle.read(bufferChunk, 0, bufferChunk.length, null);
 			if (bytesRead === 0) break;
 
-			sawAnyByte = true;
 			const chunk = bufferChunk.subarray(0, bytesRead);
 			endedWithNewline = chunk[bytesRead - 1] === 0x0a;
 
@@ -462,7 +460,7 @@ async function streamLinesFromFile(
 		}
 	}
 
-	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
+	if (reachedEof && (currentLineLength > 0 || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
 
@@ -534,7 +532,6 @@ async function streamLinesForRanges(
 	let currentLineLength = 0;
 	let currentLineChunks: Buffer[] = [];
 	let captureLimit = 0;
-	let sawAnyByte = false;
 	let endedWithNewline = false;
 	let reachedEof = true;
 	let stopScanning = false;
@@ -640,7 +637,6 @@ async function streamLinesForRanges(
 			throwIfAborted(signal);
 			const { bytesRead } = await fileHandle.read(bufferChunk, 0, bufferChunk.length, null);
 			if (bytesRead === 0) break;
-			sawAnyByte = true;
 			const chunk = bufferChunk.subarray(0, bytesRead);
 			endedWithNewline = chunk[bytesRead - 1] === LF_BYTE;
 			let start = 0;
@@ -658,7 +654,7 @@ async function streamLinesForRanges(
 		if (fileHandle) await fileHandle.close();
 	}
 
-	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
+	if (reachedEof && (currentLineLength > 0 || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
 
@@ -1700,7 +1696,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							totalFileLines === 0
 								? "The file is empty."
 								: `Use :1 to read from the start, or :${totalFileLines} to read the last line.`;
-						return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
+						return toolResult<ReadToolDetails>({
+							resolvedPath: absolutePath,
+							suffixResolution,
+							totalLines: totalFileLines,
+						})
 							.text(
 								`Line ${requestedStart + 1} is beyond end of file (${totalFileLines} lines total). ${suggestion}`,
 							)

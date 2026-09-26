@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -49,6 +49,43 @@ function readSession(cwd: string): ToolSession {
 		isToolActive: () => false,
 	} as unknown as ToolSession;
 }
+
+test("streamed empty reads do not finalize a phantom line", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "read-streamed-empty-"));
+	const file = path.join(root, "empty.txt");
+	await Bun.write(file, "");
+	const originalReadFile = fs.readFile;
+	let bufferedAttempts = 0;
+	// Exercise the streaming fallback while retaining real stat/open/read/EOF behavior.
+	const readSpy = spyOn(fs, "readFile").mockImplementation((async (target: unknown, ...args: unknown[]) => {
+		if (target === file) {
+			bufferedAttempts++;
+			throw new Error("Buffered read unavailable");
+		}
+		return originalReadFile(target as Parameters<typeof fs.readFile>[0], ...(args as []));
+	}) as typeof fs.readFile);
+	try {
+		const read = new ReadTool(readSession(root));
+		for (const selector of [":2", "", ":raw", ":2:raw"]) {
+			const result = await read.execute(`streamed-empty-${selector}`, { path: `empty.txt${selector}` });
+			const line = selector.startsWith(":2") ? 2 : 1;
+			expect(textOf(result)).toBe(`Line ${line} is beyond end of file (0 lines total). The file is empty.`);
+			expect(result.details?.totalLines).toBe(0);
+			expect(result.details?.displayContent).toBeUndefined();
+		}
+		for (const selector of [":1-1,3-3", ":1-1,3-3:raw"]) {
+			const result = await read.execute(`streamed-empty-ranges-${selector}`, { path: `empty.txt${selector}` });
+			expect(textOf(result)).toBe(
+				"[Range 1-1 is beyond end of file (0 lines total); skipped]\n" +
+					"[Range 3-3 is beyond end of file (0 lines total); skipped]",
+			);
+		}
+		expect(bufferedAttempts).toBe(6);
+	} finally {
+		readSpy.mockRestore();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
 
 test("streamed newline-terminated reads count every finalized line at EOF", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "read-streamed-"));

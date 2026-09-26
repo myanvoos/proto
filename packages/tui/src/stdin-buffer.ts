@@ -581,9 +581,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				i++;
 				continue;
 			}
-			if (i + seqLen > len) break; // incomplete tail: hold for the next chunk
 			let valid = true;
-			for (let j = 1; j < seqLen; j++) {
+			for (let j = 1; j < seqLen && i + j < len; j++) {
 				const cont = bytes[i + j]!;
 				if (cont < 0x80 || cont > 0xbf) {
 					valid = false;
@@ -594,6 +593,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				i++; // invalid lead stays in the run and decodes as replacement
 				continue;
 			}
+			// Only hold tails whose available bytes are valid continuations;
+			// malformed short sequences must not swallow following controls or text.
+			if (i + seqLen > len) break;
 			pendingContinuations = seqLen - 1;
 			i++;
 		}

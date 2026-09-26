@@ -45,7 +45,7 @@ test("a strip clipped to a row budget scrolls to keep the active tab visible", (
 	for (let step = 0; step < LABELS.length; step++) {
 		const lines = instance.render(20);
 		expect(lines.length).toBeLessThanOrEqual(3);
-		const active = instance.getActiveTab().label;
+		const active = instance.getActiveTab()!.label;
 		expect(lines.join("\n"), `active ${active}`).toContain(`<${` ${active} `}>`);
 		instance.nextTab();
 	}

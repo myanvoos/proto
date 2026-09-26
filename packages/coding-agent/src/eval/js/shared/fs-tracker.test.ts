@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { beginFileTracking, flushFileTracking, trackedFsModule } from "./fs-tracker";
+import { beginFileTracking, flushFileTracking, StaleWriteError, trackedFsModule } from "./fs-tracker";
 import type { JsStatusEvent } from "./types";
 
 const cleanupPaths = new Set<string>();
@@ -303,6 +303,141 @@ test("every content-mutating FileHandle method emits an observation across cells
 		} finally {
 			await handle?.close();
 		}
+	}
+});
+
+const handleReads: Array<{
+	name: string;
+	run: (handle: fs.promises.FileHandle) => Promise<string>;
+}> = [
+	{ name: "readFile", run: handle => handle.readFile("utf8") },
+	{
+		name: "read",
+		run: async handle => {
+			const buffer = Buffer.alloc(64);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+			return buffer.subarray(0, bytesRead).toString();
+		},
+	},
+	{
+		name: "readv",
+		run: async handle => {
+			const buffers = [Buffer.alloc(4), Buffer.alloc(60)];
+			const { bytesRead } = await handle.readv(buffers, 0);
+			return Buffer.concat(buffers).subarray(0, bytesRead).toString();
+		},
+	},
+	{
+		name: "createReadStream",
+		run: async handle => {
+			const stream = handle.createReadStream({ start: 0, autoClose: false, encoding: "utf8" });
+			let content = "";
+			for await (const chunk of stream) content += chunk;
+			return content;
+		},
+	},
+];
+
+test.each(handleReads)("retained FileHandle $name arms stale-write protection across cells", async read => {
+	const root = await tempDir();
+	const target = path.join(root, `${read.name}.txt`);
+	await fs.promises.writeFile(target, "original");
+	const tracked = trackedFsModule(fs);
+	let handle: fs.promises.FileHandle | undefined;
+	try {
+		await capture(async () => {
+			handle = await tracked.promises.open(target, "r+");
+		});
+		await capture(async () => {
+			expect(await read.run(handle!)).toBe("original");
+		});
+		await fs.promises.writeFile(target, "external-edit");
+		await expect(capture(async () => handle!.truncate(0))).rejects.toBeInstanceOf(StaleWriteError);
+		expect(await fs.promises.readFile(target, "utf8")).toBe("external-edit");
+	} finally {
+		await handle?.close();
+	}
+});
+
+test.each(handleReads)("retained FileHandle $name re-arms a rejected mutation after an external edit", async read => {
+	const root = await tempDir();
+	const target = path.join(root, `${read.name}.txt`);
+	await fs.promises.writeFile(target, "original");
+	const tracked = trackedFsModule(fs);
+	let handle: fs.promises.FileHandle | undefined;
+	try {
+		await capture(async () => {
+			handle = await tracked.promises.open(target, "r+");
+			await tracked.promises.readFile(target);
+		});
+		await fs.promises.writeFile(target, "external-edit");
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await expect(capture(async () => handle!.truncate(0))).rejects.toBeInstanceOf(StaleWriteError);
+		}
+		await capture(async () => {
+			expect(await read.run(handle!)).toBe("external-edit");
+		});
+		await expectObserved(target, () => handle!.truncate(0));
+		expect(await fs.promises.readFile(target, "utf8")).toBe("");
+	} finally {
+		await handle?.close();
+	}
+});
+
+const staleHandleMutations: Array<{
+	name: string;
+	run: (handle: fs.promises.FileHandle) => Promise<void>;
+}> = [
+	{ name: "appendFile", run: async handle => void (await handle.appendFile("kernel-version")) },
+	{ name: "truncate", run: async handle => void (await handle.truncate(0)) },
+	{ name: "write", run: async handle => void (await handle.write("kernel-version", 0, "utf8")) },
+	{ name: "writeFile", run: async handle => void (await handle.writeFile("kernel-version")) },
+	{ name: "writev", run: async handle => void (await handle.writev([Buffer.from("kernel-version")], 0)) },
+	{
+		name: "createWriteStream",
+		run: async handle => {
+			const stream = handle.createWriteStream({ start: 0, autoClose: false });
+			try {
+				await finishWriteStream(stream, "kernel-version");
+			} finally {
+				stream.destroy();
+			}
+		},
+	},
+];
+
+test.each(staleHandleMutations)("retained FileHandle $name refuses stale writes until re-read", async mutation => {
+	const root = await tempDir();
+	const target = path.join(root, `${mutation.name}.txt`);
+	await fs.promises.writeFile(target, "original");
+	const tracked = trackedFsModule(fs);
+	let handle: fs.promises.FileHandle | undefined;
+	try {
+		await capture(async () => {
+			handle = await tracked.promises.open(target, "r+");
+		});
+		await capture(async () => {
+			expect(await tracked.promises.readFile(target, "utf8")).toBe("original");
+		});
+		await fs.promises.writeFile(target, "external-edit");
+
+		await expect(
+			capture(async () => void (await tracked.promises.writeFile(target, "path-version"))),
+		).rejects.toBeInstanceOf(StaleWriteError);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await expect(capture(() => mutation.run(handle!))).rejects.toBeInstanceOf(StaleWriteError);
+			expect(await fs.promises.readFile(target, "utf8")).toBe("external-edit");
+		}
+
+		await capture(async () => {
+			expect(await tracked.promises.readFile(target, "utf8")).toBe("external-edit");
+		});
+		await expectObserved(target, () => mutation.run(handle!));
+		// A successful handle mutation consumes the stamp, just like a path mutation.
+		await expectObserved(target, () => tracked.promises.writeFile(target, "next-version"));
+		expect(await fs.promises.readFile(target, "utf8")).toBe("next-version");
+	} finally {
+		await handle?.close();
 	}
 });
 

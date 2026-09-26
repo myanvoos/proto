@@ -56,6 +56,18 @@ interface IndexEntry {
 	titleUpdatedAt?: string;
 }
 
+interface WriterIndexChange {
+	previous: IndexEntry | undefined;
+	next: IndexEntry;
+	line: string | null;
+}
+
+function writerIndexEntry(previous: IndexEntry | undefined, line: string | null, mtimeMs: number): IndexEntry {
+	return line === null
+		? { size: 0, mtimeMs }
+		: { ...previous, size: (previous?.size ?? 0) + byteLength(line), mtimeMs };
+}
+
 interface EnqueueOptions {
 	trackDrain: boolean;
 }
@@ -105,6 +117,7 @@ export class IndexedSessionStorage implements SessionStorage {
 	readonly #backend: SessionStorageBackend;
 	readonly #index = new Map<string, IndexEntry>();
 	readonly #writers = new Set<IndexedSessionStorageWriter>();
+	readonly #writerChanges = new Map<string, WriterIndexChange[]>();
 	readonly #pathTails = new Map<string, Promise<void>>();
 	readonly #pathPending = new Map<string, Promise<void>>();
 	readonly #drainPending = new Set<Promise<void>>();
@@ -405,39 +418,48 @@ export class IndexedSessionStorage implements SessionStorage {
 		this.#writers.delete(writer);
 	}
 
-	_truncateForWriter(path: string): number {
-		const mtimeMs = this.#allocMtimeMs();
-		this.#setIndex(path, 0, mtimeMs, null);
-		return mtimeMs;
+	_truncateForWriter(path: string, getError: () => Error | undefined): Promise<void> {
+		return this.#queueWriterChange(path, null, getError);
 	}
 
-	_queueTruncate(path: string, mtimeMs: number, getError?: () => Error | undefined): Promise<void> {
+	_appendForWriter(path: string, line: string, getError: () => Error | undefined): Promise<void> {
+		return this.#queueWriterChange(path, line, getError);
+	}
+
+	#queueWriterChange(path: string, line: string | null, getError: () => Error | undefined): Promise<void> {
+		const previous = this.#index.get(path);
+		const mtimeMs = this.#allocMtimeMs();
+		const change: WriterIndexChange = { previous, next: writerIndexEntry(previous, line, mtimeMs), line };
+		const changes = this.#writerChanges.get(path) ?? [];
+		changes.push(change);
+		this.#writerChanges.set(path, changes);
+		this.#index.set(path, change.next);
 		return this.#enqueuePath(
 			path,
 			async () => {
-				const error = getError?.();
-				if (error) throw error;
-				await this.#backend.truncate(path, mtimeMs);
-			},
-			{ trackDrain: true },
-		);
-	}
-
-	_appendForWriter(path: string, line: string): number {
-		const mtimeMs = this.#allocMtimeMs();
-		const existing = this.#index.get(path);
-		const size = (existing?.size ?? 0) + byteLength(line);
-		this.#setIndex(path, size, mtimeMs);
-		return mtimeMs;
-	}
-
-	_queueAppend(path: string, line: string, mtimeMs: number, getError?: () => Error | undefined): Promise<void> {
-		return this.#enqueuePath(
-			path,
-			async () => {
-				const error = getError?.();
-				if (error) throw error;
-				await this.#backend.append(path, line, mtimeMs);
+				try {
+					const error = getError();
+					if (error) throw error;
+					if (line === null) await this.#backend.truncate(path, mtimeMs);
+					else await this.#backend.append(path, line, mtimeMs);
+				} catch (err) {
+					// Rebase only descendants of this optimistic change. A later full write
+					// replaces the entry, so it must not be rolled back with this writer.
+					let before = change.next;
+					let restored = change.previous;
+					for (const pending of changes) {
+						if (pending.previous !== before) continue;
+						pending.previous = restored;
+						before = pending.next;
+						pending.next = writerIndexEntry(restored, pending.line, pending.next.mtimeMs);
+						restored = pending.next;
+					}
+					if (this.#index.get(path) === before) this.#restoreIndex(path, restored);
+					throw err;
+				} finally {
+					changes.splice(changes.indexOf(change), 1);
+					if (changes.length === 0) this.#writerChanges.delete(path);
+				}
 			},
 			{ trackDrain: true },
 		);
@@ -539,8 +561,7 @@ class IndexedSessionStorageWriter implements SessionStorageWriter {
 		this.#path = path;
 		this.#onError = options?.onError;
 		if ((options?.flags ?? "a") === "w") {
-			const mtimeMs = storage._truncateForWriter(path);
-			this.#trackPromise(storage._queueTruncate(path, mtimeMs, () => this.#error));
+			this.#trackPromise(storage._truncateForWriter(path, () => this.#error));
 		}
 	}
 
@@ -568,15 +589,13 @@ class IndexedSessionStorageWriter implements SessionStorageWriter {
 		if (this.#closed) throw new Error("Writer closed");
 		if (this.#error) throw this.#error;
 
-		const mtimeMs = this.#storage._appendForWriter(this.#path, line);
-		void this.#trackPromise(this.#storage._queueAppend(this.#path, line, mtimeMs, () => this.#error));
+		void this.#trackPromise(this.#storage._appendForWriter(this.#path, line, () => this.#error));
 	}
 
 	async append(line: string): Promise<void> {
 		if (this.#closed) throw new Error("Writer closed");
 		if (this.#error) throw this.#error;
-		const mtimeMs = this.#storage._appendForWriter(this.#path, line);
-		await this.#trackPromise(this.#storage._queueAppend(this.#path, line, mtimeMs, () => this.#error));
+		await this.#trackPromise(this.#storage._appendForWriter(this.#path, line, () => this.#error));
 	}
 
 	async flush(): Promise<void> {

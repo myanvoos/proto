@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `TabBar.getActiveTab()` returns `Tab | undefined`; callers must handle an empty tab list
+
+### Fixed
+
+- Malformed UTF-8 input no longer delays or swallows following keys and terminal control sequences
+- Autocomplete accepts single-quoted file paths and `@` references without mistaking prose apostrophes for quotes
+- Empty tab bars no longer show navigation hints or retain obsolete selection and click regions
+
 ## [18.6.0] - 2026-09-23
 
 ### Added

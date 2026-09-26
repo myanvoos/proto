@@ -20,7 +20,7 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | `string` | Yes | Shell command text to execute. A leading `cd <path> && ...` is rewritten into `cwd` only when `cwd` was omitted. |
+| `command` | `string` | Yes | Shell command text to execute. A leading `cd <path> && ...` runs in the shell, preserving `OLDPWD` and shell failure/short-circuit behavior. |
 | `env` | `Record<string, string>` | No | Extra environment variables. Keys must match `^[A-Za-z_][A-Za-z0-9_]*$` or the tool throws. Values go through internal-URL expansion and are passed as environment values, not shell text. |
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Positive values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory. Absolute paths, including `/`, remain absolute; relative paths resolve against `session.cwd`, and `~` expands to the home directory. Must exist and be a directory. |
@@ -92,9 +92,9 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
 ## Execution flow
 
 1. `BashTool.execute()` in `packages/coding-agent/src/tools/bash.ts` reads `command`, validates `env`, and defaults `timeout` to `300`.
-2. If `cwd` is absent, it rewrites a leading `cd <path> && ...` into the structured `cwd` field and strips that prefix from `command`.
+2. The command retains any leading `cd <path> && ...`; the shell evaluates it from the explicit `cwd`, or from `session.cwd` when `cwd` is absent.
 3. If `async: true` is requested while `async.enabled` is off, it throws `ToolError` before any execution.
-4. If `bashInterceptor.enabled` is on, `checkBashInterception()` runs against both the original command and the `cd`-stripped command. For each form, configured regexes still check the complete input first, then each flat command separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines (excluding stages that consume piped stdin from `|` or `|&`, including across blank/comment continuations), followed by versions of those fragments without leading `NAME=value` assignments. A matching enabled rule throws before URL expansion or execution.
+4. If `bashInterceptor.enabled` is on, `checkBashInterception()` runs against the original command. Configured regexes check the complete input first, then each flat command separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines (excluding stages that consume piped stdin from `|` or `|&`, including across blank/comment continuations), followed by versions of those fragments without leading `NAME=value` assignments. A matching enabled rule throws before URL expansion or execution.
 5. `expandInternalUrls()` rewrites supported internal URLs inside `command`, each `env` value, and protocol-looking `cwd` values. Command replacements are shell-escaped; `env` and `cwd` replacements use raw filesystem/string values because they are not interpolated into shell text.
 6. `resolveToCwd()` resolves `cwd` against `session.cwd`; `fs.stat()` verifies that the target exists and is a directory.
 7. `timeout: 0` disables the deadline. Otherwise `clampTimeout("bash", requestedTimeoutSec, tools.maxTimeout)` applies a positive global ceiling (when configured), then `TOOL_TIMEOUTS.bash` (`min: 1`, `max: 3600`). When clamped, `#buildCompletedResult()` / `#buildBackgroundStartResult()` append a notice line.

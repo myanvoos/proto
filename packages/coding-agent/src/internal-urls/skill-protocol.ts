@@ -49,7 +49,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 		}
 
 		let targetPath: string;
-		const urlPath = url.pathname;
+		const urlPath = url.rawPathname ?? url.pathname;
 		const hasRelativePath = urlPath && urlPath !== "/" && urlPath !== "";
 
 		if (hasRelativePath) {

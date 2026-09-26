@@ -18,7 +18,7 @@ Both eventually use `executeBash()` in `src/exec/bash-executor.ts` for non-PTY e
 
 Set `bash.enabled: false` in settings to remove the model-facing `bash` tool from the active tool registry. This does not disable user-initiated bang commands or RPC `bash` requests.
 
-An explicit `cwd: "/"`, or a normalized leading `cd /`, selects the filesystem root. Relative directories resolve against the session directory; `~` selects the home directory.
+An explicit `cwd: "/"` selects the filesystem root. Relative `cwd` values resolve against the session directory; `~` selects the home directory. A leading `cd` remains a shell command, evaluated from that initial working directory; it preserves `OLDPWD`, shell expansion, and failure/short-circuit behavior.
 
 ## `xd` as a Brush builtin
 
@@ -165,7 +165,7 @@ Preflight reports a check against the current file snapshot and supported langua
 `BashTool.execute()` currently handles input as follows:
 
 - validates optional `env` names against shell-variable syntax,
-- extracts a leading single-line `cd <path> && ...` into `cwd` when `cwd` was not supplied, unless the path needs shell expansion,
+- preserves leading `cd` commands for shell evaluation rather than rewriting them into `cwd`,
 - rejects `async: true` when `async.enabled` is false,
 - defaults `timeout` to 300 seconds; `0` explicitly disables the command deadline.
 
@@ -173,7 +173,7 @@ There are no structured `head` or `tail` parameters. Before execution, internal 
 
 ## 2) Optional interception (blocked-command path)
 
-If `bashInterceptor.enabled` is true, `BashTool` loads rules from settings (`getBashInterceptorRules()`) and runs `checkBashInterception()` against the command — checking both the original and the cwd-normalized form (after a leading `cd … &&` is extracted) when they differ. Rule syntax is unchanged: each rule checks the complete input first, then raw flat command fragments separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines, then those fragments with leading `NAME=value` assignments removed. Fragments that receive piped stdin from `|` or `|&` are excluded from the fragment candidates, including across blank/comment continuation lines, because a stdin-consuming stage cannot be replaced by a path-based dedicated tool.
+If `bashInterceptor.enabled` is true, `BashTool` loads rules from settings (`getBashInterceptorRules()`) and runs `checkBashInterception()` against the original command. Rule syntax is unchanged: each rule checks the complete input first, then raw flat command fragments separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines, then those fragments with leading `NAME=value` assignments removed. Fragments that receive piped stdin from `|` or `|&` are excluded from the fragment candidates, including across blank/comment continuation lines, because a stdin-consuming stage cannot be replaced by a path-based dedicated tool.
 
 Interception behavior:
 

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Retrying a failed session-storage write no longer uses an incorrect cached file size
+- Path-scoped model and provider restrictions apply inside valid directories beginning with `..`
+- Disposed worker fleets no longer revive persisted workers after an in-flight load finishes
+- Skill prompts omit YAML frontmatter in CRLF files and when its closing delimiter is at end of file
+- Empty files report zero addressable lines across buffered, bridged, and streamed reads
+- Leading `cd` commands preserve shell `OLDPWD`, failure, and short-circuit behavior
+- Skill URLs reject raw and encoded parent-directory segments before URL normalization
+- Retained JavaScript file handles reject stale writes after external edits, and rereading through the handle permits a fresh edit
+
 ## [18.6.1] - 2026-09-24
 
 ### Added

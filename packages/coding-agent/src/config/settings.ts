@@ -14,6 +14,7 @@ import {
 	isEnoent,
 	logger,
 	MAIN_CONFIG_FILENAMES,
+	pathIsWithin,
 	procmgr,
 	setWorktreesDir,
 	toError,
@@ -163,8 +164,7 @@ function normalizePathPrefix(prefix: string): string {
 }
 
 function pathMatchesPrefix(cwd: string, prefix: string): boolean {
-	const relative = path.relative(normalizePathPrefix(prefix), path.resolve(cwd));
-	return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+	return pathIsWithin(normalizePathPrefix(prefix), path.resolve(cwd));
 }
 
 function stringArrayFromUnknown(value: unknown): string[] {

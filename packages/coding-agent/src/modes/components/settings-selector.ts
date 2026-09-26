@@ -635,8 +635,8 @@ export class SettingsSelectorComponent implements Component {
 	) {
 		this.#tabBar = new TabBar("", getSettingsTabs(), getTabBarTheme());
 		this.#tabBar.showHint = false;
-		this.#tabBar.onTabChange = () => {
-			const tabId = this.#tabBar.getActiveTab().id as SettingTab | "plugins";
+		this.#tabBar.onTabChange = tab => {
+			const tabId = tab.id as SettingTab | "plugins";
 			if (this.#searchList) {
 				const firstId = this.#searchFirstMatch.get(tabId);
 				if (firstId) this.#searchList.selectItem(firstId);
@@ -659,7 +659,7 @@ export class SettingsSelectorComponent implements Component {
 		if (this.#searchList && this.#searchTabCounts) {
 			this.#tabBar.setTabs(this.#buildSearchTabs(this.#searchTabCounts, this.#searchTabOrder));
 		} else if (!this.#searchList) {
-			this.#tabBar.setTabs(getSettingsTabs(), this.#tabBar.getActiveTab().id);
+			this.#tabBar.setTabs(getSettingsTabs(), this.#tabBar.getActiveTab()?.id);
 		}
 		this.#tabBar.invalidate();
 		// Lists capture a concrete theme object at construction: re-apply the

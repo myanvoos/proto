@@ -57,6 +57,29 @@ describe("StdinBuffer", () => {
 		expect(received.join("")).toBe("\x1b]0\x1b\\");
 	});
 
+	it.each([
+		{ name: "C1 CSI", bytes: [0xf0, 0x9b, 0x41], data: ["\ufffd", "\x1b[A"], flushed: [] },
+		{ name: "ESC", bytes: [0xe2, 0x1b], data: ["\ufffd"], flushed: ["\x1b"] },
+		{ name: "ASCII", bytes: [0xe2, 0x41], data: ["\ufffd", "A"], flushed: [] },
+	])("preserves $name after a malformed short UTF-8 tail across chunk boundaries", ({ bytes, data, flushed }) => {
+		for (let partition = 0; partition < 1 << (bytes.length - 1); partition++) {
+			const { received, buffer } = collect();
+			try {
+				let start = 0;
+				for (let end = 1; end <= bytes.length; end++) {
+					if (end === bytes.length || partition & (1 << (end - 1))) {
+						buffer.process(Buffer.from(bytes.slice(start, end)));
+						start = end;
+					}
+				}
+				expect(received).toEqual([...data]);
+				expect(buffer.flush()).toEqual([...flushed]);
+			} finally {
+				buffer.destroy();
+			}
+		}
+	});
+
 	it("materializes a held UTF-8 tail on explicit flush instead of completing later", () => {
 		const { received, buffer } = collect();
 		const flushed: string[] = [];

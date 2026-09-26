@@ -684,10 +684,16 @@ function wrapFileHandle(handle: object, absPath: string): object {
 				};
 			} else if (typeof prop === "string" && FILE_HANDLE_MUTATION_NAMES[prop]) {
 				wrapped = (...args) => {
-					noteTouched(absPath);
+					const targets = recordMutation(prop, [absPath]);
 					const result: unknown = Reflect.apply(value, target, args);
-					return prop === "createWriteStream" ? result : reportSettledCall([absPath], result);
+					if (prop === "createWriteStream") {
+						for (const target of targets) forgetRead(target);
+						return result;
+					}
+					return reportSettledCall(targets, result);
 				};
+			} else if (typeof prop === "string" && (READ_NAMES[prop] || prop === "read" || prop === "readv")) {
+				wrapped = (...args) => noteReadResult(absPath, Reflect.apply(value, target, args));
 			} else {
 				wrapped = value.bind(target) as (...args: unknown[]) => unknown;
 			}
@@ -698,6 +704,17 @@ function wrapFileHandle(handle: object, absPath: string): object {
 	wrappedFileHandles.set(handle, proxy);
 	fileHandlePaths.set(proxy, absPath);
 	return proxy;
+}
+
+function noteReadResult(target: unknown, result: unknown): unknown {
+	if (result instanceof Promise) {
+		return result.then(value => {
+			noteRead(target);
+			return value;
+		});
+	}
+	noteRead(target);
+	return result;
 }
 
 function wrapReadFunction(original: (...args: unknown[]) => unknown): (...args: unknown[]) => unknown {
@@ -714,15 +731,7 @@ function wrapReadFunction(original: (...args: unknown[]) => unknown): (...args: 
 			};
 			return original.apply(this, callbackArgs);
 		}
-		const result = original.apply(this, args);
-		if (result instanceof Promise) {
-			return result.then(value => {
-				noteRead(target);
-				return value;
-			});
-		}
-		noteRead(target);
-		return result;
+		return noteReadResult(target, original.apply(this, args));
 	};
 	wrappedFunctions.set(original, wrapped);
 	return wrapped;

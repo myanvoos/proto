@@ -44,10 +44,10 @@ export class TabBar implements Component {
 		this.#label = label;
 		this.#tabs = tabs;
 		this.#theme = theme;
-		this.#activeIndex = initialIndex;
+		this.#activeIndex = tabs.length === 0 ? -1 : Math.max(0, Math.min(initialIndex, tabs.length - 1));
 	}
 
-	getActiveTab(): Tab {
+	getActiveTab(): Tab | undefined {
 		return this.#tabs[this.#activeIndex];
 	}
 
@@ -56,6 +56,7 @@ export class TabBar implements Component {
 	}
 
 	setActiveIndex(index: number): void {
+		if (this.#tabs.length === 0) return;
 		const newIndex = Math.max(0, Math.min(index, this.#tabs.length - 1));
 		if (newIndex !== this.#activeIndex) {
 			this.#activeIndex = newIndex;
@@ -75,8 +76,11 @@ export class TabBar implements Component {
 	setTabs(tabs: Tab[], activeId?: string): void {
 		const targetId = activeId ?? this.#tabs[this.#activeIndex]?.id;
 		this.#tabs = tabs;
+		this.#hitZones = [];
+		this.#hoverTabId = null;
 		const index = tabs.findIndex(tab => tab.id === targetId);
-		this.#activeIndex = index >= 0 ? index : Math.max(0, Math.min(this.#activeIndex, tabs.length - 1));
+		this.#activeIndex =
+			tabs.length === 0 ? -1 : index >= 0 ? index : Math.max(0, Math.min(this.#activeIndex, tabs.length - 1));
 	}
 
 	setActiveById(id: string): boolean {
@@ -116,6 +120,7 @@ export class TabBar implements Component {
 	invalidate(): void {}
 
 	handleInput(data: string): boolean {
+		if (this.#tabs.length === 0) return false;
 		if (matchesKey(data, "tab") || matchesKey(data, "right")) {
 			this.nextTab();
 			return true;
@@ -128,6 +133,7 @@ export class TabBar implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		if (this.#tabs.length === 0) return [];
 		const maxWidth = Math.max(1, width);
 
 		interface TabChunk {

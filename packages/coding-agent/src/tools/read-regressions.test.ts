@@ -65,6 +65,50 @@ async function withReadSession(run: (read: ReadTool, root: string) => Promise<vo
 	}
 }
 
+for (const source of ["buffered", "bridge"] as const) {
+	test(`${source} empty reads report zero addressable lines`, async () => {
+		await withReadSession(async (diskRead, root) => {
+			await Bun.write(path.join(root, "empty.txt"), "");
+			const session = readSession(root);
+			session.getClientBridge = () => ({
+				capabilities: { readTextFile: true },
+				readTextFile: async ({ path: file }) => fs.readFile(file, "utf8"),
+			});
+			const read = source === "bridge" ? new ReadTool(session) : diskRead;
+
+			for (const selector of [":2", "", ":raw", ":2:raw"]) {
+				const result = await read.execute(`empty-${source}-${selector}`, { path: `empty.txt${selector}` });
+				const line = selector.startsWith(":2") ? 2 : 1;
+				expect(textOf(result)).toBe(`Line ${line} is beyond end of file (0 lines total). The file is empty.`);
+				expect(result.details?.totalLines).toBe(0);
+				expect(result.details?.displayContent).toBeUndefined();
+			}
+
+			for (const selector of [":1-1,3-3", ":1-1,3-3:raw"]) {
+				const result = await read.execute(`empty-ranges-${source}-${selector}`, { path: `empty.txt${selector}` });
+				expect(textOf(result)).toBe(
+					"[Range 1-1 is beyond end of file (0 lines total); skipped]\n" +
+						"[Range 3-3 is beyond end of file (0 lines total); skipped]",
+				);
+			}
+		});
+	});
+}
+
+test("newline-only files retain their addressable blank lines", async () => {
+	await withReadSession(async (read, root) => {
+		for (const count of [1, 2]) {
+			const file = `blank-${count}.txt`;
+			await Bun.write(path.join(root, file), "\n".repeat(count));
+			const result = await read.execute(`blank-${count}`, { path: file });
+			expect(result.details?.totalLines).toBe(count);
+			expect(result.details?.displayContent?.lineNumbers).toEqual(Array.from({ length: count }, (_, i) => i + 1));
+			const raw = await read.execute(`blank-raw-${count}`, { path: `${file}:raw` });
+			expect(textOf(raw)).toBe("\n".repeat(count));
+		}
+	});
+});
+
 test("multi-range reads surface the same truncation boundary as single-range reads", async () => {
 	await withReadSession(async (read, root) => {
 		const lines = Array.from(

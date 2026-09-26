@@ -267,6 +267,115 @@ describe("parking", () => {
 });
 
 describe("fleet-scoped disposal", () => {
+	test("a pending revival cannot release a replacement belonging to another fleet", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const resume = Promise.withResolvers<void>();
+		const original = registry.register({
+			id: "worker",
+			label: "worker",
+			kind: "sub",
+			fleetRoot: "/fleet-a",
+			session: null,
+			sessionFile: "/sessions/worker.jsonl",
+			status: "parked",
+		});
+		lifecycle.setPersistedSubagentReviverFactory(async () => {
+			await resume.promise;
+			return async () => {
+				throw new Error("released revival must not run");
+			};
+		}, 0);
+		const revival = lifecycle.ensureLive(original.id);
+		registry.unregister(original.id, original);
+		let disposed = false;
+		const replacement = registry.register({
+			id: original.id,
+			label: "replacement",
+			kind: "sub",
+			fleetRoot: "/fleet-b",
+			status: "idle",
+			session: {
+				dispose: async () => {
+					disposed = true;
+				},
+			} as unknown as AgentSession,
+		});
+		try {
+			await lifecycle.disposeFleet("/fleet-a");
+			resume.resolve();
+			await expect(revival).rejects.toThrow("changed");
+			expect(registry.get(original.id)).toBe(replacement);
+			expect(disposed).toBe(false);
+			expect(lifecycle.has(original.id, original)).toBe(false);
+		} finally {
+			resume.resolve();
+			await lifecycle.release(replacement.id, replacement);
+			await lifecycle.dispose();
+		}
+	});
+
+	for (const pendingStage of ["factory", "session"] as const) {
+		test(`disposal cancels a cold revival pending in its ${pendingStage} without affecting another fleet`, async () => {
+			const registry = new AgentRegistry();
+			const lifecycle = new AgentLifecycleManager(registry);
+			const entered = Promise.withResolvers<void>();
+			const resume = Promise.withResolvers<void>();
+			const disposed: string[] = [];
+			const built: string[] = [];
+			const register = (id: string, fleetRoot: string): AgentRef =>
+				registry.register({
+					id,
+					label: id,
+					kind: "sub",
+					fleetRoot,
+					session: null,
+					sessionFile: `/sessions/${id}.jsonl`,
+					status: "parked",
+				});
+			const workerA = register("worker-a", "/session-a/fleet");
+			const workerB = register("worker-b", "/session-b/fleet");
+			lifecycle.setPersistedSubagentReviverFactory(async ref => {
+				if (ref === workerA && pendingStage === "factory") {
+					entered.resolve();
+					await resume.promise;
+				}
+				return async () => {
+					built.push(ref.id);
+					const session = {
+						dispose: async () => {
+							disposed.push(ref.id);
+						},
+					} as unknown as AgentSession;
+					if (ref === workerA && pendingStage === "session") {
+						entered.resolve();
+						await resume.promise;
+					}
+					return session;
+				};
+			}, 0);
+			const revival = lifecycle.ensureLive(workerA.id);
+			await entered.promise;
+			await lifecycle.disposeFleet("/session-a/fleet");
+			resume.resolve();
+			try {
+				await expect(revival).rejects.toThrow();
+				expect(registry.get(workerA.id)).toBeUndefined();
+				expect(workerA.session).toBeNull();
+				expect(lifecycle.has(workerA.id, workerA)).toBe(false);
+				expect(built).toEqual(pendingStage === "factory" ? [] : [workerA.id]);
+				expect(disposed).toEqual(pendingStage === "factory" ? [] : [workerA.id]);
+
+				const liveB = await lifecycle.ensureLive(workerB.id);
+				expect(registry.get(workerB.id)?.session).toBe(liveB);
+				expect(registry.get(workerB.id)?.status).toBe("idle");
+				expect(disposed).not.toContain(workerB.id);
+			} finally {
+				await lifecycle.dispose();
+			}
+		});
+	}
+
 	test("releasing one detached main fleet leaves another fleet live", async () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
