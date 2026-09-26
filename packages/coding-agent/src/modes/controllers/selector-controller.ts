@@ -562,7 +562,7 @@ export class SelectorController {
 				break;
 			case "tools.xdevDocs":
 				void this.ctx.session.refreshBaseSystemPrompt().catch(err => {
-					this.ctx.showError(`Failed to apply xd:// prompt docs setting: ${err}`);
+					this.ctx.showError(`Failed to apply protolens:// prompt docs setting: ${err}`);
 				});
 				break;
 			case "inspect_media.mode":

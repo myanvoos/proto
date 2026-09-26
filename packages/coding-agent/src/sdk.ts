@@ -2464,7 +2464,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 		// read is registry-bridged (DISABLED_TOOL_NAMES keeps it out of requested tool lists) but must
-		// stay reachable: mounted under xd:// when xdev is active, native otherwise. Restricted or
+		// stay reachable: mounted under protolens:// when xdev is active, native otherwise. Restricted or
 		// explicitly enumerated tool sets that omit read keep it out entirely.
 		if (
 			!restrictToolNames &&

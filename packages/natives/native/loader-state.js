@@ -596,6 +596,14 @@ function initLoaderContext(overrides = {}) {
 	};
 }
 
+let nativeAddonPath;
+
+/** The validated, extracted addon used by this host; child runtimes must load the same build. */
+export function getNativeAddonPath() {
+	if (!nativeAddonPath) loadNative();
+	return nativeAddonPath;
+}
+
 export function loadNative() {
 	startupMarker("native:loadNative:start");
 	const ctx = initLoaderContext();
@@ -614,6 +622,7 @@ export function loadNative() {
 			installNativeTokioRuntime(bindings);
 			cleanupStaleNativeVersions({ nativesDir: ctx.nativesDir, currentVersion: ctx.packageVersion });
 			startupMarker("native:loadNative:done");
+			nativeAddonPath = candidate;
 			return bindings;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);

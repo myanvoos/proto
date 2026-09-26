@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { getDocFilenames, getEmbeddedDoc } from "./docs-index";
+import { getDocFilenames, getDocsDirectory, getEmbeddedDoc } from "./docs-index";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 const docLineCountCache = new Map<string, Promise<number>>();
@@ -21,35 +21,48 @@ function getDocLineCount(filename: string): Promise<number> {
 	return count;
 }
 
-export class ProtoProtocolHandler implements ProtocolHandler {
-	readonly scheme = "proto";
+export class HarnessProtocolHandler implements ProtocolHandler {
+	readonly scheme = "harness";
 	readonly immutable = true;
 
 	async resolve(url: InternalUrl): Promise<InternalResource> {
 		const host = url.rawHost || url.hostname;
-		const pathname = url.rawPathname ?? url.pathname;
-		const filename = host ? (pathname && pathname !== "/" ? host + pathname : host) : "";
-
-		if (!filename) {
-			return this.#listDocs(url);
+		const pathname = decodeURIComponent(url.rawPathname ?? url.pathname);
+		const filename = host + pathname;
+		if (path.isAbsolute(filename)) {
+			throw new Error("Absolute paths are not allowed in harness:// URLs");
 		}
-
-		return this.#readDoc(filename, url);
+		const relative = filename.replaceAll("\\", "/");
+		if (relative.split("/").includes("..")) {
+			throw new Error("Path traversal (..) is not allowed in harness:// URLs");
+		}
+		const normalized = path.posix.normalize(relative);
+		const docPath =
+			normalized === "." || normalized === "docs" || normalized === "docs/"
+				? ""
+				: normalized.startsWith("docs/")
+					? normalized.slice("docs/".length)
+					: normalized;
+		if (!docPath) return this.#listDocs(url);
+		const prefix = `${docPath.replace(/\/$/, "")}/`;
+		if (getDocFilenames().some(filename => filename.startsWith(prefix))) {
+			return this.#listDocs(url, prefix);
+		}
+		return this.#readDoc(docPath, url);
 	}
-
 	async complete(): Promise<UrlCompletion[]> {
 		return getDocFilenames().map(value => ({ value }));
 	}
 
-	async #listDocs(url: InternalUrl): Promise<InternalResource> {
-		const filenames = getDocFilenames();
+	async #listDocs(url: InternalUrl, prefix = ""): Promise<InternalResource> {
+		const filenames = getDocFilenames().filter(filename => filename.startsWith(prefix));
 		if (filenames.length === 0) {
 			throw new Error("No documentation files found");
 		}
 
 		const entries = await Promise.all(
 			filenames.map(
-				async filename => `- [${filename}](proto://${filename}) (${await getDocLineCount(filename)} lines)`,
+				async filename => `- [${filename}](harness://${filename}) (${await getDocLineCount(filename)} lines)`,
 			),
 		);
 		const listing = entries.join("\n");
@@ -60,25 +73,13 @@ export class ProtoProtocolHandler implements ProtocolHandler {
 			content,
 			contentType: "text/markdown",
 			size: Buffer.byteLength(content, "utf-8"),
+			sourcePath: path.resolve(await getDocsDirectory(), prefix),
+			isDirectory: true,
 		};
 	}
 
 	async #readDoc(filename: string, url: InternalUrl): Promise<InternalResource> {
-		if (path.isAbsolute(filename)) {
-			throw new Error("Absolute paths are not allowed in proto:// URLs");
-		}
-
-		const normalized = path.posix.normalize(filename.replaceAll("\\", "/"));
-		if (normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) {
-			throw new Error("Path traversal (..) is not allowed in proto:// URLs");
-		}
-
-		const docPath =
-			normalized === "docs" ? "" : normalized.startsWith("docs/") ? normalized.slice("docs/".length) : normalized;
-		if (!docPath) {
-			return this.#listDocs(url);
-		}
-
+		const docPath = filename;
 		const content = await getEmbeddedDoc(docPath);
 		if (content === undefined) {
 			const lookup = docPath.replace(/\.md$/, "");
@@ -88,7 +89,7 @@ export class ProtoProtocolHandler implements ProtocolHandler {
 			const suffix =
 				suggestions.length > 0
 					? `\nDid you mean: ${suggestions.join(", ")}`
-					: "\nUse proto:// to list available files.";
+					: "\nUse harness:// to list available files.";
 			throw new Error(`Documentation file not found: ${filename}${suffix}`);
 		}
 
@@ -97,6 +98,7 @@ export class ProtoProtocolHandler implements ProtocolHandler {
 			content,
 			contentType: "text/markdown",
 			size: Buffer.byteLength(content, "utf-8"),
+			sourcePath: path.join(await getDocsDirectory(), docPath),
 		};
 	}
 }

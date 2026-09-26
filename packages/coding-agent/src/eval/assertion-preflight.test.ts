@@ -197,58 +197,37 @@ test("keeps an earlier proven failure visible past trailing incomplete literals"
 	expect(streamedJs?.line).toBe(4);
 });
 
-test("stops preflight at raw heredoc bodies, including streamed partial blocks", async () => {
+test("ignores assertion-looking multiline string contents in complete and streamed cells", async () => {
 	const { directory, file } = await makeFixture("needle\n");
 	const prefix = [
 		"from pathlib import Path",
 		`text = Path(${JSON.stringify(file)}).read_text()`,
 		'old = "needle"',
 		"assert text.count(old) == 1",
-	].join("\n");
-	const body = [
-		"PAYLOAD \t= << \tRAW_BODY  \r",
+		'payload = """',
 		'assert text.count("missing") == 1',
-		'  arbitrary indentation and """quotes""" and \'single quotes\'',
-		"  RAW_BODY",
-		'assert text.count("still hidden") == 1',
-		"RAW_BODY   ",
 	].join("\n");
-	const source = `${prefix}\n${body}`;
-	expect(await preflightKernelSource(source, { cwd: directory })).toBeUndefined();
-
-	const command = heredoc(source);
-	const close = command.indexOf("\nRAW_BODY   ");
-	expect(close).toBeGreaterThan(0);
+	expect(await preflightKernelSource(`${prefix}\n"""`, { cwd: directory })).toBeUndefined();
 	expect(
-		await preflightStreamedInput("raw-heredoc-body", JSON.stringify({ command: command.slice(0, close) }), {
+		await preflightStreamedInput("multiline-string-body", JSON.stringify({ command: `python <<'PY'\n${prefix}` }), {
 			session: { cwd: directory },
 		}),
 	).toBeUndefined();
-	expect(await fs.readFile(file, "utf8")).toBe("needle\n");
+
+	const failure = await preflightKernelSource(`${prefix}\n"""\nassert text.count("missing") == 1`, {
+		cwd: directory,
+	});
+	expect(failure?.line).toBe(8);
+	expect(failure?.count).toBe(0);
 });
 
-test("keeps an earlier proven Python failure before a raw heredoc header", async () => {
-	const { directory, file } = await makeFixture("haystack\n");
-	const source = `${pythonCell(file)}\nPAYLOAD = <<RAW\nassert text.count("ignored") == 1\nRAW`;
-	const direct = await preflightKernelSource(source, { cwd: directory });
-	expect(direct?.line).toBe(6);
-	expect(direct?.count).toBe(0);
-	const streamed = await preflightStreamedInput(
-		"raw-heredoc-prior-failure",
-		JSON.stringify({ command: heredoc(source) }),
-		{ session: { cwd: directory } },
-	);
-	expect(streamed?.line).toBe(6);
-	expect(streamed?.count).toBe(0);
-});
-
-test("keeps header-looking Python strings and comments in normal preflight code", async () => {
+test("keeps quoted strings and comments in normal Python preflight code", async () => {
 	const { directory, file } = await makeFixture("needle\n");
 	const source = [
 		"from pathlib import Path",
 		`text = Path(${JSON.stringify(file)}).read_text()`,
-		'marker = "PAYLOAD = <<END"',
-		"# PAYLOAD = <<END",
+		`marker = 'assert text.count("ignored") == 1'`,
+		'# assert text.count("ignored") == 1',
 		'old = "missing"',
 		"assert text.count(old) == 1",
 	].join("\n");
@@ -256,7 +235,6 @@ test("keeps header-looking Python strings and comments in normal preflight code"
 	expect(failure?.line).toBe(6);
 	expect(failure?.count).toBe(0);
 });
-
 test("treats removed embed directives as ordinary Python comments", async () => {
 	const { directory, file } = await makeFixture("needle\n");
 	const source = [

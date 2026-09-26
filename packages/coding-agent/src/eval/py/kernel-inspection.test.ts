@@ -42,7 +42,8 @@ probe_integer = 1 << 1000000
 probe_list = [probe_evil] * 100000
 if True:
     probe_nested = 7
-probe_task = asyncio.create_task(asyncio.sleep(60))
+probe_task = retain_task(asyncio.create_task(asyncio.sleep(60)))
+await asyncio.sleep(0)
 probe_cell = kernel_state()["executionCount"]`);
 		const inspected = await run(`snapshot = kernel_state()
 variables = {v["name"]: v for v in snapshot["variables"]}
@@ -52,7 +53,7 @@ assert defs()["probe_nested"] == probe_cell
 assert variables["probe_integer"]["preview"] == "<large integer>"
 assert all(len(v["preview"]) <= 200 for v in snapshot["variables"])
 assert any(t["id"] == str(id(probe_task)) for t in snapshot["tasks"])
-assert any(t["kind"] == "cell" for t in snapshot["tasks"])
+assert not any(t["kind"] == "cell" for t in snapshot["tasks"])  # Sync cells are not asyncio tasks.
 assert snapshot["active"] == 1 and snapshot["queued"] == 0
 assert kernel_state(limit=0)["variables"] == []
 assert kernel_state(limit=0)["tasks"] == []

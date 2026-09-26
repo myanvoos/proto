@@ -7,7 +7,7 @@ import { defaultLoadModeForToolName, ESSENTIAL_BUILTIN_TOOL_NAMES } from "./esse
 import { isMountableUnderXdev, xdevDocsAll } from "./xdev";
 
 // Contract: only these built-ins ship their schemas as native tools on every request. Everything
-// else mounts under xd:// and is dispatched from bash. If this set drifts, every session silently
+// else mounts under protolens:// and is dispatched from bash. If this set drifts, every session silently
 // gains or loses native tool schemas.
 const ALWAYS_NATIVE_TOOL_NAMES = ["bash", "read", "ask", "checklist", "web_search", "inspect_media"] as const;
 
@@ -78,7 +78,7 @@ describe("xdevDocsAll", () => {
 		expect(Settings.isolated().get("tools.xdevDocs")).toBe("catalog");
 		const docs = xdevDocsAll(state);
 		expect(docs).toContain("## Additional devices (docs on demand)");
-		expect(docs).toContain("- xd://probe — Returns the supplied value.");
+		expect(docs).toContain("- protolens://probe — Returns the supplied value.");
 		expect(docs).not.toContain("type Args =");
 	});
 });

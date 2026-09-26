@@ -203,14 +203,14 @@ export function getConfigAgentDirName(): string {
 	return profile ? path.join(getConfigDirName(), "profiles", profile, "agent") : `${getConfigDirName()}/agent`;
 }
 
-type XdgCategory = "data" | "state" | "cache";
+type ProtogCategory = "data" | "state" | "cache";
 
 class DirResolver {
 	readonly configRoot: string;
 	readonly agentDir: string;
 
-	readonly #rootDirs: Record<XdgCategory, string>;
-	readonly #agentDirs: Record<XdgCategory, string>;
+	readonly #rootDirs: Record<ProtogCategory, string>;
+	readonly #agentDirs: Record<ProtogCategory, string>;
 
 	readonly #rootCache = new Map<string, string>();
 	readonly #agentCache = new Map<string, string>();
@@ -264,7 +264,7 @@ class DirResolver {
 		};
 	}
 
-	rootSubdir(subdir: string, xdg?: XdgCategory): string {
+	rootSubdir(subdir: string, xdg?: ProtogCategory): string {
 		const cached = this.#rootCache.get(subdir);
 		if (cached) return cached;
 		const base = xdg ? this.#rootDirs[xdg] : this.configRoot;
@@ -273,7 +273,7 @@ class DirResolver {
 		return result;
 	}
 
-	agentSubdir(userAgentDir: string | undefined, subdir: string, xdg?: XdgCategory): string {
+	agentSubdir(userAgentDir: string | undefined, subdir: string, xdg?: ProtogCategory): string {
 		if (!userAgentDir || userAgentDir === this.agentDir) {
 			const cached = this.#agentCache.get(subdir);
 			if (cached) return cached;

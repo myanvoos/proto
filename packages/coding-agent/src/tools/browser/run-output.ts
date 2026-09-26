@@ -29,7 +29,7 @@ export class RunOutput {
 			this.push(output);
 			return;
 		}
-		this.push({ type: "text", text: output.type === "notice" ? output.text : safeJsonStringify(output.data) });
+		this.push({ type: "text", text: output.type === "json" ? safeJsonStringify(output.data) : output.text });
 	}
 
 	push(entry: TextContent | ImageContent): void {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The mounted-tool shell builtin is `protolens`, with `protolensCallId`/`protolensDispatches` bridge fields; no `xd` or `proto` builtin aliases shadow executable commands
+
 ### Added
 
 - `ShellRunResult.sessionEnded` reports when a command ended the persistent shell session

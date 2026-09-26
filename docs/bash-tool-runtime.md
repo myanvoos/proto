@@ -20,15 +20,23 @@ Set `bash.enabled: false` in settings to remove the model-facing `bash` tool fro
 
 An explicit `cwd: "/"` selects the filesystem root. Relative `cwd` values resolve against the session directory; `~` selects the home directory. A leading `cd` remains a shell command, evaluated from that initial working directory; it preserves `OLDPWD`, shell expansion, and failure/short-circuit behavior.
 
-## `xd` as a Brush builtin
+## Internal URI arguments
 
-When xdev is enabled, model-facing Bash runs use the Brush shell parser and register `xd` as a builtin. `xd <tool> '<json>'` therefore composes with the same shell language as native commands: pipelines, `|&`, redirects, command substitutions, subshells/groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` are parsed and executed by one runtime. The builtin receives the invocation-local working directory from each shell branch, so `(cd sub; xd read '{"path":"file"}')` does not mutate the shared tool session; concurrent branches remain isolated.
+The bash tool uses one pre-execution rewrite pass for literal internal URI arguments, environment values, and `cwd`. Each internal URI must resolve to a real filesystem path or fail with a teaching error directing the caller to `read`. This applies equally to Brush builtins (`rg`, `cat`, etc.) and external commands; it is not a per-builtin resolver. URLs constructed later by shell expansion are not reinterpreted.
 
-The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `xdDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
+`harness://` and documentation subdirectories such as `harness://tools/` resolve to real directories. Source checkouts use their existing docs tree without copying files or changing permissions. Embedded documentation and built-in rules are materialized as read-only files in a build-keyed cache. Skills and custom rules retain their original filesystem paths. For example, `rg -n approval harness://` searches the documentation corpus.
 
-`xd` exists only inside the agent's Brush shell. Supervised processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `xd` binary exists on `PATH`.
+A trailing read selector is not part of the resource: `harness://bash.md:1-40` resolves `harness://bash.md` and keeps the selector on the path (`/…/bash.md:1-40`), so `protolens read` and other selector-aware consumers see the same address `read` accepts. Generated agent/history views and mounted-device resources without files are not passed off as local filenames: arguments of a `protolens` command reach the device as typed (`protolens read history://` works like the `read` tool), and anywhere else they fail with the `read` hint. Quoted JSON, embedded script text, and heredoc bodies remain data; their URI strings are not rewritten. External HTTP URLs remain unchanged.
 
-Without positional JSON, `xd` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | xd read`. Positional JSON wins when both are supplied. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
+## `protolens` as a Brush builtin
+
+When xdev is enabled, model-facing Bash runs use the Brush shell parser and register `protolens` as a builtin. `protolens <tool> '<json>'` therefore composes with the same shell language as native commands: pipelines, `|&`, redirects, command substitutions, subshells/groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` are parsed and executed by one runtime. The builtin receives the invocation-local working directory from each shell branch, so `(cd sub; protolens read '{"path":"file"}')` does not mutate the shared tool session; concurrent branches remain isolated.
+
+The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `protolensDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
+
+`protolens` exists only inside the agent's Brush shell. Supervised processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `protolens` binary exists on `PATH`.
+
+Without positional JSON, `protolens` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | protolens read`. Positional JSON wins when both are supplied. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
 
 ## Persistent interpreter cells
 
@@ -36,24 +44,45 @@ The kernel bridge handles supported `python`/`python3`, `node`, and `bun` stdin 
 
 A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
 
-Inline-code invocations stream program stdin while the cell is running: the producer need not close before the consumer starts, and total input is not capped at 1 MiB. Transport chunks and in-flight buffers are bounded and backpressured. Python `sys.stdin.buffer` / `sys.stdout.buffer` and JavaScript `process.stdin` / `process.stdout` preserve arbitrary bytes through pipes and file redirection, including invalid UTF-8 and NUL. Text APIs still perform their normal encoding/decoding. Final-expression display also remains active: byte-only producers should assign a Python write result (`written = sys.stdout.buffer.write(data)`) or use `void process.stdout.write(data)` in JavaScript, rather than displaying the returned count/boolean into the pipeline. Model-visible Bash capture is text; use pipes, redirection, or artifact values to retain arbitrary bytes. Stdin-only interpreter invocations consume stdin as source code; `-c` / `-e` keeps source separate from program data.
+Inline-code invocations stream program stdin while the cell is running: the producer need not close before the consumer starts, and total input is not capped at 1 MiB. Transport chunks and in-flight buffers are bounded and backpressured. Python `sys.stdin.buffer` / `sys.stdout.buffer` and JavaScript `process.stdin` / `process.stdout` preserve arbitrary bytes through pipes and file redirection, including invalid UTF-8 and NUL. Text APIs still perform their normal encoding/decoding. Final-expression values, explicit displays, and harness notes remain visible as presentation sidebands but never enter stdout or stderr. Ordinary unassigned binary writes are safe in pipes and redirects without suppressing their return values. Model-visible Bash capture is text; use pipes, redirection, or artifact values to retain arbitrary bytes. Stdin-only interpreter invocations consume stdin as source code; `-c` / `-e` keeps source separate from program data.
 
-Kernel stdout, stderr, display text, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. Binary output uses byte-preserving frames; rich display metadata remains a separate channel, never binary pipeline payload. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
+Kernel stdout, stderr, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. Binary output uses byte-preserving frames; rich display metadata remains a separate channel, never binary pipeline payload. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
 
 ## Kernel-cell reference
 
+### Compatibility philosophy
+
+**Native semantics within a cell. Persistent state between cells. Harness presentation outside program I/O.**
+
+The kernel is an additive interpreter, not a notebook dialect. Ordinary programs keep their language semantics, argument vectors, byte streams, and exit statuses. Python `asyncio.run()` and main-module pickling work in ordinary synchronous cells; JavaScript declarations keep the selected interpreter's native binding behavior rather than being demoted to persistent assignments. Node lexical scope and temporal dead zones are preserved; Bun follows its own native source transforms, including its optimization-dependent class hoisting. Persistence, top-level await, tool calls, and rich displays add capabilities without requiring source workarounds. Differential regressions compare real interpreters with cells through the actual Bash route, including redirected bytes, file effects, and exit status; separate tests defend the additive features.
+
+A persistent interpreter is deliberately **not a fresh OS process**. Bindings and explicitly retained async resources survive cells; `atexit` and Python thread/executor lifetimes belong to the kernel process rather than to each invocation. Python cells run synchronously without a host event loop unless they use top-level await. Ordinary cell-owned asyncio work settles before completion; `retain_task(task)` opts into background lifetime. JavaScript completion waits for referenced work; `retainTask(resource)` unrefs a resource to retain it across cells. Use a real subprocess when process isolation or interpreter teardown is itself the contract. Runtime errors never cause automatic replay through a fresh process: side effects may already have happened.
+
 When the kernel bridge is available, Bash routes supported interpreter invocations to the retained language runtimes instead of spawning a fresh interpreter. Each recognized interpreter invocation is one cell; a single Bash command may contain several cells alongside ordinary shell syntax. The former structured cell fields (`language`, `code`, `title`, `timeout`, and `reset`) are not Bash parameters: the interpreter command supplies the language and source, and the enclosing Bash call supplies the timeout.
+
+### Reproducing compatibility checks
+
+From the repository root, compare native interpreters with the real Bash/kernel route, then exercise the compiled worker and its native addon in an isolated home:
+
+```bash
+bun test packages/coding-agent/src/tools/bash-interpreter-parity.test.ts
+bun run --cwd=packages/coding-agent build
+PROTO_COMPILED_KERNEL_TEST_BIN="$PWD/packages/coding-agent/dist/proto" \
+  bun test packages/coding-agent/src/tools/bash-compiled-kernel.test.ts
+```
+
+The compiled test is opt-in so a stale `dist` binary cannot affect normal source tests. It checks exact program bytes, native self-spawn through `process.execPath`, callback completion, sideband display, and state reuse through the same stdio supervisor used for remote kernels. It does not provision or test an actual SSH/container target.
 
 ### Cell forms and API
 
 Recognized cell forms are:
 
 - `python`/`python3` with source on stdin, normally a quoted heredoc or a pipeline.
-- `python -c '...'`, `node -e '...'`, or `bun -e '...'` with no extra interpreter arguments.
+- `python -c '...' [args...]`, `node -e '...' [args...]`, or `bun -e '...' [args...]`. Program arguments stay in the kernel and populate native `sys.argv` / `process.argv`; JS `--` separates arguments from interpreter options.
 - `python fleet://<name>.py` for a script staged under the internal `fleet://` URL.
-- Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without a bridge use an external interpreter.
+- Ordinary script paths, `-m`, unsupported interpreter flags, and calls made without a bridge use an external interpreter. Supported stdin (`-`) and internal fleet scripts also accept program arguments.
 
-A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `xd context --resource kernel --op start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
+A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `protolens context --resource kernel --op start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
 
 For example:
 
@@ -70,23 +99,34 @@ Every enabled runtime receives the cell prelude. Python helpers are synchronous 
 
 - `display(value)` and `print(...)` for ordinary and rich output.
 - `env(...)`, `output(...)`, and `tool.<name>(args)` for environment, agent/task-output, and normal session-tool access. `output()` reads agent/task outputs; use `read artifact://...` for Bash artifacts.
-- `proto_path(path)` (Python) and `protoPath(path)` (JavaScript) to resolve plain paths and supported internal URLs for filesystem APIs.
 - Python `symbols(path?, code?=None, lang?=None)`, `defs()`, and `block_range(path, line)` for bounded source inspection. Both runtimes expose `defs()` and `kernel_state()` / `kernelState()` for binding provenance and safe runtime inspection.
 - `completion(...)` for a stateless tool-free model call; `agent(...)` for a policy-checked subagent; and `parallel(...)`/`pipeline(...)` for bounded fan-out.
 - `log(message)`, `phase(title)`, and `budget` for progress and the live turn budget.
 
-`agent()` availability follows the current spawn policy, and `parallel()`/`pipeline()` width follows `orchestrator.maxConcurrency` (`0` means unbounded). Python supports top-level `await` on its persistent event loop (do not call `asyncio.run()` there); JavaScript supports top-level `await` and bare `return`. The prelude also includes the stale-write guard and filesystem mutation/status tracking used by kernel edits; read before localized replacement and let the guard reject stale writes. The guard covers every destructive operation in both kernels — write-mode opens, `os.replace`/`rename`, `os.truncate` and `os.remove`/`unlink` — so the atomic write idiom is refused just like a direct overwrite when the file changed since the kernel read it. It is armed by the kernel's own reads; host-side observations (shell builtins and redirects, the read tool) only extend it to paths the kernel has never read and never refresh an existing record, because the kernel still holds the content it read. Each net-mutated path also prints one compact `<kernel> note:` line in the cell's own output, in Python and JavaScript alike.
+`agent()` availability follows the current spawn policy, and `parallel()`/`pipeline()` width follows `orchestrator.maxConcurrency` (`0` means unbounded). Ordinary Python cells support `asyncio.run()` without an active host loop; top-level-`await` cells use the retained event loop and follow Python's normal restrictions on nested loop runners; JavaScript supports top-level `await` and bare `return`. The prelude also includes the stale-write guard and filesystem mutation/status tracking used by kernel edits; read before localized replacement and let the guard reject stale writes. The guard covers every destructive operation in both kernels — write-mode opens, `os.replace`/`rename`, `os.truncate` and `os.remove`/`unlink` — so the atomic write idiom is refused just like a direct overwrite when the file changed since the kernel read it. It is armed by the kernel's own reads; host-side observations (shell builtins and redirects, the read tool) only extend it to paths the kernel has never read and never refresh an existing record, because the kernel still holds the content it read. Each net-mutated path also prints one compact `<kernel> note:` line in the cell's own output, in Python and JavaScript alike.
+
+### Filesystem paths in cells
+
+Raw Python/JavaScript file APIs and path-taking kernel helpers use ordinary filesystem paths. Read internal resources with `tool.read`, or let bash resolve literal URI arguments and `env` values before execution. Cell source and heredoc bodies are not rewritten.
+
+For a local Python cell, this bash input passes a resolved skill file without embedding its host path in code:
+
+```json
+{"command":"python -c 'print(Path(os.environ[\"INPUT\"]).read_text())'","env":{"INPUT":"skill://example/notes.md"}}
+```
+
+JavaScript cells can consume the same resolved environment value with `env("INPUT")`. In remote kernels, raw file APIs address the target while tool calls and bash-resolved paths address the host; transfer content explicitly instead of treating host paths as remote paths.
 
 ### Rich output
 
 `display()` accepts JSON-compatible values, Markdown/text, and image values. Python MIME bundles support `application/json`, `text/markdown`, `text/plain`, HTML-to-Markdown conversion, PNG/JPEG images, and structured status events; common PIL, pandas, Plotly, and Matplotlib displays therefore remain available. Matplotlib figures render off-screen through the `Agg` backend. JavaScript object results become structured JSON and image records become image content.
 
-Text output follows the Bash output stream. JSON values, images, and kernel status events also stay structured on the Bash result for rendering and replay, so status diffs and rich displays are not flattened into shell pipelines. JSON display text included in the model-visible stream is capped at 8,000 characters per value; the structured result retains the value. Output truncation and artifact spill follow the Bash `OutputSink` rules described below.
+Only program stdout/stderr enter Bash byte streams. Display text, final-expression values, JSON, images, filesystem receipts, and kernel status events stay on a separate presentation channel for rendering and replay, including with `2>&1`, pipes, redirects, and command substitutions. JSON display text included in the model-visible stream is capped at 8,000 characters per value; the structured result retains the value. Output truncation and artifact spill follow the Bash `OutputSink` rules described below.
 
 ### State and reset
 
 - Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
-- Variables, imports, definitions, and running tasks survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
+- Variables, imports, definitions, and explicitly retained async work survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
 - Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM. The discoverable `context` tool provides explicit kernel start, inspect, reset, close, and keepalive operations, plus whole-lane inspection and reset, from outside the executing cell.
 - Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution; death during execution leaves completion uncertain and does not replay the cell. Check partial side effects before retrying. The next cell reports the changed generation and lost state.
 
@@ -98,15 +138,15 @@ The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd
 
 ## Explicit kernel lifecycle and targets
 
-Use `xd context` from the Brush shell (or call the discoverable `context` tool directly) to manage a named language/lane without entering that kernel's execution queue:
+Use `protolens context` from the Brush shell (or call the discoverable `context` tool directly) to manage a named language/lane without entering that kernel's execution queue:
 
 ```bash
-xd context '{"resource":"kernel","op":"list"}'
-xd context '{"resource":"kernel","op":"start","language":"python","lane":"analysis","interpreter":"/work/.venv/bin/python","cwd":"/work"}'
-xd context '{"resource":"kernel","op":"inspect","language":"python","lane":"analysis"}'
-xd context '{"resource":"kernel","op":"keepalive","language":"python","lane":"analysis","ttlMs":600000}'
-xd context '{"resource":"kernel","op":"reset","language":"python","lane":"analysis"}'
-xd context '{"resource":"kernel","op":"close","language":"python","lane":"analysis","force":true}'
+protolens context '{"resource":"kernel","op":"list"}'
+protolens context '{"resource":"kernel","op":"start","language":"python","lane":"analysis","interpreter":"/work/.venv/bin/python","cwd":"/work"}'
+protolens context '{"resource":"kernel","op":"inspect","language":"python","lane":"analysis"}'
+protolens context '{"resource":"kernel","op":"keepalive","language":"python","lane":"analysis","ttlMs":600000}'
+protolens context '{"resource":"kernel","op":"reset","language":"python","lane":"analysis"}'
+protolens context '{"resource":"kernel","op":"close","language":"python","lane":"analysis","force":true}'
 ```
 
 The paths above must already exist. Execute subsequent interpreter cells with the matching Bash `lane`. Configuration belongs to the owner session and language/lane; changing an existing configuration requires `reset`, not silent replacement. Reset discards variables but retains the selected environment unless explicitly overridden. Close releases the runtime and forgets its lane configuration; subsequent implicit cells use local defaults, so explicitly start/configure a remote lane again before reuse. Closing busy work requires explicit `force:true`, which cancels it. Inspect/list and forced close remain available during an executing cell. Keepalive is a bounded lease (at most one hour), not an immortal kernel; owner disposal still closes owned runtimes.
@@ -114,8 +154,8 @@ The paths above must already exist. Execute subsequent interpreter cells with th
 Python and Bun kernels support local, existing-container, and SSH targets; Node kernels run on the local host only (use `bun` or `python` for SSH/container targets):
 
 ```bash
-xd context '{"resource":"kernel","op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
-xd context '{"resource":"kernel","op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
+protolens context '{"resource":"kernel","op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
+protolens context '{"resource":"kernel","op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
 ```
 
 Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.
@@ -160,7 +200,7 @@ The active/selected model must support every input modality. Explicit media part
 
 ## Scoped access from ordinary scripts
 
-External interpreters do not automatically receive prelude objects or `xd`. Use explicit delegation rather than relying on private kernel transport credentials: it supplies thin Python/JavaScript clients with a revocable, expiring capability.
+External interpreters do not automatically receive prelude objects or `protolens`. Use explicit delegation rather than relying on private kernel transport credentials: it supplies thin Python/JavaScript clients with a revocable, expiring capability.
 
 ```python
 lease = delegate([
@@ -191,18 +231,18 @@ Save only explicit bindings, then restore them into a later Python, Node, or Bun
 ```python
 summary = {"passed": 12, "failed": 0}
 payload = b"\x00\x80\xff"
-save_state("local://report-state.json", ["summary", "payload"])
+save_state("report-state.json", ["summary", "payload"])
 ```
 
 After an explicit kernel reset, in a later cell:
 
 ```python
-load_state("local://report-state.json")
+load_state("report-state.json")
 ```
 
-JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `load_state(path, collision="reject")`; explicit `"overwrite"` permits replacing colliding user bindings. Prelude/reserved bindings cannot be replaced.
+JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `load_state(path, collision="reject")`; explicit `"overwrite"` permits replacing colliding mutable user bindings. JavaScript restores through live binding setters so existing closures observe the restored value; `const`, imports, and prelude/reserved bindings cannot be overwritten. Read-only collisions reject the entire restore before any binding changes.
 
-Snapshots are versioned, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata; the recorded language and interpreter are provenance only. Python, Node, and Bun kernels restore each other's snapshots. Within a language every byte type round-trips; across languages Python `bytes`/`bytearray` restore as a JavaScript `Buffer`, and `Buffer`/`Uint8Array`/`ArrayBuffer` restore as Python `bytes`. Python integers beyond ±(2^53−1) restore exactly in Python and fail to load in JavaScript instead of rounding. Binding names must be valid, non-reserved identifiers in the loading language. Selection addresses published kernel globals, not variables local to a function or JavaScript async-cell closure. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and malformed metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
+Snapshots are versioned, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata; the recorded language and interpreter are provenance only. Python, Node, and Bun kernels restore each other's snapshots. Within a language every byte type round-trips; across languages Python `bytes`/`bytearray` restore as a JavaScript `Buffer`, and `Buffer`/`Uint8Array`/`ArrayBuffer` restore as Python `bytes`. Python integers beyond ±(2^53−1) restore exactly in Python and fail to load in JavaScript instead of rounding. Binding names must be valid, non-reserved identifiers in the loading language. Selection addresses published top-level kernel bindings, including JavaScript lexical bindings; it cannot address variables local to user-defined functions. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and malformed metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
 
 ## Kernel recovery helpers
 

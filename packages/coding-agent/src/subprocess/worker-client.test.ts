@@ -11,7 +11,6 @@ test("worker subprocesses do not inherit session bridge capabilities", () => {
 		PI_TOOL_BRIDGE_SESSION: "previous",
 		PI_SESSION_FILE: "/previous/session.jsonl",
 		PI_ARTIFACTS_DIR: "/previous/artifacts",
-		PI_EVAL_LOCAL_ROOTS: "{}",
 		WORKER_ENV_MARKER: "preserved",
 	});
 
@@ -25,7 +24,6 @@ test("worker subprocesses do not inherit session bridge capabilities", () => {
 		"PI_TOOL_BRIDGE_SESSION",
 		"PI_SESSION_FILE",
 		"PI_ARTIFACTS_DIR",
-		"PI_EVAL_LOCAL_ROOTS",
 	];
 	expect(sessionBridgeNames.filter(name => name in env)).toEqual([]);
 });

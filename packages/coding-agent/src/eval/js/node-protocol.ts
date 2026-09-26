@@ -1,7 +1,7 @@
 /**
- * Wire codec for the Node kernel's IPC channel (node-entry.ts ↔ context-manager.ts). Bun and Node share
- * only JSON IPC serialization — their structured-clone formats differ — so each message crosses as one
- * JSON string. The codec keeps the structured-clone contract Bun kernels get from "advanced" IPC: what
+ * Wire codec for standalone kernels (node-entry.ts ↔ context-manager.ts). Bun and Node share only JSON
+ * IPC serialization — their structured-clone formats differ — so each message crosses as one JSON
+ * string. The codec keeps the structured-clone contract CLI-hosted Bun kernels get from "advanced" IPC: what
  * plain JSON would flatten (undefined, NaN/±Infinity/-0, bigints, bytes, Date, RegExp, Map, Set, errors,
  * cycles and shared references) crosses as tagged nodes, and what structured clone rejects (functions,
  * symbols, promises, weak collections) throws a DataCloneError instead of silently vanishing. Host-side

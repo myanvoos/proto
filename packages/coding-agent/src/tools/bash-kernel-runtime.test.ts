@@ -57,14 +57,14 @@ for (const lang of ["python", "node"] as const) {
 					: 'console.log(process.env.RUNTIME_ENV); process.stderr.write("diagnostic\\n")';
 			const flag = lang === "python" ? "-c" : "-e";
 			const result = await bash.execute("env", {
-				command: `${lang} ${flag} '${source}' 2> diagnostics.txt`,
+				command: `${lang} ${flag} '${source}' 2> stderr-capture.txt`,
 				env: { RUNTIME_ENV: "tool-value" },
 			});
 			expect(text(result)).toContain("tool-value");
 			expect(text(result)).not.toContain("diagnostic");
-			expect(await Bun.file(path.join(cwd, "diagnostics.txt")).text()).toContain("diagnostic");
+			expect(await Bun.file(path.join(cwd, "stderr-capture.txt")).text()).toContain("diagnostic");
 			const inline = await bash.execute("inline", {
-				command: `RUNTIME_ENV=inline-value ${lang} ${flag} '${source}' 2> diagnostics.txt`,
+				command: `RUNTIME_ENV=inline-value ${lang} ${flag} '${source}' 2> stderr-capture.txt`,
 			});
 			expect(text(inline)).toContain("inline-value");
 		});

@@ -481,12 +481,11 @@ fn touch_file(
 ) -> Result<(), TouchError> {
 	let filename = if is_stdout { OsStr::new("-") } else { path.as_os_str() };
 	let resolved = host.resolve(path);
-	if !is_stdout {
-		host.note_write(&resolved);
-	}
-
 	let metadata_result =
 		if opts.no_deref { resolved.symlink_metadata() } else { resolved.metadata() };
+	if !is_stdout && metadata_result.is_ok() {
+		host.note_write(&resolved);
+	}
 
 	if let Err(error) = metadata_result {
 		if error.kind() != ErrorKind::NotFound {
@@ -507,7 +506,7 @@ fn touch_file(
 			return Ok(());
 		}
 
-		if let Err(error) = brush_core::heldfiles::open(&resolved, OpenOptions::new().write(true).create(true).truncate(true)) {
+		if let Err(error) = host.open_write(&resolved, OpenOptions::new().write(true).create(true).truncate(true)) {
 
 
 			let is_directory = path

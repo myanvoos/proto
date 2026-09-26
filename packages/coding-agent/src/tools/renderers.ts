@@ -18,11 +18,11 @@ import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
 import { thinkToolRenderer } from "./think";
 import {
+	protolensDeviceCallFromBashArgs,
 	renderXdevCall,
 	renderXdevResult,
 	setXdevRendererLookup,
 	type XdevDispatch,
-	xdDeviceCallFromBashArgs,
 } from "./xdev";
 
 export type ToolRenderer = {
@@ -42,25 +42,27 @@ export type ToolRenderer = {
 	animatedPartialResult?: boolean | ((args: unknown) => boolean);
 };
 
-let bashXdRendererInstance: ToolRenderer | undefined;
+let bashProtoRendererInstance: ToolRenderer | undefined;
 
-function getBashXdRenderer(): ToolRenderer {
-	bashXdRendererInstance ??= {
+function getBashProtoRenderer(): ToolRenderer {
+	bashProtoRendererInstance ??= {
 		...bashToolRenderer,
 		renderCall(args: unknown, options: RenderResultOptions, uiTheme: Theme): Component {
-			const xd = xdDeviceCallFromBashArgs(args);
-			if (xd) {
-				if (isResolutionDeviceName(xd.name)) return renderResolutionDeviceCall(xd.name, xd.content ?? "", uiTheme);
-				if (xd.name === REPORT_ISSUE_DEVICE_NAME) return renderReportIssueDeviceCall(xd.content ?? "", uiTheme);
+			const protolens = protolensDeviceCallFromBashArgs(args);
+			if (protolens) {
+				if (isResolutionDeviceName(protolens.name))
+					return renderResolutionDeviceCall(protolens.name, protolens.content ?? "", uiTheme);
+				if (protolens.name === REPORT_ISSUE_DEVICE_NAME)
+					return renderReportIssueDeviceCall(protolens.content ?? "", uiTheme);
 				const context = (options as { renderContext?: { resolveXdevMounted?: (name: string) => unknown } })
 					.renderContext;
 				const delegated = renderXdevCall(
-					xd.name,
-					xd.content,
+					protolens.name,
+					protolens.content,
 					options,
 					uiTheme,
 					context?.resolveXdevMounted as Parameters<typeof renderXdevCall>[4],
-					xd.argv,
+					protolens.argv,
 				);
 				if (delegated) return delegated;
 			}
@@ -83,7 +85,7 @@ function getBashXdRenderer(): ToolRenderer {
 					options,
 					uiTheme,
 					context?.resolveXdevMounted as Parameters<typeof renderXdevResult>[4],
-					xdDeviceCallFromBashArgs(args),
+					protolensDeviceCallFromBashArgs(args),
 				);
 				if (delegated) return delegated;
 			}
@@ -96,7 +98,7 @@ function getBashXdRenderer(): ToolRenderer {
 			return render(result, options, uiTheme, args);
 		},
 	};
-	return bashXdRendererInstance;
+	return bashProtoRendererInstance;
 }
 
 /** Process ops that `fleet` owned before the split; their details already match the jobs renderers. */
@@ -181,7 +183,7 @@ function getFleetRenderer(): ToolRenderer {
 export const toolRenderers: Record<string, ToolRenderer> = {
 	ask: askToolRenderer as ToolRenderer,
 	get bash(): ToolRenderer {
-		return getBashXdRenderer();
+		return getBashProtoRenderer();
 	},
 	browser: browserToolRenderer as ToolRenderer,
 	computer: computerToolRenderer as ToolRenderer,

@@ -1,10 +1,5 @@
 import type { ToolSession } from "../../tools";
-import {
-	type ExecutorBackend,
-	type ExecutorBackendExecOptions,
-	type ExecutorBackendResult,
-	resolveEvalUrlRoots,
-} from "../backend";
+import type { ExecutorBackend, ExecutorBackendExecOptions, ExecutorBackendResult } from "../backend";
 import { namespaceSessionId as sharedNamespace, toExecutorBackendResult } from "../backend-helpers";
 import type { JsKernelRuntime } from "../kernel-environment";
 import { kernelTargetCwd, parseKernelTarget } from "../kernel-target";
@@ -32,6 +27,7 @@ function createJsBackend(runtime: JsKernelRuntime, label: string): ExecutorBacke
 				runtime,
 				target,
 				interpreter: opts.interpreter,
+				invocation: opts.invocation,
 				cwd: remote ? kernelTargetCwd(target, opts.runCwd ?? opts.cwd) : (opts.runCwd ?? opts.cwd),
 				idleTimeoutMs: opts.idleTimeoutMs,
 				signal: opts.signal,
@@ -48,7 +44,6 @@ function createJsBackend(runtime: JsKernelRuntime, label: string): ExecutorBacke
 				onDisplay: opts.onDisplay,
 				completionContext: opts.completionContext,
 				session: opts.session,
-				localRoots: remote ? undefined : resolveEvalUrlRoots(opts.session),
 			});
 			return toExecutorBackendResult(result);
 		},

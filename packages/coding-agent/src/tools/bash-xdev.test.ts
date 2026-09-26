@@ -128,7 +128,7 @@ function renderBashResult(
 	return stripAnsi(component.render(90).join("\n"));
 }
 
-test("xd cannot reset its own lane and rejected control preserves shell state", async () => {
+test("protolens cannot reset its own lane and rejected control preserves shell state", async () => {
 	await withBash(async (bash, _state, session) => {
 		session.getSessionId = () => session.cwd;
 		const context = new ContextTool(session);
@@ -136,7 +136,7 @@ test("xd cannot reset its own lane and rejected control preserves shell state", 
 		session.xdev!.mountedNames.add("context");
 		try {
 			const rejected = await bash.execute("self-reset", {
-				command: "ORIGIN_MARKER=retained; xd context --op reset --resource lane --lane work",
+				command: "ORIGIN_MARKER=retained; protolens context --op reset --resource lane --lane work",
 				lane: "work",
 			});
 			expect(rejected.details?.exitCode, textOf(rejected)).toBe(1);
@@ -152,10 +152,23 @@ test("xd cannot reset its own lane and rejected control preserves shell state", 
 	});
 }, 10_000);
 
-test("multiple semicolon-separated xd calls dispatch in order", async () => {
+test("protolens is the only device builtin and proto remains an external executable", async () => {
+	await withBash(async (bash, state, session) => {
+		const executable = path.join(session.cwd, "proto");
+		await fs.writeFile(executable, "#!/bin/sh\nprintf 'external-proto:%s\\n' \"$1\"\n", { mode: 0o755 });
+		const result = await bash.execute("device-namespace", {
+			command: `export PATH="$PWD:$PATH"; type -t protolens; type -t proto; proto --version; if type -t xd; then exit 99; fi; protolens probe --value mounted`,
+		});
+		expect(result.isError, textOf(result)).not.toBe(true);
+		expect(textOf(result)).toContain("builtin\nfile\nexternal-proto:--version\n");
+		expect(state.calls).toEqual(["mounted"]);
+	});
+});
+
+test("multiple semicolon-separated protolens calls dispatch in order", async () => {
 	await withBash(async (bash, state) => {
-		const result = await bash.execute("xd-sequential", {
-			command: `xd probe '{"value":"one"}'; xd probe '{"value":"two"}'`,
+		const result = await bash.execute("protolens-sequential", {
+			command: `protolens probe '{"value":"one"}'; protolens probe '{"value":"two"}'`,
 		});
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("probe:one\nprobe:two\n");
@@ -164,10 +177,10 @@ test("multiple semicolon-separated xd calls dispatch in order", async () => {
 	});
 });
 
-test("xd conditional chains preserve shell success semantics", async () => {
+test("protolens conditional chains preserve shell success semantics", async () => {
 	await withBash(async (bash, state) => {
-		const result = await bash.execute("xd-conditional", {
-			command: `xd probe '{"value":"fail"}' && xd probe '{"value":"skipped"}' || xd probe '{"value":"recovered"}'`,
+		const result = await bash.execute("protolens-conditional", {
+			command: `protolens probe '{"value":"fail"}' && protolens probe '{"value":"skipped"}' || protolens probe '{"value":"recovered"}'`,
 		});
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("probe:recovered\n");
@@ -176,10 +189,10 @@ test("xd conditional chains preserve shell success semantics", async () => {
 	});
 });
 
-test("ampersand-separated xd calls dispatch concurrently", async () => {
+test("ampersand-separated protolens calls dispatch concurrently", async () => {
 	await withBash(async (bash, state) => {
-		const result = await bash.execute("xd-concurrent", {
-			command: `xd probe '{"value":"one"}' & xd probe '{"value":"two"}' & wait`,
+		const result = await bash.execute("protolens-concurrent", {
+			command: `protolens probe '{"value":"one"}' & protolens probe '{"value":"two"}' & wait`,
 		});
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("probe:one");
@@ -189,23 +202,25 @@ test("ampersand-separated xd calls dispatch concurrently", async () => {
 	});
 });
 
-test("mixed native commands compose with xd through Brush", async () => {
+test("mixed native commands compose with protolens through Brush", async () => {
 	await withBash(async bash => {
-		const result = await bash.execute("xd-mixed", { command: `xd probe '{"value":"one"}'; printf done` });
+		const result = await bash.execute("protolens-mixed", {
+			command: `protolens probe '{"value":"one"}'; printf done`,
+		});
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("probe:one\n");
 		expect(textOf(result)).toContain("done");
 	});
 });
 
-test("xd JSON string values keep internal URI literals opaque", async () => {
+test("protolens JSON string values keep internal URI literals opaque", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-opaque-uri-"));
 	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
 	const uri = "skill" + "://system-prompts";
 	const skills: Skill[] = [systemPromptsSkill(dir)];
 	try {
 		const bash = new BashTool(sessionWithProbe(dir, state, skills));
-		const result = await bash.execute("xd-opaque-uri", { command: `xd probe '{"value":"${uri}"}'` });
+		const result = await bash.execute("protolens-opaque-uri", { command: `protolens probe '{"value":"${uri}"}'` });
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain(`probe:${uri}\n`);
 		expect(state.calls).toEqual([uri]);
@@ -214,14 +229,14 @@ test("xd JSON string values keep internal URI literals opaque", async () => {
 	}
 });
 
-test("xd JSON with shell-escaped quotes stays opaque", async () => {
+test("protolens JSON with shell-escaped quotes stays opaque", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-escaped-uri-"));
 	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
 	const uri = "skill" + "://system-prompts";
 	try {
 		const bash = new BashTool(sessionWithProbe(dir, state, [systemPromptsSkill(dir)]));
 		const json = `{\\"value\\":\\"${uri}\\"}`;
-		const result = await bash.execute("xd-escaped-uri", { command: `xd probe ${json}` });
+		const result = await bash.execute("protolens-escaped-uri", { command: `protolens probe ${json}` });
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain(`probe:${uri}\n`);
 		expect(state.calls).toEqual([uri]);
@@ -230,14 +245,14 @@ test("xd JSON with shell-escaped quotes stays opaque", async () => {
 	}
 });
 
-test("xd JSON supplied through an environment variable stays opaque", async () => {
+test("protolens JSON supplied through an environment variable stays opaque", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-env-uri-"));
 	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
 	const uri = "skill" + "://system-prompts";
 	try {
 		const bash = new BashTool(sessionWithProbe(dir, state, [systemPromptsSkill(dir)]));
-		const result = await bash.execute("xd-env-uri", {
-			command: 'xd probe "$ARGS"',
+		const result = await bash.execute("protolens-env-uri", {
+			command: 'protolens probe "$ARGS"',
 			env: { ARGS: `{"value":"${uri}"}` },
 		});
 		expect(result.isError).not.toBe(true);
@@ -248,7 +263,7 @@ test("xd JSON supplied through an environment variable stays opaque", async () =
 	}
 });
 
-test("xd accepts extra MCP arguments when the input schema is open", async () => {
+test("protolens accepts extra MCP arguments when the input schema is open", async () => {
 	await withBash(async (bash, _state, session) => {
 		const makeTool = (name: string, additionalProperties?: unknown): Tool => {
 			const parameters = {
@@ -275,8 +290,8 @@ test("xd accepts extra MCP arguments when the input schema is open", async () =>
 		session.xdev?.mountedNames.add(schemaObject.name);
 
 		for (const name of [omitted.name, schemaObject.name]) {
-			const result = await bash.execute(`xd-open-${name}`, {
-				command: `xd ${name} '{"value":"ok","extra":"forwarded"}'`,
+			const result = await bash.execute(`protolens-open-${name}`, {
+				command: `protolens ${name} '{"value":"ok","extra":"forwarded"}'`,
 			});
 			expect(result.isError).not.toBe(true);
 			expect(textOf(result)).toContain("accepted:forwarded\n");
@@ -284,14 +299,14 @@ test("xd accepts extra MCP arguments when the input schema is open", async () =>
 	});
 });
 
-test("xd refuses the bash transport instead of recursively executing it", async () => {
+test("protolens refuses the bash transport instead of recursively executing it", async () => {
 	await withBash(
 		async (bash, _state, session) => {
 			let nestedCalls = 0;
 			const nestedBash = {
 				name: "bash",
 				label: "Bash",
-				description: "Nested bash should never run through xd.",
+				description: "Nested bash should never run through protolens.",
 				parameters: type({ command: "string" }),
 				async execute() {
 					nestedCalls++;
@@ -299,17 +314,17 @@ test("xd refuses the bash transport instead of recursively executing it", async 
 				},
 			} as unknown as Tool;
 			session.xdev?.tools.set("bash", nestedBash);
-			const result = await bash.execute("xd-bash-transport", {
-				command: `xd bash '{"command":"echo nested"}'`,
+			const result = await bash.execute("protolens-bash-transport", {
+				command: `protolens bash '{"command":"echo nested"}'`,
 			});
 			expect(nestedCalls).toBe(0);
-			expect(textOf(result)).toContain("No such tool: xd://bash.");
+			expect(textOf(result)).toContain("No such tool: protolens://bash.");
 		},
 		["bash"],
 	);
 });
 
-test("xd preserves text block boundaries for shell output and rendering", async () => {
+test("protolens preserves text block boundaries for shell output and rendering", async () => {
 	await withBash(async (bash, _state, session) => {
 		const multi = {
 			name: "multi-block",
@@ -327,8 +342,8 @@ test("xd preserves text block boundaries for shell output and rendering", async 
 		} as unknown as Tool;
 		session.xdev?.tools.set(multi.name, multi);
 		session.xdev?.mountedNames.add(multi.name);
-		const command = `xd ${multi.name} '{}'`;
-		const result = await bash.execute("xd-block-boundary", { command });
+		const command = `protolens ${multi.name} '{}'`;
+		const result = await bash.execute("protolens-block-boundary", { command });
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("first\nsecond\n");
 		expect(textOf(result)).not.toContain("firstsecond");
@@ -347,7 +362,7 @@ test("xd preserves text block boundaries for shell output and rendering", async 
 	});
 });
 
-test("xd keeps tool output when dispatch details are not JSON serializable", async () => {
+test("protolens keeps tool output when dispatch details are not JSON serializable", async () => {
 	await withBash(async (bash, _state, session) => {
 		const bigint = {
 			name: "bigint-details",
@@ -363,7 +378,7 @@ test("xd keeps tool output when dispatch details are not JSON serializable", asy
 		} as unknown as Tool;
 		session.xdev?.tools.set(bigint.name, bigint);
 		session.xdev?.mountedNames.add(bigint.name);
-		const result = await bash.execute("xd-bigint-details", { command: `xd ${bigint.name} '{}'` });
+		const result = await bash.execute("protolens-bigint-details", { command: `protolens ${bigint.name} '{}'` });
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("output survived\n");
 	});
@@ -391,65 +406,89 @@ test("standalone command and environment path URIs still resolve", async () => {
 	}
 });
 
-test("xd stdout participates in native pipelines and substitutions", async () => {
+test("protolens receives generated-view URIs as typed while other commands still reject them", async () => {
+	await withBash(async (bash, state) => {
+		const result = await bash.execute("protolens-generated-view", {
+			command:
+				'protolens probe history://worker_0:1-5 && FOO=1 protolens probe agent://worker_0; echo "$(protolens probe history://)"',
+		});
+		expect(result.isError, textOf(result)).not.toBe(true);
+		expect(state.calls).toEqual(["history://worker_0:1-5", "agent://worker_0", "history://"]);
+		await expect(
+			bash.execute("cat-generated-view", { command: "protolens probe ok; cat agent://worker_0" }),
+		).rejects.toThrow("generated view");
+	});
+});
+
+test("protolens stdout participates in native pipelines and substitutions", async () => {
 	await withBash(async bash => {
-		const piped = await bash.execute("xd-pipe", { command: `xd probe '{"value":"pipe"}' | rg '^probe:'` });
+		const piped = await bash.execute("protolens-pipe", {
+			command: `protolens probe '{"value":"pipe"}' | rg '^probe:'`,
+		});
 		expect(piped.isError).not.toBe(true);
 		expect(textOf(piped)).toContain("probe:pipe\n");
 
-		const substituted = await bash.execute("xd-substitution", {
-			command: `value=$(xd probe '{"value":"sub"}'); printf '<%s>' "$value"`,
+		const substituted = await bash.execute("protolens-substitution", {
+			command: `value=$(protolens probe '{"value":"sub"}'); printf '<%s>' "$value"`,
 		});
 		expect(substituted.isError).not.toBe(true);
 		expect(textOf(substituted)).toContain("<probe:sub>");
 	});
 });
 
-test("xd redirects and pipeline status use the native shell", async () => {
+test("protolens redirects and pipeline status use the native shell", async () => {
 	await withBash(async (bash, state) => {
-		const outPath = `${state.calls.length}-xd-output.txt`;
-		const redirected = await bash.execute("xd-redirect", {
-			command: `xd probe '{"value":"redirect"}' > ${outPath}; cat ${outPath}`,
+		const outPath = `${state.calls.length}-protolens-output.txt`;
+		const redirected = await bash.execute("protolens-redirect", {
+			command: `protolens probe '{"value":"redirect"}' > ${outPath}; cat ${outPath}`,
 		});
 		expect(redirected.isError).not.toBe(true);
 		expect(textOf(redirected)).toContain("probe:redirect\n");
 
 		// Pipeline status is computed natively; exit 2 is a hard failure, while
 		// exit 1 is the soft Unix signal and stays a data result.
-		const failed = await bash.execute("xd-pipe-failure", { command: `xd probe '{"value":"closed"}' | exit 2` });
+		const failed = await bash.execute("protolens-pipe-failure", {
+			command: `protolens probe '{"value":"closed"}' | exit 2`,
+		});
 		expect(failed.isError).toBe(true);
-		const soft = await bash.execute("xd-pipe-soft", { command: `xd probe '{"value":"closed"}' | exit 1` });
+		const soft = await bash.execute("protolens-pipe-soft", {
+			command: `protolens probe '{"value":"closed"}' | exit 1`,
+		});
 		expect(soft.isError ?? false).toBe(false);
 	});
 });
 
-test("piped stdin supplies the xd JSON args when no positional args are given", async () => {
+test("piped stdin supplies the protolens JSON args when no positional args are given", async () => {
 	await withBash(async (bash, state) => {
-		const piped = await bash.execute("xd-stdin", { command: `printf '{"value":"from-stdin"}' | xd probe` });
+		const piped = await bash.execute("protolens-stdin", {
+			command: `printf '{"value":"from-stdin"}' | protolens probe`,
+		});
 		expect(piped.isError).not.toBe(true);
 		expect(textOf(piped)).toContain("probe:from-stdin\n");
-		const chained = await bash.execute("xd-stdin-chain", {
-			command: `xd probe '{"value":"first"}' | sed 's/^probe:\\(.*\\)$/{"value":"\\1-again"}/' | xd probe`,
+		const chained = await bash.execute("protolens-stdin-chain", {
+			command: `protolens probe '{"value":"first"}' | sed 's/^probe:\\(.*\\)$/{"value":"\\1-again"}/' | protolens probe`,
 		});
 		expect(textOf(chained)).toContain("probe:first-again\n");
-		const explicit = await bash.execute("xd-stdin-ignored", {
-			command: `printf '{"value":"stdin"}' | xd probe '{"value":"arg"}'`,
+		const explicit = await bash.execute("protolens-stdin-ignored", {
+			command: `printf '{"value":"stdin"}' | protolens probe '{"value":"arg"}'`,
 		});
 		expect(textOf(explicit)).toContain("probe:arg\n");
-		const invalid = await bash.execute("xd-stdin-invalid", { command: `printf 'nope' | xd probe; echo rc=$?` });
+		const invalid = await bash.execute("protolens-stdin-invalid", {
+			command: `printf 'nope' | protolens probe; echo rc=$?`,
+		});
 		expect(textOf(invalid)).toContain("piped stdin must be a JSON args object");
 		expect(textOf(invalid)).toContain("rc=2");
 		expect(state.calls).toEqual(["from-stdin", "first", "first-again", "arg"]);
 	});
 });
 
-test("xd text output is newline-terminated so following commands start on their own line", async () => {
+test("protolens text output is newline-terminated so following commands start on their own line", async () => {
 	await withBash(async bash => {
-		const docs = await bash.execute("xd-docs-newline", { command: `xd probe ?; printf next` });
+		const docs = await bash.execute("protolens-docs-newline", { command: `protolens probe ?; printf next` });
 		expect(textOf(docs)).toContain("for these docs).\nJSON escape hatch:");
-		const failure = await bash.execute("xd-error-newline", { command: `xd missing '{}'; printf next` });
-		expect(textOf(failure)).toContain("No such tool: xd://missing.");
-		expect(textOf(failure)).toMatch(/xd:\/\/<tool>\.\nnext/);
+		const failure = await bash.execute("protolens-error-newline", { command: `protolens missing '{}'; printf next` });
+		expect(textOf(failure)).toContain("No such tool: protolens://missing.");
+		expect(textOf(failure)).toMatch(/protolens:\/\/<tool>\.\nnext/);
 	});
 });
 
@@ -494,13 +533,13 @@ test("mounted read uses pipelines and branch-local cwd", async () => {
 	};
 	try {
 		const bash = new BashTool(session);
-		const piped = await bash.execute("xd-read-pipe", {
-			command: `(cd one; xd read '{"path":"same.txt"}') | rg ONE`,
+		const piped = await bash.execute("protolens-read-pipe", {
+			command: `(cd one; protolens read '{"path":"same.txt"}') | rg ONE`,
 		});
 		expect(piped.isError).not.toBe(true);
 		expect(textOf(piped)).toContain("ONE");
-		const branches = await bash.execute("xd-read-branches", {
-			command: `(cd one; xd read '{"path":"same.txt"}') & (cd two; xd read '{"path":"same.txt"}') & wait`,
+		const branches = await bash.execute("protolens-read-branches", {
+			command: `(cd one; protolens read '{"path":"same.txt"}') & (cd two; protolens read '{"path":"same.txt"}') & wait`,
 		});
 		expect(branches.isError).not.toBe(true);
 		expect(textOf(branches)).toContain("ONE");
@@ -564,7 +603,7 @@ function sessionWithCancellationProbe(cwd: string, state: CancellationProbeState
 	} as unknown as ToolSession;
 }
 
-test("pre-aborted xd calls never invoke the mounted tool", async () => {
+test("pre-aborted protolens calls never invoke the mounted tool", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-abort-"));
 	const state: CancellationProbeState = {
 		calls: 0,
@@ -578,7 +617,7 @@ test("pre-aborted xd calls never invoke the mounted tool", async () => {
 		const controller = new AbortController();
 		controller.abort();
 		await expect(
-			bash.execute("xd-pre-abort", { command: `xd probe '{"value":"never"}'` }, controller.signal),
+			bash.execute("protolens-pre-abort", { command: `protolens probe '{"value":"never"}'` }, controller.signal),
 		).rejects.toThrow();
 		expect(state.calls).toBe(0);
 	} finally {
@@ -586,7 +625,7 @@ test("pre-aborted xd calls never invoke the mounted tool", async () => {
 	}
 });
 
-test("xd cooperative cancellation propagates the signal and discards output", async () => {
+test("protolens cooperative cancellation propagates the signal and discards output", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-coop-"));
 	const state: CancellationProbeState = {
 		calls: 0,
@@ -599,8 +638,8 @@ test("xd cooperative cancellation propagates the signal and discards output", as
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
 		const controller = new AbortController();
 		const pending = bash.execute(
-			"xd-cooperative-abort",
-			{ command: `xd probe '{"value":"cooperative"}'` },
+			"protolens-cooperative-abort",
+			{ command: `protolens probe '{"value":"cooperative"}'` },
 			controller.signal,
 		);
 		await state.started.promise;
@@ -613,7 +652,7 @@ test("xd cooperative cancellation propagates the signal and discards output", as
 	}
 });
 
-test("xd late results are discarded after cancellation", async () => {
+test("protolens late results are discarded after cancellation", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-late-"));
 	const state: CancellationProbeState = {
 		calls: 0,
@@ -625,7 +664,11 @@ test("xd late results are discarded after cancellation", async () => {
 	try {
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
 		const controller = new AbortController();
-		const pending = bash.execute("xd-late-abort", { command: `xd probe '{"value":"late"}'` }, controller.signal);
+		const pending = bash.execute(
+			"protolens-late-abort",
+			{ command: `protolens probe '{"value":"late"}'` },
+			controller.signal,
+		);
 		await state.started.promise;
 		controller.abort();
 		state.release.resolve();
@@ -636,7 +679,7 @@ test("xd late results are discarded after cancellation", async () => {
 	}
 });
 
-test("the shell deadline aborts an in-flight xd dispatch instead of orphaning it", async () => {
+test("the shell deadline aborts an in-flight protolens dispatch instead of orphaning it", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-deadline-"));
 	const state: CancellationProbeState = {
 		calls: 0,
@@ -647,7 +690,10 @@ test("the shell deadline aborts an in-flight xd dispatch instead of orphaning it
 	};
 	try {
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
-		const result = await bash.execute("xd-deadline", { command: `xd probe '{"value":"deadline"}'`, timeout: 1 });
+		const result = await bash.execute("protolens-deadline", {
+			command: `protolens probe '{"value":"deadline"}'`,
+			timeout: 1,
+		});
 		expect(result.isError).toBe(true);
 		expect(result.details?.timedOut).toBe(true);
 		expect(result.details?.execution?.timeout).toMatchObject({ cause: "deadline", scope: "command" });
@@ -659,12 +705,16 @@ test("the shell deadline aborts an in-flight xd dispatch instead of orphaning it
 	}
 }, 15000);
 
-test("native xd bridge keeps stdin and pipe purity separate from status records", async () => {
+test("native protolens bridge keeps stdin and pipe purity separate from status records", async () => {
 	const shell = new Shell();
 	const chunks: string[] = [];
 	let request: { stdin?: string } | undefined;
 	const result = await shell.run(
-		{ command: "printf input | xd probe | rg '^out$'", cwd: process.cwd(), xdCallId: "xd-stream" },
+		{
+			command: "printf input | protolens probe | rg '^out$'",
+			cwd: process.cwd(),
+			protolensCallId: "protolens-stream",
+		},
 		(error, chunk) => {
 			if (!error) chunks.push(chunk);
 		},
@@ -677,19 +727,23 @@ test("native xd bridge keeps stdin and pipe purity separate from status records"
 	expect(chunks.join("")).toContain("out\n");
 	expect(chunks.join("")).toContain("not-piped");
 	expect(result.exitCode).toBe(0);
-	expect(result.xdDispatches).toEqual(['{"kind":"probe"}']);
+	expect(result.protolensDispatches).toEqual(['{"kind":"probe"}']);
 
 	const stderrOnly = await new Shell().run(
-		{ command: "printf input | xd probe | rg '^not-piped$'", cwd: process.cwd(), xdCallId: "xd-stderr" },
+		{
+			command: "printf input | protolens probe | rg '^not-piped$'",
+			cwd: process.cwd(),
+			protolensCallId: "protolens-stderr",
+		},
 		undefined,
 		async () => JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: "{}" }),
 	);
 	expect(stderrOnly.exitCode).toBe(1);
 });
 
-test("xd help keeps full docs for the model but renders a compact card in TUI", async () => {
+test("protolens help keeps full docs for the model but renders a compact card in TUI", async () => {
 	await withBash(async (bash, _state, session) => {
-		const result = await bash.execute("xd-help", { command: `xd probe ?` });
+		const result = await bash.execute("protolens-help", { command: `protolens probe ?` });
 		expect(result.isError).not.toBe(true);
 
 		// Model-facing content is untouched: full description + schema.
@@ -701,8 +755,8 @@ test("xd help keeps full docs for the model but renders a compact card in TUI", 
 			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
-		const rendered = renderBashResult(result, `xd probe ?`, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe · docs");
+		const rendered = renderBashResult(result, `protolens probe ?`, false, resolveXdevMounted);
+		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("Returns the supplied value.");
 		expect(rendered).toContain("1 arg");
 		expect(rendered).toContain("required: value");
@@ -712,9 +766,9 @@ test("xd help keeps full docs for the model but renders a compact card in TUI", 
 	});
 });
 
-test("xd help card keeps the device description when a transport notice precedes the docs", async () => {
+test("protolens help card keeps the device description when a transport notice precedes the docs", async () => {
 	await withBash(async (bash, _state, session) => {
-		const result = await bash.execute("xd-help-notice", { command: `xd probe ?` });
+		const result = await bash.execute("protolens-help-notice", { command: `protolens probe ?` });
 		expect(result.isError).not.toBe(true);
 		const noticed = {
 			...result,
@@ -725,28 +779,28 @@ test("xd help card keeps the device description when a transport notice precedes
 			),
 		};
 		const xdev = (session as { xdev?: { tools: Map<string, unknown> } }).xdev;
-		const rendered = renderBashResult(noticed, `xd probe ?`, false, name => xdev?.tools.get(name));
-		expect(rendered).toContain("xd://probe · docs");
+		const rendered = renderBashResult(noticed, `protolens probe ?`, false, name => xdev?.tools.get(name));
+		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("Returns the supplied value.");
 	});
 });
 
-test("xd help card expands to the full docs", async () => {
+test("protolens help card expands to the full docs", async () => {
 	await withBash(async bash => {
-		const result = await bash.execute("xd-help-expanded", { command: `xd probe ?` });
+		const result = await bash.execute("protolens-help-expanded", { command: `protolens probe ?` });
 		expect(result.isError).not.toBe(true);
-		const rendered = renderBashResult(result, `xd probe ?`, true);
-		expect(rendered).toContain("xd://probe · docs");
+		const rendered = renderBashResult(result, `protolens probe ?`, true);
+		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("type Args");
-		expect(rendered).toContain("usage: xd probe <value>");
+		expect(rendered).toContain("usage: protolens probe <value>");
 		expect(rendered).toContain("Execute from bash");
 	});
 });
 
-test("chained xd help calls render one status line per device, not a docs dump", async () => {
+test("chained protolens help calls render one status line per device, not a docs dump", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `xd probe ?; xd probe2 ?`;
-		const result = await bash.execute("xd-composite-help", { command });
+		const command = `protolens probe ?; protolens probe2 ?`;
+		const result = await bash.execute("protolens-composite-help", { command });
 		expect(result.isError).not.toBe(true);
 
 		const modelText = textOf(result);
@@ -759,32 +813,32 @@ test("chained xd help calls render one status line per device, not a docs dump",
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe · docs");
-		expect(rendered).toContain("xd://probe2 · docs");
+		expect(rendered).toContain("protolens://probe · docs");
+		expect(rendered).toContain("protolens://probe2 · docs");
 		expect(rendered).not.toContain("type Args");
 		expect(rendered).toContain("expand");
 	});
 });
 
-test("composite output is not swallowed when xd help is chained with other commands", async () => {
+test("composite output is not swallowed when protolens help is chained with other commands", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `printf hi; xd probe ?`;
-		const result = await bash.execute("xd-composite-mixed", { command });
+		const command = `printf hi; protolens probe ?`;
+		const result = await bash.execute("protolens-composite-mixed", { command });
 		expect(result.isError).not.toBe(true);
 		const resolveXdevMounted = (name: string) => {
 			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe · docs");
+		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("hi");
 	});
 });
 
-test("chained xd execute calls render one line per dispatch with their output", async () => {
+test("chained protolens execute calls render one line per dispatch with their output", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `xd probe '{"value":"one"}'; xd probe '{"value":"two"}'`;
-		const result = await bash.execute("xd-composite-execute", { command });
+		const command = `protolens probe '{"value":"one"}'; protolens probe '{"value":"two"}'`;
+		const result = await bash.execute("protolens-composite-execute", { command });
 		expect(result.isError).not.toBe(true);
 		const resolveXdevMounted = (name: string) => {
 			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
@@ -793,15 +847,15 @@ test("chained xd execute calls render one line per dispatch with their output", 
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
 		expect(rendered).toContain("probe:one");
 		expect(rendered).toContain("probe:two");
-		const statusLines = rendered.split("\n").filter(line => line.includes("xd://probe "));
+		const statusLines = rendered.split("\n").filter(line => line.includes("protolens://probe "));
 		expect(statusLines.length).toBe(2);
 	});
 });
 
-test("xd rejects unknown top-level keys without appending schema docs", async () => {
+test("protolens rejects unknown top-level keys without appending schema docs", async () => {
 	await withBash(async bash => {
-		const result = await bash.execute("xd-unknown-key", {
-			command: `xd probe '{"value":"ok","ids":["worker-1"]}'`,
+		const result = await bash.execute("protolens-unknown-key", {
+			command: `protolens probe '{"value":"ok","ids":["worker-1"]}'`,
 		});
 		const output = textOf(result);
 		expect(output).toContain("unknown top-level key: ids");
@@ -810,10 +864,10 @@ test("xd rejects unknown top-level keys without appending schema docs", async ()
 	});
 });
 
-test("xd validation failures append only the schema block", async () => {
+test("protolens validation failures append only the schema block", async () => {
 	await withBash(async bash => {
-		const result = await bash.execute("xd-schema-error", {
-			command: `xd probe '{"value":null}'`,
+		const result = await bash.execute("protolens-schema-error", {
+			command: `protolens probe '{"value":null}'`,
 		});
 		const output = textOf(result);
 		expect(output).toContain("## Schema");
@@ -822,10 +876,10 @@ test("xd validation failures append only the schema block", async () => {
 	});
 });
 
-test("failed xd dispatches are flagged in composite cards", async () => {
+test("failed protolens dispatches are flagged in composite cards", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `xd probe '{"value":"fail"}'; xd probe '{"value":"ok"}'`;
-		const result = await bash.execute("xd-composite-failure", { command });
+		const command = `protolens probe '{"value":"fail"}'; protolens probe '{"value":"ok"}'`;
+		const result = await bash.execute("protolens-composite-failure", { command });
 		const resolveXdevMounted = (name: string) => {
 			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
@@ -833,8 +887,8 @@ test("failed xd dispatches are flagged in composite cards", async () => {
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
 		const errorGlyph = stripAnsi(theme.styledSymbol("status.error", "error"));
 		const doneGlyph = stripAnsi(theme.styledSymbol("status.done", "success"));
-		expect(rendered).toContain(`${errorGlyph} xd://probe`);
-		expect(rendered).toContain(`${doneGlyph} xd://probe`);
+		expect(rendered).toContain(`${errorGlyph} protolens://probe`);
+		expect(rendered).toContain(`${doneGlyph} protolens://probe`);
 		expect(rendered).toContain("probe:fail");
 		expect(rendered).toContain("probe:ok");
 	});
@@ -854,38 +908,42 @@ test("a backgrounded command renders as pending, not failed", () => {
 	expect(rendered).toContain(`Backgrounded: ${jobId}`);
 });
 
-test("xd CLI flags dispatch through the schema without JSON quoting", async () => {
+test("protolens CLI flags dispatch through the schema without JSON quoting", async () => {
 	await withBash(async (bash, state) => {
-		const result = await bash.execute("xd-cli-flags", { command: `xd probe --value one` });
+		const result = await bash.execute("protolens-cli-flags", { command: `protolens probe --value one` });
 		expect(result.isError).not.toBe(true);
 		expect(textOf(result)).toContain("probe:one\n");
 		expect(state.calls).toEqual(["one"]);
 
-		const mixed = await bash.execute("xd-cli-positional", { command: `xd probe two` });
+		const mixed = await bash.execute("protolens-cli-positional", { command: `protolens probe two` });
 		expect(textOf(mixed)).toContain("probe:two\n");
 		expect(state.calls).toEqual(["one", "two"]);
 	});
 });
 
-test("xd CLI usage failures exit 2 while tool failures exit 1", async () => {
+test("protolens CLI usage failures exit 2 while tool failures exit 1", async () => {
 	await withBash(async bash => {
-		const usage = await bash.execute("xd-usage-exit", { command: `xd probe --vale x; echo rc=$?` });
+		const usage = await bash.execute("protolens-usage-exit", { command: `protolens probe --vale x; echo rc=$?` });
 		expect(textOf(usage)).toContain("unknown flag --vale (did you mean --value?)");
 		expect(textOf(usage)).toContain("rc=2");
 
-		const missing = await bash.execute("xd-missing-value-exit", { command: `xd probe --value; echo rc=$?` });
+		const missing = await bash.execute("protolens-missing-value-exit", {
+			command: `protolens probe --value; echo rc=$?`,
+		});
 		expect(textOf(missing)).toContain("needs a value");
 		expect(textOf(missing)).toContain("rc=2");
 
-		const toolFailure = await bash.execute("xd-tool-exit", { command: `xd probe '{"value":"fail"}'; echo rc=$?` });
+		const toolFailure = await bash.execute("protolens-tool-exit", {
+			command: `protolens probe '{"value":"fail"}'; echo rc=$?`,
+		});
 		expect(textOf(toolFailure)).toContain("rc=1");
 	});
 });
 
-test("xd CLI renders flag-style calls through device renderers", async () => {
+test("protolens CLI renders flag-style calls through device renderers", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `xd probe --value cli`;
-		const result = await bash.execute("xd-cli-render", { command });
+		const command = `protolens probe --value cli`;
+		const result = await bash.execute("protolens-cli-render", { command });
 		const resolveXdevMounted = (name: string) => {
 			const xdev = session.xdev;
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
@@ -900,11 +958,13 @@ test("xd CLI renders flag-style calls through device renderers", async () => {
 
 test("device results retain typed payloads outside pipelines and correlate to native stages", async () => {
 	await withBash(async bash => {
-		const result = await bash.execute("device-record", { command: `xd probe --json '{"value":"structured"}' | cat` });
+		const result = await bash.execute("device-record", {
+			command: `protolens probe --json '{"value":"structured"}' | cat`,
+		});
 		const device = result.details?.deviceResults?.[0];
 		expect(device?.stageIndex).toBeNumber();
 		expect(device?.xdev).toMatchObject({ tool: "probe", inner: { answer: 42, nested: { ready: false } } });
-		expect(result.details?.execution?.stages?.[device!.stageIndex!]?.route).toBe("xd");
+		expect(result.details?.execution?.stages?.[device!.stageIndex!]?.route).toBe("protolens");
 		expect(textOf(result)).toContain("probe:structured");
 	});
 });

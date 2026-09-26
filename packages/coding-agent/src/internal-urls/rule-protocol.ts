@@ -1,4 +1,8 @@
-import { getActiveRules } from "../capability/rule";
+import * as path from "node:path";
+import { parseFrontmatter } from "@oh-my-pi/pi-utils";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, getActiveRules } from "../capability/rule";
+import { BUILTIN_RULE_SOURCES } from "../discovery/builtin-rules";
+import { getBundledResourceDirectory } from "./docs-index";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 export class RuleProtocolHandler implements ProtocolHandler {
@@ -25,7 +29,15 @@ export class RuleProtocolHandler implements ProtocolHandler {
 			content: rule.content,
 			contentType: "text/markdown",
 			size: Buffer.byteLength(rule.content, "utf-8"),
-			sourcePath: rule.path,
+			sourcePath:
+				rule._source.provider === BUILTIN_DEFAULTS_PROVIDER_ID
+					? path.join(
+							await getBundledResourceDirectory("rules", async () =>
+								BUILTIN_RULE_SOURCES.map(({ name, content }) => [`${name}.md`, parseFrontmatter(content).body]),
+							),
+							`${rule.name}.md`,
+						)
+					: rule.path,
 			notes: [],
 		};
 	}

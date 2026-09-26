@@ -2,8 +2,8 @@ import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 
 /**
  * Built-in tool names that load as native LLM tools on every request; their schemas ship in the
- * tool list. Everything else mounts under `xd://` as a discoverable device dispatched from bash
- * (`xd <tool> '<json>'`). Keep this in sync with the `loadMode` field on each tool class — the map
+ * tool list. Everything else mounts under `protolens://` as a discoverable device dispatched from bash
+ * (`protolens <tool> '<json>'`). Keep this in sync with the `loadMode` field on each tool class — the map
  * only supplies defaults for tools that do not declare one (extensions, MCP bridges, RPC hosts).
  */
 export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {

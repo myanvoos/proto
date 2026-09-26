@@ -4,8 +4,9 @@ Preloaded globals, in Python notation{{#if py}}; `help(fn)` shows details. Pytho
 
 ### Files and code
 
+File APIs and path-taking helpers use filesystem paths. Internal resources → `tool.read({"path": "skill://name"})` or bash URI arguments. To pass a resolved path into a local cell, set bash `env: {"INPUT": "skill://name/file.md"}`; read it with `os.environ["INPUT"]` / `env("INPUT")`. Cell source and heredoc bodies are not URI-rewritten.
+
 ```
-proto_path(path) → Path    scheme URL (`fleet://`, `local://`, `skill://`) or `~/…` → real path for raw file APIs
 symbols(path=None, code=None, lang=None) → str    declarations outline; bodies ≥4 lines and block comments ≥6 lines fold to `N-M: <elided>`; `code=` outlines an unwritten string (`lang` required) to check structure BEFORE writing
 block_range(path, line) → (start, end) | None    1-based inclusive lines of the syntactic block containing `line`
 edit_batch([{path, before, after}], apply=False) → {state, files, conflicts, error}
@@ -40,14 +41,14 @@ save_state(path, names); load_state(path, collision="reject"|"overwrite")
 executions(id=None, limit=20) → {records, evicted}
 publish_artifact(value, kind="json"|"text"|"binary", path=None) → ref {uri: "artifact://N", mimeType, bytes, sha256, …}
 read_artifact(ref, offset=0, length=None, encoding="utf8"|"base64"|"json") → {data, offset, bytes, eof}
-display(value)    images (PIL, matplotlib), DataFrames, JSON render in the TUI
+display(value)    images (PIL, matplotlib), DataFrames, JSON render in the TUI; never program stdout/stderr
 env(key=None, value=None) → str | None | dict
 ```
 
-- `save_state`/`load_state` move named plain values (JSON-like data, bytes, artifact refs) across lanes, languages, and restarts — not objects, handles, or closures. Python bytes ↔ JS `Buffer`; ints beyond ±2^53−1 load only in Python.
+- `save_state`/`load_state` move named plain values (JSON-like data, bytes, artifact refs) across lanes, languages, and restarts — not objects, handles, or closures. Python bytes ↔ JS `Buffer`; ints beyond ±2^53−1 load only in Python. JS overwrite restores mutable live bindings; `const` and imports stay read-only (the whole restore is rejected).
 - `executions`: recent bash calls with status and captured streams; post-process earlier output without re-running. Capture is bounded: check `evicted` and each stream's `truncated`.
 - `read_artifact` reads only artifacts this kernel published. Bash/tool output artifacts → `tool.read({"path": "artifact://N"})`.
-- Remote (SSH/container) kernels: file APIs address the target; tools, `proto_path`, and artifact `path` address this host. Move target bytes with `publish_artifact`.
+- Remote (SSH/container) kernels: file APIs address the target; tools, bash-resolved URI paths, and artifact `path` address this host. Host paths are not remote filesystem paths. Move target bytes with `publish_artifact`.
 
 ### Rare: live tool events, delegation
 

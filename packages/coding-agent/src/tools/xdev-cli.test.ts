@@ -245,13 +245,13 @@ describe("xdevFlagSpecs", () => {
 describe("formatXdevCliCommand", () => {
 	test("round-trips simple args into shell-safe CLI form", () => {
 		expect(formatXdevCliCommand("browser", { action: "run", name: "main", count: 2, flag: false })).toBe(
-			"xd browser --action run --name main --count 2 --no-flag",
+			"protolens browser --action run --name main --count 2 --no-flag",
 		);
 	});
 
 	test("quotes values with spaces and special characters", () => {
-		expect(formatXdevCliCommand("read", { path: "my file.txt" })).toBe("xd read --path 'my file.txt'");
-		expect(formatXdevCliCommand("read", { path: "it's" })).toBe("xd read --path 'it'\\''s'");
+		expect(formatXdevCliCommand("read", { path: "my file.txt" })).toBe("protolens read --path 'my file.txt'");
+		expect(formatXdevCliCommand("read", { path: "it's" })).toBe("protolens read --path 'it'\\''s'");
 	});
 
 	test("truncates long values for display", () => {
@@ -265,7 +265,7 @@ describe("formatCliUsageSynopsis", () => {
 	test("renders required props positionally and optionals as flags", () => {
 		const synopsis = formatCliUsageSynopsis("probe", richSchema);
 		expect(synopsis).toBe(
-			"xd probe <value> [<count>] [<flag>] [<fast|slow>] [--ids <ids…>] [--deep <deep>] [--nums <nums…>]",
+			"protolens probe <value> [<count>] [<flag>] [<fast|slow>] [--ids <ids…>] [--deep <deep>] [--nums <nums…>]",
 		);
 		expect(synopsis).toContain("[<flag>]");
 		expect(synopsis).toContain("[<fast|slow>]");
@@ -273,10 +273,10 @@ describe("formatCliUsageSynopsis", () => {
 
 	test("single-literal props render as their literal value", () => {
 		const watchSchema = schemaOf(type({ op: type("'watch'"), command: "string", "match?": "string" }));
-		expect(formatCliUsageSynopsis("probe", watchSchema)).toBe("xd probe <watch> <command> [<match>]");
+		expect(formatCliUsageSynopsis("probe", watchSchema)).toBe("protolens probe <watch> <command> [<match>]");
 	});
 
 	test("empty schema renders bare invocation", () => {
-		expect(formatCliUsageSynopsis("list", schemaOf(type({})))).toBe("xd list");
+		expect(formatCliUsageSynopsis("list", schemaOf(type({})))).toBe("protolens list");
 	});
 });

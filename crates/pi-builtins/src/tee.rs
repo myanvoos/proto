@@ -102,9 +102,8 @@ fn tee(options: &Options, host: &mut Host) -> io::Result<()> {
 			});
 			continue;
 		}
-		match open(name, &host.resolve(name), options.append) {
+		match open(name, options.append, host) {
 			Ok(writer) => {
-				host.note_write(name);
 				writers.push(writer);
 			},
 			Err(err) => {
@@ -156,14 +155,14 @@ fn copy(mut input: impl Read, mut output: impl Write, stderr: &mut impl Write) -
 	}
 }
 
-fn open(name: &OsString, path: &std::path::Path, append: bool) -> io::Result<NamedWriter> {
+fn open(name: &OsString, append: bool, host: &Host) -> io::Result<NamedWriter> {
 	let mut options = OpenOptions::new();
 	if append {
 		options.append(true);
 	} else {
 		options.truncate(true);
 	}
-	let file = brush_core::heldfiles::open(path, options.write(true).create(true))?;
+	let file = host.open_write(name, options.write(true).create(true))?;
 	Ok(NamedWriter { inner: Writer::File(file), name: name.clone() })
 }
 

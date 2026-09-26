@@ -12,11 +12,11 @@
   - `packages/coding-agent/src/eval/kernel-session-registry.ts` — kernel sessions, busy state, idle reaping.
   - `packages/coding-agent/src/jobs/origin.ts` — execution origin used to reject self-targeted control.
 
-The tool is discoverable (`loadMode: "discoverable"`) and reachable as `xd context`.
+The tool is discoverable (`loadMode: "discoverable"`) and reachable as `protolens context`.
 
 ## Inputs
 
-The wire schema is flat so XD can derive CLI flags; each resource/op validates its own fields and rejects the rest before any side effect.
+The wire schema is flat so proto can derive CLI flags; each resource/op validates its own fields and rejects the rest before any side effect.
 
 | Field | Type | Resource | Description |
 | --- | --- | --- | --- |
@@ -65,12 +65,12 @@ Unchanged lifecycle of named kernels, formerly the `kernel` tool:
 ## Examples
 
 ```sh
-xd context --resource lane --op list
-xd context --resource lane --op inspect --lane analysis
-xd context --resource lane --op reset --lane analysis
-xd context --resource lane --op close --lane analysis --force
-xd context --resource kernel --op start --language python --lane analysis --interpreter /work/.venv/bin/python
-xd context --resource kernel --op keepalive --language python --lane analysis --ttlMs 300000
+protolens context --resource lane --op list
+protolens context --resource lane --op inspect --lane analysis
+protolens context --resource lane --op reset --lane analysis
+protolens context --resource lane --op close --lane analysis --force
+protolens context --resource kernel --op start --language python --lane analysis --interpreter /work/.venv/bin/python
+protolens context --resource kernel --op keepalive --language python --lane analysis --ttlMs 300000
 ```
 
 ## Outputs

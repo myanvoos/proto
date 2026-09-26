@@ -51,13 +51,23 @@ pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
 pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> i32 {
 	let interpreter = resolve_interpreter(spec, host);
 	if interpreter.is_none() && kernel_builtin_alias(host.name()).is_some() {
-		// A named interpreter that does not exist: report it exactly as the shell would.
+		// A named interpreter that does not exist: report it exactly as the shell
+		// would.
 		return spawn_external(spec, host, argv, None);
 	}
-	if let Some(observation) = &host.command_observation { observation.route(spec.lang); }
-	match plan(spec, argv, host) {
-		Plan::Cell { code, stdin_body, program_input } => {
-			match run_kernel_cell(spec, host, &code, program_input, interpreter.as_deref()) {
+	if let Some(observation) = &host.command_observation {
+		observation.route(spec.lang);
+	}
+	match plan(spec, argv, host, interpreter.as_deref()) {
+		Plan::Cell { code, stdin_body, program_input, invocation } => {
+			match run_kernel_cell(
+				spec,
+				host,
+				&code,
+				program_input,
+				interpreter.as_deref(),
+				&invocation,
+			) {
 				CellOutcome::Exit(code) => code,
 				CellOutcome::FallThrough(note) => {
 					if let Some(note) = note {
@@ -72,24 +82,39 @@ pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut H
 }
 enum Plan {
 	Cell {
-		code:       String,
-		stdin_body: Option<Vec<u8>>,
+		code:          String,
+		stdin_body:    Option<Vec<u8>>,
 		program_input: bool,
+		invocation:    Value,
 	},
 	External {
 		stdin_body: Option<Vec<u8>>,
 	},
 }
 
-fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
+fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host, interpreter: Option<&Path>) -> Plan {
 	let args: Vec<Option<&str>> = argv.iter().map(|arg| arg.to_str()).collect();
 	match route_argv(spec.argv, &args) {
 		ArgvRoute::Code(index) => {
 			let program_input = host.stdin.carries_program_input();
 			let code = args[index].unwrap_or_default();
-			Plan::Cell { code: code.to_string(), stdin_body: None, program_input }
+			{
+				let mut arguments = &argv[index + 1..];
+				if spec.lang != "py" && arguments.first().is_some_and(|arg| arg == "--") {
+					arguments = &arguments[1..];
+				}
+				let invocation = cell_invocation(
+					spec,
+					host,
+					interpreter,
+					(spec.lang == "py").then_some("-c"),
+					arguments,
+					None,
+				);
+				Plan::Cell { code: code.to_string(), stdin_body: None, program_input, invocation }
+			}
 		},
-		ArgvRoute::Script(index) => plan_positional(spec, argv, index, host),
+		ArgvRoute::Script(index) => plan_positional(spec, argv, index, host, interpreter),
 		ArgvRoute::External => Plan::External { stdin_body: None },
 		ArgvRoute::Stdin => {
 			if host.stdin.file().is_terminal() {
@@ -100,14 +125,38 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 				return Plan::External { stdin_body: Some(body) };
 			}
 			match str::from_utf8(&body) {
-				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body), program_input: false },
+				Ok(code) => {
+					let dash = argv.iter().position(|arg| arg == "-");
+					let arguments = dash.map_or(&[][..], |index| &argv[index + 1..]);
+					let argv0 = if dash.is_some() {
+						Some("-")
+					} else if spec.lang == "py" {
+						Some("")
+					} else {
+						None
+					};
+					let invocation =
+						cell_invocation(spec, host, interpreter, argv0, arguments, Some("<stdin>"));
+					Plan::Cell {
+						code: code.to_string(),
+						stdin_body: Some(body),
+						program_input: false,
+						invocation,
+					}
+				},
 				Err(_) => Plan::External { stdin_body: Some(body) },
 			}
 		},
 	}
 }
 
-fn plan_positional(spec: &KernelLang, argv: &[OsString], index: usize, host: &mut Host) -> Plan {
+fn plan_positional(
+	spec: &KernelLang,
+	argv: &[OsString],
+	index: usize,
+	host: &mut Host,
+	interpreter: Option<&Path>,
+) -> Plan {
 	let Some(script) = argv[index].to_str() else {
 		return Plan::External { stdin_body: None };
 	};
@@ -122,10 +171,45 @@ fn plan_positional(spec: &KernelLang, argv: &[OsString], index: usize, host: &mu
 	if read.is_err() {
 		return Plan::External { stdin_body: None };
 	}
-	if index + 1 < argv.len() {
-		host.error("extra argv after a fleet script is ignored (kernel cells have no argv)", 0);
+	let filename = candidate.to_string_lossy();
+	let invocation = cell_invocation(
+		spec,
+		host,
+		interpreter,
+		Some(&filename),
+		&argv[index + 1..],
+		Some(&filename),
+	);
+	Plan::Cell { code, stdin_body: None, program_input: false, invocation }
+}
+
+/// Program identity belongs to the invocation, not the retained runner
+/// bootstrap.
+fn cell_invocation(
+	spec: &KernelLang,
+	host: &Host,
+	interpreter: Option<&Path>,
+	argv0: Option<&str>,
+	arguments: &[OsString],
+	filename: Option<&str>,
+) -> Value {
+	let mut argv = Vec::<String>::new();
+	if spec.lang != "py" {
+		argv.push(
+			interpreter
+				.map(|path| path.to_string_lossy().into_owned())
+				.unwrap_or_else(|| host.name().to_string()),
+		);
 	}
-	Plan::Cell { code, stdin_body: None, program_input: false }
+	if let Some(argv0) = argv0 {
+		argv.push(argv0.to_string());
+	}
+	argv.extend(
+		arguments
+			.iter()
+			.map(|arg| arg.to_string_lossy().into_owned()),
+	);
+	json!({"argv": argv, "filename": filename})
 }
 
 fn is_fleet_script(spec: &KernelLang, host: &Host, candidate: &Path) -> bool {
@@ -156,7 +240,8 @@ fn under_root(candidate: &Path, root: &Path) -> bool {
 
 enum CellOutcome {
 	Exit(i32),
-	/// Run a real interpreter instead, after printing the kernel's note (if any).
+	/// Run a real interpreter instead, after printing the kernel's note (if
+	/// any).
 	FallThrough(Option<String>),
 }
 
@@ -166,6 +251,7 @@ fn run_kernel_cell(
 	code: &str,
 	stdin: bool,
 	interpreter: Option<&Path>,
+	invocation: &Value,
 ) -> CellOutcome {
 	let (Some(addr), Some(token)) = (host.var(ADDR_VAR), host.var(TOKEN_VAR)) else {
 		return CellOutcome::FallThrough(None);
@@ -183,6 +269,7 @@ fn run_kernel_cell(
 		"interpreter": interpreter.map(|path| path.to_string_lossy()),		"cwd": host.cwd().to_string_lossy(),
 		"shellEnv": host.env().map(|(key, value)| (key.to_string(), Value::String(value.to_string()))).collect::<serde_json::Map<String, Value>>(),
 		"stdin": stdin,
+		"invocation": invocation,
 	});
 	let mut payload = request.to_string();
 	payload.push('\n');
@@ -197,10 +284,11 @@ fn run_kernel_cell(
 	let mut input_requested = false;
 	let mut cancel_deadline: Option<Instant> = None;
 	loop {
-		// Our stdout consumer exited (`python -c '…big loop…' | head -1`). A real interpreter
-		// takes SIGPIPE here and dies; the cell runs in the kernel process, which never sees
-		// the broken pipe, so without this it keeps producing output nobody reads until the
-		// command deadline. Ask the kernel to stop and leave; dropping the stream tells it too.
+		// Our stdout consumer exited (`python -c '…big loop…' | head -1`). A real
+		// interpreter takes SIGPIPE here and dies; the cell runs in the kernel
+		// process, which never sees the broken pipe, so without this it keeps
+		// producing output nobody reads until the command deadline. Ask the kernel to
+		// stop and leave; dropping the stream tells it too.
 		if host.sigpipe_hit() {
 			let _ = stream.write_all(b"{\"t\":\"c\"}\n");
 			return CellOutcome::Exit(SIGPIPE_EXIT_CODE);
@@ -219,25 +307,47 @@ fn run_kernel_cell(
 		#[cfg(unix)]
 		{
 			use std::os::fd::AsRawFd;
-			let input_fd = host.stdin.file().try_borrow_as_fd().ok().map(|fd| fd.as_raw_fd());
+			let input_fd = host
+				.stdin
+				.file()
+				.try_borrow_as_fd()
+				.ok()
+				.map(|fd| fd.as_raw_fd());
 			let mut fds = [
 				libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-				libc::pollfd { fd: if input_requested { input_fd.unwrap_or(-1) } else { -1 }, events: libc::POLLIN, revents: 0 },
+				libc::pollfd {
+					fd:      if input_requested {
+						input_fd.unwrap_or(-1)
+					} else {
+						-1
+					},
+					events:  libc::POLLIN,
+					revents: 0,
+				},
 			];
 			// SAFETY: both descriptors remain owned and open for this call.
-			if unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) } <= 0 { continue; }
+			if unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) } <= 0 {
+				continue;
+			}
 			if fds[1].revents != 0 {
 				let mut bytes = [0u8; 65536];
 				match host.stdin.read(&mut bytes) {
 					Ok(n) => {
 						let frame = json!({"t": "i", "d": BASE64.encode(&bytes[..n]), "eof": n == 0});
-						if writeln!(stream, "{frame}").is_err() { return CellOutcome::Exit(1); }
+						if writeln!(stream, "{frame}").is_err() {
+							return CellOutcome::Exit(1);
+						}
 						input_requested = false;
 					},
-					Err(error) => { host.error(format!("cannot read cell stdin: {error}"), 1); return CellOutcome::Exit(1); },
+					Err(error) => {
+						host.error(format!("cannot read cell stdin: {error}"), 1);
+						return CellOutcome::Exit(1);
+					},
 				}
 			}
-			if fds[0].revents == 0 { continue; }
+			if fds[0].revents == 0 {
+				continue;
+			}
 		}
 		match stream.read(&mut chunk) {
 			Ok(0) => {
@@ -259,7 +369,10 @@ fn run_kernel_cell(
 					let newline = scan_start + offset;
 					match handle_frame(host, &buffer[..=newline], &mut streamed) {
 						FrameOutcome::Continue => {},
-						FrameOutcome::Input => { streamed = true; input_requested = stdin; },
+						FrameOutcome::Input => {
+							streamed = true;
+							input_requested = stdin;
+						},
 						FrameOutcome::Exit(code) => return CellOutcome::Exit(code),
 						FrameOutcome::FallThrough(note) => {
 							return if streamed {
@@ -306,9 +419,14 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 				let bytes = if frame.get("encoding").and_then(Value::as_str) == Some("base64") {
 					match BASE64.decode(data) {
 						Ok(bytes) => bytes,
-						Err(_) => { host.error("invalid binary kernel frame", 1); return FrameOutcome::Exit(1); },
+						Err(_) => {
+							host.error("invalid binary kernel frame", 1);
+							return FrameOutcome::Exit(1);
+						},
 					}
-				} else { data.as_bytes().to_vec() };
+				} else {
+					data.as_bytes().to_vec()
+				};
 				*streamed = true;
 				if kind == "e" {
 					let _ = host.stderr.write_all(&bytes);
@@ -325,13 +443,25 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 			let code = frame.get("c").and_then(Value::as_i64).unwrap_or(0);
 			FrameOutcome::Exit(code as i32)
 		},
-		Some("f") => FrameOutcome::FallThrough(frame.get("note").and_then(Value::as_str).map(str::to_string)),
+		Some("f") => FrameOutcome::FallThrough(
+			frame
+				.get("note")
+				.and_then(Value::as_str)
+				.map(str::to_string),
+		),
 		_ => FrameOutcome::Continue,
 	}
 }
 
-fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_body: Option<Vec<u8>>) -> i32 {
-	if let Some(observation) = &host.command_observation { observation.route("external"); }
+fn spawn_external(
+	spec: &KernelLang,
+	host: &mut Host,
+	argv: &[OsString],
+	stdin_body: Option<Vec<u8>>,
+) -> i32 {
+	if let Some(observation) = &host.command_observation {
+		observation.route("external");
+	}
 	let program = host.name().to_string();
 	let Some(resolved) = resolve_interpreter(spec, host) else {
 		if program.contains('/') {
@@ -343,10 +473,13 @@ fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_b
 			host.error(message, code);
 			return code;
 		}
-		let tried = interpreter_candidates(spec, &program).collect::<Vec<_>>().join(" or ");
+		let tried = interpreter_candidates(spec, &program)
+			.collect::<Vec<_>>()
+			.join(" or ");
 		host.error(format!("command not found (no {tried} on PATH)"), 127);
 		return 127;
-	};	let mut command = ProcessCommand::new(resolved);
+	};
+	let mut command = ProcessCommand::new(resolved);
 	command
 		.args(argv)
 		.current_dir(host.cwd())
@@ -422,14 +555,31 @@ fn resolve_interpreter(spec: &KernelLang, host: &Host) -> Option<PathBuf> {
 }
 
 /// The invoked name first, then the spec's alternates (`python` → `python3`).
-/// A version-specific name (`python3.13`) has none: nothing else stands in for it.
-fn interpreter_candidates<'a>(spec: &'a KernelLang, program: &'a str) -> impl Iterator<Item = &'a str> + 'a {
-	let alternates = if spec.interpreters.contains(&program) { spec.interpreters } else { &[] };
-	std::iter::once(program).chain(alternates.iter().copied().filter(move |name| *name != program))
+/// A version-specific name (`python3.13`) has none: nothing else stands in for
+/// it.
+fn interpreter_candidates<'a>(
+	spec: &'a KernelLang,
+	program: &'a str,
+) -> impl Iterator<Item = &'a str> + 'a {
+	let alternates = if spec.interpreters.contains(&program) {
+		spec.interpreters
+	} else {
+		&[]
+	};
+	std::iter::once(program).chain(
+		alternates
+			.iter()
+			.copied()
+			.filter(move |name| *name != program),
+	)
 }
 fn resolve_on_path(host: &Host, program: &str) -> Option<PathBuf> {
 	for dir in std::env::split_paths(host.var("PATH").unwrap_or_default()) {
-		let base = if dir.is_absolute() { dir } else { host.cwd().join(dir) };
+		let base = if dir.is_absolute() {
+			dir
+		} else {
+			host.cwd().join(dir)
+		};
 		let candidate = base.join(program);
 		if is_executable_file(&candidate) {
 			return Some(candidate);
@@ -440,5 +590,6 @@ fn resolve_on_path(host: &Host, program: &str) -> Option<PathBuf> {
 
 fn is_executable_file(path: &Path) -> bool {
 	use std::os::unix::fs::PermissionsExt;
-	std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+	std::fs::metadata(path)
+		.is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }

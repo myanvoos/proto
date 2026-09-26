@@ -21,7 +21,7 @@ The model reaches this runtime through supported `python`/`python3` Bash invocat
 
 ## What Bash's Python kernel is
 
-A supported Bash invocation executes one Python cell inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+; the availability probe checks the version, and an older interpreter selected by a Bash command runs that command as a plain process instead. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
+A supported Bash invocation executes one Python cell inside a retained `python` subprocess. NDJSON control uses private descriptors, separate from program stdin/stdout/stderr. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+; the availability probe checks the version, and an older interpreter selected by a Bash command runs that command as a plain process instead. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
 
 Supported forms include:
 
@@ -34,9 +34,9 @@ PY
 python -c 'print("one persistent Python cell")'
 ```
 
-A pipeline can provide the source on stdin, and `python fleet://<name>.py` runs a supported internal fleet script in the kernel. Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without the Bash kernel bridge use a normal external interpreter instead. Bash supplies the language and source through the command; there is no separate `language`, `code`, `title`, `timeout`, or `reset` cell object. The enclosing Bash `timeout` controls the cell's deadline.
+A pipeline can provide the source on stdin, and `python fleet://<name>.py` runs a supported internal fleet script in the kernel. Ordinary script paths, `-m`, unsupported interpreter flags, and calls made without the Bash kernel bridge use a normal external interpreter instead. Supported `-c`, `-`, and fleet-script invocations accept program arguments and expose the native `sys.argv` shape. Bash supplies the language and source through the command; there is no separate `language`, `code`, `title`, `timeout`, or `reset` cell object. The enclosing Bash `timeout` controls the cell's deadline.
 
-Each retained Python runtime can service overlapping cells at await points; state persists across later Bash kernel-cell invocations in session mode. Put dependent cells in one ordered Bash command rather than relying on parallel Bash-call ordering. The session's enabled backend settings determine whether Python can be routed into the kernel.
+Each retained Python runtime executes cells in order; state persists across later Bash kernel-cell invocations in session mode. Ordinary cells run on the main thread without an active event loop, so `asyncio.run()` retains its native meaning. Top-level-await cells drive a retained loop; cell-owned asyncio tasks settle before completion unless explicitly retained with `retain_task(task)`. Python threads/executors and interpreter-shutdown hooks have kernel-process lifetime, not cell lifetime. Put dependent cells in one ordered Bash command rather than relying on parallel Bash-call ordering. The session's enabled backend settings determine whether Python can be routed into the kernel.
 
 ## Kernel lifecycle
 
@@ -47,7 +47,7 @@ Kernel startup sequence:
 1. Availability check (`checkPythonKernelAvailability`) — verifies that a Python interpreter resolves and runs.
 2. Spawn `python -u runner.py` with filtered env and `cwd`.
 3. Send an init request that runs `os.chdir(cwd)`, injects env entries, and puts `cwd` first on `sys.path` (see [Imports](#imports)).
-4. Execute `PYTHON_PRELUDE` (idempotent — only initializes once per process).
+4. Execute `PYTHON_PRELUDE` (idempotent — only initializes once per process). User globals live in a real registered `__main__` module, separate from runner internals, so imports of `__main__` and top-level function/class pickling resolve correctly.
 
 Kernel shutdown:
 
@@ -62,7 +62,7 @@ Retained kernels are released after `DEFAULT_KERNEL_IDLE_REAP_MS` (15 minutes) w
 - Python: the host sends a `{"type": "status"}` control request over stdin; the runner answers with a `done` frame whose `busy` field counts in-flight request tasks. Backgrounded cells, awaited tool/subagent bridges, and monitors all hold a request task, so they block the reap. A missing or late answer counts as busy.
 - JavaScript: any pending run (including awaited tool/agent bridges) blocks the reap.
 
-Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event with the idle duration. Retained state from before the reap is discarded. Subagents dispose their kernels earlier by design: an idle orchestration worker is parked after `orchestrator.agentIdleTtlMs` (default 60s), and park, kill, and eviction all run `AgentSession.dispose()`, which releases that agent's Python kernel and JS context by owner. The 15-minute reap remains the net for sessions that stay adopted with TTL disabled and for detached main-TUI sessions. Known gap: fire-and-forget tasks a cell created without awaiting (for example a raw `asyncio.create_task`) are not request tasks and do not block the reap. Session disposal by owner (`disposeKernelSessionsByOwner` / `disposeVmContextsByOwner`) and explicit `reset` remain unchanged. A cleanly exited kernel is now always reported as `confirmed` by kernel shutdown; only a shutdown deadline miss escalates to `SIGTERM`/`SIGKILL` and reports `confirmed: false`.
+Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event with the idle duration. Retained state from before the reap is discarded. Subagents dispose their kernels earlier by design: an idle orchestration worker is parked after `orchestrator.agentIdleTtlMs` (default 60s), and park, kill, and eviction all run `AgentSession.dispose()`, which releases that agent's Python kernel and JS context by owner. The 15-minute reap remains the net for sessions that stay adopted with TTL disabled and for detached main-TUI sessions. Ordinary cell-owned asyncio tasks now settle before completion. Explicit `retain_task` work and runtime-lifetime Python threads do not pin the kernel against idle reap; use the kernel keepalive control when needed. Reset, close, and reap still end retained work.
 
 ## Wire protocol (NDJSON, host ↔ runner)
 
@@ -127,7 +127,7 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
   - Explicit callers may intentionally pass the same kernel session id to preserve shared-state delegation.
   - Parallel Bash calls must not be used for dependent cells; their execution order is not guaranteed.
   - A dead retained subprocess is replaced before execution.
-  - If the subprocess dies during execution, it is replaced and the cell is retried once.
+  - If the subprocess dies during execution, completion is uncertain and the cell is not replayed. The next cell starts a new generation and reports state loss; inspect partial effects before retrying.
   - A quiescent kernel is released after 15 idle minutes (see "Idle reap" under Kernel lifecycle); the next cell starts fresh and reports a `kernel-idle-reap` status event.
 - `per-call`
   - Spawns a fresh subprocess for each cell.
@@ -195,7 +195,7 @@ If the runner does not emit `done` within 5s of the interrupt (`INTERRUPT_ESCALA
 
 ### stdin behavior
 
-Interactive stdin is not supported. The runner does not forward `input()` prompts; user code that calls `input()` blocks until cancellation.
+Program stdin is a real fd 0 connected to the invocation input stream. `sys.stdin.fileno()`, `os.read(0, ...)`, `input()`, and inherited child stdin use that descriptor; source-on-stdin is consumed as code, not reused as program input. The runner control reader uses its own duplicated descriptor. Input is streamed and backpressured, with EOF when the producer closes. Interactive terminal input is not supported.
 
 ## Output capture and rendering
 

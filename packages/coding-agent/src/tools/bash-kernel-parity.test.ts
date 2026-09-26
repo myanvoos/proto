@@ -327,12 +327,12 @@ test("a raising cell renders its traceback and a failed cell marker", async () =
 	const rendered = await renderSettledCell("boom", "python", "x = 1 / 0");
 	expect(rendered).toContain("✗");
 	expect(rendered).toContain("ZeroDivisionError: division by zero");
-	expect(rendered).toContain('File "<cell>", line 1');
+	expect(rendered).toContain('File "<stdin>", line 1');
 }, 120000);
 
-test("bash kernel live and rebuilt partial results preserve heredoc payload source", () => {
+test("bash kernel live and rebuilt partial results preserve multiline string source", () => {
 	const code =
-		'CONTENT = <<END_CONTENT\nnew prose: keep(x,y)\n  indented **payload**\nEND_CONTENT\nPath("notes.md").write_text(CONTENT)';
+		'CONTENT = """\nnew prose: keep(x,y)\n  indented **payload**\n"""\nPath("notes.md").write_text(CONTENT)';
 	const command = `python <<'EOF'\n${code}\nEOF`;
 	const call = renderBashCall(command);
 	const partial = strip(

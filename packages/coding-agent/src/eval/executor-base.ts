@@ -14,6 +14,7 @@ import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
 import { type KernelDisplayOutput, PythonDisplayBudget } from "./py/display";
 import { registerPyToolBridge } from "./py/tool-bridge";
+import type { KernelInvocation } from "./types";
 
 export type CancelledErrorClass = new (timedOut: boolean) => Error & { timedOut: boolean };
 
@@ -23,6 +24,7 @@ interface KernelExecutorBaseOptions {
 	cwd?: string;
 	runCwd?: string;
 	shellEnv?: Record<string, string>;
+	invocation?: KernelInvocation;
 	stdin?: ReadableStream<Uint8Array>;
 	timeoutMs?: number;
 	deadlineMs?: number;
@@ -71,6 +73,7 @@ export interface GenericKernel<TEnv> {
 			cwd?: string;
 			env?: TEnv;
 			shellEnv?: Record<string, string>;
+			invocation?: KernelInvocation;
 			stdin?: ReadableStream<Uint8Array>;
 			onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 			onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
@@ -273,7 +276,6 @@ const MANAGED_KERNEL_ENV_KEYS = [
 	"PI_TOOL_BRIDGE_URL",
 	"PI_TOOL_BRIDGE_TOKEN",
 	"PI_TOOL_BRIDGE_SESSION",
-	"PI_EVAL_LOCAL_ROOTS",
 ] as const;
 
 interface ManagedKernelEnvOptions {
@@ -281,7 +283,6 @@ interface ManagedKernelEnvOptions {
 	artifactsDir?: string;
 	bridgeSessionId?: string;
 	bridge?: { url: string; token: string };
-	localRoots?: Record<string, string>;
 }
 interface ManagedKernelEnvPolicy {
 	sparse?: boolean;
@@ -296,7 +297,6 @@ export function buildManagedKernelEnvPatch(
 	options: ManagedKernelEnvOptions,
 	policy?: ManagedKernelEnvPolicy,
 ): KernelEnvPatch {
-	const localRoots = options.localRoots;
 	if (policy?.sparse) {
 		const patch: Record<string, string | undefined> = {};
 		if (options.sessionFile) patch.PI_SESSION_FILE = options.sessionFile;
@@ -306,7 +306,6 @@ export function buildManagedKernelEnvPatch(
 			patch.PI_TOOL_BRIDGE_TOKEN = options.bridge.token;
 			patch.PI_TOOL_BRIDGE_SESSION = options.bridgeSessionId ?? "";
 		}
-		if (localRoots) patch.PI_EVAL_LOCAL_ROOTS = JSON.stringify(localRoots);
 		return patch;
 	}
 	return {
@@ -315,7 +314,6 @@ export function buildManagedKernelEnvPatch(
 		PI_TOOL_BRIDGE_URL: options.bridge?.url ?? null,
 		PI_TOOL_BRIDGE_TOKEN: options.bridge?.token ?? null,
 		PI_TOOL_BRIDGE_SESSION: options.bridge && options.bridgeSessionId ? options.bridgeSessionId : null,
-		PI_EVAL_LOCAL_ROOTS: localRoots && Object.keys(localRoots).length > 0 ? JSON.stringify(localRoots) : null,
 	};
 }
 
@@ -516,6 +514,7 @@ export async function executeWithKernelBase<
 			env: buildKernelEnvPatch(options ?? ({} as TOptions)),
 			fsObservations: options?.fsObservations,
 			shellEnv: options?.shellEnv,
+			invocation: options?.invocation,
 			stdin: options?.stdin,
 			onStream: options?.onStream,
 			onBytes: options?.onBytes,

@@ -46,7 +46,7 @@ export interface ResolveContext {
 
 	skills?: readonly Skill[];
 
-	xd?: {
+	protolens?: {
 		read(name: string | null): Promise<string>;
 	};
 
@@ -62,7 +62,7 @@ export interface WriteContext {
 
 	localProtocolOptions?: LocalProtocolOptions;
 
-	xd?: {
+	protolens?: {
 		write(name: string | null, content: string): Promise<void>;
 	};
 }

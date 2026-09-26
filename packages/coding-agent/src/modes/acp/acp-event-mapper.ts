@@ -6,12 +6,12 @@ import type {
 	ToolCallLocation,
 	ToolKind,
 } from "@oh-my-pi/pi-utils/acp";
-import { parseXdUrl } from "../../internal-urls/xd-protocol";
+import { parseProtolensUrl } from "../../internal-urls/protolens-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { ChecklistStatus } from "../../tools/checklist";
 import { resolveToCwd } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
-import { parseXdBashCommand } from "../../tools/xdev";
+import { parseProtolensBashCommand } from "../../tools/xdev";
 import { probeXdevCliArgs } from "../../tools/xdev-cli";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
@@ -121,14 +121,14 @@ function xdevDispatchDevice(toolName: string, args: unknown): string | undefined
 	if (toolName === "read") {
 		const path = extractStringProperty<PathContainer>(args, "path");
 		if (!path) return undefined;
-		return parseXdUrl(path)?.name ?? undefined;
+		return parseProtolensUrl(path)?.name ?? undefined;
 	}
 	if (toolName === "bash") {
 		const command = extractStringProperty<{ command?: string }>(args, "command");
 		if (!command) return undefined;
 		const segments = tokenizeShellSegments(command);
 		if (segments.length !== 1) return undefined;
-		const parsed = parseXdBashCommand(segments[0]);
+		const parsed = parseProtolensBashCommand(segments[0]);
 		return parsed?.kind === "device" ? parsed.name : undefined;
 	}
 	return undefined;
@@ -143,7 +143,7 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 		if (toolName === "bash") {
 			const command = extractStringProperty<{ command?: string }>(args, "command");
 			const segments = command ? tokenizeShellSegments(command) : [];
-			const parsed = segments.length === 1 ? parseXdBashCommand(segments[0]) : undefined;
+			const parsed = segments.length === 1 ? parseProtolensBashCommand(segments[0]) : undefined;
 			if (parsed?.kind !== "device") return false;
 			if (parsed.argv.length === 1) {
 				try {

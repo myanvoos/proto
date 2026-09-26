@@ -277,10 +277,6 @@ export function resolveFleetUrlToPath(input: string | InternalUrl, options: Loca
 	return resolved;
 }
 
-export function buildEvalUrlRoots(options: LocalProtocolOptions): Record<string, string> {
-	return { local: resolveLocalRoot(options), fleet: resolveFleetRoot(options) };
-}
-
 const LOCAL_WRITE_NOTE = "Use write path local://<file> to persist large intermediate artifacts across turns.";
 
 type ResolvedLocalTarget =

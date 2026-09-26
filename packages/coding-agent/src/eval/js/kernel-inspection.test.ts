@@ -44,8 +44,9 @@ test("JavaScript inspection avoids getters and proxies, bounds previews, and ref
 				onText: chunk => {
 					output += chunk;
 				},
-				onDisplay: output => {
-					if (output.type === "status") events.push(output.event);
+				onDisplay: display => {
+					if (display.type === "text") output += display.text;
+					if (display.type === "status") events.push(display.event);
 				},
 			},
 			onStatus: event => {
@@ -56,7 +57,7 @@ test("JavaScript inspection avoids getters and proxies, bounds previews, and ref
 	};
 	try {
 		await run(`var probe_calls = 0;
-var probe_value = new Proxy({}, { get() { probe_calls++; throw Error("proxy invoked"); } });
+globalThis.probe_value = new Proxy({}, { get() { probe_calls++; throw Error("proxy invoked"); } });
 Object.defineProperty(globalThis, "probe_getter", { configurable: true, get() { probe_calls++; throw Error("getter invoked"); } });
 var probe_large = "\\x00".repeat(1000000);
 var probe_integer = 1n << 1000000n;

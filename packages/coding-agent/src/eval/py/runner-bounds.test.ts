@@ -15,7 +15,8 @@ test("%%capture preserves small output and binding while bounding large output",
 	};
 	try {
 		const small = await executePython("%%capture captured_small\nprint('first')\nprint('second')", options);
-		expect(small.output).toContain("first\\nsecond\\n");
+		expect(small.output).toBe("");
+		expect(small.displayOutputs).toContainEqual({ type: "text", text: "'first\\nsecond\\n'\n" });
 		const smallBinding = await executePython("print(len(captured_small), repr(captured_small))", options);
 		expect(smallBinding.output).toContain("13 'first\\nsecond\\n'");
 

@@ -11,6 +11,7 @@ import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import type { JsKernelRuntime } from "../kernel-environment";
 import type { KernelTarget } from "../kernel-target";
 import { type KernelDisplayOutput, PythonDisplayBudget } from "../py/display";
+import type { KernelInvocation } from "../types";
 import { executeInVmContext, isJsCellError, JsKernelTerminatedError } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
@@ -18,6 +19,7 @@ interface JsExecutorOptions {
 	runtime: JsKernelRuntime;
 	cwd?: string;
 	interpreter?: string;
+	invocation?: KernelInvocation;
 	target?: KernelTarget;
 	shellEnv?: Record<string, string>;
 	stdin?: ReadableStream<Uint8Array>;
@@ -40,7 +42,6 @@ interface JsExecutorOptions {
 	artifactId?: string;
 	session: ToolSession;
 
-	localRoots?: Record<string, string>;
 	completionContext?: EvalCompletionInvocationContext;
 }
 
@@ -156,16 +157,16 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			cwd: options.cwd ?? options.session.cwd,
 			discoveryCwd: options.session.cwd,
 			interpreter: options.interpreter,
+			invocation: options.invocation,
 			target: options.target,
 			session: options.session,
-			localRoots: options.localRoots,
 			shellEnv: options.shellEnv,
 			stdin: options.stdin,
 			completionContext: options.completionContext,
 			reset: options.reset,
 			onStatus: options.onStatus,
 			code,
-			filename: `js-cell-${crypto.randomUUID()}.js`,
+			filename: options.invocation?.filename ?? `js-cell-${crypto.randomUUID()}.js`,
 			timeoutMs: acquireBudgetMs,
 			runState: {
 				signal,

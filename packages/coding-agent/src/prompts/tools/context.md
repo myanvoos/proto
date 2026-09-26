@@ -13,7 +13,7 @@ Inspect and control this session's execution context. `bash` executes commands a
 - `close` refuses busy work unless `force:true` and forgets the kernel's lane configuration; later implicit cells use local defaults. Start/configure a remote lane again before reuse. `reset` cancels the kernel's running cell and discards bindings but retains the selected environment unless overridden; it does not touch the lane's shell or command queue. Export selected bindings first when needed.
 - A kernel idle for {{idleReapMinutes}} minutes is released; its environment is kept, the next cell starts a fresh one and prints a `<kernel> state lost` notice. `keepalive` defers that release for a bounded lease, not immortality. Session disposal still releases resources.
 - Remote/container targets require an existing reachable environment and compatible runtime. Paths and dependencies belong to that target; no automatic provisioning or local fallback. `node` kernels are local-only; use `bun` (with `hostCommand`) or `python` on a remote target.
-- A cell cannot reset/close the kernel it runs in; use a shell command (`xd context …`) instead.
+- A cell cannot reset/close the kernel it runs in; use a shell command (`protolens context …`) instead.
 
 No heap fork/save/restore exists. After a reset or restart, check the generation and rebuild or explicitly restore selected state; never assume old variables survived.
 

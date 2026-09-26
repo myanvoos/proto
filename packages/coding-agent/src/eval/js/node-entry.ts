@@ -1,11 +1,9 @@
 /**
- * Node.js entry of the JavaScript kernel: `node` cells run the shared WorkerCore/JsRuntime here, in
- * the real Node the command named, while `bun` cells keep the Bun worker (process-entry.ts).
+ * Standalone JavaScript kernel entry for a selected Node or Bun executable.
  *
- * Exception to the AGENTS.md worker rule (workers re-enter the CLI entrypoint): Node cannot load the
- * Bun CLI host. The build scripts bundle this module for Node and embed it (node-runtime.ts builds it
- * on demand from a source checkout); the host stages the bundle as a file and spawns it with JSON IPC
- * (node-protocol.ts).
+ * These workers cannot re-enter a compiled Bun CLI with its internal worker selector: Node cannot load
+ * that host, and an external Bun requires an actual entry module. Build scripts embed this self-contained
+ * module; source checkouts build it on demand. The host stages it and uses cross-runtime JSON IPC.
  */
 import { decodeNodeKernelMessage, encodeNodeKernelMessage } from "./node-protocol";
 import { WorkerCore } from "./worker-core";
@@ -14,7 +12,7 @@ import type { Transport, WorkerInbound } from "./worker-protocol";
 const MIN_NODE_MAJOR = 22;
 
 const major = Number(process.versions.node.split(".")[0]);
-if (!(major >= MIN_NODE_MAJOR)) {
+if (typeof Bun === "undefined" && !(major >= MIN_NODE_MAJOR)) {
 	process.stderr.write(
 		`node kernel requires Node.js >= ${MIN_NODE_MAJOR}; ${process.execPath} is ${process.version}\n`,
 	);
@@ -27,7 +25,11 @@ const INTERNAL_EXPERIMENTAL_WARNING =
 	/^(?:VM Modules|stripTypeScriptTypes|vm\.USE_MAIN_CONTEXT_DEFAULT_LOADER) is an experimental feature/;
 const emitWarning = process.emitWarning;
 process.emitWarning = function (this: NodeJS.Process, warning: string | Error, ...rest: unknown[]): void {
-	if (INTERNAL_EXPERIMENTAL_WARNING.test(typeof warning === "string" ? warning : warning.message)) return;
+	if (
+		typeof Bun === "undefined" &&
+		INTERNAL_EXPERIMENTAL_WARNING.test(typeof warning === "string" ? warning : warning.message)
+	)
+		return;
 	Reflect.apply(emitWarning, this, [warning, ...rest]);
 } as typeof process.emitWarning;
 
@@ -43,6 +45,7 @@ const transport: Transport = {
 			process.off("message", receive);
 		};
 	},
+	setReferenced: referenced => (referenced ? process.channel?.ref() : process.channel?.unref()),
 	// The host terminates the process tree after the `closed` acknowledgement.
 	close: () => {},
 };

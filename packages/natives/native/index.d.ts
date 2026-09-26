@@ -40,6 +40,39 @@ export declare class HighlightStream {
   push(chunk: string): string
 }
 
+/**
+ * Scoped, nestable fd 1/2 capture for a dedicated kernel child, not an in-process host console.
+ * stdout must be a pipe/socket to the host. A second live instance is rejected.
+ */
+export declare class KernelStdio {
+  constructor()
+  /**
+   * Install a fresh run's pipes, or nest without replacing pipes when this run is already active.
+   * Descendants inherit the installed write ends, never the reserved frame transport.
+   */
+  start(runId: string): void
+  /**
+   * Drain every byte accepted before the reader's barrier snapshot. The host must consume this
+   * sequence before publishing a result/display on its separate control channel.
+   */
+  flush(): number
+  /**
+   * Flush and restore the enclosing scope's descriptors (a discard sink outside all scopes).
+   * Child processes retaining this scope's pipes continue to emit frames with its original run id.
+   */
+  finish(): number
+  /**
+   * Synchronously route a retained callback's stream write, preserving its original run owner.
+   * This does not enqueue a libuv write that could outlive the temporary descriptor scope.
+   */
+  write(runId: string, stream: string, data: Buffer): number
+  /**
+   * Restore owned descriptors and cancel/join the reader without waiting for descendant EOF.
+   * Pending bytes are discarded on shutdown; use finish/flush for a delivery fence first.
+   */
+  close(): void
+}
+
 export declare class MacAppearanceObserver {
   static start(callback: (err: null | Error, appearance: MacOSAppearance) => void): MacAppearanceObserver
   stop(): void
@@ -75,7 +108,7 @@ export declare class PtySession {
 
 export declare class Shell {
   constructor(options?: ShellOptions | undefined | null)
-  run(options: ShellRunOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null, xdDispatcher?: ((request: string) => Promise<string>) | undefined | null): Promise<ShellRunResult>
+  run(options: ShellRunOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null, protolensDispatcher?: ((request: string) => Promise<string>) | undefined | null): Promise<ShellRunResult>
   abort(): Promise<void>
   close(): Promise<void>
   forceClose(): void
@@ -416,6 +449,13 @@ export interface ExtractSegmentsResult {
   afterWidth: number
 }
 
+export interface FileMutation {
+  existed: boolean
+  exists: boolean
+  before?: string
+  after?: string
+}
+
 export declare enum FileType {
   File = 1,
   Dir = 2,
@@ -427,6 +467,7 @@ export interface FsObservation {
   kind: FsObservationKind
   mtimeNs?: string
   size?: number
+  mutation?: FileMutation
 }
 
 export declare enum FsObservationKind {
@@ -915,7 +956,7 @@ export interface ShellRunOptions {
   cwd?: string
   env?: Record<string, string>
   timeoutMs?: number
-  xdCallId?: string
+  protolensCallId?: string
   signal?: unknown
 }
 
@@ -926,7 +967,7 @@ export interface ShellRunResult {
   minimized?: MinimizerResult
   workingDir?: string
   fsObservations: Array<FsObservation>
-  xdDispatches: Array<string>
+  protolensDispatches: Array<string>
   stageRecords: Array<string>
   /**
    * The command ended the persistent session (`exit`, `exec`, top-level

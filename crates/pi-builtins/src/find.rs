@@ -3626,8 +3626,7 @@ pub mod matchers {
 
 
 	fn get_or_create_file(path: &str, host: &Host) -> Result<File, Box<dyn Error>> {
-		let file = brush_core::heldfiles::open(host.resolve(path), std::fs::OpenOptions::new().write(true).create(true).truncate(true))?;
-		host.note_write(path);
+		let file = host.open_write(path, std::fs::OpenOptions::new().write(true).create(true).truncate(true))?;
 		Ok(file)
 	}
 

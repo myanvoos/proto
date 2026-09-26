@@ -108,7 +108,6 @@ export function remoteKernelEnv(env: Record<string, string | undefined> = {}): R
 		if (
 			name === "PI_TOOL_BRIDGE_URL" ||
 			name === "PI_TOOL_BRIDGE_TOKEN" ||
-			name === "PI_EVAL_LOCAL_ROOTS" ||
 			name === "PI_SESSION_FILE" ||
 			name === "PI_ARTIFACTS_DIR"
 		)

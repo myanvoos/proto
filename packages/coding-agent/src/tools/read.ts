@@ -105,14 +105,14 @@ const INTERNAL_URL_SCHEMES: Record<string, true> = {
 	local: true,
 	mcp: true,
 	memory: true,
-	proto: true,
+	harness: true,
 	pr: true,
 	rule: true,
 	security: true,
 	skill: true,
 	ssh: true,
 	vault: true,
-	xd: true,
+	protolens: true,
 };
 
 function isPotentialInternalUrlPath(value: string): boolean {
@@ -2228,12 +2228,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			signal,
 			localProtocolOptions: this.session.localProtocolOptions,
 			skills: this.session.skills,
-			xd: {
+			protolens: {
 				read: async name => {
 					if (name === REPORT_ISSUE_DEVICE_NAME) return reportIssueDeviceUsage();
 					if (name && isResolutionDeviceName(name)) return resolutionDeviceUsage(name);
 					const xdev = this.session.xdev;
-					if (!xdev) throw new ToolError("xd:// is not mounted in this session.");
+					if (!xdev) throw new ToolError("protolens:// is not mounted in this session.");
 					return name === null ? xdevListing(xdev) : xdevDocs(xdev, name);
 				},
 			},

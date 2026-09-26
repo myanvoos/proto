@@ -38,7 +38,7 @@ test("python -c single quoted, node -e double quoted", () => {
 test("real-interpreter invocations are not kernel cells", () => {
 	expect(detectBashKernelCell("python foo.py")).toBeUndefined();
 	expect(detectBashKernelCell("python3 foo.py <<EOF\nx\nEOF")).toBeUndefined();
-	expect(detectBashKernelCell("python -c 'print(1)' extra")).toBeUndefined();
+	expect(detectBashKernelCell("python -c 'print(1)' extra")?.code).toBe("print(1)");
 	expect(detectBashKernelCell("python -m http.server")).toBeUndefined();
 	expect(detectBashKernelCell("python -e 'x'")).toBeUndefined();
 	expect(detectBashKernelCell("node -c 'x'")).toBeUndefined();
@@ -117,7 +117,7 @@ test("partial commands yield the code streamed so far", () => {
 	expect(codes("echo \"$(python -c 'import os")).toEqual(["import os"]);
 });
 
-test("shell operators after -c/-e cells are mixed, while extra interpreter args are not cells", () => {
+test("shell operators are mixed while program arguments preserve cells", () => {
 	const pyPipeline = "python -c 'print(1)' | sed -n 1p";
 	expect(detectBashKernelCell(pyPipeline)).toEqual({ language: "python", code: "print(1)" });
 	expect(isBashKernelCellMixed(pyPipeline)).toBe(true);
@@ -126,7 +126,7 @@ test("shell operators after -c/-e cells are mixed, while extra interpreter args 
 	expect(detectBashKernelCell(jsRedirect)).toEqual({ language: "js", code: "console.log(1)" });
 	expect(isBashKernelCellMixed(jsRedirect)).toBe(true);
 
-	expect(detectBashKernelCell("python -c 'print(1)' extra")).toBeUndefined();
+	expect(detectBashKernelCell("python -c 'print(1)' extra")?.code).toBe("print(1)");
 	expect(detectBashKernelCell("python <<'PY' script.py\nprint(1)\nPY")).toBeUndefined();
 	expect(isBashKernelCellMixed("python -c 'print(1)' # note")).toBe(true);
 });

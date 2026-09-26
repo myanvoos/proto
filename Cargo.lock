@@ -4547,6 +4547,7 @@ dependencies = [
  "ashpd",
  "ast-grep-core",
  "atspi",
+ "base64 0.22.1",
  "brush-core",
  "core-graphics",
  "flume",

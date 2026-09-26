@@ -525,7 +525,12 @@ function renderEventHunkRows(event: EvalStatusEvent, theme: Theme, width: number
 // detail, then its diff hunk under the rail. Collapsed, the earliest non-file
 // events hide behind a "… N earlier" marker; file events and their hunks
 // always render in full.
-function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): string[] {
+export function renderStatusEvents(
+	events: EvalStatusEvent[],
+	theme: Theme,
+	expanded: boolean,
+	width: number,
+): string[] {
 	if (events.length === 0) return [];
 	const nonFileOpIndexes: number[] = [];
 	for (let i = 0; i < events.length; i++) {

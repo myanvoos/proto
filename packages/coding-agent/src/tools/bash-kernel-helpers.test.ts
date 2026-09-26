@@ -145,45 +145,10 @@ test("the kernel's own writes never trip the guard; untracked new files are unaf
 	}
 });
 
-test("proto_path resolves ~ and scheme URLs for the raw file APIs", async () => {
+test("Python raw file APIs consume shell-resolved skill paths", async () => {
 	const dir = await makeDir();
 	try {
-		const home = path.join(dir, "home");
-		await fs.mkdir(home);
-		const cell = await runCell(
-			dir,
-			[
-				"import os",
-				"_home = os.environ.get('HOME')",
-				`os.environ['HOME'] = ${JSON.stringify(home)}`,
-				"try:",
-				"    p = proto_path('~/tilde.txt')",
-				"    open(p, 'w').write('one\\n')",
-				"    print(p)",
-				"finally:",
-				"    if _home is None:",
-				"        os.environ.pop('HOME', None)",
-				"    else:",
-				"        os.environ['HOME'] = _home",
-			].join("\n"),
-		);
-		expect(cell.status).toBe("complete");
-		expect(cell.output).toContain(path.join(home, "tilde.txt"));
-		expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("one\n");
-		const literalTilde = await fs.access(path.join(dir, "~")).then(
-			() => true,
-			() => false,
-		);
-		expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
-	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
-	}
-});
-
-test("proto_path resolves active skill directories and their files", async () => {
-	const dir = await makeDir();
-	try {
-		const skillDir = path.join(dir, "example-skill");
+		const skillDir = path.join(dir, "example skill");
 		await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
 		await Bun.write(path.join(skillDir, "notes.txt"), "skill notes\n");
 		const session = stubSession(dir, [
@@ -195,17 +160,15 @@ test("proto_path resolves active skill directories and their files", async () =>
 				source: "test",
 			},
 		]);
-		const cell = await runCell(
-			dir,
-			[
-				'print(proto_path("skill://example"))',
-				'print(Path(proto_path("skill://example/notes.txt")).read_text())',
-			].join("\n"),
-			session,
-		);
-		expect(cell.status).toBe("complete");
-		expect(cell.output).toContain(skillDir);
-		expect(cell.output).toContain("skill notes");
+		const result = await new BashTool(session).execute("skill-path-handoff", {
+			command: cellCommand(
+				'print(Path(os.environ["SKILL_DIR"]).name)\nprint(Path(os.environ["SKILL_FILE"]).read_text())',
+			),
+			env: { SKILL_DIR: "skill://example", SKILL_FILE: "skill://example/notes.txt" },
+		});
+		expect(result.isError, textOf(result)).not.toBe(true);
+		expect(textOf(result)).toContain("example skill");
+		expect(textOf(result)).toContain("skill notes");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

@@ -25,6 +25,7 @@ function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 type CellInput = {
 	language: "py" | "node" | "bun";
 	code: string;
+	env?: Record<string, string>;
 	timeout?: number;
 };
 
@@ -56,6 +57,7 @@ async function executeCell(
 		id,
 		{
 			command: cellCommand(input.language, input.code),
+			env: input.env,
 			...(input.timeout === undefined ? {} : { timeout: input.timeout }),
 		},
 		undefined,
@@ -325,40 +327,7 @@ test("a js kernel file written twice reports one event with the cumulative diff"
 });
 
 for (const language of ["node", "bun"] as const) {
-	test(`${language} protoPath resolves a leading ~ for the raw file APIs`, async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-tilde-"));
-		try {
-			const home = path.join(dir, "home");
-			await fs.mkdir(home);
-			const tool = new BashTool(stubSession(dir));
-			const code = [
-				'import * as fs from "node:fs";',
-				'const prevHome = await env("HOME");',
-				`await env("HOME", ${JSON.stringify(home)});`,
-				"try {",
-				'  fs.writeFileSync(protoPath("~/tilde.txt"), "from js\\n");',
-				"} finally {",
-				'  if (prevHome !== undefined) await env("HOME", prevHome);',
-				"}",
-			].join("\n");
-			const result = await executeCell(tool, `eval-${language}-tilde-test`, {
-				language,
-				code,
-				timeout: 60,
-			});
-			expectCellComplete(result);
-			expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("from js\n");
-			const literalTilde = await fs.access(path.join(dir, "~")).then(
-				() => true,
-				() => false,
-			);
-			expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
-		} finally {
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test(`${language} protoPath resolves skills activated after the kernel starts`, async () => {
+	test(`${language} receives shell-resolved skills activated after the kernel starts`, async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-skill-"));
 		try {
 			const skillDir = path.join(dir, "example-skill");
@@ -382,11 +351,12 @@ for (const language of ["node", "bun"] as const) {
 				},
 			];
 			const result = await executeCell(tool, `eval-${language}-skill-test`, {
+				env: { SKILL_DIR: "skill://example", SKILL_FILE: "skill://example/notes.txt" },
 				language,
 				code: [
 					'import * as fs from "node:fs";',
-					'print(protoPath("skill://example"));',
-					'print(fs.readFileSync(protoPath("skill://example/notes.txt"), "utf8"));',
+					'print(env("SKILL_DIR"));',
+					'print(fs.readFileSync(env("SKILL_FILE"), "utf8"));',
 				].join("\n"),
 				timeout: 60,
 			});

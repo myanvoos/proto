@@ -8,8 +8,8 @@ pub use pi_builtins::{
 	panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available,
 };
 pub use shell::{
-	FsObservation, FsObservationKind, MinimizerResult, Shell, ShellExecuteOptions,
-	ShellExecuteResult, ShellOptions, ShellRunOptions, ShellRunResult, StreamSinks,
-	XdDispatchFuture, XdDispatchRequest, XdDispatchResponse, XdDispatcher, execute_shell,
-	execute_shell_streams,
+	FileMutation, FsObservation, FsObservationKind, MinimizerResult, ProtolensDispatchFuture,
+	ProtolensDispatchRequest, ProtolensDispatchResponse, ProtolensDispatcher, Shell,
+	ShellExecuteOptions, ShellExecuteResult, ShellOptions, ShellRunOptions, ShellRunResult,
+	StreamSinks, execute_shell, execute_shell_streams,
 };

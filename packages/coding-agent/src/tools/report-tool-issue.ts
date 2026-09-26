@@ -16,7 +16,7 @@ import { ToolError } from "./tool-errors";
 import type { XdevDispatch } from "./xdev";
 
 export const REPORT_ISSUE_DEVICE_NAME = "report_issue";
-const REPORT_ISSUE_DEVICE_PATH = `xd://${REPORT_ISSUE_DEVICE_NAME}`;
+const REPORT_ISSUE_DEVICE_PATH = `protolens://${REPORT_ISSUE_DEVICE_NAME}`;
 
 export function reportIssueDeviceUsage(): string {
 	return `Write \`<tool>: <concise description>\` as plain text to ${REPORT_ISSUE_DEVICE_PATH}. A two-line fallback also works: tool name on line 1, report body below.`;

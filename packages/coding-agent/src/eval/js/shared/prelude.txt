@@ -38,7 +38,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	};
 	const callHelper = (name, ...args) => globalThis.__proto_helpers__[name](...args);
 	const env = (key, value) => callHelper("env", key, value);
-	const protoPath = path => callHelper("protoPath", path);
+	const resolvePath = path => callHelper("resolvePath", path);
 
 	const tool = new Proxy(
 		{},
@@ -142,7 +142,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	const checkpointCall = (path, key, value, save = false) => {
 		if (save) checkpointJson(value);
 		return globalThis.__proto_call_tool__("__runtime__", {
-			op: save ? "checkpoint_save" : "checkpoint_load", path: protoPath(path), key, ...(save ? { value } : {}),
+			op: save ? "checkpoint_save" : "checkpoint_load", path: resolvePath(path), key, ...(save ? { value } : {}),
 		});
 	};
 	const workflowOptions = (list, { concurrency, timeoutMs, checkpoint, key, keys, resume } = {}) => {
@@ -311,7 +311,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		const args = { op: "symbols" };
 		let label;
 		if (!isNil(path)) {
-			args.path = protoPath(path);
+			args.path = resolvePath(path);
 			args.code = await globalThis.__proto_read_text__(args.path);
 			label = args.path;
 		} else {
@@ -334,7 +334,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	};
 	const blockRange = async (path, line) => {
 		if (!Number.isInteger(line) || line < 1) throw new RangeError(`blockRange() line must be an integer >= 1, got ${String(line)}`);
-		const resolved = protoPath(path);
+		const resolved = resolvePath(path);
 		const code = await globalThis.__proto_read_text__(resolved);
 		const result = await globalThis.__proto_call_tool__("__ast__", { op: "block_range", path: resolved, code, line });
 		if (isNil(result)) return null;
@@ -436,8 +436,8 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		},
 	};
 
-	globalThis.console = consoleBridge;
-	globalThis.print = consoleBridge.log;
+	globalThis.console = globalThis.__proto_native_console__ ?? consoleBridge;
+	globalThis.print = globalThis.console.log;
 	globalThis.display = display;
 	globalThis.tool = tool;
 	globalThis.completion = completion;
@@ -445,7 +445,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.agent = agent;
 	globalThis.executions = (id, { limit = 20 } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "executions", id, limit });
 	globalThis.editBatch = async (changes, { apply = false } = {}) => {
-		const resolved = changes.map(entry => ({ ...entry, path: protoPath(entry.path) }));
+		const resolved = changes.map(entry => ({ ...entry, path: resolvePath(entry.path) }));
 		// Applied files join this cell's mutation tracking, so the flush reports them like any
 		// kernel write: one status event and `<kernel> note:` per path.
 		if (apply) for (const entry of resolved) globalThis.__proto_fs_note_touched__(entry.path);
@@ -474,7 +474,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.phase = phase;
 	globalThis.budget = budget;
 	globalThis.__pool = __pool;
-	globalThis.protoPath = protoPath;
 	globalThis.env = env;
 	globalThis.symbols = symbols;
 	globalThis.blockRange = blockRange;

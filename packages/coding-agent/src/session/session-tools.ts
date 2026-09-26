@@ -11,7 +11,7 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
-import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
+import { type LocalProtocolOptions, PROTOLENS_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
@@ -125,13 +125,13 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 	let remainingMappingDataLength = MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH;
 	let hasOmittedMappings = false;
 	for (const route of routes) {
-		const rawMappingDataLength = route.mcpToolName.length + XD_URL_PREFIX.length + route.name.length;
+		const rawMappingDataLength = route.mcpToolName.length + PROTOLENS_URL_PREFIX.length + route.name.length;
 		if (mappings.length >= MAX_MCP_XDEV_GUIDANCE_MAPPINGS || rawMappingDataLength > remainingMappingDataLength) {
 			hasOmittedMappings = true;
 			continue;
 		}
 		const label = formatMCPXdevGuidanceLabel(route.mcpToolName);
-		const path = `${XD_URL_PREFIX}${route.name}`;
+		const path = `${PROTOLENS_URL_PREFIX}${route.name}`;
 		const mappingDataLength = label.length + path.length;
 		if (mappingDataLength > remainingMappingDataLength) {
 			hasOmittedMappings = true;
@@ -224,7 +224,7 @@ export class SessionTools {
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
 		if (this.#xdev && this.#xdev.tools !== this.#toolRegistry) {
-			throw new Error("xd:// state must reference the canonical session tool map");
+			throw new Error("protolens:// state must reference the canonical session tool map");
 		}
 		this.#setActiveToolNames = options.setActiveToolNames;
 		this.#baseSystemPrompt = options.baseSystemPrompt;
@@ -455,7 +455,7 @@ export class SessionTools {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames([...toolNames, ...this.#requiredToolNames]);
 		// read is registry-bridged and absent from enabled lists; re-add it so the mount pass keeps it
-		// mounted under xd:// (or native when xdev is off) instead of dropping it on every re-apply.
+		// mounted under protolens:// (or native when xdev is off) instead of dropping it on every re-apply.
 		// Restricted or explicitly enumerated tool sets that omit read keep it out entirely.
 		if (
 			!toolNames.includes("read") &&
@@ -598,7 +598,7 @@ export class SessionTools {
 		const parts: string[] = [];
 		if (addedNames.length > 0) parts.push(`mounted ${addedNames.join(", ")}`);
 		if (removedNames.length > 0) parts.push(`unmounted ${removedNames.join(", ")}`);
-		this.#host.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
+		this.#host.emitNotice("info", `protolens://: ${parts.join("; ")}`, "xdev");
 	}
 
 	resetAnnouncedMounts(): void {
@@ -636,12 +636,12 @@ export class SessionTools {
 					continue;
 				}
 				if (line === "Configured inline device docs:" || line === "</system-notice>") break;
-				if (line.startsWith("Read `xd://<tool>`")) {
+				if (line.startsWith("Read `protolens://<tool>`")) {
 					section = undefined;
 					continue;
 				}
 				if (!section) continue;
-				const match = /^- xd:\/\/(\S+?)(?:\s+—|$)/.exec(line);
+				const match = /^- protolens:\/\/(\S+?)(?:\s+—|$)/.exec(line);
 				const name = match?.[1];
 				if (!name) continue;
 				if (section === "added") this.#announcedMounts.add(name);

@@ -56,7 +56,6 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 }
 const TINY_WORKER_ARG = "__proto_worker_tiny_inference";
 const TAB_WORKER_ARG = "__proto_worker_tab";
-const JS_EVAL_WORKER_ARG = "__proto_worker_js_eval";
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
@@ -77,21 +76,16 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		startComputerWorker();
 		return true;
 	}
-	if (arg === JS_EVAL_WORKER_ARG) {
-		if (parentPort) installWorkerInbox(parentPort);
-		await import("./eval/js/worker-entry");
-		return true;
-	}
 	if (arg === JS_EVAL_PROCESS_ARG) {
 		// Keep this worker-only dependency out of the regular CLI startup graph.
 		const { startJsEvalProcess, startJsEvalStdioProcess } = await import("./eval/js/process-entry");
 		if (process.argv.includes("--stdio")) {
-			await startJsEvalStdioProcess(interceptUnhandledRejections);
+			await startJsEvalStdioProcess();
 			return true;
 		}
 		await runIpcSubprocessWorker<JsWorkerInbound, JsWorkerOutbound>(
 			transport => startJsEvalProcess(transport, interceptUnhandledRejections),
-			{ rethrowConnectedSendErrors: true },
+			{ rethrowConnectedSendErrors: true, unrefKeepalive: true },
 		);
 		return true;
 	}
@@ -121,6 +115,7 @@ async function runIpcSubprocessWorker<In, Out>(
 	}) => void,
 	options?: {
 		rethrowConnectedSendErrors?: boolean;
+		unrefKeepalive?: boolean;
 	},
 ): Promise<void> {
 	const { promise: shuttingDown, resolve: shutdown } = Promise.withResolvers<void>();
@@ -167,6 +162,7 @@ async function runIpcSubprocessWorker<In, Out>(
 		},
 	});
 	const keepalive = setInterval(() => {}, 2 ** 30);
+	if (options?.unrefKeepalive) keepalive.unref();
 
 	process.on("disconnect", () => shutdown());
 	try {

@@ -34,7 +34,7 @@ interface BashExecutorOptions {
 
 	useUserShell?: boolean;
 
-	xd?: {
+	protolens?: {
 		callId?: string;
 		createDispatcher: (signal?: AbortSignal) => (request: string) => Promise<string>;
 	};
@@ -64,7 +64,7 @@ export interface BashResult {
 	artifactId?: string;
 	workingDir?: string;
 	fsObservations?: FsObservation[];
-	xdDispatches?: string[];
+	protolensDispatches?: string[];
 	stageRecords?: string[];
 	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
 	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
@@ -1075,7 +1075,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 	let resetSession = false;
 	// Why this call discarded the lane's persistent shell; reported by the next call.
 	let lostShell: string | undefined;
-	const xdDispatcher = options?.xd?.createDispatcher(runAbortController.signal);
+	const protolensDispatcher = options?.protolens?.createDispatcher(runAbortController.signal);
 	const lostState = lostShellStates.get(sessionKey);
 	lostShellStates.delete(sessionKey);
 	const shellStateLost = lostState
@@ -1089,7 +1089,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				cwd: commandCwd,
 				env: commandEnv,
 				timeoutMs: nativeTimeoutMs,
-				xdCallId: options?.xd?.callId,
+				protolensCallId: options?.protolens?.callId,
 				signal: runAbortController.signal,
 			},
 			(err, chunk) => {
@@ -1097,7 +1097,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 					enqueueChunk(chunk);
 				}
 			},
-			xdDispatcher,
+			protolensDispatcher,
 		);
 
 		const ey = new ExponentialYield();
@@ -1128,7 +1128,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				cancelled: true,
 				shellStateLost,
 				stageRecords: interrupted?.stageRecords,
-				xdDispatches: interrupted?.xdDispatches,
+				protolensDispatches: interrupted?.protolensDispatches,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
 				...(await sink.dump(
 					winner.kind === "timeout" && deadlineTimeoutMs !== undefined
@@ -1157,7 +1157,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				timedOut: true,
 				shellStateLost,
 				stageRecords: winner.result.stageRecords,
-				xdDispatches: winner.result.xdDispatches,
+				protolensDispatches: winner.result.protolensDispatches,
 				...(await sink.dump(annotation)),
 			});
 		}
@@ -1173,7 +1173,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				cancelled: true,
 				shellStateLost,
 				stageRecords: winner.result.stageRecords,
-				xdDispatches: winner.result.xdDispatches,
+				protolensDispatches: winner.result.protolensDispatches,
 				...(await sink.dump(cancelledAnnotation(options?.signal))),
 			});
 		}
@@ -1202,7 +1202,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			shellStateLost,
 			workingDir: winner.result.workingDir,
 			fsObservations: winner.result.fsObservations,
-			xdDispatches: winner.result.xdDispatches,
+			protolensDispatches: winner.result.protolensDispatches,
 			stageRecords: winner.result.stageRecords,
 			...(await sink.dump()),
 		});

@@ -819,9 +819,6 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 	if let Some(path) = &input_path {
 		host.note_read(path);
 	}
-	if let Some(path) = &output_path {
-		host.note_write(path);
-	}
 
 	let input_file = input_path
 		.as_ref()
@@ -840,7 +837,7 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 	let output_file = output_path
 		.as_ref()
 		.map(|path| {
-			brush_core::heldfiles::open(path, std::fs::OpenOptions::new().write(true).create(true).truncate(true)).map_err(|error| {
+			host.open_write(path, std::fs::OpenOptions::new().write(true).create(true).truncate(true)).map_err(|error| {
 				io_error(
 					&format!(
 						"Could not open {}",

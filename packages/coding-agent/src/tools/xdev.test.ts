@@ -3,15 +3,15 @@ import { type } from "@oh-my-pi/omptype";
 import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import type { ToolSession } from ".";
 import {
-	dispatchXdArgv,
+	dispatchProtolensArgv,
+	dispatchProtolensTarget,
 	dispatchXdevTool,
-	dispatchXdTarget,
 	resolveMountedXdevExecutable,
 	type XdevState,
 	xdevDocs,
 } from "./xdev";
 
-test("xd resolution forwards cancellation before a pending action applies", async () => {
+test("protolens resolution forwards cancellation before a pending action applies", async () => {
 	const started = Promise.withResolvers<void>();
 	const controller = new AbortController();
 	let seenSignal: AbortSignal | undefined;
@@ -42,7 +42,7 @@ test("xd resolution forwards cancellation before a pending action applies", asyn
 		},
 	} as unknown as ToolSession;
 
-	const pending = dispatchXdTarget(session, "resolve", "apply this", {
+	const pending = dispatchProtolensTarget(session, "resolve", "apply this", {
 		toolCallId: "resolve-cancel",
 		signal: controller.signal,
 	});
@@ -80,7 +80,7 @@ test("devices accept the documented intent field and drop it before execution", 
 		probeState(seen),
 		"probe",
 		JSON.stringify({ target: "disk", i: "Probing disk" }),
-		"xd-intent",
+		"protolens-intent",
 	);
 
 	expect(result.isError).toBeFalsy();
@@ -89,16 +89,18 @@ test("devices accept the documented intent field and drop it before execution", 
 
 test("device validation states the constraint and the offending value", async () => {
 	await expect(
-		dispatchXdevTool(probeState({}), "probe", JSON.stringify({ target: "" }), "xd-invalid"),
+		dispatchXdevTool(probeState({}), "probe", JSON.stringify({ target: "" }), "protolens-invalid"),
 	).rejects.toThrow(/target must be at least length 1 \(was ""\)/);
 });
 
-test("a direct device call resolves whether the name is bare or carries the advertised xd:// prefix", () => {
+test("a direct device call resolves whether the name is bare or carries the advertised protolens:// prefix", () => {
 	const state = probeState({});
 	const probe = state.tools.get("probe");
 	expect(resolveMountedXdevExecutable(state, "probe")).toBe(probe);
-	expect(resolveMountedXdevExecutable(state, "xd://probe")).toBe(probe);
-	expect(resolveMountedXdevExecutable(state, "xd://missing")).toBeUndefined();
+	expect(resolveMountedXdevExecutable(state, "protolens://probe")).toBe(probe);
+	expect(resolveMountedXdevExecutable(state, "protolens://missing")).toBeUndefined();
+	expect(resolveMountedXdevExecutable(state, "xd://probe")).toBeUndefined();
+	expect(resolveMountedXdevExecutable(state, "proto://probe")).toBeUndefined();
 });
 
 test("MCP device docs advertise only the JSON forms the parser accepts", async () => {
@@ -117,15 +119,15 @@ test("MCP device docs advertise only the JSON forms the parser accepts", async (
 		isActive: () => true,
 	};
 	const session = { cwd: process.cwd(), xdev } as unknown as ToolSession;
-	const help = await dispatchXdArgv(session, name, ["?"], undefined, undefined, { toolCallId: "mcp-help" });
+	const help = await dispatchProtolensArgv(session, name, ["?"], undefined, undefined, { toolCallId: "mcp-help" });
 	const helpText = help.content.map(part => (part.type === "text" ? part.text : "")).join("");
 
 	for (const docs of [helpText, xdevDocs(xdev, name)]) {
-		expect(docs).toContain(`xd ${name} --json '<json>'`);
+		expect(docs).toContain(`protolens ${name} --json '<json>'`);
 		expect(docs).not.toContain("<command>");
 		expect(docs).not.toContain("--machine");
 	}
 	await expect(
-		dispatchXdArgv(session, name, ["ls", "box"], undefined, undefined, { toolCallId: "mcp-positional" }),
+		dispatchProtolensArgv(session, name, ["ls", "box"], undefined, undefined, { toolCallId: "mcp-positional" }),
 	).rejects.toThrow(/MCP devices take a single JSON args object/);
 });

@@ -257,6 +257,23 @@ impl Host {
 		self.observations.record_read(self.resolve(path));
 	}
 
+	/// Content writers use this before mutation; metadata-only writers use note_write.
+	pub fn prepare_write(&self, path: impl AsRef<Path>) -> io::Result<Option<brush_core::fsobserve::FsObservation>> {
+		self.observations.prepare_write(&self.resolve(path))
+	}
+
+	pub fn commit_write(&self, observation: Option<brush_core::fsobserve::FsObservation>) {
+		self.observations.commit_write(observation);
+	}
+
+	pub fn open_write(&self, path: impl AsRef<Path>, options: &std::fs::OpenOptions) -> io::Result<std::fs::File> {
+		let resolved = self.resolve(path);
+		let observation = self.prepare_write(&resolved)?;
+		let file = brush_core::heldfiles::open(&resolved, options)?;
+		self.commit_write(observation);
+		Ok(file)
+	}
+
 	pub fn note_write(&self, path: impl AsRef<Path>) {
 		self.observations.record_write(self.resolve(path));
 	}
@@ -881,7 +898,7 @@ async fn run_utility<U: Utility, SE: ShellExtensions>(
 
 
 	#[cfg_attr(not(unix), expect(unused_mut, reason = "rewritten only on unix"))]
-	let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
+let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 	#[cfg(unix)]
 	let process_substitution_fds = materialize_process_substitution_fds(&context, &mut argv)?;
 

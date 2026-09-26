@@ -29,6 +29,7 @@ import {
 	requireRemainingKernelTimeoutMs,
 } from "../kernel-session-registry";
 import { type KernelTarget, parseKernelTarget } from "../kernel-target";
+import type { KernelInvocation } from "../types";
 import {
 	checkPythonKernelAvailability,
 	type KernelDisplayOutput,
@@ -48,6 +49,7 @@ export interface PythonExecutorOptions {
 	runCwd?: string;
 	shellEnv?: Record<string, string>;
 	stdin?: ReadableStream<Uint8Array>;
+	invocation?: KernelInvocation;
 
 	timeoutMs?: number;
 
@@ -80,8 +82,6 @@ export interface PythonExecutorOptions {
 
 	artifactPath?: string;
 	artifactId?: string;
-
-	localRoots?: Record<string, string>;
 
 	toolSession?: ToolSession;
 	/** Host-side cwd for tool-bridge calls; omit for remote targets. */

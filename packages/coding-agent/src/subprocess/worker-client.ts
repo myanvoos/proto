@@ -41,7 +41,7 @@ export interface RefCountedWorkerHandle<Inbound, Outbound> extends WorkerHandle<
 }
 
 export interface SpawnedSubprocess<Outbound> {
-	proc: Subprocess<"ignore", "ignore", number | "ignore">;
+	proc: Subprocess<"ignore", "pipe" | "ignore", number | "ignore">;
 	inbound: Set<(message: Outbound) => void>;
 	errors: Set<(error: Error) => void>;
 
@@ -117,6 +117,8 @@ export function createWorkerSubprocess<Outbound>(options: {
 	reportCleanExit?: boolean;
 
 	unref?: boolean;
+	/** A reserved pipe carrying native byte frames separately from the IPC control channel. */
+	captureNativeStdio?: boolean;
 }): SpawnedSubprocess<Outbound> {
 	const inbound = new Set<(message: Outbound) => void>();
 	const errors = new Set<(error: Error) => void>();
@@ -132,33 +134,39 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stderrDrainStarted = true;
 		void drainStderrCapture(stderrCapture, options.exitLabel, stderrTail).finally(() => stderrDrained.resolve());
 	};
-	const proc = Bun.spawn({
-		cmd: options.spawnCommand.cmd,
-		cwd: options.spawnCommand.cwd,
-		detached: options.detached,
-		env: options.env,
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: stderrCapture.target,
-		serialization: options.serialization ?? "advanced",
-		ipc(message) {
-			for (const handler of inbound) handler(message as Outbound);
-		},
-		onExit(_proc, exitCode, signalCode) {
-			unregisterFault();
-			startStderrDrain();
-			if (exitCode === 0 && !options.reportCleanExit) return;
+	let proc: SpawnedSubprocess<Outbound>["proc"];
+	try {
+		proc = Bun.spawn({
+			cmd: options.spawnCommand.cmd,
+			cwd: options.spawnCommand.cwd,
+			detached: options.detached,
+			env: options.env,
+			stdin: "ignore",
+			stdout: options.captureNativeStdio ? "pipe" : "ignore",
+			stderr: stderrCapture.target,
+			serialization: options.serialization ?? "advanced",
+			ipc(message) {
+				for (const handler of inbound) handler(message as Outbound);
+			},
+			onExit(_proc, exitCode, signalCode) {
+				unregisterFault();
+				startStderrDrain();
+				if (exitCode === 0 && !options.reportCleanExit) return;
 
-			if (exitCode === null && intentionalExit.value) return;
-			const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
+				if (exitCode === null && intentionalExit.value) return;
+				const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
 
-			void stderrDrained.promise.finally(() => {
-				const suffix = stderrTail.suffix();
-				const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
-				for (const handler of errors) handler(err);
-			});
-		},
-	});
+				void stderrDrained.promise.finally(() => {
+					const suffix = stderrTail.suffix();
+					const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
+					for (const handler of errors) handler(err);
+				});
+			},
+		});
+	} catch (error) {
+		cleanupStderrCapture(stderrCapture);
+		throw error;
+	}
 
 	const identity = Process.fromPid(proc.pid);
 	const descendants = new Map<number, Process>();

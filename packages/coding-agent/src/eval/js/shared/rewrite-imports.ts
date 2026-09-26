@@ -76,7 +76,9 @@ async function loadBabelParser(): Promise<typeof BabelParser> {
 	return babelParser;
 }
 
-async function parseProgram(code: string): Promise<{ program: { body: ReadonlyArray<BabelProgramNode> } } | null> {
+async function parseProgram(
+	code: string,
+): Promise<{ program: { body: ReadonlyArray<BabelProgramNode>; directives?: ReadonlyArray<{ end: number }> } } | null> {
 	const { parse } = await loadBabelParser();
 	try {
 		return parse(code, {
@@ -96,12 +98,6 @@ async function parseProgram(code: string): Promise<{ program: { body: ReadonlyAr
 }
 
 const DYNAMIC_IMPORT_CALLEE = '(typeof __proto_import__ === "function" ? __proto_import__ : (s, o) => import(s, o))';
-
-function buildOmpImportCall(sourceLiteral: string, optionsLiteral: string | undefined): string {
-	return optionsLiteral
-		? `__proto_import__(${sourceLiteral}, ${optionsLiteral})`
-		: `__proto_import__(${sourceLiteral})`;
-}
 
 function walkNodes(root: unknown, visit: (node: BabelNode) => void): void {
 	const stack: unknown[] = [root];
@@ -123,50 +119,7 @@ function walkNodes(root: unknown, visit: (node: BabelNode) => void): void {
 	}
 }
 
-function buildOptionsLiteral(node: BabelImportDeclaration): string | undefined {
-	const attrs = node.attributes;
-	if (!attrs || attrs.length === 0) return undefined;
-	const pairs = attrs.map(attr => {
-		const key = attr.key.type === "Identifier" ? attr.key.name : JSON.stringify(attr.key.value);
-		return `${key}: ${JSON.stringify(attr.value.value)}`;
-	});
-
-	return `{ with: { ${pairs.join(", ")} } }`;
-}
-
-function rewriteImportNode(node: BabelImportDeclaration): string {
-	const sourceLiteral = JSON.stringify(node.source.value);
-	const optionsLiteral = buildOptionsLiteral(node);
-	const importCall = buildOmpImportCall(sourceLiteral, optionsLiteral);
-
-	let defaultName: string | undefined;
-	let namespaceName: string | undefined;
-	const namedPairs: Array<[string, string]> = [];
-	for (const spec of node.specifiers) {
-		if (spec.type === "ImportDefaultSpecifier") {
-			defaultName = spec.local.name;
-		} else if (spec.type === "ImportNamespaceSpecifier") {
-			namespaceName = spec.local.name;
-		} else if (spec.type === "ImportSpecifier" && spec.imported) {
-			const imported = spec.imported.type === "Identifier" ? spec.imported.name : spec.imported.value;
-			namedPairs.push([imported, spec.local.name]);
-		}
-	}
-
-	if (namedPairs.length > 0) {
-		const inner = namedPairs.map(([imp, loc]) => (imp === loc ? imp : `${imp}: ${loc}`)).join(", ");
-		const props = defaultName ? `default: ${defaultName}, ${inner}` : inner;
-		return `const { ${props} } = await ${importCall};`;
-	}
-	if (namespaceName && defaultName) {
-		return `const ${namespaceName} = await ${importCall}; const ${defaultName} = ${namespaceName}.default;`;
-	}
-	if (namespaceName) return `const ${namespaceName} = await ${importCall};`;
-	if (defaultName) return `const ${defaultName} = (await ${importCall}).default;`;
-	return `await ${importCall};`;
-}
-
-export async function rewriteImports(code: string): Promise<string> {
+async function rewriteDynamicImports(code: string): Promise<string> {
 	if (!code.includes("import")) return code;
 
 	const ast = await parseProgram(code);
@@ -176,12 +129,6 @@ export async function rewriteImports(code: string): Promise<string> {
 
 	type Edit = { start: number; end: number; text: string };
 	const edits: Edit[] = [];
-
-	for (const node of ast.program.body) {
-		if (node.type !== "ImportDeclaration") continue;
-		const decl = node as unknown as BabelImportDeclaration;
-		edits.push({ start: decl.start, end: decl.end, text: rewriteImportNode(decl) });
-	}
 
 	walkNodes(ast, node => {
 		if (node.type !== "CallExpression") return;
@@ -258,60 +205,48 @@ function getLexicalBindingNames(node: BabelPublishableDecl): string[] {
 	return names;
 }
 
-function appendGlobalBindingPublish(source: string, names: readonly string[]): string {
-	if (names.length === 0) return source;
-	const assignments = names.map(name => `this[${JSON.stringify(name)}] = ${name};`).join("\n");
-	return `${source};\n${assignments}`;
+/** Export accessors, not values: closures and later cells share the original engine binding. */
+function bindingDescriptor(name: string, parameter: string, readonly: boolean): string {
+	return `${JSON.stringify(name)}: { get: () => ${name}, set: (${parameter}) => { ${readonly ? 'throw new TypeError("Assignment to constant variable.");' : `${name} = ${parameter};`} } }`;
 }
 
-async function demoteTopLevelLexicals(code: string, options: { publishGlobals?: boolean } = {}): Promise<string> {
-	const publishGlobals = options.publishGlobals === true;
-	const fastPath = publishGlobals ? /\b(?:const|let|class|var|function)\b/ : /\b(?:const|let|class)\b/;
-	if (!fastPath.test(code)) return code;
-
-	const ast = await parseProgram(code);
-	if (!ast) {
-		return code;
-	}
-
-	const targets: Array<{ node: BabelPublishableDecl; demote: boolean }> = [];
-	for (const node of ast.program.body) {
+function collectCellBindings(body: ReadonlyArray<BabelProgramNode>): {
+	lexical: string[];
+	global: string[];
+	readonly: string[];
+} {
+	const lexical: string[] = [];
+	const readonly: string[] = [];
+	const globals: string[] = [];
+	for (const node of body) {
 		if (node.type === "VariableDeclaration") {
-			const decl = node as unknown as BabelVariableDeclaration;
-			if (decl.kind === "const" || decl.kind === "let") targets.push({ node: decl, demote: true });
-			else if (publishGlobals) targets.push({ node: decl, demote: false });
+			const declaration = node as BabelVariableDeclaration;
+			if (declaration.kind !== "var") lexical.push(...getLexicalBindingNames(declaration));
+			if (declaration.kind === "const") readonly.push(...getLexicalBindingNames(declaration));
 		} else if (node.type === "ClassDeclaration") {
-			const decl = node as unknown as BabelClassDeclaration;
-			if (decl.id) targets.push({ node: decl, demote: true });
-		} else if (publishGlobals && node.type === "FunctionDeclaration") {
-			const decl = node as unknown as BabelFunctionDeclaration;
-			if (decl.id) targets.push({ node: decl, demote: false });
+			lexical.push(...getLexicalBindingNames(node as BabelClassDeclaration));
+		} else if (node.type === "FunctionDeclaration") {
+			globals.push(...getLexicalBindingNames(node as BabelFunctionDeclaration));
 		}
 	}
-	if (targets.length === 0) return code;
-
-	targets.sort((a, b) => b.node.start - a.node.start);
-	let result = code;
-	for (const { node, demote } of targets) {
-		const segment = result.slice(node.start, node.end);
-		const bindingNames = publishGlobals ? getLexicalBindingNames(node) : [];
-		let replacement: string;
-		if (!demote) {
-			replacement = segment;
-		} else if (node.type === "VariableDeclaration") {
-			replacement = `var${segment.slice(node.kind.length)}`;
-		} else {
-			const id = node.id;
-			if (!id) continue;
-			const idEndInSegment = id.end - node.start;
-			const tail = segment.slice(idEndInSegment);
-			const hasTrailingSemi = segment.endsWith(";");
-			replacement = `var ${id.name} = class${tail}${hasTrailingSemi ? "" : ";"}`;
+	// `var` is function scoped, including declarations in loops, branches and catch bodies.
+	const visit = (value: unknown): void => {
+		if (!value || typeof value !== "object") return;
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
 		}
-		result =
-			result.slice(0, node.start) + appendGlobalBindingPublish(replacement, bindingNames) + result.slice(node.end);
-	}
-	return result;
+		const node = value as BabelNode;
+		if (isExecutionBoundary(node.type) || node.type === "ClassDeclaration" || node.type === "ClassExpression") return;
+		if (node.type === "VariableDeclaration" && node.kind === "var")
+			globals.push(...getLexicalBindingNames(node as unknown as BabelVariableDeclaration));
+		for (const [key, child] of Object.entries(node)) {
+			if (key === "loc" || key.endsWith("Comments")) continue;
+			if (child && typeof child === "object") visit(child);
+		}
+	};
+	visit(body);
+	return { lexical: [...new Set(lexical)], global: [...new Set(globals)], readonly };
 }
 
 async function returnFinalExpression(code: string): Promise<{ source: string; returned: boolean }> {
@@ -365,6 +300,7 @@ function containsAsyncWrapperSyntax(value: unknown): boolean {
 	const node = value as Record<string, unknown>;
 	const type = node.type;
 	if (type === "ReturnStatement" || type === "AwaitExpression") return true;
+	if (type === "MetaProperty" && (node.meta as { name?: string } | undefined)?.name === "import") return true;
 	if (type === "ForOfStatement" && node.await === true) return true;
 	if (typeof type === "string" && isExecutionBoundary(type)) return false;
 
@@ -428,23 +364,215 @@ export function stripTypeScriptSyntax(
 const LOOKS_LIKE_TS =
 	/(?:\bimport\s+type\b|\bexport\s+type\b|\b(?:import|export)\s*\{[^}\n]*\btype\s+\w|\binterface\s+\w|\btype\s+\w+\s*=|\b(?:as|satisfies)\s+(?:[A-Z]|\bconst\b)|:\s*(?:string|number|boolean|any|unknown|void|never|object|[A-Z]\w*)\b|<\s*[A-Z]\w*\s*[,>])/;
 
+/** Bun selects CommonJS for free CommonJS bindings, lexical top-level this, or a strict directive. */
+function usesCommonJsBindings(root: unknown): boolean {
+	const common: Record<string, true> = {
+		require: true,
+		module: true,
+		exports: true,
+		__filename: true,
+		__dirname: true,
+	};
+	let found = false;
+	const visit = (value: unknown, scopes: readonly Set<string>[], lexicalThis: boolean): void => {
+		if (!value || typeof value !== "object" || found) return;
+		if (Array.isArray(value)) {
+			for (const child of value) visit(child, scopes, lexicalThis);
+			return;
+		}
+		const node = value as BabelNode;
+		if (node.type === "ThisExpression") {
+			if (lexicalThis) found = true;
+			return;
+		}
+		if (node.type === "Identifier") {
+			const name = String(node.name);
+			if (Object.hasOwn(common, name) && !scopes.some(scope => scope.has(name))) found = true;
+			return;
+		}
+		if (node.type === "Program" || node.type === "BlockStatement") {
+			const bindings = collectCellBindings(node.body as BabelProgramNode[]);
+			const names = node.type === "Program" ? [...bindings.lexical, ...bindings.global] : bindings.lexical;
+			visit(node.body, [...scopes, new Set(names)], lexicalThis);
+			return;
+		}
+		if (isExecutionBoundary(node.type)) {
+			if (node.computed) visit(node.key, scopes, lexicalThis);
+			const names: string[] = [];
+			collectBindingNames(node.id, names);
+			for (const parameter of (node.params as unknown[]) ?? []) collectBindingNames(parameter, names);
+			const body = node.body as { body?: BabelProgramNode[] } | undefined;
+			const bindings = collectCellBindings(body?.body ?? []);
+			visit(
+				node.body,
+				[...scopes, new Set([...names, ...bindings.lexical, ...bindings.global])],
+				node.type === "ArrowFunctionExpression" && lexicalThis,
+			);
+			return;
+		}
+		if (node.type === "VariableDeclarator") {
+			visit(node.init, scopes, lexicalThis);
+			return;
+		}
+		if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+			visit(node.object, scopes, lexicalThis);
+			if (node.computed) visit(node.property, scopes, lexicalThis);
+			return;
+		}
+		if (node.type === "ObjectProperty") {
+			if (node.computed) visit(node.key, scopes, lexicalThis);
+			visit(node.value, scopes, lexicalThis);
+			return;
+		}
+		if (node.type === "StaticBlock") lexicalThis = false;
+		for (const [key, child] of Object.entries(node)) {
+			if (key === "loc" || key === "id" || key.endsWith("Comments")) continue;
+			visit(
+				child,
+				scopes,
+				(node.type === "ClassProperty" || node.type === "ClassPrivateProperty") && key === "value"
+					? false
+					: lexicalThis,
+			);
+		}
+	};
+	visit(root, [], true);
+	return found;
+}
+
+let nativeBunTranspiler: Bun.Transpiler | undefined;
+
 export async function wrapCode(
 	code: string,
+	persistentNames: readonly string[] = [],
 ): Promise<{ source: string; asyncWrapped: boolean; finalExpressionReturned: boolean }> {
-	const finalExpression = await returnFinalExpression(code);
-	const stripped = stripTypeScript(finalExpression.source);
-	const importsRewritten = await rewriteImports(stripped);
-	const needsAsyncWrapper = await requiresAsyncWrapper(importsRewritten);
-	const rewritten = {
-		source: await demoteTopLevelLexicals(importsRewritten, { publishGlobals: needsAsyncWrapper }),
-		returned: finalExpression.returned,
-	};
-	if (!needsAsyncWrapper) {
-		return { source: rewritten.source, asyncWrapped: false, finalExpressionReturned: rewritten.returned };
+	const stripped = stripTypeScript(code);
+	const ast = await parseProgram(stripped);
+	const imports = (ast?.program.body ?? []).filter(
+		node => node.type === "ImportDeclaration",
+	) as BabelImportDeclaration[];
+	const importedNames = imports.flatMap(node => node.specifiers.map(specifier => specifier.local.name));
+	const originalBindings = collectCellBindings(ast?.program.body ?? []);
+	const declared = new Set([...originalBindings.lexical, ...originalBindings.global]);
+	for (const name of importedNames) {
+		if (declared.has(name)) throw new SyntaxError(`Identifier '${name}' has already been declared`);
+		declared.add(name);
 	}
+	let source = stripped;
+	for (const node of [...imports].reverse())
+		source =
+			source.slice(0, node.start) +
+			source.slice(node.start, node.end).replace(/[^\n]/g, " ") +
+			source.slice(node.end);
+	const finalExpression = await returnFinalExpression(source);
+	source = await rewriteDynamicImports(finalExpression.source);
+	const body = await parseProgram(source);
+	// Object environment records provide live lookup for prior cells and imports. Bare calls must
+	// retain lexical-call `this`, rather than receiving that implementation object as their receiver.
+	const scopedNames = new Set([...persistentNames, ...importedNames]);
+	const callEdits: Array<{ start: number; end: number; name: string }> = [];
+	const rewriteContext = (value: unknown): void => {
+		if (!value || typeof value !== "object") return;
+		if (Array.isArray(value)) {
+			for (const child of value) rewriteContext(child);
+			return;
+		}
+		const node = value as BabelNode;
+		if (node.type === "ThisExpression" && typeof Bun === "undefined") {
+			callEdits.push({ start: node.start, end: node.end, name: "__proto_cell_this__" });
+			return;
+		}
+		if (isExecutionBoundary(node.type) && node.type !== "ArrowFunctionExpression") {
+			if (node.computed) rewriteContext(node.key);
+			return;
+		}
+		if (node.type === "StaticBlock") return;
+		for (const [key, child] of Object.entries(node)) {
+			if (key === "loc" || key.endsWith("Comments")) continue;
+			if ((node.type === "ClassProperty" || node.type === "ClassPrivateProperty") && key === "value") continue;
+			rewriteContext(child);
+		}
+	};
+	rewriteContext(body);
+
+	for (const edit of callEdits.sort((a, b) => b.start - a.start))
+		source = `${source.slice(0, edit.start)}(0, ${edit.name})${source.slice(edit.end)}`;
+	let parameter = "__proto_binding_value__";
+	while (source.includes(parameter)) parameter += "_";
+	const bindings = collectCellBindings(body?.program.body ?? []);
+	const asyncWrapped = imports.length > 0 || (await requiresAsyncWrapper(source));
+	const directives = ast?.program.directives as { value?: { value?: string } }[] | undefined;
+	const commonJs =
+		typeof Bun === "undefined" ||
+		directives?.some(directive => directive.value?.value === "use strict") ||
+		usesCommonJsBindings(ast);
+	const scriptGlobals = !asyncWrapped && commonJs;
+	const scopeNames = scriptGlobals ? bindings.lexical : [...bindings.lexical, ...bindings.global];
+	const globalNames = scriptGlobals ? bindings.global : [];
+	const publish = `__proto_publish_bindings__({${scopeNames.map(name => bindingDescriptor(name, parameter, bindings.readonly.includes(name))).join(",")}}, {${globalNames.map(name => bindingDescriptor(name, parameter, false)).join(",")}}, ${JSON.stringify(bindings.readonly)});`;
+	const directiveEnd = body?.program.directives?.at(-1)?.end ?? 0;
+	source = `${source.slice(0, directiveEnd)}\n${publish}\n${source.slice(directiveEnd)}`;
+	if (typeof Bun !== "undefined") {
+		// Match Bun's own source optimizer, including its declaration hoisting. Live accessors
+		// keep every selected binding observable, so native DCE cannot discard persistent state.
+		nativeBunTranspiler ??= new Bun.Transpiler({
+			loader: "js",
+			target: "bun",
+			treeShaking: true,
+			trimUnusedImports: false,
+			define: {
+				__filename: "__proto_cell_filename__",
+				__dirname: "__proto_cell_dirname__",
+				require: "__proto_cell_require__",
+			},
+		});
+		source = nativeBunTranspiler.transformSync(source);
+	}
+	const scopedCalls: Array<{ start: number; end: number; name: string }> = [];
+	walkNodes(await parseProgram(source), node => {
+		if (node.type === "MetaProperty" && (node.meta as { name?: string } | undefined)?.name === "import")
+			scopedCalls.push({ start: node.start, end: node.end, name: "__proto_cell_meta__" });
+		const callee = (
+			node.type === "CallExpression" || node.type === "OptionalCallExpression"
+				? node.callee
+				: node.type === "TaggedTemplateExpression"
+					? node.tag
+					: undefined
+		) as BabelNode | undefined;
+		if (callee?.type === "Identifier" && callee.name !== "eval" && scopedNames.has(String(callee.name)))
+			scopedCalls.push({ start: callee.start, end: callee.end, name: String(callee.name) });
+	});
+	for (const edit of scopedCalls.sort((a, b) => b.start - a.start))
+		source = `${source.slice(0, edit.start)}(0, ${edit.name})${source.slice(edit.end)}`;
+	const importRequests = imports.map(node => ({
+		source: node.source.value,
+		options: node.attributes?.length
+			? {
+					with: Object.fromEntries(
+						node.attributes.map(attr => [
+							attr.key.type === "Identifier" ? attr.key.name : attr.key.value,
+							attr.value.value,
+						]),
+					),
+				}
+			: undefined,
+		names: node.specifiers.map(specifier => ({
+			local: specifier.local.name,
+			imported:
+				specifier.type === "ImportNamespaceSpecifier"
+					? null
+					: specifier.type === "ImportDefaultSpecifier"
+						? "default"
+						: specifier.imported?.type === "Identifier"
+							? specifier.imported.name
+							: specifier.imported?.value,
+		})),
+	}));
+	const strict = typeof Bun === "undefined" ? asyncWrapped : !scriptGlobals;
+	const cell = `(${asyncWrapped ? "async " : ""}() => {\n${strict ? '"use strict";\n' : ""}${source}\n})()`;
 	return {
-		source: `(async () => {\n${rewritten.source}\n})()`,
-		asyncWrapped: true,
-		finalExpressionReturned: rewritten.returned,
+		source: `(${asyncWrapped ? "async " : ""}() => { with (__proto_scope__) { with (__proto_cell_globals__(${asyncWrapped})) { ${imports.length ? `with (await __proto_import_bindings__(${JSON.stringify(importRequests)})) { return ${cell}; }` : `return ${cell};`} } } })()`,
+		asyncWrapped,
+		finalExpressionReturned: finalExpression.returned,
 	};
 }

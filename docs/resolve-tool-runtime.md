@@ -1,11 +1,11 @@
 # Resolution devices runtime
 
-Pending previews do not use a `resolve` tool. They finalize through plain-text `write` calls to virtual `xd://` devices implemented in `packages/coding-agent/src/tools/resolve.ts`:
+Pending previews do not use a `resolve` tool. They finalize through plain-text `write` calls to virtual `protolens://` devices implemented in `packages/coding-agent/src/tools/resolve.ts`:
 
-- `xd://resolve` — apply the pending staged preview; body = a one-sentence reason
-- `xd://reject` — discard the pending staged preview; body = a one-sentence reason
+- `protolens://resolve` — apply the pending staged preview; body = a one-sentence reason
+- `protolens://reject` — discard the pending staged preview; body = a one-sentence reason
 
-These are internal URLs, not filesystem paths. `read xd://resolve` and `read xd://reject` return a one-line usage hint. Completed device writes carry `details.xdev` metadata; consumers recover the inner result through `writeDeviceDispatch()` and `resolveDispatchDetails()`.
+These are internal URLs, not filesystem paths. `read protolens://resolve` and `read protolens://reject` return a one-line usage hint. Completed device writes carry `details.xdev` metadata; consumers recover the inner result through `writeDeviceDispatch()` and `resolveDispatchDetails()`.
 
 ## Preview flows
 
@@ -17,7 +17,7 @@ While a preview is pending, `AgentSession.nextToolChoiceDirective()` returns a s
 - `satisfies: isPreviewResolutionToolCall`
 - reminder from `resolve-device-reminder.md`
 
-The model complies by writing to `xd://resolve` or `xd://reject`. A different write does not resolve the preview and is skipped or escalated by the soft-requirement lifecycle.
+The model complies by writing to `protolens://resolve` or `protolens://reject`. A different write does not resolve the preview and is skipped or escalated by the soft-requirement lifecycle.
 
 Dispatch invokes the pending queue head through `runResolveInvocation(...)`.
 
@@ -35,4 +35,4 @@ Because previews ride `write`, the harness keeps `write` available whenever need
 
 ## Custom tools
 
-Custom tools still stage previews through `pushPendingAction(...)`; the loader forwards them into `queueResolveHandler(...)`. The custom-tool preview API is unchanged except for the model-facing finalization step: follow up with a plain-text write to `xd://resolve` or `xd://reject`, not a `resolve` tool call.
+Custom tools still stage previews through `pushPendingAction(...)`; the loader forwards them into `queueResolveHandler(...)`. The custom-tool preview API is unchanged except for the model-facing finalization step: follow up with a plain-text write to `protolens://resolve` or `protolens://reject`, not a `resolve` tool call.

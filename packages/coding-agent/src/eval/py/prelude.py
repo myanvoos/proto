@@ -3,7 +3,6 @@ from __future__ import annotations
 __all__ = [
     "display",
     "env",
-    "proto_path",
     "StaleWriteError",
     "block_range",
     "symbols",
@@ -43,7 +42,6 @@ if "__proto_prelude_loaded__" not in globals():
     from pathlib import Path
     import os, json, math, re, hashlib, stat, sys, threading, weakref, time
     import base64
-    from urllib.parse import unquote
 
     INTENT_FIELD = "i"
 
@@ -536,7 +534,7 @@ if "__proto_prelude_loaded__" not in globals():
         return relative
 
     def _fs_emit_mutation_note(ap: str, rec: dict) -> None:
-        """Emit exactly one compact stderr note for a flushed mutation."""
+        """Emit exactly one compact sideband note for a flushed mutation."""
         meta = _FS_STATE["reported_meta"].get(ap)
         if not isinstance(meta, dict):
             return
@@ -724,84 +722,10 @@ if "__proto_prelude_loaded__" not in globals():
         _emit_status("env", key=key, value=val, action="get")
         return val
 
-    _PROTO_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
-
-    # Keep wording identical to the JS kernel's protoPath (eval/js/shared/helpers.ts).
-    _PROTO_FILE_SCHEMES = ("local", "fleet", "skill")
-    _PROTO_NON_FILE_SCHEMES = ("agent", "artifact", "conflict", "history", "mcp", "proto", "rule", "ssh", "xd")
-
-    def _proto_path_error(scheme: str, path: str, roots: dict, skill_name: str | None = None) -> ValueError:
-        read_hint = f"tool.read({{\"path\": {json.dumps(path, ensure_ascii=False)}}})"
-        if skill_name is not None:
-            skills = sorted(key[len("skill:"):] for key in roots if key.startswith("skill:"))
-            available = f"available skills: {', '.join(skills)}" if skills else "no skills are installed"
-            return ValueError(f"{path}: no skill named {json.dumps(skill_name, ensure_ascii=False)} is installed; {available}")
-        if scheme in _PROTO_FILE_SCHEMES:
-            return ValueError(f"{path}: {scheme}:// has no filesystem root in this kernel")
-        if scheme == "artifact":
-            return ValueError(
-                f"{path} is not a filesystem path; read it with {read_hint}, "
-                "or pass a kernel-published artifact ref to read_artifact(ref)"
-            )
-        if scheme == "agent":
-            return ValueError(f"{path} is not a filesystem path; read it with output(<agent id>) or {read_hint}")
-        if scheme in _PROTO_NON_FILE_SCHEMES:
-            return ValueError(f"{path} is not a filesystem path; read it with {read_hint}")
-        supported = ", ".join(f"{name}://" for name in _PROTO_FILE_SCHEMES)
-        return ValueError(f"{path}: unsupported URL scheme {scheme}://; proto_path resolves plain paths and {supported}")
-
-    def proto_path(path: str | Path) -> Path:
-        """Resolve a kernel path (plain, `~/…`, or scheme URLs) to a real filesystem Path.
-
-        Raw file APIs (`open`, `Path`, `os.*`) only speak real paths, so pass
-        `proto_path("fleet://x.py")` first when a path uses a kernel scheme;
-        writes through the resolved path are tracked and guarded like any
-        other. A `scheme://…` whose scheme has an injected on-disk root (e.g.
-        `local://`, via PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it
-        lands where `read local://…` resolves — not a literal `local:/`
-        directory under the cwd (which `Path("local://x")` collapses to). Plain
-        paths get a leading `~` expanded (as the shell and the `read` tool do)
-        and are made absolute against the kernel cwd so the status events
-        the tracker emits match filesystem snapshots by the host
-        (relative paths there would defeat its already-reported dedupe and
-        duplicate every write as a walker event); any other `scheme://` is
-        rejected with the accessor that does read it."""
-        if not isinstance(path, str):
-            return Path(os.path.abspath(os.path.expanduser(path)))
-        match = _PROTO_INTERNAL_URL_RE.match(path)
-        if not match:
-            return Path(os.path.abspath(os.path.expanduser(path)))
-        scheme = match.group(1).lower()
-        try:
-            roots = json.loads(os.environ.get("PI_EVAL_LOCAL_ROOTS") or "{}")
-        except (ValueError, TypeError):
-            roots = {}
-        raw_relative = match.group(2).replace("\\", "/")
-        root_key = scheme
-        if scheme == "skill":
-            raw_skill_name, separator, raw_relative = raw_relative.partition("/")
-            skill_name = unquote(raw_skill_name)
-            if not skill_name:
-                raise ValueError("skill:// URL requires a skill name")
-            root_key = f"skill:{skill_name}"
-            if not separator:
-                raw_relative = ""
-        if not isinstance(roots, dict):
-            roots = {}
-        root = roots.get(root_key)
-        if not root:
-            raise _proto_path_error(scheme, path, roots, skill_name if scheme == "skill" else None)
-        relative = unquote(raw_relative)
-        root_path = os.path.abspath(root)
-        if relative == "":
-            return Path(root_path)
-        rel_path = Path(relative)
-        if rel_path.is_absolute() or ".." in rel_path.parts:
-            raise ValueError(f"Unsafe {scheme}:// path (absolute or traversal): {path}")
-        resolved = os.path.abspath(os.path.join(root_path, relative))
-        if resolved != root_path and not resolved.startswith(root_path + os.sep):
-            raise ValueError(f"{scheme}:// path escapes its root: {path}")
-        return Path(resolved)
+    def _filesystem_path(path: str | Path) -> Path:
+        if isinstance(path, str) and re.match(r"^[a-z][a-z0-9+.-]*://", path, re.IGNORECASE):
+            raise ValueError("Expected a filesystem path; use tool.read for internal resources or pass a bash-resolved path through env.")
+        return Path(os.path.abspath(os.path.expanduser(path)))
 
     class StaleWriteError(RuntimeError):
         """The file changed on disk after the kernel's last read of it.
@@ -827,7 +751,7 @@ if "__proto_prelude_loaded__" not in globals():
 
     def block_range(path: str | Path, line: int) -> tuple[int, int] | None:
         """Syntactic block extent (start, end) containing 1-based `line`, resolved by tree-sitter."""
-        p = proto_path(path)
+        p = _filesystem_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
 
     def symbols(path: str | Path | None = None, *, code: str | None = None, lang: str | None = None) -> str:
@@ -842,7 +766,7 @@ if "__proto_prelude_loaded__" not in globals():
             raise ValueError("symbols() takes exactly one of `path` or `code=`")
         args: dict = {"op": "symbols"}
         if path is not None:
-            p = proto_path(path)
+            p = _filesystem_path(path)
             args["path"] = str(p)
             args["code"] = p.read_text(encoding="utf-8")
             label = str(p)
@@ -1408,7 +1332,7 @@ if "__proto_prelude_loaded__" not in globals():
         if save:
             _checkpoint_json(value)
         return _bridge_call("__runtime__", {"op": "checkpoint_save" if save else "checkpoint_load",
-            "path": str(proto_path(path)), "key": key, **({"value": value} if save else {})})
+            "path": str(_filesystem_path(path)), "key": key, **({"value": value} if save else {})})
 
     def _workflow_options(items, *, concurrency=None, timeout=None, checkpoint=None, key=None,
                           keys=None, resume=False, **unused):
@@ -1690,7 +1614,7 @@ if "__proto_prelude_loaded__" not in globals():
         """Validate (and with apply=True commit) a checked batch on the host.
         Applied files join this cell's mutation tracking, so the flush reports
         them like any kernel write: one status event and `<kernel> note:` per path."""
-        resolved = [{**entry, "path": str(proto_path(entry["path"]))} for entry in changes]
+        resolved = [{**entry, "path": str(_filesystem_path(entry["path"]))} for entry in changes]
         if apply:
             for entry in resolved:
                 _fs_record(entry["path"])

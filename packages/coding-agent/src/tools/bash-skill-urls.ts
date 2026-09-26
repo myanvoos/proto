@@ -6,26 +6,13 @@ import { type LocalProtocolOptions, resolveFleetUrlToPath, resolveLocalUrlToPath
 import { validateRelativePath } from "../internal-urls/skill-protocol";
 import type { InternalResource, ResolveContext } from "../internal-urls/types";
 import type { ImageAttachmentEntry } from ".";
-import { normalizeLocalScheme } from "./path-utils";
+import { normalizeLocalScheme, splitInternalUrlSel } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
 const SKILL_URL_PATTERN = /'skill:\/\/[^'\s")`\\]+'|"skill:\/\/[^"\s')`\\]+"|skill:\/\/[^\s'")`\\;&|<>($]+/g;
 
 const INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL =
-	/'(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
-
-const SUPPORTED_INTERNAL_SCHEMES = [
-	"skill",
-	"agent",
-	"artifact",
-	"memory",
-	"rule",
-	"local",
-	"fleet",
-	"attachment",
-] as const;
-
-type SupportedInternalScheme = (typeof SUPPORTED_INTERNAL_SCHEMES)[number];
+	/'(?:[a-z][a-z0-9+.-]*):\/\/[^'\s")`\\]*'|"(?:[a-z][a-z0-9+.-]*):\/\/[^"\s')`\\]*"|(?:[a-z][a-z0-9+.-]*):\/\/[^\s'")`\\;&|<>($]*|'local:\/[^'\s")`\\]*'|"local:\/[^"\s')`\\]*"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]*/gi;
 
 interface InternalUrlResolver {
 	canHandle(input: string): boolean;
@@ -127,14 +114,6 @@ function matchSkillName(
 	return { skill: undefined, suffix: undefined };
 }
 
-function extractScheme(url: string): SupportedInternalScheme | undefined {
-	const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(url);
-	if (!match) return undefined;
-	const scheme = match[1].toLowerCase();
-	if (!SUPPORTED_INTERNAL_SCHEMES.includes(scheme as SupportedInternalScheme)) return undefined;
-	return scheme as SupportedInternalScheme;
-}
-
 function unquoteToken(token: string): string {
 	if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
 		return token.slice(1, -1);
@@ -142,25 +121,37 @@ function unquoteToken(token: string): string {
 	return token;
 }
 
-function isInsideShellQuote(
+const COMMAND_SEPARATORS: Record<string, true> = { ";": true, "&": true, "|": true, "\n": true, "(": true, ")": true };
+
+interface ShellContext {
+	/** The index sits inside an open shell quote. */
+	quoted: boolean;
+	/** Where the simple command containing the index begins. */
+	commandStart: number;
+}
+
+function shellContextAt(
 	command: string,
 	index: number,
 	bodies?: ReadonlyArray<readonly [number, number]>,
-): boolean {
+): ShellContext {
 	type ShellQuote = "'" | '"' | undefined;
 	interface CommandSubstitution {
 		kind: "dollar" | "backtick";
 		outerQuote: ShellQuote;
+		outerCommandStart: number;
 		depth: number;
 	}
 
 	let quote: ShellQuote;
+	let commandStart = 0;
 	const substitutions: CommandSubstitution[] = [];
 	for (let i = 0; i < index; i++) {
 		if (bodies) {
 			const body = bodies.find(([start, end]) => i >= start && i < end);
 			if (body) {
 				i = body[1] - 1;
+				commandStart = body[1];
 				continue;
 			}
 		}
@@ -190,9 +181,10 @@ function isInsideShellQuote(
 			continue;
 		}
 		if (char === "$" && command[i + 1] === "(" && quote !== "'") {
-			substitutions.push({ kind: "dollar", outerQuote: quote, depth: 1 });
+			substitutions.push({ kind: "dollar", outerQuote: quote, outerCommandStart: commandStart, depth: 1 });
 			quote = undefined;
 			i++;
+			commandStart = i + 1;
 			continue;
 		}
 		if (char === "`" && quote !== "'") {
@@ -200,26 +192,44 @@ function isInsideShellQuote(
 			if (top?.kind === "backtick") {
 				substitutions.pop();
 				quote = top.outerQuote;
+				commandStart = top.outerCommandStart;
 			} else {
-				substitutions.push({ kind: "backtick", outerQuote: quote, depth: 0 });
+				substitutions.push({ kind: "backtick", outerQuote: quote, outerCommandStart: commandStart, depth: 0 });
 				quote = undefined;
+				commandStart = i + 1;
 			}
 			continue;
 		}
 		if (quote !== undefined) continue;
 
 		const substitution = substitutions.at(-1);
-		if (substitution?.kind !== "dollar") continue;
-		if (char === "(") {
-			substitution.depth++;
-		} else if (char === ")") {
-			substitution.depth--;
+		if (substitution?.kind === "dollar" && (char === "(" || char === ")")) {
+			substitution.depth += char === "(" ? 1 : -1;
 			if (substitution.depth === 0) {
-				quote = substitutions.pop()?.outerQuote;
+				substitutions.pop();
+				quote = substitution.outerQuote;
+				commandStart = substitution.outerCommandStart;
+				continue;
 			}
 		}
+		if (COMMAND_SEPARATORS[char]) commandStart = i + 1;
 	}
-	return quote !== undefined;
+	return { quoted: quote !== undefined, commandStart };
+}
+
+const PROTOLENS_COMMAND_HEAD = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*protolens\s/;
+
+/**
+ * `protolens` devices resolve internal URLs themselves, with the same
+ * selectors and generated views as a direct tool call.
+ */
+function isProtolensArgument(
+	command: string,
+	index: number,
+	bodies?: ReadonlyArray<readonly [number, number]>,
+): boolean {
+	const { commandStart } = shellContextAt(command, index, bodies);
+	return PROTOLENS_COMMAND_HEAD.test(command.slice(commandStart, index));
 }
 
 function isEscapedCharacter(command: string, index: number): boolean {
@@ -253,7 +263,7 @@ function isEmbeddedInQuotedText(
 	}
 	// A match may begin with a JSON quote nested inside an outer shell quote;
 	// the quote-state scan distinguishes that from a shell quote opening here.
-	return isInsideShellQuote(command, index, bodies);
+	return shellContextAt(command, index, bodies).quoted;
 }
 
 function shellEscape(p: string): string {
@@ -270,7 +280,7 @@ async function resolveInternalUrlToPath(
 	cwd?: string,
 ): Promise<string> {
 	const url = normalizeLocalScheme(rawUrl);
-	const scheme = extractScheme(url);
+	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(url)?.[1]?.toLowerCase();
 	if (!scheme) {
 		throw new ToolError(`Unsupported internal URL in bash command: ${url}`);
 	}
@@ -301,6 +311,9 @@ async function resolveInternalUrlToPath(
 		return resolved;
 	}
 
+	if (["agent", "history", "mcp", "protolens"].includes(scheme)) {
+		throw new ToolError(`${url} is a generated view, not a filesystem path.`);
+	}
 	if (!internalRouter?.canHandle(url)) {
 		throw new ToolError(
 			`Cannot resolve ${scheme}:// URL in bash command: ${url}\n` +
@@ -325,7 +338,7 @@ async function resolveInternalUrlToPath(
 
 // Heredoc bodies are stdin data for the command that follows them — never
 // command position. A scheme URL there is content (a script body, a doc
-// example, a kernel cell referencing `proto_path("fleet://x.py")`) and must
+// example, a kernel cell containing a literal `fleet://x.py` URL) and must
 // survive URL expansion untouched, exactly like the rest of the data stream.
 const HEREDOC_OPERATOR_RE = /^<<(-?)(?:\\([A-Za-z_][A-Za-z0-9_]*)|(["']?)([A-Za-z_][A-Za-z0-9_]*)\3)/;
 
@@ -474,10 +487,14 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 
 		const rawUrl = unquoteToken(token);
 		const url = normalizeLocalScheme(rawUrl);
+		if (/^(?:https?|ftp|sftp|file|git):\/\//i.test(url)) continue;
+		// A trailing read selector (`:1-40`, `:raw`) is not part of the resource:
+		// resolve the resource and keep the selector on the path, as read does.
+		const target = splitInternalUrlSel(url);
 		let resolvedPath: string;
 		try {
 			resolvedPath = await resolveInternalUrlToPath(
-				url,
+				target.path,
 				options.skills,
 				options.attachments ?? [],
 				options.internalRouter,
@@ -485,9 +502,12 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 				options.ensureLocalParentDirs,
 				options.cwd,
 			);
-		} catch {
-			continue;
+		} catch (error) {
+			if (isProtolensArgument(command, index, bodies)) continue;
+			throw new ToolError(`${error instanceof Error ? error.message : String(error)}
+Use read({path: ${JSON.stringify(url)}}) for internal resources without a filesystem path.`);
 		}
+		if (target.sel !== undefined) resolvedPath = `${resolvedPath}:${target.sel}`;
 		const replacement = options.noEscape ? resolvedPath : shellEscape(resolvedPath);
 		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + token.length)}`;
 	}

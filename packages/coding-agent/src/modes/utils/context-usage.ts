@@ -47,7 +47,7 @@ export interface NonMessageTokenSource {
 	};
 	readonly skills?: readonly Skill[];
 
-	/** When present, read may be provided as a mounted xd:// device instead of a native tool. */
+	/** When present, read may be provided as a mounted protolens:// device instead of a native tool. */
 	getMountedXdevToolNames?: () => readonly string[];
 }
 

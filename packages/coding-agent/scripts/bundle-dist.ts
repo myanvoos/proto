@@ -3,7 +3,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import { buildNodeJsKernel } from "../src/eval/js/node-runtime";
+import { buildJsKernel } from "../src/eval/js/node-runtime";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 
 const packageDir = path.join(import.meta.dir, "..");
@@ -60,7 +60,7 @@ export async function bundleCodingAgent(outDir = path.join(packageDir, "dist")):
 	const cliPath = path.join(outDir, "cli.js");
 	await cleanBundleOutputs(outDir);
 
-	const [docsPayload, nodeJsKernel] = await Promise.all([buildDocsIndexPayload(), buildNodeJsKernel()]);
+	const [docsPayload, jsKernel] = await Promise.all([buildDocsIndexPayload(), buildJsKernel()]);
 
 	const output = await Bun.build({
 		entrypoints: [path.join(packageDir, "src/cli.ts")],
@@ -72,7 +72,7 @@ export async function bundleCodingAgent(outDir = path.join(packageDir, "dist")):
 		define: {
 			"process.env.PI_BUNDLED": JSON.stringify("true"),
 			"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),
-			"process.env.PI_NODE_JS_KERNEL": JSON.stringify(nodeJsKernel),
+			"process.env.PI_JS_KERNEL": JSON.stringify(jsKernel),
 		},
 		minify: {
 			whitespace: true,

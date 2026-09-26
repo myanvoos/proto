@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import { Glob } from "bun";
 
 const docsEmbed = process.env.PI_DOCS_EMBED ?? "";
@@ -11,6 +12,7 @@ const gunzipAsync = promisify(gunzip);
 
 interface DocsIndex {
 	readonly filenames: readonly string[];
+	readonly directory?: string;
 
 	getBody(relativePath: string): Promise<string | undefined>;
 }
@@ -38,19 +40,25 @@ export function decodeDocsIndex(embed: string): DocsIndex | null {
 function readDocsFromDisk(): DocsIndex | null {
 	const docsDir = path.resolve(import.meta.dir, "../../../../docs");
 	const filenames: string[] = [];
-	const bodies: Record<string, string> = {};
 	try {
 		for (const relativePath of new Glob("**/*.md").scanSync(docsDir)) {
 			const normalized = relativePath.split(path.sep).join("/");
 			filenames.push(normalized);
-			bodies[normalized] = readFileSync(path.join(docsDir, relativePath), "utf8");
 		}
 	} catch (err) {
 		if (isEnoent(err)) return null;
 		throw err;
 	}
 	filenames.sort();
-	return { filenames, getBody: relativePath => Promise.resolve(bodies[relativePath]) };
+	if (filenames.length === 0) return null;
+	return {
+		filenames,
+		directory: docsDir,
+		getBody: relativePath =>
+			filenames.includes(relativePath)
+				? Bun.file(path.join(docsDir, relativePath)).text()
+				: Promise.resolve(undefined),
+	};
 }
 
 function readShippedEmbed(): DocsIndex | null {
@@ -73,7 +81,7 @@ function readShippedEmbed(): DocsIndex | null {
 
 function emptyIndex(): DocsIndex {
 	logger.warn(
-		"proto:// docs corpus unavailable: no build-time embed, on-disk docs/ directory, or shipped dist embed found",
+		"harness:// docs corpus unavailable: no build-time embed, on-disk docs/ directory, or shipped dist embed found",
 	);
 	return { filenames: [], getBody: () => Promise.resolve(undefined) };
 }
@@ -94,7 +102,7 @@ function getIndex(): DocsIndex {
 		return index;
 	}
 
-	index = readShippedEmbed() ?? readDocsFromDisk() ?? emptyIndex();
+	index = readDocsFromDisk() ?? readShippedEmbed() ?? emptyIndex();
 	return index;
 }
 
@@ -104,4 +112,63 @@ export function getDocFilenames(): readonly string[] {
 
 export function getEmbeddedDoc(relativePath: string): Promise<string | undefined> {
 	return getIndex().getBody(relativePath);
+}
+
+// Publish complete directories atomically so concurrent processes never see a partial corpus.
+const materializedDirectories = new Map<string, Promise<string>>();
+export function getBundledResourceDirectory(
+	name: "harness" | "rules",
+	load: () => Promise<ReadonlyArray<readonly [string, string]>>,
+): Promise<string> {
+	const cacheRoot = path.join(getConfigRootDir(), "cache", "docs");
+	const cacheKey = path.join(cacheRoot, name);
+	const cached = materializedDirectories.get(cacheKey);
+	if (cached) return cached;
+	const pending = (async () => {
+		const entries = await load();
+		const buildKey = `${VERSION}-${Bun.hash(JSON.stringify(entries)).toString(16)}`;
+		const directory = path.join(cacheRoot, buildKey, name);
+		try {
+			await fs.access(directory);
+			return directory;
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+		}
+		await fs.mkdir(path.dirname(directory), { recursive: true });
+		const staging = await fs.mkdtemp(`${directory}-`);
+		try {
+			for (const [filename, content] of entries) {
+				const target = path.join(staging, filename);
+				await fs.mkdir(path.dirname(target), { recursive: true });
+				await fs.writeFile(target, content, { mode: 0o444 });
+			}
+			try {
+				await fs.rename(staging, directory);
+			} catch (error) {
+				// Another process may have published the same build while we unpacked.
+				if (!error || typeof error !== "object" || !("code" in error)) throw error;
+				if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+			}
+			return directory;
+		} finally {
+			await fs.rm(staging, { recursive: true, force: true });
+		}
+	})();
+	materializedDirectories.set(cacheKey, pending);
+	void pending.catch(() => materializedDirectories.delete(cacheKey));
+	return pending;
+}
+
+export function getDocsDirectory(): Promise<string> {
+	const directory = getIndex().directory;
+	if (directory) return Promise.resolve(directory);
+	return getBundledResourceDirectory("harness", () =>
+		Promise.all(
+			getDocFilenames().map(async filename => {
+				const content = await getEmbeddedDoc(filename);
+				if (content === undefined) throw new Error(`Missing bundled documentation: ${filename}`);
+				return [filename, content] as const;
+			}),
+		),
+	);
 }

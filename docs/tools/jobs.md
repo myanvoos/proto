@@ -31,7 +31,7 @@ requires the immutable incarnation `id`, obtainable from `start`, `restart` or `
 
 ## Operations
 
-The wire schema is flat so XD CLI flags map directly; each op accepts only its own fields and
+The wire schema is flat so proto CLI flags map directly; each op accepts only its own fields and
 rejects the rest before any side effect.
 
 | Op | Fields | Behavior |

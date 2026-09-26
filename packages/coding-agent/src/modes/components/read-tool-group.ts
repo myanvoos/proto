@@ -2,7 +2,7 @@ import * as path from "node:path";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import type { Component, ImageBudget } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
-import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
+import { InternalUrlRouter, PROTOLENS_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
 import { PREVIEW_LIMITS, sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
@@ -50,7 +50,7 @@ export function readArgsHaveTarget(args: unknown): boolean {
 export function readArgsCollapseIntoGroup(args: unknown): boolean {
 	const target = readArgsTarget(args);
 	if (target === undefined) return false;
-	return target.startsWith(XD_URL_PREFIX) || !InternalUrlRouter.instance().canHandle(target);
+	return target.startsWith(PROTOLENS_URL_PREFIX) || !InternalUrlRouter.instance().canHandle(target);
 }
 
 export function groupedReadUsageCallIds(message: AssistantMessage): string[] | undefined {

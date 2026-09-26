@@ -37,7 +37,7 @@ const refSchema = type({
 });
 
 /**
- * Flat wire schema so XD CLI flags map one-to-one; `OP_FIELDS` enforces which fields each op accepts
+ * Flat wire schema so proto CLI flags map one-to-one; `OP_FIELDS` enforces which fields each op accepts
  * before any side effect.
  */
 const jobsSchema = type({

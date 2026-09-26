@@ -1,4 +1,12 @@
 import { postmortem, readLines } from "@oh-my-pi/pi-utils";
+import {
+	createWorkerHandle,
+	createWorkerSubprocess,
+	resolveWorkerSpawnCmd,
+	workerEnvFromParent,
+} from "../../subprocess/worker-client";
+import { safeSend } from "../../utils/ipc";
+import { withNativeOutput } from "./native-output";
 import { decodeJsKernelFrame, JsKernelFrameWriter, MAX_JS_KERNEL_WIRE_BYTES } from "./stdio-protocol";
 import { type RejectionInterceptor, WorkerCore } from "./worker-core";
 import type { WorkerInbound, WorkerOutbound } from "./worker-protocol";
@@ -10,6 +18,7 @@ export function startJsEvalProcess(
 	transport: {
 		send(message: WorkerOutbound): void;
 		onMessage(handler: (message: WorkerInbound) => void): () => void;
+		setReferenced?(referenced: boolean): void;
 	},
 	interceptUnhandledRejections: RejectionInterceptor,
 ): void {
@@ -17,6 +26,8 @@ export function startJsEvalProcess(
 		{
 			send: message => transport.send(message),
 			onMessage: handler => transport.onMessage(handler),
+			setReferenced:
+				transport.setReferenced ?? (referenced => (referenced ? process.channel?.ref() : process.channel?.unref())),
 
 			close: () => {},
 		},
@@ -30,41 +41,52 @@ export function startJsEvalProcess(
 	);
 }
 
-/** Same CLI worker host and runtime as IPC, with a bounded authenticated-by-pipe remote transport. */
-export async function startJsEvalStdioProcess(interceptUnhandledRejections: RejectionInterceptor): Promise<void> {
-	let receive: ((message: WorkerInbound) => void) | undefined;
-	const writer = new JsKernelFrameWriter(Bun.stdout.writer(), () => exitHost(1));
-	startJsEvalProcess(
-		{
-			send(message) {
-				writer.send(message);
-				if (message.type === "closed")
-					void writer.flush().then(
-						() => exitHost(0),
-						() => exitHost(1),
-					);
-			},
-			onMessage(handler) {
-				receive = handler;
-				return () => {
-					receive = undefined;
-				};
-			},
-		},
-		interceptUnhandledRejections,
+/** The remote control stdout stays separate from the child interpreter's native output pipes. */
+export async function startJsEvalStdioProcess(): Promise<void> {
+	const spawned = createWorkerSubprocess<WorkerOutbound>({
+		spawnCommand: resolveWorkerSpawnCmd("__proto_worker_js_eval_process"),
+		env: workerEnvFromParent({ PI_JS_NATIVE_STDIO: "1" }),
+		exitLabel: "Remote JS eval worker",
+		captureNativeStdio: true,
+		reportCleanExit: true,
+		unref: false,
+	});
+	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
+		safeSend(spawned.proc, message, "remote-js-eval"),
 	);
-	try {
-		for await (const line of readLines(Bun.stdin.stream(), undefined, MAX_JS_KERNEL_WIRE_BYTES)) {
-			const message = decodeJsKernelFrame(line) as WorkerInbound;
-			receive?.(message);
+	const worker = withNativeOutput(base, spawned.proc.stdout!);
+	const writer = new JsKernelFrameWriter(Bun.stdout.writer(), () => exitHost(1));
+	let closing = false;
+	worker.onMessage(message => {
+		writer.send(message);
+		if (message.type === "closed") {
+			closing = true;
+			void writer.flush().then(
+				async () => {
+					await worker.terminate();
+					exitHost(0);
+				},
+				() => exitHost(1),
+			);
 		}
+	});
+	worker.onError(error => {
+		if (closing) return;
+		closing = true;
+		process.stderr.write(`${error.message}\n`);
+		void worker.terminate().finally(() => exitHost(1));
+	});
+	try {
+		for await (const line of readLines(Bun.stdin.stream(), undefined, MAX_JS_KERNEL_WIRE_BYTES))
+			worker.send(decodeJsKernelFrame(line) as WorkerInbound);
 	} finally {
-		// Loss of the transport must not orphan a remote interpreter or its subprocesses.
+		closing = true;
+		await worker.terminate();
+		// A disconnected remote supervisor must not orphan any descendants outside the worker's snapshot.
 		if (process.env.PI_KERNEL_REMOTE === "1") {
 			try {
 				process.kill(-process.pid, "SIGKILL");
 			} catch {}
 		}
-		receive?.({ type: "close" });
 	}
 }

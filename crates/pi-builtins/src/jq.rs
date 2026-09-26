@@ -1087,7 +1087,7 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 			host.note_read(path);
 			let inputs = read::slice(cli, &file);
 			if cli.in_place {
-				host.note_write(path);
+				let observation = host.prepare_write(path)?;
 
 
 
@@ -1104,6 +1104,7 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 				std::mem::drop(file);
 				let perms = std::fs::metadata(path)?.permissions();
 				tmp.persist(path).map_err(Error::Persist)?;
+				host.commit_write(observation);
 				std::fs::set_permissions(path, perms)?;
 			} else {
 				last = output::with_stdout(stdout, |out| {

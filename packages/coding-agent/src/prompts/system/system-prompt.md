@@ -45,7 +45,7 @@ Most file tools auto-resolve these to FS paths.
 - `artifact://<id>`: content
 - `local://<name>.md`: plan artifacts/shared subagent content
 - `mcp://<uri>`: MCP resource
-- `proto://`: harness docs; AVOID unless user asks about harness.
+- `harness://`: harness docs; AVOID unless user asks about harness.
 
 {{#if toolInventory}}
 {{toolInventory}}
@@ -59,8 +59,8 @@ Most file tools auto-resolve these to FS paths.
 {{/has}}
 
 {{#if xdevTools.length}}
-# xd:// Tool Devices
-Mounted tools run as `xd <tool> [flags]` inside `{{toolRefs.bash}}` (syntax: bash tool docs); `xd <tool> ?` prints a device's docs and CLI usage.
+# protolens:// Tool Devices
+Mounted tools run as `protolens <tool> [flags]` inside `{{toolRefs.bash}}` (syntax: bash tool docs); `protolens <tool> ?` prints a device's docs and CLI usage.
 {{xdevDocs}}
 {{/if}}
 
@@ -80,7 +80,7 @@ Mounted tools run as `xd <tool> [flags]` inside `{{toolRefs.bash}}` (syntax: bas
 {{#if autoQaEnabled}}
 {{#has tools "bash"}}
 <critical>
-Automated QA: tool output inconsistent with described behavior → run `{{toolRefs.bash}}` with `xd report_issue 'tool: <concise description>'`. False positives fine.
+Automated QA: tool output inconsistent with described behavior → run `{{toolRefs.bash}}` with `protolens report_issue 'tool: <concise description>'`. False positives fine.
 </critical>
 {{/has}}
 {{/if}}

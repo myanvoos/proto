@@ -20,6 +20,7 @@ pub mod highlight;
 pub mod html;
 pub mod iofs;
 pub mod js;
+pub mod kernel_stdio;
 pub mod keys;
 
 pub mod pdf;

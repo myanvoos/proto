@@ -16,11 +16,11 @@ function formatDisplayJsonForText(value: unknown): string {
 }
 
 /**
- * Text rendering of one display output for a byte stream, or undefined when
+ * Text rendering of one sideband display for the tool response, or undefined when
  * the output has no text form. `jsonIndex` numbers JSON displays within a cell.
  */
 export function formatDisplayOutputForText(output: EvalDisplayOutput, jsonIndex: number): string | undefined {
-	if (output.type === "notice") return output.text;
+	if (output.type === "notice" || output.type === "text" || output.type === "markdown") return output.text;
 	if (output.type !== "json") return undefined;
 	return `display[${jsonIndex}]:\n${formatDisplayJsonForText(output.data)}`;
 }

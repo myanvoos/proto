@@ -12,7 +12,7 @@ import {
 	formatLineEntriesWithMode,
 	formatSummaryElisionFooter,
 } from "./read-format";
-import { dispatchXdTarget } from "./xdev";
+import { dispatchProtolensTarget } from "./xdev";
 
 const settingsValues: Record<string, unknown> = {
 	"images.autoResize": false,
@@ -180,8 +180,8 @@ test("mounted read preserves loopback HTTP URLs and scopes filesystem paths to b
 			isActive: () => false,
 		};
 
-		for (const uri of ["xd://", "xd://read"]) {
-			const result = await dispatchXdTarget(session, "read", JSON.stringify({ path: uri }), {
+		for (const uri of ["protolens://", "protolens://read"]) {
+			const result = await dispatchProtolensTarget(session, "read", JSON.stringify({ path: uri }), {
 				toolCallId: "mounted-internal-uri",
 				cwd: branch,
 			});
@@ -196,7 +196,7 @@ test("mounted read preserves loopback HTTP URLs and scopes filesystem paths to b
 		});
 		try {
 			const url = `http://127.0.0.1:${server.port}/value`;
-			const literal = await dispatchXdTarget(session, "read", JSON.stringify({ path: url }), {
+			const literal = await dispatchProtolensTarget(session, "read", JSON.stringify({ path: url }), {
 				toolCallId: "mounted-url-literal",
 				cwd: branch,
 			});
@@ -204,14 +204,14 @@ test("mounted read preserves loopback HTTP URLs and scopes filesystem paths to b
 			expect(textOf(literal)).toContain(body.trim());
 
 			const escapedUrl = url.replaceAll("/", "\\/");
-			const escaped = await dispatchXdTarget(session, "read", `{"path":"${escapedUrl}"}`, {
+			const escaped = await dispatchProtolensTarget(session, "read", `{"path":"${escapedUrl}"}`, {
 				toolCallId: "mounted-url-escaped",
 				cwd: branch,
 			});
 			expect(escaped.isError).not.toBe(true);
 			expect(textOf(escaped)).toContain(body.trim());
 
-			const file = await dispatchXdTarget(session, "read", JSON.stringify({ path: "relative.txt" }), {
+			const file = await dispatchProtolensTarget(session, "read", JSON.stringify({ path: "relative.txt" }), {
 				toolCallId: "mounted-file-relative",
 				cwd: branch,
 			});
@@ -309,9 +309,9 @@ test("file code ranges mark opening and closing bracket anchors", async () => {
 
 test("proto documentation index includes cached line-count hints", async () => {
 	await withReadSession(async (_session, read) => {
-		const result = await read.execute("proto-list", { path: "proto://" });
+		const result = await read.execute("proto-list", { path: "harness://" });
 		const output = textOf(result);
 		expect(output).toContain("# Documentation");
-		expect(output).toMatch(/- \[.+\]\(proto:\/\/[^)]+\) \(\d+ lines\)/);
+		expect(output).toMatch(/- \[.+\]\(harness:\/\/[^)]+\) \(\d+ lines\)/);
 	});
 });

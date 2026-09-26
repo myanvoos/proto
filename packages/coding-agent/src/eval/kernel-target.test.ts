@@ -39,7 +39,6 @@ test("remote environment cannot expose loopback bridge credentials or host files
 	const env = remoteKernelEnv({
 		PI_TOOL_BRIDGE_URL: "http://127.0.0.1:1234",
 		PI_TOOL_BRIDGE_TOKEN: "secret",
-		PI_EVAL_LOCAL_ROOTS: '{"local":"/private"}',
 		PI_SESSION_FILE: "/private/session",
 		PI_ARTIFACTS_DIR: "/private/artifacts",
 		PI_TOOL_BRIDGE_SESSION: "owned",

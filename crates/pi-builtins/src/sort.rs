@@ -4487,10 +4487,11 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	let output_path = matches
 		.get_one::<OsString>(options::OUTPUT)
 		.map(|path| host.resolve(path).into_os_string());
-	if let Some(path) = &output_path {
-		host.note_write(path);
-	}
+	let observation = output_path.as_ref().map(|path| {
+		host.prepare_write(path).map_err(|error| SortError::OpenFailed { path: PathBuf::from(path), error })
+	}).transpose()?.flatten();
 	let output = Output::new(output_path.as_ref(), Some(host.stdout_clone()))?;
+	host.commit_write(observation);
 
 	if settings.debug {
 		let global_flags = GlobalOptionFlags::from_matches(matches);

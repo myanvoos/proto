@@ -91,10 +91,22 @@ describe("python kernel stdout proxy", () => {
 		using tempDir = TempDir.createSync("@python-stdout-display-");
 		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
 		try {
-			const { status, text } = await run(
-				kernel,
+			const events: string[] = [];
+			const streams: string[] = [];
+			const { status } = await kernel.execute(
 				['print("TEXT BEFORE DISPLAY")', 'display("DISPLAYED VALUE")', 'print("TEXT AFTER DISPLAY")'].join("\n"),
+				{
+					onChunk: text => {
+						streams.push(text);
+						events.push(text);
+					},
+					onDisplay: output => {
+						if (output.type === "text") events.push(output.text);
+					},
+				},
 			);
+			const text = events.join("");
+			expect(streams.join("")).toBe("TEXT BEFORE DISPLAY\nTEXT AFTER DISPLAY\n");
 			expect(status).toBe("ok");
 			const order = ["TEXT BEFORE DISPLAY", "DISPLAYED VALUE", "TEXT AFTER DISPLAY"].map(marker =>
 				text.indexOf(marker),

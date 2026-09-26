@@ -1,10 +1,8 @@
-import * as fs from "node:fs";
-import { buildEvalUrlRoots, type LocalProtocolOptions } from "../internal-urls";
 import type { ExecutionMetadata } from "../session/execution-metadata";
 import type { ToolSession } from "../tools";
 import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { KernelTarget } from "./kernel-target";
-import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
+import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent, KernelInvocation } from "./types";
 
 export interface ExecutorBackendExecOptions {
 	cwd: string;
@@ -12,6 +10,7 @@ export interface ExecutorBackendExecOptions {
 	interpreter?: string;
 	runCwd?: string;
 	shellEnv?: Record<string, string>;
+	invocation?: KernelInvocation;
 	stdin?: ReadableStream<Uint8Array>;
 	sessionId: string;
 	sessionFile: string | undefined;
@@ -60,17 +59,4 @@ export interface ExecutorBackend {
 	isAvailable(session: ToolSession): Promise<boolean>;
 
 	execute(code: string, opts: ExecutorBackendExecOptions): Promise<ExecutorBackendResult>;
-}
-
-export function resolveEvalUrlRoots(session: ToolSession): Record<string, string> {
-	const options: LocalProtocolOptions = session.localProtocolOptions ?? {
-		getArtifactsDir: () => session.getArtifactsDir?.() ?? null,
-		getSessionId: () => session.getSessionId?.() ?? null,
-	};
-	const roots = buildEvalUrlRoots(options);
-	// Kernels write `local://`/`fleet://` files through raw file APIs, which never create parents.
-	fs.mkdirSync(roots.local, { recursive: true });
-	fs.mkdirSync(roots.fleet, { recursive: true });
-	for (const skill of session.skills ?? []) roots[`skill:${skill.name}`] = skill.baseDir;
-	return roots;
 }

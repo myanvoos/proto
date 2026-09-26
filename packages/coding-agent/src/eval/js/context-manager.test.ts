@@ -260,7 +260,7 @@ test("Bun.file writer mutations are guarded and reported", async () => {
 	}
 }, 15_000);
 
-test("background JavaScript output remains visible after its run result settles", async () => {
+test("ordinary JavaScript callbacks finish before the run result settles", async () => {
 	using tempDir = TempDir.createSync("@js-background-output-");
 	const cwd = tempDir.path();
 	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
@@ -284,7 +284,7 @@ test("background JavaScript output remains visible after its run result settles"
 			ownerId,
 			cwd,
 			session: toolSession,
-			code: 'setTimeout(() => console.log("LATE_JS_OUTPUT"), 50);',
+			code: 'setTimeout(() => console.log("LATE_JS_OUTPUT"), 0);',
 			filename: "background-output.js",
 			runState: {
 				onText: chunk => {
@@ -293,16 +293,15 @@ test("background JavaScript output remains visible after its run result settles"
 				},
 			},
 		});
-		// This deliberately exercises a real background timer in the isolated
-		// runtime; awaiting its emitted signal avoids a guessed test-side delay.
-		await seen.promise;
+		// A native event-loop test needs a real child-process timer, not a test-host fake clock.
 		expect(output.join("")).toContain("LATE_JS_OUTPUT");
+		await seen.promise;
 	} finally {
 		await disposeVmContextsByOwner(ownerId);
 	}
 }, 15_000);
 
-test("fails closed when neither isolated JS worker can be created", async () => {
+test("fails closed rather than falling back when the isolated JS subprocess cannot start", async () => {
 	using tempDir = TempDir.createSync("@js-worker-isolation-");
 	const cwd = tempDir.path();
 	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
@@ -319,12 +318,6 @@ test("fails closed when neither isolated JS worker can be created", async () => 
 
 	vi.spyOn(Bun, "spawn").mockImplementation(() => {
 		throw new Error("forced subprocess spawn failure");
-	});
-	const workerGlobal = globalThis as unknown as {
-		Worker: (scriptURL: string | URL, options?: WorkerOptions) => Worker;
-	};
-	vi.spyOn(workerGlobal, "Worker").mockImplementation(() => {
-		throw new Error("forced Worker construction failure");
 	});
 
 	try {

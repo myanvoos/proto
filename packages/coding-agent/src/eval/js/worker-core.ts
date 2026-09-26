@@ -1,8 +1,8 @@
-// node:timers rather than Bun.sleep: the Node kernel runtime (node-entry.ts) runs this core too.
-import { setTimeout as sleep } from "node:timers/promises";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { ToolError } from "../../tools/tool-errors";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { PythonDisplayBudget } from "../py/display";
+import type { KernelInvocation } from "../types";
 import { JsRuntime, type RuntimeHooks } from "./shared/runtime";
 import type {
 	RunErrorPayload,
@@ -30,6 +30,7 @@ interface ActiveRun {
 	floatingRejections: unknown[];
 	/** Rejected with the cell's CellExit when its code calls `process.exit()`. */
 	exit: PromiseWithResolvers<never>;
+	exitRequested: boolean;
 }
 
 type RunMessage = Extract<WorkerInbound, { type: "run" }>;
@@ -101,7 +102,7 @@ function foldFloatingRejections(active: ActiveRun, result: RunResult, hooks: Run
 	let folded = result;
 	let reported = rejections;
 	// An explicit process.exit() status stands; the rejections are only reported.
-	if (result.ok && result.exitCode === undefined) {
+	if (result.ok && !active.exitRequested) {
 		const error = errorPayload(rejections[0]);
 		error.message = `Unhandled rejection (missing await?): ${error.message}`;
 		folded = { type: "result", runId: active.runId, ok: false, error };
@@ -123,6 +124,7 @@ export class WorkerCore {
 	#closing = false;
 	#outputAcks = new Map<string, () => void>();
 	#outputSequence = 0;
+	#draining: ActiveRun | undefined;
 	#recentCellFiles = new Set<string>();
 	#unsubscribe: () => void;
 	#uninstallRejectionGuard: () => void;
@@ -147,7 +149,11 @@ export class WorkerCore {
 			// Printed by a cell that catches it, the stack starts at the cell's own `process.exit()` call.
 			Error.captureStackTrace(cellExit, exitCell);
 			this.#options.markNonFatal?.(cellExit);
-			this.#runs.get(runId)?.exit.reject(cellExit);
+			const active = this.#runs.get(runId);
+			if (active) {
+				active.exitRequested = true;
+				active.exit.reject(cellExit);
+			}
 			throw cellExit;
 		}) as typeof process.exit;
 		process.exit = exitCell;
@@ -254,6 +260,7 @@ export class WorkerCore {
 			case "output-ack":
 				this.#outputAcks.get(msg.id)?.();
 				this.#outputAcks.delete(msg.id);
+				this.#refreshChannelReference();
 				return;
 			case "tool-reply":
 				this.#deliverToolReply(msg.id, msg.reply);
@@ -292,7 +299,7 @@ export class WorkerCore {
 		while (!this.#closing) {
 			const msg = this.#runQueue.shift();
 			if (!msg) return;
-			await this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot, msg.completionContext);
+			await this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot, msg.completionContext, msg.invocation);
 		}
 	}
 
@@ -300,7 +307,6 @@ export class WorkerCore {
 		this.#syncProcessCwd(snapshot.cwd, currentRunId);
 		if (this.#runtime) {
 			this.#runtime.setCwd(snapshot.cwd);
-			this.#runtime.setLocalRoots(snapshot.localRoots ?? {});
 			return this.#runtime;
 		}
 		this.#runtime = new JsRuntime({
@@ -308,8 +314,8 @@ export class WorkerCore {
 			generation: snapshot.generation,
 			target: snapshot.target,
 			sessionId: snapshot.sessionId,
-			localRoots: snapshot.localRoots,
 			trackFileWrites: true,
+			nativeStdio: process.env.PI_JS_NATIVE_STDIO === "1",
 		});
 		return this.#runtime;
 	}
@@ -348,6 +354,7 @@ export class WorkerCore {
 		filename: string,
 		snapshot: SessionSnapshot,
 		completionContext?: EvalCompletionInvocationContext,
+		invocation?: KernelInvocation,
 	): Promise<void> {
 		const active: ActiveRun = {
 			runId,
@@ -357,6 +364,7 @@ export class WorkerCore {
 			floatingRejections: [],
 			input: new WorkerInput(runId, this.#transport, snapshot.stdin === true),
 			exit: Promise.withResolvers<never>(),
+			exitRequested: false,
 		};
 		this.#runs.set(runId, active);
 		const displayBudget = new PythonDisplayBudget();
@@ -365,6 +373,7 @@ export class WorkerCore {
 			const id = String(++this.#outputSequence);
 			const ack = Promise.withResolvers<void>();
 			this.#outputAcks.set(id, ack.resolve);
+			this.#refreshChannelReference();
 			this.#transport.send(
 				typeof chunk === "string"
 					? { type: "text", runId, id, chunk, stream }
@@ -398,11 +407,18 @@ export class WorkerCore {
 				runId,
 				cwd: snapshot.cwd,
 				shellEnv: snapshot.shellEnv,
+				invocation,
+				drain: this.#transport.setReferenced ? () => this.#drainEventLoop(active) : undefined,
 				stdin: active.input,
 				stop: active.exit.promise,
 			});
 			runtime.displayValue(value, hooks);
-			result = { type: "result", runId, ok: true };
+			result = {
+				type: "result",
+				runId,
+				ok: true,
+				...(runtime.cellExitCode ? { exitCode: runtime.cellExitCode } : {}),
+			};
 		} catch (error) {
 			result =
 				error instanceof CellExit
@@ -410,7 +426,8 @@ export class WorkerCore {
 					: { type: "result", runId, ok: false, error: errorPayload(error) };
 		}
 		try {
-			await sleep(0);
+			// The check phase delivers unhandled rejections even for in-process test transports.
+			await nextTurn();
 			result = foldFloatingRejections(active, result, hooks);
 			await output.flush();
 		} catch (error) {
@@ -419,8 +436,35 @@ export class WorkerCore {
 			active.input.destroy();
 			this.#runs.delete(runId);
 			this.#rememberCellFile(filename);
-			if (!this.#closing) this.#transport.send(result);
+			const nativeSequence = this.#runtime?.nativeSequence;
+			if (!this.#closing)
+				this.#transport.send(nativeSequence === undefined ? result : { ...result, nativeSequence });
 			displayBudget.release();
+		}
+	}
+
+	#refreshChannelReference(): void {
+		this.#transport.setReferenced?.(
+			!this.#draining || this.#draining.pendingTools.size > 0 || this.#outputAcks.size > 0,
+		);
+	}
+
+	async #drainEventLoop(active: ActiveRun): Promise<void> {
+		const drained = Promise.withResolvers<void>();
+		const onBeforeExit = (): void => {
+			// Ref before resolving: the kernel must survive the very event that would end a native command.
+			this.#transport.setReferenced?.(true);
+			drained.resolve();
+		};
+		process.once("beforeExit", onBeforeExit);
+		this.#draining = active;
+		this.#refreshChannelReference();
+		try {
+			await Promise.race([drained.promise, active.exit.promise]);
+		} finally {
+			process.off("beforeExit", onBeforeExit);
+			this.#draining = undefined;
+			this.#transport.setReferenced?.(true);
 		}
 	}
 
@@ -437,6 +481,7 @@ export class WorkerCore {
 		const id = `tc-${active.runId}-${crypto.randomUUID()}`;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 		active.pendingTools.set(id, { runId: active.runId, resolve, reject });
+		this.#refreshChannelReference();
 		try {
 			this.#transport.send({
 				type: "tool-call",
@@ -448,6 +493,7 @@ export class WorkerCore {
 			});
 		} catch (error) {
 			active.pendingTools.delete(id);
+			this.#refreshChannelReference();
 			reject(error);
 		}
 		return await promise;
@@ -458,6 +504,7 @@ export class WorkerCore {
 			const pending = active.pendingTools.get(id);
 			if (!pending) continue;
 			active.pendingTools.delete(id);
+			this.#refreshChannelReference();
 			if (reply.ok) pending.resolve(reply.value);
 			else pending.reject(errorFromPayload(reply.error));
 			return;

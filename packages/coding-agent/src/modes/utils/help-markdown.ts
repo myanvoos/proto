@@ -23,6 +23,6 @@ export function buildHelpMarkdown(bindings: HelpMarkdownBindings): string {
 		"- `/tools` — tools currently visible to the agent",
 		"- `/model` — switch the model for this session",
 		"- `/resume` — resume a different session",
-		"- `proto://` — internal documentation URLs; type `proto://` in the prompt to browse them",
+		"- `harness://` — internal documentation URLs; type `harness://` in the prompt to browse them",
 	].join("\n");
 }

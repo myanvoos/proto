@@ -6,6 +6,7 @@ wrapper writes typed frames back.
 Host -> wrapper:
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?}
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?, "cwd": str?, "env": dict?}
+  # Code requests may include invocation: {"argv": [str, ...], "filename": str?}
   {"type": "stdin", "id": str, "data": base64, "eof": bool}  # one <=64 KiB credit
   {"type": "tool_response", "requestId": str, "reply": dict}  # remote bridge only
   {"type": "cancel", "id": str}                  # cancel active/queued cell
@@ -27,7 +28,14 @@ Wrapper -> host:
 
 Binary stdout/stderr frames use encoding:"base64", data:<base64>, text:<preview>.
 Code requests set stdin:true to enable program input, independent of this control pipe.
-Input replies bypass the asyncio execution queue so synchronous reads can progress.
+The control reader owns a private descriptor; fd 0 is a bounded native input pipe.
+Ordinary code executes on the main thread outside any host event loop. Coroutine
+cells and explicitly retained work use a persistent loop, also on the main thread.
+Cell completion drains owned asyncio tasks; retain_task() transfers live tasks
+to kernel lifetime. asyncio.run() remains entirely native. Threads and executors
+are runtime-lifetime resources: explicit join/shutdown/context managers keep
+native meaning. atexit and interpreter/thread finalization run only when the
+kernel shuts down, not at cell completion.
 
 The runner is intentionally self-contained: no third-party imports, no IPython.
 Magics are translated by a small line-scanner before AST parsing; rich display
@@ -42,6 +50,7 @@ import asyncio
 import base64
 import builtins
 import codecs
+from collections import deque
 import contextvars
 import importlib
 import importlib.machinery
@@ -136,12 +145,10 @@ def _emit(frame: dict) -> None:
         _RAW_STDOUT.flush()
 
 
-def _emit_kernel_note(note: str) -> None:
-    """Send one model-visible note through the current cell's stderr stream."""
-    rid = _CURRENT_RID.get()
-    if rid is None:
-        return
-    _emit({"type": "stderr", "id": rid, "data": f"<kernel> note: {note}\n"})
+def _emit_kernel_note(note: str, *, level: str = "note") -> None:
+    """Model-visible harness receipts are sideband, never program bytes."""
+    if _current_run_id() is not None:
+        _emit_status("note", text=f"<kernel> {level}: {note}\n")
 
 
 class _StreamProxy(io.TextIOBase):
@@ -205,7 +212,7 @@ class _StreamProxy(io.TextIOBase):
         this cell. Without capture the number would be the runner's own frame
         channel, so the unsupported-operation error stands.
         """
-        rid = _CURRENT_RID.get()
+        rid = _current_run_id()
         if rid is not None and self._routed_fd(rid) is not None:
             return self._fd
         raise io.UnsupportedOperation("fileno")
@@ -244,7 +251,7 @@ class _StreamProxy(io.TextIOBase):
             data = str(data)
         if not data:
             return 0
-        rid = _CURRENT_RID.get()
+        rid = _current_run_id()
         if rid is None:
             _RAW_STDERR.write(data)
             _RAW_STDERR.flush()
@@ -276,7 +283,7 @@ class _StreamProxy(io.TextIOBase):
         return len(data)
 
     def flush(self) -> None:
-        rid = _CURRENT_RID.get()
+        rid = _current_run_id()
         if rid is not None:
             self.flush_rid(rid)
         return None
@@ -331,7 +338,7 @@ class _BinaryStreamProxy(io.RawIOBase):
             raise TypeError(f"a bytes-like object is required, not '{type(data).__name__}'")
         if not payload:
             return 0
-        rid = _CURRENT_RID.get()
+        rid = _current_run_id()
         if rid is None:
             _RAW_STDERR.write(payload.decode("utf-8", "backslashreplace"))
             _RAW_STDERR.flush()
@@ -355,59 +362,107 @@ def _flush_stream_proxies(rid: str) -> None:
 
 
 
-class _ProgramInput(io.RawIOBase):
-    """Blocking Python I/O backed by one 64 KiB protocol credit at a time."""
+_STDIN_ENCODING = getattr(sys.__stdin__, "encoding", None) or "utf-8"
+_STDIN_ERRORS = getattr(sys.__stdin__, "errors", None) or "strict"
+
+
+def _open_program_stdin():
+    raw = io.FileIO(0, "rb", closefd=False)
+    raw.name = "<stdin>"
+    return io.TextIOWrapper(io.BufferedReader(raw), encoding=_STDIN_ENCODING, errors=_STDIN_ERRORS)
+
+
+class _ProgramInput:
+    """A native pipe on fd 0, fed with at most one outstanding 64 KiB credit.
+
+    The feeder must not run on the control-reader thread: a child can leave
+    stdin unread while the cell waits for a bridge reply or cancellation.
+    """
 
     def __init__(self, rid: str, enabled: bool) -> None:
-        super().__init__()
         self.rid = rid
         self._condition = threading.Condition()
-        self._data = b""
+        self._data: bytes | None = None
         self._eof = not enabled
         self._requested = False
-        self._error: str | None = None
+        self._closed = False
+        self.error: str | None = None
+        read_fd, self._write_fd = os.pipe()
+        try:
+            os.dup2(read_fd, 0)
+        finally:
+            if read_fd != 0:
+                os.close(read_fd)
+        os.set_blocking(self._write_fd, False)
+        self.stream = _open_program_stdin()
+        self._thread: threading.Thread | None = None
 
-    def readable(self) -> bool:
-        return True
+    def start(self) -> None:
+        if self._eof:
+            os.close(self._write_fd)
+            return
+        self._thread = threading.Thread(target=self._pump, name="proto-program-input", daemon=True)
+        self._thread.start()
 
-    def readinto(self, buffer) -> int:
-        with self._condition:
-            while not self._data and not self._eof:
-                if not self._requested:
+    def _pump(self) -> None:
+        try:
+            while True:
+                with self._condition:
+                    if self._closed:
+                        return
                     self._requested = True
                     _emit({"type": "stdin_request", "id": self.rid})
-                self._condition.wait()
-            if self._error:
-                raise OSError(self._error)
-            size = min(len(buffer), len(self._data))
-            buffer[:size] = self._data[:size]
-            self._data = self._data[size:]
-            return size
+                    while self._data is None and not self._eof and not self._closed:
+                        self._condition.wait()
+                    if self._closed:
+                        return
+                    data = self._data or b""
+                    self._data = None
+                    eof = self._eof
+                offset = 0
+                while offset < len(data):
+                    if self._closed:
+                        return
+                    if not select.select([], [self._write_fd], [], 0.05)[1]:
+                        continue
+                    try:
+                        offset += os.write(self._write_fd, data[offset:])
+                    except BlockingIOError:
+                        continue
+                if eof:
+                    return
+        except (BrokenPipeError, OSError):
+            # The program may close stdin or finish without consuming it.
+            pass
+        finally:
+            os.close(self._write_fd)
 
     def feed(self, frame: dict) -> None:
         with self._condition:
+            if self._closed:
+                return
             try:
                 encoded = frame.get("data", "")
                 if not self._requested or not isinstance(encoded, str) or len(encoded) > 87384:
                     raise ValueError("Invalid stdin credit")
                 data = base64.b64decode(encoded, validate=True)
-                if len(data) > 65536 or self._data or (not data and not frame.get("eof")):
+                if len(data) > 65536 or self._data is not None or (not data and not frame.get("eof")):
                     raise ValueError("Invalid stdin chunk")
                 self._data = data
                 self._eof = bool(frame.get("eof"))
                 self._requested = False
             except (ValueError, TypeError) as error:
-                self._error = str(error)
+                self.error = str(error)
                 self._eof = True
             self._condition.notify_all()
 
     def close(self) -> None:
         with self._condition:
-            self._eof = True
-            self._data = b""
+            self._closed = True
             self._condition.notify_all()
-        super().close()
-
+        if self._thread is not None:
+            self._thread.join()
+        self.stream.close()
 
 _PROGRAM_INPUTS: dict[str, _ProgramInput] = {}
 _BRIDGE_REPLIES: dict[str, tuple[threading.Event, list[dict]]] = {}
@@ -415,7 +470,7 @@ _BRIDGE_LOCK = threading.Lock()
 
 
 def __proto_bridge_call__(name: str, args: dict, completion_invocation_id=None):
-    rid = _CURRENT_RID.get()
+    rid = _current_run_id()
     if rid is None:
         raise RuntimeError("Tool bridge called outside an active cell")
     request_id = os.urandom(16).hex()
@@ -446,11 +501,9 @@ class _RunnerState:
     def __init__(self) -> None:
         self.execution_count: int = 0
         self.cancel_requested: bool = False
-        self.user_ns: dict[str, Any] = {
-            "__name__": "__main__",
-            "__doc__": None,
-            "__builtins__": builtins,
-        }
+        self.user_module = types.ModuleType("__main__")
+        self.user_ns = self.user_module.__dict__
+        self.filename = "<string>"
         self.last_install_marker: int = 0
         self.loop: asyncio.AbstractEventLoop | None = None
         self.shutting_down: bool = False
@@ -461,6 +514,10 @@ class _RunnerState:
         self.prelude_exports: dict[str, Any] = {}
         self.shadow_warned: set[str] = set()
         self.request_tasks: set[asyncio.Task] = set()
+        self.cell_tasks: dict[asyncio.Task, str] = {}
+        self.thread_owners: weakref.WeakKeyDictionary[threading.Thread, str] = weakref.WeakKeyDictionary()
+        self.retained: weakref.WeakSet = weakref.WeakSet()
+        self.work_changed = asyncio.Event()
         self.pending_request_ids: set[str] = set()
         self.cancelled_request_ids: set[str] = set()
         self.active_request_id: str | None = None
@@ -478,64 +535,50 @@ _REQUEST_QUEUE_MAX_BYTES = 16 * 1024 * 1024
 
 
 class _BoundedRequestQueue:
-    """Async request queue bounded by both entry count and serialized bytes."""
+    """Thread-safe FIFO with bounded count/bytes and an asyncio wakeup.
+
+    Admission never blocks the control reader: input, bridge responses and
+    cancellation must still get through when the execution queue is full.
+    """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[tuple[dict, int]] = asyncio.Queue(
-            maxsize=_REQUEST_QUEUE_MAX_COUNT
-        )
+        self._queue: deque[tuple[dict, int]] = deque()
         self._bytes = 0
-        self._reserved_count = 0
-        self._reserved_bytes = 0
-        self._condition = threading.Condition()
+        self._lock = threading.Lock()
+        self._ready = asyncio.Event()
+        self._closed = False
 
-    def reserve(self, size: int) -> bool:
-        """Reserve bounded capacity before scheduling a callback from stdin."""
-        if size > _REQUEST_QUEUE_MAX_BYTES:
-            return False
-        with self._condition:
-            while (
-                self._reserved_count >= _REQUEST_QUEUE_MAX_COUNT
-                or self._reserved_bytes + size > _REQUEST_QUEUE_MAX_BYTES
-            ):
-                self._condition.wait()
-            self._reserved_count += 1
-            self._reserved_bytes += size
-        return True
-
-    def put_reserved(self, request: dict, size: int) -> None:
-        self._queue.put_nowait((request, size))
-        self._bytes += size
+    def _wake(self) -> None:
+        loop = _STATE.loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._ready.set)
 
     def put_nowait(self, request: dict, size: int) -> bool:
-        if size > _REQUEST_QUEUE_MAX_BYTES:
-            return False
-        with self._condition:
-            if (
-                self._reserved_count >= _REQUEST_QUEUE_MAX_COUNT
-                or self._reserved_bytes + size > _REQUEST_QUEUE_MAX_BYTES
-            ):
+        with self._lock:
+            if (self._closed or len(self._queue) >= _REQUEST_QUEUE_MAX_COUNT
+                    or self._bytes + size > _REQUEST_QUEUE_MAX_BYTES):
                 return False
-            self._reserved_count += 1
-            self._reserved_bytes += size
-        self.put_reserved(request, size)
+            self._queue.append((request, size))
+            self._bytes += size
+        self._wake()
         return True
 
     async def get(self) -> tuple[dict, int]:
-        request, size = await self._queue.get()
-        self._bytes -= size
-        with self._condition:
-            self._reserved_count -= 1
-            self._reserved_bytes -= size
-            self._condition.notify()
-        return request, size
+        while True:
+            with self._lock:
+                if self._closed:
+                    return {"type": "exit"}, 0
+                if self._queue:
+                    request, size = self._queue.popleft()
+                    self._bytes -= size
+                    return request, size
+                self._ready.clear()
+            await self._ready.wait()
 
-    def qsize(self) -> int:
-        return self._queue.qsize()
-
-    def task_done(self) -> None:
-        self._queue.task_done()
-
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+        self._wake()
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "proto_current_rid", default=None
@@ -1050,32 +1093,6 @@ def _end_fd_capture() -> None:
             pass
 
 
-_HEREDOC_OPEN_RE = re.compile(
-    r"(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z_0-9]*)[ \t]*"
-    r"=[ \t]*<<[ \t]*(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)[ \t]*\r?$"
-)
-
-
-class _HeredocBlock:
-    """A source-range heredoc assignment found by the literal-aware scanner."""
-
-    __slots__ = ("start", "end", "indent", "name", "delimiter")
-
-    def __init__(
-        self,
-        start: int,
-        end: int,
-        indent: str,
-        name: str,
-        delimiter: str,
-    ) -> None:
-        self.start = start
-        self.end = end
-        self.indent = indent
-        self.name = name
-        self.delimiter = delimiter
-
-
 _CURLY_DOUBLE_RE = re.compile("[\u201c\u201d]")
 _CURLY_SINGLE_RE = re.compile("[\u2018\u2019]")
 _NBSP_RE = re.compile("\u00a0")
@@ -1099,7 +1116,7 @@ class PreparedCell:
     """Pre-processed cell ready for compilation.
 
     ``source`` is what will execute. ``notes`` disclose behavior the model
-    did not explicitly request (heredoc bindings, accepted repairs); ``hints``
+    did not explicitly request (accepted repairs); ``hints``
     carry diagnostics for a cell that will fail to compile regardless.
     """
 
@@ -1119,12 +1136,7 @@ def _compiles(source: str) -> bool:
     return True
 
 
-def _heredoc_indent(line: str) -> str:
-    """Return the exact heredoc indentation prefix (spaces/tabs only)."""
-    return line[: len(line) - len(line.lstrip(" \t"))]
-
-
-def _raw_string_body_lines(source: str) -> set[int]:
+def _string_body_lines(source: str) -> set[int]:
     """1-based physical lines that begin inside Python multiline strings."""
     protected: set[int] = set()
     fstring_start = getattr(tokenize, "FSTRING_START", None)
@@ -1147,163 +1159,6 @@ def _raw_string_body_lines(source: str) -> set[int]:
     except (tokenize.TokenError, SyntaxError, ValueError):
         pass
     return protected
-
-
-def _nested_python_lines(source: str) -> set[int]:
-    """Physical lines whose first tokens are inside (), [], or {}."""
-    nested: set[int] = set()
-    depth = 0
-    ignored = {
-        tokenize.ENCODING,
-        tokenize.INDENT,
-        tokenize.DEDENT,
-        tokenize.NEWLINE,
-        tokenize.NL,
-    }
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-            if depth > 0 and tok.type not in ignored:
-                nested.add(tok.start[0])
-            if tok.type != tokenize.OP:
-                continue
-            if tok.string in "([{":
-                depth += 1
-            elif tok.string in ")]}":
-                depth = max(0, depth - 1)
-    except (tokenize.TokenError, SyntaxError, ValueError):
-        pass
-    return nested
-
-
-def _masked_verbatim_source(source: str, ranges: list[tuple[int, int]]) -> str:
-    """Blank payload characters while preserving every physical newline."""
-    if not ranges:
-        return source
-    lines = source.split("\n")
-    for start, end in ranges:
-        for index in range(start, min(end, len(lines))):
-            lines[index] = "".join("\r" if char == "\r" else " " for char in lines[index])
-    return "\n".join(lines)
-
-
-def _inside_verbatim(index: int, ranges: list[tuple[int, int]]) -> bool:
-    return any(start <= index < end for start, end in ranges)
-
-
-def _heredoc_line_text(line: str) -> str:
-    """Drop the CR belonging to a CRLF physical line."""
-    return line[:-1] if line.endswith("\r") else line
-
-
-def _find_heredoc_end(
-    lines: list[str], start: int, indent: str, delimiter: str
-) -> int | None:
-    terminator = re.compile(re.escape(delimiter) + r"[ \t]*\r?$")
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if _heredoc_indent(line) != indent:
-            continue
-        if terminator.fullmatch(line[len(indent) :]) is not None:
-            return index
-    return None
-
-
-def _collect_heredoc_blocks(source: str) -> tuple[list[_HeredocBlock], set[int]]:
-    """Find heredocs incrementally, re-tokenizing after every masked payload.
-
-    A hostile unmatched quote in one payload can stop Python tokenization before
-    a later real string. Discovering only the first eligible heredoc per pass
-    ensures its body is masked before any later header-looking line is judged.
-    """
-    lines = source.split("\n")
-    ranges: list[tuple[int, int]] = []
-    blocks: list[_HeredocBlock] = []
-    starts: set[int] = set()
-    protected: set[int] = set()
-
-    for _ in range(max(1, len(lines) + 1)):
-        masked = _masked_verbatim_source(source, ranges)
-        protected = _raw_string_body_lines(masked)
-        nested = _nested_python_lines(masked)
-        discovered = False
-        for index, line in enumerate(lines):
-            if (
-                index in starts
-                or index + 1 in protected
-                or index + 1 in nested
-                or _inside_verbatim(index, ranges)
-            ):
-                continue
-            match = _HEREDOC_OPEN_RE.fullmatch(line)
-            if match is None:
-                continue
-            indent = match.group("indent")
-            delimiter = match.group("delimiter")
-            end = _find_heredoc_end(lines, index, indent, delimiter)
-            if end is None:
-                return blocks, protected
-            block = _HeredocBlock(
-                index,
-                end,
-                indent,
-                match.group("name"),
-                delimiter,
-            )
-            starts.add(index)
-            blocks.append(block)
-            ranges.append((index + 1, end))
-            discovered = True
-            break
-        if not discovered:
-            break
-
-    blocks.sort(key=lambda block: block.start)
-    return blocks, protected
-
-
-def _extract_heredocs(source: str) -> tuple[str, list[str]]:
-    """Expand assignment heredocs into verbatim string assignments.
-
-    Consumed rows are replaced with blank lines to keep subsequent source line
-    numbers aligned.
-    """
-    lines = source.split("\n")
-    blocks, protected = _collect_heredoc_blocks(source)
-    by_start = {block.start: block for block in blocks}
-    notes: list[str] = []
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        block = by_start.get(i)
-        if block is None:
-            line = lines[i]
-            if i + 1 not in protected:
-                match = _HEREDOC_OPEN_RE.fullmatch(line)
-                if match is not None:
-                    indent = match.group("indent")
-                    delimiter = match.group("delimiter")
-                    if _find_heredoc_end(lines, i, indent, delimiter) is None:
-                        name = match.group("name")
-                        raise SyntaxError(
-                            f"heredoc {name!r} (line {i + 1}) is never closed: "
-                            f"expected {delimiter!r} alone at the opening indentation",
-                            ("<cell>", i + 1, 1, line),
-                        )
-            out.append(line)
-            i += 1
-            continue
-
-        content = "\n".join(
-            _heredoc_line_text(line) for line in lines[block.start + 1 : block.end]
-        )
-        out.append(f"{block.indent}{block.name} = {json.dumps(content, ensure_ascii=True)}")
-        out.extend("" for _ in range(block.end - block.start))
-        notes.append(
-            f"heredoc {block.name}: bound {len(content)} chars "
-            f"({block.end - block.start - 1} lines) verbatim"
-        )
-        i = block.end + 1
-    return "\n".join(out), notes
 
 
 def _unicode_repairs(source: str) -> tuple[str, list[str]]:
@@ -1379,8 +1234,7 @@ def _syntax_hints(source: str) -> list[str]:
         if "multi-line string" in message and pos:
             hints.append(
                 f"{_quote_style_at(source, pos)} opened at line {pos[0]} is never closed — "
-                "count the quote runs; text containing triple quotes is the usual cause "
-                "(an assignment heredoc avoids quoting entirely)"
+                "count the quote runs; text containing triple quotes is the usual cause"
             )
         elif pos:
             hints.append(
@@ -1424,16 +1278,14 @@ def _syntax_hints(source: str) -> list[str]:
 def prepare_cell(code: str) -> PreparedCell:
     """Full pre-processing pipeline for a user cell.
 
-    Order matters: heredocs are extracted first (their content is data, immune
-    to magic rewriting and repairs), then magics are translated, then
-    a repair ladder runs only if the result still fails to compile. Every
+    Magics are translated first, then a repair ladder runs only if the
+    result still fails to compile. Every
     accepted repair is disclosed in ``notes``; ``hints`` are populated only
     when no repair compiles.
     """
-    source, heredoc_notes = _extract_heredocs(code)
-    transformed = transform_cell(source)
+    transformed = transform_cell(code)
     if _compiles(transformed):
-        return PreparedCell(transformed, heredoc_notes, [])
+        return PreparedCell(transformed, [], [])
     fenced = _strip_markdown_fences(transformed)
     cleaned, repair_notes = _unicode_repairs(transformed)
     candidates: list[tuple[str, list[str]]] = []
@@ -1451,17 +1303,17 @@ def prepare_cell(code: str) -> PreparedCell:
         if _compiles(candidate):
             return PreparedCell(
                 candidate,
-                heredoc_notes + [f"executed repaired cell: {'; '.join(applied)}"],
+                [f"executed repaired cell: {'; '.join(applied)}"],
                 [],
             )
-    return PreparedCell(transformed, heredoc_notes, _syntax_hints(transformed))
+    return PreparedCell(transformed, [], _syntax_hints(transformed))
 
 
-def _emit_cell_prep(rid: str, prepared: PreparedCell) -> None:
+def _emit_cell_prep(prepared: PreparedCell) -> None:
     for note in prepared.notes:
-        _emit({"type": "stderr", "id": rid, "data": f"<kernel> note: {note}\n"})
+        _emit_kernel_note(note)
     for hint in prepared.hints:
-        _emit({"type": "stderr", "id": rid, "data": f"<kernel> hint: {hint}\n"})
+        _emit_kernel_note(hint, level="hint")
 
 
 _MAGIC_LINE_RE = re.compile(
@@ -1590,12 +1442,6 @@ def transform_cell(source: str) -> str:
     return "\n".join(out)
 
 
-def _string_body_lines(source: str) -> set[int]:
-    """Return literal-protected lines using the shared heredoc scanner."""
-    _, protected = _collect_heredoc_blocks(source)
-    return protected
-
-
 def _split_magic_head(text: str) -> tuple[tuple[str, str], str]:
     """Split ``"name rest"`` into ``("name", "rest")``."""
     text = text.lstrip()
@@ -1631,7 +1477,7 @@ def cell_magic(
 
 def _emit_status(op: str, **data: Any) -> None:
     bundle = {"application/x-proto-status": {"op": op, **data}}
-    rid = _CURRENT_RID.get()
+    rid = _current_run_id()
     if rid is None:
         return
     _sync_before_frame(rid)
@@ -2223,7 +2069,7 @@ def _mime_bundle(value: Any) -> dict:
 
 
 def _emit_display(bundle: dict, *, kind: str = "display") -> None:
-    rid = _CURRENT_RID.get()
+    rid = _current_run_id()
     if rid is None:
         return
     _sync_before_frame(rid)
@@ -2462,7 +2308,7 @@ def __proto_kernel_state(*, limit: int = 200) -> dict:
                           "type": kind_name, "preview": preview,
                           "cell": _STATE.defs.get(name, _STATE.execution_count), "provenance": "cell"})
     # asyncio owns these tasks; do not call user task repr, names or coroutine getters.
-    live_tasks = asyncio.all_tasks()
+    live_tasks = asyncio.all_tasks(_STATE.loop) if _STATE.loop is not None else set()
     tasks = []
     for task in sorted(live_tasks, key=id)[:limit]:
         request = task in _STATE.request_tasks
@@ -2471,7 +2317,7 @@ def __proto_kernel_state(*, limit: int = 200) -> dict:
     return {"generation": _KERNEL_GENERATION, "target": json.loads(json.dumps(_KERNEL_TARGET)), "language": "python", "interpreter": sys.executable,
             "cwd": os.getcwd(), "executionCount": _STATE.execution_count,
             "active": _STATE.active_executions,
-            "queued": max(0, len(_STATE.pending_request_ids) - len(_STATE.request_tasks)),
+            "queued": max(0, len(_STATE.pending_request_ids) - bool(_STATE.active_request_id)),
             "variables": variables, "totalVariables": total,
             "tasks": tasks, "totalTasks": len(live_tasks), "taskScope": "asyncio"}
 
@@ -2481,7 +2327,7 @@ def __proto_defs_view() -> dict[str, int]:
 
 
 def _state_path(path):
-    resolver = _prelude_fn("proto_path")
+    resolver = _prelude_fn("_filesystem_path")
     return str(resolver(path) if resolver else Path(path).expanduser())
 
 
@@ -2499,7 +2345,56 @@ def __proto_load_state(path, *, collision="reject") -> dict:
 
 
 def _current_run_id() -> str | None:
-    return _CURRENT_RID.get()
+    return _CURRENT_RID.get() or _STATE.thread_owners.get(threading.current_thread())
+
+
+def __proto_retain_task(task):
+    """Transfer a live top-level-await task from cell to kernel lifetime.
+
+    Tasks owned by asyncio.run retain that loop's native shutdown semantics.
+    Threads/executors already have runtime lifetime; use their native join,
+    shutdown or context-manager APIs when a cell needs to wait for them.
+    """
+    if not isinstance(task, asyncio.Task):
+        raise TypeError("retain_task expects an asyncio.Task")
+    if task.get_loop() is not _STATE.loop or task.done():
+        raise ValueError("retain_task requires a live task on the kernel's top-level-await loop")
+    _STATE.retained.add(task)
+    _STATE.work_changed.set()
+    return task
+
+def _create_user_task(loop, coro, **kwargs):
+    task = asyncio.Task(coro, loop=loop, **kwargs)
+    context = kwargs.get("context")
+    rid = context.get(_CURRENT_RID) if context is not None else _current_run_id()
+    if rid is not None:
+        _STATE.cell_tasks[task] = rid
+        if asyncio.current_task(loop) in _STATE.retained:
+            _STATE.retained.add(task)
+        task.add_done_callback(_task_finished)
+    return task
+
+
+def _task_finished(task: asyncio.Task) -> None:
+    if task in _STATE.retained or _STATE.cell_tasks.get(task) != _STATE.active_request_id:
+        _STATE.cell_tasks.pop(task, None)
+    _STATE.work_changed.set()
+
+
+_THREAD_START = threading.Thread.start
+
+
+def _start_user_thread(thread, *args, **kwargs):
+    rid = _current_run_id()
+    added = rid is not None and thread not in _STATE.thread_owners
+    if added:
+        _STATE.thread_owners[thread] = rid
+    try:
+        return _THREAD_START(thread, *args, **kwargs)
+    except BaseException:
+        if added:
+            _STATE.thread_owners.pop(thread, None)
+        raise
 
 
 def _next_completion_invocation_id() -> str:
@@ -2517,6 +2412,7 @@ def _runner_exports() -> dict[str, Any]:
         "display": __proto_display,
         "defs": __proto_defs_view,
         "kernel_state": __proto_kernel_state,
+        "retain_task": __proto_retain_task,
         "save_state": __proto_save_state,
         "load_state": __proto_load_state,
     }
@@ -2531,6 +2427,7 @@ def _install_builtins(ns: dict) -> None:
     instead of losing it for the life of the kernel.
     """
     ns["__proto_display"] = __proto_display
+    ns["__proto_display_result"] = _display_result
     ns["__proto_magic"] = __proto_magic
     ns["__proto_magic_cell"] = __proto_magic_cell
     ns["__proto_shell"] = __proto_shell
@@ -2578,97 +2475,110 @@ def _load_prelude(source: str) -> None:
     _STATE.shadow_warned.clear()
 
 
-_install_builtins(_STATE.user_ns)
-
-
 _TLA_FLAG = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x2000)
 
 
-def _await_sync(coro) -> Any:
+async def _await_user(coro):
+    # Task._step re-raises SystemExit/KeyboardInterrupt into the event loop.
+    # Keep them as user outcomes, so neither can tear down the host loop.
     try:
-        running_loop = asyncio.get_running_loop()
+        return True, await coro
+    except BaseException as exc:
+        return False, exc
+
+
+def _await_sync(coro) -> Any:
+    loop = _STATE.loop
+    try:
+        asyncio.get_running_loop()
     except RuntimeError:
-        running_loop = None
-    if running_loop is not None and running_loop.is_running():
-        raise RuntimeError(
-            "top-level await is not supported from synchronous magic execution"
-        )
-    return asyncio.run(coro)
+        pass
+    else:
+        coro.close()
+        raise RuntimeError("top-level await is not supported from synchronous magic execution")
+    if loop is None:
+        return asyncio.run(coro)
+    task = loop.create_task(_await_user(coro))
+    _STATE.request_tasks.add(task)
+    try:
+        ok, value = loop.run_until_complete(task)
+    except BaseException:
+        # SIGINT or SystemExit raised by a child task/callback can escape
+        # Task._step. Settle the suspended request before admitting a new cell.
+        task.cancel()
+        loop.run_until_complete(task)
+        raise
+    finally:
+        _STATE.request_tasks.discard(task)
+        _STATE.cell_tasks.pop(task, None)
+    if not ok:
+        raise value
+    return value
 
 
-def _run_compiled_sync(code, ns: dict, *, want_value: bool) -> Any:
-    """Synchronous execution path used by nested magic helpers."""
-    if code.co_flags & inspect.CO_COROUTINE:
-        result = _await_sync(eval(code, ns))
-        return result if want_value else None
-    if want_value:
-        return eval(code, ns)
-    exec(code, ns)
-    return None
+def _run_compiled_sync(code, ns: dict) -> None:
+    """Ordinary code runs on the main thread with no running host loop.
 
-
-async def _run_compiled_async(code, ns: dict, *, want_value: bool) -> Any:
-    """Execute a code object in the persistent event loop.
-
-    Coroutine code is awaited in the FIFO execution task. Plain
-    statement/expression code runs on the main runner thread so SIGINT can
-    interrupt it reliably.
+    A whole compiled coroutine cell runs on the explicit persistent loop;
+    asyncio.run in ordinary code is untouched and owns its own native loop.
     """
     if code.co_flags & inspect.CO_COROUTINE:
-        result = await eval(code, ns)
-        return result if want_value else None
-    if want_value:
-        return eval(code, ns)
-    exec(code, ns)
-    return None
+        _await_sync(eval(code, ns))
+    else:
+        exec(code, ns)
 
 
-_USER_EXEC_CODES: set[Any] = {_run_compiled_sync.__code__, _run_compiled_async.__code__}
+def _display_result(value) -> None:
+    if value is not None:
+        __proto_display(value, kind="result")
 
 
-def _compile_source(source: str) -> tuple[Any, Any | None, bool]:
-    module = ast.parse(source, "<cell>", "exec")
-    if not module.body:
-        return None, None, False
-
-    last = module.body[-1]
-    if isinstance(last, ast.Expr):
-        body_module = ast.Module(body=module.body[:-1], type_ignores=[])
-        expr_module = ast.Expression(body=last.value)
-        ast.copy_location(expr_module, last)
-        body_code = compile(body_module, "<cell>", "exec", flags=_TLA_FLAG)
-        expr_code = compile(expr_module, "<cell>", "eval", flags=_TLA_FLAG)
-        return body_code, expr_code, True
-
-    return compile(module, "<cell>", "exec", flags=_TLA_FLAG), None, False
+def _compile_source(source: str):
+    module = ast.parse(source, _STATE.filename, "exec")
+    if module.body and isinstance(module.body[-1], ast.Expr):
+        last = module.body[-1]
+        last.value = ast.copy_location(ast.Call(
+            func=ast.Name(id="__proto_display_result", ctx=ast.Load()),
+            args=[last.value], keywords=[],
+        ), last.value)
+        ast.fix_missing_locations(module)
+    return compile(module, _STATE.filename, "exec", flags=_TLA_FLAG, dont_inherit=True)
 
 
 def _exec_source(source: str, ns: dict) -> None:
-    """Synchronous source execution for legacy magic helpers."""
-    body_code, expr_code, has_expr = _compile_source(source)
-    if body_code is None:
-        return
-    _run_compiled_sync(body_code, ns, want_value=False)
-    if has_expr and expr_code is not None:
-        value = _run_compiled_sync(expr_code, ns, want_value=True)
-        if value is not None:
-            __proto_display(value, kind="result")
+    _run_compiled_sync(_compile_source(source), ns)
 
 
-async def _exec_source_async(source: str, ns: dict) -> None:
-    """Compile + execute ``source``; if the last node is an expression, route
-    its value through ``__proto_display`` so dataframes/figures render rich.
-    Top-level ``await`` / ``async for`` / ``async with`` is permitted; awaited
-    regions yield to other requests in the runner's persistent event loop."""
-    body_code, expr_code, has_expr = _compile_source(source)
-    if body_code is None:
-        return
-    await _run_compiled_async(body_code, ns, want_value=False)
-    if has_expr and expr_code is not None:
-        value = await _run_compiled_async(expr_code, ns, want_value=True)
-        if value is not None:
-            __proto_display(value, kind="result")
+def _owned_tasks(rid: str) -> list[asyncio.Task]:
+    return [task for task, owner in list(_STATE.cell_tasks.items())
+            if owner == rid and task not in _STATE.retained and task not in _STATE.request_tasks]
 
+
+
+
+def _drain_cell_work(rid: str, *, cancel: bool = False) -> None:
+    """Settle owned asyncio work, including work it starts while settling.
+
+    This is not interpreter teardown: native threads/executors, atexit and
+    module finalizers keep process lifetime and are never shut down per cell.
+    Waiting does not consume task exceptions: already handled errors stay
+    handled, and unobserved errors keep asyncio's native diagnostics.
+    """
+    while True:
+        tasks = _owned_tasks(rid)
+        for task in tasks:
+            if task.done():
+                _STATE.cell_tasks.pop(task, None)
+        pending = [task for task in tasks if not task.done()]
+        if not pending:
+            return
+        _STATE.work_changed.clear()
+        if cancel:
+            for task in pending:
+                task.cancel()
+        # Completion and retain_task both wake the waiter. A task can transfer
+        # ownership while the cell is settling without stranding its old cell.
+        _await_sync(_STATE.work_changed.wait())
 
 def _install_idle_sigint() -> None:
     try:
@@ -2677,39 +2587,19 @@ def _install_idle_sigint() -> None:
         pass
 
 
-def _user_code_on_stack(frame: Any) -> bool:
-    while frame is not None:
-        if frame.f_code in _USER_EXEC_CODES:
-            return True
-        frame = frame.f_back
-    return False
-
-
 def _exec_sigint_handler(_signum: int, frame: Any) -> None:
-    """Interrupt the running cell without taking the runner down with it.
-
-    Python-level signal handlers always run on the main thread. If user code
-    is on the stack (sync code, or a sync section of a coroutine) raising
-    ``KeyboardInterrupt`` unwinds it like a REPL would. If the main thread is
-    instead parked in the event loop — the cell is at a top-level ``await`` —
-    raising there would propagate out of ``selector.select`` and kill the
-    whole runner (all kernel state lost); cancel the request task instead so
-    the ``await`` raises ``CancelledError`` inside the cell.
-    """
-    if _user_code_on_stack(frame):
+    """Deliver SIGINT on the main thread, without raising inside loop I/O."""
+    loop = _STATE.loop
+    if loop is None or not loop.is_running() or asyncio.current_task(loop) is not None:
         raise KeyboardInterrupt
-    cancelled = False
+    while frame is not None:
+        if frame.f_globals is _STATE.user_ns:
+            raise KeyboardInterrupt
+        frame = frame.f_back
     for task in list(_STATE.request_tasks):
         if not task.done():
             task.cancel()
-            cancelled = True
-    loop = _STATE.loop
-    if cancelled and loop is not None:
-        try:
-            loop.call_soon_threadsafe(_noop)
-        except RuntimeError:
-            pass
-
+    loop.call_soon_threadsafe(_noop)
 
 def _noop() -> None:
     return None
@@ -2740,15 +2630,39 @@ _MANAGED_ENV_KEYS = (
     "PI_TOOL_BRIDGE_URL",
     "PI_TOOL_BRIDGE_TOKEN",
     "PI_TOOL_BRIDGE_SESSION",
-    "PI_EVAL_LOCAL_ROOTS",
 )
 
 
 def _apply_request_runtime(req: dict) -> None:
+    invocation = req.get("invocation") or {"argv": ["-c"]}
+    argv = invocation.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv):
+        raise ValueError("invocation.argv must be a nonempty string list")
+    filename = invocation.get("filename")
+    if filename is not None and not isinstance(filename, str):
+        raise ValueError("invocation.filename must be a string")
+    sys.argv = list(argv)
+    stdin_code = argv[0] in ("", "-") and filename in (None, "<stdin>")
+    _STATE.filename = filename or ("<stdin>" if stdin_code else "<string>")
+    ns = _STATE.user_ns
+    ns.update({"__name__": "__main__", "__package__": None, "__spec__": None})
+    if filename is None or stdin_code:
+        if stdin_code:
+            ns["__file__"] = "<stdin>"
+            ns["__cached__"] = None
+        else:
+            ns.pop("__file__", None)
+            ns.pop("__cached__", None)
+        ns["__loader__"] = importlib.machinery.BuiltinImporter
+    else:
+        ns["__file__"] = filename
+        ns["__cached__"] = None
+        ns["__loader__"] = importlib.machinery.SourceFileLoader("__main__", filename)
+    sys.modules["__main__"] = _STATE.user_module
     cwd = req.get("cwd")
     if isinstance(cwd, str) and cwd:
         os.chdir(cwd)
-    _set_import_path_prefix(os.getcwd())
+    _set_import_path_prefix(os.path.dirname(os.path.abspath(filename)) if filename and not stdin_code else os.getcwd())
 
     env = req.get("env")
     if isinstance(env, dict):
@@ -2844,7 +2758,7 @@ def _cell_bound_names(source: str) -> tuple[list[str], list[str]]:
     return defs, bound
 
 
-def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
+def _track_cell_defs(source: str, execution_count: int) -> None:
     if _STATE.prelude_names is None and _STATE.user_ns.get("__proto_prelude_loaded__"):
         _STATE.prelude_names = set(_STATE.user_ns)
         _STATE.defs.clear()
@@ -2864,19 +2778,14 @@ def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
         if name not in _STATE.prelude_names or name in _STATE.shadow_warned:
             continue
         _STATE.shadow_warned.add(name)
-        _emit(
-            {
-                "type": "stderr",
-                "id": rid,
-                "data": (
-                    f"<kernel> warning: {name!r} now shadows the kernel helper of the same name; "
-                    f"later cells see your value. `del {name}` restores the helper.\n"
-                ),
-            }
+        _emit_kernel_note(
+            f"{name!r} now shadows the kernel helper of the same name; "
+            f"later cells see your value. `del {name}` restores the helper.",
+            level="warning",
         )
 
 
-async def _handle_request_async(req: dict) -> None:
+def _handle_request(req: dict) -> dict:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
     completion_token = _CURRENT_COMPLETION_COUNT.set([0])
@@ -2892,11 +2801,11 @@ async def _handle_request_async(req: dict) -> None:
                   if key not in _MANAGED_ENV_KEYS and not key.startswith("PI_KERNEL_")}
     saved_env = {key: os.environ.get(key) for key in scoped_env}
     os.environ.update(scoped_env)
-    saved_stdin = sys.stdin
+    saved_stdin, saved_dunder_stdin = sys.stdin, sys.__stdin__
     program_input = _ProgramInput(rid, req.get("stdin") is True)
     _PROGRAM_INPUTS[rid] = program_input
-    cell_stdin = io.TextIOWrapper(io.BufferedReader(program_input), encoding="utf-8")
-    sys.stdin = cell_stdin
+    sys.stdin = sys.__stdin__ = program_input.stream
+    program_input.start()
     capture = _begin_fd_capture(rid)
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
@@ -2922,48 +2831,21 @@ async def _handle_request_async(req: dict) -> None:
             else:
                 prepared = prepare_cell(code)
                 transformed = prepared.source
-                _emit_cell_prep(rid, prepared)
-        except SyntaxError as exc:
-            _emit_error(rid, exc)
-            _sync_fd_capture(capture)
-            _emit(
-                {
-                    "type": "done",
-                    "id": rid,
-                    "status": "error",
-                    "executionCount": execution_count,
-                    "cancelled": False,
-                }
-            )
-            return
+                _emit_cell_prep(prepared)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
             _emit_error(rid, exc)
-            _sync_fd_capture(capture)
-            _emit(
-                {
-                    "type": "done",
-                    "id": rid,
-                    "status": "error",
-                    "executionCount": execution_count,
-                    "cancelled": False,
-                }
-            )
-            return
+            return {
+                "type": "done", "id": rid, "status": "error",
+                "executionCount": execution_count, "cancelled": False,
+            }
 
         if rid in _STATE.cancelled_request_ids:
-            _sync_fd_capture(capture)
-            _emit(
-                {
-                    "type": "done",
-                    "id": rid,
-                    "status": "error",
-                    "executionCount": execution_count,
-                    "cancelled": True,
-                }
-            )
-            return
+            return {
+                "type": "done", "id": rid, "status": "error",
+                "executionCount": execution_count, "cancelled": True,
+            }
 
         _begin_exec_sigint()
         try:
@@ -2975,7 +2857,10 @@ async def _handle_request_async(req: dict) -> None:
             else:
                 _STATE.cell_bindings = frozenset(_cell_bound_names(transformed)[1])
                 _refresh_project_modules()
-                await _exec_source_async(transformed, _STATE.user_ns)
+                _exec_source(transformed, _STATE.user_ns)
+                _drain_cell_work(rid)
+                if program_input.error:
+                    raise OSError(program_input.error)
         except KeyboardInterrupt:
             cancelled = True
             status = "error"
@@ -2986,10 +2871,6 @@ async def _handle_request_async(req: dict) -> None:
             cancelled = True
             status = "error"
             _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
-            current = asyncio.current_task()
-            uncancel = getattr(current, "uncancel", None)
-            if callable(uncancel):
-                uncancel()
         except SystemExit as exc:
             exit_code, message = _system_exit_outcome(exc)
             if message is not None:
@@ -3001,6 +2882,15 @@ async def _handle_request_async(req: dict) -> None:
             status = "error"
             _emit_error(rid, exc)
         finally:
+            try:
+                _drain_cell_work(rid, cancel=status != "ok" or exit_code is not None)
+            except BaseException as exc:
+                status = "error"
+                cancelled = cancelled or isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError))
+                _emit_error(rid, exc)
+                # A second interrupt must not make still-running work look
+                # completed. The host escalates if cleanup cannot settle.
+                _drain_cell_work(rid, cancel=True)
             _end_exec_sigint()
             try:
                 _flush_fs_status()
@@ -3016,7 +2906,7 @@ async def _handle_request_async(req: dict) -> None:
                 for name, value in _STATE.user_ns.items():
                     if type(name) is str and not name.startswith("__") and (name not in bindings_before or bindings_before[name] is not value):
                         _STATE.defs[name] = execution_count
-                _track_cell_defs(transformed, rid, execution_count)
+                _track_cell_defs(transformed, execution_count)
             _flush_stream_proxies(rid)
         except BaseException as exc:
             status = "error"
@@ -3024,7 +2914,6 @@ async def _handle_request_async(req: dict) -> None:
         if rid in _STATE.cancelled_request_ids:
             cancelled = True
             status = "error"
-        _sync_fd_capture(capture)
         done: dict = {
             "type": "done",
             "id": rid,
@@ -3034,7 +2923,7 @@ async def _handle_request_async(req: dict) -> None:
         }
         if exit_code is not None and not cancelled:
             done["exitCode"] = exit_code
-        _emit(done)
+        return done
     finally:
         _flush_stream_proxies(rid)
         _sync_fd_capture(capture)
@@ -3045,9 +2934,15 @@ async def _handle_request_async(req: dict) -> None:
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
         _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
         _CLOSED_MATPLOTLIB_FIGURES.reset(closed_matplotlib_token)
-        sys.stdin = saved_stdin
+        sys.stdin, sys.__stdin__ = saved_stdin, saved_dunder_stdin
         _PROGRAM_INPUTS.pop(rid, None)
-        cell_stdin.close()
+        program_input.close()
+        null_fd = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null_fd, 0)
+        finally:
+            if null_fd != 0:
+                os.close(null_fd)
         for key, value in saved_env.items():
             if os.environ.get(key) != scoped_env[key]:
                 continue  # Intentional user changes remain kernel-local.
@@ -3088,7 +2983,7 @@ def _drop_runner_frames(report: traceback.TracebackException) -> None:
 
 def _emit_error(rid: str, exc: BaseException) -> None:
     _sync_before_frame(rid)
-    if isinstance(exc, SyntaxError) and exc.filename == "<cell>":
+    if isinstance(exc, SyntaxError) and exc.filename == _STATE.filename:
         tb_lines = traceback.format_exception_only(type(exc), exc)
     else:
         report = traceback.TracebackException(type(exc), exc, exc.__traceback__, compact=True)
@@ -3109,46 +3004,60 @@ def _request_size(req: dict) -> int:
     return len(json.dumps(req, ensure_ascii=False, default=_json_default).encode("utf-8"))
 
 
-def _read_stdin(loop: asyncio.AbstractEventLoop, queue: _BoundedRequestQueue, stdin) -> None:
-    for raw_line in stdin:
+def _cancel_request(rid: str) -> None:
+    if rid not in _STATE.pending_request_ids:
+        return
+    _STATE.cancelled_request_ids.add(rid)
+    if _STATE.active_request_id == rid and _STATE.active_executions:
+        os.kill(os.getpid(), signal.SIGINT)
+
+
+def _read_control(queue: _BoundedRequestQueue, control) -> None:
+    for raw_line in control:
         line = raw_line.strip()
         if not line:
             continue
         try:
             req = json.loads(line)
         except json.JSONDecodeError as exc:
-            _emit(
-                {
-                    "type": "error",
-                    "id": "",
-                    "ename": "ProtocolError",
-                    "evalue": f"Invalid JSON request: {exc}",
-                    "traceback": [],
-                }
-            )
+            _emit({"type": "error", "id": "", "ename": "ProtocolError",
+                   "evalue": f"Invalid JSON request: {exc}", "traceback": []})
             continue
-        # Control input must bypass the asyncio execution queue: synchronous
-        # user code can be blocked inside readline() or a bridged tool call.
-        if req.get("type") == "stdin":
+        kind = req.get("type")
+        # This thread remains responsive while main-thread code blocks in
+        # stdin, a native call, or a bridge request. It never runs user code.
+        if kind == "stdin":
             target = _PROGRAM_INPUTS.get(str(req.get("id")))
             if target is not None:
                 target.feed(req)
             continue
-        if req.get("type") == "tool_response":
+        if kind == "tool_response":
             with _BRIDGE_LOCK:
                 pending = _BRIDGE_REPLIES.get(str(req.get("requestId")))
                 if pending is not None:
                     pending[1].append(req.get("reply") or {})
                     pending[0].set()
             continue
+        if kind == "cancel":
+            _cancel_request(str(req.get("id", "")))
+            continue
+        if kind == "status":
+            _emit({"type": "done", "id": str(req.get("id", "")), "status": "ok",
+                   "executionCount": _STATE.execution_count,
+                   "busy": len(_STATE.pending_request_ids), "interpreter": sys.executable})
+            continue
+        if kind == "exit":
+            queue.close()
+            return
         try:
             size = _request_size(req)
         except (TypeError, ValueError):
             size = _REQUEST_QUEUE_MAX_BYTES + 1
-        if not queue.reserve(size):
-            loop.call_soon_threadsafe(_emit_queue_limit_error, req)
-            continue
-        loop.call_soon_threadsafe(queue.put_reserved, req, size)
+        rid = str(req.get("id"))
+        _STATE.pending_request_ids.add(rid)
+        if not queue.put_nowait(req, size):
+            _STATE.pending_request_ids.discard(rid)
+            _emit_queue_limit_error(req)
     for target in list(_PROGRAM_INPUTS.values()):
         target.close()
     with _BRIDGE_LOCK:
@@ -3156,10 +3065,10 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: _BoundedRequestQueue, st
             replies.append({"ok": False, "error": {"message": "Host transport closed"}})
             event.set()
     if _REMOTE_TARGET and os.getpgrp() == os.getpid():
-        # The pipe is the capability lifetime. A vanished parent cannot reap a remote tree.
+        # Only unexpected transport loss revokes the remote process tree.
+        # An explicit exit request above still runs native shutdown hooks.
         os.killpg(os.getpid(), signal.SIGKILL)
-    loop.call_soon_threadsafe(_enqueue_exit, queue)
-
+    queue.close()
 
 def _emit_queue_limit_error(req: dict) -> None:
     _emit_error(str(req.get("id", "")), ValueError(
@@ -3168,131 +3077,85 @@ def _emit_queue_limit_error(req: dict) -> None:
     ))
 
 
-def _enqueue_exit(queue: _BoundedRequestQueue) -> None:
-    request = {"type": "exit"}
-    if not queue.put_nowait(request, _request_size(request)):
-        asyncio.create_task(queue._queue.put((request, _request_size(request))))
 
 
-def _emit_cancelled_request(req: dict) -> None:
-    rid = str(req.get("id"))
+def _cancelled_request_result(req: dict) -> dict:
     _STATE.execution_count += 1
-    _emit(
-        {
-            "type": "done",
-            "id": rid,
-            "status": "error",
-            "executionCount": _STATE.execution_count,
-            "cancelled": True,
-        }
-    )
+    return {
+        "type": "done", "id": str(req.get("id")), "status": "error",
+        "executionCount": _STATE.execution_count, "cancelled": True,
+    }
+
+async def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
+    tasks = asyncio.all_tasks(loop) - {asyncio.current_task(loop)}
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    await loop.shutdown_asyncgens()
+    await loop.shutdown_default_executor()
 
 
-async def _execution_worker(queue: _BoundedRequestQueue) -> None:
-    """Run user requests one at a time in stdin arrival order."""
-    tasks = _STATE.request_tasks
-    while True:
-        req, _size = await queue.get()
-        rid = str(req.get("id"))
-        if rid in _STATE.cancelled_request_ids:
-            _emit_cancelled_request(req)
-            _STATE.pending_request_ids.discard(rid)
-            _STATE.cancelled_request_ids.discard(rid)
-            queue.task_done()
-            continue
-        current = asyncio.current_task()
-        if current is None:
-            raise RuntimeError("Python execution worker has no asyncio task")
-        tasks.add(current)
-        _STATE.active_request_id = rid
-        try:
-            if rid in _STATE.cancelled_request_ids:
-                _emit_cancelled_request(req)
-            else:
-                await _handle_request_async(req)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:
-            _emit_error("", exc)
-        finally:
-            _STATE.active_request_id = None
-            _STATE.pending_request_ids.discard(rid)
-            _STATE.cancelled_request_ids.discard(rid)
-            tasks.discard(current)
-            queue.task_done()
-
-
-async def _main_async() -> None:
+def main() -> None:
+    # fd 0 belongs exclusively to program input. The transport is a private,
+    # non-inheritable descriptor and cannot be consumed by subprocesses.
+    control = os.fdopen(os.dup(0), "r", encoding="utf-8")
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(null_fd, 0)
+    finally:
+        if null_fd != 0:
+            os.close(null_fd)
+    sys.stdin = sys.__stdin__ = _open_program_stdin()
     sys.stdout = _StreamProxy("stdout")
     sys.stderr = _StreamProxy("stderr")
+    sys.modules["__main__"] = _STATE.user_module
+    _install_builtins(_STATE.user_ns)
     _install_idle_sigint()
     _install_runner_audit()
     _install_import_freshness()
     _start_parent_watchdog()
+    threading.Thread.start = _start_user_thread
 
-    stdin = sys.__stdin__
-    if stdin is None:
-        return
-
-    loop = asyncio.get_running_loop()
+    loop = asyncio.new_event_loop()
+    loop.set_task_factory(_create_user_task)
     _STATE.loop = loop
     queue = _BoundedRequestQueue()
-    execution_queue = _BoundedRequestQueue()
-    reader = threading.Thread(
-        target=_read_stdin,
-        args=(loop, queue, stdin),
-        name="proto-stdin-reader",
-        daemon=True,
-    )
+    reader = threading.Thread(target=_read_control, args=(queue, control),
+                              name="proto-control-reader", daemon=True)
     reader.start()
-    execution_worker = asyncio.create_task(_execution_worker(execution_queue))
-
     try:
         while True:
-            req, size = await queue.get()
+            # Driving the loop while idle keeps explicitly retained work
+            # live, but the dispatcher itself is never an asyncio task.
+            req, _size = loop.run_until_complete(queue.get())
             if req.get("type") == "exit":
                 break
-            if req.get("type") == "cancel":
-                rid = str(req.get("id", ""))
-                if rid not in _STATE.pending_request_ids:
-                    continue
-                _STATE.cancelled_request_ids.add(rid)
-                if _STATE.active_request_id == rid and _STATE.active_executions > 0:
-                    for task in list(_STATE.request_tasks):
-                        if not task.done():
-                            task.cancel()
-                continue
-            if req.get("type") == "status":
-                _emit(
-                    {
-                        "type": "done",
-                        "id": str(req.get("id", "")),
-                        "status": "ok",
-                        "executionCount": _STATE.execution_count,
-                        "busy": len(_STATE.request_tasks) + execution_queue.qsize(),
-                        "interpreter": sys.executable,
-                    }
-                )
-                continue
             rid = str(req.get("id"))
-            if rid in _STATE.cancelled_request_ids:
-                _emit_cancelled_request(req)
-                continue
-            if not execution_queue.put_nowait(req, size):
-                _emit_error(rid, ValueError(
-                    f"Execution queue limit exceeded (max {_REQUEST_QUEUE_MAX_COUNT} queued requests "
-                    f"and {_REQUEST_QUEUE_MAX_BYTES} bytes)"
-                ))
-                continue
-            _STATE.pending_request_ids.add(rid)
+            _STATE.active_request_id = rid
+            try:
+                if rid in _STATE.cancelled_request_ids:
+                    done = _cancelled_request_result(req)
+                else:
+                    done = _handle_request(req)
+            except BaseException as exc:
+                _emit_error(rid, exc)
+                done = {
+                    "type": "done", "id": rid, "status": "error",
+                    "executionCount": _STATE.execution_count,
+                    "cancelled": isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)),
+                }
+            finally:
+                _STATE.active_request_id = None
+                _STATE.pending_request_ids.discard(rid)
+                _STATE.cancelled_request_ids.discard(rid)
+            # Completion is the cleanup/retirement barrier. The control reader
+            # may answer status immediately after the host sees this frame.
+            _emit(done)
     finally:
         _STATE.shutting_down = True
-        execution_worker.cancel()
-        await asyncio.gather(execution_worker, return_exceptions=True)
-
-def main() -> None:
-    asyncio.run(_main_async())
-
+        loop.run_until_complete(_shutdown_loop(loop))
+        loop.close()
 
 if __name__ == "__main__":
     main()

@@ -264,49 +264,21 @@ function decodeString(raw: string): string | undefined {
 	return out;
 }
 
-/**
- * Recognize the runner's raw-heredoc header at the first non-indentation character
- * of a physical line. Callers remain responsible for invoking this only while
- * outside strings and comments.
- */
-export function isPythonRawHeredocHeader(
-	source: string,
-	index: number,
-	lineStart: number,
-	limit = source.length,
-): boolean {
-	if (index < lineStart || limit < index || !/^[ \t]*$/u.test(source.slice(lineStart, index))) return false;
-	const newline = source.indexOf("\n", index);
-	const lineEnd = newline < 0 ? Math.min(source.length, limit) : Math.min(newline, limit);
-	let line = source.slice(lineStart, lineEnd);
-	if (line.endsWith("\r")) line = line.slice(0, -1);
-	return /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*<<[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/u.test(line);
-}
-
 function lexSource(source: string, language: StreamedCompletionLanguage): LexResult {
 	const tokens: Token[] = [];
 	let i = 0;
-	let lineStart = 0;
 	let incomplete = false;
 	const isStart = language === "python" ? PY_IDENT_START : JS_IDENT_START;
 	const isCont = language === "python" ? PY_IDENT_CONT : JS_IDENT_CONT;
 	while (i < source.length) {
 		const ch = source[i]!;
 		if (/\s/u.test(ch)) {
-			if (ch === "\n") lineStart = i + 1;
 			i++;
 			continue;
-		}
-		if (language === "python" && isPythonRawHeredocHeader(source, i, lineStart)) {
-			// The Python runner replaces the whole block before execution. Stop at
-			// its header: the body is raw text, even when its close has not streamed.
-			incomplete = true;
-			break;
 		}
 		if (language === "python" && ch === "#") {
 			const end = source.indexOf("\n", i);
 			i = end < 0 ? source.length : end + 1;
-			if (end >= 0) lineStart = i;
 			continue;
 		}
 		if (language === "js" && ch === "/" && source[i + 1] === "/") {
@@ -330,7 +302,6 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 			while (i < source.length) {
 				const c = source[i]!;
 				if (c === "\\") {
-					if (source[i + 1] === "\n") lineStart = i + 2;
 					i += 2;
 					continue;
 				}
@@ -339,7 +310,6 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 					closed = true;
 					break;
 				}
-				if (c === "\n") lineStart = i + 1;
 				i++;
 			}
 			if (!closed) incomplete = true;
@@ -358,7 +328,6 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 				const c = source[i]!;
 				if (c === "\n" || c === "\r") return { tokens, incomplete: false, valid: false };
 				if (c === "\\") {
-					if (source[i + 1] === "\n") lineStart = i + 2;
 					i += 2;
 					continue;
 				}

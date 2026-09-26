@@ -4426,9 +4426,11 @@ pub fn process_all_files(
 		let mut reader = LineReader::open_with_host(path, host)
 			.map_err_context(|| format!("error opening input file {}", path.quote()))?;
 		let resolved_path = host.resolve(path);
-		if in_place.in_place {
-			host.note_write(&resolved_path);
-		}
+		let observation = if in_place.in_place {
+			host.prepare_write(&resolved_path)?
+		} else {
+			None
+		};
 		let output = in_place.begin(&resolved_path)?;
 
 		if context.separate || index == 0 {
@@ -4455,6 +4457,7 @@ pub fn process_all_files(
 		}
 
 		in_place.end()?;
+		host.commit_write(observation);
 
 		if context.stop_processing {
 			break;

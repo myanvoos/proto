@@ -2088,6 +2088,16 @@ pub(crate) async fn setup_redirect(
 
 					let fd_num = specified_fd_num.unwrap_or(default_fd_if_unspecified);
 
+					let is_read = matches!(kind,
+						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput);
+					let observation = if is_read {
+						None
+					} else {
+						shell.fs_observations().prepare_write(&expanded_file_path).map_err(|err| {
+							error::ErrorKind::RedirectionFailure(
+								expanded_file_path.to_string_lossy().to_string(), err.to_string())
+						})?
+					};
 					let opened_file = shell
 						.open_file(&options, &expanded_file_path, params)
 						.map_err(|err| {
@@ -2101,7 +2111,7 @@ pub(crate) async fn setup_redirect(
 						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput => {
 							shell.fs_observations().record_read(&expanded_file_path);
 						},
-						_ => shell.fs_observations().record_write(&expanded_file_path),
+						_ => shell.fs_observations().commit_write(observation),
 					}
 
 					params.open_files.set_fd(fd_num, opened_file);
@@ -2270,12 +2280,21 @@ fn setup_redirect_output_and_error_to(
 	let abs_file_path: PathBuf = shell.absolute_path(Path::new(file_path));
 
 	let mut file_options = std::fs::File::options();
-	file_options
-		.create(true)
-		.write(true)
-		.truncate(!append)
-		.append(append);
+	if !append && shell.options().disallow_overwriting_regular_files_via_output_redirection {
+		if abs_file_path.is_file() {
+			file_options.create_new(true);
+		} else {
+			file_options.create(true);
+		}
+		file_options.write(true);
+	} else {
+		file_options.create(true).write(true).truncate(!append).append(append);
+	}
 
+	let observation = shell.fs_observations().prepare_write(&abs_file_path).map_err(|err| {
+		error::ErrorKind::RedirectionFailure(
+			abs_file_path.to_string_lossy().to_string(), err.to_string())
+	})?;
 	let stdout_file = shell
 		.open_file(&file_options, &abs_file_path, params)
 		.map_err(|err| {
@@ -2285,8 +2304,8 @@ fn setup_redirect_output_and_error_to(
 			)
 		})?;
 
+	shell.fs_observations().commit_write(observation);
 	let stderr_file = stdout_file.try_clone()?;
-	shell.fs_observations().record_write(&abs_file_path);
 
 	params.open_files.set_fd(OpenFiles::STDOUT_FD, stdout_file);
 	params.open_files.set_fd(OpenFiles::STDERR_FD, stderr_file);

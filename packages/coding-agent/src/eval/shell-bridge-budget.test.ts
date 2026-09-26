@@ -57,16 +57,15 @@ test("one shell run shares rich-output admission across every bridge cell", asyn
 	);
 	const bridge = registerKernelShellRun(session());
 	try {
-		let sawTruncation = false;
 		for (let index = 0; index < 32; index++) {
 			const response = await request(bridge);
-			sawTruncation = sawTruncation || response.includes("truncated");
+			expect(response).toBe('{"t":"x","c":0}\n');
 		}
 		const images = bridge.drainImages();
 		const json = bridge.drainJsonOutputs();
 		expect(images).toHaveLength(3);
 		expect(Buffer.byteLength(JSON.stringify({ images, json }))).toBeLessThan(4 * 1024 * 1024);
-		expect(sawTruncation).toBe(true);
+		expect(bridge.drainDisplayText().some(text => text.includes("truncated"))).toBe(true);
 		expect(bridge.drainImages()).toEqual([]);
 		expect(bridge.drainJsonOutputs()).toEqual([]);
 	} finally {
@@ -83,7 +82,8 @@ test("shell status frames cannot retain unbounded rich metadata in callbacks or 
 	const live: EvalStatusEvent[] = [];
 	const bridge = registerKernelShellRun(session(), event => live.push(event));
 	try {
-		expect(await request(bridge)).toContain("metadata truncated");
+		expect(await request(bridge)).toBe('{"t":"x","c":0}\n');
+		expect(bridge.drainDisplayText().join("\n")).toContain("metadata truncated");
 		expect(Buffer.byteLength(JSON.stringify(live))).toBeLessThan(4 * 1024 * 1024);
 		expect(bridge.drainStatusEvents()).toEqual(live);
 	} finally {

@@ -823,8 +823,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				}),
 			);
 
-	// toolNames is native-only; mounted xd:// devices still provide the capability (skill:// and
-	// file reads dispatch through `xd read`), so count them for the skills gate.
+	// toolNames is native-only; mounted protolens:// devices still provide the capability (skill:// and
+	// file reads dispatch through `protolens read`), so count them for the skills gate.
 	const hasRead = toolNames.includes("read") || xdevToolNames.has("read");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
 

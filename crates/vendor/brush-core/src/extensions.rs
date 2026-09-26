@@ -40,6 +40,7 @@ pub trait ErrorFormatter: Clone + Default + Send + Sync + 'static {
 
 
 
+
 	fn format_error(
 		&self,
 		error: &error::Error,

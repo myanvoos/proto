@@ -1272,7 +1272,10 @@ fn copy_dir_contents_recursive(
 			#[cfg(not(unix))]
 			{
 
-				fs::copy(host.resolve(&from_path), host.resolve(&to_path))?;
+				let observation = host.prepare_write(&to_path)?;
+				let result = fs::copy(host.resolve(&from_path), host.resolve(&to_path));
+				host.commit_write(observation);
+				result?;
 			}
 
 			print_verbose(host, &from_path, &to_path);
@@ -1314,7 +1317,10 @@ fn copy_file_with_hardlinks_helper(
 		make_fifo(&host.resolve(to))?;
 	} else {
 
-		fs::copy(host.resolve(from), host.resolve(to))?;
+		let observation = host.prepare_write(to)?;
+		let result = fs::copy(host.resolve(from), host.resolve(to));
+		host.commit_write(observation);
+		result?;
 
 		#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
 		{
@@ -1333,6 +1339,7 @@ fn rename_file_fallback(
 	#[cfg(unix)] hardlink_scanner: Option<&HardlinkGroupScanner>,
 ) -> io::Result<()> {
 	let to_fs = host.resolve(to);
+	let observation = host.prepare_write(&to_fs)?;
 
 	if to_fs.is_symlink() {
 		fs::remove_file(&to_fs).map_err(|err| {
@@ -1358,6 +1365,7 @@ fn rename_file_fallback(
 			{
 
 				fs::hard_link(host.resolve(&existing_target), &to_fs)?;
+				host.commit_write(observation);
 				fs::remove_file(host.resolve(from))?;
 				return Ok(());
 			}
@@ -1365,8 +1373,9 @@ fn rename_file_fallback(
 	}
 
 
-	fs::copy(host.resolve(from), &to_fs)
-		.map_err(|err| io::Error::new(err.kind(), "Permission denied"))?;
+	let result = fs::copy(host.resolve(from), &to_fs);
+	host.commit_write(observation);
+	result.map_err(|err| io::Error::new(err.kind(), "Permission denied"))?;
 
 
 	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]

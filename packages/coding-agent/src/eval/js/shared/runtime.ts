@@ -1,12 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Console } from "node:console";
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, Module } from "node:module";
 import * as path from "node:path";
 import { Readable, Writable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import * as util from "node:util";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { KernelTarget } from "../../kernel-target";
+import type { KernelInvocation } from "../../types";
 
 import {
 	beginFileTracking,
@@ -20,6 +22,7 @@ import {
 import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
+import { NativeStdio } from "./native-stdio";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
 import { wrapCode } from "./rewrite-imports";
 import { type LoadStateOptions, loadKernelState, runtimeInterpreter, type StateResult, saveKernelState } from "./state";
@@ -57,6 +60,8 @@ export interface RunContext {
 	finalExpressionSet: boolean;
 	finalExpressionValue: unknown;
 	completionInvocationCount: number;
+	invocation?: KernelInvocation;
+	execPath: string;
 }
 
 export interface RuntimeOptions {
@@ -67,10 +72,9 @@ export interface RuntimeOptions {
 
 	extraGlobals?: Record<string, unknown>;
 
-	localRoots?: Record<string, string>;
-
 	/** Dedicated-process runtimes only: patches Bun.write for mutation tracking. */
 	trackFileWrites?: boolean;
+	nativeStdio?: boolean;
 }
 
 const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -107,7 +111,6 @@ const PRELUDE_GLOBAL_KEYS = [
 	"phase",
 	"budget",
 	"__pool",
-	"protoPath",
 	"env",
 	"symbols",
 	"blockRange",
@@ -168,7 +171,7 @@ export class JsRuntime {
 	#globalOwner = Symbol("JsRuntime globals");
 	#ownedGlobalKeys = new Set<string>();
 	#disposed = false;
-	#runHookResolver = () => this.#als.getStore()?.hooks;
+	#runContextResolver = () => this.#als.getStore();
 
 	#ownGlobal(key: string, mutable = false): void {
 		if (this.#ownedGlobalKeys.has(key)) return;
@@ -194,7 +197,11 @@ export class JsRuntime {
 	#env: Map<string, string>;
 	#als = new AsyncLocalStorage<RunContext>();
 	#moduleLoader: LocalModuleLoader;
-	#localRoots: Record<string, string>;
+	#scope: Record<string, unknown> = Object.create(null);
+	#bindingGetters = new Set<() => unknown>();
+	#readonlyGetters = new Set<() => unknown>();
+	#nativeStdio?: NativeStdio;
+	cellExitCode: number | undefined;
 
 	constructor(opts: RuntimeOptions) {
 		this.#generation = opts.generation ?? crypto.randomUUID();
@@ -204,16 +211,19 @@ export class JsRuntime {
 		this.sessionId = opts.sessionId;
 		this.#env = new Map();
 		this.#moduleLoader = new LocalModuleLoader(this.sessionId);
-		this.#localRoots = opts.localRoots ?? {};
 		this.helpers = createHelpers({
 			cwd: () => this.#activeCwd(),
 			env: this.#env,
-			localRoots: () => this.#localRoots,
 			emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
 		});
 		if (opts.trackFileWrites) installBunWriteTracking();
+		if (opts.nativeStdio) this.#nativeStdio = new NativeStdio(() => this.currentRunId());
 		this.#install(opts.extraGlobals);
 		this.#baseline = new Set(Object.getOwnPropertyNames(globalThis));
+	}
+
+	get nativeSequence(): number | undefined {
+		return this.#nativeStdio?.sequence;
 	}
 
 	get cwd(): string {
@@ -235,11 +245,6 @@ export class JsRuntime {
 		}
 	}
 
-	setLocalRoots(localRoots: Record<string, string>): void {
-		if (this.#disposed) throw new Error("Cannot set local roots on a disposed JS runtime");
-		this.#localRoots = localRoots;
-	}
-
 	setRunScope(scope: Record<string, unknown>): void {
 		this.#activateGlobals("set run scope");
 		Object.assign(globalThis, scope);
@@ -253,6 +258,8 @@ export class JsRuntime {
 			runId?: string;
 			cwd?: string;
 			shellEnv?: Record<string, string>;
+			invocation?: KernelInvocation;
+			drain?: () => Promise<void>;
 			stdin?: Readable;
 			/** Rejecting it ends the run at once with its reason; work the cell left pending runs on detached. */
 			stop?: Promise<never>;
@@ -278,6 +285,11 @@ export class JsRuntime {
 			process.env[key] = value;
 			this.#env.set(key, value);
 		}
+		const savedExitCode = process.exitCode;
+		process.exitCode = typeof Bun === "undefined" ? undefined : 0;
+		this.cellExitCode = undefined;
+		const savedArgv = process.argv;
+		process.argv = options.invocation?.argv.slice() ?? [process.execPath];
 		const savedStdin = Object.getOwnPropertyDescriptor(process, "stdin");
 		const stdin = options.stdin ?? Readable.from([]);
 		Object.defineProperty(process, "stdin", { configurable: true, get: () => stdin });
@@ -288,23 +300,38 @@ export class JsRuntime {
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
 			completionInvocationCount: 0,
+			invocation: options.invocation,
+			execPath: options.invocation?.argv[0] ?? process.execPath,
 		};
 		this.#tasks.set(context.runId, { id: context.runId, kind: "cell", state: "running", cell });
 		beginFileTracking(context.runId, event => hooks.onDisplay({ type: "status", event }), {
-			note: text => hooks.onText(text),
+			note: text => hooks.onDisplay({ type: "status", event: { op: "note", text } }),
 			cwd: context.cwd,
 		});
 		try {
 			const evaluation = this.#als.run(context, async () => {
-				const wrapped = await wrapCode(code);
+				const wrapped = await wrapCode(code, Object.keys(this.#scope));
+				this.#nativeStdio?.start(context.runId);
 				const value = indirectEval(wrapped.source, filename);
+				await awaitMaybePromise(value);
+				await options.drain?.();
+
 				if (wrapped.finalExpressionReturned) {
 					const awaited = await awaitMaybePromise(value);
 					if (context.finalExpressionSet) {
 						const finalValue = context.finalExpressionValue;
 						context.finalExpressionSet = false;
 						context.finalExpressionValue = undefined;
-						return await awaitMaybePromise(finalValue);
+						// A bare promise is a value, not an implicit top-level await. Unresolved promises
+						// alone do not keep a native Node/Bun command alive.
+						if (util.types.isPromise(finalValue)) {
+							hooks.onDisplay({
+								type: "text",
+								text: `${util.inspect(finalValue, { customInspect: false, getters: false })}\n`,
+							});
+							return undefined;
+						}
+						return finalValue;
 					}
 					return awaited;
 				}
@@ -312,8 +339,9 @@ export class JsRuntime {
 			});
 			return await (options.stop ? Promise.race([evaluation, options.stop]) : evaluation);
 		} finally {
+			this.#nativeStdio?.finish();
 			for (const name of this.#definitions.keys()) {
-				if (!Object.hasOwn(globalThis, name)) this.#definitions.delete(name);
+				if (!Object.hasOwn(globalThis, name) && !Object.hasOwn(this.#scope, name)) this.#definitions.delete(name);
 			}
 			for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(globalThis))) {
 				if (name.startsWith("__proto_")) continue;
@@ -326,7 +354,11 @@ export class JsRuntime {
 				)
 					this.#definitions.set(name, cell);
 			}
+			for (const key of this.#ownedGlobalKeys) recordGlobalValue(key, this.#globalOwner);
 			await flushFileTracking();
+			this.cellExitCode = process.exitCode === undefined ? undefined : Number(process.exitCode) & 0xff;
+			process.exitCode = savedExitCode ?? (typeof Bun === "undefined" ? undefined : 0);
+			process.argv = savedArgv;
 			stdin.destroy();
 			if (savedStdin) Object.defineProperty(process, "stdin", savedStdin);
 			for (const [key, value] of savedEnv) {
@@ -363,9 +395,10 @@ export class JsRuntime {
 					mimeType: record.mimeType,
 					dataType: describeDataType(record.data),
 				});
-				hooks.onText(
-					`[display: image dropped — \`data\` must be a base64 string, Uint8Array/Buffer, or ArrayBuffer; got ${describeDataType(record.data)}]\n`,
-				);
+				hooks.onDisplay({
+					type: "notice",
+					text: `[display: image dropped — \`data\` must be a base64 string, Uint8Array/Buffer, or ArrayBuffer; got ${describeDataType(record.data)}]\n`,
+				});
 				return;
 			}
 			try {
@@ -374,11 +407,11 @@ export class JsRuntime {
 				logger.debug("js displayValue: value is not structured-cloneable, falling back to text", {
 					error: err instanceof Error ? err.message : String(err),
 				});
-				hooks.onText(`${Object.prototype.toString.call(value)}\n`);
+				hooks.onDisplay({ type: "text", text: `${Object.prototype.toString.call(value)}\n` });
 			}
 			return;
 		}
-		hooks.onText(`${String(value)}\n`);
+		hooks.onDisplay({ type: "text", text: `${String(value)}\n` });
 	}
 
 	#activeCwd(): string {
@@ -428,16 +461,46 @@ export class JsRuntime {
 		return dynamicRequire;
 	}
 
+	#stateNamespace(): Record<string, unknown> {
+		const namespace = Object.create(null);
+		const descriptors = {
+			...Object.getOwnPropertyDescriptors(globalThis),
+			...Object.getOwnPropertyDescriptors(this.#scope),
+		};
+		for (const [name, descriptor] of Object.entries(descriptors)) {
+			if (descriptor.get && this.#bindingGetters.has(descriptor.get)) {
+				try {
+					descriptors[name] = {
+						value: descriptor.get(),
+						enumerable: true,
+						configurable: true,
+						writable: !this.#readonlyGetters.has(descriptor.get),
+					};
+				} catch {
+					// A declaration not yet initialized retains its TDZ, rather than becoming undefined.
+				}
+			}
+		}
+		Object.defineProperties(namespace, descriptors);
+		return namespace;
+	}
+
 	async saveState(snapshotPath: string, names: unknown): Promise<StateResult> {
 		this.#activateGlobals("save state");
-		return await saveKernelState(this.helpers.protoPath(snapshotPath), names, globalThis, this.#baseline);
+		return await saveKernelState(
+			this.helpers.resolvePath(snapshotPath),
+			names,
+			this.#stateNamespace(),
+			this.#baseline,
+		);
 	}
 
 	async loadState(snapshotPath: string, options: LoadStateOptions = {}): Promise<StateResult> {
 		this.#activateGlobals("load state");
+		const namespace = this.#stateNamespace();
 		const result = await loadKernelState(
-			this.helpers.protoPath(snapshotPath),
-			globalThis,
+			this.helpers.resolvePath(snapshotPath),
+			namespace,
 			this.#baseline,
 			options,
 			names => {
@@ -446,6 +509,11 @@ export class JsRuntime {
 			},
 		);
 		for (const name of result.names) {
+			const target = Object.hasOwn(this.#scope, name) ? this.#scope : globalThis;
+			const current = Object.getOwnPropertyDescriptor(target, name);
+			const restored = Object.getOwnPropertyDescriptor(namespace, name)!;
+			if (current?.get && this.#bindingGetters.has(current.get)) current.set!(restored.value);
+			else Object.defineProperty(target, name, restored);
 			this.#definitions.set(name, this.#executionCount);
 			recordGlobalValue(name, this.#globalOwner);
 		}
@@ -458,8 +526,8 @@ export class JsRuntime {
 			throw new RangeError("kernelState limit must be an integer from 0 to 1000");
 		const variables = [];
 		let totalVariables = 0;
-		for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(globalThis)).sort(([a], [b]) =>
-			a.localeCompare(b),
+		for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(this.#stateNamespace())).sort(
+			([a], [b]) => a.localeCompare(b),
 		)) {
 			if (name.startsWith("__proto_") || (this.#baseline.has(name) && !this.#definitions.has(name))) continue;
 			totalVariables++;
@@ -502,12 +570,124 @@ export class JsRuntime {
 	#install(extraGlobals: Record<string, unknown> | undefined): void {
 		assertCanUseGlobalOwner(this.#globalOwner, "initialize a JS runtime");
 		const injected: Record<string, unknown> = {
+			__proto_scope__: this.#scope,
+			__proto_cell_globals__: (moduleMode: boolean) => {
+				const cwd = this.#activeCwd();
+				const invocation = this.#als.getStore()?.invocation;
+				const filename = invocation?.filename ?? (typeof Bun === "undefined" ? "[eval]" : path.join(cwd, "[eval]"));
+				const module = new Module(typeof Bun === "undefined" && !invocation?.filename ? "[eval]" : filename);
+				module.filename = path.resolve(cwd, filename);
+				module.paths = createRequire(module.filename).resolve.paths("__proto_cell__") ?? [];
+				const require = this.#activeRequire();
+				module.require = require;
+				const metadataPath = invocation?.filename
+					? path.resolve(cwd, invocation.filename)
+					: path.join(cwd, typeof Bun === "undefined" ? "[eval1]" : "[eval]");
+				const meta = {
+					url: pathToFileURL(metadataPath).href,
+					filename: metadataPath,
+					dirname: path.dirname(metadataPath),
+					...(typeof Bun === "undefined"
+						? {}
+						: {
+								require: module.require,
+								path: metadataPath,
+								dir: path.dirname(metadataPath),
+								file: path.basename(metadataPath),
+								main: true,
+							}),
+					resolve: (specifier: string) => {
+						const resolved = require.resolve(specifier);
+						return path.isAbsolute(resolved) ? pathToFileURL(resolved).href : resolved;
+					},
+				};
+				return {
+					module,
+					exports: module.exports,
+					__filename: filename,
+					__dirname: path.dirname(filename),
+					__proto_cell_filename__: filename,
+					__proto_cell_dirname__: path.dirname(filename),
+					__proto_cell_require__: module.require,
+					__proto_cell_meta__: meta,
+					__proto_cell_this__: moduleMode ? undefined : globalThis,
+				};
+			},
+			__proto_publish_bindings__: (
+				lexicals: PropertyDescriptorMap,
+				globals: PropertyDescriptorMap,
+				readonly: string[],
+			) => {
+				for (const [target, bindings] of [
+					[this.#scope, lexicals],
+					[globalThis, globals],
+				] as const) {
+					for (const [name, descriptor] of Object.entries(bindings)) {
+						if (target === globalThis) this.#ownGlobal(name, true);
+						if (descriptor.get) this.#bindingGetters.add(descriptor.get);
+						if (descriptor.get && readonly.includes(name)) this.#readonlyGetters.add(descriptor.get);
+						Object.defineProperty(target, name, { ...descriptor, configurable: true, enumerable: true });
+						this.#definitions.set(name, this.#executionCount);
+					}
+				}
+			},
+			__proto_import_bindings__: async (
+				requests: {
+					source: string;
+					options?: ImportCallOptions;
+					names: { local: string; imported: string | null }[];
+				}[],
+			) => {
+				const scope = Object.create(null);
+				for (const request of requests) {
+					const namespace = (await this.#moduleLoader.importForRun(
+						this.#activeCwd(),
+						request.source,
+						request.options,
+					)) as Record<string, unknown>;
+					for (const { local, imported } of request.names) {
+						if (imported !== null && !Object.hasOwn(namespace, imported))
+							throw new SyntaxError(
+								`The requested module '${request.source}' does not provide an export named '${imported}'`,
+							);
+						const descriptor = {
+							get: () => (imported === null ? namespace : namespace[imported]),
+							set: () => {
+								throw new TypeError("Assignment to constant variable.");
+							},
+							configurable: true,
+							enumerable: true,
+						};
+						this.#bindingGetters.add(descriptor.get);
+						this.#readonlyGetters.add(descriptor.get);
+						Object.defineProperty(scope, local, descriptor);
+						Object.defineProperty(this.#scope, local, descriptor);
+						this.#definitions.set(local, this.#executionCount);
+					}
+				}
+				return scope;
+			},
+			retainTask: <T extends { unref(): unknown }>(resource: T): T => {
+				if (!resource || typeof resource.unref !== "function")
+					throw new TypeError(
+						"retainTask expects a resource with unref(); unresolved promises already do not keep the event loop alive",
+					);
+				resource.unref();
+				return resource;
+			},
+			__proto_native_console__: this.#nativeStdio?.console,
+			__proto_native_stdio_write__: this.#nativeStdio?.write.bind(this.#nativeStdio),
 			__proto_session__: this.#session,
 			__proto_helpers__: this.helpers,
 			kernelState: (options?: { limit?: number }) => this.kernelState(options),
 			saveState: (snapshotPath: string, names: unknown) => this.saveState(snapshotPath, names),
 			loadState: (snapshotPath: string, options?: LoadStateOptions) => this.loadState(snapshotPath, options),
-			defs: () => Object.fromEntries([...this.#definitions].filter(([name]) => Object.hasOwn(globalThis, name))),
+			defs: () =>
+				Object.fromEntries(
+					[...this.#definitions].filter(
+						([name]) => Object.hasOwn(globalThis, name) || Object.hasOwn(this.#scope, name),
+					),
+				),
 			__proto_call_tool__: async (name: string, args: unknown, completionInvocationId?: string) => {
 				const hooks = this.#activeHooks("tool");
 				if (!hooks) return undefined;
@@ -539,8 +719,7 @@ export class JsRuntime {
 				this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event });
 			},
 			__proto_log__: (level: string, ...args: unknown[]) => {
-				const prefix = level === "error" ? "[error] " : level === "warn" ? "[warn] " : "";
-				const text = `${prefix}${formatConsoleArgs(args)}`;
+				const text = util.format(...args);
 				this.#activeHooks("log")?.onText(
 					text.endsWith("\n") ? text : `${text}\n`,
 					level === "error" || level === "warn" ? "stderr" : "stdout",
@@ -592,14 +771,24 @@ export class JsRuntime {
 
 		indirectEval(JAVASCRIPT_PRELUDE_SOURCE);
 		for (const key of allGlobalKeys) recordGlobalValue(key, this.#globalOwner);
-		RUN_HOOK_RESOLVERS.add(this.#runHookResolver);
+		RUN_CONTEXT_RESOLVERS.add(this.#runContextResolver);
+		installProcessIdentity();
 		patchStdioOnce();
 	}
 
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
-		RUN_HOOK_RESOLVERS.delete(this.#runHookResolver);
+		this.#nativeStdio?.dispose();
+		RUN_CONTEXT_RESOLVERS.delete(this.#runContextResolver);
+		if (RUN_CONTEXT_RESOLVERS.size === 0 && processIdentity) {
+			if (Object.getOwnPropertyDescriptor(process, "execPath")?.get === processIdentity.get)
+				Object.defineProperty(process, "execPath", {
+					...processIdentity.descriptor,
+					value: processIdentity.launcher,
+				});
+			processIdentity = undefined;
+		}
 		for (const key of this.#ownedGlobalKeys) releaseGlobalKey(key, this.#globalOwner);
 		this.#ownedGlobalKeys.clear();
 	}
@@ -703,14 +892,48 @@ function enterGlobalRun(owner: symbol, action: string): () => void {
 	};
 }
 
-const RUN_HOOK_RESOLVERS = new Set<() => RuntimeHooks | undefined>();
+const RUN_CONTEXT_RESOLVERS = new Set<() => RunContext | undefined>();
+let processIdentity: { descriptor: PropertyDescriptor; launcher: string; get: () => string } | undefined;
+
+/** A cell sees its selected interpreter; the worker's launcher identity remains private to host code. */
+function installProcessIdentity(): void {
+	if (processIdentity) return;
+	const descriptor = Object.getOwnPropertyDescriptor(process, "execPath")!;
+	const identity = {
+		descriptor,
+		launcher: process.execPath,
+		get: (): string => {
+			for (const resolve of RUN_CONTEXT_RESOLVERS) {
+				const context = resolve();
+				if (context) return context.execPath;
+			}
+			return identity.launcher;
+		},
+	};
+	processIdentity = identity;
+	Object.defineProperty(process, "execPath", {
+		configurable: descriptor.configurable,
+		enumerable: descriptor.enumerable,
+		get: identity.get,
+		set: (value: string) => {
+			for (const resolve of RUN_CONTEXT_RESOLVERS) {
+				const context = resolve();
+				if (context) {
+					context.execPath = value;
+					return;
+				}
+			}
+			identity.launcher = value;
+		},
+	});
+}
 
 const PATCHED_STDIO_STREAMS = new WeakSet<NodeJS.WriteStream>();
 
 function activeRunHooks(): RuntimeHooks | undefined {
-	for (const resolve of RUN_HOOK_RESOLVERS) {
-		const hooks = resolve();
-		if (hooks) return hooks;
+	for (const resolve of RUN_CONTEXT_RESOLVERS) {
+		const context = resolve();
+		if (context) return context.hooks;
 	}
 	return undefined;
 }
@@ -723,6 +946,16 @@ function patchStdioOnce(): void {
 		const original = stream.write.bind(stream) as (...args: unknown[]) => boolean;
 		const routed = (chunk: unknown, encoding?: unknown, callback?: unknown): boolean => {
 			const hooks = activeRunHooks();
+			const nativeWrite = (globalThis as { __proto_native_stdio_write__?: NativeStdio["write"] })
+				.__proto_native_stdio_write__;
+			if (nativeWrite)
+				return nativeWrite(
+					stream === process.stderr ? "stderr" : "stdout",
+					() => original(chunk, encoding, callback),
+					chunk,
+					encoding,
+					callback,
+				);
 			if (!hooks) return original(chunk, encoding, callback);
 			const cb = typeof encoding === "function" ? encoding : callback;
 			const enc = typeof encoding === "string" ? (encoding as BufferEncoding) : undefined;
@@ -755,10 +988,4 @@ function chunkToString(chunk: unknown, encoding?: BufferEncoding): string {
 	if (typeof chunk === "string") return chunk;
 	if (chunk instanceof Uint8Array) return Buffer.from(chunk).toString(encoding ?? "utf8");
 	return String(chunk);
-}
-
-function formatConsoleArgs(args: unknown[]): string {
-	return args
-		.map(arg => (typeof arg === "string" ? arg : util.inspect(arg, { depth: 6, colors: false, breakLength: 120 })))
-		.join(" ");
 }

@@ -238,11 +238,8 @@ fn file_truncate(
 	}
 
 	let create = !no_create;
-	let file = match brush_core::heldfiles::open(&resolved, OpenOptions::new().write(true).create(create)) {
-		Ok(file) => {
-			host.note_write(&resolved);
-			file
-		},
+	let file = match host.open_write(&resolved, OpenOptions::new().write(true).create(create)) {
+		Ok(file) => file,
 		Err(error) if error.kind() == ErrorKind::NotFound && !create => return Ok(()),
 		Err(error) => {
 			return Err(format!("cannot open {} for writing: {error}", filename.quote()));

@@ -1,24 +1,27 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import { executeBash } from "../exec/bash-executor";
+import { disposeBashSessions, executeBash } from "../exec/bash-executor";
 import { convertToLlm } from "../session/messages";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
 
-const KERNEL_OWNER = `bash-kernel-test:${process.pid}`;
+const owners = new Map<string, string>();
 
 function stubSession(cwd: string): ToolSession {
+	const owner = owners.get(cwd) ?? `bash-kernel-test:${crypto.randomUUID()}`;
+	owners.set(cwd, owner);
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
+		getSessionId: () => owner,
 		getEvalSessionId: () => `bash-kernel-test:${cwd}`,
-		getEvalKernelOwnerId: () => KERNEL_OWNER,
+		getEvalKernelOwnerId: () => owner,
 	} as unknown as ToolSession;
 }
 
@@ -29,8 +32,15 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 		.join("\n");
 }
 
-afterAll(async () => {
-	await Promise.all([disposeKernelSessionsByOwner(KERNEL_OWNER), disposeVmContextsByOwner(KERNEL_OWNER)]);
+afterEach(async () => {
+	for (const owner of owners.values()) {
+		await Promise.all([
+			disposeBashSessions(owner),
+			disposeKernelSessionsByOwner(owner),
+			disposeVmContextsByOwner(owner),
+		]);
+	}
+	owners.clear();
 });
 
 test("heredoc python routes to the kernel and state persists across bash calls", async () => {
@@ -57,7 +67,7 @@ test("heredoc and -c python cells share one kernel session", async () => {
 	}
 }, 60000);
 
-test("script paths, --version, and -c with argv fall through to a real interpreter", async () => {
+test("script paths and --version stay native while -c preserves program argv", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-script-"));
 	try {
 		await Bun.write(path.join(dir, "prog.py"), "import sys\nprint('argv', sys.argv[1])\n");
@@ -499,10 +509,7 @@ test("heredoc file edits compose through bash and expose one structured file mut
 				"source = target.read_text()",
 				'assert source.count("before") == 1',
 				'target.write_text(source.replace("before", "intermediate"))',
-				"CONTENT = <<END_CONTENT",
-				"after",
-				"",
-				"END_CONTENT",
+				'CONTENT = "after\\n"',
 				"target.write_text(CONTENT)",
 				"PYEOF",
 			].join("\n"),

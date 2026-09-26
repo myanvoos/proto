@@ -42,10 +42,10 @@ test("scheme URLs inside quoted heredoc bodies are preserved; command-position U
 	}
 });
 
-test("kernel cell bodies referencing proto_path keep their scheme URLs", async () => {
+test("kernel cell bodies keep literal URI data unchanged", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-"));
 	try {
-		const command = ["python <<'PYEOF'", `p = proto_path("${X_URL}")`, "print(p)", "PYEOF"].join("\n");
+		const command = ["python <<'PYEOF'", `url = "${X_URL}"`, "print(url)", "PYEOF"].join("\n");
 		const expanded = await expandInternalUrls(command, optionsWith(path.join(dir, "artifacts")));
 		expect(expanded).toBe(command);
 	} finally {
@@ -167,4 +167,29 @@ describe("expansion stays scoped", () => {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
+});
+
+test("recognized internal arguments never silently fall through as local filenames", async () => {
+	await expect(expandInternalUrls("cat skill://missing/file", { skills: [] })).rejects.toThrow("Unknown skill");
+	await expect(expandInternalUrls("cat history://", { skills: [] })).rejects.toThrow("Use read");
+	await expect(
+		expandInternalUrls("cat custom://view", {
+			skills: [],
+			internalRouter: {
+				canHandle: () => true,
+				resolve: async url => ({ url, content: "generated", contentType: "text/plain" }),
+			},
+		}),
+	).rejects.toThrow("without a filesystem path");
+});
+
+test("custom internal schemes rewrite real paths and preserve external URLs", async () => {
+	const result = await expandInternalUrls("cat custom://file; curl https://example.com", {
+		skills: [],
+		internalRouter: {
+			canHandle: () => true,
+			resolve: async url => ({ url, content: "", contentType: "text/plain", sourcePath: "/tmp/a file" }),
+		},
+	});
+	expect(result).toBe("cat '/tmp/a file'; curl https://example.com");
 });

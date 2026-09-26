@@ -4,6 +4,7 @@ import type { FsObservation } from "./fs-observations";
 import { KernelInputReader } from "./kernel-streams";
 import type { KernelTarget } from "./kernel-target";
 import { type KernelDisplayOutput, renderKernelDisplay } from "./py/display";
+import type { KernelInvocation } from "./types";
 
 export type KernelRuntimeEnv = Record<string, string | null>;
 
@@ -12,6 +13,7 @@ export interface KernelExecuteOptions {
 
 	cwd?: string;
 	shellEnv?: Record<string, string>;
+	invocation?: KernelInvocation;
 	/** Live program input, separate from code/control; cell teardown cancels upstream. */
 	stdin?: ReadableStream<Uint8Array>;
 
@@ -893,11 +895,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			}
 			if (frame.type === "display" || frame.type === "result") {
 				const { text, outputs } = await renderKernelDisplay(frame.bundle ?? {});
-				if (text) {
-					await completed.onChunk?.(text);
-					await completed.onStream?.(text, "stdout");
-					await completed.onBytes?.(Buffer.from(text), "stdout");
-				}
+				if (text) await completed.onDisplay?.({ type: "text", text });
 				for (const output of outputs) await completed.onDisplay?.(output);
 				this.#trimCompletedOutputSinks();
 			}
@@ -933,13 +931,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			case "result": {
 				const bundle = frame.bundle ?? {};
 				const { text, outputs } = await renderKernelDisplay(bundle);
-				if (text && pending.options?.onChunk) {
-					await pending.options.onChunk(text);
-				}
-				if (text) {
-					await pending.options?.onStream?.(text, "stdout");
-					await pending.options?.onBytes?.(Buffer.from(text), "stdout");
-				}
+				if (text) await pending.options?.onDisplay?.({ type: "text", text });
 				if (outputs.length > 0 && pending.options?.onDisplay) {
 					for (const output of outputs) {
 						await pending.options.onDisplay(output);

@@ -1,4 +1,5 @@
-import { logger, Snowflake, untilAborted, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { getNativeAddonPath } from "@oh-my-pi/pi-natives/loader";
+import { isCompiledBinary, logger, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 import { currentExecutionOrigin, type ExecutionOrigin } from "../../jobs/origin";
 import {
 	createWorkerHandle,
@@ -24,12 +25,14 @@ import {
 import { KernelInputReader } from "../kernel-streams";
 import type { KernelTarget } from "../kernel-target";
 import { kernelTargetCwd, parseKernelTarget } from "../kernel-target";
+import type { KernelInvocation } from "../types";
+import { withNativeOutput } from "./native-output";
 import { decodeNodeKernelMessage, encodeNodeKernelMessage } from "./node-protocol";
 import {
 	NODE_INTERPRETER_NOT_FOUND,
 	NODE_REMOTE_TARGET_UNSUPPORTED,
 	resolveNodeInterpreter,
-	stageNodeJsKernel,
+	stageJsKernel,
 } from "./node-runtime";
 import { spawnTargetJsWorker } from "./target-worker";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
@@ -41,7 +44,6 @@ import type {
 	WorkerOutbound,
 } from "./worker-protocol";
 
-export { rewriteImports, wrapCode } from "./shared/rewrite-imports";
 export type { JsDisplayOutput } from "./worker-protocol";
 
 interface VmRunState {
@@ -60,7 +62,7 @@ interface VmRunResult {
 }
 
 interface WorkerHandle {
-	mode: "process" | "worker" | "target" | "node";
+	mode: "process" | "target" | "node";
 	send(msg: WorkerInbound): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
@@ -210,7 +212,6 @@ async function reapSessionFire(session: JsSession): Promise<void> {
 		if (oldestSessionKey !== undefined) reapNotes.delete(oldestSessionKey);
 	}
 }
-const useWorkerThreadForTests = false;
 
 export interface VmSessionOptions {
 	signal?: AbortSignal;
@@ -222,7 +223,6 @@ export interface VmSessionOptions {
 	discoveryCwd?: string;
 	interpreter?: string;
 	target?: KernelTarget;
-	localRoots?: Record<string, string>;
 	shellEnv?: Record<string, string>;
 	reset?: boolean;
 	onStatus?: (event: JsStatusEvent) => void;
@@ -240,12 +240,12 @@ export async function executeInVmContext(options: {
 	interpreter?: string;
 	target?: KernelTarget;
 	session: ToolSession;
-	localRoots?: Record<string, string>;
 	shellEnv?: Record<string, string>;
 	stdin?: ReadableStream<Uint8Array>;
 	reset?: boolean;
 	onStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
+	invocation?: KernelInvocation;
 	code: string;
 	filename: string;
 	timeoutMs?: number;
@@ -310,7 +310,6 @@ async function prepareVmSession(options: VmSessionOptions): Promise<JsSession> {
 			interpreter: options.interpreter,
 			target: options.target,
 			sessionId: options.sessionId,
-			localRoots: options.localRoots,
 			shellEnv: options.shellEnv,
 		},
 		options.timeoutMs,
@@ -473,10 +472,10 @@ async function runOnce(
 		sessionId: string;
 		cwd: string;
 		session: ToolSession;
-		localRoots?: Record<string, string>;
 		shellEnv?: Record<string, string>;
 		stdin?: ReadableStream<Uint8Array>;
 		completionContext?: EvalCompletionInvocationContext;
+		invocation?: KernelInvocation;
 		code: string;
 		filename: string;
 		runState: VmRunState;
@@ -531,11 +530,11 @@ async function runOnce(
 			runId,
 			code: options.code,
 			filename: options.filename,
+			invocation: options.invocation,
 			snapshot: {
 				cwd: kernelTargetCwd(session.info.target, options.cwd),
 				target: session.info.target,
 				sessionId: options.sessionId,
-				localRoots: session.info.target.kind === "local" ? options.localRoots : undefined,
 				shellEnv: session.info.target.kind === "local" ? options.shellEnv : undefined,
 				stdin: Boolean(options.stdin),
 			},
@@ -637,28 +636,12 @@ async function acquireSession(
 
 		startupSession = session;
 		const readyTimeoutMs = Math.max(WORKER_INIT_TIMEOUT_MS, timeoutMs ?? 0);
-		while (true) {
-			try {
-				await initWorker(session, snapshot, readyTimeoutMs, startupSignal);
-				break;
-			} catch (error) {
-				const failed = session.worker;
-				await failed.terminate();
-				startupWorkerStopped = true;
-				if (startupSignal.aborted || failed.mode === "target" || failed.mode === "node" || snapshot.interpreter)
-					throw error;
-				if (failed.mode === "worker") {
-					throw new ToolError("Isolated JS eval worker failed to initialize; refusing host-process execution", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-				logger.warn("JS eval subprocess init failed; retrying with a Bun Worker", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-				session.worker = spawnBunWorker();
-				startupWorkerStopped = false;
-				session.state = "alive";
-			}
+		try {
+			await initWorker(session, snapshot, readyTimeoutMs, startupSignal);
+		} catch (error) {
+			await session.worker.terminate();
+			startupWorkerStopped = true;
+			throw error;
 		}
 		session.ownerIds = new Set(startingSession.ownerIds);
 		session.hasFallbackOwner = startingSession.hasFallbackOwner;
@@ -1084,48 +1067,36 @@ async function raceWithTimeout<T>(
 }
 
 async function spawnJsWorker(runtime: JsKernelRuntime, snapshot: SessionSnapshot): Promise<WorkerHandle> {
-	if (runtime === "node") return spawnNodeJsProcess(snapshot.interpreter!, await stageNodeJsKernel());
+	if (runtime === "node") return spawnStandaloneJsProcess(runtime, snapshot.interpreter!, await stageJsKernel());
 	const target = parseKernelTarget(snapshot.target);
 	if (target.kind !== "local") {
 		snapshot.discoveryCwd ??= snapshot.cwd;
 		snapshot.cwd = kernelTargetCwd(target, snapshot.cwd);
-		snapshot.localRoots = undefined;
 		snapshot.shellEnv = undefined;
 		return await spawnTargetJsWorker(target, snapshot);
 	}
-	if (!useWorkerThreadForTests) {
-		try {
-			return spawnJsProcess(snapshot.interpreter);
-		} catch (err) {
-			if (snapshot.interpreter) throw err;
-			logger.warn("JS eval subprocess spawn failed; falling back to a Bun Worker", {
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	}
-	return spawnBunWorker();
-}
-
-function spawnBunWorker(): WorkerHandle {
 	try {
-		const hostEntry = workerHostEntry();
-		const worker = hostEntry
-			? new Worker(hostEntry, { type: "module", argv: ["__proto_worker_js_eval"] })
-			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module" });
-		return wrapBunWorker(worker);
-	} catch (err) {
-		throw new ToolError("Unable to create an isolated JS eval worker; refusing host-process execution", {
-			error: err instanceof Error ? err.message : String(err),
-		});
+		// A restored lane may carry the observed launcher path as its interpreter. A compiled
+		// host is not an external Bun CLI: keep using its internal worker entry in that case.
+		if (!snapshot.interpreter || (isCompiledBinary() && snapshot.interpreter === process.execPath))
+			return spawnJsProcess();
+		return spawnStandaloneJsProcess(runtime, snapshot.interpreter, await stageJsKernel());
+	} catch (error) {
+		throw new ToolError(
+			"Unable to create an isolated JS eval subprocess; refusing an interpreter with weaker native semantics",
+			{
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
 	}
 }
 
-function spawnJsProcess(interpreter?: string): WorkerHandle {
+function spawnJsProcess(): WorkerHandle {
 	const spawnCommand = resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG);
-	if (interpreter) spawnCommand.cmd[0] = interpreter;
 	const spawned = createWorkerSubprocess<WorkerOutbound>({
 		spawnCommand,
-		env: workerEnvFromParent(),
+		env: workerEnvFromParent({ PI_JS_NATIVE_STDIO: "1" }),
+		captureNativeStdio: true,
 		exitLabel: "JS eval worker",
 		detached: true,
 		reportCleanExit: true,
@@ -1134,26 +1105,26 @@ function spawnJsProcess(interpreter?: string): WorkerHandle {
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSendIpc(spawned.proc, message, "js-eval"),
 	);
-	return processWorkerHandle("process", base, spawned.snapshotDescendants);
+	return processWorkerHandle("process", withNativeOutput(base, spawned.proc.stdout!), spawned.snapshotDescendants);
 }
 
-/**
- * `node` cells: the staged Node kernel bundle (node-entry.ts) under the resolved Node. Node cannot
- * re-enter the Bun CLI worker host, and the runtimes share only JSON IPC (node-protocol.ts).
- * `--experimental-vm-modules` enables the local-module loader's vm.SourceTextModule.
- */
-function spawnNodeJsProcess(interpreter: string, entry: string): WorkerHandle {
+/** Run the staged module in the requested interpreter, never pass an internal CLI selector to it. */
+function spawnStandaloneJsProcess(runtime: JsKernelRuntime, interpreter: string, entry: string): WorkerHandle {
 	const spawned = createWorkerSubprocess<unknown>({
-		spawnCommand: { cmd: [interpreter, "--experimental-vm-modules", entry] },
-		env: workerEnvFromParent(),
-		exitLabel: "Node JS kernel",
+		// Only Node needs this flag for the local-module loader's vm.SourceTextModule.
+		spawnCommand: {
+			cmd: runtime === "node" ? [interpreter, "--experimental-vm-modules", entry] : [interpreter, entry],
+		},
+		env: workerEnvFromParent({ PI_JS_NATIVE_STDIO: "1", PI_JS_NATIVE_ADDON: getNativeAddonPath() }),
+		captureNativeStdio: true,
+		exitLabel: `${runtime} JS kernel`,
 		serialization: "json",
 		detached: true,
 		reportCleanExit: true,
 		unref: false,
 	});
 	const base = createWorkerHandle<WorkerInbound, unknown>(spawned, message =>
-		safeSendIpc(spawned.proc, encodeNodeKernelMessage(message), "node-js-kernel"),
+		safeSendIpc(spawned.proc, encodeNodeKernelMessage(message), `${runtime}-js-kernel`),
 	);
 	const decoded: WorkerProcessHandle = {
 		send: message => base.send(message),
@@ -1161,7 +1132,11 @@ function spawnNodeJsProcess(interpreter: string, entry: string): WorkerHandle {
 		onError: handler => base.onError(handler),
 		terminate: () => base.terminate(),
 	};
-	return processWorkerHandle("node", decoded, spawned.snapshotDescendants);
+	return processWorkerHandle(
+		runtime === "node" ? "node" : "process",
+		withNativeOutput(decoded, spawned.proc.stdout!),
+		spawned.snapshotDescendants,
+	);
 }
 
 interface WorkerProcessHandle {
@@ -1211,76 +1186,4 @@ function processWorkerHandle(
 		},
 		terminate: () => base.terminate(),
 	};
-}
-
-function wrapBunWorker(worker: Worker): WorkerHandle {
-	const exited = Promise.withResolvers<void>();
-	worker.addEventListener("close", () => exited.resolve(), { once: true });
-	return {
-		mode: "worker",
-		send(msg) {
-			worker.postMessage(msg);
-		},
-		onMessage(handler) {
-			const wrap = (event: MessageEvent): void => handler(event.data as WorkerOutbound);
-			worker.addEventListener("message", wrap);
-			return () => worker.removeEventListener("message", wrap);
-		},
-		onError(handler) {
-			const onError = (event: ErrorEvent): void => handler(errorFromWorkerEvent(event));
-			const onMessageError = (event: MessageEvent): void =>
-				handler(new ToolError(`JS eval worker message error: ${String(event.data)}`));
-			const onClose = (): void => handler(new Error("JS eval worker exited"));
-			worker.addEventListener("error", onError);
-			worker.addEventListener("messageerror", onMessageError);
-			worker.addEventListener("close", onClose);
-			return () => {
-				worker.removeEventListener("error", onError);
-				worker.removeEventListener("messageerror", onMessageError);
-				worker.removeEventListener("close", onClose);
-			};
-		},
-		async close() {
-			const { promise: closed, resolve } = Promise.withResolvers<boolean>();
-			let settled = false;
-			let sawClosedAck = false;
-			let sawWorkerExit = false;
-			let timeout: NodeJS.Timeout | undefined;
-			let unsubscribe = (): void => {};
-			const finish = (value: boolean): void => {
-				if (settled) return;
-				settled = true;
-				if (timeout) clearTimeout(timeout);
-				unsubscribe();
-				worker.removeEventListener("close", onClose);
-				resolve(value);
-			};
-			const finishIfClosed = (): void => {
-				if (sawClosedAck && sawWorkerExit) finish(true);
-			};
-			const onClose = (): void => {
-				sawWorkerExit = true;
-				finishIfClosed();
-			};
-			unsubscribe = this.onMessage(msg => {
-				if (msg.type !== "closed") return;
-				sawClosedAck = true;
-				finishIfClosed();
-			});
-			worker.addEventListener("close", onClose);
-			timeout = setTimeout(() => finish(false), workerCloseTimeoutMs);
-			worker.postMessage({ type: "close" } satisfies WorkerInbound);
-			return await closed;
-		},
-		async terminate() {
-			worker.terminate();
-			await raceWithTimeout(exited.promise, workerCloseTimeoutMs, "JS eval worker shutdown not confirmed");
-		},
-	};
-}
-
-function errorFromWorkerEvent(event: ErrorEvent): Error {
-	if (event.error instanceof Error) return event.error;
-	if (event.message) return new Error(event.message);
-	return new Error("Unknown JS eval worker error");
 }

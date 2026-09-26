@@ -1,5 +1,6 @@
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import type { KernelTarget } from "../kernel-target";
+import type { KernelInvocation } from "../types";
 import type { JsDisplayOutput } from "./shared/types";
 
 export type { JsDisplayOutput } from "./shared/types";
@@ -13,8 +14,6 @@ export interface SessionSnapshot {
 	shellEnv?: Record<string, string>;
 	stdin?: boolean;
 	sessionId: string;
-
-	localRoots?: Record<string, string>;
 }
 
 export interface RunErrorPayload {
@@ -34,6 +33,7 @@ export type WorkerInbound =
 			runId: string;
 			code: string;
 			filename: string;
+			invocation?: KernelInvocation;
 			snapshot: SessionSnapshot;
 			completionContext?: EvalCompletionInvocationContext;
 	  }
@@ -51,13 +51,15 @@ export type WorkerOutbound =
 	| { type: "display"; runId: string; output: JsDisplayOutput }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown; completionInvocationId?: string }
 	// `exitCode`: the cell called `process.exit()`, which ends the cell — not the kernel — with that status.
-	| { type: "result"; runId: string; ok: true; exitCode?: number }
-	| { type: "result"; runId: string; ok: false; error: RunErrorPayload }
+	| { type: "result"; runId: string; ok: true; exitCode?: number; nativeSequence?: number }
+	| { type: "result"; runId: string; ok: false; error: RunErrorPayload; nativeSequence?: number }
 	| { type: "log"; level: "debug" | "warn" | "error"; msg: string; meta?: Record<string, unknown> }
 	| { type: "closed" };
 
 export interface Transport {
 	send(msg: WorkerOutbound): void;
 	onMessage(handler: (msg: WorkerInbound) => void): () => void;
+	/** Dedicated hosts can release only their control channel while the native event loop drains. */
+	setReferenced?(referenced: boolean): void;
 	close(): void;
 }

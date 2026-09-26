@@ -2774,7 +2774,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "Generate Image",
 			description:
-				"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.",
+				"Enable the generate_image tool (text-to-image generation and editing). Exposed as a protolens:// device when tools.xdev is on.",
 		},
 	},
 
@@ -3128,9 +3128,9 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Discovery & MCP",
-			label: "xd:// Tools",
+			label: "protolens:// Tools",
 			description:
-				"Mount rarely-used (discoverable) tools as xd:// devices instead of shipping their schemas on every request; dispatch them from bash with `xd <tool> [flags]`. Sessions without bash skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
+				"Mount rarely-used (discoverable) tools as protolens:// devices instead of shipping their schemas on every request; dispatch them from bash with `protolens <tool> [flags]`. Sessions without bash skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
 		},
 	},
 
@@ -3141,7 +3141,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Discovery & MCP",
-			label: "xd:// Prompt Docs",
+			label: "protolens:// Prompt Docs",
 			description:
 				"Choose which mounted-device docs and schemas are inlined in the system prompt. Built-ins keeps core tools inline while MCP and extension tools stay on-demand.",
 			options: [
@@ -3162,9 +3162,9 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Discovery & MCP",
-			label: "xd:// Inline Devices",
+			label: "protolens:// Inline Devices",
 			description:
-				"When xd:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.",
+				"When protolens:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.",
 		},
 	},
 
@@ -4180,7 +4180,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Developer",
 			label: "Auto QA",
 			description:
-				"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
+				"Automated tool issue reporting (protolens://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
 		},
 	},
 

@@ -34,10 +34,11 @@ use crate::{
 	minimizer, process,
 };
 
-/// Request delivered to the TypeScript xdev bridge by the Brush `xd` builtin.
+/// Request delivered to the TypeScript xdev bridge by the Brush `protolens`
+/// builtin.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct XdDispatchRequest {
+pub struct ProtolensDispatchRequest {
 	pub name:            Option<String>,
 	pub args:            Vec<String>,
 	pub stdin:           String,
@@ -49,7 +50,7 @@ pub struct XdDispatchRequest {
 
 /// Text streams and metadata returned by the TypeScript xdev bridge.
 #[derive(Debug, Clone, Default)]
-pub struct XdDispatchResponse {
+pub struct ProtolensDispatchResponse {
 	pub stdout:    String,
 	pub stderr:    String,
 	pub exit_code: i32,
@@ -57,87 +58,88 @@ pub struct XdDispatchResponse {
 	pub record:    Option<String>,
 }
 
-pub type XdDispatchFuture = Pin<Box<dyn Future<Output = Result<XdDispatchResponse>> + Send>>;
+pub type ProtolensDispatchFuture =
+	Pin<Box<dyn Future<Output = Result<ProtolensDispatchResponse>> + Send>>;
 
-pub trait XdDispatcher: Send + Sync {
-	fn dispatch(&self, request: XdDispatchRequest) -> XdDispatchFuture;
+pub trait ProtolensDispatcher: Send + Sync {
+	fn dispatch(&self, request: ProtolensDispatchRequest) -> ProtolensDispatchFuture;
 }
 
-type XdRuntime = Arc<parking_lot::Mutex<XdRuntimeState>>;
+type ProtolensRuntime = Arc<parking_lot::Mutex<ProtolensRuntimeState>>;
 
 #[derive(Default)]
-struct XdRuntimeState {
-	dispatcher: Option<Arc<dyn XdDispatcher>>,
+struct ProtolensRuntimeState {
+	dispatcher: Option<Arc<dyn ProtolensDispatcher>>,
 	call_id:    Option<String>,
 	records:    Vec<String>,
 }
 
 #[derive(Clone)]
-struct XdErrorFormatter {
-	runtime: XdRuntime,
+struct ProtolensErrorFormatter {
+	runtime: ProtolensRuntime,
 }
 
-impl XdErrorFormatter {
+impl ProtolensErrorFormatter {
 	fn take_records(&self) -> Vec<String> {
 		std::mem::take(&mut self.runtime.lock().records)
 	}
 }
 
-impl Default for XdErrorFormatter {
+impl Default for ProtolensErrorFormatter {
 	fn default() -> Self {
-		Self { runtime: Arc::new(parking_lot::Mutex::new(XdRuntimeState::default())) }
+		Self { runtime: Arc::new(parking_lot::Mutex::new(ProtolensRuntimeState::default())) }
 	}
 }
 
-impl ErrorFormatter for XdErrorFormatter {}
+impl ErrorFormatter for ProtolensErrorFormatter {}
 
 #[derive(Clone, Default)]
-struct XdShellExtensions;
+struct ProtolensShellExtensions;
 
-impl ShellExtensions for XdShellExtensions {
-	type ErrorFormatter = XdErrorFormatter;
+impl ShellExtensions for ProtolensShellExtensions {
+	type ErrorFormatter = ProtolensErrorFormatter;
 
 	fn builtin_alias(command_name: &str) -> Option<&'static str> {
 		pi_builtins::kernel_builtin_alias(command_name)
 	}
 }
 
-const XD_STDIN_LIMIT: usize = 1024 * 1024;
-const XD_BRIDGE_FAILURE_EXIT: i32 = 125;
+const PROTOLENS_STDIN_LIMIT: usize = 1024 * 1024;
+const PROTOLENS_BRIDGE_FAILURE_EXIT: i32 = 125;
 
-fn xd_content(name: &str, content_type: ContentType) -> String {
+fn protolens_content(name: &str, content_type: ContentType) -> String {
 	let content = match content_type {
 		ContentType::ShortDescription => "dispatch a mounted xdev tool through the agent session",
-		ContentType::ShortUsage => "xd [tool [ARGS...]]  (? = docs)",
+		ContentType::ShortUsage => "protolens [tool [ARGS...]]  (? = docs)",
 		ContentType::DetailedHelp | ContentType::ManPage => {
 			return format!(
-				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [ARGS...]]  (? = \
-				 docs)\n\nArgs are CLI flags mapped from the tool schema (xd <tool> ? prints usage); \
-				 --json '<json>' passes a raw args object. The Brush builtin is available only in the \
-				 agent shell; external bash does not inherit it."
+				"{name}: dispatch a mounted agent tool.\nUsage: protolens [tool [ARGS...]]  (? = \
+				 docs)\n\nArgs are CLI flags mapped from the tool schema (protolens <tool> ? prints \
+				 usage); --json '<json>' passes a raw args object. The Brush builtin is available \
+				 only in the agent shell; external bash does not inherit it."
 			);
 		},
 	};
 	content.to_string()
 }
 
-fn xd_exit_code(code: i32) -> ExecutionExitCode {
+fn protolens_exit_code(code: i32) -> ExecutionExitCode {
 	if !(0..=255).contains(&code) {
-		return ExecutionExitCode::Custom(XD_BRIDGE_FAILURE_EXIT as u8);
+		return ExecutionExitCode::Custom(PROTOLENS_BRIDGE_FAILURE_EXIT as u8);
 	}
 	ExecutionExitCode::from(code as u8)
 }
 
-fn xd_execute(
-	context: ExecutionContext<'_, XdShellExtensions>,
+fn protolens_execute(
+	context: ExecutionContext<'_, ProtolensShellExtensions>,
 	args: Vec<CommandArg>,
 ) -> builtins::BoxFuture<'_, Result<ExecutionResult, brush_core::error::Error>> {
 	Box::pin(async move {
 		if let Some(observation) = &context.params.command_observation {
-			observation.route("xd");
+			observation.route("protolens");
 		}
 		let mut plain_args: Vec<String> = args.into_iter().map(|arg| arg.to_string()).collect();
-		if plain_args.first().is_some_and(|arg| arg == "xd") {
+		if plain_args.first().is_some_and(|arg| arg == "protolens") {
 			plain_args.remove(0);
 		}
 		let (name, args) = match plain_args.as_slice() {
@@ -150,24 +152,26 @@ fn xd_execute(
 			(runtime.dispatcher.clone(), runtime.call_id.clone())
 		};
 		let Some(dispatcher) = dispatcher else {
-			let _ = writeln!(context.stderr(), "xd: no agent dispatcher is attached");
+			let _ = writeln!(context.stderr(), "protolens: no agent dispatcher is attached");
 			return Ok(ExecutionResult::from(ExecutionExitCode::NotFound));
 		};
 
-		let mut input = Vec::with_capacity(XD_STDIN_LIMIT + 1);
+		let mut input = Vec::with_capacity(PROTOLENS_STDIN_LIMIT + 1);
 		let read_result = context
 			.stdin()
-			.take((XD_STDIN_LIMIT + 1) as u64)
+			.take((PROTOLENS_STDIN_LIMIT + 1) as u64)
 			.read_to_end(&mut input);
 		if let Err(error) = read_result {
-			let _ = writeln!(context.stderr(), "xd: failed to read stdin: {error}");
-			return Ok(ExecutionResult::from(ExecutionExitCode::Custom(XD_BRIDGE_FAILURE_EXIT as u8)));
+			let _ = writeln!(context.stderr(), "protolens: failed to read stdin: {error}");
+			return Ok(ExecutionResult::from(ExecutionExitCode::Custom(
+				PROTOLENS_BRIDGE_FAILURE_EXIT as u8,
+			)));
 		}
-		let stdin_truncated = input.len() > XD_STDIN_LIMIT;
+		let stdin_truncated = input.len() > PROTOLENS_STDIN_LIMIT;
 		if stdin_truncated {
-			input.truncate(XD_STDIN_LIMIT);
+			input.truncate(PROTOLENS_STDIN_LIMIT);
 		}
-		let request = XdDispatchRequest {
+		let request = ProtolensDispatchRequest {
 			name,
 			args,
 			stdin: String::from_utf8_lossy(&input).into_owned(),
@@ -191,9 +195,9 @@ fn xd_execute(
 		let response = match result {
 			Ok(response) => response,
 			Err(error) => {
-				let _ = writeln!(context.stderr(), "xd: dispatcher failed: {error}");
+				let _ = writeln!(context.stderr(), "protolens: dispatcher failed: {error}");
 				return Ok(ExecutionResult::from(ExecutionExitCode::Custom(
-					XD_BRIDGE_FAILURE_EXIT as u8,
+					PROTOLENS_BRIDGE_FAILURE_EXIT as u8,
 				)));
 			},
 		};
@@ -222,14 +226,14 @@ fn xd_execute(
 		{
 			return Ok(ExecutionResult::from(ExecutionExitCode::BrokenPipe));
 		}
-		Ok(ExecutionResult::from(xd_exit_code(response.exit_code)))
+		Ok(ExecutionResult::from(protolens_exit_code(response.exit_code)))
 	})
 }
 
-fn xd_registration() -> Registration<XdShellExtensions> {
+fn protolens_registration() -> Registration<ProtolensShellExtensions> {
 	Registration {
-		execute_func: xd_execute,
-		content_func: |name, content_type, _options| Ok(xd_content(name, content_type)),
+		execute_func: protolens_execute,
+		content_func: |name, content_type, _options| Ok(protolens_content(name, content_type)),
 		disabled: false,
 		special_builtin: false,
 		declaration_builtin: false,
@@ -238,7 +242,7 @@ fn xd_registration() -> Registration<XdShellExtensions> {
 }
 
 struct ShellSessionCore {
-	shell: BrushShell<XdShellExtensions>,
+	shell: BrushShell<ProtolensShellExtensions>,
 	trace: crate::execution_trace::CommandTrace,
 }
 
@@ -268,7 +272,7 @@ impl ShellAbortState {
 	}
 }
 
-fn shell_working_dir_matches(shell: &BrushShell<XdShellExtensions>, cwd: &str) -> bool {
+fn shell_working_dir_matches(shell: &BrushShell<ProtolensShellExtensions>, cwd: &str) -> bool {
 	let requested = std::path::Path::new(cwd);
 	if !requested.is_absolute() {
 		return false;
@@ -278,7 +282,7 @@ fn shell_working_dir_matches(shell: &BrushShell<XdShellExtensions>, cwd: &str) -
 }
 
 fn set_shell_working_dir_if_changed(
-	shell: &mut BrushShell<XdShellExtensions>,
+	shell: &mut BrushShell<ProtolensShellExtensions>,
 	cwd: &str,
 ) -> Result<()> {
 	if shell_working_dir_matches(shell, cwd) {
@@ -335,11 +339,20 @@ pub enum FsObservationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileMutation {
+	pub existed: bool,
+	pub exists:  bool,
+	pub before:  Option<String>,
+	pub after:   Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FsObservation {
 	pub path:     String,
 	pub kind:     FsObservationKind,
 	pub mtime_ns: Option<i64>,
 	pub size:     Option<u64>,
+	pub mutation: Option<FileMutation>,
 }
 
 impl From<fsobserve::FsObservation> for FsObservation {
@@ -352,34 +365,40 @@ impl From<fsobserve::FsObservation> for FsObservation {
 			},
 			mtime_ns: value.stamp.map(|stamp| stamp.mtime_ns),
 			size:     value.stamp.map(|stamp| stamp.size),
+			mutation: value.mutation.map(|mutation| FileMutation {
+				existed: mutation.existed,
+				exists:  mutation.exists,
+				before:  mutation.before,
+				after:   mutation.after,
+			}),
 		}
 	}
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShellRunResult {
-	pub exit_code:       Option<i32>,
-	pub cancelled:       bool,
-	pub timed_out:       bool,
-	pub minimized:       Option<MinimizerResult>,
-	pub working_dir:     Option<String>,
-	pub fs_observations: Vec<FsObservation>,
-	pub xd_dispatches:   Vec<String>,
-	pub stage_records:   Vec<String>,
+	pub exit_code:            Option<i32>,
+	pub cancelled:            bool,
+	pub timed_out:            bool,
+	pub minimized:            Option<MinimizerResult>,
+	pub working_dir:          Option<String>,
+	pub fs_observations:      Vec<FsObservation>,
+	pub protolens_dispatches: Vec<String>,
+	pub stage_records:        Vec<String>,
 	/// The command ended the persistent session (`exit`, `exec`, top-level
 	/// `return`/`break`), so its variables, functions and aliases are gone and
 	/// the next run starts a fresh shell.
 	#[serde(default)]
-	pub session_ended:   bool,
+	pub session_ended:        bool,
 }
 
 struct CommandOutcome {
-	exec:            ExecutionResult,
-	minimized:       Option<MinimizerResult>,
-	working_dir:     Option<String>,
-	fs_observations: Vec<FsObservation>,
-	xd_dispatches:   Vec<String>,
-	stage_records:   Vec<String>,
+	exec:                 ExecutionResult,
+	minimized:            Option<MinimizerResult>,
+	working_dir:          Option<String>,
+	fs_observations:      Vec<FsObservation>,
+	protolens_dispatches: Vec<String>,
+	stage_records:        Vec<String>,
 }
 
 impl CommandOutcome {
@@ -399,7 +418,7 @@ impl CommandOutcome {
 				.into_iter()
 				.map(Into::into)
 				.collect(),
-			xd_dispatches: session.shell.error_formatter().take_records(),
+			protolens_dispatches: session.shell.error_formatter().take_records(),
 			stage_records: session.trace.records(),
 		}
 	}
@@ -412,7 +431,7 @@ impl CommandOutcome {
 			minimized: self.minimized,
 			working_dir: self.working_dir,
 			fs_observations: self.fs_observations,
-			xd_dispatches: self.xd_dispatches,
+			protolens_dispatches: self.protolens_dispatches,
 			stage_records: self.stage_records,
 			session_ended,
 		}
@@ -422,15 +441,15 @@ impl CommandOutcome {
 impl ShellRunResult {
 	const fn aborted(reason: AbortReason) -> Self {
 		Self {
-			exit_code:       None,
-			cancelled:       matches!(reason, AbortReason::Signal),
-			timed_out:       matches!(reason, AbortReason::Timeout),
-			minimized:       None,
-			working_dir:     None,
-			fs_observations: Vec::new(),
-			xd_dispatches:   Vec::new(),
-			stage_records:   Vec::new(),
-			session_ended:   false,
+			exit_code:            None,
+			cancelled:            matches!(reason, AbortReason::Signal),
+			timed_out:            matches!(reason, AbortReason::Timeout),
+			minimized:            None,
+			working_dir:          None,
+			fs_observations:      Vec::new(),
+			protolens_dispatches: Vec::new(),
+			stage_records:        Vec::new(),
+			session_ended:        false,
 		}
 	}
 }
@@ -451,11 +470,11 @@ pub type ShellExecuteResult = ShellRunResult;
 const SHELL_CLOSE_GRACE: Duration = Duration::from_millis(150);
 
 pub struct Shell {
-	xd_runtime:     XdRuntime,
-	session:        Arc<TokioMutex<Option<ShellSessionCore>>>,
-	abort_state:    ShellAbortState,
-	spawn_registry: Arc<process::SpawnRegistry>,
-	config:         ShellConfig,
+	protolens_runtime: ProtolensRuntime,
+	session:           Arc<TokioMutex<Option<ShellSessionCore>>>,
+	abort_state:       ShellAbortState,
+	spawn_registry:    Arc<process::SpawnRegistry>,
+	config:            ShellConfig,
 }
 
 impl Shell {
@@ -476,7 +495,7 @@ impl Shell {
 			},
 		};
 		Self {
-			xd_runtime: Arc::new(parking_lot::Mutex::new(XdRuntimeState::default())),
+			protolens_runtime: Arc::new(parking_lot::Mutex::new(ProtolensRuntimeState::default())),
 			session: Arc::new(TokioMutex::new(None)),
 			abort_state: ShellAbortState::default(),
 			spawn_registry: Arc::new(process::SpawnRegistry::new()),
@@ -484,12 +503,12 @@ impl Shell {
 		}
 	}
 
-	pub fn set_xd_dispatcher(
+	pub fn set_protolens_dispatcher(
 		&self,
-		dispatcher: Option<Arc<dyn XdDispatcher>>,
+		dispatcher: Option<Arc<dyn ProtolensDispatcher>>,
 		call_id: Option<String>,
 	) {
-		let mut runtime = self.xd_runtime.lock();
+		let mut runtime = self.protolens_runtime.lock();
 		runtime.dispatcher = dispatcher;
 		runtime.call_id = call_id;
 		runtime.records.clear();
@@ -509,7 +528,7 @@ impl Shell {
 		};
 		run_shell_session(
 			self.session.clone(),
-			self.xd_runtime.clone(),
+			self.protolens_runtime.clone(),
 			self.abort_state.clone(),
 			self.spawn_registry.clone(),
 			self.config.clone(),
@@ -640,7 +659,7 @@ pub async fn execute_shell_streams(
 
 async fn run_shell_session(
 	session: Arc<TokioMutex<Option<ShellSessionCore>>>,
-	xd_runtime: XdRuntime,
+	protolens_runtime: ProtolensRuntime,
 	abort_state: ShellAbortState,
 	force_registry: Arc<process::SpawnRegistry>,
 	config: ShellConfig,
@@ -661,7 +680,7 @@ async fn run_shell_session(
 
 	let mut run_task = tokio::spawn({
 		let session = session.clone();
-		let xd_runtime = xd_runtime.clone();
+		let protolens_runtime = protolens_runtime.clone();
 		let abort_state = abort_state.clone();
 		let tokio_cancel = tokio_cancel.clone();
 		let at = ct.emplace_abort_token();
@@ -674,7 +693,7 @@ async fn run_shell_session(
 				None => session_guard.insert(
 					create_session_for_run(
 						&config,
-						xd_runtime.clone(),
+						protolens_runtime.clone(),
 						Some(spawn_registry.clone()),
 						Some(tokio_cancel.clone()),
 					)
@@ -704,7 +723,7 @@ async fn run_shell_session(
 				if let Some(session) = guard.as_ref() {
 					session.trace.interrupt();
 					aborted.stage_records = session.trace.records();
-					aborted.xd_dispatches = session.shell.error_formatter().take_records();
+					aborted.protolens_dispatches = session.shell.error_formatter().take_records();
 				}
 				*guard = None;
 			}
@@ -733,7 +752,7 @@ async fn run_shell_oneshot(
 	on_chunk: Option<Sender<String>>,
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
-	let xd_runtime = Arc::new(parking_lot::Mutex::new(XdRuntimeState::default()));
+	let protolens_runtime = Arc::new(parking_lot::Mutex::new(ProtolensRuntimeState::default()));
 	let tokio_cancel = CancellationToken::new();
 	let spawn_registry = Arc::new(process::SpawnRegistry::new());
 	let process_cancel_bridge = tokio::spawn({
@@ -747,12 +766,12 @@ async fn run_shell_oneshot(
 
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
-		let xd_runtime = xd_runtime.clone();
+		let protolens_runtime = protolens_runtime.clone();
 		let spawn_registry = spawn_registry.clone();
 		async move {
 			let mut session = create_session_for_run(
 				&config,
-				xd_runtime.clone(),
+				protolens_runtime.clone(),
 				Some(spawn_registry.clone()),
 				Some(tokio_cancel.clone()),
 			)
@@ -788,7 +807,7 @@ async fn run_shell_oneshot_streams(
 	streams: StreamSinks,
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
-	let xd_runtime = Arc::new(parking_lot::Mutex::new(XdRuntimeState::default()));
+	let protolens_runtime = Arc::new(parking_lot::Mutex::new(ProtolensRuntimeState::default()));
 	let tokio_cancel = CancellationToken::new();
 	let spawn_registry = Arc::new(process::SpawnRegistry::new());
 	let process_cancel_bridge = tokio::spawn({
@@ -802,12 +821,12 @@ async fn run_shell_oneshot_streams(
 
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
-		let xd_runtime = xd_runtime.clone();
+		let protolens_runtime = protolens_runtime.clone();
 		let spawn_registry = spawn_registry.clone();
 		async move {
 			let mut session = create_session_for_run(
 				&config,
-				xd_runtime.clone(),
+				protolens_runtime.clone(),
 				Some(spawn_registry.clone()),
 				Some(tokio_cancel.clone()),
 			)
@@ -861,7 +880,7 @@ fn is_session_bridge_env_var(key: &str) -> bool {
 }
 
 fn copy_env_into_shell(
-	shell: &mut BrushShell<XdShellExtensions>,
+	shell: &mut BrushShell<ProtolensShellExtensions>,
 	env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Result<()> {
 	let mut merged_path: Option<String> = None;
@@ -900,13 +919,13 @@ fn copy_env_into_shell(
 
 async fn create_session_for_run(
 	config: &ShellConfig,
-	xd_runtime: XdRuntime,
+	protolens_runtime: ProtolensRuntime,
 	spawn_registry: Option<Arc<process::SpawnRegistry>>,
 	cancel_token: Option<CancellationToken>,
 ) -> Result<ShellSessionCore> {
-	let mut shell: BrushShell<XdShellExtensions> =
-		BrushShell::builder_with_extensions::<XdShellExtensions>()
-			.error_formatter(XdErrorFormatter { runtime: xd_runtime })
+	let mut shell: BrushShell<ProtolensShellExtensions> =
+		BrushShell::builder_with_extensions::<ProtolensShellExtensions>()
+			.error_formatter(ProtolensErrorFormatter { runtime: protolens_runtime })
 			.do_not_inherit_env(true)
 			.profile(ProfileLoadBehavior::Skip)
 			.rc(RcLoadBehavior::Skip)
@@ -915,7 +934,7 @@ async fn create_session_for_run(
 			.await
 			.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
 
-	shell.register_builtin("xd", xd_registration());
+	shell.register_builtin("protolens", protolens_registration());
 
 	if let Some(exec_builtin) = shell.builtin_mut("exec") {
 		exec_builtin.disabled = true;
@@ -978,7 +997,7 @@ async fn create_session_for_run(
 }
 
 async fn source_snapshot(
-	shell: &mut BrushShell<XdShellExtensions>,
+	shell: &mut BrushShell<ProtolensShellExtensions>,
 	snapshot_path: &str,
 	spawn_registry: Option<Arc<process::SpawnRegistry>>,
 	cancel_token: Option<CancellationToken>,
@@ -1649,13 +1668,15 @@ async fn terminate_run(registry: &process::SpawnRegistry) {
 		}
 	}
 }
-fn terminate_internal_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
+fn terminate_internal_background_jobs(shell: &mut BrushShell<ProtolensShellExtensions>) {
 	for job in &mut shell.jobs_mut().jobs {
 		job.abort_internal_tasks();
 	}
 }
 
-fn shell_termination_targets(shell: &BrushShell<XdShellExtensions>) -> process::TerminationTargets {
+fn shell_termination_targets(
+	shell: &BrushShell<ProtolensShellExtensions>,
+) -> process::TerminationTargets {
 	let mut targets = process::TerminationTargets::new();
 	for job in &shell.jobs().jobs {
 		if let Some(pgid) = job.process_group_id() {
@@ -1668,7 +1689,7 @@ fn shell_termination_targets(shell: &BrushShell<XdShellExtensions>) -> process::
 	targets
 }
 
-fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
+fn terminate_background_jobs(shell: &mut BrushShell<ProtolensShellExtensions>) {
 	let targets = shell_termination_targets(shell);
 	terminate_internal_background_jobs(shell);
 	if targets.is_empty() {
@@ -1683,7 +1704,7 @@ fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
 }
 
 fn apply_command_env(
-	shell: &mut BrushShell<XdShellExtensions>,
+	shell: &mut BrushShell<ProtolensShellExtensions>,
 	env: Option<&HashMap<String, String>>,
 ) -> Result<bool> {
 	let Some(env) = env else {
@@ -1706,7 +1727,7 @@ fn apply_command_env(
 	Ok(true)
 }
 
-fn apply_env_fallback(shell: &mut BrushShell<XdShellExtensions>) -> Result<()> {
+fn apply_env_fallback(shell: &mut BrushShell<ProtolensShellExtensions>) -> Result<()> {
 	if shell.env().get("env").is_some() {
 		return Ok(());
 	}

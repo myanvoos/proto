@@ -31,7 +31,7 @@ const targetSchema = type({ kind: "'local'", "+": "reject" })
 	.or(type({ kind: "'container'", container: "string > 0", "engine?": "'docker' | 'podman'", ...targetOptions }))
 	.or(type({ kind: "'ssh'", host: "string > 0", ...targetOptions }));
 
-// Flat wire schema: XD derives CLI flags from top-level properties. Which fields
+// Flat wire schema: proto derives CLI flags from top-level properties. Which fields
 // each resource/op accepts is enforced by parseContextArgs before any side effect.
 export const contextSchema = type({
 	resource: type("'lane' | 'kernel'").describe("lane: bash lane queue/shell/kernels; kernel: one named kernel"),

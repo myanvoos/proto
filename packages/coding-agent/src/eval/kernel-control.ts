@@ -2,7 +2,6 @@ import * as path from "node:path";
 import { currentExecutionOrigin } from "../jobs/origin";
 import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
-import { resolveEvalUrlRoots } from "./backend";
 import { namespaceSessionId, readInterpreterSetting } from "./backend-helpers";
 import {
 	closeVmKernelSession,
@@ -197,7 +196,6 @@ async function startKernel(
 			signal,
 			reset: args.op === "reset",
 			toolSession: session,
-			localRoots: resolveEvalUrlRoots(session),
 			sessionFile: session.getSessionFile?.() ?? undefined,
 			artifactsDir: session.getArtifactsDir?.() ?? undefined,
 		});
@@ -210,7 +208,6 @@ async function startKernel(
 		signal,
 		discoveryCwd: session.cwd,
 		reset: args.op === "reset",
-		localRoots: resolveEvalUrlRoots(session),
 	});
 	if (signal.aborted) {
 		await closeVmKernelSession(info.sessionKey, true, ownerId);

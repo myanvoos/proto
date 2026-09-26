@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AsyncJobManager } from "../async/job-manager";
 import { Settings } from "../config/settings";
 import { createTools, type ToolSession } from ".";
-import { dispatchXdArgv } from "./xdev";
+import { dispatchProtolensArgv } from "./xdev";
 
 function enabledToolSession(): ToolSession {
 	const settings = Settings.isolated({
@@ -34,7 +34,7 @@ function enabledToolSession(): ToolSession {
 }
 
 describe("unified control surface authorization", () => {
-	for (const dispatch of ["native", "xd"] as const) {
+	for (const dispatch of ["native", "protolens"] as const) {
 		test(`${dispatch} preserves operation policy before side effects`, async () => {
 			const session = enabledToolSession();
 			session.enableIrc = false;
@@ -58,7 +58,7 @@ describe("unified control surface authorization", () => {
 				const result =
 					dispatch === "native"
 						? await tool.execute("denied", args)
-						: await dispatchXdArgv(session, name, ["--json", JSON.stringify(args)], undefined, undefined, {
+						: await dispatchProtolensArgv(session, name, ["--json", JSON.stringify(args)], undefined, undefined, {
 								toolCallId: "denied",
 							});
 				expect(result.isError, `${name} ${args.op}`).toBe(true);

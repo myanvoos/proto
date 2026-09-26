@@ -9,6 +9,7 @@ export interface PythonStatusEvent {
 }
 
 export type KernelDisplayOutput =
+	| { type: "text"; text: string }
 	| { type: "json"; data: unknown }
 	| { type: "image"; data: string; mimeType: string }
 	| { type: "markdown"; text: string }
@@ -101,7 +102,7 @@ export const PYTHON_DISPLAY_MAX_IMAGE_DECODE_BYTES = 20 * 1024 * 1024;
  */
 export function normalizeKernelDisplayOutput(output: KernelDisplayOutput): PythonDisplayOutput | undefined {
 	if (output.type === "status") return undefined;
-	if (output.type === "notice") return output;
+	if (output.type === "notice" || output.type === "text" || output.type === "markdown") return output;
 	if (output.type === "image") {
 		if (output.data.length > (PYTHON_DISPLAY_MAX_IMAGE_DECODE_BYTES / 3) * 4) {
 			return { type: "notice", text: "display image rejected: larger than 20 MiB decoded" };
@@ -115,9 +116,6 @@ export function normalizeKernelDisplayOutput(output: KernelDisplayOutput): Pytho
 			return { type: "notice", text: "display JSON dropped: not serializable" };
 		}
 	}
-	// Markdown kernel outputs already stream through the model-visible text
-	// leg (onChunk); a display block would duplicate them live, persisted,
-	// and in the next prompt.
 	return undefined;
 }
 
@@ -131,14 +129,7 @@ export function normalizePythonDisplayOutputs(
 	outputs: readonly KernelDisplayOutput[] | undefined,
 ): PythonDisplayOutput[] {
 	const budget = new PythonDisplayBudget();
-	for (const output of outputs ?? []) {
-		if (output.type === "markdown") {
-			// Markdown lives on the model-visible text leg; persisting a block
-			// would duplicate it (see normalizeKernelDisplayOutput).
-			continue;
-		}
-		budget.addKernelOutput(output);
-	}
+	for (const output of outputs ?? []) budget.addKernelOutput(output);
 	return budget.blocks;
 }
 
@@ -161,7 +152,7 @@ export class PythonDisplayBudget {
 
 	/** Only bounded, detached values leave the admission gate. */
 	addKernelOutput(output: KernelDisplayOutput): KernelDisplayOutput[] {
-		if (output.type === "status" || output.type === "markdown") return [];
+		if (output.type === "status") return [];
 		const previous = this.blocks.at(-1);
 		if (this.#blockCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
 			this.#appendNotice(`display truncated at ${PYTHON_DISPLAY_MAX_BLOCKS} blocks`);
@@ -299,16 +290,13 @@ export class PythonDisplayBudget {
 }
 
 function kernelOutputFromBlock(block: PythonDisplayOutput): KernelDisplayOutput {
-	if (block.type === "image" || block.type === "notice") return block;
-	if (block.type === "json") {
-		try {
-			return { type: "json", data: JSON.parse(block.text) };
-		} catch {
-			// A clipped JSON rendering is text, never a malformed structured value.
-			return { type: "notice", text: block.text };
-		}
+	if (block.type !== "json") return block;
+	try {
+		return { type: "json", data: JSON.parse(block.text) };
+	} catch {
+		// A clipped JSON rendering is text, never a malformed structured value.
+		return { type: "notice", text: block.text };
 	}
-	return { type: "notice", text: block.text };
 }
 
 function isStatusBundle(data: unknown): boolean {

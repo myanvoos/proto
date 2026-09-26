@@ -74,6 +74,25 @@ async fn js_cells_name_their_runtime_to_the_bridge() {
 }
 
 #[tokio::test]
+async fn kernel_requests_preserve_interpreter_visible_arguments() {
+	for (command, expected, filename) in [
+		("python3 -c 'cell()' --flag value", vec!["-c", "--flag", "value"], None),
+		("python3 - first second <<'PY'\ncell()\nPY", vec!["-", "first", "second"], Some("<stdin>")),
+		("node -e 'cell()' -- --flag value", vec!["--flag", "value"], None),
+		("bun -e 'cell()' first --flag", vec!["first", "--flag"], None),
+	] {
+		let (addr, host) = bridge("{\"t\":\"x\",\"c\":0}\n");
+		let (result, output) = run(command, &addr, "/usr/bin:/bin").await;
+		let request = host.join().expect("bridge request");
+		let argv = request["invocation"]["argv"].as_array().expect("invocation argv");
+		let arguments = if request["lang"] == "py" { &argv[..] } else { &argv[1..] };
+		assert_eq!(arguments, expected, "{command}");
+		assert_eq!(request["invocation"]["filename"].as_str(), filename);
+		assert_eq!(result.exit_code, Some(0), "{output:?}");
+	}
+}
+
+#[tokio::test]
 async fn declined_node_cell_without_interpreter_reports_both_names() {
 	let (addr, host) = bridge("{\"t\":\"f\"}\n");
 	let missing = std::env::temp_dir().join(format!("pi-shell-no-node-{}", std::process::id()));

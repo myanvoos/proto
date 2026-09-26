@@ -4,15 +4,26 @@
 
 ### Breaking Changes
 
+- Removed the Python kernel's `NAME = <<DELIM` assignment heredoc; cells use ordinary Python string literals, so a cell is valid Python outside the kernel too
+- Removed kernel `proto_path` / `protoPath`; use `read` for internal resources or pass bash-resolved paths through `env` to filesystem APIs
+
+- Mounted devices now use the `protolens` shell builtin and `protolens://` URLs; the `xd` command and `xd://` scheme have no aliases. The standalone `proto` executable retains its name
+- Harness documentation URLs move from `proto://` to `harness://` without a compatibility alias
+- Bash resolves literal internal-URL path arguments once before execution or fails with a `read` hint; generated-only `agent://`, `history://`, `mcp://`, and `protolens://` content must be read through `read` or `protolens read`. JSON payloads and interpreter heredocs remain unchanged
 - Control surfaces are now `context` (lanes/interpreters), `fleet` (workers/messages), and `jobs` (executions/processes/watches/waits); `orchestrate_*`, `kernel`, `monitor`, and fleet's old job/process operations are removed without executable aliases
 - Control calls require an explicit `op`; tracked worker input uses `fleet send`, peer delivery uses `fleet message`, and worker-turn waits use the returned job reference with `jobs wait`
 - `jobs list` and `inspect` no longer acknowledge results; only explicit waits, inbox drains, or automatic delivery consume them
 - Process control requires immutable incarnation references and a protocol-2 broker; incompatible brokers are reported without stopping their existing services or falling back to name-only control
-- `xd context --resource kernel` languages are `python`, `node`, and `bun` (replacing `javascript`): `node`/`nodejs` cells run on the Node.js found on PATH and `bun` cells on Bun, each with its own state; node kernels are local-only
+- `protolens context --resource kernel` languages are `python`, `node`, and `bun` (replacing `javascript`): `node`/`nodejs` cells run on the Node.js found on PATH and `bun` cells on Bun, each with its own state; node kernels are local-only
 - Monitors require background execution (`async.enabled`) to be enabled
 
 ### Added
 
+- Native-interpreter differential coverage for kernel language semantics, invocation identity, byte streams, side effects, and exit status
+- `retain_task(asyncio.Task)` / `retainTask(resource)` for explicit background lifetime beyond cell completion
+
+- Shell writes that own their target (`cat > file`, `>>`, `tee`) now report a `<shell> note:` receipt with diff stats, show their hunks on the tool card, and refuse to clobber a file changed since the shell last read it
+- Bundled harness documentation and built-in rules unpack once into immutable, versioned content-cache directories under `~/.proto/cache/docs`; `harness://` directories and document/rule URLs expose stable searchable filesystem paths reused across processes, while custom rules retain their original source paths
 - JavaScript cells expose `symbols()` and `blockRange()` like Python
 - Execution records report `queuedAt` separately from the real `startedAt`
 - Streaming, binary-safe Python and JavaScript kernel pipes with live program input and output backpressure
@@ -28,6 +39,13 @@
 
 ### Changed
 
+- Kernel displays, expression values, and harness notes are presentation sidebands, never program stdout/stderr; binary writes no longer need return-value suppression
+- Supported Python/Node/Bun cells preserve program arguments instead of falling through to fresh processes
+- Python cells support ordinary `asyncio.run()`, real `__main__` pickling, and native stdin descriptors; top-level await remains additive
+- JavaScript kernels preserve native bindings and settle referenced callbacks, capture actual Node/Bun console and descriptor bytes with bounded native pipes, and require subprocess isolation rather than falling back to an in-thread worker
+
+- Source checkouts resolve `harness://` documentation to existing files and directories without creating a cache
+
 - `read_artifact`/`readArtifact` default to UTF-8 (pages end on character boundaries; binary data needs `encoding="base64"`) and accept a bare `artifact://N` the session published
 - `edit_batch`/`editBatch` return `state: "conflict"` with per-path reasons (`stale`, `exists`, `missing`) instead of raising, and write nothing
 - Subagents without an output schema may yield plain text, and their results are the plain final answer instead of a JSON encoding
@@ -37,13 +55,14 @@
 - Fleets, interpreter requests, background results, rich displays, and editor attachments now enforce byte-aware admission limits with explicit overflow feedback
 - `jobs watch` observes existing jobs or processes without owning them; command-probe watches reap their own helpers, and `jobs wait` returns events without stopping subscriptions
 - Bash tool docs are reorganized around what agents decide: per-lane ordering and state, `async` cells starting without kernel state, routing inside pipelines vs `bash -c`/`xargs`, and an edit example whose anchor assertion runs before the replacement streams; rarely used kernel helpers are condensed, with Python details available through `help(fn)`
-- `xd` usage (flags, arrays, stdin payloads, exit codes) is documented once in the bash tool docs instead of also in the system prompt
+- `protolens` usage (flags, arrays, stdin payloads, exit codes) is documented once in the bash tool docs instead of also in the system prompt
 - The system prompt says when to use `fleet spawn` workers versus kernel `agent()`/`parallel()` fan-out
 - Python commands run as kernel cells on the interpreter the shell would run: `.venv/bin/python` and `python3.13` are kernel cells too, bare `python` follows an activated venv or exported `PATH`, and a lane keeps one Python kernel per interpreter
-- `xd context --resource kernel` `interpreter` picks one of a lane's Python kernels for `inspect`, `close`, and `keepalive`
+- `protolens context --resource kernel` `interpreter` picks one of a lane's Python kernels for `inspect`, `close`, and `keepalive`
 
 ### Fixed
 
+- Bash internal-URL arguments keep trailing read selectors (`protolens read harness://bash.md:1-40`), and `protolens` arguments such as `agent://` and `history://` reach the device instead of failing
 - Resetting a busy lane reports its active and queued background commands as cancelled rather than failed
 - Python kernel cells import project modules as a fresh `python` would: edits made between or within cells (by the kernel, subprocesses, or host tools) are picked up, a `cd` re-resolves module names, and the cell's own `PYTHONPATH` applies; a note names earlier bindings that still hold old code, and rebuilt C extensions are reported instead of silently kept
 - Python kernel `sys.path` no longer accumulates every earlier cell's working directory
@@ -51,14 +70,13 @@
 - A Python older than 3.10 runs a `python` command as a plain process with a one-time note instead of failing the cell
 - A virtual environment's `python` and its base interpreter no longer share one kernel
 - Single-literal device flags parse in flag and positional form
-- Bash tool docs tell agents to run services under `xd jobs --op start` when jobs is mounted as an `xd` device, and drop the supervision rule when it is disabled
-- `xd` boolean flags followed by `true`/`false` take it as their value instead of shifting positionals (`--pty false` was silently ignored)
+- Bash tool docs tell agents to run services under `protolens jobs --op start` when jobs is mounted as an `protolens` device, and drop the supervision rule when it is disabled
+- `protolens` boolean flags followed by `true`/`false` take it as their value instead of shifting positionals (`--pty false` was silently ignored)
 - MCP device docs show only the JSON argument forms the devices accept
-- `xd context`, `xd fleet`, and `xd jobs` accept leading operation words without assigning subsequent arguments to unrelated operations
+- `protolens context`, `protolens fleet`, and `protolens jobs` accept leading operation words without assigning subsequent arguments to unrelated operations
 - Jobs `input` `keys` accept control chords such as `C-d`, `ctrl+c`, and `^D`
 - Matplotlib figures closed before the end of a Python cell still display
 - Kernel `display()` output appears in order with stdout, and `display("text")` shows plain text without quotes
-- `proto_path`/`protoPath` errors name the missing skill or the accessor for non-file URLs
 - Kernel `symbols()` reports no outline for unparsed code instead of echoing the source, and keeps indentation of folded body lines
 - Background jobs of shell builtins, subshells, and functions report `$!`, list in `jobs -l`, and respond to `kill %N`
 - `<shell> state lost` notices report when an earlier call's `exit`, timeout, or crash reset a lane's shell
@@ -66,7 +84,7 @@
 - A force-closed or reset kernel cell reports why it was cancelled
 - Kernel `edit_batch` writes emit `<kernel> note:` lines and no longer trigger spurious stale-write errors afterwards
 - Delegated launches keep running after the cell that started them ends
-- Kernel `local://` and `fleet://` files can be written in a fresh session without creating the directory first
+- Bash-resolved `local://` and `fleet://` paths passed through `env` are writable from a fresh kernel session
 - `read <file>:conflicts` and conflict warnings no longer point to a nonexistent `write` tool
 - `read <url>` returns the page's own content instead of an empty RSS/Atom alternate; feed URLs render item titles, dates, summaries, and links
 - Image reads report the file's own format, plus the format sent when it was transcoded
@@ -75,7 +93,7 @@
 - Browser `run` output no longer starts with an internal `kernel-state` event
 - Unknown-tool errors from kernel cells no longer claim to come from the JavaScript runtime
 - Output footers no longer report a byte limit when only long lines were clipped, or negative line ranges when diagnostics are appended
-- `xd <device> ?` help cards keep the device description when a notice precedes the docs
+- `protolens <device> ?` help cards keep the device description when a notice precedes the docs
 - Split CLI bundles execute commands and remote JavaScript worker entrypoints instead of silently exiting
 - Long sessions avoid repeatedly loading and rewriting all older history during compaction, context rebuilding, and fleet discovery
 - Deeply nested fleets can wait for descendants at the concurrency limit without deadlocking, and disposed scopes stop retaining parent sessions

@@ -163,7 +163,7 @@ test("discovery honours settings instead of scanning unconditionally", async () 
 });
 
 test("schemes that need no capability discovery keep working", async () => {
-	const docs = await runCli(["read", "proto://"]);
+	const docs = await runCli(["read", "harness://"]);
 	expect(docs.exitCode).toBe(0);
 	expect(docs.stdout).toContain("Documentation");
 

@@ -25,12 +25,14 @@ test("plain text display bundles remain model-visible text", async () => {
 	expect(rendered.outputs).toEqual([]);
 });
 
-test("markdown display bundles do not duplicate the text leg as a block", async () => {
+test("markdown display bundles produce one sideband text representation", async () => {
 	const rendered = await renderKernelDisplay({ "text/markdown": "**bold**" });
 	expect(rendered.text).toBe("**bold**\n");
 	expect(rendered.outputs).toEqual([]);
-	// The single-output normalizer drops markdown for the same reason.
-	expect(normalizeKernelDisplayOutput({ type: "markdown", text: "**bold**" })).toBeUndefined();
+	expect(normalizeKernelDisplayOutput({ type: "markdown", text: "**bold**" })).toEqual({
+		type: "markdown",
+		text: "**bold**",
+	});
 });
 
 test("display budget enforces per-block clipping and exact persisted bytes", () => {
@@ -58,12 +60,17 @@ test("display budget enforces per-block clipping and exact persisted bytes", () 
 	expect(huge.blocks.at(-1)?.type).toBe("notice");
 });
 
-test("markdown kernel outputs are skipped by batch normalization", () => {
+test("text and markdown sidebands survive bounded batch normalization", () => {
 	const blocks = normalizePythonDisplayOutputs([
-		{ type: "markdown", text: "# dup" },
+		{ type: "text", text: "plain" },
+		{ type: "markdown", text: "# title" },
 		{ type: "image", data: "aGk=", mimeType: "image/png" },
 	]);
-	expect(blocks).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
+	expect(blocks).toEqual([
+		{ type: "text", text: "plain" },
+		{ type: "markdown", text: "# title" },
+		{ type: "image", data: "aGk=", mimeType: "image/png" },
+	]);
 });
 
 test("notice recording never pushes the block list past its cap", () => {

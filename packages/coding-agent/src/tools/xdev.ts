@@ -6,7 +6,7 @@ import { Container } from "@oh-my-pi/pi-tui/tui";
 import { INTENT_FIELD, parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { extractUriScheme } from "../internal-urls/parse";
-import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
+import { PROTOLENS_URL_PREFIX } from "../internal-urls/protolens-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine } from "../tui/status-line";
@@ -65,7 +65,7 @@ export interface XdevDispatch {
 
 	args?: Record<string, unknown>;
 
-	/** Original shell argv when dispatched via the CLI form (`xd browser --action run`). */
+	/** Original shell argv when dispatched via the CLI form (`protolens browser --action run`). */
 	argv?: string[];
 
 	inner?: unknown;
@@ -101,7 +101,7 @@ function renderDocsParts(
 	const schema = jsonSchemaToTypeScript(wireSchema);
 	let description = inst.description ?? "";
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
-		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`xd ${inst.name} ?\`)`;
+		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`protolens ${inst.name} ?\`)`;
 	}
 	const usageOptions = { jsonOnly: isJsonOnlyDevice(inst.name) };
 	const usage =
@@ -115,13 +115,13 @@ function renderDocsParts(
 			? [
 					usage,
 					"",
-					`Execute from bash with one JSON args object: \`xd ${inst.name} --json '<json>'\`, \`xd ${inst.name} '<json>'\`, or JSON piped on stdin (\`xd ${inst.name} ?\` for these docs). Flags and positional values are rejected.`,
+					`Execute from bash with one JSON args object: \`protolens ${inst.name} --json '<json>'\`, \`protolens ${inst.name} '<json>'\`, or JSON piped on stdin (\`protolens ${inst.name} ?\` for these docs). Flags and positional values are rejected.`,
 				]
 			: [
 					usage,
 					"",
-					`Execute from bash with the flags/positionals above (or \`xd ${inst.name} ?\` for these docs).`,
-					`JSON escape hatch: \`xd ${inst.name} --json '<json>'\`, or pipe a JSON args object on stdin; a \`-\` flag value reads stdin. MCP devices accept JSON only.`,
+					`Execute from bash with the flags/positionals above (or \`protolens ${inst.name} ?\` for these docs).`,
+					`JSON escape hatch: \`protolens ${inst.name} --json '<json>'\`, or pipe a JSON args object on stdin; a \`-\` flag value reads stdin. MCP devices accept JSON only.`,
 				]
 		).join("\n"),
 	};
@@ -140,7 +140,7 @@ function schemaProperties(schema: Record<string, unknown>): string[] | undefined
 	return Object.keys(properties as Record<string, unknown>);
 }
 
-function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unknown>): string[] {
+function unknownProtoKeys(args: Record<string, unknown>, schema: Record<string, unknown>): string[] {
 	const accepted = schemaProperties(schema);
 	if (!accepted) return [];
 	const declared = new Set(accepted);
@@ -149,7 +149,7 @@ function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unk
 
 import { suggestKnownKey } from "./xdev-cli";
 
-function validateXdArgs(
+function validateProtoArgs(
 	device: AiTool,
 	rawArgs: Record<string, unknown>,
 	toolCallId: string,
@@ -163,7 +163,7 @@ function validateXdArgs(
 		args = { ...args };
 		delete args[INTENT_FIELD];
 	}
-	const unknown = unknownXdKeys(args, schema);
+	const unknown = unknownProtoKeys(args, schema);
 	if (unknown.length > 0) {
 		const accepted = schemaProperties(schema) ?? [];
 		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "(none — this device takes no parameters)";
@@ -173,7 +173,7 @@ function validateXdArgs(
 			.map(hint => `did you mean \`${hint}\`?`);
 		const hintText = hints.length > 0 ? ` ${hints.join(" ")}` : "";
 		throw new ToolError(
-			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.${hintText} Accepted keys: ${acceptedText}.`,
+			`Invalid args for ${PROTOLENS_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.${hintText} Accepted keys: ${acceptedText}.`,
 		);
 	}
 	try {
@@ -185,7 +185,7 @@ function validateXdArgs(
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new ToolError(`Invalid args for ${XD_URL_PREFIX}${device.name}: ${message}\n\n${validationDocs()}`);
+		throw new ToolError(`Invalid args for ${PROTOLENS_URL_PREFIX}${device.name}: ${message}\n\n${validationDocs()}`);
 	}
 }
 
@@ -195,18 +195,18 @@ function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): R
 		parsed = JSON.parse(content);
 	} catch (error) {
 		throw new ToolError(
-			`${XD_URL_PREFIX}${device.name} expects a JSON args object as content (${error instanceof Error ? error.message : String(error)}). Write \`?\` for docs.`,
+			`${PROTOLENS_URL_PREFIX}${device.name} expects a JSON args object as content (${error instanceof Error ? error.message : String(error)}). Write \`?\` for docs.`,
 		);
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 		throw new ToolError(
-			`${XD_URL_PREFIX}${device.name} content must be a JSON object, got ${Array.isArray(parsed) ? "array" : typeof parsed}.`,
+			`${PROTOLENS_URL_PREFIX}${device.name} content must be a JSON object, got ${Array.isArray(parsed) ? "array" : typeof parsed}.`,
 		);
 	}
 
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
 	const schema = toolWireSchema(device);
-	return validateXdArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
+	return validateProtoArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
 }
 
 function toolSummary(inst: Tool): string {
@@ -279,9 +279,9 @@ function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
 	return state.tools.get(name);
 }
 
-/** Resolve a mounted device by bare name or by the `xd://name` spelling its docs advertise. */
+/** Resolve a mounted device by bare name or by the `protolens://name` spelling its docs advertise. */
 export function resolveMountedXdevTool(state: XdevState, name: string): Tool | undefined {
-	const bare = name.startsWith(XD_URL_PREFIX) ? name.slice(XD_URL_PREFIX.length) : name;
+	const bare = name.startsWith(PROTOLENS_URL_PREFIX) ? name.slice(PROTOLENS_URL_PREFIX.length) : name;
 	return state.mountedNames.has(bare) ? state.tools.get(bare) : undefined;
 }
 
@@ -309,12 +309,12 @@ export function xdevEntries(state: XdevState): Array<{ name: string; summary: st
 }
 
 export function xdevListing(state: XdevState): string {
-	const rows = xdevEntries(state).map(({ name, summary }) => `${XD_URL_PREFIX}${name.padEnd(14)} ${summary}`);
+	const rows = xdevEntries(state).map(({ name, summary }) => `${PROTOLENS_URL_PREFIX}${name.padEnd(14)} ${summary}`);
 	return [
-		`${XD_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
+		`${PROTOLENS_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
 		...rows,
 		"",
-		`Docs + CLI usage: run \`xd <tool> ?\` in bash; execute with \`xd <tool> [flags]\` or \`xd <tool> --json '<json>'\`. Active top-level tools accept the same dispatch.`,
+		`Docs + CLI usage: run \`protolens <tool> ?\` in bash; execute with \`protolens <tool> [flags]\` or \`protolens <tool> --json '<json>'\`. Active top-level tools accept the same dispatch.`,
 	].join("\n");
 }
 
@@ -351,7 +351,7 @@ export function xdevDocsAll(
 				"## Additional devices (docs on demand)",
 				...overflow.map(tool => {
 					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
+					return `- ${PROTOLENS_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
 				}),
 			].join("\n"),
 		);
@@ -396,7 +396,7 @@ function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 	const inst = resolveXdevTool(state, name);
 	if (!inst) {
 		throw new ToolError(
-			`No such tool: ${XD_URL_PREFIX}${name}. Mounted devices: ${[...state.mountedNames].join(", ")}. Active top-level tools are also dispatchable via ${XD_URL_PREFIX}<tool>.`,
+			`No such tool: ${PROTOLENS_URL_PREFIX}${name}. Mounted devices: ${[...state.mountedNames].join(", ")}. Active top-level tools are also dispatchable via ${PROTOLENS_URL_PREFIX}<tool>.`,
 		);
 	}
 	return inst;
@@ -433,7 +433,7 @@ async function executeResolvedXdev(
 	};
 	try {
 		throwIfAborted(signal);
-		const validated = validateXdArgs(
+		const validated = validateProtoArgs(
 			canonical as AiTool,
 			args,
 			toolCallId,
@@ -490,7 +490,7 @@ export async function dispatchXdevTool(
 	return executeResolvedXdev(name, canonical, validated, { toolCallId, signal, onUpdate, context });
 }
 
-export type XdBashDispatch =
+export type ProtolensBashDispatch =
 	| { kind: "listing" }
 	| {
 			kind: "device";
@@ -500,15 +500,15 @@ export type XdBashDispatch =
 			stdinTruncated?: boolean;
 	  };
 
-export function parseXdBashCommand(argv: readonly string[]): XdBashDispatch | undefined {
-	if (argv.length === 0 || argv[0] !== "xd") return undefined;
+export function parseProtolensBashCommand(argv: readonly string[]): ProtolensBashDispatch | undefined {
+	if (argv.length === 0 || argv[0] !== "protolens") return undefined;
 	const rest = argv.slice(1);
 	if (rest.length === 0 || (rest.length === 1 && HELP_CONTENT_RE.test(rest[0]))) return { kind: "listing" };
 	const [name, ...args] = rest;
 	return { kind: "device", name, argv: args };
 }
 
-export interface XdDispatchOptions {
+export interface ProtolensDispatchOptions {
 	toolCallId: string;
 	signal?: AbortSignal;
 	onUpdate?: AgentToolUpdateCallback;
@@ -516,24 +516,24 @@ export interface XdDispatchOptions {
 	cwd?: string;
 }
 
-/** `xd <tool> ?` / `help` / `--help` variants request the docs card. */
+/** `protolens <tool> ?` / `help` / `--help` variants request the docs card. */
 function isHelpArgv(argv: readonly string[]): boolean {
 	return argv.length > 0 && /^(?:\?|help|--help|-h)$/i.test(argv[0]);
 }
 
 /**
- * Dispatch an `xd` invocation from the shell bridge: raw argv + captured stdin.
+ * Dispatch a `protolens` invocation from the shell bridge: raw argv + captured stdin.
  * CLI flags are mapped through the device wire schema; JSON payloads (single `{...}`
  * positional, `--json`, bare stdin) stay first-class. XdevUsageError propagates so the
  * bridge can exit 2 (usage) instead of 1 (tool failure).
  */
-export async function dispatchXdArgv(
+export async function dispatchProtolensArgv(
 	session: ToolSession,
 	name: string | undefined,
 	argv: readonly string[],
 	stdin: string | undefined,
 	stdinTruncated: boolean | undefined,
-	options: XdDispatchOptions,
+	options: ProtolensDispatchOptions,
 ): Promise<AgentToolResult<unknown>> {
 	const textContent = argv.join(" ");
 	if (name === REPORT_ISSUE_DEVICE_NAME) {
@@ -546,10 +546,10 @@ export async function dispatchXdArgv(
 	}
 	const xdev = session.xdev;
 	if (!xdev) {
-		throw new ToolError("xd:// is not mounted in this session.");
+		throw new ToolError("protolens:// is not mounted in this session.");
 	}
 	if (!name) {
-		throw new ToolError(`Cannot dispatch to ${XD_URL_PREFIX} itself — pick a device:\n${xdevListing(xdev)}`);
+		throw new ToolError(`Cannot dispatch to ${PROTOLENS_URL_PREFIX} itself — pick a device:\n${xdevListing(xdev)}`);
 	}
 	const canonical = resolveRequiredXdevTool(xdev, name);
 
@@ -579,13 +579,13 @@ export async function dispatchXdArgv(
 }
 
 /** Compatibility entry: dispatch a device from its legacy single-string content form. */
-export async function dispatchXdTarget(
+export async function dispatchProtolensTarget(
 	session: ToolSession,
 	name: string | undefined,
 	content: string,
-	options: XdDispatchOptions,
+	options: ProtolensDispatchOptions,
 ): Promise<AgentToolResult<unknown>> {
-	return dispatchXdArgv(session, name, content.length > 0 ? [content] : [], undefined, undefined, options);
+	return dispatchProtolensArgv(session, name, content.length > 0 ? [content] : [], undefined, undefined, options);
 }
 
 function resolveDeviceRenderer(
@@ -728,7 +728,7 @@ function formatXdevHelpCard(
 			{
 				icon: options.isPartial ? "running" : "done",
 				spinnerFrame: options.spinnerFrame,
-				title: `${XD_URL_PREFIX}${dispatch.tool}`,
+				title: `${PROTOLENS_URL_PREFIX}${dispatch.tool}`,
 				meta: ["docs", ...helpArgsMeta(mounted)],
 				...(badge
 					? {
@@ -797,7 +797,7 @@ function formatXdevCompositeCard(
 			renderStatusLine(
 				{
 					icon: dispatch.isError ? "error" : "done",
-					title: `${XD_URL_PREFIX}${dispatch.tool}`,
+					title: `${PROTOLENS_URL_PREFIX}${dispatch.tool}`,
 					...(meta.length > 0 ? { meta } : {}),
 					...(badge
 						? {
@@ -844,17 +844,17 @@ function renderXdevHelpCard(
 }
 
 /**
- * The xd device call when `args.command` is exactly one xd invocation (no chaining, no
+ * The protolens device call when `args.command` is exactly one protolens invocation (no chaining, no
  * surrounding commands). Composite commands render through the composite card instead.
  */
-export function xdDeviceCallFromBashArgs(
+export function protolensDeviceCallFromBashArgs(
 	args: unknown,
 ): { name: string; content?: string; argv?: string[] } | undefined {
 	const command = (args as { command?: unknown } | undefined)?.command;
 	if (typeof command !== "string") return undefined;
 	const segments = tokenizeShellSegments(command);
 	if (segments.length !== 1) return undefined;
-	const parsed = parseXdBashCommand(segments[0]);
+	const parsed = parseProtolensBashCommand(segments[0]);
 	if (parsed?.kind !== "device") return undefined;
 	if (parsed.argv.length === 1) {
 		// Single-token form: legacy JSON object payload, MCP JSON, or a plain-text device arg.
@@ -903,7 +903,10 @@ export function renderXdevCall(
 	const mounted = resolveMounted?.(name);
 	const isHelpCall = (typeof content === "string" && HELP_CONTENT_RE.test(content)) || argv?.[0] === "?";
 	if (isHelpCall) {
-		return renderDefaultToolExecution({ label: `xd ${displayDeviceLabel(name, mounted)}`, args: {}, options }, theme);
+		return renderDefaultToolExecution(
+			{ label: `protolens ${displayDeviceLabel(name, mounted)}`, args: {}, options },
+			theme,
+		);
 	}
 	let args: Record<string, unknown>;
 	if (typeof content === "string" && content.length > 0) {

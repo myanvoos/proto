@@ -1,14 +1,14 @@
 export * from "./agent-protocol";
 export * from "./artifact-protocol";
+export * from "./harness-protocol";
 export * from "./history-protocol";
 export * from "./json-query";
 export * from "./local-protocol";
 export * from "./mcp-protocol";
 export * from "./parse";
-export * from "./proto-protocol";
+export * from "./protolens-protocol";
 export * from "./router";
 export * from "./rule-protocol";
 export * from "./skill-protocol";
 export * from "./ssh-protocol";
 export type * from "./types";
-export * from "./xd-protocol";

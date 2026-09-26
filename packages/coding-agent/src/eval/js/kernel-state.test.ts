@@ -82,8 +82,8 @@ await Bun.write("restored.bin", persisted.nested[4].payload);`,
 test("JavaScript restore rejects collisions, accessors, corruption, and incompatible metadata without partial mutation", async () => {
 	using directory = TempDir.createSync("@js-state-validation-");
 	await using kernel = await harness(directory.path());
-	await kernel.run(`var first = 1;
-var second = Buffer.from("ok");
+	await kernel.run(`globalThis.first = 1;
+globalThis.second = Buffer.from("ok");
 await saveState("valid.json", ["first", "second"]);`);
 	await kernel.run(`delete globalThis.first;
 second = "existing";

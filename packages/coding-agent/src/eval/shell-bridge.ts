@@ -22,7 +22,7 @@ import { PythonDisplayBudget } from "./py/display";
 import { MIN_KERNEL_PYTHON } from "./py/kernel";
 import { findLiteralCompletionCalls } from "./speculation";
 import { statusEventKey, upsertStatusEvent } from "./status-events";
-import type { EvalDisplayOutput, EvalStatusEvent } from "./types";
+import type { EvalDisplayOutput, EvalStatusEvent, KernelInvocation } from "./types";
 
 export interface KernelShellBridgeOptions {
 	lane?: string;
@@ -35,6 +35,8 @@ export interface KernelShellBridgeHandle {
 	drainImages(): ImageContent[];
 	drainStatusEvents(): EvalStatusEvent[];
 	drainJsonOutputs(): unknown[];
+	/** Presentation only: never written to a command stdout/stderr descriptor. */
+	drainDisplayText(): string[];
 	queriedExecutions(): boolean;
 	/** Why the last kernel cell was cancelled by something other than this run (e.g. a force-close). */
 	cellFailure(): string | undefined;
@@ -48,9 +50,11 @@ interface RunContext {
 	images: ImageContent[];
 	statusEvents: EvalStatusEvent[];
 	jsonOutputs: unknown[];
+	displayText: string[];
 	displayBudget: PythonDisplayBudget;
 	active: Set<AbortController>;
 	onStatusEvent?: (event: EvalStatusEvent) => void;
+	onDisplayText?: (text: string) => void;
 	completionContext?: KernelShellBridgeOptions;
 }
 
@@ -91,6 +95,7 @@ interface CellRequest {
 	cwd?: string;
 	shellEnv?: Record<string, string>;
 	stdin?: boolean;
+	invocation?: KernelInvocation;
 	/** The command word as typed (`python`, `.venv/bin/python`). */
 	program?: string;
 	/** The executable the shell resolves `program` to. */
@@ -108,12 +113,9 @@ const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
 const tooOldNoted = new WeakMap<ToolSession, Set<string>>();
 
 /** The fallthrough frame for a python command no kernel can run; says once per interpreter why. */
-function pythonFallThrough(
-	session: ToolSession,
-	route: PythonCellRoute,
-	request: CellRequest,
-): Record<string, unknown> {
+function pythonFallThrough(context: RunContext, route: PythonCellRoute, request: CellRequest): Record<string, unknown> {
 	if (route.kind !== "external" || !route.tooOld) return { t: "f" };
+	const session = context.session;
 	const label = request.interpreter ?? request.program ?? "python";
 	let noted = tooOldNoted.get(session);
 	if (!noted) {
@@ -122,10 +124,11 @@ function pythonFallThrough(
 	}
 	if (noted.has(label)) return { t: "f" };
 	noted.add(label);
-	return {
-		t: "f",
-		note: `<kernel> note: ${label} is older than Python ${MIN_KERNEL_PYTHON}, which kernel cells need; it runs as a plain process (no kernel state or helpers)`,
-	};
+	const text = `<kernel> note: ${label} is older than Python ${MIN_KERNEL_PYTHON}, which kernel cells need; it runs as a plain process (no kernel state or helpers)`;
+	for (const output of context.displayBudget.addKernelOutput({ type: "notice", text })) {
+		if (output.type === "notice") appendDisplayText(context, output.text);
+	}
+	return { t: "f" };
 }
 let listener: TCPSocketListener<SocketState> | undefined;
 
@@ -133,6 +136,7 @@ export function registerKernelShellRun(
 	session: ToolSession,
 	onStatusEvent?: (event: EvalStatusEvent) => void,
 	completionContext?: KernelShellBridgeOptions,
+	onDisplayText?: (text: string) => void,
 ): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
@@ -142,9 +146,11 @@ export function registerKernelShellRun(
 		images: [],
 		statusEvents: [],
 		jsonOutputs: [],
+		displayText: [],
 		displayBudget: new PythonDisplayBudget(),
 		active: new Set(),
 		onStatusEvent,
+		onDisplayText,
 		completionContext,
 	};
 	runs.set(token, context);
@@ -163,6 +169,7 @@ export function registerKernelShellRun(
 		drainImages: () => context.images.splice(0),
 		drainStatusEvents: () => context.statusEvents.splice(0),
 		drainJsonOutputs: () => context.jsonOutputs.splice(0),
+		drainDisplayText: () => context.displayText.splice(0),
 		queriedExecutions: () => context.queriedExecutions,
 		cellFailure: () => context.cellFailure,
 		dispose: () => {
@@ -172,6 +179,7 @@ export function registerKernelShellRun(
 			context.displayBudget.release();
 			context.images.length = 0;
 			context.jsonOutputs.length = 0;
+			context.displayText.length = 0;
 			context.statusEvents.length = 0;
 			for (const abort of context.active) abort.abort();
 			if (runs.size === 0) {
@@ -181,6 +189,11 @@ export function registerKernelShellRun(
 			}
 		},
 	};
+}
+
+function appendDisplayText(context: RunContext, text: string): void {
+	context.displayText.push(text);
+	context.onDisplayText?.(`${text}\n`);
 }
 
 function ensureListener(): TCPSocketListener<SocketState> {
@@ -497,6 +510,19 @@ function parseRequest(line: string): CellRequest | undefined {
 	)
 		return undefined;
 	if (parsed.stdin !== undefined && typeof parsed.stdin !== "boolean") return undefined;
+	let invocation: KernelInvocation | undefined;
+	if (parsed.invocation !== undefined) {
+		const value = parsed.invocation;
+		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const record = value as Record<string, unknown>;
+		if (!Array.isArray(record.argv) || record.argv.some(arg => typeof arg !== "string" || arg.includes("\0")))
+			return undefined;
+		if (record.filename != null && typeof record.filename !== "string") return undefined;
+		invocation = {
+			argv: record.argv as string[],
+			filename: typeof record.filename === "string" ? record.filename : undefined,
+		};
+	}
 	const text = (value: unknown): string | undefined =>
 		typeof value === "string" && value.length > 0 ? value : undefined;
 	return {
@@ -505,6 +531,7 @@ function parseRequest(line: string): CellRequest | undefined {
 		lang: parsed.lang,
 		shellEnv: parsed.shellEnv as Record<string, string> | undefined,
 		stdin: parsed.stdin === true,
+		invocation,
 		cwd: text(parsed.cwd),
 		program: text(parsed.program),
 		interpreter: text(parsed.interpreter),
@@ -522,10 +549,8 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	const abort = new AbortController();
 	socket.data.abort = abort;
 	context.active.add(abort);
-	// Status events (write/delete hunks, env, agent, …) are surfaced structurally
-	// to the bash tool (drainStatusEvents → rendered like an eval cell), not
-	// flattened into the stdout byte stream — matching the eval tool, whose
-	// model-facing text is stdout only and whose hunks are a TUI affordance.
+	// Status and display events are presentation sidebands. Only program output
+	// goes to the shell byte streams; tool responses still include rich results.
 	const cellStatusEvents: EvalStatusEvent[] = [];
 	try {
 		const backend = CELL_BACKENDS[request.lang];
@@ -551,7 +576,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 				: undefined;
 		abort.signal.throwIfAborted();
 		if (pythonRoute?.kind === "external") {
-			finish(socket, pythonFallThrough(session, pythonRoute, request));
+			finish(socket, pythonFallThrough(context, pythonRoute, request));
 			return;
 		}
 		// Set only when a python command picked a kernel apart from the lane's default one.
@@ -587,16 +612,16 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 						candidateFingerprints,
 					}
 				: undefined;
-		// Displays render into the byte stream as they arrive, in order with stdout/stderr.
+		// Presentation travels beside program streams, never through shell pipes or redirections.
 		let streamedDisplays = 0;
 		let jsonDisplays = 0;
-		const renderDisplay = async (output: EvalDisplayOutput): Promise<void> => {
-			if (output.type === "markdown" || output.type === "status") return;
+		const renderDisplay = (output: EvalDisplayOutput): void => {
+			if (output.type === "status") return;
 			for (const admitted of context.displayBudget.addKernelOutput(output)) {
 				if (admitted.type === "image") context.images.push(admitted);
 				else if (admitted.type === "json") context.jsonOutputs.push(admitted.data);
 				const text = formatDisplayOutputForText(admitted, admitted.type === "json" ? ++jsonDisplays : jsonDisplays);
-				if (text) await sendBytes(socket, Buffer.from(`${text}\n`), "stdout");
+				if (text) appendDisplayText(context, text.trimEnd());
 			}
 		};
 		const result = await withExecutionOrigin(
@@ -612,6 +637,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 					interpreter,
 					target: configuration?.target,
 					shellEnv: request.shellEnv,
+					invocation: request.invocation,
 					stdin: request.stdin ? createInput(socket) : undefined,
 					sessionId: kernelLaneSessionId(session, context.completionContext?.lane),
 					sessionFile: session.getSessionFile?.() ?? undefined,
@@ -629,6 +655,10 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 					},
 					onStatus: event => {
 						if (isEvalTimeoutControlEvent(event)) return;
+						if (event.op === "note" && typeof event.text === "string") {
+							renderDisplay({ type: "notice", text: event.text });
+							return;
+						}
 						if (event.op === "execution-query") {
 							context.queriedExecutions = true;
 							return;
@@ -644,11 +674,10 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 							const key = routedInterpreter ? `${lane} (${routedInterpreter})` : lane;
 							const previous = known.get(key);
 							if (previous && previous !== event.generation)
-								sendOutput(
-									socket,
-									`<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.\n`,
-									"stderr",
-								);
+								renderDisplay({
+									type: "notice",
+									text: `<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.`,
+								});
 							known.set(key, event.generation);
 						}
 						// File-observation correctness needs only mutation identity, not retained rich hunks.
@@ -662,7 +691,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 							context.onStatusEvent?.(admitted);
 						} else {
 							const notice = context.displayBudget.blocks.at(-1);
-							if (notice?.type === "notice" && notice !== previous) sendOutput(socket, `${notice.text}\n`);
+							if (notice?.type === "notice" && notice !== previous) appendDisplayText(context, notice.text);
 						}
 					},
 				}),

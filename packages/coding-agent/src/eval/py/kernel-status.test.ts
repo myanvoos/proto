@@ -303,7 +303,8 @@ test("late partial Python prints are evicted visibly instead of leaking per-cell
 					`async def late_partial_${index}():`,
 					"    await late_partial_gate.wait()",
 					`    print("PARTIAL_${index}", end="")`,
-					`asyncio.create_task(late_partial_${index}())`,
+					`retain_task(asyncio.create_task(late_partial_${index}()))`,
+					"await asyncio.sleep(0)",
 				].join("\n"),
 				{
 					onChunk: chunk => {

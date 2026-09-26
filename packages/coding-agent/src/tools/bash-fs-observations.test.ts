@@ -87,16 +87,21 @@ test("shell builtins and redirects report file observations with exact stamps", 
 		});
 		expect(byPath.get(path.join(dir, "matched.txt"))?.kind).toBe(FsObservationKind.Read);
 		expect(byPath.has(path.join(dir, "unmatched.txt"))).toBe(false);
+		// A write the shell itself performed carries the content snapshots the
+		// bash tool turns into a receipt and a hunk; a creation has no `before`.
 		expect(byPath.get(path.join(dir, "redirected.txt"))).toEqual({
 			path: path.join(dir, "redirected.txt"),
 			kind: FsObservationKind.Write,
 			...(await stampOf("redirected.txt")),
+			mutation: { existed: false, exists: true, after: "out\n" },
 		});
 		expect(byPath.get(path.join(dir, "edited.txt"))).toEqual({
 			path: path.join(dir, "edited.txt"),
 			kind: FsObservationKind.Write,
 			...(await stampOf("edited.txt")),
+			mutation: { existed: true, exists: true, before: "before\n", after: "after\n" },
 		});
+		// A removal mutates no content, so it reports no snapshots.
 		expect(byPath.get(path.join(dir, "removed.txt"))).toEqual({
 			path: path.join(dir, "removed.txt"),
 			kind: FsObservationKind.Write,

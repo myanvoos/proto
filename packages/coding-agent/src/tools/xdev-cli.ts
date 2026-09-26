@@ -1,7 +1,7 @@
 /**
- * CLI-to-args mapping for `xd` device dispatches.
+ * CLI-to-args mapping for `protolens` device dispatches.
  *
- * The Brush `xd` builtin hands us raw shell argv (`xd browser --action run --name main`), so
+ * The Brush `protolens` builtin hands us raw shell argv (`protolens browser --action run --name main`), so
  * device arguments can be authored as ordinary command lines instead of JSON embedded in shell
  * quotes. This module converts argv + stdin into the device's args object using the tool's JSON
  * wire schema, and renders the inverse (canonical CLI usage lines for docs and TUI previews).
@@ -16,7 +16,7 @@
  *   is not a positional slot, a first positional equal to one of its values selects the op.
  * - A single `{...}` positional stays the legacy full-args JSON form; `--json '<json>'` is the
  *   explicit escape hatch (required for MCP devices, whose schemas are not CLI-mappable).
- * - A flag value of `-` reads that value from stdin; bare `xd <tool>` with piped stdin takes a
+ * - A flag value of `-` reads that value from stdin; bare `protolens <tool>` with piped stdin takes a
  *   JSON object (existing behavior) or, for a single-string device, the plain payload.
  */
 import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
@@ -194,7 +194,7 @@ function positionalOrder(deviceName: string, schema: Record<string, unknown>): s
 
 /**
  * The `op` selector when it is a closed string set that is not already a positional slot, so a
- * leading positional matching one of its values selects the op (`xd fleet list`).
+ * leading positional matching one of its values selects the op (`protolens fleet list`).
  */
 function leadingOpSpec(specs: readonly XdevFlagSpec[], order: readonly string[]): XdevFlagSpec | undefined {
 	if (order.includes("op")) return undefined;
@@ -205,12 +205,12 @@ function parseScalarToken(spec: XdevFlagSpec, token: string, flag: string): unkn
 	if (spec.type === "boolean") {
 		if (token === "true") return true;
 		if (token === "false") return false;
-		throw new XdevUsageError(`xd: --${flag} expects true or false, got "${token}"`);
+		throw new XdevUsageError(`protolens: --${flag} expects true or false, got "${token}"`);
 	}
 	if (spec.type === "number") {
 		const value = Number(token);
 		if (!Number.isFinite(value)) {
-			throw new XdevUsageError(`xd: --${flag} expects a number, got "${token}"`);
+			throw new XdevUsageError(`protolens: --${flag} expects a number, got "${token}"`);
 		}
 		return value;
 	}
@@ -218,7 +218,7 @@ function parseScalarToken(spec: XdevFlagSpec, token: string, flag: string): unkn
 		if (spec.enumValues?.includes(token)) return token;
 		const hint = suggestKnownKey(token, spec.enumValues ?? []);
 		throw new XdevUsageError(
-			`xd: --${flag} expects one of ${spec.enumValues?.map(v => `'${v}'`).join(" | ")}${hint ? ` (did you mean '${hint}'?)` : ""}, got "${token}"`,
+			`protolens: --${flag} expects one of ${spec.enumValues?.map(v => `'${v}'`).join(" | ")}${hint ? ` (did you mean '${hint}'?)` : ""}, got "${token}"`,
 		);
 	}
 	if (spec.type === "json") {
@@ -272,7 +272,7 @@ function coerceArrayEntries(spec: XdevFlagSpec, entries: readonly string[], flag
 	if (spec.items !== "number") return [...entries];
 	return entries.map(entry => {
 		const value = Number(entry);
-		if (!Number.isFinite(value)) throw new XdevUsageError(`xd: --${flag} expects numbers, got "${entry}"`);
+		if (!Number.isFinite(value)) throw new XdevUsageError(`protolens: --${flag} expects numbers, got "${entry}"`);
 		return value;
 	});
 }
@@ -344,7 +344,7 @@ export function parseXdevCliArgs(
 	let explicitJson: Record<string, unknown> | undefined;
 	let endOfFlags = false;
 	const needValue = (flag: string): string => {
-		throw new XdevUsageError(`xd ${options.deviceName}: --${flag} needs a value`);
+		throw new XdevUsageError(`protolens ${options.deviceName}: --${flag} needs a value`);
 	};
 
 	for (let i = 0; i < argv.length; i++) {
@@ -363,7 +363,7 @@ export function parseXdevCliArgs(
 
 			if (flagName === "json" && !negated) {
 				if (explicitJson !== undefined) {
-					throw new XdevUsageError(`xd ${options.deviceName}: --json given twice`);
+					throw new XdevUsageError(`protolens ${options.deviceName}: --json given twice`);
 				}
 				let payload = inlineValue;
 				if (payload === undefined) {
@@ -381,7 +381,7 @@ export function parseXdevCliArgs(
 				if (payload === "-") {
 					if (options.stdin === undefined) throw needValue("json");
 					if (options.stdinTruncated) {
-						throw new XdevUsageError("xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
+						throw new XdevUsageError("protolens: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
 					}
 					payload = options.stdin;
 				} else if (payload === undefined) {
@@ -398,11 +398,11 @@ export function parseXdevCliArgs(
 					specs.map(s => s.name),
 				);
 				throw new XdevUsageError(
-					`xd ${options.deviceName}: unknown flag --${rawFlag}${hint ? ` (did you mean --${hint}?)` : ""}. Run \`xd ${options.deviceName} ?\` for docs.`,
+					`protolens ${options.deviceName}: unknown flag --${rawFlag}${hint ? ` (did you mean --${hint}?)` : ""}. Run \`protolens ${options.deviceName} ?\` for docs.`,
 				);
 			}
 			if (negated && spec.type !== "boolean") {
-				throw new XdevUsageError(`xd ${options.deviceName}: --no-${flagName} only applies to boolean flags`);
+				throw new XdevUsageError(`protolens ${options.deviceName}: --no-${flagName} only applies to boolean flags`);
 			}
 			if (spec.type === "boolean") {
 				let value = inlineValue;
@@ -443,7 +443,7 @@ export function parseXdevCliArgs(
 			}
 			if (valueToken === "-" && options.stdin !== undefined) {
 				if (options.stdinTruncated) {
-					throw new XdevUsageError("xd: stdin exceeds the 1 MiB bridge limit; pass smaller args");
+					throw new XdevUsageError("protolens: stdin exceeds the 1 MiB bridge limit; pass smaller args");
 				}
 				valueToken = options.stdin;
 			}
@@ -465,7 +465,7 @@ export function parseXdevCliArgs(
 
 	if (explicitJson !== undefined) {
 		if (positionals.length > 0) {
-			throw new XdevUsageError(`xd ${options.deviceName}: --json cannot be combined with positional args`);
+			throw new XdevUsageError(`protolens ${options.deviceName}: --json cannot be combined with positional args`);
 		}
 		return { args: explicitJson, viaJson: true };
 	}
@@ -477,7 +477,7 @@ export function parseXdevCliArgs(
 	}
 	if (positionals.some(token => tryParseJsonObject(token) !== undefined)) {
 		throw new XdevUsageError(
-			`xd ${options.deviceName}: a JSON object payload must be the only positional argument (or use --json '<json>')`,
+			`protolens ${options.deviceName}: a JSON object payload must be the only positional argument (or use --json '<json>')`,
 		);
 	}
 
@@ -492,13 +492,13 @@ export function parseXdevCliArgs(
 		options.stdin.trim().length > 0
 	) {
 		if (options.stdinTruncated) {
-			throw new XdevUsageError("xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
+			throw new XdevUsageError("protolens: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
 		}
 		const parsedJson = tryParseJsonObject(options.stdin.trim());
 		if (parsedJson) return { args: parsedJson, viaJson: true };
 		const firstFlag = order[0];
 		throw new XdevUsageError(
-			`xd ${options.deviceName}: piped stdin must be a JSON args object (text payloads: --${firstFlag ?? "<flag>"} -)`,
+			`protolens ${options.deviceName}: piped stdin must be a JSON args object (text payloads: --${firstFlag ?? "<flag>"} -)`,
 		);
 	}
 
@@ -507,13 +507,13 @@ export function parseXdevCliArgs(
 			const parsed = tryParseJsonObject(positionals[0]);
 			if (!parsed) {
 				throw new XdevUsageError(
-					`xd ${options.deviceName}: MCP devices take a single JSON args object: xd ${options.deviceName} '{"...":"..."}'`,
+					`protolens ${options.deviceName}: MCP devices take a single JSON args object: protolens ${options.deviceName} '{"...":"..."}'`,
 				);
 			}
 			return { args: parsed, viaJson: true };
 		}
 		throw new XdevUsageError(
-			`xd ${options.deviceName}: MCP devices take a single JSON args object: xd ${options.deviceName} '{"...":"..."}'`,
+			`protolens ${options.deviceName}: MCP devices take a single JSON args object: protolens ${options.deviceName} '{"...":"..."}'`,
 		);
 	}
 
@@ -528,12 +528,12 @@ export function parseXdevCliArgs(
 		const prop = order.shift();
 		if (!prop) {
 			throw new XdevUsageError(
-				`xd ${options.deviceName}: unexpected positional argument "${token}" — use --flag form; run \`xd ${options.deviceName} ?\` for docs`,
+				`protolens ${options.deviceName}: unexpected positional argument "${token}" — use --flag form; run \`protolens ${options.deviceName} ?\` for docs`,
 			);
 		}
 		const spec = specByName.get(prop);
 		if (!spec) {
-			throw new XdevUsageError(`xd ${options.deviceName}: no schema property for positional "${token}"`);
+			throw new XdevUsageError(`protolens ${options.deviceName}: no schema property for positional "${token}"`);
 		}
 		if (spec.type === "array") {
 			const jsonEntries = tryParseJsonScalarArray(token);
@@ -559,7 +559,7 @@ export function parseXdevCliArgs(
 function parseJsonObjectPayload(token: string, context: string): Record<string, unknown> {
 	const parsed = tryParseJsonObject(token);
 	if (!parsed) {
-		throw new XdevUsageError(`xd: ${context} is not a valid JSON object`);
+		throw new XdevUsageError(`protolens: ${context} is not a valid JSON object`);
 	}
 	return parsed;
 }
@@ -592,7 +592,7 @@ function displayValue(value: string): string {
 
 /** Render device args back into the canonical CLI command line (for TUI previews and hints). */
 export function formatXdevCliCommand(name: string, args: Record<string, unknown>): string {
-	const parts = [`xd ${name}`];
+	const parts = [`protolens ${name}`];
 	for (const [key, raw] of Object.entries(args)) {
 		if (raw === undefined) continue;
 		if (typeof raw === "boolean") {
@@ -623,17 +623,17 @@ export interface CliUsageOptions {
 
 const JSON_ONLY_SYNOPSIS_SUFFIX = "--json '<json>'";
 
-/** One-line usage synopsis generated from the schema, e.g. `xd browser --action <action> [--url <url>] …`. */
+/** One-line usage synopsis generated from the schema, e.g. `protolens browser --action <action> [--url <url>] …`. */
 export function formatCliUsageSynopsis(
 	name: string,
 	schema: Record<string, unknown>,
 	options: CliUsageOptions = {},
 ): string {
-	if (options.jsonOnly) return `xd ${name} ${JSON_ONLY_SYNOPSIS_SUFFIX}`;
+	if (options.jsonOnly) return `protolens ${name} ${JSON_ONLY_SYNOPSIS_SUFFIX}`;
 	const specs = xdevFlagSpecs(schema);
-	if (specs.length === 0) return `xd ${name}`;
+	if (specs.length === 0) return `protolens ${name}`;
 	const order = positionalOrder(name, schema);
-	const parts = [`xd ${name}`];
+	const parts = [`protolens ${name}`];
 	const seen = new Set<string>();
 	const opSpec = leadingOpSpec(specs, order);
 	if (opSpec) {
@@ -667,14 +667,14 @@ function formatCliToken(spec: XdevFlagSpec, positional: boolean): string {
 	return spec.required ? token : `[${token}]`;
 }
 
-/** Flag reference block for `xd <tool> ?` docs. */
+/** Flag reference block for `protolens <tool> ?` docs. */
 export function formatCliFlagReference(name: string, tool: AiTool, options: CliUsageOptions = {}): string {
 	const schema = toolWireSchema(tool);
 	if (options.jsonOnly) {
 		return [
 			`Usage: ${formatCliUsageSynopsis(name, schema, options)}`,
-			`       xd ${name} '<json>'`,
-			`       <json producer> | xd ${name}`,
+			`       protolens ${name} '<json>'`,
+			`       <json producer> | protolens ${name}`,
 			"",
 			"This device takes one JSON args object matching the schema; flags and positional values are not accepted.",
 		].join("\n");
@@ -702,7 +702,7 @@ export function formatCliFlagReference(name: string, tool: AiTool, options: CliU
 	}
 	lines.push(
 		"",
-		"Positional values fill the unflagged scalar properties in usage order. `--json '<json>'` passes a raw args object (MCP devices only accept this form). A `-` value reads that flag from stdin; bare `xd " +
+		"Positional values fill the unflagged scalar properties in usage order. `--json '<json>'` passes a raw args object (MCP devices only accept this form). A `-` value reads that flag from stdin; bare `protolens " +
 			name +
 			"` with piped stdin takes a JSON object (or the plain payload for single-string devices).",
 	);

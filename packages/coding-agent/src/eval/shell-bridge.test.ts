@@ -350,16 +350,16 @@ function stdoutOf(response: string): string {
 const pythonAvailable = (await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true })).ok;
 
 test.skipIf(!pythonAvailable)(
-	"Python display() output streams in order with stdout, strings as plain text",
+	"Python displays remain visible outside program stdout",
 	async () => {
 		const bridge = registerKernelShellRun(stubSession());
 		const client = await connectBridge(bridge);
 		try {
 			const code = 'print("before"); display({"a": 1}); display("plain string"); print("after")';
 			client.socket.write(`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "py", code })}\n`);
-			expect(stdoutOf(await within(client.response, 60_000))).toBe(
-				'before\ndisplay[1]:\n{\n  "a": 1\n}\nplain string\nafter\n',
-			);
+			expect(stdoutOf(await within(client.response, 60_000))).toBe("before\nafter\n");
+			expect(bridge.drainDisplayText()).toEqual(['display[1]:\n{\n  "a": 1\n}', "plain string"]);
+			expect(bridge.drainJsonOutputs()).toEqual([{ a: 1 }]);
 		} finally {
 			client.socket.destroy();
 			bridge.dispose();
@@ -380,7 +380,9 @@ for (const streams of [true, false]) {
 		const client = await connectBridge(bridge);
 		try {
 			client.socket.write(client.request("unused"));
-			expect(stdoutOf(await within(client.response))).toBe('out\ndisplay[1]:\n{\n  "n": 1\n}\n');
+			expect(stdoutOf(await within(client.response))).toBe("out\n");
+			expect(bridge.drainDisplayText()).toEqual(['display[1]:\n{\n  "n": 1\n}']);
+			expect(bridge.drainDisplayText()).toEqual([]);
 		} finally {
 			client.socket.destroy();
 			bridge.dispose();

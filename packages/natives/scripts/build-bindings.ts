@@ -146,8 +146,9 @@ const napiArgs = [
 	"index.d.ts",
 	"-o",
 	buildOutputDir,
-	"--profile",
-	cargoProfile,
+	// Cargo names this profile "dev" but its artifact directory "debug".
+	// napi-rs only resolves that directory correctly when its default profile is used.
+	...(cargoProfile === "dev" ? [] : ["--profile", cargoProfile]),
 ];
 
 const BUILD_LOG_TAIL_LINES = 40;

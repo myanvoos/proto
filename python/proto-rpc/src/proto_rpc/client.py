@@ -1414,7 +1414,7 @@ class RpcClient:
     def _normalize_host_tool_event(self, payload: JsonObject) -> None:
         """Rename transport tool events for in-flight host-tool dispatches.
 
-        With `tools.xdev` enabled, proto mounts custom tools as `xd://` devices
+        With `tools.xdev` enabled, proto mounts custom tools as `proto://` devices
         and the agent invokes them through the `write` tool, so
         `tool_execution_update`/`tool_execution_end` events report the
         transport tool (`write`) rather than the host tool that actually ran.

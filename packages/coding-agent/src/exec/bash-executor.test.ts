@@ -95,7 +95,7 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 			timedOut: false,
 			workingDir: process.cwd(),
 			fsObservations: [],
-			xdDispatches: [],
+			protolensDispatches: [],
 			stageRecords: [],
 			sessionEnded: false,
 			minimized: {

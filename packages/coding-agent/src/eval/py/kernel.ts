@@ -259,6 +259,7 @@ export class PythonKernel extends BaseKernel {
 								),
 					shellEnv: target.kind === "local" ? opts?.shellEnv : undefined,
 					stdin: Boolean(opts?.stdin),
+					invocation: opts?.invocation,
 					fsObservations: opts?.fsObservations,
 					silent: opts?.silent ?? false,
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),

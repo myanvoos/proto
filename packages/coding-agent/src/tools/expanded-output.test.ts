@@ -68,7 +68,7 @@ const RENDERERS: Array<{ name: string; render: (expanded: boolean) => string }> 
 			),
 	},
 	{
-		name: "xd composite card",
+		name: "protolens composite card",
 		render: expanded => {
 			const dispatches: XdevDispatch[] = [
 				{ tool: "browser", mode: "execute" },

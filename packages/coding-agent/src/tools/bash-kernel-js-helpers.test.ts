@@ -49,10 +49,11 @@ afterEach(async () => {
 	await fs.rm(dir, { recursive: true, force: true });
 });
 
-async function runCell(interpreter: string, code: string): Promise<string> {
+async function runCell(interpreter: string, code: string, env?: Record<string, string>): Promise<string> {
 	const result = await tool.execute("bash-kernel-js-helpers-test", {
 		command: `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`,
 		timeout: 60,
+		env,
 	});
 	const output = result.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
 	expect(result.isError, output).not.toBe(true);
@@ -118,17 +119,17 @@ test("JS symbols() rejects ambiguous or malformed arguments", async () => {
 	}
 });
 
-test("blockRange() returns the enclosing block like block_range(), null past EOF, and resolves local://", async () => {
+test("blockRange() returns the enclosing block like block_range(), null past EOF, and accepts shell-resolved paths", async () => {
 	await Bun.write(path.join(dir, "artifacts", "local", "shape.py"), SHAPE_PY);
 	expect(await runCell("python", 'print(block_range("shape.py", 2), block_range("shape.py", 99))')).toBe(
 		"(2, 3) None",
 	);
 	const cell = [
-		'print(JSON.stringify([await blockRange("shape.py", 2), await blockRange("shape.py", 99), await blockRange("local://shape.py", 4)]))',
+		'print(JSON.stringify([await blockRange("shape.py", 2), await blockRange("shape.py", 99), await blockRange(env("SHAPE_PATH"), 4)]))',
 		'try { await blockRange("shape.py", 0); } catch (err) { print(err.name, err.message); }',
 	].join("\n");
 	for (const interpreter of JS_INTERPRETERS) {
-		expect(await runCell(interpreter, cell)).toBe(
+		expect(await runCell(interpreter, cell, { SHAPE_PATH: "local://shape.py" })).toBe(
 			"[[2,3],null,[4,9]]\nRangeError blockRange() line must be an integer >= 1, got 0",
 		);
 	}

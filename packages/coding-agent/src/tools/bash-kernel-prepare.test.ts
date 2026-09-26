@@ -47,183 +47,58 @@ afterAll(async () => {
 	await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("assignment heredoc binds hostile payload text verbatim", async () => {
+test("Python assignment heredocs fail before any cell statements execute", async () => {
+	const result = await runCell(
+		[
+			'Path("unsupported-syntax.txt").write_text("must not execute")',
+			"PAYLOAD = <<DATA",
+			"body",
+			"DATA",
+			'print("must not execute")',
+		].join("\n"),
+	);
+	expect(statusOf(result)).toBe("error");
+	expect(textOf(result)).toContain("SyntaxError: invalid syntax");
+	expect(textOf(result)).toContain('File "<stdin>", line 2');
+	expect(await Bun.file(path.join(dir, "unsupported-syntax.txt")).exists()).toBe(false);
+});
+
+test("ordinary Python string assignments write quote-heavy payloads through shell heredocs", async () => {
 	const content = [
 		`line "one" with \\backslash and \${dollar_braces} and %d and !bang`,
 		"''' single triple quotes",
 		'""" double triple quotes',
+		"",
 	].join("\n");
 	const result = await runCell(
-		["PAYLOAD = <<DATA", content, "DATA", 'Path("heredoc-payload.txt").write_text(PAYLOAD)'].join("\n"),
+		[`payload = ${JSON.stringify(content)}`, 'Path("literal-payload.txt").write_text(payload)'].join("\n"),
 	);
 	expect(statusOf(result)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-payload.txt"), "utf8")).toBe(content);
-	expect(textOf(result)).toContain("heredoc PAYLOAD: bound");
+	expect(await fs.readFile(path.join(dir, "literal-payload.txt"), "utf8")).toBe(content);
 });
 
-test("empty and trailing-newline heredocs preserve delimiter-boundary semantics", async () => {
+test("magic translation leaves multiline Python string bodies untouched", async () => {
+	const content = ["%not_a_magic", "!not_a_command", "  indented text", ""].join("\n");
 	const result = await runCell(
 		[
-			"EMPTY=<<END_EMPTY",
-			"END_EMPTY",
-			"TRAILING = << END_TRAILING",
-			"line",
-			"",
-			"END_TRAILING",
-			'Path("heredoc-empty.txt").write_text(EMPTY)',
-			'Path("heredoc-trailing.txt").write_text(TRAILING)',
-		].join("\n"),
-	);
-	expect(statusOf(result)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-empty.txt"), "utf8")).toBe("");
-	expect(await fs.readFile(path.join(dir, "heredoc-trailing.txt"), "utf8")).toBe("line\n");
-});
-
-test("custom delimiter closes only when alone at the header indentation", async () => {
-	const content = ["alpha", "OTHER", "  FINAL", "omega"].join("\n");
-	const result = await runCell(
-		["COLLISION = <<FINAL", content, "FINAL\t", 'Path("heredoc-collision.txt").write_text(COLLISION)'].join("\n"),
-	);
-	expect(statusOf(result)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-collision.txt"), "utf8")).toBe(content);
-});
-
-test("CRLF source recognizes physical heredoc lines without retaining carriage returns", async () => {
-	const result = await runCell(
-		["CRLF\t=\t<<\tEND", "alpha", "END\t", 'Path("heredoc-crlf.txt").write_text(CRLF)'].join("\r\n"),
-	);
-	expect(statusOf(result)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-crlf.txt"), "utf8")).toBe("alpha");
-});
-
-test("hostile payload quotes do not hide subsequent heredocs", async () => {
-	const hostile = String.raw`""" hostile quote and \backslash`;
-	const result = await runCell(
-		[
-			"FIRST = <<ONE",
-			hostile,
-			"ONE",
-			"SECOND = <<TWO",
-			`after \${literal}`,
-			"TWO",
-			'Path("heredoc-first.txt").write_text(FIRST)',
-			'Path("heredoc-second.txt").write_text(SECOND)',
-		].join("\n"),
-	);
-	expect(statusOf(result)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-first.txt"), "utf8")).toBe(hostile);
-	expect(await fs.readFile(path.join(dir, "heredoc-second.txt"), "utf8")).toBe(`after \${literal}`);
-});
-
-test("heredocs preserve Python execution position in branches and functions", async () => {
-	const prepared = await runCell(
-		[
-			"if False:",
-			"    HIDDEN = <<STOP",
-			"    false branch",
-			"    STOP",
-			'    Path("heredoc-hidden.txt").write_text(HIDDEN)',
-			"def write_later():",
-			"    LATER = <<DONE",
-			"      body indentation is data",
-			"    DONE",
-			'    Path("heredoc-deferred.txt").write_text(LATER)',
-		].join("\n"),
-	);
-	expect(statusOf(prepared)).toBe("complete");
-	expect(await Bun.file(path.join(dir, "heredoc-hidden.txt")).exists()).toBe(false);
-	expect(await Bun.file(path.join(dir, "heredoc-deferred.txt")).exists()).toBe(false);
-
-	const invoked = await runCell("write_later()");
-	expect(statusOf(invoked)).toBe("complete");
-	expect(await fs.readFile(path.join(dir, "heredoc-deferred.txt"), "utf8")).toBe("      body indentation is data");
-});
-
-test("unterminated heredoc reports its variable, opening line, and delimiter", async () => {
-	const result = await runCell(["MISSING = <<STOP", "body", 'print("never")'].join("\n"));
-	expect(statusOf(result)).toBe("error");
-	const output = textOf(result);
-	expect(output).toContain("heredoc 'MISSING' (line 1) is never closed");
-	expect(output).toContain("STOP");
-});
-
-test("heredoc replacement preserves following source line numbers", async () => {
-	const result = await runCell(["VALUE = <<END", "payload", "END", 'raise RuntimeError("boom")'].join("\n"));
-	expect(statusOf(result)).toBe("error");
-	expect(textOf(result)).toContain('File "<cell>", line 4');
-});
-
-test("a hostile heredoc cannot expose a later fake header inside a real string", async () => {
-	const result = await runCell(
-		[
-			"FIRST = <<ONE",
-			'""" unmatched and indentation-hostile',
-			`  ) % ! \${still_data}`,
-			"ONE",
-			'text = """',
-			"FAKE = <<END",
-			"must remain string data",
-			"END",
+			'payload = """%not_a_magic',
+			"!not_a_command",
+			"  indented text",
 			'"""',
-			"SECOND = <<TWO",
-			"real second payload",
-			"TWO",
-			"print(text, SECOND)",
+			'Path("multiline-payload.txt").write_text(payload)',
+			"!printf translated-magic",
 		].join("\n"),
 	);
 	expect(statusOf(result)).toBe("complete");
-	const output = textOf(result);
-	expect(output).toContain("FAKE = <<END");
-	expect(output).toContain("must remain string data");
-	expect(output).toContain("real second payload");
-	expect(output).not.toContain("heredoc FAKE: bound");
+	expect(await fs.readFile(path.join(dir, "multiline-payload.txt"), "utf8")).toBe(content);
+	expect(textOf(result)).toContain("translated-magic");
 });
 
-test("heredoc-looking assignments inside outer parentheses are not transformed", async () => {
-	const result = await runCell(["values = (", "    INNER = <<END", "    payload", "    END", ")"].join("\n"));
-	expect(statusOf(result)).toBe("error");
-	expect(textOf(result)).not.toContain("heredoc INNER: bound");
-});
-
-test("heredoc-looking declarations inside real strings stay literal", async () => {
-	const result = await runCell(
-		[
-			'text = """',
-			"FAKE = <<END",
-			"not a heredoc",
-			"END",
-			'"""',
-			'inline = "ALSO = <<TOKEN"',
-			"shifted = 3 << 2",
-			"print(text, inline, shifted)",
-		].join("\n"),
-	);
+test("native bitshifts keep ordinary Python behavior", async () => {
+	const result = await runCell("value = 5 << 3\nprint(value)");
 	expect(statusOf(result)).toBe("complete");
-	const output = textOf(result);
-	expect(output).toContain("FAKE = <<END");
-	expect(output).toContain("ALSO = <<TOKEN");
-	expect(output).toContain("12");
-	expect(output).not.toContain("<kernel> note: heredoc");
+	expect(textOf(result)).toContain("40");
 });
-
-test("native bitshifts and old embed-looking comments keep ordinary Python behavior", async () => {
-	const result = await runCell(["value = 5 << 3", "#@embed OLD", 'print(value, "ordinary")'].join("\n"));
-	expect(statusOf(result)).toBe("complete");
-	const output = textOf(result);
-	expect(output).toContain("40 ordinary");
-	expect(output).not.toContain("<kernel> note: heredoc");
-});
-
-test("headers reject trailing comments and delimiter expressions", async () => {
-	const commented = await runCell(["VALUE = <<END # comment", "body", "END"].join("\n"));
-	expect(statusOf(commented)).toBe("error");
-	expect(textOf(commented)).not.toContain("never closed");
-
-	const expression = await runCell(["VALUE = <<END.other", "body", "END"].join("\n"));
-	expect(statusOf(expression)).toBe("error");
-	expect(textOf(expression)).not.toContain("never closed");
-});
-
 test("markdown-wrapped cells are stripped with a disclosure note", async () => {
 	const result = await runCell(["```python", "print('fenced-marker')", "```"].join("\n"));
 	expect(statusOf(result)).toBe("complete");

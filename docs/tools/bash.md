@@ -53,6 +53,12 @@ The tool returns a single `text` content block plus optional `details`.
 
 Stdout and stderr remain distinct for shell redirection and stage records; uncaptured terminal output is merged for the model. Definite non-zero exit codes are appended to the returned error result text as `Command exited with code <n>`.
 
+## Kernel compatibility
+
+Supported interpreter commands are a strict-upgrade interface: native language semantics within a cell, persistent state between cells, and harness presentation outside program I/O. Program arguments remain available through native `sys.argv` / `process.argv`. Ordinary synchronous Python supports `asyncio.run()`; JavaScript retains the selected interpreter's native declaration behavior instead of replacing lexical declarations with assignments.
+
+Final-expression values, `display(...)`, and harness notes remain visible even when stdout/stderr are redirected, but never enter pipes, files, or command substitutions. Unassigned byte writes need no `_ =` or `void` workaround. Explicitly retained work and process-lifetime resources are the intentional boundary from a fresh process; see [the full compatibility contract](../bash-tool-runtime.md#compatibility-philosophy).
+
 ## Kernel inspection and recovery
 
 Kernel cells inherit the shell environment, including `env` overrides and inline assignments. `printf 41 | python -c 'import sys; print(int(sys.stdin.read()) + 1)'` stays in the retained Python kernel; `node`/`bun -e` similarly expose program input through `process.stdin`. Source-on-stdin still supplies code, not program input.
@@ -63,7 +69,7 @@ Use `kernel_state()` / `kernelState()` for bounded, side-effect-avoiding binding
 
 - `details.execution.stages`: actual executed commands, parent indices, route, status, exit code/signal, elapsed time, source spans when available, stdout/stderr captures. Skipped shell branches produce no records.
 - Each stream carries `text`, original byte count, `truncated`, `complete`, and an optional artifact containing that captured preview. Captures are limited to 16 KiB per stream, with 128 retained stages; the final retained stage reports `omittedAfter` when further commands were omitted.
-- `details.deviceResults`: structured `xd` results, including `stageIndex`, independent of shell pipes or text truncation.
+- `details.deviceResults`: structured `protolens` results, including `stageIndex`, independent of shell pipes or text truncation.
 
 History is per tool session, capped at 128 records and 8 MiB. `resultOmitted` explains oversized/unserializable payloads or history-query results, which are intentionally not recursively stored. Managed jobs also record their final results under the job ID. Trace capture is not available for external PTY/client-terminal execution.
 
@@ -112,7 +118,7 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
 2. The command retains any leading `cd <path> && ...`; the shell evaluates it from the explicit `cwd`, or from `session.cwd` when `cwd` is absent.
 3. If `async: true` is requested while `async.enabled` is off, it throws `ToolError` before any execution.
 4. If `bashInterceptor.enabled` is on, `checkBashInterception()` runs against the original command. Configured regexes check the complete input first, then each flat command separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines (excluding stages that consume piped stdin from `|` or `|&`, including across blank/comment continuations), followed by versions of those fragments without leading `NAME=value` assignments. A matching enabled rule throws before URL expansion or execution.
-5. `expandInternalUrls()` rewrites supported internal URLs inside `command`, each `env` value, and protocol-looking `cwd` values. Command replacements are shell-escaped; `env` and `cwd` replacements use raw filesystem/string values because they are not interpolated into shell text.
+5. `expandInternalUrls()` rewrites supported internal URLs inside `command`, each `env` value, and protocol-looking `cwd` values. A trailing read selector (`:1-40`, `:raw`) is split off before resolution and re-appended to the resolved path. A URL with no filesystem path is left untouched when it is an argument of a `protolens` command (the device resolves it); elsewhere it throws with a `read` hint. Command replacements are shell-escaped; `env` and `cwd` replacements use raw filesystem/string values because they are not interpolated into shell text.
 6. `resolveToCwd()` resolves `cwd` against `session.cwd`; `fs.stat()` verifies that the target exists and is a directory.
 7. `timeout: 0` disables the deadline. Otherwise `clampTimeout("bash", requestedTimeoutSec, tools.maxTimeout)` applies a positive global ceiling (when configured), then `TOOL_TIMEOUTS.bash` (`min: 1`, `max: 3600`). When clamped, `#buildCompletedResult()` / `#buildBackgroundStartResult()` append a notice line.
 8. Execution path splits:

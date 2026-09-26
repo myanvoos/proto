@@ -8,44 +8,44 @@ use napi::{
 use napi_derive::napi;
 use pi_shell::{
 	FsObservation as CoreFsObservation, FsObservationKind as CoreFsObservationKind,
-	MinimizerResult as CoreMinimizerResult, Shell as CoreShell,
+	MinimizerResult as CoreMinimizerResult, ProtolensDispatchFuture, ProtolensDispatchRequest,
+	ProtolensDispatchResponse, ProtolensDispatcher, Shell as CoreShell,
 	ShellExecuteOptions as CoreShellExecuteOptions, ShellOptions as CoreShellOptions,
-	ShellRunOptions as CoreShellRunOptions, ShellRunResult as CoreShellRunResult, XdDispatchFuture,
-	XdDispatchRequest, XdDispatchResponse, XdDispatcher, execute_shell as core_execute_shell,
-	minimizer,
+	ShellRunOptions as CoreShellRunOptions, ShellRunResult as CoreShellRunResult,
+	execute_shell as core_execute_shell, minimizer,
 };
 
 use crate::task;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WireXdDispatchResponse {
+struct WireProtolensDispatchResponse {
 	stdout:    String,
 	stderr:    String,
 	exit_code: i32,
 	record:    Option<String>,
 }
 
-struct NapiXdDispatcher {
+struct NapiProtolensDispatcher {
 	callback: Arc<ThreadsafeFunction<String, Promise<String>, String, Status, false, true>>,
 }
 
-impl XdDispatcher for NapiXdDispatcher {
-	fn dispatch(&self, request: XdDispatchRequest) -> XdDispatchFuture {
+impl ProtolensDispatcher for NapiProtolensDispatcher {
+	fn dispatch(&self, request: ProtolensDispatchRequest) -> ProtolensDispatchFuture {
 		let callback = Arc::clone(&self.callback);
 		Box::pin(async move {
 			let payload = serde_json::to_string(&request)
-				.map_err(|error| anyhow::anyhow!("failed to encode xd request: {error}"))?;
+				.map_err(|error| anyhow::anyhow!("failed to encode protolens request: {error}"))?;
 			let promise = callback
 				.call_async(payload)
 				.await
-				.map_err(|error| anyhow::anyhow!("xd dispatcher callback failed: {error}"))?;
+				.map_err(|error| anyhow::anyhow!("protolens dispatcher callback failed: {error}"))?;
 			let response_json = promise
 				.await
-				.map_err(|error| anyhow::anyhow!("xd dispatcher promise rejected: {error}"))?;
-			let response: WireXdDispatchResponse = serde_json::from_str(&response_json)
-				.map_err(|error| anyhow::anyhow!("invalid xd dispatcher response: {error}"))?;
-			Ok(XdDispatchResponse {
+				.map_err(|error| anyhow::anyhow!("protolens dispatcher promise rejected: {error}"))?;
+			let response: WireProtolensDispatchResponse = serde_json::from_str(&response_json)
+				.map_err(|error| anyhow::anyhow!("invalid protolens dispatcher response: {error}"))?;
+			Ok(ProtolensDispatchResponse {
 				stdout:    response.stdout,
 				stderr:    response.stderr,
 				exit_code: response.exit_code,
@@ -119,7 +119,7 @@ pub struct ShellRunOptions<'env> {
 
 	pub timeout_ms: Option<u32>,
 
-	pub xd_call_id: Option<String>,
+	pub protolens_call_id: Option<String>,
 
 	pub signal: Option<Unknown<'env>>,
 }
@@ -188,6 +188,14 @@ impl From<CoreFsObservationKind> for FsObservationKind {
 }
 
 #[napi(object)]
+pub struct FileMutation {
+	pub existed: bool,
+	pub exists:  bool,
+	pub before:  Option<String>,
+	pub after:   Option<String>,
+}
+
+#[napi(object)]
 pub struct FsObservation {
 	pub path: String,
 
@@ -196,6 +204,8 @@ pub struct FsObservation {
 	pub mtime_ns: Option<String>,
 
 	pub size: Option<f64>,
+
+	pub mutation: Option<FileMutation>,
 }
 
 impl From<CoreFsObservation> for FsObservation {
@@ -205,6 +215,12 @@ impl From<CoreFsObservation> for FsObservation {
 			kind:     value.kind.into(),
 			mtime_ns: value.mtime_ns.map(|mtime_ns| mtime_ns.to_string()),
 			size:     value.size.map(|size| size as f64),
+			mutation: value.mutation.map(|mutation| FileMutation {
+				existed: mutation.existed,
+				exists:  mutation.exists,
+				before:  mutation.before,
+				after:   mutation.after,
+			}),
 		}
 	}
 }
@@ -223,25 +239,25 @@ pub struct ShellRunResult {
 
 	pub fs_observations: Vec<FsObservation>,
 
-	pub xd_dispatches: Vec<String>,
-	pub stage_records: Vec<String>,
+	pub protolens_dispatches: Vec<String>,
+	pub stage_records:        Vec<String>,
 	/// The command ended the persistent session (`exit`, `exec`, top-level
 	/// `return`/`break`); the next run starts a fresh shell.
-	pub session_ended: bool,
+	pub session_ended:        bool,
 }
 
 impl From<CoreShellRunResult> for ShellRunResult {
 	fn from(value: CoreShellRunResult) -> Self {
 		Self {
-			exit_code:       value.exit_code,
-			cancelled:       value.cancelled,
-			timed_out:       value.timed_out,
-			minimized:       value.minimized.map(Into::into),
-			working_dir:     value.working_dir,
-			fs_observations: value.fs_observations.into_iter().map(Into::into).collect(),
-			xd_dispatches:   value.xd_dispatches,
-			stage_records:   value.stage_records,
-			session_ended:   value.session_ended,
+			exit_code:            value.exit_code,
+			cancelled:            value.cancelled,
+			timed_out:            value.timed_out,
+			minimized:            value.minimized.map(Into::into),
+			working_dir:          value.working_dir,
+			fs_observations:      value.fs_observations.into_iter().map(Into::into).collect(),
+			protolens_dispatches: value.protolens_dispatches,
+			stage_records:        value.stage_records,
+			session_ended:        value.session_ended,
 		}
 	}
 }
@@ -266,16 +282,17 @@ impl Shell {
 		#[napi(ts_arg_type = "((error: Error | null, chunk: string) => void) | undefined | null")]
 		on_chunk: Option<ThreadsafeFunction<String, UnknownReturnValue>>,
 		#[napi(ts_arg_type = "((request: string) => Promise<string>) | undefined | null")]
-		xd_dispatcher: Option<
+		protolens_dispatcher: Option<
 			ThreadsafeFunction<String, Promise<String>, String, Status, false, true>,
 		>,
 	) -> Result<PromiseRaw<'env, ShellRunResult>> {
 		let cancel_token = task::CancelToken::new(options.timeout_ms, options.signal);
 		let inner = Arc::clone(&self.inner);
-		let dispatcher = xd_dispatcher.map(|callback| {
-			Arc::new(NapiXdDispatcher { callback: Arc::new(callback) }) as Arc<dyn XdDispatcher>
+		let dispatcher = protolens_dispatcher.map(|callback| {
+			Arc::new(NapiProtolensDispatcher { callback: Arc::new(callback) })
+				as Arc<dyn ProtolensDispatcher>
 		});
-		inner.set_xd_dispatcher(dispatcher, options.xd_call_id.clone());
+		inner.set_protolens_dispatcher(dispatcher, options.protolens_call_id.clone());
 		let run_options = CoreShellRunOptions {
 			command:    options.command,
 			cwd:        options.cwd,
@@ -428,7 +445,7 @@ mod tests {
 			minimized: None,
 			working_dir: None,
 			fs_observations: Vec::new(),
-			xd_dispatches: Vec::new(),
+			protolens_dispatches: Vec::new(),
 			stage_records: Vec::new(),
 			session_ended: false,
 		}

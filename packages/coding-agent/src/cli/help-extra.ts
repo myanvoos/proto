@@ -74,8 +74,8 @@ ${chalk.bold("Built-in Tools (availability depends on settings and model):")}
 ${BUILTIN_TOOL_NAMES.map(name => `  ${name}`).join("\n")}
 
   bash runs shell commands and supported Python/JavaScript kernel cells.
-  Mounted tools are available through \`xd <tool> '<json>'\` inside bash.
-  Use \`xd <tool> ?\` for a mounted tool's documentation and schema.
+  Mounted tools are available through \`protolens <tool> '<json>'\` inside bash.
+  Use \`protolens <tool> ?\` for a mounted tool's documentation and schema.
   fleet manages persistent workers and peer messaging.
   jobs controls executions, supervised processes, watches, and waiting.
   context controls lanes and interpreter lifecycles.

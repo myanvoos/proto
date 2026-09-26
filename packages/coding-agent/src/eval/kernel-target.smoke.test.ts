@@ -236,7 +236,6 @@ ${read}
 				PI_TOOL_BRIDGE_SESSION: bridge,
 				PI_TOOL_BRIDGE_TOKEN: "must-not-leak",
 				PI_TOOL_BRIDGE_URL: "http://127.0.0.1:1",
-				PI_EVAL_LOCAL_ROOTS: "must-not-leak",
 			},
 		});
 		try {
@@ -248,7 +247,6 @@ ${read}
 				const result = await kernel.execute(
 					`import os,json
 assert 'PI_TOOL_BRIDGE_TOKEN' not in os.environ
-assert 'PI_EVAL_LOCAL_ROOTS' not in os.environ
 print(target_value + 1)
 print(tool.target_probe(value="python"))
 from pathlib import Path

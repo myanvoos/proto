@@ -16,7 +16,7 @@
 - Registration requires `checkpoint.enabled = true` (default `false`).
 - Top-level sessions receive the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: when either name is explicitly requested while the feature is enabled, registration automatically includes the other.
-- In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `xd://checkpoint`; an explicitly requested tool remains top-level.
+- In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `protolens://checkpoint`; an explicitly requested tool remains top-level.
 
 ## Inputs
 

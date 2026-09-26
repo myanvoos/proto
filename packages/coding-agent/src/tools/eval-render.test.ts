@@ -250,7 +250,7 @@ test("timeout outcome follows output without leaking execution diagnostics", () 
 });
 
 for (const [language, code] of [
-	["python", 'PAYLOAD = <<END_PAYLOAD\n  first: keep(x,y)\n\n    second line\nEND_PAYLOAD\nprint("unfinished'],
+	["python", 'PAYLOAD = """\n  first: keep(x,y)\n\n    second line\n"""\nprint("unfinished'],
 	["js", "const payload = `\n  first: keep(x,y)\n\n    second line\n${unfinished("],
 ] as const) {
 	test(`live ${language} previews preserve incomplete payload source lines`, () => {

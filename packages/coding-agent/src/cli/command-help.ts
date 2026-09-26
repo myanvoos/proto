@@ -637,7 +637,7 @@ export const readHelp = {
 		"proto read src/foo.ts:50-100",
 		"proto read src/foo.ts:raw",
 		"proto read https://example.com",
-		"proto read proto://",
+		"proto read harness://",
 		"proto read path/to/archive.zip:dir/file.ts",
 		"proto read path/to/db.sqlite:users:42",
 	],

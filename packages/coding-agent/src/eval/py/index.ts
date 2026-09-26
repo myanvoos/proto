@@ -1,10 +1,5 @@
 import type { ToolSession } from "../../tools";
-import {
-	type ExecutorBackend,
-	type ExecutorBackendExecOptions,
-	type ExecutorBackendResult,
-	resolveEvalUrlRoots,
-} from "../backend";
+import type { ExecutorBackend, ExecutorBackendExecOptions, ExecutorBackendResult } from "../backend";
 import {
 	readSetting,
 	namespaceSessionId as sharedNamespace,
@@ -51,7 +46,6 @@ export default {
 			interpreter: opts.interpreter ?? (remote ? target.interpreter : readInterpreterSetting(opts.session)),
 			sessionFile: opts.sessionFile,
 			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,
-			localRoots: remote ? undefined : resolveEvalUrlRoots(opts.session),
 			kernelOwnerId: opts.kernelOwnerId,
 			reset: opts.reset,
 			onChunk: opts.onChunk,
@@ -60,6 +54,7 @@ export default {
 			onDisplay: opts.onDisplay,
 			shellEnv: remote ? undefined : opts.shellEnv,
 			stdin: opts.stdin,
+			invocation: opts.invocation,
 			onStatus: opts.onStatus,
 			completionContext: opts.completionContext,
 			toolSession: opts.session,

@@ -3,7 +3,7 @@ import { Text } from "@oh-my-pi/pi-tui/components/text";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
+import { PROTOLENS_URL_PREFIX } from "../internal-urls/protolens-protocol";
 import type { Theme } from "../modes/theme/theme";
 import resolveReminderPrompt from "../prompts/system/resolve-device-reminder.md" with { type: "text" };
 import { renderStatusLine } from "../tui/status-line";
@@ -13,13 +13,13 @@ import { replaceTabs } from "./render-utils";
 import { tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import type { XdevDispatch } from "./xdev";
-import { parseXdBashCommand } from "./xdev";
+import { parseProtolensBashCommand } from "./xdev";
 
 export const RESOLVE_DEVICE_NAME = "resolve";
 export const REJECT_DEVICE_NAME = "reject";
 
-export const RESOLVE_DEVICE_PATH = `${XD_URL_PREFIX}${RESOLVE_DEVICE_NAME}`;
-export const REJECT_DEVICE_PATH = `${XD_URL_PREFIX}${REJECT_DEVICE_NAME}`;
+export const RESOLVE_DEVICE_PATH = `${PROTOLENS_URL_PREFIX}${RESOLVE_DEVICE_NAME}`;
+export const REJECT_DEVICE_PATH = `${PROTOLENS_URL_PREFIX}${REJECT_DEVICE_NAME}`;
 
 type ResolutionDeviceName = typeof RESOLVE_DEVICE_NAME | typeof REJECT_DEVICE_NAME;
 
@@ -30,9 +30,9 @@ export function isResolutionDeviceName(name: string): name is ResolutionDeviceNa
 export function resolutionDeviceUsage(device: ResolutionDeviceName): string {
 	switch (device) {
 		case RESOLVE_DEVICE_NAME:
-			return `Run \`xd resolve <reason>\` (bash) with a one-sentence plain-text reason to APPLY the pending staged action (e.g. a tool preview).`;
+			return `Run \`protolens resolve <reason>\` (bash) with a one-sentence plain-text reason to APPLY the pending staged action (e.g. a tool preview).`;
 		case REJECT_DEVICE_NAME:
-			return `Run \`xd reject <reason>\` (bash) with a one-sentence plain-text reason to DISCARD the pending staged action (e.g. a tool preview).`;
+			return `Run \`protolens reject <reason>\` (bash) with a one-sentence plain-text reason to DISCARD the pending staged action (e.g. a tool preview).`;
 	}
 }
 
@@ -42,7 +42,7 @@ export function isPreviewResolutionToolCall(toolCall: { name: string; arguments?
 	if (typeof command !== "string") return false;
 	const segments = tokenizeShellSegments(command);
 	if (segments.length !== 1) return false;
-	const parsed = parseXdBashCommand(segments[0]);
+	const parsed = parseProtolensBashCommand(segments[0]);
 	return parsed?.kind === "device" && isResolutionDeviceName(parsed.name);
 }
 

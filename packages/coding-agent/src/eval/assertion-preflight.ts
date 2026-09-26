@@ -6,7 +6,7 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ToolSession } from "../tools";
 import { detectBashKernelCell } from "../tools/bash-embedded-code";
 import type { StreamedKernelFailure as StreamedKernelFailureContract } from "./speculation";
-import { isPythonRawHeredocHeader, parseStreamedBashInput } from "./speculation";
+import { parseStreamedBashInput } from "./speculation";
 
 /** Languages understood by the assertion preflight. */
 export type PreflightKernelLanguage = "python" | "js";
@@ -327,7 +327,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 	let start = 0;
 	let startLine = 1;
 	let line = 1;
-	let lineStart = 0;
 	let quote: "'" | '"' | undefined;
 	let triple = false;
 	let comment = false;
@@ -343,7 +342,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 					startLine = line + 1;
 				}
 				line += 1;
-				lineStart = index + 1;
 			}
 			continue;
 		}
@@ -352,7 +350,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 				if (char === "\\") {
 					if (source[index + 1] === "\n") {
 						line += 1;
-						lineStart = index + 2;
 					}
 					index += 1;
 					continue;
@@ -365,7 +362,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 				}
 				if (char === "\n") {
 					line += 1;
-					lineStart = index + 1;
 				}
 				continue;
 			}
@@ -380,11 +376,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 			}
 			if (char === "\n") return statements;
 			continue;
-		}
-		if (isPythonRawHeredocHeader(source, index, lineStart, limit)) {
-			// Raw heredoc bodies are not Python until the runner replaces them.
-			// A close may not have streamed yet, so conservatively stop at the header.
-			return statements;
 		}
 		if (char === "#") {
 			comment = true;
@@ -406,7 +397,6 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 			brackets.pop();
 			continue;
 		}
-		if (char === "\n") lineStart = index + 1;
 		if (brackets.length === 0 && (char === "\n" || char === ";")) {
 			pushStatement(statements, source.slice(start, index), startLine);
 			start = index + 1;

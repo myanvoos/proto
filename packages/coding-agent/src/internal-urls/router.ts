@@ -1,10 +1,11 @@
 import { AgentProtocolHandler } from "./agent-protocol";
 import { ArtifactProtocolHandler } from "./artifact-protocol";
+import { HarnessProtocolHandler } from "./harness-protocol";
 import { HistoryProtocolHandler } from "./history-protocol";
 import { LocalProtocolHandler } from "./local-protocol";
 import { McpProtocolHandler } from "./mcp-protocol";
 import { extractUriScheme, parseInternalUrl } from "./parse";
-import { ProtoProtocolHandler } from "./proto-protocol";
+import { ProtolensProtocolHandler } from "./protolens-protocol";
 import { RuleProtocolHandler } from "./rule-protocol";
 import { SkillProtocolHandler } from "./skill-protocol";
 import { SshProtocolHandler } from "./ssh-protocol";
@@ -16,7 +17,6 @@ import type {
 	UrlCompletion,
 	WriteContext,
 } from "./types";
-import { XdProtocolHandler } from "./xd-protocol";
 
 export class InternalUrlRouter {
 	static #instance: InternalUrlRouter | undefined;
@@ -24,7 +24,7 @@ export class InternalUrlRouter {
 	#handlers = new Map<string, ProtocolHandler>();
 
 	constructor() {
-		this.register(new ProtoProtocolHandler());
+		this.register(new HarnessProtocolHandler());
 		this.register(new AgentProtocolHandler());
 		this.register(new ArtifactProtocolHandler());
 		this.register(new LocalProtocolHandler());
@@ -33,7 +33,7 @@ export class InternalUrlRouter {
 		this.register(new McpProtocolHandler());
 		this.register(new HistoryProtocolHandler());
 		this.register(new SshProtocolHandler());
-		this.register(new XdProtocolHandler());
+		this.register(new ProtolensProtocolHandler());
 	}
 
 	static instance(): InternalUrlRouter {

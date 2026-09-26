@@ -1,4 +1,4 @@
-import { buildNodeJsKernel } from "../src/eval/js/node-runtime";
+import { buildJsKernel } from "../src/eval/js/node-runtime";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createHostVirtualModulePlugin } from "./host-virtual-module";
 
@@ -28,7 +28,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
 	try {
-		const [docsPayload, nodeJsKernel] = await Promise.all([buildDocsIndexPayload(), buildNodeJsKernel()]);
+		const [docsPayload, jsKernel] = await Promise.all([buildDocsIndexPayload(), buildJsKernel()]);
 		const output = await Bun.build({
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
@@ -37,7 +37,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),
-				"process.env.PI_NODE_JS_KERNEL": JSON.stringify(nodeJsKernel),
+				"process.env.PI_JS_KERNEL": JSON.stringify(jsKernel),
 			},
 			splitting: true,
 			// Bun's default chunk naming (chunk-[hash]) collides when distinct chunks share a

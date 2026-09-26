@@ -15,6 +15,7 @@ interface CellRun {
 	status: "ok" | "error";
 	stdout: string;
 	stderr: string;
+	notes: string[];
 	traceback: string[];
 }
 
@@ -25,14 +26,18 @@ async function run(
 ): Promise<CellRun> {
 	let stdout = "";
 	let stderr = "";
+	const notes: string[] = [];
 	const result = await kernel.execute(code, {
 		...options,
+		onDisplay: output => {
+			if (output.type === "status" && output.event.op === "note") notes.push(String(output.event.text));
+		},
 		onStream: (text, stream) => {
 			if (stream === "stdout") stdout += text;
 			else stderr += text;
 		},
 	});
-	return { status: result.status, stdout, stderr, traceback: result.error?.traceback ?? [] };
+	return { status: result.status, stdout, stderr, notes, traceback: result.error?.traceback ?? [] };
 }
 
 async function withKernel(prefix: string, body: (kernel: PythonKernel, dir: string) => Promise<void>): Promise<void> {
@@ -59,7 +64,8 @@ describe("python kernel import freshness", () => {
 
 				expect(second.stdout).toContain("v2-edited True");
 				// Only `thing` is stale: the cell rebinds probe_mod itself, and json is a library.
-				expect(second.stderr).toContain(
+				expect(second.stderr).toBe("");
+				expect(second.notes.join("")).toContain(
 					"probe_mod changed on disk; imports load the new source, but names from earlier cells still hold the old code: thing\n",
 				);
 			});
@@ -168,7 +174,7 @@ describe("python kernel import freshness", () => {
 				const failed = await run(kernel, "x = 1\nimport probe_missing_module_for_traceback");
 				expect(failed.status).toBe("error");
 				const frames = failed.traceback.filter(line => line.trimStart().startsWith("File "));
-				expect(frames).toEqual(['  File "<cell>", line 2, in <module>']);
+				expect(frames).toEqual(['  File "<string>", line 2, in <module>']);
 			});
 		},
 		60_000,

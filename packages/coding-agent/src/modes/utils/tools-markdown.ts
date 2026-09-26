@@ -24,7 +24,9 @@ export function buildToolsMarkdown(bindings: ToolsMarkdownBindings): string {
 		rows.push(`| \`${tool.name}\` | ${description} |`);
 	}
 	for (const mounted of bindings.xdevTools ?? []) {
-		rows.push(`| \`xd://${mounted.name}\` | ${escapeTableCell(mounted.summary) || "No description provided."} |`);
+		rows.push(
+			`| \`protolens://${mounted.name}\` | ${escapeTableCell(mounted.summary) || "No description provided."} |`,
+		);
 	}
 
 	return ["| Tool | Description |", "|------|-------------|", ...rows].join("\n");

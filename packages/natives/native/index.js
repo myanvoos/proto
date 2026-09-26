@@ -194,6 +194,7 @@ function lazyNativeExport(name, adapt, isClass = false) {
 export const DesktopSession = lazyNativeExport("DesktopSession", bindings => adaptDesktopSession(bindings.DesktopSession), true);
 export const FileLock = lazyNativeExport("FileLock", undefined, true);
 export const HighlightStream = lazyNativeExport("HighlightStream", undefined, true);
+export const KernelStdio = lazyNativeExport("KernelStdio", undefined, true);
 export const MacAppearanceObserver = lazyNativeExport("MacAppearanceObserver", undefined, true);
 export const MacOSPowerAssertion = lazyNativeExport("MacOSPowerAssertion", undefined, true);
 export const Process = lazyNativeExport("Process", undefined, true);

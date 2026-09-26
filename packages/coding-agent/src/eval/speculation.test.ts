@@ -22,36 +22,22 @@ test("speculates on a pool model id, not just the role tiers", () => {
 	expect(calls[0]?.args).toEqual({ prompt: "summarize", model: "openai-codex/gpt-5.6-sol" });
 });
 
-test("stops speculative Python calls at raw heredoc bodies, including partial streams", () => {
-	const code = [
-		'answer = completion("before")',
-		"PAYLOAD \t=\t << \tRAW_BODY  \r",
-		'completion("hidden")',
-		'  arbitrary indentation and """quotes""" and \'single quotes\'',
-		"  RAW_BODY",
-		'completion("still hidden")',
-		"RAW_BODY   ",
-		'answer = completion("after")',
-	].join("\n");
+test("ignores completion-looking multiline string contents, including partial streams", () => {
+	const prefix = ['answer = completion("before")', 'payload = """', 'completion("hidden")'].join("\n");
+	const code = `${prefix}\n"""\nanswer = completion("after")`;
 	const calls = findHeredocCompletionCalls(`python <<'PY'\n${code}\nPY`);
-	expect(calls.map(call => call.args.prompt)).toEqual(["before"]);
-	const indented = ['answer = completion("before")', "\tPAYLOAD = <<RAW", 'completion("hidden")', "\tRAW"].join("\n");
-	expect(findLiteralCompletionCalls("python", indented).map(call => call.args.prompt)).toEqual(["before"]);
+	expect(calls.map(call => call.args.prompt)).toEqual(["before", "after"]);
 
-	const partial = parseStreamedInputForCompletion(
-		JSON.stringify({ command: `python <<'PY'\n${code.slice(0, code.indexOf("RAW_BODY   "))}` }),
-	);
+	const partial = parseStreamedInputForCompletion(JSON.stringify({ command: `python <<'PY'\n${prefix}` }));
 	expect(partial.calls.map(call => call.args.prompt)).toEqual(["before"]);
 });
 
-test("does not mistake bitshifts, strings, comments, or removed directives for raw heredocs", () => {
+test("does not confuse bitshifts, strings, or comments with completion calls", () => {
 	const code = [
 		"shifted = 1 << SHIFT",
-		'text = "PAYLOAD = <<END"',
-		"# PAYLOAD = <<END",
-		"#@embed PAYLOAD",
+		`text = 'completion("in string")'`,
+		'# completion("in comment")',
 		'answer = completion("visible")',
-		"#@end",
 	].join("\n");
 	expect(findLiteralCompletionCalls("python", code).map(call => call.args.prompt)).toEqual(["visible"]);
 });
