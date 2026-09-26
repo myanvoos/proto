@@ -5,9 +5,10 @@ import {
 	type AgentTurnEndContext,
 	resolveTelemetry,
 	type StreamFn,
-	ThinkingLevel,
+	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
+	appendSelfSummary,
 	applyShakeRegions,
 	CompactionCancelledError,
 	type CompactionPreparation,
@@ -16,9 +17,12 @@ import {
 	collectShakeRegions,
 	compact,
 	compactionContextTokens,
+	consolidateSelfSummary,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
 	generateSelfSummary,
+	getAnthropicCompactionPayload,
+	type HandoffOptions,
 	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
@@ -31,7 +35,6 @@ import {
 	type SummaryOptions,
 	shouldCompact,
 	shouldUseProviderNativeCompaction,
-	upsertSelfSummary,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
@@ -44,7 +47,6 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
 import type {
@@ -104,7 +106,7 @@ function hasConfiguredCompactionMethod(settings: ConfiguredCompactionSettings): 
 function compactionDeadEndWarning(remedies: string): string {
 	return (
 		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
-		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
+		`The retained context is still too large; ${remedies}, explicitly clear the session, or switch to a larger-context model.`
 	);
 }
 
@@ -159,11 +161,6 @@ const COMPACTION_RECOVERY_BAND = 0.8;
 // Payload-shaped 413s share text patterns with overflow; trust the payload classification only while local occupancy
 // stays under this ceiling (≥10% headroom) and reported usage stays within the window.
 const PAYLOAD_REJECTION_OCCUPANCY_CEILING = 0.9;
-
-const SELF_SUMMARY_MAX_TOKENS = 4096;
-// The observational-memory observation agent runs its stages at a low thinking level; the handoff
-// note uses the same memory-role models at that level.
-const MEMORY_ROLE_THINKING_LEVEL: ThinkingLevel = ThinkingLevel.Low;
 
 interface ArmedSpeculation {
 	result: CompactionResult;
@@ -788,7 +785,7 @@ export class SessionMaintenance {
 				}
 			}
 
-			summary = await this.#appendSelfSummary(summary, preparation, compactionAbortController.signal);
+			summary = await this.#appendSelfSummary(summary, preparation, compactionAbortController.signal, preserveData);
 
 			if (compactionAbortController.signal.aborted) {
 				throw new CompactionCancelledError(undefined, {
@@ -1071,7 +1068,7 @@ export class SessionMaintenance {
 			armed = {
 				result: {
 					...result,
-					summary: await this.#appendSelfSummary(result.summary, preparation, signal),
+					summary: await this.#appendSelfSummary(result.summary, preparation, signal, result.preserveData),
 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
 				},
 				action: "remote",
@@ -1810,86 +1807,68 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Every summary a compaction commits is written by something that only ever saw a serialized
-	 * transcript — the observational-memory extension, or a remote compactor. The handoff note is
-	 * written from that transcript by the same memory-role models the observation agent uses
-	 * (@smol, then @tiny), falling back to the session's own model when they are unavailable or
-	 * fail. Best-effort: a failed or unauthorized note is skipped rather than allowed to fail the
-	 * compaction.
+	 * Complement structural summaries and local observations with the session model's own working
+	 * knowledge. Never delegate this to memory-role models: their narrower synthesis is precisely
+	 * what this layer supplements. New entries are best-effort; safety consolidation fails closed.
 	 */
-	async #appendSelfSummary(summary: string, preparation: CompactionPreparation, signal: AbortSignal): Promise<string> {
+	async #appendSelfSummary(
+		summary: string,
+		preparation: CompactionPreparation,
+		signal: AbortSignal,
+		preserveData?: Record<string, unknown>,
+	): Promise<string> {
+		// Native compaction owns its memory; supplemental self-memory is only for local summaries.
+		if (getOpenAiRemoteCompactionPayload({ preserveData }) || getAnthropicCompactionPayload(preserveData))
+			return summary;
+		// Carry memory even when generation is disabled, unauthorized, empty, or fails.
+		summary = appendSelfSummary(summary, "", preparation.previousSummary);
 		const model = this.#model;
-		if (!model) return summary;
-		if (!this.#host.settings.getGroup("compaction").selfSummary) return summary;
+		if (!model || signal.aborted) return summary;
 		const sessionId = this.#host.sessionId();
-
-		for (const candidate of this.#selfSummaryModelCandidates(model)) {
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate.model, sessionId);
-			if (!apiKey) continue;
+		const apiKey = this.#host.modelRegistry.resolver(model, sessionId);
+		const options: HandoffOptions = {
+			systemPrompt: this.#host.baseSystemPrompt(),
+			tools: this.#host.agent.state.tools,
+			convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+			initiatorOverride: "agent",
+			metadata: this.#host.agent.metadataForProvider(model.provider),
+			telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
+			thinkingLevel: this.#host.thinkingLevel(),
+			sessionId,
+			promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+			providerSessionState: this.#host.providerSessionState,
+			preferWebsockets: this.#host.preferWebsockets,
+			completeImpl: async (requestModel, requestContext, requestOptions) => {
+				const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+				return stream.result();
+			},
+		};
+		if (this.#host.settings.getGroup("compaction").selfSummary) {
 			try {
-				const note = await generateSelfSummary(
-					this.#host.obfuscatePreparationForProvider(preparation),
-					candidate.model,
-					this.#host.modelRegistry.resolver(candidate.model, sessionId),
-					{
-						systemPrompt: this.#host.baseSystemPrompt(),
-						tools: this.#host.agent.state.tools,
-						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-						initiatorOverride: "agent",
-						metadata: this.#host.agent.metadataForProvider(candidate.model.provider),
-						telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
-						thinkingLevel: candidate.memoryRole ? MEMORY_ROLE_THINKING_LEVEL : this.#host.thinkingLevel(),
-						maxTokens: SELF_SUMMARY_MAX_TOKENS,
-						sessionId,
-						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
-						providerSessionState: this.#host.providerSessionState,
-						preferWebsockets: this.#host.preferWebsockets,
-						completeImpl: async (requestModel, requestContext, requestOptions) => {
-							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
-							return stream.result();
-						},
-					},
-					signal,
-				);
-				return upsertSelfSummary(summary, note);
+				if (await this.#host.modelRegistry.getApiKey(model, sessionId)) {
+					const note = await generateSelfSummary(
+						this.#host.obfuscatePreparationForProvider(preparation),
+						model,
+						apiKey,
+						options,
+						signal,
+					);
+					summary = appendSelfSummary(summary, note);
+				}
 			} catch (error) {
-				if (signal.aborted) return summary;
-				logger.warn("Self-written compaction summary failed; trying the next memory-role model", {
-					error: error instanceof Error ? error.message : String(error),
-					model: `${candidate.model.provider}/${candidate.model.id}`,
-				});
+				if (!signal.aborted) {
+					logger.warn(
+						"Self-written compaction summary failed; retaining earlier self-memory and the structural summary",
+						{
+							error: error instanceof Error ? error.message : String(error),
+							model: `${model.provider}/${model.id}`,
+						},
+					);
+				}
 			}
 		}
-		return summary;
-	}
-
-	/**
-	 * Mirrors the observational-memory model candidate order: the @smol and @tiny roles first
-	 * (cheaper models with the transcript handed to them), the session's own model last as the
-	 * fallback — unless the session model already fills a memory role, which keeps it first.
-	 */
-	#selfSummaryModelCandidates(sessionModel: Model): Array<{ model: Model; memoryRole: boolean }> {
-		const settings = this.#host.settings;
-		const resolveRole = (spec: string): Model | undefined =>
-			resolveModelRoleValue(spec, this.#host.modelRegistry.getAvailable(), {
-				settings,
-				matchPreferences: getModelMatchPreferences(settings),
-			}).model;
-		const roles = [resolveRole("@smol"), resolveRole("@tiny")].filter((model): model is Model => model !== undefined);
-		const isMemoryRole = (model: Model): boolean =>
-			roles.some(role => role.provider === model.provider && role.id === model.id);
-		const currentUsesMemoryRole = isMemoryRole(sessionModel);
-		const ordered = currentUsesMemoryRole ? [sessionModel, ...roles] : [...roles, sessionModel];
-
-		const candidates: Array<{ model: Model; memoryRole: boolean }> = [];
-		const seen = new Set<string>();
-		for (const model of ordered) {
-			const key = `${model.provider}/${model.id}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			candidates.push({ model, memoryRole: isMemoryRole(model) });
-		}
-		return candidates;
+		// A failed safety consolidation must not commit an oversized or partial replacement.
+		return consolidateSelfSummary(summary, model, apiKey, options, signal);
 	}
 
 	async #prepareCompactionFromHooks(
@@ -2508,7 +2487,7 @@ export class SessionMaintenance {
 			}
 
 			return await this.#commitAutoCompactionResult({
-				summary: await this.#appendSelfSummary(summary, preparation, autoCompactionSignal),
+				summary: await this.#appendSelfSummary(summary, preparation, autoCompactionSignal, preserveData),
 				shortSummary,
 				firstKeptEntryId,
 				tokensBefore,

@@ -9,19 +9,21 @@ import {
 	type CompactionPreparation,
 	type CompactionSettings,
 	compact,
-	compactionThresholdRatio,
+	consolidateSelfSummary,
 	DEFAULT_COMPACTION_SETTINGS,
+	generateSelfSummary,
 	resolveThresholdTokens,
 	shouldCompact,
 } from "./compaction";
 import { NativeCompactionError } from "./errors";
 import {
+	appendSelfSummary,
 	createFileOps,
+	extractSelfSummaries,
 	type SummaryMessage,
 	serializeConversationForSummary,
 	TOOL_RESULT_MIN_CHARS,
 	truncateToolResultForSummary,
-	upsertSelfSummary,
 } from "./utils";
 
 const DIALECTS = [
@@ -374,20 +376,37 @@ describe("remote endpoint compaction", () => {
 });
 
 describe("the session model's own summary section", () => {
-	test("replaces the previous round's note instead of stacking a second one", () => {
-		const first = upsertSelfSummary("## Goal\nShip the parser rewrite", "Ruled out the streaming parser.");
-		const second = upsertSelfSummary(first, "parser.ts:88 is applied but unverified.");
+	test("appends corrections without rewriting the earlier learning", () => {
+		const first = appendSelfSummary("## Goal\nShip the parser rewrite", "Ruled out the streaming parser.");
+		const second = appendSelfSummary(first, "Correction: the streaming parser works after flushing its final token.");
 
-		expect(second.match(/<self-summary>/g)).toHaveLength(1);
-		expect(second).toContain("## Goal\nShip the parser rewrite");
-		expect(second).toContain("parser.ts:88 is applied but unverified.");
-		expect(second).not.toContain("Ruled out the streaming parser.");
+		expect(second).toStartWith(first);
+		expect(second.match(/<self-summary>/g)).toHaveLength(2);
+		expect(second).toContain("Correction: the streaming parser works after flushing its final token.");
+	});
+
+	test("restores committed memory instead of a compactor's shortened or duplicated copy", () => {
+		const original = appendSelfSummary("old structural summary", "The long-form lesson.\n\n  Exact example: a\tb.");
+		const rewritten = "new structural summary\n<self-summary>Only a reading list survived.</self-summary>";
+		const next = appendSelfSummary(rewritten, "A new exception to the lesson.", original);
+
+		expect(next).toContain(extractSelfSummaries(original));
+		expect(next).not.toContain("Only a reading list survived.");
+		expect(next).not.toContain("old structural summary");
+		expect(appendSelfSummary(next, "", next)).toBe(next);
+	});
+
+	test("a quoted closing wrapper cannot discard the rest of a memory entry on the next compaction", () => {
+		const first = appendSelfSummary("summary", "The literal </self-summary> is followed by an important exception.");
+		const second = appendSelfSummary("replacement summary", "", first);
+		expect(extractSelfSummaries(second)).toBe(extractSelfSummaries(first));
+		expect(second).toContain("&lt;/self-summary> is followed by an important exception.");
 	});
 
 	test("leaves the summary untouched when the model produced no note", () => {
 		const summary = "## Goal\nShip the parser rewrite";
 
-		expect(upsertSelfSummary(summary, "  \n  ")).toBe(summary);
+		expect(appendSelfSummary(summary, "  \n  ")).toBe(summary);
 	});
 });
 
@@ -399,31 +418,24 @@ describe("the context a compaction fires at", () => {
 	/** Unconfigured: `thresholdPercent`/`thresholdTokens` at their "not set" sentinel. */
 	const unconfigured = DEFAULT_COMPACTION_SETTINGS;
 
-	test("an unconfigured window compacts at the anchor ratio for its size", () => {
-		// The share of the window a session may fill falls as the window grows.
-		expect(resolveThresholdTokens(131_072, unconfigured)).toBe(104_857);
-		expect(resolveThresholdTokens(262_144, unconfigured)).toBe(183_500);
-		expect(resolveThresholdTokens(1_048_576, unconfigured)).toBe(419_430);
+	test("keeps working knowledge until the effective window needs its reserve", () => {
+		// Regression: the 272K worker folded 195,981 tokens despite still having room.
+		expect(shouldCompact(195_981, 272_000, unconfigured)).toBe(false);
+		expect(shouldCompact(231_200, 272_000, unconfigured)).toBe(false);
+		expect(shouldCompact(231_201, 272_000, unconfigured)).toBe(true);
 	});
 
-	test("a window between anchors interpolates instead of stepping", () => {
-		const ratio = compactionThresholdRatio(200_000);
-
-		expect(ratio).toBeGreaterThan(compactionThresholdRatio(262_144));
-		expect(ratio).toBeLessThan(compactionThresholdRatio(131_072));
-		expect(resolveThresholdTokens(200_000, unconfigured)).toBe(149_482);
+	test("a larger window does not discard a greater fraction of its capacity", () => {
+		expect(shouldCompact(450_000, 1_000_000, unconfigured)).toBe(false);
+		expect(shouldCompact(850_000, 1_000_000, unconfigured)).toBe(false);
+		expect(shouldCompact(850_001, 1_000_000, unconfigured)).toBe(true);
+		expect(shouldCompact(1_700_001, 2_000_000, unconfigured)).toBe(true);
 	});
 
-	test("windows past the last anchor hold its ratio rather than falling further", () => {
-		expect(compactionThresholdRatio(4_000_000)).toBe(0.4);
-		expect(resolveThresholdTokens(2_000_000, unconfigured)).toBe(800_000);
-	});
-
-	test("a window too small for the curve's headroom is bounded by the room a compaction needs", () => {
-		// 90% of 32k would leave less than the summary itself needs, so the reserve governs.
-		expect(compactionThresholdRatio(32_768)).toBe(0.9);
+	test("small windows and explicit reserves still leave room to produce a summary", () => {
 		expect(resolveThresholdTokens(32_768, unconfigured)).toBe(16_384);
 		expect(shouldCompact(20_000, 32_768, unconfigured)).toBe(true);
+		expect(shouldCompact(25_000, 32_768, withSettings({ reserveTokens: 10_000 }))).toBe(true);
 	});
 
 	test("a configured threshold is obeyed as written, early or late", () => {
@@ -435,6 +447,123 @@ describe("the context a compaction fires at", () => {
 		expect(shouldCompact(101_000, 1_000_000, byTokens)).toBe(true);
 		expect(resolveThresholdTokens(1_000_000, byPercent)).toBe(200_000);
 	});
+});
+
+describe("self-memory safety consolidation", () => {
+	test("retains entries below 30%, consolidates at the boundary, then resumes appending", async () => {
+		const initial = appendSelfSummary("current structural summary", "Old lesson: qualify the evidence. ".repeat(40));
+		const combined = appendSelfSummary(initial, "New correction: the exception applies only before shutdown.");
+		const memory = extractSelfSummaries(combined);
+		const tokens = new Tokenizer().countTokens(memory, "strict");
+		let requests = 0;
+		const options = {
+			systemPrompt: [],
+			completeImpl: async (_model: Model, context: { messages: Message[] }) => {
+				requests++;
+				const replay = JSON.stringify(context.messages[0]);
+				expect(replay).toContain("Old lesson: qualify the evidence.");
+				expect(replay).toContain("the exception applies only before shutdown");
+				expect(replay).not.toContain("current structural summary");
+				return {
+					...RESPONSE,
+					content: [
+						{ type: "text" as const, text: "Qualify the evidence; the exception applies only before shutdown." },
+					],
+				};
+			},
+		};
+		const below = await consolidateSelfSummary(combined, testModel((tokens + 1) / 0.3), "test-key", options);
+		expect(requests).toBe(0);
+		expect(extractSelfSummaries(below)).toBe(memory);
+
+		const consolidated = await consolidateSelfSummary(combined, testModel(tokens / 0.3), "test-key", options);
+		expect(requests).toBe(1);
+		expect(consolidated).toStartWith("current structural summary");
+		expect(consolidated.match(/<self-summary>/g)).toHaveLength(1);
+		expect(consolidated).toContain("Qualify the evidence; the exception applies only before shutdown.");
+		expect(new Tokenizer().countTokens(extractSelfSummaries(consolidated), "strict")).toBeLessThan(tokens);
+		expect(appendSelfSummary(consolidated, "Next lesson.")).toStartWith(consolidated);
+	});
+});
+
+describe("self-summary working knowledge", () => {
+	test("replays earlier learning, full source results, and the latest request together", async () => {
+		const source = "A reference passage with a consequential exception. ".repeat(200);
+		const read = toolPair(0);
+		const result = read[1];
+		if (result.role !== "toolResult") throw new Error("Expected a source result");
+		result.content = [{ type: "text", text: source }];
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "latest",
+			messagesToSummarize: [user("Learn the voice before writing.", 0), ...read],
+			turnPrefixMessages: [user("Compare the exception to the earlier reference.", 1)],
+			recentMessages: [user("Keep the narrator's uncertainty, not just the short sentences.", 2)],
+			previousSummary:
+				"<self-summary>Earlier reference: unreliable chronology, not an unreliable witness.</self-summary>",
+			isSplitTurn: true,
+			tokensBefore: 195_981,
+			fileOps: createFileOps(),
+			settings: DEFAULT_COMPACTION_SETTINGS,
+		};
+		await generateSelfSummary(preparation, testModel(272_000), "test-key", {
+			systemPrompt: ["session instructions"],
+			completeImpl: async (_model, context) => {
+				const [previous, task, call, content, comparison, correction] = context.messages;
+				expect(previous.content).toEqual([
+					{ type: "text", text: expect.stringContaining("unreliable chronology, not an unreliable witness") },
+				]);
+				expect(task).toMatchObject(preparation.messagesToSummarize[0]);
+				expect(call.content).toEqual(read[0].content);
+				expect(content).toMatchObject({
+					role: "toolResult",
+					toolCallId: result.toolCallId,
+					content: result.content,
+				});
+				expect(comparison).toMatchObject(preparation.turnPrefixMessages[0]);
+				expect(correction).toMatchObject(preparation.recentMessages[0]);
+				return RESPONSE;
+			},
+		});
+	});
+
+	test.each([
+		{ history: 1_000, limit: 64_000, needed: 4_096, ceiling: 4_096 },
+		{ history: 195_981, limit: 64_000, needed: 19_000, ceiling: 19_599 },
+		{ history: 850_000, limit: 64_000, needed: 32_000, ceiling: 32_768 },
+		{ history: 850_000, limit: 8_192, needed: 8_000, ceiling: 8_192 },
+	])(
+		"keeps learned detail within the provider output limit ($history input, $limit output)",
+		async ({ history, limit, needed, ceiling }) => {
+			const note = `${"Lesson and evidence. ".repeat(needed / 4)}Final exception: leave the cause unresolved.`;
+			const summary = await generateSelfSummary(
+				{
+					firstKeptEntryId: "latest",
+					messagesToSummarize: [user("Reference corpus", 0)],
+					turnPrefixMessages: [],
+					recentMessages: [],
+					isSplitTurn: false,
+					tokensBefore: history,
+					fileOps: createFileOps(),
+					settings: DEFAULT_COMPACTION_SETTINGS,
+				},
+				{ ...testModel(1_000_000), maxTokens: limit },
+				"test-key",
+				{
+					systemPrompt: [],
+					completeImpl: async (_model, _context, options) => {
+						// Simulate a provider rejecting oversized allowances or truncating the learned content.
+						if (options.maxTokens === undefined || options.maxTokens > ceiling)
+							throw new Error("Output limit exceeded");
+						return {
+							...RESPONSE,
+							content: [{ type: "text", text: options.maxTokens >= needed ? note : "Truncated learning" }],
+						};
+					},
+				},
+			);
+			expect(summary).toEndWith("Final exception: leave the cause unresolved.");
+		},
+	);
 });
 
 function nativeOpenAiModel(): Model {

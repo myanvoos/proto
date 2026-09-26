@@ -148,19 +148,25 @@ export function upsertFileOperations(
 	return `${baseSummary}\n\n${fileOperations}`;
 }
 
-const SELF_SUMMARY_TAG_RE = /<self-summary>[\s\S]*?<\/self-summary>\s*/g;
+const SELF_SUMMARY_TAG_RE = /<self-summary>[\s\S]*?<\/self-summary>/g;
 
-/**
- * The session model's own note is regenerated on every compaction, and the summary it is appended
- * to carries the previous round's note forward, so the old section is replaced rather than stacked.
- */
-export function upsertSelfSummary(summary: string, note: string): string {
-	const baseSummary = summary.replace(SELF_SUMMARY_TAG_RE, "").trimEnd();
-	const trimmedNote = note.trim();
-	if (!trimmedNote) return baseSummary;
-	const section = prompt.render(selfSummarySectionTemplate, { note: trimmedNote });
-	if (!baseSummary) return section;
-	return `${baseSummary}\n\n${section}`;
+/** Self-authored entries, in append order since the last safety consolidation. */
+export function extractSelfSummaries(summary: string): string {
+	return (summary.match(SELF_SUMMARY_TAG_RE) ?? []).join("\n\n");
+}
+
+export function stripSelfSummaries(summary: string): string {
+	return summary.replace(SELF_SUMMARY_TAG_RE, "").trimEnd();
+}
+
+/** The prior committed memory is authoritative, not a compactor's reconstruction of it. */
+export function appendSelfSummary(summary: string, note: string, previousSummary = summary): string {
+	const baseSummary = stripSelfSummaries(summary);
+	const previous = extractSelfSummaries(previousSummary);
+	// A quoted wrapper in a new note must not terminate the stored entry on its next replay.
+	const trimmedNote = note.trim().replace(/<\/?self-summary>/gi, tag => tag.replace("<", "&lt;"));
+	const section = trimmedNote ? prompt.render(selfSummarySectionTemplate, { note: trimmedNote }) : "";
+	return [baseSummary, previous, section].filter(Boolean).join("\n\n");
 }
 
 export const TOOL_RESULT_MIN_CHARS = 2000;

@@ -60,6 +60,8 @@
 
 ### Fixed
 
+- Local self-memory appends learned content until it reaches 30% of the model context, then consolidates toward 20%; failed consolidation preserves existing history, and provider-native compaction is exempt.
+- Compaction keeps working context longer by default and uses the session's own model for detailed learned-content memory, rather than delegating its self-summary to Observer models.
 - Node and Bun kernel pipes reach native stdin descriptor 0, including synchronous `fs` reads and inherited child stdin; input stays streamed and isolated between cells
 - Shell jobs, kernel tool calls, and delegated launches share the session project broker even when a cell runs in another directory; process working directories remain cell-relative
 - Bash internal-URL arguments keep trailing read selectors (`protolens read harness://bash.md:1-40`), and `protolens` arguments such as `agent://` and `history://` reach the device instead of failing

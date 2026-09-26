@@ -1,13 +1,13 @@
 /**
  * Every compaction summary is written by something that only saw a serialized transcript — the
- * observational-memory extension, or a remote compactor. The handoff note is written from that
- * transcript by the same memory-role models that power the observation agent (@smol, then @tiny),
- * falling back to the session's own model. The note is appended to whichever summary was produced,
+ * observational-memory extension, or a remote compactor. The session's own model supplements
+ * that summary with working knowledge from the full transcript, without delegating to observers.
+ * The note is appended to whichever summary was produced,
  * and a failed note never fails the compaction.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction";
+import { appendSelfSummary, convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Context, Message, Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -44,10 +44,13 @@ describe("self-written compaction summary", () => {
 	let session: AgentSession;
 	let authStorage: AuthStorage | undefined;
 	let requests: RecordedRequest[];
+	let nextNote: MockResponse;
+	let queuedNotes: MockResponse[];
 
 	beforeEach(async () => {
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.setRuntimeApiKey("openai", "test-key");
 		requests = [];
 	});
 
@@ -59,23 +62,27 @@ describe("self-written compaction summary", () => {
 
 	interface SeedOptions {
 		smolRole?: boolean;
-		smolFails?: boolean;
 		sessionNoteFails?: boolean;
 		selfSummary?: boolean;
+		native?: "openai" | "anthropic";
+		contextWindow?: number;
 	}
 
 	function seedSession(options: SeedOptions = {}): SessionManager {
-		const sessionModel = getBundledModel("anthropic", SESSION_MODEL_ID) as Model;
-		const noteRequest: MockResponse = { content: [SELF_NOTE] };
+		const bundled = getBundledModel(
+			options.native ?? "anthropic",
+			options.native === "openai" ? "gpt-5" : SESSION_MODEL_ID,
+		) as Model;
+		const sessionModel = { ...bundled, contextWindow: options.contextWindow ?? bundled.contextWindow };
+		nextNote = { content: [SELF_NOTE] };
+		queuedNotes = [];
 		const sessionMock = createMockModel({
 			handler: (context: Context): MockResponse =>
 				options.sessionNoteFails && isSessionRequest(context.systemPrompt ?? [])
 					? { throw: "session note request failed" }
-					: noteRequest,
+					: (queuedNotes.shift() ?? nextNote),
 		});
-		const smolMock = createMockModel({
-			handler: (): MockResponse => (options.smolFails ? { throw: "memory-role request failed" } : noteRequest),
-		});
+		const smolMock = createMockModel({ handler: (): MockResponse => nextNote });
 		const streamFn: typeof sessionMock.stream = (requestModel, context: Context, streamOptions) => {
 			requests.push({
 				modelId: requestModel.id,
@@ -101,9 +108,15 @@ describe("self-written compaction summary", () => {
 			}),
 			modelRegistry: new ModelRegistry(authStorage!),
 			sideStreamFn: streamFn,
-			extensionRunner: extensionCompactor(),
+			extensionRunner: extensionCompactor(options.native),
 		});
 
+		appendWork(sessionManager);
+		return sessionManager;
+	}
+
+	function appendWork(sessionManager: SessionManager): void {
+		const sessionModel = session.agent.state.model!;
 		const bulk = "parser token stream analysis. ".repeat(600);
 		for (let turn = 0; turn < 12; turn++) {
 			sessionManager.appendMessage({
@@ -129,7 +142,6 @@ describe("self-written compaction summary", () => {
 				timestamp: Date.now(),
 			});
 		}
-		return sessionManager;
 	}
 
 	/**
@@ -137,7 +149,18 @@ describe("self-written compaction summary", () => {
 	 * compaction. Only the two members the session consults are stubbed; the cast is confined here
 	 * so the test states the hook contract rather than reconstructing the whole runner.
 	 */
-	function extensionCompactor(): ExtensionRunner {
+	function extensionCompactor(native?: "openai" | "anthropic"): ExtensionRunner {
+		const preserveData =
+			native === "openai"
+				? {
+						openaiRemoteCompaction: {
+							provider: "openai",
+							replacementHistory: [{ type: "compaction", encrypted_content: "native-history" }],
+						},
+					}
+				: native === "anthropic"
+					? { anthropicCompaction: { provider: "anthropic", content: "native-history" } }
+					: undefined;
 		const stub = {
 			hasHandlers: (event: string) => event === "session_before_compact",
 			emit: async () => ({
@@ -147,6 +170,7 @@ describe("self-written compaction summary", () => {
 					firstKeptEntryId: "",
 					tokensBefore: 1_000,
 					details: { compactor: "test" },
+					preserveData,
 				},
 			}),
 		};
@@ -154,7 +178,7 @@ describe("self-written compaction summary", () => {
 	}
 
 	function committedSummary(sessionManager: SessionManager): string {
-		const entry = sessionManager.getBranch().find(candidate => candidate.type === "compaction");
+		const entry = sessionManager.getBranch().findLast(candidate => candidate.type === "compaction");
 		return entry?.type === "compaction" ? entry.summary : "";
 	}
 
@@ -162,7 +186,7 @@ describe("self-written compaction summary", () => {
 		return requests.filter(request => isSessionRequest(request.systemPrompt));
 	}
 
-	it("writes the note with the smol memory-role model before touching the session model", async () => {
+	it("writes its own memory with the session model even when a smol role is configured", async () => {
 		const sessionManager = seedSession({ smolRole: true });
 		await session.reload();
 
@@ -174,7 +198,7 @@ describe("self-written compaction summary", () => {
 		expect(committedSummary(sessionManager)).toContain(SELF_NOTE);
 		const notes = noteRequests();
 		expect(notes).toHaveLength(1);
-		expect(notes[0].modelId).toBe(SMOL_MODEL_ID);
+		expect(notes[0].modelId).toBe(SESSION_MODEL_ID);
 
 		const injected = session.agent.state.messages
 			.map(message => textOf(convertMessageToLlm(message)))
@@ -182,15 +206,15 @@ describe("self-written compaction summary", () => {
 		expect(injected).toContain(SELF_NOTE);
 	});
 
-	it("falls back to the session model when the memory-role model fails", async () => {
-		seedSession({ smolRole: true, smolFails: true });
+	it("does not silently substitute an observer when the session model cannot write its memory", async () => {
+		seedSession({ smolRole: true, sessionNoteFails: true });
 		await session.reload();
 
 		const result = await session.compact();
 
-		expect(result.summary).toContain(SELF_NOTE);
-		const notes = noteRequests();
-		expect(notes.map(request => request.modelId)).toEqual([SMOL_MODEL_ID, SESSION_MODEL_ID]);
+		expect(result.summary).toContain(EXTENSION_SUMMARY);
+		expect(result.summary).not.toContain("<self-summary>");
+		expect(noteRequests().map(request => request.modelId)).toEqual([SESSION_MODEL_ID]);
 	});
 
 	it("asks for the note under the session's own system prompt, replaying the folded transcript", async () => {
@@ -219,8 +243,8 @@ describe("self-written compaction summary", () => {
 		expect(committedSummary(sessionManager)).toContain(EXTENSION_SUMMARY);
 	});
 
-	it("commits the compaction unchanged when every note candidate fails", async () => {
-		const sessionManager = seedSession({ smolRole: true, smolFails: true, sessionNoteFails: true });
+	it("persists the structural summary when self-authored memory fails", async () => {
+		const sessionManager = seedSession({ sessionNoteFails: true });
 		await session.reload();
 
 		const result = await session.compact();
@@ -229,6 +253,99 @@ describe("self-written compaction summary", () => {
 		expect(result.summary).not.toContain("<self-summary>");
 		expect(committedSummary(sessionManager)).toContain(EXTENSION_SUMMARY);
 	});
+
+	it.each(["correction", "failure", "disabled", "empty"] as const)(
+		"keeps earlier memory verbatim through another compaction (%s)",
+		async outcome => {
+			const sessionManager = seedSession();
+			await session.reload();
+			const first = await session.compact();
+			const originalMemory = first.summary.slice(first.summary.indexOf("<self-summary>"));
+
+			appendWork(sessionManager);
+			await session.reload();
+			const correction =
+				"Correction: flushing the last token fixes the streaming parser; parser.ts:88 is now verified.";
+			nextNote =
+				outcome === "failure" ? { throw: "note failed" } : { content: outcome === "empty" ? [] : [correction] };
+			if (outcome === "disabled") session.settings.override("compaction.selfSummary", false);
+			const second = await session.compact();
+
+			expect(second.summary).toContain(originalMemory);
+			expect(second.summary.split(SELF_NOTE)).toHaveLength(2);
+			expect(committedSummary(sessionManager)).toContain(originalMemory);
+			const replay = session.agent.state.messages.map(message => textOf(convertMessageToLlm(message))).join("\n");
+			expect(replay).toContain(originalMemory);
+			if (outcome === "correction") {
+				expect(second.summary.indexOf(correction)).toBeGreaterThan(second.summary.indexOf(originalMemory));
+				expect(replay).toContain(correction);
+			} else {
+				expect(second.summary).not.toContain(correction);
+			}
+		},
+	);
+
+	it("consolidates the newly appended entry with earlier memory when their total crosses 30%", async () => {
+		const sessionManager = seedSession({ contextWindow: 10_000 });
+		const prior = appendSelfSummary(EXTENSION_SUMMARY, "earlier technique and evidence. ".repeat(350));
+		sessionManager.appendCompaction(prior, "prior memory", "", 40_000);
+		appendWork(sessionManager);
+		await session.reload();
+		const replacement = "Earlier technique: qualify evidence. New exception: after shutdown, use the backup feed.";
+		queuedNotes = [
+			{ content: ["New exception: after shutdown, use the backup feed. ".repeat(300)] },
+			{ content: [replacement] },
+		];
+		await session.compact();
+		expect(noteRequests()).toHaveLength(2);
+		const consolidationInput = noteRequests()[1].messages.map(textOf).join("\n");
+		expect(consolidationInput).toContain("earlier technique and evidence");
+		expect(consolidationInput).toContain("New exception: after shutdown, use the backup feed.");
+		expect(committedSummary(sessionManager)).toContain(replacement);
+		expect(committedSummary(sessionManager).match(/<self-summary>/g)).toHaveLength(1);
+	});
+
+	it.each(["empty", "truncated", "aborted", "oversized", "failed"] as const)(
+		"does not commit a %s safety consolidation over the earlier memory",
+		async outcome => {
+			const sessionManager = seedSession({ selfSummary: false, contextWindow: 10_000 });
+			const prior = appendSelfSummary(EXTENSION_SUMMARY, "earlier technique and evidence. ".repeat(800));
+			sessionManager.appendCompaction(prior, "prior memory", "", 40_000);
+			appendWork(sessionManager);
+			await session.reload();
+			session.agent.replaceMessages(sessionManager.buildSessionContext().messages);
+			const originalEntries = sessionManager.getBranch().filter(entry => entry.type === "compaction").length;
+			nextNote =
+				outcome === "failed"
+					? { throw: "consolidation unavailable" }
+					: outcome === "truncated" || outcome === "aborted"
+						? { content: ["Partial memory"], stopReason: outcome === "aborted" ? "aborted" : "length" }
+						: { content: outcome === "empty" ? [] : ["still oversized memory. ".repeat(2_000)] };
+
+			await expect(session.compact()).rejects.toThrow();
+			expect(noteRequests()).toHaveLength(1);
+			expect(committedSummary(sessionManager)).toBe(prior);
+			expect(sessionManager.getBranch().filter(entry => entry.type === "compaction")).toHaveLength(originalEntries);
+			expect(session.agent.state.messages.map(message => textOf(convertMessageToLlm(message))).join("\n")).toContain(
+				"earlier technique and evidence",
+			);
+		},
+	);
+
+	it.each(["openai", "anthropic"] as const)(
+		"leaves %s native compaction to the provider without extra self-memory requests",
+		async native => {
+			const sessionManager = seedSession({ native });
+			await session.reload();
+			await session.compact();
+			appendWork(sessionManager);
+			await session.reload();
+			const result = await session.compact();
+
+			expect(result.summary).toBe(EXTENSION_SUMMARY);
+			expect(noteRequests()).toHaveLength(0);
+		},
+	);
 
 	it("skips the extra request when self-written summaries are turned off", async () => {
 		seedSession({ selfSummary: false });

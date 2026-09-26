@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Self-summary composition is append-only; SDK callers use `appendSelfSummary` instead of `upsertSelfSummary`.
+
+### Changed
+
+- Automatic compaction now keeps context until its reserve is needed (normally 85% of the effective window), instead of compacting at progressively lower utilization on larger windows.
+
+### Fixed
+
+- Local self-memory keeps earlier entries verbatim until its 30%-of-context safety threshold, then consolidates the full chain without accepting empty, truncated, or oversized replacements.
+- Self-summaries preserve learned source content, examples, and cross-source conclusions with a history-scaled output allowance instead of a 200-word status note.
+
 ## [18.6.0] - 2026-09-23
 
 ### Added

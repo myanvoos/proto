@@ -2068,9 +2068,9 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Compaction Threshold",
 			description:
-				"Percent threshold for context maintenance; set to Default to scale with the model's context window (90% at 32K falling to 40% at 1M)",
+				"Percent threshold for context maintenance; Default preserves context until the reserve is needed (normally 85% of the effective window)",
 			options: [
-				{ value: "default", label: "Default", description: "Scales with the model's context window" },
+				{ value: "default", label: "Default", description: "Use the effective window minus its reserve" },
 				{ value: "10", label: "10%", description: "Extremely early maintenance" },
 				{ value: "20", label: "20%", description: "Very early maintenance" },
 				{ value: "30", label: "30%", description: "Early maintenance" },
@@ -2139,7 +2139,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Self-Written Summary",
 			description:
-				"Have the session's own model append its own note — reasoning, ruled-out approaches, unfinished state — to every compaction summary",
+				"Append the session model's learned content for local compaction; consolidate accumulated memory at 30% of context. Native compaction is exempt",
 		},
 	},
 	"compaction.reserveTokens": { type: "number", default: undefined },

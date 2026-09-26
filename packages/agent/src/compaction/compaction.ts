@@ -77,12 +77,15 @@ import compactionSummaryPrompt from "./prompts/compaction-summary.md" with { typ
 import compactionUpdateSummaryPrompt from "./prompts/compaction-update-summary.md" with { type: "text" };
 import handoffDocumentPrompt from "./prompts/handoff-document.md" with { type: "text" };
 import nativeCompactionPrompt from "./prompts/native-compaction.md" with { type: "text" };
+import selfSummaryConsolidationPrompt from "./prompts/self-summary-consolidation.md" with { type: "text" };
 
 import {
+	appendSelfSummary,
 	computeFileLists,
 	createFileOps,
 	escapeSummaryBoundaryTags,
 	extractFileOpsFromMessage,
+	extractSelfSummaries,
 	type FileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
@@ -279,38 +282,6 @@ export function compactionContextTokens(providerContextTokens: number, storedCon
 	return Math.max(Math.max(0, providerContextTokens), Math.max(0, storedConversationEstimate));
 }
 
-/**
- * How full a context window may get before maintenance runs, by window size.
- *
- * The fraction falls as windows grow, because the two costs it balances move in opposite
- * directions: a small window has to run nearly full to fit any work at all, while re-sending 40%
- * of a million-token window already costs more every turn than folding it does once. Anchors are
- * interpolated piecewise-linearly and held constant outside the range.
- */
-export const COMPACTION_THRESHOLD_ANCHORS: readonly { window: number; ratio: number }[] = [
-	{ window: 32_768, ratio: 0.9 },
-	{ window: 131_072, ratio: 0.8 },
-	{ window: 262_144, ratio: 0.7 },
-	{ window: 1_048_576, ratio: 0.4 },
-];
-
-/** Fraction of `contextWindow` the default threshold allows, read off the anchor curve. */
-export function compactionThresholdRatio(contextWindow: number): number {
-	const first = COMPACTION_THRESHOLD_ANCHORS[0];
-	const last = COMPACTION_THRESHOLD_ANCHORS[COMPACTION_THRESHOLD_ANCHORS.length - 1];
-	if (contextWindow <= first.window) return first.ratio;
-	if (contextWindow >= last.window) return last.ratio;
-	for (let i = 1; i < COMPACTION_THRESHOLD_ANCHORS.length; i++) {
-		const previous = COMPACTION_THRESHOLD_ANCHORS[i - 1];
-		const next = COMPACTION_THRESHOLD_ANCHORS[i];
-		if (contextWindow > next.window) continue;
-		const span = next.window - previous.window;
-		const progress = span > 0 ? (contextWindow - previous.window) / span : 0;
-		return previous.ratio + (next.ratio - previous.ratio) * progress;
-	}
-	return last.ratio;
-}
-
 function windowThresholdCeiling(contextWindow: number, settings: CompactionSettings): number {
 	return Math.max(0, Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)));
 }
@@ -327,9 +298,8 @@ export function resolveThresholdTokens(contextWindow: number, settings: Compacti
 		return Math.floor(contextWindow * (clampedThresholdPercent / 100));
 	}
 
-	// Unconfigured: the window's own shape decides, bounded by the room a compaction needs to run.
-	const ceiling = windowThresholdCeiling(contextWindow, settings);
-	return Math.min(ceiling, Math.floor(contextWindow * compactionThresholdRatio(contextWindow)));
+	// Preserve working context until the reserve is needed; large windows are not a reason to discard more.
+	return windowThresholdCeiling(contextWindow, settings);
 }
 
 function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
@@ -447,7 +417,8 @@ const SUMMARIZATION_PROMPT = prompt.render(compactionSummaryPrompt);
 
 const UPDATE_SUMMARIZATION_PROMPT = prompt.render(compactionUpdateSummaryPrompt);
 
-const SELF_SUMMARY_PROMPT = prompt.render(compactionSelfSummaryPrompt);
+const SELF_SUMMARY_MIN_TOKENS = 4096;
+const SELF_SUMMARY_MAX_TOKENS = 32768;
 
 const HANDOFF_DOCUMENT_PROMPT = prompt.render(handoffDocumentPrompt);
 
@@ -792,6 +763,8 @@ export interface HandoffFromContextOptions {
 	thinkingLevel?: ThinkingLevel;
 
 	oneshotKind?: string;
+
+	requireComplete?: boolean;
 }
 
 export async function generateHandoffFromContext(
@@ -823,6 +796,9 @@ export async function generateHandoffFromContext(
 	if (response.stopReason === "error") {
 		throw createSummarizationError("Handoff generation failed", response);
 	}
+	if (options.requireComplete && response.stopReason !== "stop") {
+		throw new Error(`Self-memory consolidation did not finish (${response.stopReason})`);
+	}
 
 	return response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -843,6 +819,7 @@ async function generateSelfAuthored(
 	oneshotKind: string,
 	options: HandoffOptions,
 	signal: AbortSignal | undefined,
+	requireComplete = false,
 ): Promise<string> {
 	const llmMessages = (options.convertToLlm ?? defaultConvertToLlm)(messages);
 	const requestMessages: Message[] = [
@@ -875,6 +852,7 @@ async function generateSelfAuthored(
 			telemetry: options.telemetry,
 			thinkingLevel: options.thinkingLevel,
 			oneshotKind,
+			requireComplete,
 		},
 	);
 }
@@ -899,7 +877,7 @@ export async function generateHandoff(
 
 /**
  * The structured summary is written by a summarizer that only ever sees a serialized transcript.
- * This note is written by a memory-role model from the whole live transcript, and is appended to
+ * The session model writes its working knowledge from the whole live transcript, appended to
  * whatever summary the compaction produced — including one supplied by an extension.
  * The previous summary leads the replay: it is the only surviving record of history already folded.
  * The retained tail trails it: with a minimal tail the newest request is still live, and a handoff
@@ -923,7 +901,67 @@ export async function generateSelfSummary(
 		);
 	}
 	messages.push(...preparation.messagesToSummarize, ...preparation.turnPrefixMessages, ...preparation.recentMessages);
-	return generateSelfAuthored(messages, model, apiKey, SELF_SUMMARY_PROMPT, "self-summary", options, signal);
+	// Research-heavy sessions need room for learned substance, not a fixed-size status note. This
+	// is an output allowance (including reasoning on providers that share it), not a length target.
+	const maxTokens = Math.min(
+		model.maxTokens ?? SELF_SUMMARY_MAX_TOKENS,
+		options.maxTokens ??
+			Math.min(
+				SELF_SUMMARY_MAX_TOKENS,
+				Math.max(SELF_SUMMARY_MIN_TOKENS, Math.ceil(preparation.tokensBefore * 0.1)),
+			),
+	);
+	return generateSelfAuthored(
+		messages,
+		model,
+		apiKey,
+		prompt.render(compactionSelfSummaryPrompt, { maxTokens }),
+		"self-summary",
+		{ ...options, maxTokens },
+		signal,
+	);
+}
+
+/** Append-only below 30% of the active window; consolidate toward 20% to leave growth headroom. */
+export async function consolidateSelfSummary(
+	summary: string,
+	model: Model,
+	apiKey: ApiKey,
+	options: HandoffOptions,
+	signal?: AbortSignal,
+): Promise<string> {
+	const contextWindow = model.contextWindow ?? 0;
+	if (contextWindow <= 0) return summary;
+	const memory = extractSelfSummaries(summary);
+	const tokenizer = new Tokenizer(model);
+	const threshold = contextWindow * 0.3;
+	if (!memory || tokenizer.countTokens(memory, "strict") < threshold) return summary;
+
+	const maxTokens = Math.max(
+		1,
+		Math.min(
+			model.maxTokens ?? SELF_SUMMARY_MAX_TOKENS,
+			options.maxTokens ?? Infinity,
+			Math.floor(contextWindow * 0.2),
+		),
+	);
+	const replacement = await generateSelfAuthored(
+		[createCompactionSummaryMessage(memory, 0, new Date().toISOString())],
+		model,
+		apiKey,
+		prompt.render(selfSummaryConsolidationPrompt, { maxTokens }),
+		"self-summary-consolidation",
+		{ ...options, maxTokens },
+		signal,
+		true,
+	);
+	requireNonEmptySummary(replacement, "Self-memory consolidation");
+	const consolidated = appendSelfSummary(summary, replacement, "");
+	const tokens = tokenizer.countTokens(extractSelfSummaries(consolidated), "strict");
+	if (tokens >= threshold) {
+		throw new Error(`Self-memory consolidation still uses ${tokens} tokens; must be below 30% of ${contextWindow}`);
+	}
+	return consolidated;
 }
 
 export interface CompactionPreparation {
