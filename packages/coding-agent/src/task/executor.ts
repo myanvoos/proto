@@ -46,6 +46,7 @@ import type { ArtifactManager } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import { MONITOR_EVENT_MESSAGE_TYPE } from "../session/monitor-event";
 import type { SubagentUsageTotals } from "../session/session-entries";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { TailAccumulator, truncateTail } from "../session/streaming-output";
@@ -388,6 +389,9 @@ export interface ExecutorOptions {
 	keepAlive?: boolean;
 
 	onCleanupDeferred?: (completion: Promise<void>) => void;
+
+	/** Commits the owner startup receipt after the child contract is durable, before its first turn. */
+	onSessionInitialized?: () => Promise<void>;
 
 	cleanupGraceMs?: number;
 }
@@ -845,7 +849,10 @@ interface SubagentRunMonitor {
 }
 
 function isAsyncResultInjection(message: AgentMessage | undefined): boolean {
-	return message?.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE;
+	return (
+		message?.role === "custom" &&
+		(message.customType === ASYNC_RESULT_MESSAGE_TYPE || message.customType === MONITOR_EVENT_MESSAGE_TYPE)
+	);
 }
 
 function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
@@ -1958,7 +1965,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	};
 }
 
-interface IrcWakeTurnMonitorOptions {
+interface WakeTurnMonitorOptions {
 	id: string;
 	index?: number;
 	agent: AgentDefinition;
@@ -1978,12 +1985,12 @@ interface IrcWakeTurnMonitorOptions {
 	artifactsDir?: string;
 }
 
-export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWakeTurnMonitorOptions): void {
+export function attachWakeTurnMonitor(session: AgentSession, options: WakeTurnMonitorOptions): void {
 	const { id, agent } = options;
 	const index = options.index ?? 0;
 	const maxRuntimeMs = options.maxRuntimeMs ?? 0;
-	session.setIrcWakeTurnObserver(records => {
-		const ircTask =
+	session.setWakeTurnObserver(records => {
+		const wakeTask =
 			records
 				.map(record => {
 					const body =
@@ -1993,17 +2000,17 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					return typeof body === "string" ? body : record.content;
 				})
 				.filter(Boolean)
-				.join("\n\n") || "IRC follow-up";
+				.join("\n\n") || "Background follow-up";
 		const turnStartTime = Date.now();
-		// A worker woken by IRC still owes its result to whoever owns it; the claim makes the turn
+		// A worker woken by a background event still owes its result to whoever owns it; the claim makes the turn
 		// visible to that owner while it runs and delivers the result when it finishes.
-		const claim = claimWakeTurn(id, ircTask);
+		const claim = claimWakeTurn(id, wakeTask);
 		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
 		const turnMonitor = createSubagentRunMonitor({
 			index,
 			id,
 			agent,
-			task: ircTask,
+			task: wakeTask,
 			description: options.description,
 			modelOverride: options.modelOverride,
 			modelRole: options.modelRole,
@@ -2066,7 +2073,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					index,
 					id,
 					agent,
-					task: ircTask,
+					task: wakeTask,
 					modelOverride: options.modelOverride,
 					modelRole: options.modelRole,
 					outputSchema: options.outputSchema,
@@ -2082,7 +2089,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				});
 				claim?.settle(result);
 			} catch (finalizeError) {
-				logger.warn("IRC subagent turn finalization failed", {
+				logger.warn("Background subagent turn finalization failed", {
 					id,
 					error: finalizeError instanceof Error ? finalizeError.message : String(finalizeError),
 				});
@@ -2373,7 +2380,7 @@ function createRunLocalReviver(args: {
 	sessionFile: string;
 	parentArtifactManager: ArtifactManager | undefined;
 	blueprint: SubagentSessionBlueprint;
-	wake: IrcWakeTurnMonitorOptions;
+	wake: WakeTurnMonitorOptions;
 }): AgentReviver {
 	return async expectedAgentRef => {
 		const reopened = await SessionManager.open(args.sessionFile, undefined, undefined, {
@@ -2401,7 +2408,7 @@ function createRunLocalReviver(args: {
 			reportRuntimeError: err => logger.error("Extension error", { path: err.extensionPath, error: err.error }),
 		});
 		AgentRegistry.global().syncSessionStatus(args.id, revived);
-		attachIrcWakeTurnMonitor(revived, args.wake);
+		attachWakeTurnMonitor(revived, args.wake);
 		return revived;
 	};
 }
@@ -2555,7 +2562,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const progress = monitor.progress;
 	let unsubscribe: (() => void) | null = null;
 	let reviveSession: AgentReviver | null = null;
-	const ircWakeOptions: IrcWakeTurnMonitorOptions = {
+	const ircWakeOptions: WakeTurnMonitorOptions = {
 		id,
 		index,
 		agent,
@@ -2928,6 +2935,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
 			});
+			if (options.onSessionInitialized) {
+				await session.sessionManager.ensureOnDisk();
+				await session.sessionManager.flush();
+				await options.onSessionInitialized();
+			}
 
 			abortSignal.addEventListener(
 				"abort",
@@ -3086,7 +3098,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const asyncJobOwnerId = session?.getAsyncJobOwnerId() ?? id;
 			const jobManager = AsyncJobManager.instance();
 			if (jobManager) {
-				const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt);
+				const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt, {
+					excludeMonitors: !aborted && options.keepAlive !== false && worktree === undefined,
+				});
 				if (!reap.settled) {
 					deferCleanup(reap.completion);
 					logger.warn("Subagent async job cleanup exceeded its deadline", {
@@ -3098,7 +3112,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (session) {
 				monitor.captureSalvage(session);
 				if (options.keepAlive !== false && worktree === undefined) {
-					attachIrcWakeTurnMonitor(session, ircWakeOptions);
+					attachWakeTurnMonitor(session, ircWakeOptions);
 				}
 				await finalizeSubagentLifecycle({
 					id,
@@ -3124,7 +3138,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					});
 					lateCleanups.push(finalReap);
 				} else {
-					const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt);
+					const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt, {
+						excludeMonitors: !aborted && options.keepAlive !== false && worktree === undefined,
+					});
 					if (!reap.settled) {
 						deferCleanup(reap.completion);
 						logger.warn("Subagent async job cleanup exceeded its deadline after session shutdown", {

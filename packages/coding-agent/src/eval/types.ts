@@ -13,6 +13,7 @@ export type EvalDisplayOutput =
 	| { type: "json"; data: unknown }
 	| { type: "image"; data: string; mimeType: string }
 	| { type: "markdown"; text?: string }
+	| { type: "notice"; text: string }
 	| { type: "status"; event: EvalStatusEvent };
 
 export interface EvalCellResult {

@@ -3,6 +3,7 @@ import { Settings } from "../config/settings";
 import * as sdkModule from "../sdk";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
+import { MONITOR_EVENT_MESSAGE_TYPE } from "../session/monitor-event";
 import { emptySubagentUsageTotals } from "../session/session-entries";
 import { EventBus } from "../utils/event-bus";
 import { runSubprocess } from "./executor";
@@ -35,7 +36,10 @@ const proseTurn: Turn = () => {};
  * response. Extra prompts past the script answer with prose, so an unbounded chase would show up
  * as an unbounded prompt count.
  */
-function asyncJobSession(turns: Turn[]): { session: AgentSession; prompts: () => number } {
+function asyncJobSession(
+	turns: Turn[],
+	customType = ASYNC_RESULT_MESSAGE_TYPE,
+): { session: AgentSession; prompts: () => number } {
 	const listeners: Emit[] = [];
 	const emit: Emit = event => {
 		for (const listener of listeners) listener(event);
@@ -73,7 +77,7 @@ function asyncJobSession(turns: Turn[]): { session: AgentSession; prompts: () =>
 			jobPending = false;
 			emit({
 				type: "message_start",
-				message: { role: "custom", customType: ASYNC_RESULT_MESSAGE_TYPE },
+				message: { role: "custom", customType },
 			} as unknown as AgentSessionEvent);
 			runNext();
 		},
@@ -83,7 +87,7 @@ function asyncJobSession(turns: Turn[]): { session: AgentSession; prompts: () =>
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},
 	};
@@ -152,4 +156,12 @@ test("a worker that never covers its background result is failed, bounded, and s
 	expect(result.extractedToolData?.yield).toEqual([{ data: { phase: "one" }, status: "success" }]);
 	// task + still-running notice + the 3 yield reminders, then it stops: the chase is bounded.
 	expect(prompts()).toBe(5);
+});
+
+test("monitor events arriving after a yield invalidate the stale report", async () => {
+	const { session } = asyncJobSession([yieldTurn({ phase: "before monitor" })], MONITOR_EVENT_MESSAGE_TYPE);
+	const result = await run(session, "monitor-yield-stale");
+	expect(result.exitCode).not.toBe(0);
+	expect(result.error).toContain("Background job results arrived after the subagent's last yield");
+	expect(result.output).toContain("before monitor");
 });

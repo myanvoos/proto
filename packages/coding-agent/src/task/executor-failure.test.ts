@@ -62,7 +62,7 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;

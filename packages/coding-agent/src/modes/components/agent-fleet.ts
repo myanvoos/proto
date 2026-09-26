@@ -358,6 +358,10 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#observedById = new Map();
 		for (const session of this.#observers.getSessions()) this.#observedById.set(session.id, session);
 		const rowOrder = this.#rowOrder;
+		if (rowOrder) {
+			const currentIds = new Set(refs.map(ref => ref.id));
+			for (const id of rowOrder.keys()) if (!currentIds.has(id)) rowOrder.delete(id);
+		}
 		let rosterRows: AgentRef[];
 		if (!rowOrder) {
 			rosterRows = refs.sort(

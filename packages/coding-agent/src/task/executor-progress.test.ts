@@ -37,7 +37,7 @@ function createMockSession(onPrompt: (emit: (event: AgentSessionEvent) => void) 
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
+		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},
 	};

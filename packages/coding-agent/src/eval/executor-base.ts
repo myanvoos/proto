@@ -12,7 +12,7 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEven
 import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
-import type { KernelDisplayOutput } from "./py/display";
+import { type KernelDisplayOutput, PythonDisplayBudget } from "./py/display";
 import { registerPyToolBridge } from "./py/tool-bridge";
 
 export type CancelledErrorClass = new (timedOut: boolean) => Error & { timedOut: boolean };
@@ -441,7 +441,7 @@ export async function executeWithKernelBase<
 			...dumped,
 			...base,
 			artifactId: dumped.artifactId,
-			displayOutputs,
+			displayOutputs: displayBudget.kernelOutputs(),
 			stdinRequested: base.stdinRequested,
 		});
 
@@ -454,18 +454,28 @@ export async function executeWithKernelBase<
 		maxColumns: resolveOutputMaxColumns(settings),
 	});
 
-	const displayOutputs: KernelDisplayOutput[] = [];
+	const displayBudget = new PythonDisplayBudget();
+	let resultReady = false;
+	let releaseRequested = false;
+	const releaseOutput = (): void => {
+		if (!resultReady) {
+			releaseRequested = true;
+			return;
+		}
+		sink.release();
+		displayBudget.release();
+	};
 	const deadlineMs = (resolveDeadlineMs ?? getExecutionDeadlineMs)(options);
 	let executionTimeoutMs: number | undefined;
 	const abortShield = createBridgeAbortShield(options?.signal);
 
-	const collectDisplay = (output: KernelDisplayOutput): void => {
+	const collectDisplay = (output: KernelDisplayOutput): KernelDisplayOutput[] => {
 		if (output.type === "status") {
 			abortShield.handleStatus?.(output.event);
 			options?.onStatus?.(output.event);
-			if (isEvalTimeoutControlEvent(output.event)) return;
+			return isEvalTimeoutControlEvent(output.event) ? [] : [output];
 		}
-		displayOutputs.push(output);
+		return displayBudget.addKernelOutput(output);
 	};
 
 	const emitStatus: (event: JsStatusEvent) => void =
@@ -506,11 +516,10 @@ export async function executeWithKernelBase<
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,
 			onChunk: text => sink.push(text),
-			retainedOutputBytes: () => sink.retainedBytes(),
-			releaseOutput: () => sink.release(),
-			onDisplay: output => {
-				collectDisplay(output);
-				return options?.onDisplay?.(output);
+			retainedOutputBytes: () => sink.retainedBytes() + displayBudget.retainedBytes(),
+			releaseOutput: releaseOutput,
+			onDisplay: async output => {
+				for (const accepted of collectDisplay(output)) await options?.onDisplay?.(accepted);
 			},
 		});
 
@@ -557,6 +566,8 @@ export async function executeWithKernelBase<
 		throw error;
 	} finally {
 		await sink.dispose();
+		resultReady = true;
+		if (releaseRequested) releaseOutput();
 		unregisterBridge?.();
 		abortShield.dispose?.();
 	}

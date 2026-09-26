@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Markdown caches account for source text as well as rendered output and no longer pin oversized inputs through cache keys
+- Editor drafts, undo/history, pasted attachments, and image conversion work have byte-aware limits instead of growing without bound
 - Malformed UTF-8 input no longer delays or swallows following keys and terminal control sequences
 - Autocomplete accepts single-quoted file paths and `@` references without mistaking prose apostrophes for quotes
 - Empty tab bars no longer show navigation hints or retain obsolete selection and click regions

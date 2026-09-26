@@ -14,9 +14,11 @@ import { AttachmentChipsBand } from "./components/attachment-chips";
 import { HookEditorComponent } from "./components/hook-editor";
 import { HookInputComponent } from "./components/hook-input";
 import { HookSelectorComponent } from "./components/hook-selector";
+import { ToolExecutionComponent } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { Composer } from "./composer";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
+import { InputController } from "./controllers/input-controller";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 import type { InteractiveModeContext } from "./types";
 
@@ -246,7 +248,7 @@ test("reflows an unacknowledged history offer under a new immutable identity", (
 	}
 });
 
-test("history image admission regenerates a frozen offer before its first write", async () => {
+test("history image admission survives retirement and restores payloads on replay", async () => {
 	const source = String.raw`
 import { Image, ImageProtocol, setCellDimensions, setKittyGraphics, setTerminalImageProtocol } from "../../../tui/src/index.ts";
 import { Composer } from "./composer.ts";
@@ -321,9 +323,15 @@ composer.start({ deferInput: true });
 composer.beginHistoryFlush();
 composer.ui.requestRender();
 scheduler.flush();
-composer.stop();
 const output = terminal.writes.join("");
+terminal.writes.length = 0;
+composer.ui.resetDisplay();
+scheduler.flush();
+const replayOutput = terminal.writes.join("");
+composer.stop();
 console.log(JSON.stringify({
+	deletedIds: [...output.matchAll(/a=d,d=I,i=(\d+)/g)].map(match => Number(match[1])),
+	replayPayload: replayOutput.includes("TkVXRVNU"),
 	states: transcript.blockStates(),
 	olderFallback: output.includes("[Image: older.png [image/png] 1x1]"),
 	newestFallback: output.includes("[Image: newest.png [image/png] 1x1]"),
@@ -357,7 +365,11 @@ console.log(JSON.stringify({
 		olderPayload: boolean;
 		newestPayload: boolean;
 		transmitIds: number[];
+		deletedIds: number[];
+		replayPayload: boolean;
 	};
+	expect(result.deletedIds).toEqual([]);
+	expect(result.replayPayload).toBe(true);
 	expect(result.states).toEqual(["committed", "committed"]);
 	expect(result.olderFallback).toBe(true);
 	expect(result.newestFallback).toBe(false);
@@ -1045,6 +1057,69 @@ test("a shrink retires the transcript overflow once and only a replay can bring 
 		composer.beginHistoryReplay();
 		const replay = frameAt(60, 20).history;
 		for (const marker of markers) expect(countContaining(replay, marker)).toBe(1);
+	} finally {
+		composer.stop();
+	}
+});
+
+test("narrowing the terminal keeps every word of blocks already retired to scrollback", () => {
+	// A width change replays the ledger after clearing native scrollback, so the
+	// replay is the only copy left. Retired blocks keep rows laid out for the old
+	// width; clipped at the new edge instead of rewrapped, their tails were lost.
+	const { composer, terminal, scheduler, transcript } = createHarness(100, 12);
+	try {
+		for (let index = 0; index < 6; index++) {
+			transcript.addChild(new WrappingBlock(`transcript-${index} opening words padpadpadpad tail-${index} words`));
+			render(composer, scheduler);
+		}
+		expect(transcript.blockStates(), "the replay must include compacted blocks").toContain("committed");
+
+		terminal.resize(40, 12);
+		scheduler.flush();
+		const tape = terminal.tape();
+		for (let index = 0; index < 6; index++) {
+			expect(countContaining(tape, `transcript-${index} `), `transcript-${index} head`).toBe(1);
+			expect(countContaining(tape, `tail-${index} words`), `transcript-${index} tail`).toBe(1);
+		}
+	} finally {
+		composer.stop();
+	}
+});
+
+test("Ctrl+O expands a tool card that already retired to scrollback", () => {
+	// Retired cards keep their "Ctrl+O expand" hint in scrollback; the replay
+	// Ctrl+O triggers must redraw them expanded, not repeat the collapsed rows.
+	const { composer, terminal, scheduler, transcript } = createHarness(80, 14);
+	const redraw = () => render(composer, scheduler);
+	try {
+		const lines = Array.from({ length: 40 }, (_value, index) => `OUTLINE-${String(index + 1).padStart(2, "0")}`);
+		const card = new ToolExecutionComponent(
+			"bash",
+			{ command: "seq 1 40" },
+			{ useBuiltInRenderer: true },
+			undefined,
+			{ requestRender: redraw, requestComponentRender: redraw },
+		);
+		transcript.addChild(card);
+		card.updateResult({ content: [{ type: "text", text: lines.join("\n") }], details: {}, isError: false }, false);
+		redraw();
+		for (let index = 0; index < 8; index++) {
+			transcript.addChild(new StaticBlock([`later-block-${index}`]));
+			redraw();
+		}
+		expect(transcript.blockStates()[0]).toBe("committed");
+		expect(countContaining(terminal.tape(), "OUTLINE-01"), "collapsed card hides its earliest lines").toBe(0);
+
+		const context = {
+			hideToolActivity: false,
+			toolOutputExpanded: false,
+			chatContainer: transcript,
+			ui: composer.ui,
+		};
+		new InputController(context as unknown as InteractiveModeContext).toggleToolOutputExpansion();
+		scheduler.flush();
+		const tape = terminal.tape();
+		for (const line of lines) expect(countContaining(tape, line), line).toBe(1);
 	} finally {
 		composer.stop();
 	}

@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
 import { BlobStore, sweepUnreferencedBlobs } from "./blob-store";
-import { loadSessionFile } from "./session-loader";
+import { appendSessionArchive, loadSessionFile } from "./session-loader";
+import { FileSessionStorage } from "./session-storage";
 
 let root: string | undefined;
 
@@ -73,6 +74,52 @@ test("corrupt archive makes blob GC fail closed", async () => {
 
 	const result = await sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0 });
 
+	expect(result.aborted).toBe(true);
+	expect(result.removed).toBe(0);
+	expect(await store.has(blob.hash)).toBe(true);
+});
+
+test("blob GC marks every incremental archive batch and fails closed on a corrupt later batch", async () => {
+	const { blobs, sessions } = await setup();
+	const store = new BlobStore(blobs);
+	const sessionFile = path.join(sessions, "session.jsonl");
+	const storage = new FileSessionStorage();
+	const refs = await Promise.all([store.put(Buffer.from("first batch")), store.put(Buffer.from("second batch"))]);
+	let size: number | null = null;
+	for (const [index, blob] of refs.entries()) {
+		const id = `entry-${index}`;
+		size = await appendSessionArchive(
+			sessionFile,
+			storage,
+			{
+				version: 1,
+				sessionId: "session",
+				sessionFile,
+				records: [{ id, beforeId: null, line: JSON.stringify({ id, images: [{ data: blob.ref }] }) }],
+			},
+			size,
+		);
+		await age(blob.path);
+	}
+	const swept = await sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0 });
+	expect(swept.aborted).toBe(false);
+	expect(swept.marked).toBe(0);
+	for (const blob of refs) expect(await store.has(blob.hash)).toBe(true);
+	expect(swept.removed).toBe(0);
+	await storage.appendTextAtomic(`${sessionFile}.archive.jsonl.gz`, "corrupt\n", { expectedSize: size });
+	const invalid = await sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0 });
+	expect(invalid.aborted).toBe(true);
+	expect(invalid.removed).toBe(0);
+	for (const blob of refs) expect(await store.has(blob.hash)).toBe(true);
+});
+
+test("empty archive fails blob GC closed rather than deleting recoverable payloads", async () => {
+	const { blobs, sessions } = await setup();
+	const store = new BlobStore(blobs);
+	const blob = await store.put(Buffer.from("possibly recoverable"));
+	await age(blob.path);
+	await Bun.write(path.join(sessions, "session.jsonl.archive.jsonl.gz"), "\n");
+	const result = await sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0 });
 	expect(result.aborted).toBe(true);
 	expect(result.removed).toBe(0);
 	expect(await store.has(blob.hash)).toBe(true);

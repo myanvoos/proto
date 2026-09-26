@@ -42,9 +42,25 @@ test("a paste split across reads completes at its terminator", () => {
 	});
 });
 
-test("an oversized paste without a terminator flushes what it has", () => {
+test("an oversized paste is discarded and its remaining bytes cannot execute as keys", () => {
 	const handler = new BracketedPasteHandler({ byteLimit: 8 });
-	const result = handler.process(`${START}0123456789`);
-	expect(result).toEqual({ handled: true, pasteContent: "0123456789" });
-	expect(handler.process("\r")).toEqual({ handled: false });
+	expect(handler.process(`${START}0123456789`)).toEqual({ handled: true, rejected: true });
+	expect(handler.process("\r")).toEqual({ handled: true });
+	expect(handler.process(`ignored${END}\r`)).toEqual({ handled: true, rejected: true });
+	expect(handler.process("next key")).toEqual({ handled: false });
+});
+
+test("the UTF-8 byte boundary holds when the terminator shares the final chunk", () => {
+	const handler = new BracketedPasteHandler({ byteLimit: 8 });
+	expect(handler.process(`${START}😀😀${END}`)).toEqual({ handled: true, pasteContent: "😀😀" });
+	expect(handler.process(`${START}😀😀a${END}`)).toEqual({ handled: true, rejected: true });
+	expect(handler.process(`${START}${"a".repeat(1024 * 1024)}${END}`)).toEqual({ handled: true, rejected: true });
+});
+
+test("split terminators do not consume the content budget or reset an active paste", () => {
+	const handler = new BracketedPasteHandler({ byteLimit: 8 });
+	expect(handler.process(`${START}éééé\x1b[20`)).toEqual({ handled: true });
+	expect(handler.process("1~")).toEqual({ handled: true, pasteContent: "éééé" });
+	expect(handler.process(`${START}abc`)).toEqual({ handled: true });
+	expect(handler.process(`${START}def${END}`)).toEqual({ handled: true, pasteContent: "abcdef" });
 });

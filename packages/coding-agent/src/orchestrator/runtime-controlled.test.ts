@@ -25,9 +25,9 @@ import * as mcpConfig from "../mcp/config";
 import { MCPManager } from "../mcp/manager";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
-import { discoverAuthStorage } from "../sdk";
+import { createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AuthStorage } from "../session/auth-storage";
-import { SessionManager } from "../session/session-manager";
+import { extractSessionInit, SessionManager } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
@@ -219,7 +219,7 @@ function parentSession(args: {
 	sessionManager: SessionManager;
 	sessionId?: string;
 }): ToolSession {
-	const sessionId = args.sessionId ?? "parent-session";
+	const sessionId = args.sessionId ?? args.sessionManager.getSessionId();
 	return {
 		cwd: args.cwd,
 		hasUI: false,
@@ -261,7 +261,15 @@ afterEach(async () => {
 }, 30_000);
 
 async function controlledFixture(
-	options: { streamFn?: StreamFn; maxConcurrency?: number; maxJobs?: number; unsavedParent?: boolean } = {},
+	options: {
+		streamFn?: StreamFn;
+		maxConcurrency?: number;
+		maxJobs?: number;
+		maxTotalJobs?: number;
+		maxOwnerBytes?: number;
+		tools?: string[];
+		unsavedParent?: boolean;
+	} = {},
 ) {
 	// Registry replacement must not leave a lifecycle bound to the prior test's registry.
 	AgentLifecycleManager.resetGlobalForTests();
@@ -284,7 +292,11 @@ async function controlledFixture(
 	const manager = new AsyncJobManager({
 		retentionMs: 60_000,
 		...(options.maxJobs !== undefined ? { maxRunningJobs: options.maxJobs } : {}),
+		...(options.maxTotalJobs !== undefined ? { maxTotalJobs: options.maxTotalJobs } : {}),
+		...(options.maxOwnerBytes !== undefined ? { maxOwnerBytes: options.maxOwnerBytes } : {}),
 	});
+	const previousManager = AsyncJobManager.instance();
+	AsyncJobManager.setInstance(manager);
 	const streamFn = options.streamFn ?? controlledProvider();
 	const session = parentSession({
 		cwd: root,
@@ -298,7 +310,10 @@ async function controlledFixture(
 		sessionManager,
 	});
 	const runtime = OrchestratorRuntime.global();
-	const agent = { ...getBundledAgent("worker")!, tools: ["controlled_eval", "yield"] } as AgentDefinition;
+	const agent = {
+		...getBundledAgent("worker")!,
+		tools: options.tools ?? ["controlled_eval", "yield"],
+	} as AgentDefinition;
 	const model = buildModel({
 		id: "controlled-model",
 		name: "Controlled Model",
@@ -316,6 +331,7 @@ async function controlledFixture(
 		for (const id of runtime.listIds(session)) await runtime.kill(session, id);
 		await manager.dispose({ timeoutMs: 1_000 });
 		await AgentLifecycleManager.global().dispose();
+		AsyncJobManager.setInstance(previousManager);
 		authStorage.close();
 		await fs.rm(root, { recursive: true, force: true });
 	};
@@ -1169,3 +1185,424 @@ test("omitting an agent uses the parent's permitted default instead of rejecting
 	const result = await runtime.wait(restricted, { sessions: [worker.id], timeoutMs: 1_000 });
 	expect(result.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered" } }]);
 });
+
+test("a nested worker wait returns runnable capacity at concurrency one", async () => {
+	let childStarted = false;
+	let waitTimedOut: boolean | undefined;
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			const user = JSON.stringify(context.messages.findLast(entry => entry.role === "user"));
+			if (user.includes("nested-child")) {
+				childStarted = true;
+				pushToolCall(stream, model, call("child-yield", "yield", { result: { data: "child completed" } }));
+				return;
+			}
+			const waited = context.messages.findLast(
+				entry => entry.role === "toolResult" && entry.toolName === "orchestrate_wait",
+			);
+			if (waited?.role === "toolResult") {
+				waitTimedOut = (waited.details as { wait?: { timedOut: boolean } })?.wait?.timedOut;
+				pushToolCall(stream, model, call("parent-yield", "yield", { result: { data: "parent completed" } }));
+				return;
+			}
+			const spawned = context.messages.findLast(
+				entry => entry.role === "toolResult" && entry.toolName === "orchestrate_spawn",
+			);
+			if (spawned?.role === "toolResult") {
+				const id = (spawned.details as { spawned?: { id: string } })?.spawned?.id;
+				pushToolCall(stream, model, call("nested-wait", "orchestrate_wait", { ids: [id], timeoutMs: 5_000 }));
+				return;
+			}
+			pushToolCall(stream, model, call("nested-spawn", "orchestrate_spawn", { message: "nested-child" }));
+		});
+		return stream;
+	};
+	const { runtime, session, manager } = await controlledFixture({
+		streamFn,
+		maxConcurrency: 1,
+		tools: ["yield", "orchestrate_spawn", "orchestrate_wait", "orchestrate_list"],
+	});
+	const parent = await runtime.spawn(session, { message: "nested-parent" });
+	await withTimeout(manager.waitForAll(), 10_000, "nested worker starved behind its waiting parent's permit");
+	expect(childStarted).toBe(true);
+	expect(waitTimedOut).toBe(false);
+	expect((await runtime.wait(session, { sessions: [parent.id] })).settled).toMatchObject([{ status: "completed" }]);
+}, 30_000);
+
+test("spawn admission rejects queued count and schema bytes before persisting identities, then cancellation frees it", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const { runtime, session, manager, sessionManager } = await controlledFixture({
+		streamFn: yieldingProvider(new Map([["hold-admission", blocked.promise]])),
+		maxConcurrency: 1,
+		maxTotalJobs: 2,
+		maxOwnerBytes: 1024,
+	});
+	try {
+		await expect(
+			runtime.spawn(session, {
+				message: "oversized schema",
+				outputSchema: { type: "string", description: "x".repeat(2048) },
+			}),
+		).rejects.toThrow();
+		await expect(
+			runtime.spawn(
+				{ ...session, outputSchema: { type: "string", description: "x".repeat(2048) } },
+				{
+					message: "oversized inherited schema",
+				},
+			),
+		).rejects.toThrow("byte limit");
+		expect(runtime.listIds(session)).toEqual([]);
+		const first = await runtime.spawn(session, { message: "hold-admission" });
+		const queued = await runtime.spawn(session, { message: "queued admission" });
+		const before = sessionManager.getEntries().length;
+		await expect(runtime.spawn(session, { message: "rejected by total pending count" })).rejects.toThrow();
+		expect(runtime.listIds(session)).toEqual([first.id, queued.id]);
+		expect(sessionManager.getEntries().length).toBe(before);
+		await runtime.kill(session, queued.id);
+		const replacement = await runtime.spawn(session, { message: "replacement after cancellation" });
+		expect(replacement.id).not.toBe(queued.id);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("streaming steering rejects aggregate UTF-8 bytes without enqueueing or losing the worker", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const { runtime, session, manager } = await controlledFixture({
+		streamFn: yieldingProvider(new Map([["hold-byte-steers", blocked.promise]])),
+	});
+	const worker = await runtime.spawn(session, { message: "hold-byte-steers" });
+	try {
+		await withTimeout(
+			(async () => {
+				while (!AgentRegistry.global().get(worker.id)?.session?.isStreaming) await Bun.sleep(10);
+			})(),
+			5_000,
+			"worker did not start streaming",
+		);
+		await runtime.send(session, { session: worker.id, message: "é".repeat(100 * 1024) });
+		await expect(runtime.send(session, { session: worker.id, message: "é".repeat(40 * 1024) })).rejects.toThrow(
+			"bytes",
+		);
+		expect(AgentRegistry.global().get(worker.id)?.session?.getQueuedMessages().steering).toHaveLength(1);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("cold rehydration preserves every concurrently accepted root worker", async () => {
+	const { runtime, session, sessionManager, manager, agent, model } = await controlledFixture({
+		streamFn: yieldingProvider(new Map()),
+		maxConcurrency: 2,
+	});
+	const accepted = await Promise.all(
+		Array.from({ length: 10 }, (_, index) => runtime.spawn(session, { message: `concurrent-root-${index}` })),
+	);
+	await manager.waitForAll();
+	await runtime.suspendScope(runtime.ownerScope(session), manager);
+	await sessionManager.flush();
+	const file = sessionManager.getSessionFile()!;
+	await sessionManager.close();
+	const reopened = await SessionManager.open(file, undefined, undefined, {
+		suppressBreadcrumb: true,
+		throwIfMissing: true,
+	});
+	const restored = new OrchestratorRuntime();
+	restored.setWorkerResolutionForTesting(agent, model);
+	const coldSession = {
+		...session,
+		sessionManager: reopened,
+		getSessionId: () => reopened.getSessionId(),
+	} as ToolSession;
+	try {
+		expect(await restored.rehydrate(coldSession)).toBe(10);
+		expect(new Set(restored.listIds(coldSession))).toEqual(new Set(accepted.map(worker => worker.id)));
+		expect(restored.screens(coldSession).every(screen => screen.addressable && screen.lifecycle === "parked")).toBe(
+			true,
+		);
+	} finally {
+		await restored.suspendScope(restored.ownerScope(coldSession), manager);
+		await reopened.close();
+	}
+}, 30_000);
+
+test("accepted turns queued before worker allocation survive cold restart with their original inputs", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const gatedProvider = yieldingProvider(new Map([["hold-cold-start", blocked.promise]]));
+	const fixture = await controlledFixture({
+		streamFn: (model, context, options) => {
+			started.resolve();
+			return gatedProvider(model, context, options);
+		},
+		maxConcurrency: 1,
+	});
+	const { runtime, session, manager, sessionManager, agent, model } = fixture;
+	const first = await runtime.spawn(session, { message: "hold-cold-start" });
+	await withTimeout(started.promise, 5_000, "first worker did not enter provider");
+	const queued = await Promise.all(
+		Array.from({ length: 9 }, (_, index) => runtime.spawn(session, { message: `cold-queued-${index}` })),
+	);
+	const coldFile = path.join(fixture.root, "cold", "parent.jsonl");
+	await sessionManager.flush();
+	await Bun.write(coldFile, Bun.file(sessionManager.getSessionFile()!));
+	await Bun.write(
+		path.join(coldFile.slice(0, -6), `${first.id}.jsonl`),
+		Bun.file(AgentRegistry.global().get(first.id)!.sessionFile!),
+	);
+	blocked.resolve();
+	await manager.waitForAll();
+	await runtime.suspendScope(runtime.ownerScope(session), manager);
+	const reopened = await SessionManager.open(coldFile, undefined, undefined, {
+		suppressBreadcrumb: true,
+		throwIfMissing: true,
+	});
+	const observedInputs: string[] = [];
+	const streamFn: StreamFn = (model, context) => {
+		observedInputs.push(JSON.stringify(context.messages.findLast(entry => entry.role === "user")));
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() =>
+			pushToolCall(stream, model, call("cold-complete", "yield", { result: { data: "cold queued turn complete" } })),
+		);
+		return stream;
+	};
+	const coldSession = {
+		...session,
+		streamFn,
+		sessionManager: reopened,
+		getSessionFile: () => coldFile,
+		getSessionId: () => reopened.getSessionId(),
+	} as ToolSession;
+	const restored = new OrchestratorRuntime();
+	restored.setWorkerResolutionForTesting(agent, model);
+	try {
+		expect(await restored.rehydrate(coldSession, coldSession)).toBe(10);
+		await manager.waitForAll();
+		expect(new Set(restored.listIds(coldSession))).toEqual(new Set([first.id, ...queued.map(worker => worker.id)]));
+		expect(observedInputs).toHaveLength(9);
+		for (let index = 0; index < 9; index++)
+			expect(observedInputs.some(input => input.includes(`cold-queued-${index}`))).toBe(true);
+		expect((await restored.wait(coldSession, { sessions: queued.map(worker => worker.id) })).settled).toHaveLength(9);
+	} finally {
+		await restored.suspendScope(restored.ownerScope(coldSession), manager);
+		await reopened.close();
+	}
+}, 30_000);
+
+test("a cold revived worker restores its own grandchildren and can continue their turns", async () => {
+	let grandchildId: string | undefined;
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			const userIndex = context.messages.findLastIndex(entry => entry.role === "user");
+			const user = JSON.stringify(context.messages[userIndex]);
+			if (user.includes("grandchild-task")) {
+				pushToolCall(
+					stream,
+					model,
+					call("child-result", "yield", { result: { data: "grandchild turn complete" } }),
+				);
+				return;
+			}
+			const recent = context.messages.slice(userIndex + 1);
+			const completed = recent.some(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_wait");
+			if (completed) {
+				pushToolCall(stream, model, call("parent-result", "yield", { result: { data: "nested turn complete" } }));
+				return;
+			}
+			const spawned = recent.find(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_spawn");
+			if (spawned?.role === "toolResult") grandchildId = (spawned.details as { spawned: { id: string } }).spawned.id;
+			const sent = recent.some(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_send");
+			if (spawned || sent) {
+				pushToolCall(
+					stream,
+					model,
+					call("wait-grandchild", "orchestrate_wait", { ids: [grandchildId], timeoutMs: 5_000 }),
+				);
+			} else if (user.includes("cold-parent-followup")) {
+				pushToolCall(
+					stream,
+					model,
+					call("send-grandchild", "orchestrate_send", { to: grandchildId, message: "grandchild-task resumed" }),
+				);
+			} else {
+				pushToolCall(stream, model, call("spawn-grandchild", "orchestrate_spawn", { message: "grandchild-task" }));
+			}
+		});
+		return stream;
+	};
+	const fixture = await controlledFixture({
+		streamFn,
+		maxConcurrency: 1,
+		tools: ["yield", "orchestrate_spawn", "orchestrate_send", "orchestrate_wait", "orchestrate_list"],
+	});
+	const { runtime, session, manager, agent, model } = fixture;
+	const parent = await runtime.spawn(session, { message: "warm-parent-turn" });
+	await withTimeout(manager.waitForAll(), 10_000, "nested cold turns failed to settle");
+	expect(grandchildId).toBeDefined();
+	await runtime.suspendScope(runtime.ownerScope(session), manager);
+	await AgentLifecycleManager.global().dispose();
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
+	OrchestratorRuntime.resetGlobalForTests();
+	const coldRuntime = OrchestratorRuntime.global();
+	coldRuntime.setWorkerResolutionForTesting(agent, model);
+	AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+		async ref => async expectedRef => {
+			const reopened = await SessionManager.open(ref.sessionFile!, undefined, undefined, {
+				suppressBreadcrumb: true,
+				throwIfMissing: true,
+			});
+			const init = extractSessionInit(reopened.getEntries())!;
+			const { session: revived } = await createAgentSession({
+				cwd: fixture.root,
+				sessionManager: reopened,
+				authStorage: fixture.authStorage,
+				modelRegistry: fixture.modelRegistry,
+				settings: fixture.settings,
+				model,
+				streamFn,
+				agentId: ref.id,
+				parentAgentId: ref.parentId,
+				expectedAgentRef: expectedRef,
+				toolNames: init.tools,
+				spawns: init.spawns,
+				systemPrompt: () => [init.systemPrompt],
+				requireYieldTool: true,
+				hasUI: false,
+				enableMCP: false,
+				enableIrc: false,
+				preloadedExtensionPaths: [],
+				preloadedCustomToolPaths: [],
+			});
+			return revived;
+		},
+		60_000,
+	);
+	try {
+		expect(await coldRuntime.rehydrate(session)).toBe(1);
+		await coldRuntime.send(session, { session: parent.id, message: "cold-parent-followup" });
+		await withTimeout(manager.waitForAll(), 10_000, "nested cold turns failed to settle");
+		const outcome = await coldRuntime.wait(session, { sessions: [parent.id] });
+		expect(outcome.settled).toMatchObject([{ status: "completed" }]);
+		expect(
+			AgentRegistry.global()
+				.get(grandchildId!)
+				?.session?.messages.filter(entry => entry.role === "user"),
+		).toHaveLength(2);
+	} finally {
+		await coldRuntime.suspendScope(coldRuntime.ownerScope(session), manager);
+	}
+}, 30_000);
+
+test("suspending an empty scope rejects a discovery-blocked spawn before persisting or starting a worker", async () => {
+	const { runtime, session, manager, settings, sessionManager } = await controlledFixture({
+		streamFn: yieldingProvider(new Map()),
+		maxTotalJobs: 1,
+	});
+	const entered = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const reload = spyOn(settings, "reloadFromDisk").mockImplementation(async () => {
+		entered.resolve();
+		await resume.promise;
+	});
+	try {
+		const pending = runtime.spawn(session, { message: "must not start after owner disposal" });
+		void pending.catch(() => {});
+		await withTimeout(entered.promise, 1_000, "spawn did not enter discovery");
+		await runtime.suspendScope(runtime.ownerScope(session), manager);
+		resume.resolve();
+		await expect(pending).rejects.toThrow("scope was suspended");
+		expect(sessionManager.getCustomEntries("orchestrator-worker-lifecycle")).toHaveLength(0);
+		expect(runtime.scopeCacheSizeForTesting()).toBe(0);
+		const admission = manager.reserve({ ownerId: session.getAsyncJobOwnerId!()! });
+		admission.release();
+	} finally {
+		resume.resolve();
+		reload.mockRestore();
+	}
+});
+
+test("concurrent streaming steers share one byte budget and rejected messages never enter the queue", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const started = Promise.withResolvers<void>();
+	const gated = yieldingProvider(new Map([["hold-concurrent-steers", blocked.promise]]));
+	const { runtime, session, manager } = await controlledFixture({
+		streamFn: (model, context, options) => {
+			started.resolve();
+			return gated(model, context, options);
+		},
+	});
+	const worker = await runtime.spawn(session, { message: "hold-concurrent-steers" });
+	await started.promise;
+	try {
+		const sent = await Promise.allSettled(
+			Array.from({ length: 4 }, () => runtime.send(session, { session: worker.id, message: "é".repeat(48 * 1024) })),
+		);
+		expect(sent.filter(result => result.status === "fulfilled")).toHaveLength(2);
+		expect(sent.filter(result => result.status === "rejected")).toHaveLength(2);
+		const steering = AgentRegistry.global().get(worker.id)!.session!.getQueuedMessages().steering;
+		expect(steering).toHaveLength(2);
+		expect(steering.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0)).toBe(192 * 1024);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("a restart after accepting the runnable turn but before child initialization preserves the accepted worker", async () => {
+	const fixture = await controlledFixture({ streamFn: yieldingProvider(new Map()), maxConcurrency: 1 });
+	const { runtime, session, manager, sessionManager, agent, model } = fixture;
+	const reached = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const flushToDisk = sessionManager.flush.bind(sessionManager);
+	let gated = false;
+	const flush = spyOn(sessionManager, "flush").mockImplementation(async () => {
+		await flushToDisk();
+		const last = sessionManager.getCustomEntries("orchestrator-worker-lifecycle").at(-1);
+		if (!gated && (last?.data as { action?: string })?.action === "turn-started") {
+			gated = true;
+			reached.resolve();
+			await release.promise;
+		}
+	});
+	const coldFile = path.join(fixture.root, "cold-startup", "parent.jsonl");
+	let accepted: { id: string };
+	try {
+		accepted = await runtime.spawn(session, { message: "accepted before child allocation" });
+		await withTimeout(reached.promise, 2_000, "worker never reached its durable turn-start boundary");
+		await Bun.write(coldFile, Bun.file(sessionManager.getSessionFile()!));
+	} finally {
+		release.resolve();
+		flush.mockRestore();
+		await manager.waitForAll();
+	}
+	await runtime.suspendScope(runtime.ownerScope(session), manager);
+	const reopened = await SessionManager.open(coldFile, undefined, undefined, {
+		suppressBreadcrumb: true,
+		throwIfMissing: true,
+	});
+	const coldSession = {
+		...session,
+		sessionManager: reopened,
+		getSessionFile: () => coldFile,
+		getSessionId: () => reopened.getSessionId(),
+	} as ToolSession;
+	const restored = new OrchestratorRuntime();
+	restored.setWorkerResolutionForTesting(agent, model);
+	try {
+		expect(await restored.rehydrate(coldSession, coldSession)).toBe(1);
+		await manager.waitForAll();
+		expect(restored.listIds(coldSession)).toEqual([accepted.id]);
+		expect((await restored.wait(coldSession, { sessions: [accepted.id] })).settled).toMatchObject([
+			{ status: "completed" },
+		]);
+	} finally {
+		await restored.suspendScope(restored.ownerScope(coldSession), manager);
+		await reopened.close();
+	}
+}, 30_000);

@@ -68,7 +68,6 @@ export class ChatTranscriptBuilder {
 	#servedModelTracker = new ServedModelTracker();
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#checklistSnapshot: ToolExecutionComponent | null = null;
-	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
 	constructor(private readonly deps: ChatTranscriptBuilderDeps) {
@@ -93,7 +92,9 @@ export class ChatTranscriptBuilder {
 
 	setExpanded(expanded: boolean): void {
 		this.#expanded = expanded;
-		for (const component of this.#expandables) component.setExpanded(expanded);
+		for (const component of this.container.children) {
+			if ("setExpanded" in component && typeof component.setExpanded === "function") component.setExpanded(expanded);
+		}
 	}
 
 	get expanded(): boolean {
@@ -114,7 +115,6 @@ export class ChatTranscriptBuilder {
 		this.#servedModelTracker = new ServedModelTracker();
 		this.#waitingPoll = null;
 		this.#checklistSnapshot = null;
-		this.#expandables = [];
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -125,7 +125,6 @@ export class ChatTranscriptBuilder {
 
 	#trackExpandable(component: { setExpanded(expanded: boolean): void }): void {
 		component.setExpanded(this.#expanded);
-		this.#expandables.push(component);
 	}
 
 	#resolveWaitingPoll(nextToolName?: string): void {

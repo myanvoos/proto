@@ -548,3 +548,52 @@ test("a failed JS output consumer rejects its cell without breaking later cells"
 		await disposeVmContextsByOwner(ownerId);
 	}
 }, 10_000);
+
+test("local dependency invalidation reloads parents after edits, deletion, and recreation", async () => {
+	using tempDir = TempDir.createSync("@js-module-metadata-");
+	const cwd = tempDir.path();
+	const ownerId = `module-lifetime:${crypto.randomUUID()}`;
+	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
+	const session: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+	const child = path.join(cwd, "child.ts");
+	await Bun.write(path.join(cwd, "parent.ts"), 'export { value } from "./child.ts";');
+	const run = async () => {
+		let output = "";
+		await executeInVmContext({
+			sessionKey: ownerId,
+			sessionId: ownerId,
+			ownerId,
+			cwd,
+			session,
+			code: 'import { value } from "./parent.ts"; console.log(value);',
+			filename: "module-test.js",
+			runState: {
+				onText: chunk => {
+					output += chunk;
+				},
+			},
+		});
+		return output.trim();
+	};
+	try {
+		await Bun.write(child, "export const value = 1;");
+		await fs.promises.utimes(child, 1, 1);
+		expect(await run()).toBe("1");
+		await Bun.write(child, "export const value = 2;");
+		await fs.promises.utimes(child, 2, 2);
+		expect(await run()).toBe("2");
+		await fs.promises.rm(child);
+		await expect(run()).rejects.toThrow();
+		await Bun.write(child, "export const value = 3;");
+		await fs.promises.utimes(child, 3, 3);
+		expect(await run()).toBe("3");
+	} finally {
+		await disposeVmContextsByOwner(ownerId);
+	}
+}, 30_000);

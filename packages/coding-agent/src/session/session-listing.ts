@@ -548,15 +548,6 @@ async function scanArchivedMessages(
 		if (stat.size <= 0 || stat.size > SESSION_ARCHIVE_MAX_ENCODED_BYTES) return undefined;
 		const encoded = (await storage.readText(archivePath)).trim();
 		if (encoded.length === 0 || encoded.length > SESSION_ARCHIVE_MAX_ENCODED_BYTES) return undefined;
-		const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
-			maxOutputLength: SESSION_ARCHIVE_MAX_DECODED_BYTES,
-		});
-		const archive: unknown = JSON.parse(decoded.toString("utf8"));
-		if (typeof archive !== "object" || archive === null) return undefined;
-		const candidate = archive as { version?: unknown; sessionId?: unknown; records?: unknown };
-		if (candidate.version !== 1 || candidate.sessionId !== sessionId || !Array.isArray(candidate.records))
-			return undefined;
-		if (candidate.records.length > SESSION_ARCHIVE_MAX_RECORDS) return undefined;
 		const acc: SessionScanAccumulator = {
 			messageCount: 0,
 			assistantTurns: 0,
@@ -565,13 +556,28 @@ async function scanArchivedMessages(
 			hasMessageText: false,
 			shortSummary: undefined,
 		};
-		for (const record of candidate.records) {
-			if (typeof record !== "object" || record === null) return undefined;
-			const row = record as { id?: unknown; line?: unknown };
-			if (typeof row.id !== "string" || typeof row.line !== "string") return undefined;
-			const entry: unknown = JSON.parse(row.line);
-			if (typeof entry !== "object" || entry === null || !("id" in entry) || entry.id !== row.id) return undefined;
-			foldSessionEntry(acc, entry as Record<string, unknown>);
+		let recordCount = 0;
+		for (const batch of encoded.split("\n")) {
+			if (!batch.trim()) continue;
+			const decoded = gunzipSync(Buffer.from(batch, "base64"), {
+				maxOutputLength: SESSION_ARCHIVE_MAX_DECODED_BYTES,
+			});
+			const archive: unknown = JSON.parse(decoded.toString("utf8"));
+			if (typeof archive !== "object" || archive === null) return undefined;
+			const candidate = archive as { version?: unknown; sessionId?: unknown; records?: unknown };
+			if (candidate.version !== 1 || candidate.sessionId !== sessionId || !Array.isArray(candidate.records))
+				return undefined;
+			recordCount += candidate.records.length;
+			if (recordCount > SESSION_ARCHIVE_MAX_RECORDS) return undefined;
+			for (const record of candidate.records) {
+				if (typeof record !== "object" || record === null) return undefined;
+				const row = record as { id?: unknown; line?: unknown };
+				if (typeof row.id !== "string" || typeof row.line !== "string") return undefined;
+				const entry: unknown = JSON.parse(row.line);
+				if (typeof entry !== "object" || entry === null || !("id" in entry) || entry.id !== row.id)
+					return undefined;
+				foldSessionEntry(acc, entry as Record<string, unknown>);
+			}
 		}
 		return acc;
 	} catch {

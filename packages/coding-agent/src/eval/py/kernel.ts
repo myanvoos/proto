@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { Settings } from "../../config/settings";
+import { KernelStartupCleanupError } from "../kernel-admission";
 import {
 	BaseKernel,
 	getRemainingTimeMs,
@@ -278,7 +279,10 @@ export class PythonKernel extends BaseKernel {
 			});
 			return kernel;
 		} catch (err) {
-			await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }).catch(() => {});
+			const shutdown = await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }).catch(() => undefined);
+			if (!shutdown?.confirmed) {
+				throw new KernelStartupCleanupError(err, () => kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }));
+			}
 			throw err;
 		}
 	}

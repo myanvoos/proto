@@ -392,6 +392,7 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 		{
 			cwd: opts.session.cwd,
 			browserScreenshotDir: expandBrowserScreenshotDir(opts.session),
+			outputArtifact: await opts.session.allocateOutputArtifact?.("browser-original").catch(() => undefined),
 			excludeWebP: webpExclusionForModel(opts.session.getActiveModel?.()),
 		},
 	);

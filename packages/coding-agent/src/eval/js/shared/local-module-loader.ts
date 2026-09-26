@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { maybeTrackedModule } from "./fs-tracker";
 import { collectModuleSourceSpecifiers, stripTypeScriptSyntax } from "./rewrite-imports";
 
@@ -24,11 +25,11 @@ export class LocalModuleLoader {
 	#moduleMtimes = new Map<string, number>();
 	#moduleDeps = new Map<string, Set<string>>();
 	#moduleParents = new Map<string, Set<string>>();
-	#moduleVersions = new Map<string, number>();
+	#nextModuleVersion = 0;
 	#moduleEntries = new Map<string, LocalModuleEntry>();
 	#moduleBuilds = new Map<string, Promise<LocalModuleEntry>>();
 	#externalModules = new Map<string, Promise<vm.Module>>();
-	#requireCache = new Map<string, NodeJS.Require>();
+	#requireCache = new LRUCache<string, NodeJS.Require>({ max: 128 });
 	#modulePaths = new WeakMap<vm.Module, string>();
 	#linkChain: Promise<void> = Promise.resolve();
 
@@ -107,8 +108,7 @@ export class LocalModuleLoader {
 		}
 		this.#setModuleDependencies(modulePath, localDeps);
 		this.#moduleMtimes.set(modulePath, fs.statSync(modulePath).mtimeMs);
-		const version = this.#moduleVersions.get(modulePath) ?? 1;
-		this.#moduleVersions.set(modulePath, version);
+		const version = ++this.#nextModuleVersion;
 		const fileUrl = pathToFileURL(modulePath).href;
 		const identifier = `${fileUrl}?proto-session=${this.#sessionTag}&v=${version}`;
 		const wrappedSource = buildModuleSource(stripped, modulePath);
@@ -196,6 +196,9 @@ export class LocalModuleLoader {
 			this.#moduleBuilds.delete(current);
 			const deps = this.#moduleDeps.get(current);
 			if (deps) for (const dep of deps) stack.push(dep);
+			this.#moduleMtimes.delete(current);
+			this.#setModuleDependencies(current, new Set());
+			this.#moduleDeps.delete(current);
 		}
 	}
 
@@ -253,8 +256,10 @@ export class LocalModuleLoader {
 		seen.add(modulePath);
 		this.#moduleEntries.delete(modulePath);
 		this.#moduleBuilds.delete(modulePath);
-		this.#moduleVersions.set(modulePath, (this.#moduleVersions.get(modulePath) ?? 1) + 1);
+		this.#moduleMtimes.delete(modulePath);
 		const parents = [...(this.#moduleParents.get(modulePath) ?? [])];
+		this.#setModuleDependencies(modulePath, new Set());
+		this.#moduleDeps.delete(modulePath);
 		for (const parent of parents) this.#invalidateModuleAndParents(parent, seen);
 	}
 

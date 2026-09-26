@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { AgentRegistry } from "../registry/agent-registry";
-import { type AgentProgress, projectAgentProgress, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import {
+	type AgentProgress,
+	projectAgentProgress,
+	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
+	WORKER_SUBAGENT_PROGRESS_CHANNEL,
+} from "../task";
 import { EventBus } from "../utils/event-bus";
 import { SessionObserverRegistry } from "./session-observer-registry";
 
@@ -109,4 +114,54 @@ describe("SessionObserverRegistry detached reattachment", () => {
 		});
 		expect(observers.getSession(progress.id)?.status).toBe("active");
 	});
+});
+
+test("completed progress and grouping owners retire without hiding active workers or durable histories", () => {
+	const registry = new SessionObserverRegistry();
+	const bus = new EventBus();
+	registry.subscribeToEventBus(bus);
+	bus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
+		id: "active",
+		status: "started",
+		index: 0,
+		parentToolCallId: "active-group",
+	});
+	for (let index = 0; index < 160; index++) {
+		bus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: `finished-${index}`,
+			status: "completed",
+			index: 0,
+			parentToolCallId: `group-${index}`,
+			sessionFile: `/history/finished-${index}.jsonl`,
+		});
+	}
+	expect(registry.getActiveSubagentCount()).toBe(1);
+	expect(registry.getSessions()).toHaveLength(129);
+	expect(registry.getSession("finished-0")).toBeUndefined();
+	expect(registry.getSession("finished-159")?.sessionFile).toBe("/history/finished-159.jsonl");
+	bus.emit(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, {
+		id: "finished-0",
+		status: "started",
+		index: 0,
+		parentToolCallId: "new-group",
+	});
+	expect(registry.getSession("finished-0")?.status).toBe("active");
+	expect(registry.getActiveSubagentCount()).toBe(2);
+	registry.dispose();
+});
+
+test("progress previews bound task, tool, retry and output bytes without discarding usage counters", () => {
+	const progress = subagentProgress();
+	const oversized = "é".repeat(128 * 1024);
+	progress.task = oversized;
+	progress.assignment = oversized;
+	progress.currentToolArgs = oversized;
+	progress.recentTools = Array.from({ length: 40 }, () => ({ tool: "read", args: oversized, endMs: 1 }));
+	progress.recentOutput = Array.from({ length: 40 }, () => oversized);
+	progress.retryFailure = { attempt: 1, errorMessage: oversized };
+	const observed = projectAgentProgress(progress);
+	expect(Buffer.byteLength(JSON.stringify(observed))).toBeLessThan(40 * 1024);
+	expect(observed.tokens).toBe(progress.tokens);
+	expect(observed.recentOutput).toHaveLength(8);
+	expect(progress.task).toBe(oversized);
 });

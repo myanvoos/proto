@@ -8,14 +8,20 @@ import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
+import type { TranscriptWindow } from "../../session/session-context";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
-import { parseSessionEntries } from "../../session/session-loader";
+import { parseSessionEntries, sessionArchivePath } from "../../session/session-loader";
+import { SessionManager } from "../../session/session-manager";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../controllers/tool-args-reveal";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "../utils/transcript-window";
+import {
+	estimateTranscriptBytes,
+	TRANSCRIPT_WINDOW_BYTES,
+	TRANSCRIPT_WINDOW_MESSAGES,
+} from "../utils/transcript-window";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
 import { formatContextUsage } from "./status-line/context-thresholds";
@@ -65,13 +71,6 @@ function sanitizeViewerLine(text: string, maxWidth: number): string {
 interface LocalTranscriptSentinel {
 	offset: number;
 	bytes: Buffer;
-}
-
-interface TranscriptWindowGroup {
-	start: number;
-	startsBoundary: boolean;
-	entries: FileEntry[];
-	components: Component[];
 }
 
 interface LocalTranscriptState {
@@ -126,9 +125,12 @@ export class AgentTranscriptViewer implements Component {
 
 	#localState: LocalTranscriptState | undefined;
 	#localUnavailable = "";
+	#archiveManager: SessionManager | undefined;
+	#archiveWindow: TranscriptWindow | undefined;
+	#archiveLoading = false;
+	#archiveGeneration = 0;
 
 	#model: string | undefined;
-	#windowGroups: TranscriptWindowGroup[] = [];
 	#transientBuilder: ChatTranscriptBuilder | undefined;
 	#awaitingTransientPersistence = false;
 	#reconcileTimer: NodeJS.Timeout | undefined;
@@ -191,9 +193,9 @@ export class AgentTranscriptViewer implements Component {
 		this.#scrollToTopOnNextContent = false;
 		this.#localState = undefined;
 		this.#localUnavailable = "";
-		this.#windowGroups = [];
 		this.#model = undefined;
 		this.#notice = undefined;
+		this.#closeArchive();
 		this.#builder.dispose();
 	}
 
@@ -217,7 +219,7 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#handleSessionEvent(event: AgentSessionEvent): void {
-		if (this.#disposed) return;
+		if (this.#disposed || this.#archiveWindow || this.#archiveLoading) return;
 		if (event.type === "message_update" && event.message.role === "assistant") {
 			this.#showTransient(event.message);
 			return;
@@ -244,27 +246,44 @@ export class AgentTranscriptViewer implements Component {
 				requestRender: this.deps.requestRender,
 			});
 		}
-		const content = message.content.map(block => {
-			if (block.type !== "toolCall") return block;
-			const partialJson = getStreamingPartialJson(block);
-			if (partialJson === undefined) return block;
-			const rawInput = block.customWireName !== undefined;
-			return {
-				...block,
-				arguments: decodeStreamedToolArgs(partialJson, {
-					rawInput,
-					fullArgs: block.arguments,
-					streamingStringKeys: streamingStringKeysForTool(block.name, rawInput),
-				}),
-			};
-		});
+		let sourceBytes = estimateTranscriptBytes(message, TRANSCRIPT_WINDOW_BYTES);
+		for (const block of message.content) {
+			if (sourceBytes > TRANSCRIPT_WINDOW_BYTES) break;
+			if (block.type === "toolCall") sourceBytes += (getStreamingPartialJson(block)?.length ?? 0) * 2;
+		}
+		const oversized = sourceBytes > TRANSCRIPT_WINDOW_BYTES || message.content.length > TRANSCRIPT_WINDOW_MESSAGES;
+		const content = oversized
+			? []
+			: message.content.map(block => {
+					if (block.type !== "toolCall") return block;
+					const partialJson = getStreamingPartialJson(block);
+					if (partialJson === undefined) return block;
+					const rawInput = block.customWireName !== undefined;
+					return {
+						...block,
+						arguments: decodeStreamedToolArgs(partialJson, {
+							rawInput,
+							fullArgs: block.arguments,
+							streamingStringKeys: streamingStringKeysForTool(block.name, rawInput),
+						}),
+					};
+				});
 		this.#transientBuilder.rebuild([
 			{
 				type: "message",
 				id: "viewer-live-message",
 				parentId: null,
 				timestamp: new Date(message.timestamp).toISOString(),
-				message: { ...message, content },
+				message: oversized
+					? {
+							role: "custom",
+							customType: "transcript-window-notice",
+							display: true,
+							timestamp: message.timestamp,
+							content:
+								"Streaming output exceeds the display window and is omitted. Full content remains in saved session history.",
+						}
+					: { ...message, content },
 			},
 		]);
 		this.#transientBuilder.setExpanded(this.#expanded);
@@ -304,6 +323,7 @@ export class AgentTranscriptViewer implements Component {
 
 	#refresh(): void {
 		if (this.#disposed) return;
+		if (this.#archiveWindow || this.#archiveLoading) return;
 		const sessionFile = this.deps.registry.get(this.deps.agentId)?.sessionFile;
 		if (!sessionFile) {
 			this.#clearLocal("none");
@@ -347,7 +367,6 @@ export class AgentTranscriptViewer implements Component {
 		this.#localState = undefined;
 		this.#localUnavailable = reason;
 		this.#model = undefined;
-		this.#windowGroups = [];
 		this.#clearTransient();
 		this.#rebuild([]);
 	}
@@ -373,7 +392,7 @@ export class AgentTranscriptViewer implements Component {
 			this.#loadWindow(
 				sessionFile,
 				stat,
-				readTranscriptTail(sessionFile, stat.size, TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES),
+				readTranscriptTail(sessionFile, stat.size, TRANSCRIPT_WINDOW_BYTES, TRANSCRIPT_WINDOW_MESSAGES),
 				"bottom",
 				true,
 				followBottom,
@@ -408,83 +427,58 @@ export class AgentTranscriptViewer implements Component {
 		this.#followBottom = followBottom;
 		this.#scrollToTopOnNextContent = position === "top";
 		this.#clearTransient();
-		this.#builder.rebuild([]);
-		this.#windowGroups = [];
-		this.#appendWindowGroups(this.#parseWindowGroups(window));
+		this.#builder.rebuild(this.#windowMessages(window));
 		this.deps.requestRender();
 	}
 
-	#parseWindowGroups(window: TranscriptFileWindow): TranscriptWindowGroup[] {
-		const bytes = Buffer.from(window.text);
-		const groups: TranscriptWindowGroup[] = [];
-		let current: TranscriptWindowGroup | undefined;
-		let prelude: FileEntry[] = [];
-		let lineStart = 0;
-		while (lineStart < bytes.byteLength) {
-			const newline = bytes.indexOf(0x0a, lineStart);
-			if (newline < 0) break;
-			const entries = parseSessionEntries(bytes.subarray(lineStart, newline + 1).toString("utf-8"));
-			for (const entry of entries) {
-				const boundary =
-					entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant");
-				if (boundary) {
-					if (current) groups.push(current);
-					current = {
-						start: prelude.length > 0 ? window.start : window.start + lineStart,
-						startsBoundary: true,
-						entries: [...prelude, entry],
-						components: [],
-					};
-					prelude = [];
-				} else if (current) current.entries.push(entry);
-				else prelude.push(entry);
-			}
-			lineStart = newline + 1;
-		}
-		if (current) groups.push(current);
-		else if (prelude.length > 0) {
-			groups.push({ start: window.start, startsBoundary: false, entries: prelude, components: [] });
-		}
-		return groups;
-	}
-
-	#appendWindowGroups(groups: TranscriptWindowGroup[]): void {
-		for (const group of groups) {
-			let target = group;
-			if (!group.startsBoundary && this.#windowGroups.length > 0) target = this.#windowGroups.at(-1)!;
-			else this.#windowGroups.push(group);
-			const before = new Set(this.#builder.container.children);
-			this.#append(this.#extractMessages(group.entries));
-			for (const component of this.#builder.container.children) {
-				if (!before.has(component)) target.components.push(component);
+	#windowMessages(window: TranscriptFileWindow): SessionMessageEntry[] {
+		const messages: SessionMessageEntry[] = [];
+		for (const record of window.records) {
+			if (record.text !== undefined) {
+				messages.push(...this.#extractMessages(parseSessionEntries(record.text)));
+			} else {
+				messages.push({
+					type: "message",
+					id: `omitted-${record.start}`,
+					parentId: null,
+					timestamp: new Date(0).toISOString(),
+					message: {
+						role: "custom",
+						customType: "transcript-window-notice",
+						content: `Transcript group at bytes ${record.start}–${record.end} exceeds the display window and is omitted. Full content remains in the saved session file.`,
+						display: true,
+						timestamp: 0,
+					},
+				});
 			}
 		}
+		return messages;
 	}
 
 	#appendFileGrowth(sessionFile: string, stat: fs.Stats, state: LocalTranscriptState): void {
-		let cursor = state.windowEnd;
 		try {
-			for (;;) {
-				const window = readTranscriptAfter(
-					sessionFile,
-					cursor,
-					stat.size,
-					TRANSCRIPT_WINDOW_SOFT_BYTES,
-					TRANSCRIPT_WINDOW_SOFT_MESSAGES,
-				);
-				if (window.end <= cursor) break;
-				if (this.#awaitingTransientPersistence) this.#clearTransient();
-				this.#appendWindowGroups(this.#parseWindowGroups(window));
-				cursor = window.end;
+			// Seek the final byte window first. Never construct all unseen groups
+			// and only then evict them after a long pause or a large file append.
+			const window = readTranscriptTail(sessionFile, stat.size, TRANSCRIPT_WINDOW_BYTES, TRANSCRIPT_WINDOW_MESSAGES);
+			if (window.start !== state.windowStart) {
+				this.#loadWindow(sessionFile, stat, window, "bottom", true, this.#followBottom);
+				return;
 			}
-			this.#evictOldGroups(cursor);
+			if (window.end > state.windowEnd) {
+				if (this.#awaitingTransientPersistence) this.#clearTransient();
+				this.#append(
+					this.#windowMessages({
+						...window,
+						records: window.records.filter(record => record.start >= state.windowEnd),
+					}),
+				);
+			}
 			this.#localState = {
 				...state,
 				size: stat.size,
 				mtimeMs: stat.mtimeMs,
 				ctimeMs: stat.ctimeMs,
-				windowStart: this.#windowGroups[0]?.start ?? cursor,
-				windowEnd: cursor,
+				windowEnd: window.end,
 				atTail: true,
 				sentinels: sentinelsFromFile(sessionFile, stat.size),
 			};
@@ -494,30 +488,21 @@ export class AgentTranscriptViewer implements Component {
 		}
 	}
 
-	#evictOldGroups(end: number): void {
-		while (
-			this.#windowGroups.length > 1 &&
-			(this.#windowGroups.length > TRANSCRIPT_WINDOW_SOFT_MESSAGES ||
-				end - this.#windowGroups[0]!.start > TRANSCRIPT_WINDOW_SOFT_BYTES)
-		) {
-			const evicted = this.#windowGroups.shift()!;
-			for (const component of evicted.components) {
-				if (this.#builder.container.children.includes(component)) {
-					this.#builder.container.disposeAndRemoveChild(component);
-				}
-			}
-		}
-	}
-
 	#pageOlder(): boolean {
+		if (this.#archiveLoading) return true;
+		if (this.#archiveWindow) {
+			if (this.#archiveWindow.start === 0) return false;
+			return this.#loadArchivePage(this.#archiveWindow.pageFromLatest + 1, "bottom");
+		}
 		const state = this.#localState;
-		if (!state || state.windowStart === 0) return false;
+		if (!state) return false;
+		if (state.windowStart === 0) return this.#loadArchivePage(0, "top");
 		try {
 			const window = readTranscriptBefore(
 				state.path,
 				state.windowStart,
-				TRANSCRIPT_WINDOW_SOFT_BYTES,
-				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+				TRANSCRIPT_WINDOW_BYTES,
+				TRANSCRIPT_WINDOW_MESSAGES,
 			);
 			this.#loadWindow(state.path, fs.statSync(state.path), window, "bottom", false);
 			return true;
@@ -528,6 +513,14 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#pageNewer(): boolean {
+		if (this.#archiveLoading) return true;
+		if (this.#archiveWindow) {
+			if (this.#archiveWindow.pageFromLatest === 0) {
+				this.#jumpNewest();
+				return true;
+			}
+			return this.#loadArchivePage(this.#archiveWindow.pageFromLatest - 1, "top");
+		}
 		const state = this.#localState;
 		if (!state || state.atTail) return false;
 		try {
@@ -535,8 +528,8 @@ export class AgentTranscriptViewer implements Component {
 				state.path,
 				state.windowEnd,
 				state.size,
-				TRANSCRIPT_WINDOW_SOFT_BYTES,
-				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+				TRANSCRIPT_WINDOW_BYTES,
+				TRANSCRIPT_WINDOW_MESSAGES,
 			);
 			if (window.end <= state.windowEnd) return false;
 			this.#loadWindow(state.path, fs.statSync(state.path), window, "top", window.end >= state.size);
@@ -548,6 +541,7 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#jumpOldest(): void {
+		if (this.#loadArchivePage(Number.MAX_SAFE_INTEGER, "top")) return;
 		const state = this.#localState;
 		if (!state) return;
 		try {
@@ -555,8 +549,8 @@ export class AgentTranscriptViewer implements Component {
 				state.path,
 				0,
 				state.size,
-				TRANSCRIPT_WINDOW_SOFT_BYTES,
-				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+				TRANSCRIPT_WINDOW_BYTES,
+				TRANSCRIPT_WINDOW_MESSAGES,
 			);
 			this.#loadWindow(state.path, fs.statSync(state.path), window, "top", false);
 		} catch (err) {
@@ -565,6 +559,7 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#jumpNewest(): void {
+		this.#closeArchive();
 		const state = this.#localState;
 		if (!state) return;
 		try {
@@ -572,6 +567,64 @@ export class AgentTranscriptViewer implements Component {
 		} catch (err) {
 			logger.debug("transcript viewer: newest window read failed", { err: String(err) });
 		}
+	}
+
+	/** Archive pages hydrate only the selected durable window, never the whole archived transcript. */
+	#loadArchivePage(pageFromLatest: number, position: "top" | "bottom"): boolean {
+		const file = this.deps.registry.get(this.deps.agentId)?.sessionFile;
+		if (!file || (!this.#archiveManager && !fs.existsSync(sessionArchivePath(file)))) return false;
+		if (this.#archiveLoading) return true;
+		const generation = ++this.#archiveGeneration;
+		this.#archiveLoading = true;
+		void (async () => {
+			try {
+				const manager = this.#archiveManager ?? (await SessionManager.openReadOnly(file));
+				if (this.#disposed || generation !== this.#archiveGeneration) {
+					if (manager !== this.#archiveManager) await manager.close();
+					return;
+				}
+				this.#archiveManager = manager;
+				const context = manager.buildSessionContext({
+					transcript: true,
+					collapseCompactedHistory: false,
+					window: { pageFromLatest, maxMessages: TRANSCRIPT_WINDOW_MESSAGES, maxBytes: TRANSCRIPT_WINDOW_BYTES },
+				});
+				this.#archiveWindow = context.window;
+				this.#followBottom = position === "bottom";
+				this.#scrollToTopOnNextContent = position === "top";
+				this.#clearTransient();
+				this.#builder.rebuild(
+					context.messages.map((message, index) => ({
+						type: "message",
+						id: `archive-${index}`,
+						parentId: null,
+						timestamp: new Date(0).toISOString(),
+						message,
+					})),
+				);
+			} catch (error) {
+				if (!this.#disposed && generation === this.#archiveGeneration)
+					this.#notice = `Cannot read archived history: ${String(error)}`;
+			} finally {
+				if (!this.#disposed && generation === this.#archiveGeneration) {
+					this.#archiveLoading = false;
+					this.deps.requestRender();
+				}
+			}
+		})();
+		return true;
+	}
+
+	#closeArchive(): void {
+		this.#archiveGeneration++;
+		this.#archiveLoading = false;
+		this.#archiveWindow = undefined;
+		const manager = this.#archiveManager;
+		this.#archiveManager = undefined;
+		if (manager)
+			void manager
+				.close()
+				.catch(error => logger.debug("transcript viewer: archive close failed", { error: String(error) }));
 	}
 
 	#extractMessages(entries: FileEntry[]): SessionMessageEntry[] {
@@ -788,9 +841,14 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#pagingStatus(): string {
+		if (this.#archiveLoading) return "Loading archived history…";
+		if (this.#archiveWindow) {
+			const window = this.#archiveWindow;
+			return `${window.start > 0 ? "← older" : "start"}  archived history  ${window.pageFromLatest > 0 ? "newer →" : "latest (G: live)"}`;
+		}
 		const state = this.#localState;
 		if (!state) return "";
-		const older = state.windowStart > 0 ? "← older" : "start";
+		const older = state.windowStart > 0 || fs.existsSync(sessionArchivePath(state.path)) ? "← older" : "start";
 		const newer = state.atTail ? "latest" : "newer →";
 		return `${older}  ${newer}`;
 	}

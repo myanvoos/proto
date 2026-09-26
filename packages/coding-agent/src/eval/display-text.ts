@@ -19,6 +19,10 @@ export function formatDisplayOutputsForText(outputs: readonly EvalDisplayOutput[
 	const chunks: string[] = [];
 	let displayIndex = 0;
 	for (const output of outputs) {
+		if (output.type === "notice") {
+			chunks.push(output.text);
+			continue;
+		}
 		if (output.type !== "json") continue;
 		displayIndex++;
 		chunks.push(`display[${displayIndex}]:\n${formatDisplayJsonForText(output.data)}`);

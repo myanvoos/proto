@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
 import { findMostRecentNonEmptySession, getRecentSessions, listSessions } from "./session-listing";
+import { appendSessionArchive } from "./session-loader";
 import { FileSessionStorage } from "./session-storage";
 
 function archiveText(sessionId: string, sessionFile: string, entries: unknown[]): string {
@@ -94,4 +95,42 @@ describe("session listing archived metadata", () => {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
+});
+
+test("listing discovers messages in every incremental archive batch", async () => {
+	const { dir, file, storage } = await makeSession();
+	try {
+		let size: number | null = null;
+		for (const [index, role] of ["user", "assistant"].entries()) {
+			const id = `archived-${index}`;
+			size = await appendSessionArchive(
+				file,
+				storage,
+				{
+					version: 1,
+					sessionId: "archived-session",
+					sessionFile: file,
+					records: [
+						{
+							id,
+							beforeId: null,
+							line: JSON.stringify({
+								type: "message",
+								id,
+								message: { role, content: `${role} archived batch`, timestamp: index },
+							}),
+						},
+					],
+				},
+				size,
+			);
+		}
+		const listed = (await listSessions(dir, storage))[0];
+		expect(listed?.messageCount).toBe(2);
+		expect(listed?.assistantTurns).toBe(1);
+		expect(listed?.firstMessage).toBe("user archived batch");
+		expect(listed?.allMessagesText).toContain("assistant archived batch");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
 });

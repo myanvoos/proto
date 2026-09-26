@@ -1,10 +1,11 @@
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { $env, formatNumber, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
+import type { AsyncJob, AsyncJobAdmission, AsyncJobManager } from "../async/job-manager";
 import {
 	formatModelSelectorValue,
 	formatModelStringWithRouting,
@@ -26,7 +27,7 @@ import {
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
-import type { ExecutorOptions } from "../task/executor";
+import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
 import { Semaphore } from "../task/parallel";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
@@ -38,7 +39,7 @@ import type { ToolSession } from "../tools";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { formatCost, formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
-import { registerWakeTurnOwner, type WakeTurnClaim } from "./wake-turns";
+import { registerWakeTurnOwner, registerWakeTurnResolver, type WakeTurnClaim } from "./wake-turns";
 
 export type WorkerTurnState = "starting" | "running" | "idle";
 export type WorkerLifecycle = "live" | "parked" | "terminal";
@@ -119,12 +120,14 @@ interface WorkerSpawnEvent extends WorkerLifecycleBase {
 	model?: string;
 	childSessionFile: string;
 	createdAt: number;
+	/** Accepted initial input survives a restart before a runnable permit is available. */
+	message?: string;
 	effort?: WorkerEffort;
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
 }
 interface WorkerTurnLifecycleEvent extends WorkerLifecycleBase {
-	action: "turn-started" | "turn-settled";
+	action: "turn-started" | "turn-initialized" | "turn-settled";
 	turn: number;
 }
 
@@ -136,10 +139,11 @@ interface WorkerTombstoneEvent extends WorkerLifecycleBase {
 type WorkerLifecycleEvent = WorkerSpawnEvent | WorkerTurnLifecycleEvent | WorkerTombstoneEvent;
 
 interface RestoreCandidate {
-	spawn: WorkerSpawnEvent;
+	spawnEntryId: string;
 	turnCount: number;
 	lastActivityAt: number;
 	inFlight: boolean;
+	initialized: boolean;
 	tombstoneReason?: WorkerTombstoneReason;
 }
 
@@ -197,6 +201,7 @@ interface WorkerRecord {
 
 	/** Override queued by `send(model=)` that the next orchestrator-driven turn must apply to the worker session. */
 	pendingModelOverride?: string | string[];
+	pendingInitialMessage?: string;
 
 	effort?: WorkerEffort;
 	outputSchema?: unknown;
@@ -220,6 +225,8 @@ interface WorkerRecord {
 	};
 
 	lastJobId?: string;
+	/** Delivery watermark belongs to the worker, not a process-lifetime job-id set. */
+	waitedTurn?: number;
 
 	/** Spend of every settled turn of this worker, as attributed to the owning session. */
 	usage: WorkerUsage;
@@ -230,9 +237,10 @@ interface WorkerRecord {
 	temporaryArtifacts?: { dir: string; unregister: () => void };
 	wakeTurnCleanup?: () => void;
 	temporaryArtifactsCleanup?: Promise<void>;
-	capacityWaitCleanup?: () => void;
+	steeringCleanups?: Set<() => void>;
+	steeringInFlight?: { count: number; bytes: number };
 
-	queue: Array<{ message: string; turn: number }>;
+	queue: Array<{ message: string; turn: number; admission: AsyncJobAdmission }>;
 	turnCount: number;
 	killed: boolean;
 
@@ -411,13 +419,14 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 			label,
 			childSessionFile: data.childSessionFile,
 			createdAt: data.createdAt,
+			...(typeof data.message === "string" ? { message: data.message } : {}),
 			...(typeof data.model === "string" && data.model.trim() ? { model: data.model.trim() } : {}),
 			...(effort !== undefined ? { effort } : {}),
 			...(Object.hasOwn(data, "outputSchema") ? { outputSchema: data.outputSchema } : {}),
 			...(schemaMode !== undefined ? { schemaMode } : {}),
 		};
 	}
-	if (data.action === "turn-started" || data.action === "turn-settled") {
+	if (data.action === "turn-started" || data.action === "turn-initialized" || data.action === "turn-settled") {
 		if (typeof data.turn !== "number" || !Number.isInteger(data.turn) || data.turn < 1) return undefined;
 		return { ...base, action: data.action, turn: data.turn };
 	}
@@ -485,6 +494,12 @@ export class OrchestratorRuntime {
 	}
 
 	static resetGlobalForTests(): void {
+		const current = OrchestratorRuntime.#global;
+		if (current) {
+			current.#unsubscribeRegistry();
+			current.#unregisterWakeResolver();
+			current.#retiredRecords?.close();
+		}
 		OrchestratorRuntime.#global = undefined;
 	}
 
@@ -534,13 +549,104 @@ export class OrchestratorRuntime {
 	}
 
 	readonly #recordsByScope = new Map<string, Map<string, WorkerRecord>>();
+	#retiredRecords: Database | undefined;
+	readonly #coldRecords = new Map<string, WeakRef<WorkerRecord>>();
+	readonly #coldFinalizer = new FinalizationRegistry<{ id: string; weak: WeakRef<WorkerRecord> }>(entry => {
+		if (this.#coldRecords.get(entry.id) === entry.weak) this.#coldRecords.delete(entry.id);
+	});
+	readonly #unsubscribeRegistry: () => void;
+	readonly #unregisterWakeResolver: () => void;
+
+	constructor() {
+		const listeners = OrchestratorRuntime.#observe(new WeakRef(this));
+		this.#unsubscribeRegistry = listeners.registry;
+		this.#unregisterWakeResolver = listeners.wake;
+	}
+
+	static #observe(reference: WeakRef<OrchestratorRuntime>): { registry: () => void; wake: () => void } {
+		const registry = AgentRegistry.global().onChange(event => {
+			const runtime = reference.deref();
+			if (!runtime) {
+				registry();
+				return;
+			}
+			if (event.ref.status === "parked" && !event.ref.session) runtime.#retireParkedRecord(event.ref.id);
+		});
+		const wake = registerWakeTurnResolver((id, task) => {
+			const runtime = reference.deref();
+			if (!runtime) {
+				wake();
+				return undefined;
+			}
+			const record = runtime.#coldRecord(id);
+			if (!record) return undefined;
+			const scope = runtime.#scopeForRecord(record);
+			runtime.#setRecord(scope, record);
+			return runtime.#claimWakeTurn(scope, record, task);
+		});
+		return { registry, wake };
+	}
+
+	#rememberCold(record: WorkerRecord): void {
+		if (this.#coldRecords.get(record.id)?.deref() === record) return;
+		const weak = new WeakRef(record);
+		this.#coldRecords.set(record.id, weak);
+		this.#coldFinalizer.register(record, { id: record.id, weak });
+	}
+
+	#coldRecord(id: string): WorkerRecord | undefined {
+		const cached = this.#coldRecords.get(id)?.deref();
+		if (cached) return cached;
+		const row = this.#retiredRecords
+			?.query<{ data: string }, [string]>("SELECT data FROM records WHERE id = ?")
+			.get(id);
+		if (!row) return undefined;
+		const record = JSON.parse(row.data) as WorkerRecord;
+		this.#rememberCold(record);
+		return record;
+	}
+
+	#retireParkedRecord(id: string): void {
+		for (const [key, records] of this.#recordsByScope) {
+			const record = records.get(id);
+			if (
+				!record ||
+				record.turn ||
+				record.queue.length ||
+				!record.childSessionFile ||
+				record.temporaryArtifacts ||
+				record.pendingInitialMessage !== undefined
+			)
+				continue;
+			this.#forgetWakeTurnOwner(record);
+			if (!this.#retiredRecords) {
+				this.#retiredRecords = new Database("");
+				this.#retiredRecords.run("PRAGMA cache_size = -1024");
+				this.#retiredRecords.run(
+					"CREATE TABLE records (id TEXT PRIMARY KEY, scope TEXT NOT NULL, data TEXT NOT NULL)",
+				);
+				this.#retiredRecords.run("CREATE INDEX records_scope ON records(scope)");
+			}
+			this.#retiredRecords
+				.query("INSERT OR REPLACE INTO records (id, scope, data) VALUES (?, ?, ?)")
+				.run(id, key, JSON.stringify(record));
+			this.#rememberCold(record);
+			records.delete(id);
+			if (records.size === 0) this.#recordsByScope.delete(key);
+			return;
+		}
+	}
+
 	/** Last tool session seen per scope, so an IRC wake can register its turn without one in hand. */
 	readonly #toolSessionByScope = new Map<string, ToolSession>();
 	/** Wake turns can outlive their worker record while the externally driven turn settles. */
 	readonly #pendingWakeScopes = new Set<string>();
 	readonly #terminationTails = new Map<string, Promise<void>>();
 	#turnSemaphoreState: { limit: number; semaphore: Semaphore } | undefined;
-	readonly #waitedJobIds = new Set<string>();
+	readonly #runnableTurns = new Map<
+		string,
+		{ semaphore: Semaphore; signal: AbortSignal; held: boolean; waits: number }
+	>();
 	#testResolvedWorker: ResolvedWorker | undefined;
 	#teardownGraceMs = TEARDOWN_GRACE_MS;
 
@@ -594,10 +700,20 @@ export class OrchestratorRuntime {
 	}
 
 	#scopeRecords(scope: OwnerScope): Map<string, WorkerRecord> {
-		return this.#recordsByScope.get(scopeKey(scope, "")) ?? new Map();
+		const key = scopeKey(scope, "");
+		const records = new Map(this.#recordsByScope.get(key));
+		for (const row of this.#retiredRecords
+			?.query<{ id: string }, [string]>("SELECT id FROM records WHERE scope = ?")
+			.iterate(key) ?? []) {
+			const record = this.#coldRecord(row.id);
+			if (record) records.set(record.id, record);
+		}
+		return records;
 	}
 
 	#setRecord(scope: OwnerScope, record: WorkerRecord): void {
+		this.#retiredRecords?.query("DELETE FROM records WHERE id = ?").run(record.id);
+		this.#coldRecords.delete(record.id);
 		const key = scopeKey(scope, "");
 		let records = this.#recordsByScope.get(key);
 		if (!records) {
@@ -615,11 +731,18 @@ export class OrchestratorRuntime {
 	}
 
 	#retireScopeIfUnused(key: string): void {
-		if (this.#recordsByScope.has(key) || this.#pendingWakeScopes.has(key)) return;
+		if (
+			this.#recordsByScope.has(key) ||
+			this.#pendingWakeScopes.has(key) ||
+			this.#retiredRecords?.query("SELECT 1 FROM records WHERE scope = ? LIMIT 1").get(key)
+		)
+			return;
 		this.#toolSessionByScope.delete(key);
 	}
 
 	#deleteRecord(scope: OwnerScope, id: string): void {
+		this.#retiredRecords?.query("DELETE FROM records WHERE id = ?").run(id);
+		this.#coldRecords.delete(id);
 		const key = scopeKey(scope, "");
 		const records = this.#recordsByScope.get(key);
 		if (!records) {
@@ -772,9 +895,8 @@ export class OrchestratorRuntime {
 
 	#hasInMemoryTombstone(session: OrchestratorParent, record: WorkerRecord): boolean {
 		let terminalReason: WorkerTombstoneReason | undefined;
-		for (const data of session.sessionManager?.getCustomEntryDataForMetadata?.(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) ??
-			[]) {
-			const event = parseLifecycleEvent(data);
+		for (const entry of session.sessionManager?.iterateCustomEntries(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) ?? []) {
+			const event = parseLifecycleEvent(entry.data);
 			if (
 				!event ||
 				event.id !== record.id ||
@@ -796,14 +918,20 @@ export class OrchestratorRuntime {
 		return manager;
 	}
 
+	#lookupRecord(scope: OwnerScope, id: string): WorkerRecord | undefined {
+		const record = this.#recordsByScope.get(scopeKey(scope, ""))?.get(id) ?? this.#coldRecord(id);
+		return record && matchesScope(record, scope) ? record : undefined;
+	}
+
 	#record(scope: OwnerScope, id: string): WorkerRecord {
-		const record = this.#scopeRecords(scope).get(id.trim());
+		const record = this.#lookupRecord(scope, id.trim());
 		if (!record || !matchesScope(record, scope)) {
 			const roster = this.#listIds(scope);
 			throw new ToolError(
 				`Unknown worker "${id}".${roster.length > 0 ? ` Active workers: ${roster.join(", ")}` : " No workers — spawn one with orchestrate_spawn."}`,
 			);
 		}
+		if (this.#coldRecords.has(record.id)) this.#setRecord(scope, record);
 		return record;
 	}
 
@@ -819,9 +947,11 @@ export class OrchestratorRuntime {
 		};
 	}
 
-	#clearPendingCapacityWait(record: WorkerRecord): void {
-		record.capacityWaitCleanup?.();
-		record.capacityWaitCleanup = undefined;
+	#clearPendingMessages(record: WorkerRecord): void {
+		for (const queued of record.queue) queued.admission.release();
+		record.queue.length = 0;
+		for (const cleanup of record.steeringCleanups ?? []) cleanup();
+		record.steeringCleanups = undefined;
 	}
 
 	#startTemporaryArtifactsCleanup(record: WorkerRecord): Promise<void> {
@@ -851,7 +981,7 @@ export class OrchestratorRuntime {
 		record.modelRole = undefined;
 		record.outputSchema = undefined;
 		record.live = undefined;
-		record.queue.length = 0;
+		this.#clearPendingMessages(record);
 		if (record.turn) {
 			const jobId = record.turn.jobId;
 			if (clearTurn) {
@@ -875,8 +1005,10 @@ export class OrchestratorRuntime {
 		activity?: string,
 		cleanupArtifacts = true,
 	): void {
-		this.#clearPendingCapacityWait(record);
+		if (this.#coldRecords.has(record.id)) this.#setRecord(this.#scopeForRecord(record), record);
+		this.#clearPendingMessages(record);
 		this.#forgetWakeTurnOwner(record);
+		record.pendingInitialMessage = undefined;
 		record.state = "dead";
 		record.terminal = this.#terminalInfo(record, reason);
 		record.lastActivityAt = record.terminal.at;
@@ -932,7 +1064,13 @@ export class OrchestratorRuntime {
 	}
 
 	#listIds(scope: OwnerScope): string[] {
-		return [...this.#scopeRecords(scope).keys()];
+		const key = scopeKey(scope, "");
+		const ids = [...(this.#recordsByScope.get(key)?.keys() ?? [])];
+		for (const row of this.#retiredRecords
+			?.query<{ id: string }, [string]>("SELECT id FROM records WHERE scope = ?")
+			.iterate(key) ?? [])
+			ids.push(row.id);
+		return ids;
 	}
 
 	#displayModel(session: ToolSession, record: WorkerRecord): string | undefined {
@@ -976,7 +1114,7 @@ export class OrchestratorRuntime {
 	 */
 	activeTurns(session: OrchestratorParent): Array<{ id: string; label: string; turn: number; queued: number }> {
 		const scope = this.ownerScope(session);
-		return [...this.#scopeRecords(scope).values()]
+		return [...(this.#recordsByScope.get(scopeKey(scope, ""))?.values() ?? [])]
 			.filter(record => record.turn !== undefined && record.state !== "dead" && record.terminal === undefined)
 			.map(record => ({
 				id: record.id,
@@ -987,17 +1125,22 @@ export class OrchestratorRuntime {
 	}
 
 	listIds(session: ToolSession): string[] {
-		return this.#listIds(this.#activeScope(session));
+		const scope = this.#activeScope(session);
+		this.#resumePending(session, scope);
+		return this.#listIds(scope);
 	}
 
 	screens(session: ToolSession, ids?: string[]): WorkerScreen[] {
 		const scope = this.#activeScope(session);
+		this.#resumePending(session, scope);
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
 		const records: WorkerRecord[] = [];
-		for (const record of this.#scopeRecords(scope).values()) {
-			if (wanted && !wanted.has(record.id)) continue;
-			records.push(record);
-		}
+		if (wanted) {
+			for (const id of wanted) {
+				const record = this.#lookupRecord(scope, id);
+				if (record) records.push(record);
+			}
+		} else records.push(...this.#scopeRecords(scope).values());
 
 		records.sort((a, b) => a.createdAt - b.createdAt);
 		for (const record of records) {
@@ -1005,7 +1148,7 @@ export class OrchestratorRuntime {
 				this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
 			}
 		}
-		const retainedRecords = records.filter(record => this.#scopeRecords(scope).get(record.id) === record);
+		const retainedRecords = records.filter(record => this.#lookupRecord(scope, record.id) === record);
 		return retainedRecords.map(record => {
 			const registered = this.#registeredAgent(record);
 			const lifecycle: WorkerLifecycle =
@@ -1055,16 +1198,19 @@ export class OrchestratorRuntime {
 
 	#persistedIds(session: OrchestratorParent, scope: OwnerScope): Set<string> {
 		const ids = new Set<string>();
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
-			if (entry.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
+		for (const entry of session.sessionManager?.iterateCustomEntries(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) ?? []) {
 			const event = parseLifecycleEvent(entry.data);
 			if (event?.ownerId === scope.ownerId && event.parentSessionId === scope.parentSessionId) ids.add(event.id);
 		}
-		for (const record of this.#scopeRecords(scope).values()) ids.add(record.id);
+		for (const id of this.#listIds(scope)) ids.add(id);
 		return ids;
 	}
 
-	async #resolvePersistedChild(parentSessionFile: string, spawn: WorkerSpawnEvent): Promise<string | undefined> {
+	async #resolvePersistedChild(
+		parentSessionFile: string,
+		spawn: WorkerSpawnEvent,
+		allowUnstarted = false,
+	): Promise<string | undefined> {
 		if (!/^[A-Za-z0-9_-]+$/.test(spawn.id) || spawn.childSessionFile !== `${spawn.id}.jsonl`) return undefined;
 		const artifactsDir = path.resolve(parentSessionFile.slice(0, -6));
 		const childSessionFile = path.resolve(artifactsDir, spawn.childSessionFile);
@@ -1072,6 +1218,7 @@ export class OrchestratorRuntime {
 		if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`) || relative === "..") {
 			return undefined;
 		}
+		if (allowUnstarted && spawn.message !== undefined) return childSessionFile;
 		try {
 			const persisted = await SessionManager.peekSessionInit(childSessionFile);
 			return persisted?.init ? childSessionFile : undefined;
@@ -1158,26 +1305,24 @@ export class OrchestratorRuntime {
 		});
 	}
 
-	async rehydrate(session: OrchestratorParent): Promise<number> {
+	async rehydrate(session: OrchestratorParent, toolSession?: ToolSession): Promise<number> {
 		const sessionFile = session.getSessionFile();
 		const sessionManager = session.sessionManager;
 		if (!sessionFile || !sessionManager) return 0;
 		const scope = this.ownerScope(session);
-		const allSpawns = new Map<string, WorkerSpawnEvent>();
+		const allSpawns = new Map<string, string>();
 		const terminalIntents = new Map<string, WorkerTombstoneReason>();
-		for (const entry of sessionManager.getEntries()) {
-			if (entry.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
+		for (const entry of sessionManager.iterateCustomEntries(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE)) {
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
-			if (event.action === "spawn") allSpawns.set(event.id, event);
+			if (event.action === "spawn") allSpawns.set(event.id, entry.id);
 			else if (event.action === "tombstone") terminalIntents.set(event.id, event.reason);
 		}
 
 		// Spend already attributed to each worker is replayed from the owner transcript so a resumed
 		// session keeps reporting what its workers cost.
 		const persistedUsage = new Map<string, WorkerUsage>();
-		for (const entry of sessionManager.getEntries()) {
-			if (entry.type !== "custom" || entry.customType !== SUBAGENT_USAGE_CUSTOM_TYPE) continue;
+		for (const entry of sessionManager.iterateCustomEntries(SUBAGENT_USAGE_CUSTOM_TYPE)) {
 			const usage = parseSubagentUsageEntry(entry.data);
 			if (!usage) continue;
 			const totals = persistedUsage.get(usage.agentId) ?? emptyWorkerUsage();
@@ -1188,17 +1333,17 @@ export class OrchestratorRuntime {
 		}
 
 		const candidates = new Map<string, RestoreCandidate>();
-		for (const entry of sessionManager.getBranch()) {
-			if (entry.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
+		for (const entry of sessionManager.iterateCustomEntries(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE, { branch: true })) {
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
 			const eventTime = Date.parse(entry.timestamp);
 			if (event.action === "spawn") {
 				candidates.set(event.id, {
-					spawn: event,
+					spawnEntryId: entry.id,
 					turnCount: 0,
 					lastActivityAt: Number.isFinite(eventTime) ? eventTime : event.createdAt,
 					inFlight: false,
+					initialized: event.message === undefined,
 				});
 				continue;
 			}
@@ -1208,6 +1353,8 @@ export class OrchestratorRuntime {
 			if (event.action === "turn-started" && event.turn >= candidate.turnCount) {
 				candidate.turnCount = event.turn;
 				candidate.inFlight = true;
+			} else if (event.action === "turn-initialized") {
+				candidate.initialized = true;
 			} else if (event.action === "turn-settled" && event.turn >= candidate.turnCount) {
 				candidate.turnCount = event.turn;
 				candidate.inFlight = false;
@@ -1217,8 +1364,10 @@ export class OrchestratorRuntime {
 		}
 
 		for (const id of terminalIntents.keys()) {
-			const spawn = allSpawns.get(id);
-			if (!spawn) continue;
+			const entryId = allSpawns.get(id);
+			const entry = entryId ? sessionManager.getEntry(entryId) : undefined;
+			const spawn = entry?.type === "custom" ? parseLifecycleEvent(entry.data) : undefined;
+			if (spawn?.action !== "spawn") continue;
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
 			if (!childSessionFile) continue;
 			await this.#markTerminalRef(id, scope.ownerId, childSessionFile, undefined, undefined, spawn.label);
@@ -1227,11 +1376,15 @@ export class OrchestratorRuntime {
 
 		let restored = 0;
 		for (const candidate of candidates.values()) {
-			const { spawn } = candidate;
-			if (candidate.tombstoneReason || terminalIntents.has(spawn.id) || candidate.turnCount < 1) continue;
-			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
+			const entry = sessionManager.getEntry(candidate.spawnEntryId);
+			const spawn = entry?.type === "custom" ? parseLifecycleEvent(entry.data) : undefined;
+			if (spawn?.action !== "spawn") continue;
+			if (candidate.tombstoneReason || terminalIntents.has(spawn.id)) continue;
+			if (candidate.turnCount < 1 && spawn.message === undefined) continue;
+			const initialPending = candidate.turnCount === 0 || (candidate.inFlight && !candidate.initialized);
+			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn, initialPending);
 			if (!childSessionFile) continue;
-			if (this.#scopeRecords(scope).has(spawn.id)) continue;
+			if (this.#lookupRecord(scope, spawn.id)) continue;
 			const existing = AgentRegistry.global().get(spawn.id);
 			let tombstoned: boolean;
 			try {
@@ -1267,7 +1420,7 @@ export class OrchestratorRuntime {
 				resolved = undefined;
 			}
 			if (!resolved) continue;
-			const { agent, modelOverride, modelRole } = resolved;
+			const { agent, model, modelOverride, modelRole } = resolved;
 			let schema: ResolvedWorkerSchema;
 			try {
 				schema = this.#resolveOutputSchema(session, agent, {
@@ -1298,6 +1451,8 @@ export class OrchestratorRuntime {
 				jobOwnerId: scope.jobOwnerId,
 				childSessionFile,
 				agent,
+				model,
+				...(initialPending ? { pendingInitialMessage: spawn.message } : {}),
 				modelOverride,
 				modelRole,
 				...(spawn.effort !== undefined ? { effort: spawn.effort } : {}),
@@ -1313,9 +1468,43 @@ export class OrchestratorRuntime {
 				suspended: false,
 				terminalPersisted: false,
 			});
+			this.#retireParkedRecord(spawn.id);
 			restored++;
 		}
+		if (toolSession && this.#scopeRecords(scope).size > 0) {
+			this.#activeScope(toolSession);
+			this.#resumePending(toolSession, scope);
+		}
 		return restored;
+	}
+
+	#resumePending(session: ToolSession, scope: OwnerScope): void {
+		const manager = session.asyncJobManager;
+		if (!manager) return;
+		for (const record of this.#recordsByScope.get(scopeKey(scope, ""))?.values() ?? []) {
+			if (record.pendingInitialMessage === undefined || record.turn || record.killed || record.suspended) continue;
+			let admission: AsyncJobAdmission;
+			try {
+				admission = manager.reserve({
+					ownerId: record.jobOwnerId,
+					bytes: Buffer.byteLength(
+						JSON.stringify({ message: record.pendingInitialMessage, schema: record.outputSchema }),
+					),
+				});
+			} catch {
+				record.lastActivity = "accepted initial turn waiting for admission capacity";
+				continue;
+			}
+			try {
+				this.#registerTurnJob(session, manager, record, record.pendingInitialMessage, { first: true, admission });
+				record.pendingInitialMessage = undefined;
+				record.state = "starting";
+				const ref = this.#registeredAgent(record);
+				if (ref?.status === "parked" && !ref.session) AgentRegistry.global().unregister(ref.id, ref);
+			} finally {
+				admission.release();
+			}
+		}
 	}
 
 	async spawn(
@@ -1331,7 +1520,16 @@ export class OrchestratorRuntime {
 		},
 	): Promise<SpawnOutcome> {
 		const scope = this.#activeScope(session);
-		return this.#withTerminationLock(scope, () => this.#spawnLocked(session, scope, args));
+		// Reserve before the lock, discovery, worker graph, or persisted spawn can retain the request.
+		const admission = this.#manager(session).reserve({
+			ownerId: scope.jobOwnerId,
+			bytes: Buffer.byteLength(JSON.stringify(args)),
+		});
+		try {
+			return await this.#withTerminationLock(scope, () => this.#spawnLocked(session, scope, args, admission));
+		} finally {
+			admission.release();
+		}
 	}
 
 	async #spawnLocked(
@@ -1346,6 +1544,7 @@ export class OrchestratorRuntime {
 			outputSchema?: unknown;
 			schemaMode?: StructuredSubagentSchemaMode;
 		},
+		admission: AsyncJobAdmission,
 	): Promise<SpawnOutcome> {
 		const manager = this.#manager(session);
 		await session.settings.reloadFromDisk();
@@ -1368,9 +1567,15 @@ export class OrchestratorRuntime {
 			requestedAgent,
 			args.model,
 		);
+		const outputSchema = Object.hasOwn(args, "outputSchema")
+			? args.outputSchema
+			: (agent.output ?? session.outputSchema);
+		admission.resize(Buffer.byteLength(JSON.stringify({ ...args, outputSchema })));
 		const schema = this.#resolveOutputSchema(session, agent, args);
+		if (this.#toolSessionByScope.get(scopeKey(scope, "")) !== session) {
+			throw new ToolError("Orchestrator parent scope was suspended while the spawn request was being prepared.");
+		}
 		const reservedIds = this.#persistedIds(session, scope);
-		for (const ref of AgentRegistry.global().list()) reservedIds.add(ref.id);
 		const requestedLabel = args.label;
 		if (requestedLabel !== undefined && !/^[A-Za-z0-9_-]{1,48}$/.test(requestedLabel)) {
 			throw new ToolError(
@@ -1423,6 +1628,7 @@ export class OrchestratorRuntime {
 						label,
 						childSessionFile: childSessionName,
 						createdAt,
+						message: args.message,
 						...(args.model !== undefined ? { model: args.model } : {}),
 						...(record.effort !== undefined ? { effort: record.effort } : {}),
 						...(record.outputSchemaSource === "caller" ? { outputSchema: record.outputSchema } : {}),
@@ -1432,7 +1638,9 @@ export class OrchestratorRuntime {
 				);
 				if (!persisted) throw new ToolError("Orchestrator parent session changed before the worker could start.");
 			}
-			const jobId = this.#registerTurnJob(session, manager, record, args.message, { first: true });
+			if (record.suspended || record.killed)
+				throw new ToolError("Orchestrator parent scope was suspended before the worker could start.");
+			const jobId = this.#registerTurnJob(session, manager, record, args.message, { first: true, admission });
 			if (childSessionFile) await registerSessionFile(id, childSessionFile);
 			return { id, label, jobId };
 		} catch (error) {
@@ -1508,6 +1716,7 @@ export class OrchestratorRuntime {
 
 	async send(session: ToolSession, args: { session: string; message: string; model?: string }): Promise<SendOutcome> {
 		const scope = this.#activeScope(session);
+		this.#resumePending(session, scope);
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead" || record.terminal) {
 			throw this.#terminalError(record);
@@ -1527,31 +1736,68 @@ export class OrchestratorRuntime {
 		if (modelChange) this.#recordModelChange(session, record, modelChange);
 
 		if (record.turn) {
+			const watchedTurn = record.turn;
 			const live = registered?.session;
 			if (live?.isStreaming) {
 				// Steering a busy worker is not free: every unread steer is context it must absorb when
 				// it next looks up. Bound the unread ones by the same number as queued turns.
-				const pending = live.getQueuedMessages().steering.length;
-				if (pending >= MAX_QUEUED_TURNS) {
-					const reason = `Worker "${record.id}" already has ${pending}/${MAX_QUEUED_TURNS} steering messages its current turn has not read yet. Wait for the turn to settle (orchestrate_wait), then retry this message.`;
+				const steering = live.getQueuedMessages().steering;
+				record.steeringInFlight ??= { count: 0, bytes: 0 };
+				const inFlight = record.steeringInFlight;
+				const messageBytes = Buffer.byteLength(message);
+				const pending = steering.length + inFlight.count;
+				const bytes = steering.reduce((total, text) => total + Buffer.byteLength(text), inFlight.bytes);
+				if (pending >= MAX_QUEUED_TURNS || bytes + Buffer.byteLength(message) > MAX_QUEUED_TURN_BYTES) {
+					const reason = `Worker "${record.id}" already has ${pending}/${MAX_QUEUED_TURNS} steering messages (${bytes}/${MAX_QUEUED_TURN_BYTES} bytes) its current turn has not read yet. Wait for the turn to settle (orchestrate_wait), then retry this message.`;
 					throw new ToolError(reason, {
 						receipt: this.#receipt(record, "rejected", record.turnCount, record.turn.jobId, reason),
 					});
 				}
-				if (modelChange) {
-					await this.#applyModelChangeToSession(live, modelChange.modelOverride);
-					// Applied inline: the running session already talks to the new model, so no
-					// follow-up turn may re-apply it (that would reset provider conversation state).
-					record.pendingModelOverride = undefined;
+				const admission = this.#manager(session).reserve({
+					ownerId: record.jobOwnerId,
+					bytes: Buffer.byteLength(message),
+				});
+				inFlight.count++;
+				inFlight.bytes += messageBytes;
+				try {
+					if (modelChange) {
+						await this.#applyModelChangeToSession(live, modelChange.modelOverride);
+						record.pendingModelOverride = undefined;
+					}
+					if (record.killed || record.suspended || this.#registeredAgent(record)?.session !== live)
+						throw this.#terminalError(record);
+					const before = new Set(live.agent.peekSteeringQueue());
+					await live.steer(message);
+					if (record.killed || record.suspended || this.#registeredAgent(record)?.session !== live)
+						throw this.#terminalError(record);
+					const unread = live.agent.peekSteeringQueue().filter(entry => !before.has(entry));
+					let unsubscribe: (() => void) | undefined;
+					const cleanup = () => {
+						admission.release();
+						unsubscribe?.();
+						record.steeringCleanups?.delete(cleanup);
+					};
+					record.steeringCleanups ??= new Set();
+					record.steeringCleanups.add(cleanup);
+					const releaseIfRead = () => {
+						if (!unread.some(entry => live.agent.peekSteeringQueue().includes(entry))) cleanup();
+					};
+					unsubscribe = live.agent.subscribe(releaseIfRead);
+					releaseIfRead();
+				} catch (error) {
+					admission.release();
+					throw error;
+				} finally {
+					inFlight.count--;
+					inFlight.bytes -= messageBytes;
 				}
-				await live.steer(message);
 				record.lastActivityAt = Date.now();
 				return {
 					id: record.id,
 					label: record.label,
 					mode: "steered",
-					jobId: record.turn.jobId,
-					receipt: this.#receipt(record, "accepted", record.turnCount, record.turn.jobId),
+					jobId: watchedTurn.jobId,
+					receipt: this.#receipt(record, "accepted", record.turnCount, watchedTurn.jobId),
 				};
 			}
 			const queuedBytes = record.queue.reduce((total, item) => total + Buffer.byteLength(item.message), 0);
@@ -1563,7 +1809,8 @@ export class OrchestratorRuntime {
 					receipt: this.#receipt(record, "rejected", queuedTurn, record.turn.jobId, reason),
 				});
 			}
-			record.queue.push({ message, turn: queuedTurn });
+			const admission = this.#manager(session).reserve({ ownerId: record.jobOwnerId, bytes: messageBytes });
+			record.queue.push({ message, turn: queuedTurn, admission });
 			record.lastActivityAt = Date.now();
 			return {
 				id: record.id,
@@ -1599,6 +1846,7 @@ export class OrchestratorRuntime {
 	): Promise<WaitOutcome> {
 		const scope = this.#activeScope(session);
 		const manager = this.#manager(session);
+		this.#resumePending(session, scope);
 
 		// A bare wait covers turns in flight *and* turns that settled before the parent got here:
 		// a result that was never delivered is exactly what the parent is waiting for.
@@ -1607,7 +1855,7 @@ export class OrchestratorRuntime {
 			: [...this.#scopeRecords(scope).values()].filter(
 					record =>
 						record.turn !== undefined ||
-						(record.lastJobId !== undefined && !this.#waitedJobIds.has(record.lastJobId)),
+						(record.lastJobId !== undefined && record.waitedTurn !== record.turnCount),
 				);
 
 		const snapshots: Array<{ record: WorkerRecord; jobId: string; turn: number }> = [];
@@ -1619,7 +1867,7 @@ export class OrchestratorRuntime {
 		const collectSettled = (): WaitOutcome["settled"] => {
 			const settled: WaitOutcome["settled"] = [];
 			for (const { record, jobId, turn } of snapshots) {
-				if (this.#waitedJobIds.has(jobId)) continue;
+				if ((record.waitedTurn ?? 0) >= turn) continue;
 				const job = manager.getJob(jobId);
 				if (!job || job.status === "running") continue;
 				const receiptStatus: WorkerReceiptStatus =
@@ -1665,17 +1913,38 @@ export class OrchestratorRuntime {
 				}
 				racePromises.push(abortPromise);
 			}
+			const runnable = this.#runnableTurns.get(scope.ownerId);
+			if (runnable) {
+				runnable.waits++;
+				if (runnable.held) {
+					runnable.held = false;
+					runnable.semaphore.release();
+				}
+			}
 			try {
 				waitEndedByTimeout = (await Promise.race(racePromises)) === "timeout";
 			} finally {
 				manager.unwatchJobs(watchedJobIds);
 				clearTimeout(timeoutHandle);
 				abortCleanup?.();
+				if (runnable && --runnable.waits === 0 && !runnable.signal.aborted) {
+					await runnable.semaphore.acquire(runnable.signal);
+					if (runnable.waits === 0) runnable.held = true;
+					else runnable.semaphore.release();
+				}
 			}
 		}
 
 		const settled = collectSettled();
-		for (const entry of settled) this.#waitedJobIds.add(entry.jobId);
+		for (const { record, turn, jobId } of snapshots) {
+			if (settled.some(entry => entry.jobId === jobId)) {
+				record.waitedTurn = Math.max(record.waitedTurn ?? 0, turn);
+				if (this.#coldRecords.has(record.id))
+					this.#retiredRecords
+						?.query("UPDATE records SET data = ? WHERE id = ?")
+						.run(JSON.stringify(record), record.id);
+			}
+		}
 		manager.acknowledgeDeliveries(settled.map(entry => entry.jobId));
 
 		const stillRunning = watched.filter(record => record.turn !== undefined).map(record => record.id);
@@ -1683,6 +1952,9 @@ export class OrchestratorRuntime {
 	}
 
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
+		// An empty/list-only scope has no records whose removal could retire this root.
+		// Wake completion already owns its call frame; it must not keep a disposed owner cached.
+		this.#toolSessionByScope.delete(scopeKey(scope, ""));
 		const records = [...this.#scopeRecords(scope).values()];
 		const artifactCleanups: Promise<void>[] = [];
 		const teardown = records.map(record => ({
@@ -1691,9 +1963,8 @@ export class OrchestratorRuntime {
 			job: record.turn && manager ? manager.getJob(record.turn.jobId) : undefined,
 		}));
 		for (const { record } of teardown) {
-			this.#clearPendingCapacityWait(record);
+			this.#clearPendingMessages(record);
 			record.suspended = true;
-			record.queue.length = 0;
 			record.state = "dead";
 			record.lastActivityAt = Date.now();
 			record.lastActivity = "suspended for parent-session switch";
@@ -1776,7 +2047,7 @@ export class OrchestratorRuntime {
 	 */
 	async killIfManaged(session: OrchestratorParent, id: string): Promise<KillOutcome | undefined> {
 		const scope = this.ownerScope(session);
-		const record = this.#scopeRecords(scope).get(id.trim());
+		const record = this.#lookupRecord(scope, id.trim());
 		if (!record || !matchesScope(record, scope)) return undefined;
 		return this.#withTerminationLock(scope, () =>
 			this.#killRecord(record, session.asyncJobManager, session, "explicit-kill"),
@@ -1993,6 +2264,21 @@ export class OrchestratorRuntime {
 			parentTelemetry: session.getTelemetry?.(),
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
+			onSessionInitialized: async () => {
+				if (record.suspended || record.killed) throw this.#terminalError(record);
+				const persisted = await this.#appendLifecycleEvent(
+					session,
+					{
+						...this.#eventBase(record),
+						action: "turn-initialized",
+						turn: record.turnCount,
+					},
+					record.parentSessionFile,
+				);
+				if (record.childSessionFile && !persisted)
+					throw new ToolError(`Worker "${record.id}" changed parent scope during initialization.`);
+				if (record.suspended || record.killed) throw this.#terminalError(record);
+			},
 			keepAlive: true,
 		};
 	}
@@ -2027,7 +2313,6 @@ export class OrchestratorRuntime {
 		onProgress: (progress: AgentProgress) => void,
 		first: boolean,
 	): Promise<SingleResult> {
-		const { runSubagentFollowUpTurn, runSubprocess } = await import("../task/executor");
 		if (first) {
 			return runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress));
 		}
@@ -2076,7 +2361,7 @@ export class OrchestratorRuntime {
 	 */
 	#claimWakeTurn(scope: OwnerScope, record: WorkerRecord, task: string): WakeTurnClaim | undefined {
 		if (record.terminal || record.state === "dead" || record.killed || record.suspended) return undefined;
-		if (this.#scopeRecords(scope).get(record.id) !== record) return undefined;
+		if (this.#lookupRecord(scope, record.id) !== record) return undefined;
 		const session = this.#toolSessionByScope.get(scopeKey(scope, ""));
 		if (!session) return undefined;
 		if (record.turn) {
@@ -2126,10 +2411,9 @@ export class OrchestratorRuntime {
 		manager: AsyncJobManager,
 		record: WorkerRecord,
 		message: string,
-		options: { first: boolean; reserveCapacity?: boolean; external?: Promise<ExternalTurnOutcome> },
+		options: { first: boolean; admission?: AsyncJobAdmission; external?: Promise<ExternalTurnOutcome> },
 	): string {
 		const turnIndex = record.turnCount + 1;
-		if (record.lastJobId) this.#waitedJobIds.delete(record.lastJobId);
 		const turn: WorkerTurn = {
 			jobId: "",
 			message,
@@ -2144,14 +2428,15 @@ export class OrchestratorRuntime {
 			"worker",
 			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal, markRunning }) => {
-				let acquired = false;
+				const runnable = { semaphore, signal, held: false, waits: 0 };
 				let started = false;
 				try {
 					// An external turn is already running outside the orchestrator, so it must not wait
 					// behind a semaphore permit it cannot hold; every other turn takes its permit first.
 					if (!options.external) {
 						await semaphore.acquire(signal);
-						acquired = true;
+						runnable.held = true;
+						this.#runnableTurns.set(record.id, runnable);
 					}
 					started = true;
 					markRunning();
@@ -2191,14 +2476,17 @@ export class OrchestratorRuntime {
 						`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn cancelled while queued: ${reason}`,
 					);
 				} finally {
-					if (acquired) semaphore.release();
+					if (this.#runnableTurns.get(record.id) === runnable) this.#runnableTurns.delete(record.id);
+					if (runnable.held) semaphore.release();
 				}
 			},
 			{
 				id: `${record.id}-t${turnIndex}`,
 				agentId: record.id,
 				ownerId: record.jobOwnerId,
-				queued: options.reserveCapacity !== true,
+				queued: true,
+				admission: options.admission,
+				bytes: Buffer.byteLength(message),
 			},
 		);
 		turn.jobId = jobId;
@@ -2216,6 +2504,8 @@ export class OrchestratorRuntime {
 	): Promise<void> {
 		if (record.lastJobId === settledJobId && record.turn?.jobId !== settledJobId) return;
 		record.lastJobId = settledJobId;
+		for (const cleanup of record.steeringCleanups ?? []) cleanup();
+		record.steeringCleanups = undefined;
 		record.live = undefined;
 		record.lastActivityAt = Date.now();
 		if (record.killed || record.suspended) {
@@ -2284,53 +2574,17 @@ export class OrchestratorRuntime {
 			record.turn = undefined;
 			return;
 		}
-		let callbackInvoked = false;
-		const unregisterCapacityWait = manager.onCapacityAvailable(error => {
-			callbackInvoked = true;
-			record.capacityWaitCleanup = undefined;
-			if (error) {
-				record.turn = undefined;
-				this.#markRecordTerminal(
-					record,
-					"unrecoverable",
-					`terminal: queued follow-up could not start: ${error.message}`,
-				);
-				logger.error("orchestrator: queued follow-up could not start", {
-					id: record.id,
-					error: error.message,
-				});
-				return;
-			}
-			if (record.killed || record.suspended || record.terminal) {
-				record.turn = undefined;
-				record.queue.length = 0;
-				return;
-			}
-			const next = record.queue.shift();
-			if (!next) {
-				record.turn = undefined;
-				return;
-			}
-			record.turn = undefined;
-			try {
-				this.#registerTurnJob(session, manager, record, next.message, {
-					first: false,
-					reserveCapacity: true,
-				});
-			} catch (registrationError) {
-				record.queue.unshift(next);
-				this.#markRecordTerminal(
-					record,
-					"unrecoverable",
-					`terminal: queued follow-up could not start: ${registrationError instanceof Error ? registrationError.message : String(registrationError)}`,
-				);
-				logger.error("orchestrator: queued follow-up could not start", {
-					id: record.id,
-					error: registrationError instanceof Error ? registrationError.message : String(registrationError),
-				});
-			}
-		});
-		if (!callbackInvoked) record.capacityWaitCleanup = unregisterCapacityWait;
+		// Every follow-up already owns a reservation. Transfer it directly to a queued job;
+		// waiting for total capacity here would wait on our own reserved message.
+		const next = record.queue.shift()!;
+		record.turn = undefined;
+		try {
+			this.#registerTurnJob(session, manager, record, next.message, { first: false, admission: next.admission });
+		} catch (error) {
+			next.admission.release();
+			this.#markRecordTerminal(record, "unrecoverable", "terminal: queued follow-up could not start");
+			throw error;
+		}
 	}
 
 	async #settleTurn(

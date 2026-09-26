@@ -136,7 +136,7 @@ test("concurrent print resumes of one session never lose a turn", async () => {
 
 	const winners = runs.filter(run => run.exitCode === 0);
 	const refused = runs.filter(run => run.exitCode !== 0);
-	expect(winners).toHaveLength(1);
+	expect(winners, JSON.stringify(runs, null, 2)).toHaveLength(1);
 	expect(refused).toHaveLength(2);
 
 	const text = await Bun.file(seededFile).text();

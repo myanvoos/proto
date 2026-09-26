@@ -5,6 +5,7 @@ export const COMPUTER_WORKER_ARG = "__proto_worker_computer";
 
 export interface ComputerSessionSnapshot {
 	cwd: string;
+	outputArtifact?: { path?: string; id?: string };
 	sessionId: string;
 	captureMaxWidth: number;
 	captureMaxHeight: number;

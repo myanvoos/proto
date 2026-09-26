@@ -64,6 +64,14 @@ and does not discard its source. Displaceable checklist/fleet snapshots may be
 replaced only while uncommitted. Once retired, changes require an explicit
 replay rather than silently rewriting terminal history.
 
+Committed blocks keep their components for the newest
+`RETAINED_COMMITTED_BLOCKS`, so a replay re-renders them with current
+expansion, thinking visibility, and width. Older blocks compact to row
+snapshots (displacement participants and Kitty image owners never compact).
+A snapshot replays its rows as laid out; at a narrower width it rewraps rows
+whose content no longer fits under their gutter, since the writer would clip
+them after the replay has already erased the scrollback copy.
+
 ## 2. Frame pipeline
 
 1. Composer allocates space to prompt chrome, then asks the transcript ledger

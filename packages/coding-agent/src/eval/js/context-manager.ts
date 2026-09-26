@@ -12,6 +12,7 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
+import { kernelAdmission } from "../kernel-admission";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 import type {
 	JsDisplayOutput,
@@ -71,13 +72,15 @@ interface JsSession {
 	sessionId: string;
 	cwd: string;
 	worker: WorkerHandle;
-	state: "alive" | "dead";
+	state: "alive" | "stopping" | "dead";
 	pending: Map<string, PendingRun>;
 	completedRuns: Map<string, CompletedRunSink>;
 	ownerIds: Set<string>;
 	hasFallbackOwner: boolean;
 	reapTimer?: NodeJS.Timeout;
 	reapShutdownRetries: number;
+	shutdown?: Promise<boolean>;
+	releaseAdmission(): void;
 }
 
 interface StartingJsSession extends SessionOwners {
@@ -114,7 +117,7 @@ function clearSessionReap(session: JsSession): void {
 
 async function reapSessionFire(session: JsSession): Promise<void> {
 	session.reapTimer = undefined;
-	if (sessions.get(session.sessionKey) !== session || session.state !== "alive") return;
+	if (sessions.get(session.sessionKey) !== session || session.state === "dead") return;
 	// Busy covers anything the worker is still coordinating: backgrounded cells,
 	// awaited tool/agent bridges, completion calls. Reset cycles also block reaping.
 	if (
@@ -233,8 +236,10 @@ export async function executeInVmContext(options: {
 async function resetVmContext(sessionKey: string): Promise<void> {
 	const session = sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.promise.catch(() => undefined));
 	if (!session) return;
-	sessions.delete(sessionKey);
-	await killSession(session, new ToolError("JS context reset"), { force: false });
+	if (!(await killSession(session, new ToolError("JS context reset"), { force: false }))) {
+		throw new ToolError("JS context reset shutdown not confirmed");
+	}
+	if (sessions.get(sessionKey) === session) sessions.delete(sessionKey);
 }
 
 export async function disposeAllVmContexts(): Promise<void> {
@@ -246,8 +251,10 @@ export async function disposeAllVmContexts(): Promise<void> {
 		if (result.status !== "fulfilled") continue;
 		if (!all.includes(result.value)) all.push(result.value);
 	}
-	sessions.clear();
-	await Promise.all(all.map(session => killSession(session, new ToolError("JS context disposed"), { force: false })));
+	const stopped = await Promise.all(
+		all.map(session => killSessionFor(session, new ToolError("JS context disposed"), { force: false })),
+	);
+	if (stopped.some(confirmed => !confirmed)) throw new ToolError("JS context disposal shutdown not confirmed");
 }
 
 export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
@@ -270,19 +277,16 @@ export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
 		}
 		starting.ownerIds.delete(ownerId);
 	}
-	for (const session of toKill) {
-		if (sessions.get(session.sessionKey) === session) sessions.delete(session.sessionKey);
-	}
 	const started = await Promise.allSettled(startingToKill.map(starting => starting.promise));
 	for (const result of started) {
 		if (result.status !== "fulfilled") continue;
 		const session = result.value;
-		if (sessions.get(session.sessionKey) === session) sessions.delete(session.sessionKey);
 		toKill.push(session);
 	}
-	await Promise.all(
-		toKill.map(session => killSession(session, new ToolError("JS context disposed"), { force: false })),
+	const stopped = await Promise.all(
+		toKill.map(session => killSessionFor(session, new ToolError("JS context disposed"), { force: false })),
 	);
+	if (stopped.some(confirmed => !confirmed)) throw new ToolError("JS context disposal shutdown not confirmed");
 }
 
 async function runOnce(
@@ -374,6 +378,12 @@ async function acquireSession(
 	ownerId?: string,
 ): Promise<JsSession> {
 	const existing = sessions.get(sessionKey);
+	if (existing?.state === "stopping") {
+		if (!(await killSession(existing, new ToolError("JS context shutdown in progress"), { force: true }))) {
+			throw new ToolError("JS context shutdown not confirmed; cannot start another interpreter on this lane");
+		}
+		if (sessions.get(sessionKey) === existing) sessions.delete(sessionKey);
+	}
 	if (existing && existing.state === "alive") {
 		existing.sessionId = snapshot.sessionId;
 		existing.cwd = snapshot.cwd;
@@ -385,10 +395,14 @@ async function acquireSession(
 		attachSessionOwner(starting, snapshot.sessionId, ownerId);
 		return await starting.promise;
 	}
+	const releaseAdmission = kernelAdmission.reserve(ownerId ?? snapshot.sessionId);
 	let startingSession!: StartingJsSession;
+	let startupSession: JsSession | undefined;
+	let startupWorkerStopped = true;
 
 	const startup = (async (): Promise<JsSession> => {
 		const worker = spawnJsWorker();
+		startupWorkerStopped = false;
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
@@ -396,12 +410,14 @@ async function acquireSession(
 			worker,
 			state: "alive",
 			reapShutdownRetries: 0,
+			releaseAdmission,
 			pending: new Map(),
 			completedRuns: new Map(),
 			ownerIds: new Set(),
 			hasFallbackOwner: false,
 		};
 
+		startupSession = session;
 		const readyTimeoutMs = Math.max(WORKER_INIT_TIMEOUT_MS, timeoutMs ?? 0);
 		while (true) {
 			try {
@@ -409,7 +425,8 @@ async function acquireSession(
 				break;
 			} catch (error) {
 				const failed = session.worker;
-				await failed.terminate().catch(() => undefined);
+				await failed.terminate();
+				startupWorkerStopped = true;
 				if (failed.mode === "worker") {
 					throw new ToolError("Isolated JS eval worker failed to initialize; refusing host-process execution", {
 						error: error instanceof Error ? error.message : String(error),
@@ -419,6 +436,7 @@ async function acquireSession(
 					error: error instanceof Error ? error.message : String(error),
 				});
 				session.worker = spawnBunWorker();
+				startupWorkerStopped = false;
 				session.state = "alive";
 			}
 		}
@@ -439,6 +457,16 @@ async function acquireSession(
 	startingSessions.set(sessionKey, startingSession);
 	try {
 		return await startup;
+	} catch (error) {
+		if (startupWorkerStopped) releaseAdmission();
+		else if (startupSession) {
+			// Failed termination still owns capacity and a retryable process handle.
+			startupSession.state = "stopping";
+			startupSession.ownerIds = new Set(startingSession.ownerIds);
+			startupSession.hasFallbackOwner = startingSession.hasFallbackOwner;
+			sessions.set(sessionKey, startupSession);
+		}
+		throw error;
 	} finally {
 		if (startingSessions.get(sessionKey) === startingSession) startingSessions.delete(sessionKey);
 	}
@@ -496,8 +524,8 @@ function trimCompletedRuns(session: JsSession): void {
 		const oldest = session.completedRuns.keys().next().value;
 		if (oldest === undefined) break;
 		const removed = session.completedRuns.get(oldest);
-		evictCompletedRun(session, oldest);
 		retainedBytes -= Math.max(0, removed?.runState.retainedBytes?.() ?? 0);
+		evictCompletedRun(session, oldest);
 	}
 }
 
@@ -639,32 +667,41 @@ function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: 
 	finishPending(pending, msg);
 }
 
-async function killSessionFor(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
-	if (sessions.get(session.sessionKey) === session) {
-		sessions.delete(session.sessionKey);
-	}
-	await killSession(session, error, options);
+async function killSessionFor(session: JsSession, error: Error, options: { force: boolean }): Promise<boolean> {
+	const confirmed = await killSession(session, error, options);
+	if (confirmed && sessions.get(session.sessionKey) === session) sessions.delete(session.sessionKey);
+	return confirmed;
 }
 
 async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<boolean> {
 	if (session.state === "dead") return true;
-	clearSessionReap(session);
-	for (const pending of session.pending.values()) {
-		if (pending.settled) continue;
-		pending.settled = true;
-		for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
-		pending.reject(error);
+	if (session.shutdown) return await session.shutdown;
+	session.shutdown = (async () => {
+		session.state = "stopping";
+		clearSessionReap(session);
+		for (const pending of session.pending.values()) {
+			if (pending.settled) continue;
+			pending.settled = true;
+			for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
+			pending.reject(error);
+		}
+		session.pending.clear();
+		for (const runId of session.completedRuns.keys()) evictCompletedRun(session, runId);
+		const confirmed = await shutdownWorker(session.worker, options.force);
+		if (!confirmed) {
+			if (!sessions.has(session.sessionKey)) sessions.set(session.sessionKey, session);
+			return false;
+		}
+		session.releaseAdmission();
+		session.state = "dead";
+		reapNotes.delete(session.sessionKey);
+		return true;
+	})();
+	try {
+		return await session.shutdown;
+	} finally {
+		session.shutdown = undefined;
 	}
-	session.pending.clear();
-	for (const runId of session.completedRuns.keys()) evictCompletedRun(session, runId);
-	const confirmed = await shutdownWorker(session.worker, options.force);
-	if (!confirmed) {
-		session.state = "alive";
-		return false;
-	}
-	session.state = "dead";
-	reapNotes.delete(session.sessionKey);
-	return true;
 }
 
 export async function shutdownWorker(worker: WorkerHandle, force: boolean): Promise<boolean> {
@@ -790,7 +827,12 @@ function spawnJsProcess(): WorkerHandle {
 	return {
 		mode: "process",
 		send: message => base.send(message),
-		onMessage: handler => base.onMessage(handler),
+		onMessage: handler =>
+			base.onMessage(message => {
+				// Remember owned live children before a later cell crashes the worker.
+				if (message.type === "result") spawned.snapshotDescendants();
+				handler(message);
+			}),
 		onError: handler => base.onError(handler),
 		async close() {
 			const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -806,7 +848,10 @@ function spawnJsProcess(): WorkerHandle {
 			};
 			unsubscribe = base.onMessage(message => {
 				if (message.type !== "closed") return;
-				void base.terminate().finally(() => finish(true));
+				void base.terminate().then(
+					() => finish(true),
+					() => finish(false),
+				);
 			});
 			timeout = setTimeout(() => finish(false), workerCloseTimeoutMs);
 			base.send({ type: "close" });
@@ -817,6 +862,8 @@ function spawnJsProcess(): WorkerHandle {
 }
 
 function wrapBunWorker(worker: Worker): WorkerHandle {
+	const exited = Promise.withResolvers<void>();
+	worker.addEventListener("close", () => exited.resolve(), { once: true });
 	return {
 		mode: "worker",
 		send(msg) {
@@ -875,6 +922,7 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 		},
 		async terminate() {
 			worker.terminate();
+			await raceWithTimeout(exited.promise, workerCloseTimeoutMs, "JS eval worker shutdown not confirmed");
 		},
 	};
 }

@@ -2,7 +2,13 @@ import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FileSessionStorage, SessionStorageLockError, type SessionStorageWriter } from "./session-storage";
+import {
+	FileSessionStorage,
+	MemorySessionStorage,
+	SessionStorageLockError,
+	type SessionStorageWriter,
+	SessionWriteConflictError,
+} from "./session-storage";
 import { serializeTitleSlot } from "./session-title-slot";
 
 const tempDirs: string[] = [];
@@ -325,3 +331,112 @@ test("title replacement respects the writer lock and fsyncs its committed rename
 	expect(await Bun.file(sessionPath).text()).toStartWith(serializeTitleSlot(replacement));
 	expect(fsyncSpy).toHaveBeenCalled();
 });
+
+for (const kind of ["file", "memory"] as const) {
+	test(`${kind} atomic append preserves existing UTF-8 bytes without full reads or rewrites`, async () => {
+		const storage = kind === "file" ? new FileSessionStorage() : new MemorySessionStorage();
+		const target = path.join(makeTempDir(), "archive.jsonl");
+		await storage.writeText(target, "é\n");
+		const read = spyOn(storage, "readText");
+		const write = spyOn(storage, "writeText");
+		const rewrite = spyOn(storage, "writeTextAtomic");
+		const writeSync = spyOn(storage, "writeTextSync");
+		await storage.appendTextAtomic(target, "第二\n", { expectedSize: 3, durable: true });
+		expect(read).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+		expect(rewrite).not.toHaveBeenCalled();
+		expect(writeSync).not.toHaveBeenCalled();
+		expect(await storage.readText(target)).toBe("é\n第二\n");
+		await expect(storage.appendTextAtomic(target, "stale", { expectedSize: 3 })).rejects.toBeInstanceOf(
+			SessionWriteConflictError,
+		);
+		await expect(storage.appendTextAtomic(target, "stale", { expectedSize: null })).rejects.toBeInstanceOf(
+			SessionWriteConflictError,
+		);
+		await storage.appendTextAtomic(target, "cancelled", { commitGuard: () => false });
+		expect(await storage.readText(target)).toBe("é\n第二\n");
+		const missing = `${target}.new`;
+		await expect(storage.appendTextAtomic(missing, "wrong", { expectedSize: 0 })).rejects.toBeInstanceOf(
+			SessionWriteConflictError,
+		);
+		await storage.appendTextAtomic(missing, "created", { expectedSize: null });
+		expect(await storage.readText(missing)).toBe("created");
+	});
+}
+
+test("atomic append shares the writer lock and fsyncs both file and directory", async () => {
+	const storage = new FileSessionStorage();
+	const target = path.join(makeTempDir(), "archive.jsonl");
+	await storage.writeText(target, "old");
+	const writer = storage.openWriter(target);
+	try {
+		await expect(storage.appendTextAtomic(target, "blocked")).rejects.toBeInstanceOf(SessionStorageLockError);
+	} finally {
+		await writer.close();
+	}
+	const sync = fs.fsyncSync;
+	const synced: string[] = [];
+	spyOn(fs, "fsyncSync").mockImplementation(fd => {
+		synced.push(fs.fstatSync(fd).isDirectory() ? "directory" : "file");
+		sync(fd);
+	});
+	await storage.appendTextAtomic(target, "new", { durable: true, expectedSize: 3 });
+	expect(synced).toEqual(process.platform === "win32" ? ["file"] : ["file", "directory"]);
+	expect(await storage.readText(target)).toBe("oldnew");
+});
+
+test("a partial append failure truncates only the attempted suffix and releases the writer lock", async () => {
+	const storage = new FileSessionStorage();
+	const target = path.join(makeTempDir(), "archive.jsonl");
+	await storage.writeText(target, "original é\n");
+	const before = storage.statSync(target).size;
+	const write = fs.writeSync;
+	let writes = 0;
+	const failedWrite = spyOn(fs, "writeSync").mockImplementation(
+		(
+			fd: number,
+			data: NodeJS.ArrayBufferView | string,
+			offset?: number | null,
+			length?: number | BufferEncoding | null,
+			position?: number | null,
+		) => {
+			if (++writes === 2) throw new Error("partial append rejected");
+			if (typeof data === "string") throw new Error("expected byte append");
+			return write(fd, data, offset, Math.min(2, typeof length === "number" ? length : data.byteLength), position);
+		},
+	);
+	await expect(storage.appendTextAtomic(target, "new suffix", { durable: true })).rejects.toThrow(
+		"partial append rejected",
+	);
+	failedWrite.mockRestore();
+	expect(await storage.readText(target)).toBe("original é\n");
+	await storage.appendTextAtomic(target, "retry", { expectedSize: before });
+	expect(await storage.readText(target)).toBe("original é\nretry");
+});
+
+for (const failure of ["file", "directory"] as const) {
+	test(`a durable ${failure} sync failure rolls back existing and newly created append targets`, async () => {
+		if (failure === "directory" && process.platform === "win32") return;
+		const storage = new FileSessionStorage();
+		const target = path.join(makeTempDir(), "archive.jsonl");
+		await storage.writeText(target, "original");
+		const sync = fs.fsyncSync;
+		for (const current of [target, `${target}.new`]) {
+			let failed = false;
+			const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(fd => {
+				const kind = fs.fstatSync(fd).isDirectory() ? "directory" : "file";
+				if (!failed && kind === failure) {
+					failed = true;
+					throw new Error("durability unavailable");
+				}
+				sync(fd);
+			});
+			await expect(storage.appendTextAtomic(current, "suffix", { durable: true })).rejects.toThrow(
+				"durability unavailable",
+			);
+			syncSpy.mockRestore();
+			if (current === target) expect(await storage.readText(current)).toBe("original");
+			else expect(await storage.exists(current)).toBe(false);
+		}
+	});
+}

@@ -3,8 +3,16 @@ import {
 	copyToClipboard as nativeCopyToClipboard,
 	readImageFromClipboard as nativeReadImageFromClipboard,
 } from "@oh-my-pi/pi-natives/clipboard";
+import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui/editor-limits";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils/mime";
+import { readBytesWithLimit } from "@oh-my-pi/pi-utils/stream";
+import {
+	assertImageInputSize,
+	ImageResourceLimitError,
+	MAX_IMAGE_INPUT_BYTES,
+	reserveImageInput,
+} from "./image-resources";
 import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text" };
 
 type SpawnCaptureOptions = { input?: string; timeoutMs?: number };
@@ -27,9 +35,14 @@ async function spawnCapture(
 		proc.kill();
 	}, timeoutMs);
 	try {
-		const response = new Response(proc.stdout);
-		const stdout =
-			options.encoding === "bytes" ? new Uint8Array(await response.arrayBuffer()) : await response.text();
+		const maxBytes = options.encoding === "bytes" ? MAX_IMAGE_INPUT_BYTES : EDITOR_LIMITS.draftBytes;
+		const { bytes, truncated } = await readBytesWithLimit(proc.stdout, maxBytes);
+		if (truncated) {
+			proc.kill();
+			await proc.exited;
+			throw new RangeError(`Clipboard exceeds ${maxBytes} bytes and was not pasted`);
+		}
+		const stdout = options.encoding === "bytes" ? bytes : new TextDecoder().decode(bytes);
 		await proc.exited;
 		if (timedOut) {
 			throw new Error(`${cmd[0]} timed out after ${timeoutMs}ms`);
@@ -103,12 +116,24 @@ export async function copyToClipboard(text: string): Promise<void> {
 async function readTextFromX11Clipboard(): Promise<string> {
 	try {
 		return await spawnCapture(["xclip", "-selection", "clipboard", "-o"]);
-	} catch {
+	} catch (error) {
+		if (error instanceof RangeError) throw error;
 		return await spawnCapture(["xsel", "--clipboard", "--output"]);
 	}
 }
 
 export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
+	// The platform clipboard API cannot inspect size before allocation. Reserve its
+	// maximum admitted payload up front and keep the lease until the native read settles.
+	const lease = reserveImageInput(MAX_IMAGE_INPUT_BYTES);
+	try {
+		return await readClipboardImage();
+	} finally {
+		lease.release();
+	}
+}
+
+async function readClipboardImage(): Promise<ClipboardImage | null> {
 	if (process.env.TERMUX_VERSION) {
 		return null;
 	}
@@ -121,7 +146,9 @@ export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 				const data = await spawnCapture(["wl-paste", "--type", mimeType], { encoding: "bytes" });
 				if (data.byteLength > 0) return { data, mimeType };
 			}
-		} catch {}
+		} catch (error) {
+			if (error instanceof RangeError) throw error;
+		}
 	}
 
 	if (!hasDisplay()) {
@@ -129,8 +156,11 @@ export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 	}
 
 	try {
-		return (await nativeReadImageFromClipboard()) ?? null;
+		const image = await nativeReadImageFromClipboard();
+		if (image) assertImageInputSize(image.data.byteLength);
+		return image ?? null;
 	} catch (error) {
+		if (error instanceof ImageResourceLimitError) throw error;
 		logger.warn("clipboard: failed to read clipboard image", { error: String(error) });
 		return null;
 	}
@@ -150,7 +180,8 @@ export async function readTextFromClipboard(): Promise<string> {
 		if (hasWaylandDisplay) {
 			try {
 				return await spawnCapture(["wl-paste", "--type", "text/plain", "--no-newline"]);
-			} catch {
+			} catch (error) {
+				if (error instanceof RangeError) throw error;
 				if (hasX11Display) {
 					return await readTextFromX11Clipboard();
 				}
@@ -159,6 +190,7 @@ export async function readTextFromClipboard(): Promise<string> {
 			return await readTextFromX11Clipboard();
 		}
 	} catch (error) {
+		if (error instanceof RangeError) throw error;
 		logger.warn("clipboard: failed to read clipboard text", { error: String(error) });
 	}
 	return "";

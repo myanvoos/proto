@@ -327,6 +327,7 @@ export class EventController {
 	}
 
 	#getReadGroup(): ReadToolGroupComponent {
+		if (this.#lastReadGroup && !this.ctx.chatContainer.hasSourceCapacity(this.#lastReadGroup)) this.#resetReadGroup();
 		if (!this.#lastReadGroup) {
 			const group = new ReadToolGroupComponent({
 				showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
@@ -812,6 +813,12 @@ export class EventController {
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
+			// Timeline anchors belong to one assistant message, not the entire autonomous run.
+			// Keep only still-running tools; completed replay blocks may already have been disposed.
+			for (const id of this.#toolTimelineComponents.keys()) {
+				if (!this.ctx.pendingTools.has(id)) this.#toolTimelineComponents.delete(id);
+			}
+			this.#postToolAssistantComponents.clear();
 			this.#resetStreamingAssistantState();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
@@ -1211,6 +1218,12 @@ export class EventController {
 					: displayMessage,
 			);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
+			this.ctx.chatContainer.accountSource(this.ctx.streamingComponent, displayTimeline.beforeTools);
+			for (const content of event.message.content) {
+				if (content.type !== "toolCall") continue;
+				const component = this.ctx.pendingTools.get(content.id);
+				if (component) this.ctx.chatContainer.accountSource(component, content.arguments);
+			}
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
 				for (const [toolCallId, component] of this.ctx.pendingTools.entries()) {
@@ -1255,6 +1268,7 @@ export class EventController {
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
 				const component = this.#upsertPostToolAssistantSegment(toolCallId, segment);
 				component?.markTranscriptBlockFinalized();
+				if (component) this.ctx.chatContainer.accountSource(component, segment);
 				if (component) lastPostToolAssistantComponent = component;
 			}
 			if (interruptedDiscardedTool) {
@@ -1292,7 +1306,7 @@ export class EventController {
 				}
 			}
 			if (displayMessage === event.message) {
-				this.ctx.transcriptMessageComponents.set(event.message, this.ctx.streamingComponent);
+				this.ctx.transcriptMessageComponents.set(event.message, new WeakRef(this.ctx.streamingComponent));
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
@@ -1339,6 +1353,7 @@ export class EventController {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const group = this.#getReadGroup();
 				group.updateArgs(event.args, event.toolCallId);
+				this.ctx.chatContainer.accountSource(group, event.args);
 				this.ctx.pendingTools.set(event.toolCallId, group);
 				this.#toolTimelineComponents.set(event.toolCallId, group);
 				this.#moveTranscriptComponent(group, replacementIndex);
@@ -1364,6 +1379,7 @@ export class EventController {
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(component);
+			this.ctx.chatContainer.accountSource(component, event.args);
 			this.#moveTranscriptComponent(component, replacementIndex);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
@@ -1372,6 +1388,7 @@ export class EventController {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(event.args, event.toolCallId);
+				this.ctx.chatContainer.accountSource(component, event.args);
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
 				}
@@ -1404,6 +1421,7 @@ export class EventController {
 		event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
 	): void {
 		component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+		this.ctx.chatContainer.accountSource(component, event.result);
 		this.ctx.pendingTools.delete(event.toolCallId);
 		if (
 			component instanceof ToolExecutionComponent &&
@@ -1458,6 +1476,7 @@ export class EventController {
 			}
 			this.#attachReadToolImages(component, event.toolCallId, event.result);
 			component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+			this.ctx.chatContainer.accountSource(component, event.result);
 			this.ctx.pendingTools.delete(event.toolCallId);
 			this.#clearReadToolCall(event.toolCallId);
 			this.ctx.ui.requestRender();
@@ -1465,6 +1484,7 @@ export class EventController {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+				this.ctx.chatContainer.accountSource(component, event.result);
 				this.ctx.pendingTools.delete(event.toolCallId);
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
 					if (event.toolName === "fleet" && component.canBeDisplacedBy("fleet")) {
@@ -1528,7 +1548,7 @@ export class EventController {
 			this.ctx.statusContainer.disposeChildren();
 		}
 		if (this.ctx.streamingComponent) {
-			this.ctx.chatContainer.removeChild(this.ctx.streamingComponent);
+			this.ctx.chatContainer.disposeAndRemoveChild(this.ctx.streamingComponent);
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
 		}

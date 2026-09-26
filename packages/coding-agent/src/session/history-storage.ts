@@ -1,6 +1,7 @@
 import type { Database, Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui";
 import { checkpointWal, getHistoryDbPath, logger, openSqliteDatabaseSync, postmortem } from "@oh-my-pi/pi-utils";
 
 export interface HistoryEntry {
@@ -22,6 +23,20 @@ type HistoryRow = {
 	cwd: string | null;
 	session_id: string | null;
 };
+
+type HistoryCandidate = {
+	id: number;
+	created_at: number;
+	bytes: number;
+};
+
+// Bound tokenization, generated SQL/FTS input, and SQLite expression depth.
+const SEARCH_QUERY_BYTES = 4096;
+const SEARCH_QUERY_TOKENS = 64;
+const PROMPT_BYTES_SQL = "length(CAST(prompt AS BLOB))";
+const ROW_BYTES_SQL = `${PROMPT_BYTES_SQL} + coalesce(length(CAST(cwd AS BLOB)), 0) + coalesce(length(CAST(session_id AS BLOB)), 0)`;
+const ELIGIBLE_SQL = `${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} AND (${ROW_BYTES_SQL}) <= ${EDITOR_LIMITS.historyBytes}`;
+const CANDIDATE_SQL = `SELECT id, created_at, (${ROW_BYTES_SQL}) AS bytes FROM history`;
 
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
@@ -59,8 +74,9 @@ export class HistoryStorage {
 	#upsertRowStmt: Statement;
 	#recentStmt: Statement;
 	#searchStmt: Statement;
-
-	#substringStmts = new Map<number, Statement>();
+	#rowStmt: Statement;
+	#substringStmt?: Statement;
+	#substringTokenCount = 0;
 
 	private constructor(db: Database) {
 		this.#db = db;
@@ -90,11 +106,12 @@ END;
 			}
 		}
 		this.#recentStmt = this.#db.prepare(
-			"SELECT id, prompt, created_at, cwd, session_id FROM history ORDER BY created_at DESC, id DESC LIMIT ?",
+			`${CANDIDATE_SQL} WHERE ${ELIGIBLE_SQL} ORDER BY created_at DESC, id DESC LIMIT ?`,
 		);
 		this.#searchStmt = this.#db.prepare(
-			"SELECT h.id, h.prompt, h.created_at, h.cwd, h.session_id FROM history_fts f JOIN history h ON h.id = f.rowid WHERE history_fts MATCH ? ORDER BY h.created_at DESC, h.id DESC LIMIT ?",
+			`${CANDIDATE_SQL} WHERE ${ELIGIBLE_SQL} AND id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH ?) ORDER BY created_at DESC, id DESC LIMIT ?`,
 		);
+		this.#rowStmt = this.#db.prepare("SELECT id, prompt, created_at, cwd, session_id FROM history WHERE id = ?");
 		this.#upsertRowStmt = this.#db.prepare(`
 INSERT INTO history (prompt, created_at, cwd, session_id)
 VALUES (?, ${SQLITE_NOW_EPOCH}, ?, ?)
@@ -137,68 +154,84 @@ ON CONFLICT(prompt) DO UPDATE SET
 
 	#close(): void {
 		checkpointWal(this.#db);
-		for (const stmt of this.#substringStmts.values()) stmt.finalize();
-		this.#substringStmts.clear();
+		this.#substringStmt?.finalize();
+		this.#rowStmt.finalize();
 		this.#upsertRowStmt.finalize();
 		this.#recentStmt.finalize();
 		this.#searchStmt.finalize();
 		this.#db.close();
 	}
 
-	#insertBatch(rows: Array<Pick<HistoryEntry, "prompt" | "cwd" | "sessionId">>): void {
-		this.#db.transaction((rows: Array<Pick<HistoryEntry, "prompt" | "cwd" | "sessionId">>) => {
-			for (const row of rows) {
-				this.#upsertRowStmt.run(row.prompt, row.cwd ?? null, row.sessionId ?? null);
-			}
-		})(rows);
-	}
-
 	setSessionResolver(resolver: () => string | undefined): void {
 		this.#sessionResolver = resolver;
 	}
 
-	/** Stores a prompt synchronously so it is durable when this method returns. */
+	/**
+	 * Stores an eligible prompt synchronously, durable when this method returns.
+	 * Rejects input above the shared expansion ceiling (16 MiB) before normalization;
+	 * each metadata string is capped at the draft ceiling (4 MiB). Never truncates.
+	 * Expanded prompts above the draft ceiling stay durable but are not retrieved.
+	 */
 	add(prompt: string, cwd?: string, sessionId?: string): Promise<void> {
+		if (Buffer.byteLength(prompt) > EDITOR_LIMITS.expandedBytes) return Promise.resolve();
 		const trimmed = normalizePrompt(prompt);
 		if (!trimmed) return Promise.resolve();
 		const session = sessionId ?? this.#sessionResolver?.();
+		if (
+			Buffer.byteLength(cwd ?? "") > EDITOR_LIMITS.draftBytes ||
+			Buffer.byteLength(session ?? "") > EDITOR_LIMITS.draftBytes
+		)
+			return Promise.resolve();
 		try {
-			this.#insertBatch([{ prompt: trimmed, cwd: cwd ?? undefined, sessionId: session || undefined }]);
+			this.#upsertRowStmt.run(trimmed, cwd ?? null, session || null);
 		} catch (error) {
 			logger.error("HistoryStorage add failed", { error: String(error) });
 		}
 		return Promise.resolve();
 	}
 
+	/**
+	 * Newest eligible rows, capped at 1000 and an 8 MiB UTF-8 payload prefix.
+	 * Prompts above the shared draft ceiling remain on disk but are excluded.
+	 * Metadata is included in the byte budget; no rejected strings are hydrated.
+	 */
 	getRecent(limit: number): HistoryEntry[] {
 		const safeLimit = this.#normalizeLimit(limit);
 		if (safeLimit === 0) return [];
 
 		try {
-			const rows = this.#recentStmt.all(safeLimit) as HistoryRow[];
-			return rows.map(row => this.#toEntry(row));
+			return this.#db.transaction(() => {
+				const rows = this.#recentStmt.all(safeLimit) as HistoryCandidate[];
+				return this.#hydrate(rows);
+			})();
 		} catch (error) {
 			logger.error("HistoryStorage getRecent failed", { error: String(error) });
 			return [];
 		}
 	}
 
+	/** Same payload admission as getRecent; queries over 4 KiB or 64 tokens return no results. */
 	search(query: string, limit: number): HistoryEntry[] {
+		if (Buffer.byteLength(query) > SEARCH_QUERY_BYTES) return [];
+		return this.#db.transaction(() => this.#search(query, limit))();
+	}
+
+	#search(query: string, limit: number): HistoryEntry[] {
 		const safeLimit = this.#normalizeLimit(limit);
 		if (safeLimit === 0) return [];
 
 		const tokens = this.#tokenize(query);
-		if (tokens.length === 0) return [];
+		if (tokens.length === 0 || tokens.length > SEARCH_QUERY_TOKENS) return [];
 
 		const ftsQuery = tokens.map(tok => `"${tok.replace(/"/g, '""')}"*`).join(" ");
-		let ftsRows: HistoryRow[] = [];
+		let ftsRows: HistoryCandidate[] = [];
 		try {
-			ftsRows = this.#searchStmt.all(ftsQuery, safeLimit) as HistoryRow[];
+			ftsRows = this.#searchStmt.all(ftsQuery, safeLimit) as HistoryCandidate[];
 		} catch (error) {
 			logger.debug("HistoryStorage FTS query failed, using substring only", { error: String(error) });
 		}
 
-		let subRows: HistoryRow[] = [];
+		let subRows: HistoryCandidate[] = [];
 		try {
 			subRows = this.#searchSubstring(tokens, safeLimit);
 		} catch (error) {
@@ -206,10 +239,10 @@ ON CONFLICT(prompt) DO UPDATE SET
 		}
 
 		if (ftsRows.length === 0) {
-			return subRows.map(row => this.#toEntry(row));
+			return this.#hydrate(subRows);
 		}
 
-		const rowsById = new Map<number, HistoryRow>();
+		const rowsById = new Map<number, HistoryCandidate>();
 		for (const row of ftsRows) {
 			rowsById.set(row.id, row);
 		}
@@ -217,10 +250,9 @@ ON CONFLICT(prompt) DO UPDATE SET
 			if (!rowsById.has(row.id)) rowsById.set(row.id, row);
 		}
 
-		return [...rowsById.values()]
-			.sort((a, b) => b.created_at - a.created_at || b.id - a.id)
-			.slice(0, safeLimit)
-			.map(row => this.#toEntry(row));
+		return this.#hydrate(
+			[...rowsById.values()].sort((a, b) => b.created_at - a.created_at || b.id - a.id).slice(0, safeLimit),
+		);
 	}
 
 	matchingSessionIds(query: string, limit = 500): string[] {
@@ -243,45 +275,38 @@ ON CONFLICT(prompt) DO UPDATE SET
 	#rebuildHistory(): boolean {
 		const versionRow = this.#db.prepare("PRAGMA user_version").get() as { user_version: number };
 		if (versionRow.user_version >= HISTORY_DATA_VERSION) return false;
-		let rows: HistoryRow[];
-		try {
-			const sessionIdSelection = this.#historySchemaHasColumn("session_id") ? "session_id" : "NULL AS session_id";
-			rows = this.#db
-				.prepare(`SELECT id, prompt, created_at, cwd, ${sessionIdSelection} FROM history`)
-				.all() as HistoryRow[];
-		} catch (error) {
-			logger.error("HistoryStorage rebuild dump failed", { error: String(error) });
-			return false;
-		}
-		const winners = new Map<string, HistoryRow>();
-		for (const row of rows) {
-			const prompt = normalizePrompt(row.prompt);
-			if (!prompt) continue;
-			const incumbent = winners.get(prompt);
-
-			const rowWins =
-				!incumbent ||
-				row.created_at > incumbent.created_at ||
-				(row.created_at === incumbent.created_at && row.id > incumbent.id);
-			if (rowWins) winners.set(prompt, { ...row, prompt });
-		}
+		this.#db.run("PRAGMA temp_store = FILE");
 		this.#db.transaction(() => {
-			this.#db.run("DROP INDEX IF EXISTS idx_history_created_at");
+			if (!this.#historySchemaHasColumn("session_id")) {
+				this.#db.run("ALTER TABLE history ADD COLUMN session_id TEXT");
+			}
 			this.#db.run("DROP TRIGGER IF EXISTS history_ai");
 			this.#db.run("DROP TABLE IF EXISTS history_fts");
-			this.#db.run("DROP TABLE history");
-			this.#db.run(HISTORY_TABLE_DDL);
-			const insert = this.#db.prepare(
-				"INSERT INTO history (id, prompt, created_at, cwd, session_id) VALUES (?, ?, ?, ?, ?)",
+			// Keep normalization winners on disk, not in an archive-sized JS map.
+			// Oversized legacy prompts stay byte-for-byte intact in the durable table.
+			this.#db.run("CREATE TEMP TABLE history_normalized (id INTEGER PRIMARY KEY, prompt TEXT NOT NULL UNIQUE)");
+			const rows = this.#db.prepare<{ id: number; prompt: string }, []>(
+				`SELECT id, prompt FROM history WHERE ${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} ORDER BY created_at DESC, id DESC`,
 			);
-			for (const row of winners.values()) {
-				insert.run(row.id, row.prompt, row.created_at, row.cwd, row.session_id);
+			const insert = this.#db.prepare("INSERT OR IGNORE INTO history_normalized (id, prompt) VALUES (?, ?)");
+			try {
+				for (const row of rows.iterate()) {
+					const prompt = normalizePrompt(row.prompt);
+					if (prompt) insert.run(row.id, prompt);
+				}
+			} finally {
+				rows.finalize();
+				insert.finalize();
 			}
+			this.#db.run(
+				`DELETE FROM history WHERE ${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} AND id NOT IN (SELECT id FROM history_normalized)`,
+			);
+			this.#db.run(
+				"UPDATE history SET prompt = (SELECT prompt FROM history_normalized WHERE id = history.id) WHERE id IN (SELECT id FROM history_normalized)",
+			);
+			this.#db.run("DROP TABLE history_normalized");
 			this.#db.run(`PRAGMA user_version = ${HISTORY_DATA_VERSION}`);
 		})();
-		if (winners.size < rows.length) {
-			logger.debug("HistoryStorage collapsed rows during rebuild", { before: rows.length, after: winners.size });
-		}
 		return true;
 	}
 
@@ -298,22 +323,29 @@ ON CONFLICT(prompt) DO UPDATE SET
 			.filter(tok => tok.length > 0);
 	}
 
-	#searchSubstring(tokens: string[], limit: number): HistoryRow[] {
-		const stmt = this.#getSubstringStmt(tokens.length);
-		const params: unknown[] = tokens.map(tok => `%${escapeLikePattern(tok)}%`);
-		params.push(limit);
-		return stmt.all(...(params as [string, ...unknown[]])) as HistoryRow[];
+	#searchSubstring(tokens: string[], limit: number): HistoryCandidate[] {
+		if (!this.#substringStmt || this.#substringTokenCount !== tokens.length) {
+			this.#substringStmt?.finalize();
+			this.#substringStmt = undefined;
+			const whereClause = Array(tokens.length).fill("prompt LIKE ? ESCAPE '\\' COLLATE NOCASE").join(" AND ");
+			this.#substringStmt = this.#db.prepare(
+				`${CANDIDATE_SQL} WHERE ${ELIGIBLE_SQL} AND ${whereClause} ORDER BY created_at DESC, id DESC LIMIT ?`,
+			);
+			this.#substringTokenCount = tokens.length;
+		}
+		return this.#substringStmt.all(...tokens.map(tok => `%${escapeLikePattern(tok)}%`), limit) as HistoryCandidate[];
 	}
 
-	#getSubstringStmt(tokenCount: number): Statement {
-		let stmt = this.#substringStmts.get(tokenCount);
-		if (stmt) return stmt;
-		const whereClause = Array(tokenCount).fill("prompt LIKE ? ESCAPE '\\' COLLATE NOCASE").join(" AND ");
-		stmt = this.#db.prepare(
-			`SELECT id, prompt, created_at, cwd, session_id FROM history WHERE ${whereClause} ORDER BY created_at DESC, id DESC LIMIT ?`,
-		);
-		this.#substringStmts.set(tokenCount, stmt);
-		return stmt;
+	#hydrate(rows: HistoryCandidate[]): HistoryEntry[] {
+		const entries: HistoryEntry[] = [];
+		let bytes = 0;
+		for (const candidate of rows) {
+			if (bytes + candidate.bytes > EDITOR_LIMITS.historyBytes) break;
+			bytes += candidate.bytes;
+			const row = this.#rowStmt.get(candidate.id) as HistoryRow;
+			entries.push(this.#toEntry(row));
+		}
+		return entries;
 	}
 
 	#toEntry(row: HistoryRow): HistoryEntry {

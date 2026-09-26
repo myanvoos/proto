@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { once } from "node:events";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -13,9 +14,11 @@ import { Settings } from "../config/settings";
 import { Composer } from "../modes/composer";
 import { InteractiveMode } from "../modes/interactive-mode";
 import { initTheme } from "../modes/theme/theme";
+import { TRANSCRIPT_WINDOW_BYTES, TRANSCRIPT_WINDOW_MESSAGES } from "../modes/utils/transcript-window";
 import { AgentSession } from "../session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "../session/auth-storage";
 import { findMostRecentSession, resolveResumableSession } from "../session/session-listing";
+import { sessionArchivePath } from "../session/session-loader";
 import { SessionManager } from "../session/session-manager";
 
 interface RenderCommandArgs {
@@ -160,6 +163,11 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 	let mode: InteractiveMode | undefined;
 	try {
 		await fs.copyFile(sourcePath, workingCopy);
+		try {
+			await fs.copyFile(sessionArchivePath(sourcePath), sessionArchivePath(workingCopy));
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+		}
 		const openStart = performance.now();
 		const sessionManager = await SessionManager.open(workingCopy, undefined, undefined, {
 			suppressBreadcrumb: true,
@@ -189,7 +197,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		scheduler.drain();
 
 		const replayStart = performance.now();
-		await mode.renderInitialMessages({ clearTerminalHistory: true, fullHistory: true });
+		await mode.renderInitialMessages({ clearTerminalHistory: true });
 		const replayMs = performance.now() - replayStart;
 
 		const paintStart = performance.now();
@@ -198,9 +206,8 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		const paintMs = performance.now() - paintStart;
 		const paintBytes = terminal.bytes - bytesBeforePaint;
 
-		const entries = sessionManager.getEntries();
-		let messageCount = 0;
-		for (const entry of entries) if (entry.type === "message") messageCount++;
+		const entryCount = sessionManager.getEntryCount();
+		const messageCount = sessionManager.getEntryCount("message");
 
 		const repaints: { ms: number; bytes: number }[] = [];
 		for (let i = 0; i < (args.repaint ?? 0); i++) {
@@ -212,27 +219,35 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		}
 
 		if (!args.quiet) {
-			const lines = mode.chatContainer.render(width);
-			// NO_COLOR (or TERM=dumb, or FORCE_COLOR=0) is a user decision, not a terminal
-			// capability: honour it even though the transcript is captured, not displayed. TTY
-			// detection stays out of it so `proto render > thread.ansi` still keeps its colours.
+			// Offline output keeps full chronological history, but admits and disposes
+			// one durable page at a time instead of bypassing interactive byte limits.
 			const stripStyling = args.plain === true || detectColorLevel(process.env, true) === 0;
-			const joined = lines.join("\n");
-			const text = stripStyling
-				? Bun.stripANSI(joined)
-				: process.stdout.isTTY
-					? joined
-					: // Shell-integration markers only mean something to a live terminal.
-						joined.replace(SHELL_INTEGRATION_MARKER, "");
-			process.stdout.write(text);
-			process.stdout.write("\n");
+			let pageFromLatest = Number.MAX_SAFE_INTEGER;
+			while (true) {
+				const context = session.buildTranscriptSessionContext({
+					collapseCompactedHistory: false,
+					window: { pageFromLatest, maxMessages: TRANSCRIPT_WINDOW_MESSAGES, maxBytes: TRANSCRIPT_WINDOW_BYTES },
+				});
+				mode.resetTranscript();
+				mode.renderSessionContext(context);
+				const joined = mode.chatContainer.render(width).join("\n");
+				const text = stripStyling
+					? Bun.stripANSI(joined)
+					: process.stdout.isTTY
+						? joined
+						: joined.replace(SHELL_INTEGRATION_MARKER, "");
+				if (!process.stdout.write(`${text}\n`)) await once(process.stdout, "drain");
+				const page = context.window?.pageFromLatest ?? 0;
+				if (page === 0) break;
+				pageFromLatest = page - 1;
+			}
 		}
 
 		if (args.timing || args.repaint) {
 			const rows = mode.chatContainer.render(width).length;
 			const report = [
 				`session  ${sourcePath}`,
-				`         ${formatBytes(sourceSize, { style: "spaced-iec" })}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
+				`         ${formatBytes(sourceSize, { style: "spaced-iec" })}, ${entryCount} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
 				`open     ${formatMs(openMs)}`,
 				`replay   ${formatMs(replayMs)}  (transcript build + component construction)`,
 				`paint    ${formatMs(paintMs)}  (full frame compose + emit: ${formatBytes(paintBytes, { style: "spaced-iec" })}, ${terminal.writes} writes)`,

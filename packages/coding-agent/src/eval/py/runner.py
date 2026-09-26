@@ -423,6 +423,9 @@ class _BoundedRequestQueue:
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "proto_current_rid", default=None
 )
+_CURRENT_COMPLETION_COUNT: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "proto_completion_count", default=None
+)
 _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None] = (
     contextvars.ContextVar(
         "proto_displayed_matplotlib_figure_ids",
@@ -2020,6 +2023,16 @@ def _current_run_id() -> str | None:
     return _CURRENT_RID.get()
 
 
+def _next_completion_invocation_id() -> str:
+    counter = _CURRENT_COMPLETION_COUNT.get()
+    if counter is None:
+        counter = [0]
+        _CURRENT_COMPLETION_COUNT.set(counter)
+    value = counter[0]
+    counter[0] += 1
+    return str(value)
+
+
 def _runner_exports() -> dict[str, Any]:
     return {
         "display": __proto_display,
@@ -2059,6 +2072,7 @@ def _load_prelude(source: str) -> None:
         "__proto_display": __proto_display,
         "__proto_kernel_note": _emit_kernel_note,
         "__proto_current_run_id__": _current_run_id,
+        "__proto_next_completion_invocation__": _next_completion_invocation_id,
     }
     exec(compile(source, "<prelude>", "exec"), ns)
     declared = ns.get("__all__")
@@ -2385,6 +2399,7 @@ def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
 async def _handle_request_async(req: dict) -> None:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
+    completion_token = _CURRENT_COMPLETION_COUNT.set([0])
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
     saved_matplotlib_token = _SAVED_MATPLOTLIB_FIGURES.set([])
     try:
@@ -2534,6 +2549,7 @@ async def _handle_request_async(req: dict) -> None:
         _end_fd_capture()
         _flush_stream_proxies(rid)
         _CURRENT_RID.reset(token)
+        _CURRENT_COMPLETION_COUNT.reset(completion_token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
         _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
         sys.stdin = saved_stdin

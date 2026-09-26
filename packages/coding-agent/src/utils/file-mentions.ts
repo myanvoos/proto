@@ -1,13 +1,11 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { formatAge, formatBytes, isProbablyBinary, readImageMetadata, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { FileMentionMessage } from "../session/messages";
 import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../session/streaming-output";
 import { resolveReadPath } from "../tools/path-utils";
-import { readDecodedImageDimensions } from "./image-loading";
-import { formatDimensionNote, resizeImage } from "./image-resize";
+import { ImageDecodeError, ImageInputTooLargeError, loadImageInput } from "./image-loading";
+import { ImageResourceLimitError } from "./image-resources";
 
 const FILE_MENTION_REGEX = /@(?:"([^"]+)"|'([^']+)'|([^\s@]+))/g;
 const LEADING_PUNCTUATION_REGEX = /^[`"'([{<]+/;
@@ -16,7 +14,6 @@ const MENTION_BOUNDARY_REGEX = /[\s([{<"'`]/;
 const DEFAULT_DIR_LIMIT = 500;
 
 const MAX_AUTO_READ_TEXT_BYTES = 5 * 1024 * 1024;
-const MAX_AUTO_READ_IMAGE_BYTES = 25 * 1024 * 1024;
 
 function isMentionBoundary(text: string, index: number): boolean {
 	if (index === 0) return true;
@@ -239,50 +236,40 @@ export async function generateFileMentionMessages(
 			const imageMetadata = await readImageMetadata(absolutePath);
 			const mimeType = imageMetadata?.mimeType;
 			if (mimeType) {
-				if (stat.size > MAX_AUTO_READ_IMAGE_BYTES) {
-					files.push({
+				try {
+					const loaded = await loadImageInput({
 						path: resolvedPath,
-						content: `(skipped auto-read: too large, ${formatBytes(stat.size)})`,
-						byteSize: stat.size,
-						skippedReason: "tooLarge",
+						cwd,
+						resolvedPath: absolutePath,
+						detectedMimeType: mimeType,
+						autoResize: autoResizeImages,
 					});
-					continue;
-				}
-				const buffer = await fs.readFile(absolutePath);
-				if (buffer.length === 0) {
-					continue;
-				}
-
-				const base64Content = buffer.toBase64();
-				// An undecodable image is reported instead of being attached: the provider cannot use it
-				// and the user would otherwise see an empty preview.
-				if (!(await readDecodedImageDimensions(buffer))) {
-					files.push({
-						path: resolvedPath,
-						content: "(skipped auto-read: image is corrupt or truncated)",
-						byteSize: stat.size,
-						skippedReason: "undecodableImage",
-					});
-					continue;
-				}
-				let image: ImageContent = { type: "image", mimeType, data: base64Content };
-				let dimensionNote: string | undefined;
-
-				if (autoResizeImages) {
-					try {
-						const resized = await resizeImage({ type: "image", data: base64Content, mimeType });
-						dimensionNote = formatDimensionNote(resized);
-						image = {
-							type: "image",
-							mimeType: resized.mimeType,
-							data: resized.data,
-						};
-					} catch {
-						image = { type: "image", mimeType, data: base64Content };
+					if (loaded) {
+						files.push({
+							path: resolvedPath,
+							content: loaded.dimensionNote ?? "",
+							image: { type: "image", mimeType: loaded.mimeType, data: loaded.data },
+						});
+					}
+				} catch (error) {
+					if (error instanceof ImageInputTooLargeError) {
+						files.push({
+							path: resolvedPath,
+							content: `(skipped auto-read: too large, ${formatBytes(error.bytes)})`,
+							byteSize: error.bytes,
+							skippedReason: "tooLarge",
+						});
+					} else if (error instanceof ImageDecodeError) {
+						files.push({
+							path: resolvedPath,
+							content: "(skipped auto-read: image is corrupt or truncated)",
+							byteSize: stat.size,
+							skippedReason: "undecodableImage",
+						});
+					} else {
+						throw error;
 					}
 				}
-
-				files.push({ path: resolvedPath, content: dimensionNote ?? "", image });
 				continue;
 			}
 
@@ -308,7 +295,9 @@ export async function generateFileMentionMessages(
 			const content = await Bun.file(absolutePath).text();
 			const { output, lineCount } = buildTextOutput(content);
 			files.push({ path: resolvedPath, content: output, lineCount });
-		} catch {}
+		} catch (error) {
+			if (error instanceof ImageResourceLimitError) throw error;
+		}
 	}
 
 	if (files.length === 0) return [];

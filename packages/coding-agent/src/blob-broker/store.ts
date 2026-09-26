@@ -91,6 +91,8 @@ const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
 const INDEX_SAVE_DEBOUNCE_MS = 500;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
+class BlobAdmissionError extends Error {}
+
 function randomToken(): string {
 	const bytes = new Uint8Array(16);
 	crypto.getRandomValues(bytes);
@@ -118,6 +120,9 @@ export class BlobRegistry {
 
 	constructor(options?: { maxBytes?: number; persist?: BlobPersistence | undefined; now?: () => number }) {
 		this.#maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
+		if (!Number.isSafeInteger(this.#maxBytes) || this.#maxBytes < 0) {
+			throw new RangeError("Blob resident byte budget must be a nonnegative safe integer");
+		}
 		this.#persist = options?.persist;
 		this.#now = options?.now ?? Date.now;
 		if (this.#persist) {
@@ -238,11 +243,15 @@ export class BlobRegistry {
 	}
 
 	#drop(entry: StoredBlob): void {
+		if (this.#entries.get(entry.token) !== entry) return;
 		if (entry.bytes) this.#residentBytes -= entry.bytes.byteLength;
+		entry.bytes = undefined;
+		entry.fetcher = undefined;
+		entry.pending = undefined;
 		this.#entries.delete(entry.token);
 		const key = this.#keyByToken.get(entry.token);
 		this.#keyByToken.delete(entry.token);
-		if (key !== undefined) this.#tokenByKey.delete(key);
+		if (key !== undefined && this.#tokenByKey.get(key) === entry.token) this.#tokenByKey.delete(key);
 	}
 
 	#sweep(force = false): void {
@@ -294,18 +303,38 @@ export class BlobRegistry {
 
 	async #registerBytes(key: string, mimeType: string, bytes: Uint8Array): Promise<BlobRegistryEntry> {
 		const entry = this.#insert(key, mimeType, false);
+		try {
+			if (!(await this.#storeBytes(entry, bytes))) throw new Error("Blob registration was removed before admission");
+			return this.#describe(entry);
+		} catch (error) {
+			this.#drop(entry);
+			this.#scheduleSave();
+			throw error;
+		}
+	}
+
+	async #storeBytes(entry: StoredBlob, bytes: Uint8Array): Promise<boolean> {
+		if (this.#entries.get(entry.token) !== entry) return false;
 		if (this.#sessionStore) {
 			const sha = new Bun.SHA256().update(bytes).digest("hex");
-			entry.sha = sha;
-			if (!(await this.#sessionStore.has(sha))) {
-				await this.#sessionStore.put(Buffer.from(bytes), { extension: EXT_BY_MIME[mimeType] });
+			try {
+				if (!(await this.#sessionStore.has(sha))) {
+					await this.#sessionStore.put(Buffer.from(bytes), { extension: EXT_BY_MIME[entry.mimeType] });
+				}
+			} catch (error) {
+				throw new BlobAdmissionError("Blob admission failed: durable storage is unavailable", { cause: error });
 			}
+			// A purge during the write must not re-admit an unpublished blob.
+			if (this.#entries.get(entry.token) !== entry) return false;
+			entry.sha = sha;
+			entry.fetcher = undefined;
 		} else {
 			this.#retain(entry, bytes);
 		}
 		entry.bytesCount = bytes.byteLength;
+		if (entry.publication?.bytes === 0) entry.publication = { ...entry.publication, bytes: bytes.byteLength };
 		this.#scheduleSave();
-		return this.#describe(entry);
+		return true;
 	}
 
 	registerLazy(key: string, mimeType: string, fetcher: LazyBlobFetcher): BlobRegistryEntry {
@@ -313,7 +342,7 @@ export class BlobRegistry {
 		const token = this.#tokenByKey.get(key);
 		const existing = token !== undefined ? this.#entries.get(token) : undefined;
 		if (existing && !this.#expired(existing)) {
-			existing.fetcher = fetcher;
+			if (!existing.sha) existing.fetcher = fetcher;
 			this.#touch(existing);
 			return this.#describe(existing);
 		}
@@ -376,21 +405,29 @@ export class BlobRegistry {
 
 	#retain(entry: StoredBlob, bytes: Uint8Array): void {
 		this.#evictFor(bytes.byteLength);
-		entry.bytes = bytes;
-		this.#residentBytes += bytes.byteLength;
+		// Own exactly the admitted byte range, never a caller's larger backing buffer.
+		entry.bytes = new Uint8Array(bytes);
+		this.#residentBytes += entry.bytes.byteLength;
 	}
 
 	#evictFor(incoming: number): void {
+		let pinnedBytes = 0;
+		for (const entry of this.#entries.values()) {
+			if (entry.bytes && !entry.fetcher && !entry.sha) pinnedBytes += entry.bytes.byteLength;
+		}
+		if (pinnedBytes + incoming > this.#maxBytes) {
+			throw new BlobAdmissionError(`Blob exceeds the resident byte budget (${this.#maxBytes} bytes)`);
+		}
 		while (this.#residentBytes + incoming > this.#maxBytes) {
 			let oldest: StoredBlob | undefined;
 			for (const entry of this.#entries.values()) {
-				if (entry.bytes && (!oldest || entry.lastServe < oldest.lastServe)) oldest = entry;
+				if (entry.bytes && (entry.fetcher || entry.sha) && (!oldest || entry.lastServe < oldest.lastServe)) {
+					oldest = entry;
+				}
 			}
-			if (!oldest?.bytes) return;
+			if (!oldest?.bytes) throw new BlobAdmissionError("Blob resident byte budget is exhausted");
 			this.#residentBytes -= oldest.bytes.byteLength;
 			oldest.bytes = undefined;
-
-			if (!oldest.fetcher && !oldest.sha) this.#drop(oldest);
 		}
 	}
 
@@ -460,18 +497,21 @@ export class BlobRegistry {
 	}
 
 	async materialize(entry: StoredBlob): Promise<Uint8Array | null> {
+		if (this.#entries.get(entry.token) !== entry) return null;
 		if (entry.bytes) return entry.bytes;
-		if (!entry.fetcher) return null;
-		entry.pending ??= entry
-			.fetcher()
-			.then(bytes => {
-				if (bytes && bytes.byteLength > 0) this.#retain(entry, bytes);
-				return bytes;
+		const fetcher = entry.fetcher;
+		if (!fetcher) return null;
+		entry.pending ??= Promise.resolve()
+			.then(fetcher)
+			.then(async bytes => {
+				if (!bytes || !(await this.#storeBytes(entry, bytes))) return null;
+				return entry.bytes ?? bytes;
 			})
 			.catch(error => {
 				logger.warn("blob-broker: lazy blob fetch failed", {
 					error: error instanceof Error ? error.message : String(error),
 				});
+				if (error instanceof BlobAdmissionError) throw error;
 				return null;
 			})
 			.finally(() => {
@@ -539,6 +579,21 @@ export class BlobRegistry {
 			"cache-control": `public, max-age=${this.#servableSeconds(entry)}`,
 		};
 
+		let bytes: Uint8Array | null = null;
+		if (!entry.sha) {
+			try {
+				bytes = await this.materialize(entry);
+			} catch (error) {
+				if (!(error instanceof BlobAdmissionError)) throw error;
+				this.#recordMiss();
+				return new Response(error.message, { status: 507 });
+			}
+		}
+		if (this.#entries.get(entry.token) !== entry || this.#expired(entry)) {
+			this.#drop(entry);
+			this.#recordMiss();
+			return new Response(null, { status: 410 });
+		}
 		if (entry.sha && this.#persist && this.#sessionStore) {
 			const file = Bun.file(path.join(this.#persist.blobsDir, entry.sha));
 			if (!(await file.exists())) {
@@ -549,17 +604,9 @@ export class BlobRegistry {
 			this.#recordHit(entry, method, file.size);
 			return new Response(method === "HEAD" ? null : file, { status: 200, headers });
 		}
-		const bytes = await this.materialize(entry);
-
 		if (!bytes) {
 			this.#recordMiss();
 			return new Response(null, { status: 410 });
-		}
-		if (entry.bytesCount === 0) {
-			entry.bytesCount = bytes.byteLength;
-			if (entry.publication?.bytes === 0) {
-				entry.publication = { ...entry.publication, bytes: bytes.byteLength };
-			}
 		}
 		headers["content-length"] = String(bytes.byteLength);
 		this.#recordHit(entry, method, bytes.byteLength);

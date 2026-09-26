@@ -2,10 +2,14 @@ import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { AgentSession } from "../../session/agent-session";
 import * as commandUsage from "../../utils/command-usage";
+import { COMPOSER_IMAGE_LIMITS } from "../components/custom-editor";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { InputController } from "./input-controller";
@@ -410,7 +414,8 @@ function imagePasteHarness() {
 		pendingImageLinks: [] as unknown[],
 		imageLinks: [] as unknown[],
 		pasteText: (text: string) => pastedText.push(text),
-		insertAtom: () => {},
+		insertAtom: () => true,
+		assertDraftImages: () => {},
 	};
 	const context = {
 		editor,
@@ -456,6 +461,7 @@ function largePasteHarness(choose: (title: string, options: Array<{ label: strin
 	const editor = {
 		insertTextAttachment: (content: string, expansion?: string) => attachments.push({ content, expansion }),
 		insertText: () => {},
+		canAddAttachment: () => true,
 	};
 	const context = {
 		editor,
@@ -559,4 +565,106 @@ test("focused-agent Ctrl+P cycles the viewed agent's role models, not the main s
 	expect(viewCycle).toHaveBeenCalledWith(["smol", "default", "slow"], "forward");
 	expect(mainCycle).not.toHaveBeenCalled();
 	expect(tracks).toHaveLength(1);
+});
+
+test("a pending large-paste menu rejects a second payload instead of retaining another selector", async () => {
+	const gate = Promise.withResolvers<string | undefined>();
+	const { controller, statuses, attachments, titles } = largePasteHarness(() => gate.promise);
+	const first = controller.presentLargePasteMenu("first paste", 30);
+	await controller.presentLargePasteMenu("second paste", 30);
+	expect(titles).toHaveLength(1);
+	expect(statuses.some(status => status.includes("discarded"))).toBe(true);
+	gate.resolve("Paste inline");
+	await first;
+	expect(attachments.map(item => item.content)).toEqual(["first paste"]);
+});
+
+function queuedRestoreHarness(currentText: string, queuedText: string, images: ImageContent[] = []) {
+	const statuses: string[] = [];
+	const steering: AgentMessage[] = [
+		{ role: "user", content: [{ type: "text", text: queuedText }, ...images], timestamp: 1 },
+	];
+	const editor = {
+		text: currentText,
+		pendingImages: [] as ImageContent[],
+		pendingImageLinks: [] as Array<string | undefined>,
+		imageLinks: undefined as Array<string | undefined> | undefined,
+		getText() {
+			return this.text;
+		},
+		setCollapsedText(text: string) {
+			this.text = text;
+		},
+	};
+	const clearQueue = vi.fn(() => {
+		steering.length = 0;
+		return { steering: [], followUp: [] };
+	});
+	const context = {
+		editor,
+		session: { agent: { peekSteeringQueue: () => steering, peekFollowUpQueue: () => [] }, clearQueue },
+		locallySubmittedUserSignatures: new Set(["accepted"]),
+		compactionQueuedMessages: [{ mode: "followUp", text: "after", images: undefined }],
+		showStatus: (text: string) => statuses.push(text),
+		updatePendingMessagesDisplay: () => {},
+	} as unknown as InteractiveModeContext;
+	return { controller: new InputController(context), context, editor, clearQueue, steering, statuses };
+}
+
+test("oversized queue restoration keeps the draft, accepted queues, and submission signatures intact", () => {
+	const harness = queuedRestoreHarness("draft", "é".repeat(EDITOR_LIMITS.draftBytes / 2));
+	expect(harness.controller.restoreQueuedMessagesToEditor()).toBe(0);
+	expect(harness.clearQueue).not.toHaveBeenCalled();
+	expect(harness.editor.text).toBe("draft");
+	expect(harness.steering).toHaveLength(1);
+	expect(harness.context.compactionQueuedMessages).toHaveLength(1);
+	expect(harness.context.locallySubmittedUserSignatures.size).toBe(1);
+	expect(harness.statuses[0]).toContain("remain queued");
+});
+
+test("image-limited queue restoration does not drain accepted image messages", () => {
+	const image: ImageContent = { type: "image", mimeType: "image/png", data: "a" };
+	const harness = queuedRestoreHarness(
+		"draft",
+		"queued",
+		Array.from({ length: COMPOSER_IMAGE_LIMITS.count + 1 }, () => image),
+	);
+	expect(harness.controller.restoreQueuedMessagesToEditor()).toBe(0);
+	expect(harness.clearQueue).not.toHaveBeenCalled();
+	expect(harness.editor.pendingImages).toEqual([]);
+	expect(harness.editor.text).toBe("draft");
+});
+
+test("eligible queue restoration preserves ordering and accepts the exact UTF-8 draft boundary", () => {
+	const harness = queuedRestoreHarness("", `${"é".repeat(Math.floor((EDITOR_LIMITS.draftBytes - 2 - 5) / 2))}x`);
+	expect(harness.controller.restoreQueuedMessagesToEditor()).toBe(2);
+	expect(Buffer.byteLength(harness.editor.text)).toBe(EDITOR_LIMITS.draftBytes);
+	expect(harness.editor.text.endsWith("x\n\nafter")).toBe(true);
+	expect(harness.clearQueue).toHaveBeenCalledTimes(1);
+	expect(harness.context.compactionQueuedMessages).toEqual([]);
+	expect(harness.statuses).toEqual([]);
+});
+
+test("a rejected image marker does not retain the unattached image or reference link", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-image-rejection-"));
+	try {
+		const file = path.join(directory, "tiny.png");
+		await Bun.write(
+			file,
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+				"base64",
+			),
+		);
+		const harness = imagePasteHarness();
+		const insertAtom = vi.fn(() => false);
+		harness.editor.insertAtom = insertAtom;
+		await harness.controller.handleImagePathPaste(file);
+		expect(insertAtom).toHaveBeenCalledTimes(1);
+		expect(harness.editor.pendingImages).toEqual([]);
+		expect(harness.editor.pendingImageLinks).toEqual([]);
+		expect(harness.editor.imageLinks).toEqual([]);
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
 });

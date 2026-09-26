@@ -58,7 +58,9 @@ const fleetSchema = type({
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
-	"ids?": type("string[]").describe("wait: job ids to watch (omit = all running jobs); cancel: job ids to kill"),
+	"ids?": type("string[]").describe(
+		"wait: job ids (monitor: next event; others: completion); omit for all running jobs; cancel: job ids to kill",
+	),
 	"timeoutMs?": type("number").describe(
 		"wait/logs/stop/readiness timeout in milliseconds (0 waits indefinitely where supported)",
 	),
@@ -371,6 +373,9 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			return noMatchingJobsResult(this.session, ids);
 		}
 		const runningJobs = jobsToWatch.filter(j => j.status === "running");
+		if (manager && jobsToWatch.some(job => job.events?.length)) {
+			return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
+		}
 		if (manager && jobsToWatch.length > 0 && runningJobs.length === 0) {
 			return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 		}
@@ -392,6 +397,9 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const usedSmartWindow = window.smart && params.timeoutMs === undefined;
 
 		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
+		const eventAbort = new AbortController();
+		const monitorIds = runningJobs.filter(job => job.type === "monitor").map(job => job.id);
+		if (manager && monitorIds.length > 0) racePromises.push(manager.waitForEvents(monitorIds, eventAbort.signal));
 
 		const busAbort = messaging ? new AbortController() : undefined;
 		const busCancelled = new Error("fleet wait settled");
@@ -453,7 +461,16 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			} else {
 				await Promise.race(racePromises);
 			}
+			busAbort?.abort(busCancelled);
+			if (busLeg && messaging) {
+				const settled = await busLeg;
+				if (settled.message) return messageResult(messaging.senderId, settled.message);
+			}
+			// Consume the winning events before releasing the watch to asynchronous delivery.
+			const events = signal?.aborted ? [] : manager.takeEvents(watchedJobIds, ownerId ? { ownerId } : undefined);
+			return await buildJobResult(this.session, manager, "wait", jobsToWatch, [], [], events);
 		} finally {
+			eventAbort.abort();
 			manager.unwatchJobs(watchedJobIds);
 			if (timeoutHandle) clearTimeout(timeoutHandle);
 			if (progressTimer) clearInterval(progressTimer);
@@ -463,13 +480,6 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 				manager.recordPollWaitEnd(ownerId);
 			}
 		}
-
-		if (busLeg && messaging) {
-			const settled = await busLeg;
-			if (settled.message) return messageResult(messaging.senderId, settled.message);
-		}
-
-		return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 	}
 }
 

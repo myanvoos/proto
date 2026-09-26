@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { Component } from "@oh-my-pi/pi-tui";
+import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
 import { initThemeSync } from "../theme/theme";
-import { TranscriptContainer, type TranscriptStableRow } from "./transcript-container";
+import {
+	RETAINED_COMMITTED_BLOCKS,
+	RETAINED_COMMITTED_BYTES,
+	TranscriptContainer,
+	type TranscriptStableRow,
+} from "./transcript-container";
 import { UserMessageComponent } from "./user-message";
 
 class Block implements Component {
@@ -542,40 +547,85 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderTail(80, 0)).toEqual([]);
 	});
 
-	it("releases committed component instances while retaining the complete replay ledger", () => {
-		const transcript = new TranscriptContainer();
-		const blocks = Array.from({ length: 2_000 }, (_, index) => new Block([`settled ${index}`], true));
-		for (const block of blocks) transcript.addChild(block);
-
-		const committed = transcript.peekFlushBatch(80);
+	/** Commit every block, then let a frame compact those past the retention window. */
+	function commitAll(transcript: TranscriptContainer, width: number): HistoryBatch {
+		const committed = transcript.peekFlushBatch(width);
 		if (!committed) throw new Error("Expected committed history batch");
 		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.renderViewport(width, 10, frame);
+		return committed;
+	}
 
-		expect(transcript.blockStates()).toEqual(Array.from({ length: blocks.length }, () => "committed"));
-		expect(transcript.children.some(child => blocks.includes(child as Block))).toBe(false);
+	it("disposes retired action owners and replays only the bounded recent window", () => {
+		class ActionBlock extends Block {
+			disposed = false;
+			dispose(): void {
+				this.disposed = true;
+			}
+		}
+		const transcript = new TranscriptContainer();
+		const count = RETAINED_COMMITTED_BLOCKS + 500;
+		const blocks = Array.from({ length: count }, (_, index) => new ActionBlock([`settled-${index}-end`], true));
+		for (const block of blocks) transcript.addChild(block);
+		const committed = commitAll(transcript, 80);
+		expect(committed.rows).toContain("settled-0-end");
+		expect(transcript.children).toEqual(blocks.slice(-RETAINED_COMMITTED_BLOCKS));
+		expect(blocks.slice(0, 500).every(block => block.disposed)).toBe(true);
+		expect(blocks.slice(500).some(block => block.disposed)).toBe(false);
 		transcript.beginReplay();
-		const replay = transcript.peekReplayBatch(80);
-		if (!replay) throw new Error("Expected replay batch");
-		expect(replay.rows).toEqual(committed.rows);
+		const replay = transcript.peekReplayBatch(80)!;
+		expect(replay.rows.join("\n")).toContain("/history");
+		expect(replay.rows).not.toContain("settled-0-end");
+		expect(replay.rows).toContain("settled-500-end");
+		expect(replay.rows).toContain(`settled-${count - 1}-end`);
 		transcript.acknowledgeFinalizedBatch(replay.id);
-		expect(transcript.render(80)).toEqual(
-			blocks.flatMap((_, index) => (index === 0 ? [`settled ${index}`] : ["", `settled ${index}`])),
-		);
+		transcript.render(80);
+		expect(transcript.getChildStartRow(blocks[0]!)).toBeUndefined();
+		expect(transcript.getChildStartRow(blocks.at(-1)!)).toBeDefined();
+		transcript.dispose();
 	});
 
-	it("keeps committed child deep links after replacing their heavy components", () => {
+	it("counts hidden source bytes across staged rebuilds and drops oversized committed owners", () => {
+		const staging = new TranscriptContainer();
 		const transcript = new TranscriptContainer();
-		const first = new Block(["first"], true);
-		const second = new Block(["second"], true);
-		transcript.addChild(first);
-		transcript.addChild(second);
-		const batch = transcript.peekFlushBatch(80);
-		if (!batch) throw new Error("Expected committed history batch");
-		transcript.acknowledgeFinalizedBatch(batch.id);
+		let disposed = 0;
+		const hiddenPayload = {
+			render: () => ["small preview"],
+			dispose: () => {
+				disposed++;
+			},
+		};
+		staging.addChild(hiddenPayload);
+		staging.accountSource(hiddenPayload, "x".repeat(RETAINED_COMMITTED_BYTES));
+		staging.clear();
+		transcript.addChild(hiddenPayload);
+		const active = new Block(["still streaming"], false);
+		transcript.addChild(active);
+		const offered = transcript.peekFlushBatch(80)!;
+		expect(offered.rows).toEqual(["small preview", ""]);
+		expect(disposed).toBe(0);
+		transcript.acknowledgeFinalizedBatch(offered.id);
+		expect(disposed).toBe(1);
+		expect(transcript.children).toEqual([active]);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["still streaming"]);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(80)!.rows.join("\n")).toContain("/history");
+		transcript.dispose();
+	});
 
-		transcript.render(80);
-		expect(transcript.getChildStartRow(first)).toBe(0);
-		expect(transcript.getChildStartRow(second)).toBe(2);
+	it("resizes retained recent blocks instead of replaying width-bound snapshots", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < RETAINED_COMMITTED_BLOCKS; index++) transcript.addChild(new Block(["old"], true));
+		const recent = new ReflowingAppendBlock();
+		recent.finalize();
+		transcript.addChild(recent);
+		commitAll(transcript, 80);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(4)!;
+		expect(replay.rows).toContain("abcd");
+		expect(replay.rows).toContain("efgh");
+		expect(replay.rows).not.toContain("abcdefgh");
+		transcript.dispose();
 	});
 
 	it("cancels a pending replay so shutdown flush emits only un-retired rows", () => {

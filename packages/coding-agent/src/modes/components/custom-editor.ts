@@ -3,6 +3,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	addKeyAliases,
 	canonicalKeyId,
+	EDITOR_LIMITS,
 	Editor,
 	type EditorTextDecorationContext,
 	type EditorTheme,
@@ -13,6 +14,7 @@ import {
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
 import type { AppKeybinding } from "../../config/keybindings";
 import {
 	attachmentSgr,
@@ -259,11 +261,34 @@ export type ComposerChipDescriptor =
 	| { kind: "image"; n: number; image: ImageContent; link: string | undefined }
 	| { kind: "paste"; n: number; text: TextAttachment };
 
+export const COMPOSER_IMAGE_LIMITS = { count: 32, bytes: 32 * 1024 * 1024 } as const;
+const MAX_QUEUED_INPUT_BYTES = 256 * 1024;
+const MAX_QUEUED_INPUT_CHUNKS = 128;
+
 export class CustomEditor extends Editor {
 	#spelling = new MacOSSpellingProvider();
 	imageLinks?: readonly (string | undefined)[];
 
-	pendingImages: ImageContent[] = [];
+	#pendingImages: ImageContent[] = [];
+	#disposed = false;
+	#materializingDraftLinks = false;
+
+	get pendingImages(): readonly ImageContent[] {
+		return this.#pendingImages;
+	}
+
+	set pendingImages(images: readonly ImageContent[]) {
+		this.assertDraftImages(images);
+		this.#pendingImages = images.map(image => ({ ...image, data: materializeString(image.data) }));
+	}
+
+	assertDraftImages(images: readonly ImageContent[]): void {
+		let bytes = 0;
+		for (const image of images) bytes += Buffer.byteLength(image.data);
+		if (images.length > COMPOSER_IMAGE_LIMITS.count || bytes > COMPOSER_IMAGE_LIMITS.bytes) {
+			throw new RangeError("Draft image limit reached (32 images / 32 MiB base64); submit or clear images first");
+		}
+	}
 
 	pendingImageLinks: (string | undefined)[] = [];
 
@@ -302,6 +327,16 @@ export class CustomEditor extends Editor {
 	}
 
 	setDraft(text: string, images?: readonly ImageContent[]): void {
+		if (Buffer.byteLength(text) > EDITOR_LIMITS.draftBytes) {
+			this.onInputRejected?.("Draft exceeds the 4 MiB UTF-8 limit; existing draft was preserved");
+			return;
+		}
+		try {
+			this.assertDraftImages(images ?? []);
+		} catch (error) {
+			this.onInputRejected?.(String(error));
+			return;
+		}
 		this.clearAtoms();
 		this.pendingTexts = [];
 		this.#textAttachmentCounter = 0;
@@ -309,7 +344,7 @@ export class CustomEditor extends Editor {
 		this.pendingImages = images ? [...images] : [];
 		this.pendingImageLinks = images ? images.map(() => undefined) : [];
 		this.setCollapsedText(text);
-		void this.#materializeDraftLinks();
+		void this.#materializeDraftLinks().catch(error => this.onInputRejected?.(String(error)));
 	}
 
 	setCollapsedText(text: string): void {
@@ -321,17 +356,23 @@ export class CustomEditor extends Editor {
 	}
 
 	insertTextAttachment(content: string, expansion: string = content): void {
-		this.#textAttachmentCounter++;
-		const n = this.#textAttachmentCounter;
+		const n = this.#textAttachmentCounter + 1;
 		const label = chipLabel("paste", n);
+		let bytes = Buffer.byteLength(content);
+		for (const entry of this.pendingTexts) bytes += Buffer.byteLength(entry.content);
+		if (bytes > EDITOR_LIMITS.attachmentBytes || this.pendingTexts.length >= EDITOR_LIMITS.attachmentCount) {
+			this.onInputRejected?.("Text attachment limit reached (16 MiB / 256 attachments)");
+			return;
+		}
+		if (!this.insertAtom(label, expansion)) return;
+		this.#textAttachmentCounter = n;
 		this.pendingTexts.push({
 			n,
 			label,
-			content,
+			content: materializeString(content),
 			lineCount: content.split("\n").length,
 			charCount: content.length,
 		});
-		this.insertAtom(label, expansion);
 	}
 
 	composerChips(): ComposerChipDescriptor[] {
@@ -352,14 +393,26 @@ export class CustomEditor extends Editor {
 	}
 
 	async #materializeDraftLinks(): Promise<void> {
-		const materialize = this.draftImageLinkMaterializer;
-		const images = this.pendingImages;
-		if (!materialize || images.length === 0) return;
-		const links = await materialize(images);
-		if (!links || this.pendingImages !== images) return;
-		this.pendingImageLinks = links;
-		this.imageLinks = links;
-		this.#requestShimmerRepaint?.();
+		if (this.#materializingDraftLinks || this.#disposed) return;
+		this.#materializingDraftLinks = true;
+		try {
+			while (!this.#disposed) {
+				const materialize = this.draftImageLinkMaterializer;
+				const images = this.pendingImages;
+				if (!materialize || images.length === 0) return;
+				const links = await materialize(images);
+				if (this.#disposed) return;
+				if (this.pendingImages !== images) continue;
+				if (links) {
+					this.pendingImageLinks = links;
+					this.imageLinks = links;
+					this.#requestShimmerRepaint?.();
+				}
+				return;
+			}
+		} finally {
+			this.#materializingDraftLinks = false;
+		}
 	}
 
 	override atomicTokenPattern = COMPOSER_TOKEN_REGEX;
@@ -463,6 +516,13 @@ export class CustomEditor extends Editor {
 	}
 
 	override dispose(): void {
+		this.#disposed = true;
+		this.#pendingInput = [];
+		this.#pendingInputBytes = 0;
+		this.#pasteHandler.clear();
+		this.#queuedPasteHandler.clear();
+		this.#queueDecorationText = undefined;
+		this.#decorationLines = [""];
 		this.setShimmerRepaintHandler(undefined);
 		this.#spelling.onUpdate = undefined;
 		this.pendingImages = [];
@@ -502,7 +562,7 @@ export class CustomEditor extends Editor {
 
 	onPasteImagePath?: (path: string) => void | Promise<void>;
 
-	onPasteTextRaw?: () => void;
+	onPasteTextRaw?: () => void | Promise<void>;
 
 	onDequeue?: () => void;
 
@@ -520,6 +580,8 @@ export class CustomEditor extends Editor {
 	#pasteInFlight = 0;
 
 	#pendingInput: string[] = [];
+	#pendingInputBytes = 0;
+	#queuedPasteHandler = new BracketedPasteHandler({ byteLimit: MAX_QUEUED_INPUT_BYTES });
 	#actionKeys = new Map<ConfigurableEditorAction, KeyId[]>(
 		Object.entries(DEFAULT_ACTION_KEYS).map(([action, keys]) => [action as ConfigurableEditorAction, [...keys]]),
 	);
@@ -568,19 +630,45 @@ export class CustomEditor extends Editor {
 
 	#onPasteSettled = (): void => {
 		this.#pasteInFlight--;
-		if (this.#pasteInFlight > 0) return;
-		const drained = this.#pendingInput.splice(0);
-		for (const chunk of drained) this.handleInput(chunk);
+		if (this.#pasteInFlight > 0 || this.#disposed || this.#queuedPasteHandler.active) return;
+		this.#drainPendingInput();
 	};
 
 	#trackAsyncPaste(promise: Promise<unknown>): void {
 		this.#pasteInFlight++;
-		void promise.then(this.#onPasteSettled, this.#onPasteSettled);
+		void promise.catch(error => this.onInputRejected?.(String(error))).then(this.#onPasteSettled);
+	}
+
+	#drainPendingInput(): void {
+		const drained = this.#pendingInput;
+		this.#pendingInput = [];
+		this.#pendingInputBytes = 0;
+		for (const chunk of drained) this.handleInput(chunk);
+	}
+
+	#queueInput(data: string): void {
+		const bytes = Buffer.byteLength(data);
+		if (
+			this.#pendingInput.length >= MAX_QUEUED_INPUT_CHUNKS ||
+			this.#pendingInputBytes + bytes > MAX_QUEUED_INPUT_BYTES
+		) {
+			this.onInputRejected?.("Input queue is full (128 chunks / 256 KiB); incoming input was discarded");
+			return;
+		}
+		this.#pendingInput.push(materializeString(data));
+		this.#pendingInputBytes += bytes;
 	}
 
 	override handleInput(data: string): void {
-		if (this.#pasteInFlight > 0) {
-			this.#pendingInput.push(data);
+		if (this.#disposed) return;
+		if (this.#pasteInFlight > 0 || this.#queuedPasteHandler.active) {
+			const paste = this.#queuedPasteHandler.process(data);
+			if (paste.handled) {
+				if (paste.rejected) this.onInputRejected?.("Queued paste exceeds 256 KiB and was discarded");
+				if (paste.pasteContent !== undefined)
+					this.#queueInput(`${BRACKETED_PASTE_START}${paste.pasteContent}${BRACKETED_PASTE_END}`);
+			} else this.#queueInput(data);
+			if (this.#pasteInFlight === 0 && !this.#queuedPasteHandler.active) this.#drainPendingInput();
 			return;
 		}
 
@@ -593,6 +681,7 @@ export class CustomEditor extends Editor {
 
 		const paste = this.#pasteHandler.process(data);
 		if (paste.handled) {
+			if (paste.rejected) this.onInputRejected?.("Paste exceeds the 4 MiB UTF-8 limit and was discarded");
 			if (paste.pasteContent === undefined) return;
 			const content = paste.pasteContent;
 
@@ -602,6 +691,10 @@ export class CustomEditor extends Editor {
 			}
 			const imagePaths = extractImagePastePathsFromText(content);
 			if (imagePaths && this.onPasteImagePath) {
+				if (imagePaths.length > COMPOSER_IMAGE_LIMITS.count) {
+					this.onInputRejected?.("At most 32 image paths can be pasted at once");
+					return;
+				}
 				this.#trackAsyncPaste(
 					(async () => {
 						for (const p of imagePaths) await this.onPasteImagePath?.(p);
@@ -611,8 +704,7 @@ export class CustomEditor extends Editor {
 			}
 			this.pasteText(content);
 
-			const drained = this.#pendingInput.splice(0);
-			for (const chunk of drained) this.handleInput(chunk);
+			this.#drainPendingInput();
 			return;
 		}
 
@@ -637,12 +729,12 @@ export class CustomEditor extends Editor {
 			(this.#actionMatchKeyUnion.has(canonical) || this.#customMatchKeys.has(canonical))
 		) {
 			if (this.#matchesAction(canonical, "app.clipboard.pasteImage") && this.onPasteImage) {
-				void this.onPasteImage();
+				this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
 				return;
 			}
 
 			if (this.#matchesAction(canonical, "app.clipboard.pasteTextRaw") && this.onPasteTextRaw) {
-				this.onPasteTextRaw();
+				this.#trackAsyncPaste(Promise.resolve(this.onPasteTextRaw()));
 				return;
 			}
 

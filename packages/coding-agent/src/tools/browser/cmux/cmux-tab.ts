@@ -22,7 +22,7 @@ import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
-import { cloneSafe, RunOutput } from "../run-output";
+import { RunOutput } from "../run-output";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
 import {
 	type CmuxEvalResult,
@@ -584,7 +584,8 @@ export class CmuxTab {
 			width: resized.width,
 			height: resized.height,
 		};
-		context.screenshots.push(info);
+		const admitted = context.output.admitMetadata(info);
+		if (admitted) context.screenshots.push(admitted);
 		if (!opts.silent) {
 			const lines = formatScreenshot({
 				saveFullRes,
@@ -1358,7 +1359,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 		opts.signal ? [timeoutSignal, opts.signal, runAc.signal] : [timeoutSignal, runAc.signal],
 	);
 	const runEndedError = postmortem.markExpectedCleanupError(new ToolAbortError("Browser run ended"));
-	const output = new RunOutput();
+	const output = new RunOutput(opts.snapshot.outputArtifact);
 	const screenshots: ScreenshotResult[] = [];
 	const runId = crypto.randomUUID();
 	const filename = `cmux-run-${runId}.js`;
@@ -1440,7 +1441,6 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 			onText: chunk => {
 				throwIfAborted(signal);
 				output.pushText(chunk);
-				logger.debug(chunk.replace(/\n$/, ""));
 			},
 			onDisplay: displayed => {
 				throwIfAborted(signal);
@@ -1488,7 +1488,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 				rejections: activeRun.floatingRejections,
 			});
 		}
-		return { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots };
+		return { ...(await output.finish(returnValue)), screenshots };
 	} finally {
 		runActive = false;
 		uninstallRejectionInterceptor();
@@ -1497,6 +1497,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 		activeCmuxRuns.delete(filename);
 		rememberCmuxRunFile(filename);
 		tab.clearRunContext();
+		await output.dispose();
 	}
 }
 

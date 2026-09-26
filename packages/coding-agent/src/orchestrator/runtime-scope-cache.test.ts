@@ -19,6 +19,16 @@ function session(sessionId: string, manager?: AsyncJobManager): ToolSession {
 }
 
 describe("orchestrator scope session cache", () => {
+	test("list-only scopes release their owners on suspension even without worker records", async () => {
+		const runtime = new OrchestratorRuntime();
+		for (let index = 0; index < 64; index++) {
+			const owner = session(`empty-scope-${index}`);
+			runtime.screens(owner);
+			await runtime.suspendScope(runtime.ownerScope(owner));
+		}
+		expect(runtime.scopeCacheSizeForTesting()).toBe(0);
+	});
+
 	test("retiring the last worker releases each obsolete scope session cache entry", async () => {
 		const runtime = new OrchestratorRuntime();
 		for (let index = 0; index < 64; index++) {
@@ -35,7 +45,7 @@ describe("orchestrator scope session cache", () => {
 		resetWakeTurnOwnersForTests();
 	});
 
-	test("pending wake retains its parent session until the wake result settles after record cleanup", async () => {
+	test("pending wake settles without retaining its disposed parent in the scope cache", async () => {
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
 		const runtime = new OrchestratorRuntime();
 		const parent = session("pending-wake-scope", manager);
@@ -50,7 +60,7 @@ describe("orchestrator scope session cache", () => {
 			const claim = claimWakeTurn("pending-wake-worker", "wake after parent switch");
 			expect(claim).toBeDefined();
 			await runtime.suspendScope(runtime.ownerScope(parent), manager);
-			expect(runtime.scopeCacheSizeForTesting()).toBe(1);
+			expect(runtime.scopeCacheSizeForTesting()).toBe(0);
 
 			claim?.settle({
 				index: 0,

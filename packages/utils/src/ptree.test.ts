@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import { exec, spawn, TimeoutError } from "./ptree";
+import { exec, spawn, TimeoutError, terminateProcess } from "./ptree";
 
 // Real subprocess timing throughout: fake timers cannot drive child processes or pipe EOF.
 
@@ -113,6 +113,80 @@ console.log("probe-done");`;
 			expect(Process.fromPid(descendantPid)?.status()).not.toBe(ProcessStatus.Running);
 		} finally {
 			Process.fromPid(descendantPid)?.killTree(9);
+		}
+	});
+});
+
+describe("owned process termination", () => {
+	test("terminates a detached orphan group within the supplied deadline", async () => {
+		const child = Bun.spawn(["sh", "-c", "sleep 30 & echo $!"], { detached: true, stdout: "pipe", stderr: "pipe" });
+		const identity = Process.fromPid(child.pid);
+		const reader = child.stdout.getReader();
+		let orphan: Process | null = null;
+		try {
+			const chunk = await reader.read();
+			const pid = Number(new TextDecoder().decode(chunk.value).trim());
+			orphan = Process.fromPid(pid);
+			expect(orphan).not.toBeNull();
+			await child.exited;
+			const start = performance.now();
+			expect(await terminateProcess(child, identity, { detached: true, hasOpenPipes: true, timeoutMs: 1_000 })).toBe(
+				true,
+			);
+			expect(await orphan!.waitForExit({ timeoutMs: 1_000 })).toBe(true);
+			expect(performance.now() - start).toBeLessThan(2_000);
+		} finally {
+			orphan?.killTree(9);
+			await reader.cancel();
+			reader.releaseLock();
+		}
+	});
+
+	test("an exited descriptor without inherited pipes cannot signal a recycled process id", async () => {
+		const exited = Bun.spawn(["sh", "-c", "exit"], { detached: true });
+		const exitedIdentity = Process.fromPid(exited.pid);
+		await exited.exited;
+		const unrelated = Bun.spawn(["sh", "-c", "sleep 30"], { detached: true, stdout: "ignore", stderr: "ignore" });
+		const unrelatedIdentity = Process.fromPid(unrelated.pid)!;
+		try {
+			// Deterministically model PID reuse rather than exhausting the host PID namespace.
+			const staleDescriptor = { pid: unrelated.pid, exitCode: 0 };
+			expect(await terminateProcess(staleDescriptor, exitedIdentity, { detached: true, hasOpenPipes: false })).toBe(
+				true,
+			);
+			expect(unrelatedIdentity.status()).toBe(ProcessStatus.Running);
+		} finally {
+			await unrelatedIdentity.terminate({ group: true, gracefulMs: -1, timeoutMs: 1_000 });
+			await unrelated.exited;
+		}
+	});
+
+	test("live identity termination is bounded for a TERM-resistant child", async () => {
+		const child = Bun.spawn(["sh", "-c", "trap '' TERM; echo ready; while :; do sleep 1; done"], {
+			detached: true,
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const identity = Process.fromPid(child.pid)!;
+		const reader = child.stdout.getReader();
+		try {
+			await reader.read();
+			const start = performance.now();
+			expect(
+				await terminateProcess(child, identity, {
+					detached: true,
+					hasOpenPipes: true,
+					gracefulMs: 50,
+					timeoutMs: 1_000,
+				}),
+			).toBe(true);
+			await child.exited;
+			expect(identity.status()).toBe(ProcessStatus.Exited);
+			expect(performance.now() - start).toBeLessThan(2_000);
+		} finally {
+			identity.killTree(9);
+			await reader.cancel();
+			reader.releaseLock();
 		}
 	});
 });

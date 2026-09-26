@@ -128,7 +128,7 @@ function createContext() {
 		effectiveHideThinkingBlock: false,
 		proseOnlyThinking: false,
 		noteDisplayableThinkingContent: () => false,
-		transcriptMessageComponents: new WeakMap<object, Component>(),
+		transcriptMessageComponents: new WeakMap<object, WeakRef<Component>>(),
 		statusLine: { invalidate: NOOP, markActivityEnd: NOOP, markActivityStart: NOOP },
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,
@@ -286,6 +286,48 @@ test("message end performs a full pass for a skipped streamed tool delta", async
 		expect(liveSecond).toBeInstanceOf(ReadToolGroupComponent);
 		expect(harness.chatContainer.children.indexOf(liveFirst as Component)).toBeLessThan(
 			harness.chatContainer.children.indexOf(liveSecond as Component),
+		);
+	} finally {
+		controller.dispose();
+		harness.chatContainer.dispose();
+	}
+});
+
+test("an autonomous run splits a full read group so completed source can retire before the run ends", async () => {
+	const harness = createContext();
+	const controller = new EventController(harness.context);
+	try {
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "first",
+			toolName: "read",
+			args: { path: "first.txt" },
+		});
+		const first = harness.pendingTools.get("first") as ReadToolGroupComponent;
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "first",
+			toolName: "read",
+			result: {
+				content: [{ type: "text", text: "short read preview" }],
+				details: { hidden: "x".repeat(2 * 1024 * 1024) },
+			},
+			isError: false,
+		});
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "second",
+			toolName: "read",
+			args: { path: "second.txt" },
+		});
+		expect(harness.pendingTools.get("second")).not.toBe(first);
+		expect(first.isTranscriptBlockFinalized()).toBe(true);
+		const batch = harness.chatContainer.peekFlushBatch(80)!;
+		expect(Bun.stripANSI(batch.rows.join("\n"))).toContain("first.txt");
+		harness.chatContainer.acknowledgeFinalizedBatch(batch.id);
+		expect(harness.chatContainer.children).not.toContain(first);
+		expect(Bun.stripANSI(harness.chatContainer.renderViewport(80, 20, { tick: 1, now: 1 }).join("\n"))).toContain(
+			"second.txt",
 		);
 	} finally {
 		controller.dispose();

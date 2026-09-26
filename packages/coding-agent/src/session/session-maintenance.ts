@@ -374,7 +374,7 @@ export class SessionMaintenance {
 	}
 
 	#maintenanceBranch(): SessionEntry[] {
-		const historyBranch = this.#host.sessionManager.getBranch();
+		const historyBranch = this.#host.sessionManager.getActiveBranch();
 		const previousPathIds = this.#modelContextPathIds;
 		const sharesExistingPath =
 			previousPathIds !== undefined &&
@@ -691,7 +691,7 @@ export class SessionMaintenance {
 							shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 					: undefined,
 			);
-			const pathEntries = this.#host.sessionManager.getBranch();
+			const pathEntries = this.#host.sessionManager.getActiveBranch();
 			const preparation = prepareCompaction(pathEntries, effectiveSettings, activeModel, this.#tokenizer);
 			if (!preparation) {
 				const lastEntry = pathEntries[pathEntries.length - 1];
@@ -1028,7 +1028,7 @@ export class SessionMaintenance {
 		if (!model) return clear();
 		const settings = this.#host.settings.getGroup("compaction");
 		const effectiveSettings = resolveMethodSettings(settings, method);
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getActiveBranch();
 		const snapshotLeafId = branch[branch.length - 1]?.id;
 		if (!snapshotLeafId) return clear();
 		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
@@ -1106,7 +1106,7 @@ export class SessionMaintenance {
 		) {
 			return false;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getActiveBranch();
 		const leafIdx = branch.findIndex(entry => entry.id === armed.snapshotLeafId);
 		if (leafIdx < 0) return false;
 		for (let i = leafIdx + 1; i < branch.length; i++) {
@@ -1187,7 +1187,8 @@ export class SessionMaintenance {
 				tokensAfter: this.#projectCompactedContextTokens(args),
 			},
 		);
-		const newEntries = this.#host.sessionManager.getEntries();
+		this.#modelContextEntries.clear();
+		this.#modelContextPathIds = undefined;
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
@@ -1198,9 +1199,7 @@ export class SessionMaintenance {
 		} else {
 			this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		}
-		const savedCompactionEntry = newEntries.find(e => e.type === "compaction" && e.id === entryId) as
-			| CompactionEntry
-			| undefined;
+		const savedCompactionEntry = this.#host.sessionManager.getEntry(entryId) as CompactionEntry | undefined;
 		if (this.#host.extensionRunner && savedCompactionEntry) {
 			const compactEmit = this.#host.extensionRunner.emit({
 				type: "session_compact",
@@ -1260,7 +1259,7 @@ export class SessionMaintenance {
 		}
 		if (
 			pendingMidTurnDeadEnd &&
-			prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
+			prepareCompaction(this.#host.sessionManager.getActiveBranch(), compactionSettings, model, this.#tokenizer) ===
 				undefined
 		) {
 			return;
@@ -1340,8 +1339,12 @@ export class SessionMaintenance {
 		if (this.#midTurnCompactionDeadEnds.has(activeMessages)) {
 			if (
 				!model ||
-				prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
-					undefined
+				prepareCompaction(
+					this.#host.sessionManager.getActiveBranch(),
+					compactionSettings,
+					model,
+					this.#tokenizer,
+				) === undefined
 			) {
 				return;
 			}
@@ -1399,7 +1402,7 @@ export class SessionMaintenance {
 		const sameModel =
 			this.#model && assistantMessage.provider === this.#model.provider && assistantMessage.model === this.#model.id;
 
-		const compactionEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const compactionEntry = getLatestCompactionEntry(this.#host.sessionManager.getActiveBranch());
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		// HTTP 413 byte/media rejections: token compaction cannot shrink bytes or media budgets, so a payload
@@ -1960,7 +1963,7 @@ export class SessionMaintenance {
 	}): number {
 		const nonMessageTokens = computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer);
 		const countOptions = { excludeEncryptedReasoning: true } as const;
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getActiveBranch();
 		const leaf = branch.at(-1);
 		if (!leaf) {
 			const summaryMessage = createCompactionSummaryMessage(
@@ -2213,7 +2216,7 @@ export class SessionMaintenance {
 				return COMPACTION_CHECK_NONE;
 			}
 
-			const pathEntries = this.#host.sessionManager.getBranch();
+			const pathEntries = this.#host.sessionManager.getActiveBranch();
 
 			let pathEntriesForCompaction = pathEntries;
 			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
@@ -2222,7 +2225,7 @@ export class SessionMaintenance {
 				if (reason !== "idle") {
 					await this.#rescueCompactionDeadEnd(autoCompactionSignal, () => {
 						rescueRewroteHistory = true;
-						pathEntriesForCompaction = this.#host.sessionManager.getBranch();
+						pathEntriesForCompaction = this.#host.sessionManager.getActiveBranch();
 						preparation = prepareCompaction(
 							pathEntriesForCompaction,
 							effectiveSettings,
@@ -2687,7 +2690,8 @@ export class SessionMaintenance {
 
 		const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning("clear large tool output") : undefined;
 		if (deadEndWarning) {
-			const stampEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch()) ?? savedCompactionEntry;
+			const stampEntry =
+				getLatestCompactionEntry(this.#host.sessionManager.getActiveBranch()) ?? savedCompactionEntry;
 			if (stampEntry) {
 				stampEntry.warning = deadEndWarning;
 				await this.#host.sessionManager.rewriteEntries();

@@ -50,7 +50,7 @@ import {
 } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
 
-import { cloneSafe, RunOutput } from "./run-output";
+import { RunOutput } from "./run-output";
 import type {
 	Observation,
 	ObservationEntry,
@@ -1141,7 +1141,7 @@ export class WorkerCore {
 		const ac = new AbortController();
 		const runAc = new AbortController();
 		const signal = AbortSignal.any([timeoutSignal, ac.signal, runAc.signal]);
-		const output = new RunOutput();
+		const output = new RunOutput(msg.session.outputArtifact);
 		const screenshots: ScreenshotResult[] = [];
 		const floatingFailure = Promise.withResolvers<never>();
 		const active: ActiveRun = {
@@ -1258,6 +1258,7 @@ export class WorkerCore {
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
 		if (failure) {
+			await output.dispose();
 			this.#transport.send({ type: "result", id: msg.id, ok: false, error: errorPayload(failure.error) });
 			return;
 		}
@@ -1267,7 +1268,7 @@ export class WorkerCore {
 				type: "result",
 				id: msg.id,
 				ok: true,
-				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots },
+				payload: { ...(await output.finish(returnValue)), screenshots },
 			});
 		}
 	}
@@ -1288,7 +1289,6 @@ export class WorkerCore {
 			onText: chunk => {
 				throwIfAborted(active.signal);
 				active.output.pushText(chunk);
-				this.#log("debug", chunk.replace(/\n$/, ""));
 			},
 			onDisplay: output => {
 				throwIfAborted(active.signal);
@@ -1796,7 +1796,8 @@ export class WorkerCore {
 			width: resized.width,
 			height: resized.height,
 		};
-		screenshots.push(info);
+		const admitted = output.admitMetadata(info);
+		if (admitted) screenshots.push(admitted);
 		if (!opts.silent) {
 			const lines = formatScreenshot({
 				saveFullRes,

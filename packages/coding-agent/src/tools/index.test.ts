@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { AsyncJobManager } from "../async/job-manager";
 import { Settings } from "../config/settings";
 import { BUILTIN_TOOLS, createTools, type ToolSession } from ".";
 
@@ -16,8 +17,8 @@ const EXPECTED_SCHEMA_HASHES = {
 	orchestrate_wait: "c5682266ac4050980f8b7c77167a427ab1a8befd0631c4641e3da289bf6a7f75",
 	orchestrate_kill: "c914fe9935c807a74acc19f131e44336f40ed720377ca2260153fce00c7b2f85",
 	orchestrate_list: "32062bdb9024160d3b9816f12ba2f337808ee107449f8bf08d55b0026944f51e",
-	fleet: "305745a52cc3bc9a15d6cc362657dd7bfab856697fc4b8b399bdfe1ee9a38324",
-	monitor: "b08af6762838ad48753c616a4d3577c18f4918b913ff5e5524ae16dd2bfa50ce",
+	fleet: "a08f035f1cd8c52810e31540a7ae10a2eb28622c9be6ff4c4b8a980fd2de85fc",
+	monitor: "921b8ee2390a5842169740a45443c20c7cfeb3f813730bad08c5d15394a29ce5",
 	checklist: "f1c164b6e734b737b003cd93a8e5ffb45a624486f5e0e8878032b94955892bff",
 	web_search: "0d4dfea8a9d98cfe1831327673162cdd4e1e3cd366f5d440c47c482b2495b67f",
 	manage_skill: "ba3244f6b123cda00f8f2eddad7b681a0f62ac7d3b25162169c21779502bc4c0",
@@ -54,6 +55,7 @@ function enabledToolSession(): ToolSession {
 		getGoalModeState: () => undefined,
 		getActiveModel: () => undefined,
 		taskDepth: 0,
+		asyncJobManager: new AsyncJobManager({}),
 	} as unknown as ToolSession;
 }
 
@@ -71,4 +73,30 @@ describe("lazy builtin tool registry", () => {
 			expect(schemaHash(toolWireSchema(tool)), tool.name).toBe(expectedHash);
 		}
 	});
+});
+
+test("monitor registration accepts subagents and requires the shared async manager", async () => {
+	const session = enabledToolSession();
+	session.taskDepth = 1;
+	const enabled = await createTools(session, ["monitor"]);
+	expect(enabled.map(tool => tool.name)).toContain("monitor");
+	session.asyncJobManager = undefined;
+	const disabled = await createTools(session, ["monitor"]);
+	expect(disabled.map(tool => tool.name)).not.toContain("monitor");
+});
+
+test("monitor refuses a start without an owner session", async () => {
+	const session = enabledToolSession();
+	const tool = await BUILTIN_TOOLS.monitor(session);
+	const result = await tool!.execute("unowned", { op: "start", command: "printf READY" });
+	expect(result.isError).toBe(true);
+	expect(session.asyncJobManager!.getRunningJobs()).toEqual([]);
+});
+
+test("monitor and fleet expose the migrated job schema", async () => {
+	const session = enabledToolSession();
+	for (const name of ["monitor", "fleet"] as const) {
+		const tool = await BUILTIN_TOOLS[name](session);
+		expect(schemaHash(toolWireSchema(tool!))).toBe(EXPECTED_SCHEMA_HASHES[name]);
+	}
 });

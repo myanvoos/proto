@@ -8,11 +8,32 @@
 - Checked multi-file edit previews and guarded commits with rollback/conflict reporting
 - Settled batch results, bounded cooperative deadlines/cancellation, streaming pipelines, and explicit checkpoint resumption in kernel orchestration helpers
 
+### Breaking Changes
+
+- Monitor listing and stopping now use `fleet jobs` and `fleet cancel`; `monitor` only starts watches
+- Monitors require background execution (`async.enabled`) to be enabled
+
+### Changed
+
+- Interactive redraws keep a bounded recent transcript; older saved messages remain available through paged history and full exports
+- Fleets, interpreter requests, background results, rich displays, and editor attachments now enforce byte-aware admission limits with explicit overflow feedback
+- Monitors appear as background jobs, and `fleet wait` returns their next event without stopping the watch
+
 ### Fixed
 
+- Long sessions avoid repeatedly loading and rewriting all older history during compaction, context rebuilding, and fleet discovery
+- Deeply nested fleets can wait for descendants at the concurrency limit without deadlocking, and disposed scopes stop retaining parent sessions
+- Accepted subagents retain their identities and initial requests across a restart before child-session initialization
+- Retired transcript cards, large output previews, blob payloads, and truncated strings release their oversized backing storage
+- Closing interpreter owners stops owned subprocess descendants and releases stale bridge, runtime, and callback state
+- Daemon pipes keep draining when log storage stalls, with visible omission notices and consistent follow cursors
+- Missing temporary history copies can no longer cause saved transcripts to be overwritten with incomplete previews
+- Output artifacts preserve unwritten tails when consumers release results during finalization
 - Kernel cells receive shell environment overrides, preserve stderr redirection, and keep state when inline code consumes piped input
 - Overlapping Bash calls in the same lane queue without silently losing shell state
 
+- Subagents can run monitors between turns; events wake only the owning agent, and disposing it stops its watches
+- Cancelling a monitor also stops detached descendants holding output pipes after its shell exits
 - Retrying a failed session-storage write no longer uses an incorrect cached file size
 - Path-scoped model and provider restrictions apply inside valid directories beginning with `..`
 - Disposed worker fleets no longer revive persisted workers after an in-flight load finishes
@@ -21,6 +42,15 @@
 - Leading `cd` commands preserve shell `OLDPWD`, failure, and short-circuit behavior
 - Skill URLs reject raw and encoded parent-directory segments before URL normalization
 - Retained JavaScript file handles reject stale writes after external edits, and rereading through the handle permits a fresh edit
+- Inline images (kernel `display()` plots, screenshots) no longer vanish once their tool card scrolls up into terminal history, and reappear after a display redraw
+- Images in a running tool card are no longer deleted and re-sent to the terminal on every result update
+- Narrowing the terminal no longer cuts off the ends of lines already in scrollback; they rewrap to the new width
+- Ctrl+O and the thinking toggle apply again to tool cards and replies already in scrollback, not just those still on screen
+- Starting a new session (Ctrl+N in the session view, `/new`) while the agent is working no longer interrupts it: the session keeps running in the background, shows as running in the session view, and resuming it reattaches to the live or finished turn
+- After switching away from a working session, new prompts go to the session on screen instead of the one proto was launched with
+- Resuming a session from the session view or picker shows that session's subagent activity instead of the previous session's
+- A session parked during its first reply is listed in the session view right away instead of only after that reply finishes
+- Session entries appended while the session file is being rewritten are no longer left unsaved until the next write
 
 ## [18.6.1] - 2026-09-24
 

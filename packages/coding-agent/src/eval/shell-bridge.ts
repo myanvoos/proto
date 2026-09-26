@@ -11,6 +11,7 @@ import { formatDisplayOutputsForText } from "./display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations";
 import jsBackend from "./js";
 import pythonBackend from "./py";
+import { type KernelDisplayOutput, PythonDisplayBudget } from "./py/display";
 import { defaultEvalSessionId } from "./session-id";
 import { findLiteralCompletionCalls } from "./speculation";
 import { upsertStatusEvent } from "./status-events";
@@ -37,6 +38,7 @@ interface RunContext {
 	images: ImageContent[];
 	statusEvents: EvalStatusEvent[];
 	jsonOutputs: unknown[];
+	displayBudget: PythonDisplayBudget;
 	active: Set<AbortController>;
 	onStatusEvent?: (event: EvalStatusEvent) => void;
 	completionContext?: KernelShellBridgeOptions;
@@ -87,6 +89,7 @@ export function registerKernelShellRun(
 		images: [],
 		statusEvents: [],
 		jsonOutputs: [],
+		displayBudget: new PythonDisplayBudget(),
 		active: new Set(),
 		onStatusEvent,
 		completionContext,
@@ -112,6 +115,10 @@ export function registerKernelShellRun(
 			if (disposed) return;
 			disposed = true;
 			runs.delete(token);
+			context.displayBudget.release();
+			context.images.length = 0;
+			context.jsonOutputs.length = 0;
+			context.statusEvents.length = 0;
 			for (const abort of context.active) abort.abort();
 			if (runs.size === 0) {
 				const current = listener;
@@ -426,19 +433,34 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 						);
 					known.set(key, event.generation);
 				}
-				upsertStatusEvent(cellStatusEvents, event);
-				upsertStatusEvent(context.statusEvents, event);
-				context.onStatusEvent?.(event);
+				// File-observation correctness needs only mutation identity, not retained rich hunks.
+				if (typeof event.path === "string" && ["write", "delete", "revert"].includes(event.op)) {
+					upsertStatusEvent(cellStatusEvents, { op: event.op, path: event.path });
+				}
+				const previous = context.displayBudget.blocks.at(-1);
+				const admitted = context.displayBudget.admitMetadata(event);
+				if (admitted) {
+					upsertStatusEvent(context.statusEvents, admitted);
+					context.onStatusEvent?.(admitted);
+				} else {
+					const notice = context.displayBudget.blocks.at(-1);
+					if (notice?.type === "notice" && notice !== previous) sendOutput(socket, `${notice.text}\n`);
+				}
 			},
 		});
+		const accepted: KernelDisplayOutput[] = [];
 		for (const output of result.displayOutputs) {
-			if (output.type === "image") {
-				context.images.push({ type: "image", data: output.data, mimeType: output.mimeType });
-			} else if (output.type === "json") {
-				context.jsonOutputs.push(output.data);
+			if (output.type === "markdown" || output.type === "status") continue;
+			for (const admitted of context.displayBudget.addKernelOutput(output)) {
+				accepted.push(admitted);
+				if (admitted.type === "image") {
+					context.images.push(admitted);
+				} else if (admitted.type === "json") {
+					context.jsonOutputs.push(admitted.data);
+				}
 			}
 		}
-		const displayText = formatDisplayOutputsForText(result.displayOutputs);
+		const displayText = formatDisplayOutputsForText(accepted);
 		if (displayText) sendOutput(socket, `${displayText}\n`);
 		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });

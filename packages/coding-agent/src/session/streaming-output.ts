@@ -891,16 +891,34 @@ export class OutputSink {
 		return this.#collector();
 	}
 
-	/** Bytes currently retained for the inline head/tail output window. */
+	/** All retained payload buffers, including artifact and observer tails. */
 	retainedBytes(): number {
-		return this.#head.bytes + this.#buffer.bytes;
+		return (
+			this.#head.bytes +
+			this.#buffer.bytes +
+			this.#artifactTailRing.bytes +
+			this.#diagnosticPendingBytes +
+			this.#actionableDiagnosticBytes +
+			Buffer.byteLength(this.#heldSixelTail) +
+			Buffer.byteLength(this.#pendingChunk) +
+			(this.#pendingFileWrites?.reduce((bytes, chunk) => bytes + Buffer.byteLength(chunk), 0) ?? 0)
+		);
 	}
 
-	/** Release the retained inline output window; future pushes continue normally. */
+	/** Release consumer buffers without discarding an artifact still being written. */
 	release(): void {
 		this.#head.clear();
 		this.#buffer.clear();
 		this.#headLines = 0;
+		this.#flushPendingChunk();
+		this.#diagnosticPending = "";
+		this.#diagnosticPendingBytes = 0;
+		this.#actionableDiagnostics = [];
+		this.#actionableDiagnosticBytes = 0;
+		if (this.#finalized) {
+			this.#heldSixelTail = "";
+			this.#heldSixelAccountedBytes = 0;
+		}
 	}
 
 	#summaryDisposition(outputBytes: number): ExecutionOutputDisposition {
@@ -1012,7 +1030,10 @@ export class OutputSink {
 
 		if (this.#onChunk) {
 			const now = Date.now();
-			if (now - this.#lastChunkTime >= this.#chunkThrottleMs) {
+			if (
+				now - this.#lastChunkTime >= this.#chunkThrottleMs ||
+				Buffer.byteLength(this.#pendingChunk) + Buffer.byteLength(chunk) > DEFAULT_MAX_BYTES
+			) {
 				this.#emitPendingChunkWith(chunk, now);
 			} else {
 				this.#pendingChunk += chunk;
@@ -1358,6 +1379,7 @@ export class OutputSink {
 		if (tailBytes > 0) {
 			this.#writeArtifactChunk(this.#artifactTailRing.materialize());
 		}
+		this.#artifactTailRing.clear();
 	}
 
 	async dump(notice?: string): Promise<OutputSummary> {
@@ -1450,13 +1472,17 @@ export class OutputSink {
 			await this.#fileCreation.catch(() => undefined);
 		}
 		const file = this.#file;
-		if (!file) return;
+		if (!file) {
+			this.#artifactTailRing.clear();
+			return;
+		}
 
 		try {
 			this.#flushArtifactTailIfCapped();
 		} catch (error) {
 			this.#markCollectorFailure(error);
 		} finally {
+			this.#artifactTailRing.clear();
 			try {
 				await file.sink.end();
 			} catch (error) {
@@ -1466,7 +1492,7 @@ export class OutputSink {
 	}
 
 	async dispose(): Promise<void> {
-		this.#clearPendingChunkTimer();
+		this.#flushPendingChunk();
 		if (this.#pendingCarriageReturn) {
 			this.#pendingCarriageReturn = false;
 			this.#pushChunk(NL, true);

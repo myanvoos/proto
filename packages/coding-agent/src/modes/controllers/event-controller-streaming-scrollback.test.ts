@@ -186,7 +186,7 @@ function startHarness(
 		effectiveHideThinkingBlock: false,
 		proseOnlyThinking: false,
 		noteDisplayableThinkingContent: () => false,
-		transcriptMessageComponents: new WeakMap<object, Component>(),
+		transcriptMessageComponents: new WeakMap<object, WeakRef<Component>>(),
 		statusLine: { invalidate: NOOP, markActivityEnd: NOOP, markActivityStart: NOOP },
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,

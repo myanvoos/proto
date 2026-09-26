@@ -17,6 +17,7 @@ import {
 } from "../executor-base";
 import type { FsObservation } from "../fs-observations";
 import type { JsStatusEvent } from "../js/shared/types";
+import { KernelStartupCleanupError, kernelAdmission } from "../kernel-admission";
 import {
 	createKernelSessionRegistry,
 	formatSessionKernelTimeoutAnnotation,
@@ -225,9 +226,10 @@ async function replaceSessionKernel(
 	void (async () => {
 		try {
 			const remaining = getRemainingTimeoutMs(options.deadlineMs);
-			await kernel
-				.shutdown(remaining !== undefined ? { timeoutMs: Math.max(0, remaining) } : undefined)
-				.catch(() => undefined);
+			const shutdown = await kernel.shutdown(
+				remaining !== undefined ? { timeoutMs: Math.max(0, remaining) } : undefined,
+			);
+			if (shutdown.confirmed === false) throw new Error("Python kernel replacement shutdown not confirmed");
 			if (replacement.deadlineMs !== undefined && replacement.deadlineMs <= Date.now()) {
 				throw new PythonExecutionCancelledError(true);
 			}
@@ -323,15 +325,43 @@ async function ensureToolBridge(options: PythonExecutorOptions): Promise<void> {
 	}
 }
 
+interface PerCallKernel {
+	ownerId: string;
+	kernel: Promise<PythonKernel>;
+	release(): void;
+}
+
+const perCallKernels = new Set<PerCallKernel>();
+
+async function shutdownPerCallKernel(entry: PerCallKernel): Promise<void> {
+	const kernel = await entry.kernel.catch(async error => {
+		if (error instanceof KernelStartupCleanupError) {
+			const result = await error.shutdown();
+			if (!result.confirmed) throw new Error("Python per-call kernel startup shutdown not confirmed");
+		}
+		return undefined;
+	});
+	if (kernel) {
+		const result = await kernel.shutdown();
+		if (!result.confirmed) throw new Error("Python per-call kernel shutdown not confirmed");
+	}
+	entry.release();
+	perCallKernels.delete(entry);
+}
+
 async function executePerCall(code: string, cwd: string, options: PythonExecutorOptions): Promise<PythonResult> {
 	if (options.bridge && !options.bridgeSessionId) {
 		options.bridgeSessionId = `py-bridge:${crypto.randomUUID()}`;
 	}
-	const kernel = await startKernel(cwd, options);
+	const ownerId = options.kernelOwnerId ?? options.sessionId ?? `session:${cwd}`;
+	const release = kernelAdmission.reserve(ownerId);
+	const entry: PerCallKernel = { ownerId, release, kernel: startKernel(cwd, options) };
+	perCallKernels.add(entry);
 	try {
+		const kernel = await entry.kernel;
 		return await executeWithKernel(kernel, code, { ...options, cwd });
 	} finally {
-		await kernel.shutdown().catch(() => undefined);
+		await shutdownPerCallKernel(entry);
 	}
 }
 
@@ -362,11 +392,14 @@ const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutor
 });
 
 export async function disposeAllKernelSessions(): Promise<void> {
-	await sessionRegistry.disposeAll();
+	await Promise.all([sessionRegistry.disposeAll(), ...[...perCallKernels].map(shutdownPerCallKernel)]);
 }
 
 export async function disposeKernelSessionsByOwner(ownerId: string): Promise<void> {
-	await sessionRegistry.disposeByOwner(ownerId);
+	await Promise.all([
+		sessionRegistry.disposeByOwner(ownerId),
+		...[...perCallKernels].filter(entry => entry.ownerId === ownerId).map(shutdownPerCallKernel),
+	]);
 }
 
 export async function executePythonWithKernel(

@@ -1,5 +1,7 @@
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -10,6 +12,7 @@ import {
 	SKILL_NAMESPACE,
 } from "../autocomplete";
 import { BracketedPasteHandler, decodeReencodedPasteControls } from "../bracketed-paste";
+import { EDITOR_LIMITS } from "../editor-limits";
 import { canonicalKeyId, getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey, parseKey } from "../keys";
 import { KillRing } from "../kill-ring";
@@ -354,6 +357,10 @@ interface EditorState {
 	cursorCol: number;
 }
 
+interface EditorUndoState extends EditorState {
+	bytes: number;
+}
+
 interface SelectionRange {
 	startLine: number;
 	startCol: number;
@@ -480,6 +487,7 @@ export class Editor implements Component, Focusable {
 	#linesRevision = 0;
 	#joinedTextRevision = -1;
 	#joinedText = "";
+	#textBytes = 0;
 
 	#focused = false;
 
@@ -510,7 +518,13 @@ export class Editor implements Component, Focusable {
 
 	#lastLayoutWidth: number = 80;
 
-	#wrapCache = new Map<string, WrapEntry>();
+	#wrapCache = new LRUCache<string, WrapEntry>({
+		max: 256,
+		maxSize: 8 * 1024 * 1024,
+		maxEntrySize: 4 * 1024 * 1024,
+		sizeCalculation: (entry, key) =>
+			key.length * 2 + (entry.chunks?.reduce((sum, chunk) => sum + chunk.text.length * 2 + 64, 0) ?? 0) + 64,
+	});
 	#wrapCacheWidth = -1;
 	#wrapCacheEpoch = -1;
 	#layoutCache: Array<LayoutCacheEntry | undefined> = [];
@@ -574,7 +588,7 @@ export class Editor implements Component, Focusable {
 	#historyIndex: number = -1;
 	#historyStorage?: HistoryStorage;
 
-	#undoStack: EditorState[] = [];
+	#undoStack: EditorUndoState[] = [];
 	#suspendUndo = false;
 
 	#autocompleteTimeout?: NodeJS.Timeout;
@@ -586,6 +600,8 @@ export class Editor implements Component, Focusable {
 	/** Invoked when the copy key is pressed with an active selection. */
 	onCopySelection?: (text: string) => void;
 
+	/** A rejected edit leaves the draft intact; hosts should display this reason. */
+	onInputRejected?: (reason: string) => void;
 	onLargePaste?: (text: string, lineCount: number) => boolean;
 	onAutocompleteCancel?: () => void;
 	disableSubmit: boolean = false;
@@ -607,6 +623,8 @@ export class Editor implements Component, Focusable {
 		this.#pastes.clear();
 		this.#atoms.clear();
 		this.#history = [];
+		this.#killRing.clear();
+		this.#textBytes = 0;
 		this.#undoStack.length = 0;
 		this.#wrapCache.clear();
 		this.#layoutCache = [];
@@ -626,6 +644,7 @@ export class Editor implements Component, Focusable {
 		this.onAltEnter = undefined;
 		this.onChange = undefined;
 		this.onLargePaste = undefined;
+		this.onInputRejected = undefined;
 		this.viewportRowsProvider = undefined;
 	}
 
@@ -714,7 +733,15 @@ export class Editor implements Component, Focusable {
 	setHistoryStorage(storage: HistoryStorage): void {
 		this.#historyStorage = storage;
 		const recent = storage.getRecent(100);
-		this.#history = recent.map(entry => entry.prompt);
+		this.#history = [];
+		let bytes = 0;
+		for (const { prompt } of recent) {
+			const size = Buffer.byteLength(prompt);
+			if (size > EDITOR_LIMITS.draftBytes) continue;
+			if (bytes + size > EDITOR_LIMITS.historyBytes) break;
+			this.#history.push(materializeString(prompt));
+			bytes += size;
+		}
 		this.#historyIndex = -1;
 	}
 
@@ -722,6 +749,7 @@ export class Editor implements Component, Focusable {
 		const trimmed = text.trim();
 		if (!trimmed) return;
 
+		if (Buffer.byteLength(trimmed) > EDITOR_LIMITS.expandedBytes) return;
 		const stor = this.#historyStorage;
 		if (stor) {
 			stor.add(trimmed, getProjectDir()).catch(error => {
@@ -729,28 +757,70 @@ export class Editor implements Component, Focusable {
 			});
 		}
 
+		if (Buffer.byteLength(trimmed) > EDITOR_LIMITS.draftBytes) return;
 		if (this.#history.length > 0 && this.#history[0] === trimmed) return;
-		this.#history.unshift(trimmed);
-
-		if (this.#history.length > 100) {
-			this.#history.pop();
+		this.#history.unshift(materializeString(trimmed));
+		let bytes = this.#history.reduce((sum, entry) => sum + Buffer.byteLength(entry), 0);
+		while (this.#history.length > 100 || bytes > EDITOR_LIMITS.historyBytes) {
+			bytes -= Buffer.byteLength(this.#history.pop()!);
 		}
 	}
 
-	#setLines(lines: string[]): void {
-		this.#state.lines = lines.slice();
+	#setLines(lines: string[]): boolean {
+		const bytes = lines.reduce((sum, line) => sum + Buffer.byteLength(line), Math.max(0, lines.length - 1));
+		if (!this.#acceptDraftBytes(bytes)) return false;
+		this.#state.lines = lines.map(materializeString);
+		this.#textBytes = bytes;
 		this.#linesRevision++;
+		return true;
+	}
+
+	#acceptDraftBytes(bytes: number): boolean {
+		if (bytes <= EDITOR_LIMITS.draftBytes) return true;
+		this.onInputRejected?.(`Draft exceeds ${EDITOR_LIMITS.draftBytes} UTF-8 bytes; edit was not inserted`);
+		return false;
+	}
+
+	#acceptInsertion(text: string, removed = this.getSelectedText()): boolean {
+		return this.#acceptDraftBytes(this.#textBytes + Buffer.byteLength(text) - Buffer.byteLength(removed));
+	}
+
+	/** Includes backing payloads retained for undo, not just visible chips. */
+	canAddAttachment(content: string, label?: string): boolean {
+		let bytes = Buffer.byteLength(content);
+		for (const value of this.#pastes.values()) bytes += Buffer.byteLength(value);
+		for (const [key, value] of this.#atoms)
+			if (key !== label) bytes += Buffer.byteLength(key) + Buffer.byteLength(value);
+		if (label) bytes += Buffer.byteLength(label);
+		const count = this.#pastes.size + this.#atoms.size + (label && this.#atoms.has(label) ? 0 : 1);
+		if (bytes <= EDITOR_LIMITS.attachmentBytes && count <= EDITOR_LIMITS.attachmentCount) return true;
+		this.onInputRejected?.(
+			"Draft attachment limit reached (16 MiB / 256 attachments); clear or submit the draft first",
+		);
+		return false;
+	}
+
+	#prunePayloads(text: string): void {
+		for (const id of this.#pastes.keys()) if (!text.includes(`[Paste #${id}`)) this.#pastes.delete(id);
+		for (const label of this.#atoms.keys()) if (!text.includes(label)) this.#atoms.delete(label);
 	}
 
 	#setLine(index: number, line: string): void {
 		if (this.#state.lines[index] === line) return;
-		this.#state.lines[index] = line;
+		this.#textBytes += Buffer.byteLength(line) - Buffer.byteLength(this.#state.lines[index] ?? "");
+		this.#state.lines[index] = materializeString(line);
 		this.#linesRevision++;
 	}
 
 	#spliceLines(start: number, deleteCount: number, ...items: string[]): void {
 		if (deleteCount === 0 && items.length === 0) return;
-		this.#state.lines.splice(start, deleteCount, ...items);
+		const beforeCount = this.#state.lines.length;
+		const removed = this.#state.lines.splice(start, deleteCount, ...items.map(materializeString));
+		this.#textBytes +=
+			items.reduce((sum, line) => sum + Buffer.byteLength(line), 0) -
+			removed.reduce((sum, line) => sum + Buffer.byteLength(line), 0) +
+			Math.max(0, this.#state.lines.length - 1) -
+			Math.max(0, beforeCount - 1);
 		this.#linesRevision++;
 	}
 
@@ -788,10 +858,17 @@ export class Editor implements Component, Focusable {
 	}
 
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
+		if (!this.#acceptDraftBytes(Buffer.byteLength(text))) return;
+		const clean = sanitizeLoadedText(materializeString(text));
+		if (!this.#acceptDraftBytes(Buffer.byteLength(clean))) return;
 		this.#selectionAnchor = null;
 		this.#undoStack.length = 0;
 		this.#volatileTextLen = 0;
-		const lines = sanitizeLoadedText(text).split("\n");
+		this.#wrapCache.clear();
+		this.#layoutCache = [];
+		this.#layoutScratch = [];
+		this.#prunePayloads(clean);
+		const lines = clean.split("\n");
 		this.#setLines(lines.length === 0 ? [""] : lines);
 		// A single-row entry's top and bottom are the same row, so the directional
 		// anchor degenerates to a bare column choice: Up would park the caret at the
@@ -1323,6 +1400,7 @@ export class Editor implements Component, Focusable {
 
 		const paste = this.#pasteHandler.process(data);
 		if (paste.handled) {
+			if (paste.rejected) this.onInputRejected?.("Paste exceeds the 4 MiB UTF-8 limit and was discarded");
 			if (paste.pasteContent !== undefined) this.#handlePaste(paste.pasteContent);
 			return;
 		}
@@ -1430,7 +1508,7 @@ export class Editor implements Component, Focusable {
 						// The completion is its own undo unit: reset typing
 						// coalescing so the next char snapshots separately.
 						this.#lastAction = null;
-						this.#setLines(result.lines);
+						if (!this.#setLines(result.lines)) return;
 						this.#selectionAnchor = null;
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1486,7 +1564,7 @@ export class Editor implements Component, Focusable {
 							// The completion is its own undo unit: reset typing
 							// coalescing so the next char snapshots separately.
 							this.#lastAction = null;
-							this.#setLines(result.lines);
+							if (!this.#setLines(result.lines)) return;
 							this.#selectionAnchor = null;
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1525,7 +1603,7 @@ export class Editor implements Component, Focusable {
 							// The completion is its own undo unit: reset typing
 							// coalescing so the next char snapshots separately.
 							this.#lastAction = null;
-							this.#setLines(result.lines);
+							if (!this.#setLines(result.lines)) return;
 							this.#selectionAnchor = null;
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1625,7 +1703,7 @@ export class Editor implements Component, Focusable {
 						// The completion is its own undo unit: reset typing
 						// coalescing so the next char snapshots separately.
 						this.#lastAction = null;
-						this.#setLines(result.lines);
+						if (!this.#setLines(result.lines)) return;
 						this.#selectionAnchor = null;
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1746,9 +1824,6 @@ export class Editor implements Component, Focusable {
 		}
 		let entry = this.#wrapCache.get(line);
 		if (entry === undefined) {
-			if (this.#wrapCache.size >= 256) {
-				this.#wrapCache.clear();
-			}
 			entry = { width: visibleWidth(line), chunks: null };
 			this.#wrapCache.set(line, entry);
 		}
@@ -1757,7 +1832,10 @@ export class Editor implements Component, Focusable {
 
 	#wrapLine(line: string, width: number): TextChunk[] {
 		const entry = this.#lineEntry(line, width);
-		entry.chunks ??= wordWrapLine(line, width, entry.width);
+		if (!entry.chunks) {
+			entry.chunks = wordWrapLine(line, width, entry.width);
+			this.#wrapCache.set(line, entry);
+		}
 		return entry.chunks;
 	}
 
@@ -1914,25 +1992,41 @@ export class Editor implements Component, Focusable {
 		for (const label of labels) sources.push(RegExp.escape(label));
 		if (sources.length === 0) return text;
 		const markerRegex = new RegExp(sources.join("|"), "g");
-		return text.replace(markerRegex, match => {
-			const paste = /^\[Paste #(\d+)/.exec(match);
-			if (paste) return this.#pastes.get(Number(paste[1])) ?? match;
-			return this.#atoms.get(match) ?? match;
-		});
+		const pieces: string[] = [];
+		let offset = 0;
+		let bytes = 0;
+		for (const match of text.matchAll(markerRegex)) {
+			const literal = text.slice(offset, match.index);
+			const paste = /^\[Paste #(\d+)/.exec(match[0]);
+			const expansion = (paste ? this.#pastes.get(Number(paste[1])) : this.#atoms.get(match[0])) ?? match[0];
+			bytes += Buffer.byteLength(literal) + Buffer.byteLength(expansion);
+			if (bytes > EDITOR_LIMITS.expandedBytes)
+				throw new RangeError("Expanded draft exceeds 16 MiB; remove repeated attachments before submitting");
+			pieces.push(literal, expansion);
+			offset = match.index + match[0].length;
+		}
+		const tail = text.slice(offset);
+		if (bytes + Buffer.byteLength(tail) > EDITOR_LIMITS.expandedBytes)
+			throw new RangeError("Expanded draft exceeds 16 MiB; remove repeated attachments before submitting");
+		pieces.push(tail);
+		return pieces.join("");
 	}
 
-	registerAtom(label: string, expansion: string): void {
-		this.#atoms.set(label, expansion);
+	registerAtom(label: string, expansion: string): boolean {
+		if (!this.canAddAttachment(expansion, label)) return false;
+		this.#atoms.set(materializeString(label), materializeString(expansion));
+		return true;
 	}
 
-	insertAtom(label: string, expansion: string): void {
+	insertAtom(label: string, expansion: string): boolean {
+		if (!this.#acceptInsertion(`${label} `) || !this.registerAtom(label, expansion)) return false;
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#recordUndoState();
-		this.registerAtom(label, expansion);
 		this.#withUndoSuspended(() => {
 			this.#insertTextAtCursor(`${label} `);
 		});
+		return true;
 	}
 
 	clearAtoms(): void {
@@ -2147,9 +2241,8 @@ export class Editor implements Component, Focusable {
 		this.#exitHistoryForEditing();
 		this.#withUndoSuspended(() => {
 			this.#deleteCharsBeforeCursor(this.#volatileTextLen);
-			if (text) this.#insertTextAtCursor(text);
+			this.#volatileTextLen = text && this.#insertTextAtCursor(text) ? text.length : 0;
 		});
-		this.#volatileTextLen = text.length;
 		if (!text && this.onChange) this.onChange(this.getText());
 	}
 
@@ -2199,6 +2292,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	insertPaste(content: string): void {
+		if (!this.canAddAttachment(content)) return;
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#recordUndoState();
@@ -2217,6 +2311,13 @@ export class Editor implements Component, Focusable {
 			return false;
 		}
 		const line = this.#state.lines[this.#state.cursorLine] || "";
+		if (
+			!this.#acceptInsertion(
+				replacement.insert,
+				line.slice(this.#state.cursorCol - replacement.replaceLen, this.#state.cursorCol),
+			)
+		)
+			return false;
 		const before = line.slice(0, this.#state.cursorCol - replacement.replaceLen);
 		const after = line.slice(this.#state.cursorCol);
 		this.#setLine(this.#state.cursorLine, before + replacement.insert + after);
@@ -2231,6 +2332,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#insertCharacter(char: string): void {
+		if (!this.#acceptInsertion(char)) return;
 		this.#exitHistoryForEditing();
 		// Replacing a selection already snapshotted the pre-selection text, so the
 		// inserted text joins that entry: one undo restores what the user replaced.
@@ -2333,6 +2435,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#handlePaste(pastedText: string): void {
+		if (!this.#acceptDraftBytes(Buffer.byteLength(pastedText))) return;
 		let filteredText = this.#sanitizePastedText(pastedText);
 
 		if (/^[/~.]/.test(filteredText)) {
@@ -2343,6 +2446,7 @@ export class Editor implements Component, Focusable {
 			}
 		}
 
+		if (!this.canAddAttachment(filteredText)) return;
 		const pastedLines = filteredText.split("\n");
 		const totalChars = filteredText.length;
 
@@ -2384,9 +2488,14 @@ export class Editor implements Component, Focusable {
 	}
 
 	#storePasteMarker(content: string, lineCount: number): void {
+		if (
+			!this.canAddAttachment(content) ||
+			!this.#acceptInsertion(`[Paste #${this.#pasteCounter + 1}, +${lineCount} lines]`)
+		)
+			return;
 		this.#pasteCounter++;
 		const pasteId = this.#pasteCounter;
-		this.#pastes.set(pasteId, content);
+		this.#pastes.set(pasteId, materializeString(content));
 
 		const marker =
 			lineCount > 10 ? `[Paste #${pasteId}, +${lineCount} lines]` : `[Paste #${pasteId}, ${content.length} chars]`;
@@ -2412,6 +2521,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#addNewLine(): void {
+		if (!this.#acceptInsertion("\n")) return;
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		if (this.#deleteSelection() === null) {
@@ -2450,7 +2560,14 @@ export class Editor implements Component, Focusable {
 		this.#pasteHandler.clear();
 		this.#resetKillSequence();
 
-		const result = this.#expandPasteMarkers(this.getText()).trim();
+		let result: string;
+		try {
+			result = this.#expandPasteMarkers(this.getText()).trim();
+		} catch (error) {
+			if (!(error instanceof RangeError)) throw error;
+			this.onInputRejected?.(error.message);
+			return;
+		}
 
 		this.#setLines([""]);
 		this.#state.cursorLine = 0;
@@ -2712,9 +2829,12 @@ export class Editor implements Component, Focusable {
 			lines: this.#state.lines.slice(),
 			cursorLine: this.#state.cursorLine,
 			cursorCol: this.#state.cursorCol,
+			bytes: this.#textBytes,
 		});
-		if (this.#undoStack.length > MAX_UNDO_STACK) {
-			this.#undoStack.shift();
+		let bytes = this.#undoStack.reduce((sum, snapshot) => sum + snapshot.bytes, 0);
+		while (this.#undoStack.length > MAX_UNDO_STACK || bytes > EDITOR_LIMITS.undoBytes) {
+			const removed = this.#undoStack.shift()!;
+			bytes -= removed.bytes;
 		}
 	}
 
@@ -2782,14 +2902,15 @@ export class Editor implements Component, Focusable {
 		this.#lastAction = "kill";
 	}
 
-	#insertTextAtCursor(text: string): void {
+	#insertTextAtCursor(text: string): boolean {
+		if (!this.#acceptInsertion(text)) return false;
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		if (this.#deleteSelection() === null) {
 			this.#recordUndoState();
 		}
 
-		const normalized = text.replace(/\r\n?/g, "\n");
+		const normalized = materializeString(text.replace(/\r\n?/g, "\n"));
 		const lines = normalized.split("\n");
 
 		if (lines.length === 1) {
@@ -2827,13 +2948,13 @@ export class Editor implements Component, Focusable {
 			this.onChange(this.getText());
 		}
 		this.#retriggerAutocompleteAtCursor();
+		return true;
 	}
 
 	#yankFromKillRing(): void {
 		const text = this.#killRing.peek();
 		if (!text) return;
-		this.#insertTextAtCursor(text);
-		this.#lastAction = "yank";
+		if (this.#insertTextAtCursor(text)) this.#lastAction = "yank";
 	}
 
 	#yankPop(): void {
@@ -3546,6 +3667,7 @@ export class Editor implements Component, Focusable {
 			this.#cancelAutocomplete();
 			return;
 		}
+		if (!this.#acceptInsertion(selected.value, replacement.original)) return;
 		this.#recordUndoState();
 		this.#setLine(
 			replacement.line,

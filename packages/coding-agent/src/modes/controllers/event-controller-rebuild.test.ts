@@ -4,6 +4,7 @@ import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { SessionContext } from "../../session/session-context";
 import { AssistantMessageComponent } from "../components/assistant-message";
+import { ServedModelTracker } from "../components/served-model-marker";
 import { ToolExecutionComponent, type ToolExecutionHandle, type ToolExecutionUi } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
@@ -54,8 +55,9 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 		hideToolActivity: false,
 		effectiveHideThinkingBlock: false,
 		proseOnlyThinking: false,
+		servedModelTracker: new ServedModelTracker(),
 		noteDisplayableThinkingContent: () => false,
-		transcriptMessageComponents: new WeakMap<object, Component>(),
+		transcriptMessageComponents: new WeakMap<object, WeakRef<Component>>(),
 		statusLine: { invalidate: NOOP, markActivityEnd: NOOP, markActivityStart: NOOP },
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,
@@ -165,6 +167,23 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 			message: assistant("after two"),
 		} as unknown as AgentSessionEvent);
 		expect(kinds(chatContainer)).toEqual(["assistant", "tool", "assistant"]);
+		await controller.handleEvent({
+			type: "message_end",
+			message: assistant("after two"),
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "A",
+			toolName: "alpha",
+			result: { content: [{ type: "text", text: "done" }] },
+			isError: false,
+		});
+		await controller.handleEvent({
+			type: "message_start",
+			message: { ...assistant(""), content: [] },
+		} as unknown as AgentSessionEvent);
+		expect(controller.getLivePostToolAssistantComponents()).toEqual([]);
+		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("after two");
 	} finally {
 		controller.dispose();
 		chatContainer.dispose();
@@ -252,7 +271,7 @@ test("synthetic developer context the model acted on is invisible in the transcr
 		hideToolActivity: false,
 		effectiveHideThinkingBlock: false,
 		proseOnlyThinking: false,
-		transcriptMessageComponents: new WeakMap<object, Component>(),
+		transcriptMessageComponents: new WeakMap<object, WeakRef<Component>>(),
 		statusLine: { invalidate: NOOP },
 		updateEditorBorderColor: NOOP,
 		lastAssistantUsage: undefined,

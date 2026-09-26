@@ -92,51 +92,58 @@ async function collectBlobReferences(sessionsDir: string): Promise<Set<string> |
 						return null;
 					}
 					const encoded = (await fsp.readFile(entryPath)).toString("utf8").trim();
-					let archive: unknown;
-					try {
-						const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
-							maxOutputLength: MAX_ARCHIVE_DECODED_BYTES,
-						}).toString("utf8");
-						archive = JSON.parse(decoded);
-					} catch {
-						return null;
-					}
-					if (typeof archive !== "object" || archive === null) return null;
-					const envelope = archive as {
-						version?: unknown;
-						sessionId?: unknown;
-						sessionFile?: unknown;
-						records?: unknown;
-					};
-					if (
-						envelope.version !== 1 ||
-						typeof envelope.sessionId !== "string" ||
-						typeof envelope.sessionFile !== "string" ||
-						!Array.isArray(envelope.records) ||
-						envelope.records.length > MAX_ARCHIVE_RECORDS
-					) {
-						return null;
-					}
-					for (const record of envelope.records) {
-						if (
-							typeof record !== "object" ||
-							record === null ||
-							typeof record.id !== "string" ||
-							!(record.beforeId === null || typeof record.beforeId === "string") ||
-							typeof record.line !== "string" ||
-							Buffer.byteLength(record.line, "utf8") > MAX_ARCHIVE_RECORD_BYTES
-						) {
-							return null;
-						}
-						let value: unknown;
+					if (!encoded) return null;
+					let recordCount = 0;
+					for (const batch of encoded.split("\n")) {
+						if (!batch.trim()) continue;
+						let archive: unknown;
 						try {
-							value = JSON.parse(record.line);
+							const decoded = gunzipSync(Buffer.from(batch, "base64"), {
+								maxOutputLength: MAX_ARCHIVE_DECODED_BYTES,
+							}).toString("utf8");
+							archive = JSON.parse(decoded);
 						} catch {
 							return null;
 						}
-						if (typeof value !== "object" || value === null || !("id" in value) || value.id !== record.id)
+						if (typeof archive !== "object" || archive === null) return null;
+						const envelope = archive as {
+							version?: unknown;
+							sessionId?: unknown;
+							sessionFile?: unknown;
+							records?: unknown;
+						};
+						if (
+							envelope.version !== 1 ||
+							typeof envelope.sessionId !== "string" ||
+							typeof envelope.sessionFile !== "string" ||
+							!Array.isArray(envelope.records) ||
+							envelope.records.length > MAX_ARCHIVE_RECORDS
+						) {
 							return null;
-						collectRefs(value, references);
+						}
+						recordCount += envelope.records.length;
+						if (recordCount > MAX_ARCHIVE_RECORDS) return null;
+						for (const record of envelope.records) {
+							if (
+								typeof record !== "object" ||
+								record === null ||
+								typeof record.id !== "string" ||
+								!(record.beforeId === null || typeof record.beforeId === "string") ||
+								typeof record.line !== "string" ||
+								Buffer.byteLength(record.line, "utf8") > MAX_ARCHIVE_RECORD_BYTES
+							) {
+								return null;
+							}
+							let value: unknown;
+							try {
+								value = JSON.parse(record.line);
+							} catch {
+								return null;
+							}
+							if (typeof value !== "object" || value === null || !("id" in value) || value.id !== record.id)
+								return null;
+							collectRefs(value, references);
+						}
 					}
 					continue;
 				}
@@ -465,6 +472,16 @@ export class BlobStore {
 		}
 	}
 
+	/** Read payload size without admitting the blob into memory. */
+	sizeSync(hash: string): number | null {
+		try {
+			return fs.statSync(path.join(this.dir, hash)).size;
+		} catch (error) {
+			if (isEnoent(error)) return null;
+			throw error;
+		}
+	}
+
 	async has(hash: string): Promise<boolean> {
 		try {
 			await fsp.access(path.join(this.dir, hash));
@@ -527,6 +544,17 @@ export async function resolveImageDataUrl(
 	if (!hash) return data;
 
 	const buffer = await readBlob(hash);
+	if (!buffer) {
+		logger.warn("Blob not found for persisted image data URL", { hash });
+		return data;
+	}
+	return buffer.toString("utf8");
+}
+
+export function resolveImageDataUrlSync(blobStore: BlobStore, data: string): string {
+	const hash = parseBlobRef(data);
+	if (!hash) return data;
+	const buffer = blobStore.getSync(hash);
 	if (!buffer) {
 		logger.warn("Blob not found for persisted image data URL", { hash });
 		return data;

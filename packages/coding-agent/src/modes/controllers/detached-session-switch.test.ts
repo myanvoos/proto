@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -7,11 +7,17 @@ import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import type { InteractiveModeContext } from "../../modes/types";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import * as sdkModule from "../../sdk";
 import { AgentSession } from "../../session/agent-session";
 import { AuthStorage } from "../../session/auth-storage";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
 import { SessionManager } from "../../session/session-manager";
+import { EventBus } from "../../utils/event-bus";
+import { initThemeSync } from "../theme/theme";
+import { CommandController } from "./command-controller";
 import { SelectorController } from "./selector-controller";
+
+initThemeSync();
 
 interface StreamingSession {
 	session: AgentSession;
@@ -84,6 +90,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await detachedSessionHolder.disposeAll();
 	AgentRegistry.resetGlobalForTests();
 	authStorage.close();
@@ -155,6 +162,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 			actions.push("attach");
 		},
 		clearTransientSessionUi: () => actions.push("clear"),
+		resetObserverRegistry: () => {},
 		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
 		reloadChecklist: async () => {},
@@ -232,6 +240,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 		getToolUIContext: () => undefined,
 		attachSessionView: async () => {},
 		clearTransientSessionUi: () => {},
+		resetObserverRegistry: () => {},
 		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
 		reloadChecklist: async () => {},
@@ -254,5 +263,89 @@ test("switching away keeps an idle main detached while its worker is running", a
 	} finally {
 		await a.session.dispose();
 		await detachedSessionHolder.disposeAll();
+	}
+});
+
+test("starting a new session keeps a streaming turn running in the background until it is resumed", async () => {
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected bundled test model");
+	const settings = Settings.isolated({
+		"compaction.enabled": false,
+		"session.detachedMainSessions": true,
+	});
+	const defaultRoleModel = getBundledModel("anthropic", "claude-haiku-4-5");
+	if (!defaultRoleModel) throw new Error("Expected bundled default-role model");
+	const modelRegistry = new ModelRegistry(authStorage);
+	const a = createStreamingSession(tempDir.path(), model, modelRegistry, settings, "A done");
+	const fresh = createStreamingSession(tempDir.path(), defaultRoleModel, modelRegistry, settings, "unused");
+	const registry = AgentRegistry.global();
+	for (const { session, file } of [a, fresh]) {
+		registry.register({
+			id: MAIN_AGENT_ID,
+			label: "main",
+			kind: "main",
+			fleetRoot: `${file.slice(0, -".jsonl".length)}/fleet`,
+			sessionFile: file,
+			session,
+		});
+	}
+	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+		session: fresh.session,
+		extensionsResult: { extensions: [], errors: [], runtime: {} } as unknown as sdkModule.LoadExtensionsResult,
+		setToolUIContext: () => {},
+		eventBus: new EventBus(),
+	});
+	const runA = a.session.prompt("run A");
+	await waitForStreaming(a.session);
+
+	const mutable = {
+		session: a.session,
+		agent: a.session.agent,
+		settings,
+		eventBus: undefined,
+		mcpManager: undefined,
+		ui: { requestRender: () => {} },
+		statusLine: { invalidate: () => {}, resetActiveTime: () => {} },
+		getToolUIContext: () => undefined,
+		attachSessionView: async () => {},
+		clearTransientSessionUi: () => {},
+		resetObserverRegistry: () => {},
+		resetTranscript: () => {},
+		present: () => {},
+		applyCwdChange: async () => true,
+		renderInitialMessages: async () => {},
+		reloadChecklist: async () => {},
+		updateEditorBorderColor: () => {},
+		showStatus: () => {},
+		showError: () => {},
+	};
+	Object.defineProperty(mutable, "sessionManager", {
+		get: () => mutable.session.sessionManager,
+	});
+	const ctx = mutable as unknown as InteractiveModeContext;
+
+	try {
+		await new CommandController(ctx).handleClearCommand();
+
+		expect(ctx.session).toBe(fresh.session);
+		// Like an in-place new session, the fresh one keeps the model the user was on.
+		expect(ctx.session.model?.id).toBe(model.id);
+		expect(a.session.isStreaming).toBe(true);
+		// Session lists read from disk: the parked first turn must be listed to be resumable.
+		const listed = await SessionManager.list(tempDir.path(), tempDir.path());
+		expect(listed.map(info => info.path)).toContain(a.file);
+
+		a.release();
+		await runA;
+		expect(await new SelectorController(ctx).handleResumeSession(a.file, { settingsFlushed: true })).toBe(true);
+
+		expect(ctx.session).toBe(a.session);
+		const last = a.session.messages.at(-1);
+		expect(last?.role === "assistant" ? last.content : undefined).toEqual([{ type: "text", text: "A done" }]);
+	} finally {
+		a.release();
+		await Promise.allSettled([runA]);
+		await a.session.dispose();
+		await fresh.session.dispose();
 	}
 });

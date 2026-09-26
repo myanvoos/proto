@@ -1,6 +1,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { AsyncJobType } from "../../async";
+import type { AsyncJobEvent, AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
+import type { MonitorDetails } from "../../monitor/types";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 export type FleetOp =
@@ -36,6 +37,8 @@ export interface JobSnapshot {
 	label: string;
 	durationMs: number;
 
+	monitor?: MonitorDetails;
+	events?: AsyncJobEvent[];
 	resolvedModel?: string;
 	resultText?: string;
 	errorText?: string;

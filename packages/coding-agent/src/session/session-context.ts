@@ -23,6 +23,8 @@ const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
 export interface SessionContext {
 	messages: AgentMessage[];
+	entryIds?: string[];
+	window?: TranscriptWindow;
 	thinkingLevel?: string;
 
 	configuredThinkingLevel?: string;
@@ -67,7 +69,17 @@ export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEnt
 	return null;
 }
 
+export interface TranscriptWindow {
+	start: number;
+	end: number;
+	pageFromLatest: number;
+	totalMessages: number;
+}
+
 export interface BuildSessionContextOptions {
+	window?: { pageFromLatest: number; maxMessages: number; maxBytes: number };
+	/** Internal projection: stable entry IDs alongside filtered messages. */
+	includeEntryIds?: boolean;
 	transcript?: boolean;
 
 	collapseCompactedHistory?: boolean;
@@ -134,6 +146,7 @@ export function buildSessionContext(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 	options?: BuildSessionContextOptions,
+	materializeEntry: (entry: SessionEntry) => SessionEntry = entry => entry,
 ): SessionContext {
 	if (!byId) {
 		byId = new Map<string, SessionEntry>();
@@ -228,6 +241,15 @@ export function buildSessionContext(
 		}
 	}
 
+	if (compaction) compaction = materializeEntry(compaction) as CompactionEntry;
+	for (let i = path.length - 1; i >= 0; i--) {
+		const entry = path[i];
+		if (entry.type !== "mode_change") continue;
+		const hydrated = materializeEntry(entry);
+		if (hydrated.type === "mode_change") modeData = hydrated.data;
+		break;
+	}
+
 	const injectedTtsrRules = Array.from(injectedTtsrRulesSet);
 
 	let compactionIdx = -1;
@@ -256,6 +278,7 @@ export function buildSessionContext(
 	}
 
 	const messages: AgentMessage[] = [];
+	const entryIds: string[] = [];
 	const cacheMissExplainedAt: boolean[] = [];
 	let pendingReset = false;
 	let lastAssistantModel: string | undefined;
@@ -279,19 +302,21 @@ export function buildSessionContext(
 		return explained;
 	};
 
-	const pushMessage = (msg: AgentMessage) => {
+	const pushMessage = (msg: AgentMessage, entryId: string) => {
 		messages.push(msg);
+		entryIds.push(entryId);
 		if (!options?.transcript) return;
 		cacheMissExplainedAt.push(trackMessageCacheState(msg));
 	};
 
-	const appendMessage = (entry: SessionEntry) => {
+	const appendMessage = (indexedEntry: SessionEntry) => {
+		const entry = materializeEntry(indexedEntry);
 		handleEntryResetTracking(entry);
 		if (entry.type === "message") {
 			if (!options?.transcript && entry.message.role === "assistant" && entry.message.retryRecovery) {
 				return;
 			}
-			pushMessage(entry.message);
+			pushMessage(entry.message, entry.id);
 		} else if (entry.type === "custom_message") {
 			if (!options?.transcript && entry.customType === PREWALK_PLAN_MESSAGE_TYPE) return;
 			if (!isCustomMessageContent(entry.content)) return;
@@ -306,9 +331,10 @@ export function buildSessionContext(
 					entry.timestamp,
 					attribution,
 				),
+				entry.id,
 			);
 		} else if (entry.type === "branch_summary" && entry.summary) {
-			pushMessage(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
+			pushMessage(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp), entry.id);
 		}
 	};
 
@@ -317,18 +343,20 @@ export function buildSessionContext(
 			handleEntryResetTracking(entry);
 			if (entry.type === "compaction") {
 				const active = entry.id === compaction?.id;
+				const summaryEntry = active && compaction ? compaction : entry;
 				pushMessage(
 					createCompactionSummaryMessage(
-						active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY,
+						active ? summaryEntry.summary : SUPERSEDED_COMPACTION_SUMMARY,
 						entry.tokensBefore,
 						entry.timestamp,
 						{
-							shortSummary: active ? entry.shortSummary : SUPERSEDED_COMPACTION_SHORT_SUMMARY,
+							shortSummary: active ? summaryEntry.shortSummary : SUPERSEDED_COMPACTION_SHORT_SUMMARY,
 							warning: entry.warning,
 							method: entry.method,
 							tokensAfter: entry.tokensAfter,
 						},
 					),
+					entry.id,
 				);
 			} else {
 				appendMessage(entry);
@@ -368,7 +396,7 @@ export function buildSessionContext(
 		);
 
 		if (!options?.transcript) {
-			pushMessage(compactionSummaryMsg);
+			pushMessage(compactionSummaryMsg, compaction.id);
 		}
 
 		if (!remoteReplacementHistory || options?.transcript) {
@@ -409,7 +437,7 @@ export function buildSessionContext(
 
 		if (options?.transcript) handleEntryResetTracking(compaction);
 		if (options?.transcript) {
-			pushMessage(compactionSummaryMsg);
+			pushMessage(compactionSummaryMsg, compaction.id);
 		}
 
 		for (let i = compactionIdx + 1; i < path.length; i++) {
@@ -437,6 +465,7 @@ export function buildSessionContext(
 		} else if (message.role === "toolResult") {
 			if (!seenToolCallIds.has(message.toolCallId)) {
 				messages.splice(i, 1);
+				entryIds.splice(i, 1);
 				if (options?.transcript) cacheMissExplainedAt.splice(i, 1);
 				i--;
 				continue;
@@ -467,6 +496,7 @@ export function buildSessionContext(
 				);
 			if (normalized.length === 0 && !options?.transcript) {
 				messages.splice(i, 1);
+				entryIds.splice(i, 1);
 			} else {
 				const rewritten = { ...message, content: normalized };
 				if (options?.transcript) {
@@ -490,11 +520,13 @@ export function buildSessionContext(
 				if (block.type === "toolCall") droppedToolCallIds.add(block.id);
 			}
 			messages.splice(i, 1);
+			entryIds.splice(i, 1);
 			if (droppedToolCallIds.size > 0) {
 				for (let j = messages.length - 1; j >= i; j--) {
 					const candidate = messages[j];
 					if (candidate?.role === "toolResult" && droppedToolCallIds.has(candidate.toolCallId)) {
 						messages.splice(j, 1);
+						entryIds.splice(j, 1);
 					}
 				}
 			}
@@ -503,6 +535,7 @@ export function buildSessionContext(
 
 	return {
 		messages,
+		...(options?.includeEntryIds ? { entryIds } : {}),
 		cacheMissExplainedAt: options?.transcript ? cacheMissExplainedAt : undefined,
 		thinkingLevel,
 		configuredThinkingLevel,

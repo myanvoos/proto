@@ -290,7 +290,8 @@ describe("orchestrator lifecycle identity", () => {
 			state: "running",
 			jobId: "busy-worker-t1",
 		});
-		const session = scopedSession("queue-parent");
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		const session = { ...scopedSession("queue-parent"), asyncJobManager: manager } as ToolSession;
 		const receipts = [];
 		for (let index = 0; index < 32; index++) {
 			receipts.push(await runtime.send(session, { session: "busy-worker", message: `follow-up-${index}` }));
@@ -303,5 +304,7 @@ describe("orchestrator lifecycle identity", () => {
 		expect(runtime.screens(session)[0]).toMatchObject({
 			queued: 32,
 		});
+		await runtime.suspendScope(runtime.ownerScope(session), manager);
+		await manager.dispose({ timeoutMs: 1_000 });
 	});
 });

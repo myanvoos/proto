@@ -11,6 +11,7 @@ import {
 	type SessionOwners,
 } from "./executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
+import { type KernelAdmission, KernelStartupCleanupError, kernelAdmission } from "./kernel-admission";
 
 const MAX_REAP_NOTES = 32;
 const MAX_REAP_SHUTDOWN_RETRIES = 3;
@@ -65,6 +66,7 @@ interface KernelSessionRegistryDescriptor<
 > {
 	/** Release a quiescent kernel after this much inactivity; 0 disables. Defaults to DEFAULT_KERNEL_IDLE_REAP_MS. */
 	idleReapMs?: number;
+	admission?: KernelAdmission;
 	/** Busy probe for the reap check. Undefined/true/unknown = not idle, keep the kernel. */
 	kernelBusy?: (kernel: TKernel) => Promise<boolean | undefined>;
 	/** Called on the next execute for a session key that was idle-reaped, so callers can surface the state wipe. */
@@ -145,6 +147,9 @@ export function createKernelSessionRegistry<
 	descriptor: KernelSessionRegistryDescriptor<TKernel, TOptions, TResult, TSession>,
 ): KernelSessionRegistry<TOptions, TResult> {
 	const sessions = new Map<string, TSession>();
+	const admission = descriptor.admission ?? kernelAdmission;
+	const reservations = new WeakMap<TSession, () => void>();
+	const failedStartups = new Set<{ owners: SessionOwners; error: KernelStartupCleanupError; release(): void }>();
 	const startingSessions = new Map<string, StartingKernelSession<TSession>>();
 	const resettingSessions = new Map<string, Promise<void>>();
 	const idleReapMs = descriptor.idleReapMs ?? DEFAULT_KERNEL_IDLE_REAP_MS;
@@ -203,7 +208,11 @@ export function createKernelSessionRegistry<
 		}
 		// Busy covers anything the kernel is still waiting on: backgrounded cells,
 		// monitors, awaited subagents/tool bridges. Unknown counts as busy.
-		const busy = descriptor.kernelBusy ? await descriptor.kernelBusy(session.kernel) : true;
+		const busy = session.kernel.isAlive()
+			? descriptor.kernelBusy
+				? await descriptor.kernelBusy(session.kernel)
+				: true
+			: false;
 		if (busy !== false) {
 			armReap(sessionKey);
 			return;
@@ -274,9 +283,18 @@ export function createKernelSessionRegistry<
 			attachSessionOwner(starting, sessionId, options.kernelOwnerId);
 			return await waitForStartup(starting.promise, options);
 		}
+		const release = admission.reserve(options.kernelOwnerId ?? sessionId);
 		let startingSession!: StartingKernelSession<TSession>;
 		const startup = (async () => {
-			const kernel = await descriptor.startKernel(cwd, options);
+			let kernel: TKernel;
+			try {
+				kernel = await descriptor.startKernel(cwd, options);
+			} catch (error) {
+				if (error instanceof KernelStartupCleanupError) {
+					failedStartups.add({ owners: startingSession, error, release });
+				} else release();
+				throw error;
+			}
 			const session = descriptor.createSession({
 				sessionKey,
 				sessionId,
@@ -285,6 +303,7 @@ export function createKernelSessionRegistry<
 				ownerIds: new Set(startingSession.ownerIds),
 				hasFallbackOwner: startingSession.hasFallbackOwner,
 			});
+			reservations.set(session, release);
 			if (startingSessions.get(sessionKey) === startingSession) {
 				sessions.set(sessionKey, session);
 			}
@@ -297,11 +316,11 @@ export function createKernelSessionRegistry<
 		};
 		attachSessionOwner(startingSession, sessionId, options.kernelOwnerId);
 		startingSessions.set(sessionKey, startingSession);
-		try {
-			return await waitForStartup(startup, options);
-		} finally {
+		const forgetStarting = (): void => {
 			if (startingSessions.get(sessionKey) === startingSession) startingSessions.delete(sessionKey);
-		}
+		};
+		void startup.then(forgetStarting, forgetStarting);
+		return await waitForStartup(startup, options);
 	}
 
 	async function replaceSessionKernel(session: TSession, cwd: string, options: TOptions): Promise<TKernel> {
@@ -315,9 +334,9 @@ export function createKernelSessionRegistry<
 		}
 		const old = session.kernel;
 		const remaining = getRemainingTimeoutMs(options.deadlineMs);
-		await old
-			.shutdown(remaining !== undefined ? { timeoutMs: Math.max(0, remaining) } : undefined)
-			.catch(() => undefined);
+		const shutdown = await old.shutdown(remaining !== undefined ? { timeoutMs: Math.max(0, remaining) } : undefined);
+		if (shutdown.confirmed === false)
+			throw new Error(`${descriptor.languageLabel} kernel replacement shutdown not confirmed`);
 		if (sessions.get(session.sessionKey) !== session) {
 			throw new descriptor.cancelledErrorClass(false);
 		}
@@ -342,7 +361,12 @@ export function createKernelSessionRegistry<
 	}
 
 	async function shutdownSession(session: TSession, resetting: boolean): Promise<RegistryKernelShutdownResult> {
-		return await (descriptor.shutdownSession?.(session, resetting) ?? session.kernel.shutdown());
+		const result = await (descriptor.shutdownSession?.(session, resetting) ?? session.kernel.shutdown());
+		if (result.confirmed !== false) {
+			reservations.get(session)?.();
+			reservations.delete(session);
+		}
+		return result;
 	}
 
 	async function resetSession(sessionKey: string): Promise<void> {
@@ -350,10 +374,28 @@ export function createKernelSessionRegistry<
 			sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.promise.catch(() => undefined));
 		if (!existing) return;
 		descriptor.invalidateSession?.(existing);
-		sessions.delete(sessionKey);
+		const result = await shutdownSession(existing, true);
+		if (result.confirmed === false)
+			throw new Error(`${descriptor.languageLabel} kernel reset shutdown not confirmed`);
+		if (sessions.get(sessionKey) === existing) sessions.delete(sessionKey);
 		clearReapState(sessionKey);
 		reapedNotes.delete(sessionKey);
-		await shutdownSession(existing, true).catch(() => undefined);
+	}
+
+	async function disposeFailedStartups(ownerId?: string): Promise<void> {
+		await Promise.all(
+			[...failedStartups].map(async entry => {
+				if (ownerId !== undefined && !entry.owners.ownerIds.has(ownerId)) return;
+				try {
+					const result = await entry.error.shutdown();
+					if (!result.confirmed) throw new Error("shutdown not confirmed");
+					entry.release();
+					failedStartups.delete(entry);
+				} catch (error) {
+					logger.warn(`${descriptor.languageLabel} failed startup shutdown not confirmed`, { error });
+				}
+			}),
+		);
 	}
 
 	async function disposeAll(): Promise<void> {
@@ -388,6 +430,7 @@ export function createKernelSessionRegistry<
 			});
 			if (!sessions.has(id)) sessions.set(id, session);
 		}
+		await disposeFailedStartups();
 	}
 
 	async function disposeByOwner(ownerId: string): Promise<void> {
@@ -441,10 +484,12 @@ export function createKernelSessionRegistry<
 			});
 			if (!sessions.has(session.sessionKey)) sessions.set(session.sessionKey, session);
 		}
+		await disposeFailedStartups(ownerId);
 	}
 
 	async function executeOnSession(code: string, cwd: string, options: TOptions): Promise<TResult> {
 		const sessionId = options.sessionId ?? `session:${cwd}`;
+		if (failedStartups.size > 0) await disposeFailedStartups(options.kernelOwnerId ?? sessionId);
 		const sessionKey = resolveOwnerScopedSessionKey({
 			baseKey: descriptor.buildSessionKey(sessionId, cwd, options.interpreter),
 			ownerId: options.kernelOwnerId,

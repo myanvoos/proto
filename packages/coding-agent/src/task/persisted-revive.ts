@@ -12,7 +12,7 @@ import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
-import { attachIrcWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
+import { attachWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
 import type { AgentDefinition } from "./types";
 
 interface PersistedSubagentReviveContext {
@@ -151,7 +151,7 @@ export function createPersistedSubagentReviverFactory(
 				systemPrompt: init.systemPrompt,
 				source: "user",
 			};
-			attachIrcWakeTurnMonitor(session, {
+			attachWakeTurnMonitor(session, {
 				id: ref.id,
 				agent: wakeAgent,
 				eventBus: ctx.eventBus,

@@ -1,11 +1,12 @@
-import * as fs from "node:fs/promises";
 import type { Context, ImageContent, Message, Model, ProviderPayload, TextContent } from "@oh-my-pi/pi-ai";
 import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveReadPath } from "../tools/path-utils";
-import type { ImageResizeOptions, ResizedImage } from "./image-resize";
+import { formatDimensionNote, type ImageResizeOptions, type ResizedImage, resizeImage } from "./image-resize";
+import { ImageResourceLimitError, MAX_IMAGE_INPUT_BYTES, reserveImageInput, withImageDecode } from "./image-resources";
 
-export const MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024;
+export { MAX_IMAGE_INPUT_BYTES } from "./image-resources";
+
 const SUPPORTED_INPUT_IMAGE_MIME_TYPES = SUPPORTED_IMAGE_MIME_TYPES;
 const MODEL_BOUNDARY_IMAGE_CACHE_MAX_SIZE = 64 * 1024 * 1024;
 const MODEL_BOUNDARY_IMAGE_CACHE_MAX_ENTRIES = 128;
@@ -17,10 +18,6 @@ const modelBoundaryImageCache = new LRUCache<string, NormalizedImagePayload | nu
 });
 const modelBoundaryImageNormalizations = new Map<string, Promise<NormalizedImagePayload | null>>();
 const UNDECODABLE_STB_IMAGE_OMISSION_TEXT = "[image omitted: WebP could not be decoded for this model]";
-
-function loadImageResize() {
-	return import("./image-resize");
-}
 
 function createUndecodableStbImageOmission(): TextContent {
 	return { type: "text", text: UNDECODABLE_STB_IMAGE_OMISSION_TEXT };
@@ -74,8 +71,8 @@ async function memoizedStbImageNormalization(
 
 	let pending = modelBoundaryImageNormalizations.get(key);
 	if (!pending) {
-		pending = loadImageResize()
-			.then(({ resizeImage }) => resizeImage(image, { ...resize, excludeWebP: true }))
+		const lease = reserveImageInput(Buffer.byteLength(image.data, "base64"));
+		pending = resizeImage(image, { ...resize, excludeWebP: true })
 			.then(resized => {
 				if (resized.mimeType === "image/webp" || hasWebPMagic(resized.data)) {
 					throw new Error("Image normalization retained WebP for an STB-backed model");
@@ -83,6 +80,7 @@ async function memoizedStbImageNormalization(
 				return { data: resized.data, mimeType: resized.mimeType };
 			})
 			.catch(error => {
+				if (error instanceof ImageResourceLimitError) throw error;
 				logger.warn("Dropping undecodable WebP for an STB-backed model", { error: String(error) });
 				return null;
 			})
@@ -90,7 +88,10 @@ async function memoizedStbImageNormalization(
 				modelBoundaryImageCache.set(key, payload);
 				return payload;
 			})
-			.finally(() => modelBoundaryImageNormalizations.delete(key));
+			.finally(() => {
+				modelBoundaryImageNormalizations.delete(key);
+				lease.release();
+			});
 		modelBoundaryImageNormalizations.set(key, pending);
 	}
 	const normalized = await pending;
@@ -216,11 +217,13 @@ export interface ImageDimensions {
  * a provider as undecodable base64. Returns the intrinsic dimensions for callers that show them.
  */
 export async function readDecodedImageDimensions(data: string | Uint8Array): Promise<ImageDimensions | undefined> {
-	const buffer = typeof data === "string" ? Buffer.from(data, "base64") : data;
 	try {
-		const { width, height } = await new Bun.Image(buffer).metadata();
-		return width && height ? { width, height } : undefined;
+		return await withImageDecode(data, async buffer => {
+			const { width, height } = await new Bun.Image(buffer).metadata();
+			return width && height ? { width, height } : undefined;
+		});
 	} catch (error) {
+		if (error instanceof ImageResourceLimitError) throw error;
 		logger.debug("Image decode probe failed", { error: String(error) });
 		return undefined;
 	}
@@ -243,9 +246,10 @@ export class UnsupportedImageConversionError extends Error {
 }
 
 export async function convertImageToPng(image: ImageContent): Promise<ImageContent> {
-	const bytes = Buffer.from(image.data, "base64");
-	const data = await new Bun.Image(bytes).png().toBase64();
-	return { ...image, data, mimeType: "image/png" };
+	return withImageDecode(image.data, async bytes => {
+		const data = await new Bun.Image(bytes).png().toBase64();
+		return { ...image, data, mimeType: "image/png" };
+	});
 }
 
 export async function ensureSupportedImageInput(image: ImageContent): Promise<ImageContent | null> {
@@ -254,7 +258,8 @@ export async function ensureSupportedImageInput(image: ImageContent): Promise<Im
 	}
 	try {
 		return await convertImageToPng(image);
-	} catch {
+	} catch (error) {
+		if (error instanceof ImageResourceLimitError) throw error;
 		return null;
 	}
 }
@@ -274,7 +279,6 @@ export async function normalizeModelContextImages(
 		? { ...options?.resize, excludeWebP: true }
 		: options?.resize;
 	const normalized: ImageContent[] = [];
-	const { resizeImage } = await loadImageResize();
 	for (const image of images) {
 		if (excludesWebP && isWebPImage(image)) {
 			const converted = await memoizedStbImageNormalization(image, options?.resize);
@@ -285,7 +289,8 @@ export async function normalizeModelContextImages(
 		try {
 			const resized = await resizeImage(image, resize);
 			normalized.push({ ...image, data: resized.data, mimeType: resized.mimeType });
-		} catch {
+		} catch (error) {
+			if (error instanceof ImageResourceLimitError) throw error;
 			normalized.push(image);
 		}
 	}
@@ -344,13 +349,12 @@ async function resizeImageOrKeepOriginal(
 	options: ImageResizeOptions,
 	source: string,
 ): Promise<ResizedImage | undefined> {
-	const { resizeImage } = await loadImageResize();
 	try {
 		const resized = await resizeImage(image, options);
 		if (resized.decodeFailed) throw new ImageDecodeError(source);
 		return resized;
 	} catch (error) {
-		if (error instanceof ImageDecodeError) throw error;
+		if (error instanceof ImageDecodeError || error instanceof ImageResourceLimitError) throw error;
 		logger.debug("Image resize failed; keeping the original bytes", { source, error: String(error) });
 		return undefined;
 	}
@@ -365,52 +369,62 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 	const mimeType = metadata?.mimeType;
 	if (!mimeType) return null;
 
-	const stat = await Bun.file(resolvedPath).stat();
+	const file = Bun.file(resolvedPath);
+	const stat = await file.stat();
 	if (stat.size > maxBytes) {
 		throw new ImageInputTooLargeError(stat.size, maxBytes);
 	}
 
-	const inputBuffer = await fs.readFile(resolvedPath);
-	if (inputBuffer.byteLength > maxBytes) {
-		throw new ImageInputTooLargeError(inputBuffer.byteLength, maxBytes);
-	}
-
-	await assertDecodableImage(inputBuffer, resolvedPath);
-
-	let outputData = Buffer.from(inputBuffer).toBase64();
-	let outputMimeType = mimeType;
-	let outputBytes = inputBuffer.byteLength;
-	let dimensionNote: string | undefined;
-	const { formatDimensionNote } = await loadImageResize();
-
-	const shouldReencodeWebP = options.excludeWebP === true && mimeType === "image/webp";
-	if (options.autoResize || shouldReencodeWebP) {
-		const resized = await resizeImageOrKeepOriginal(
-			{ type: "image", data: outputData, mimeType },
-			{ excludeWebP: options.excludeWebP },
-			resolvedPath,
-		);
-		if (resized) {
-			outputData = resized.data;
-			outputMimeType = resized.mimeType;
-			outputBytes = resized.buffer.byteLength;
-			dimensionNote = formatDimensionNote(resized);
+	const lease = reserveImageInput(stat.size);
+	try {
+		// A growing file cannot turn an admitted read into an unbounded allocation.
+		const readLimit = Math.min(stat.size, maxBytes, MAX_IMAGE_INPUT_BYTES);
+		const inputBuffer = new Uint8Array(await file.slice(0, readLimit + 1).arrayBuffer());
+		if (inputBuffer.byteLength > maxBytes) {
+			throw new ImageInputTooLargeError(inputBuffer.byteLength, maxBytes);
 		}
-	}
 
-	let textNote = `Read image file [${outputMimeType}]`;
-	if (dimensionNote) {
-		textNote += `\n${dimensionNote}`;
-	}
+		if (inputBuffer.byteLength > stat.size) {
+			throw new ImageResourceLimitError("oversized", "image file grew after admission; retry the read");
+		}
+		await assertDecodableImage(inputBuffer, resolvedPath);
 
-	return {
-		resolvedPath,
-		mimeType: outputMimeType,
-		data: outputData,
-		textNote,
-		dimensionNote,
-		bytes: outputBytes,
-	};
+		let outputData = Buffer.from(inputBuffer).toBase64();
+		let outputMimeType = mimeType;
+		let outputBytes = inputBuffer.byteLength;
+		let dimensionNote: string | undefined;
+
+		const shouldReencodeWebP = options.excludeWebP === true && mimeType === "image/webp";
+		if (options.autoResize || shouldReencodeWebP) {
+			const resized = await resizeImageOrKeepOriginal(
+				{ type: "image", data: outputData, mimeType },
+				{ excludeWebP: options.excludeWebP },
+				resolvedPath,
+			);
+			if (resized) {
+				outputData = resized.data;
+				outputMimeType = resized.mimeType;
+				outputBytes = resized.buffer.byteLength;
+				dimensionNote = formatDimensionNote(resized);
+			}
+		}
+
+		let textNote = `Read image file [${outputMimeType}]`;
+		if (dimensionNote) {
+			textNote += `\n${dimensionNote}`;
+		}
+
+		return {
+			resolvedPath,
+			mimeType: outputMimeType,
+			data: outputData,
+			textNote,
+			dimensionNote,
+			bytes: outputBytes,
+		};
+	} finally {
+		lease.release();
+	}
 }
 
 export async function loadImageAttachmentInput(
@@ -432,7 +446,6 @@ export async function loadImageAttachmentInput(
 	let outputMimeType = options.image.mimeType;
 	let outputBytes = inputBytes;
 	let dimensionNote: string | undefined;
-	const { formatDimensionNote } = await loadImageResize();
 
 	const shouldReencodeWebP = options.excludeWebP === true && options.image.mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {

@@ -1140,16 +1140,6 @@ if "__proto_prelude_loaded__" not in globals():
 
     tool = _ToolProxy()
 
-    _completion_invocation_counts = {}
-
-    def _next_completion_invocation_id():
-        getter = globals().get("__proto_current_run_id__")
-        run_id = getter() if callable(getter) else globals().get("__proto_run_id__")
-        key = run_id or "__default__"
-        value = _completion_invocation_counts.get(key, 0)
-        _completion_invocation_counts[key] = value + 1
-        return str(value)
-
     def completion(prompt, *, model="default", system=None, schema=None):
         """Oneshot, stateless completion against a model tier or a named model.
 
@@ -1165,7 +1155,7 @@ if "__proto_prelude_loaded__" not in globals():
             args["system"] = system
         if schema is not None:
             args["schema"] = schema
-        res = _bridge_call("__completion__", args, _next_completion_invocation_id())
+        res = _bridge_call("__completion__", args, __proto_next_completion_invocation__())
         text = res.get("text") if isinstance(res, dict) else res
         return json.loads(text) if schema is not None else text
 

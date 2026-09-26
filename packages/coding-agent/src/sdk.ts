@@ -1281,11 +1281,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 
 	const asyncJobManager =
-		!options.parentTaskPrefix && !AsyncJobManager.instance()
+		settings.get("async.enabled") && !options.parentTaskPrefix && !AsyncJobManager.instance()
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
-	const scopedAsyncJobManager = asyncJobManager ?? AsyncJobManager.instance();
+	const scopedAsyncJobManager = settings.get("async.enabled")
+		? (asyncJobManager ?? AsyncJobManager.instance())
+		: undefined;
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -1392,7 +1394,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
-			getMonitorManager: () => session?.monitorManager,
 			getUsageStatistics: () => sessionManager.getUsageStatistics(),
 			getTurnBudget: () => sessionManager.getTurnBudget(),
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
@@ -2854,19 +2855,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			getActiveModelString,
 		});
-		if (agentKind === "main") {
-			// The agents view stops workers through this same scope, so the session carries it.
-			session.setOrchestratorParent(orchestratorParent);
-			session.setSessionBeforeSwitchReconciler(async () => {
-				const runtime = OrchestratorRuntime.global();
-				const parent = orchestratorParent();
-				await runtime.suspendScope(runtime.ownerScope(parent), scopedAsyncJobManager);
-			});
-			session.setSessionSwitchReconciler(async () => {
-				syncAgentRegistrySessionScope();
-				await OrchestratorRuntime.global().rehydrate(orchestratorParent());
-			});
-		}
+		// Every session can own descendants, including a parked/revived worker.
+		session.setOrchestratorParent(orchestratorParent);
+		session.setSessionBeforeSwitchReconciler(async () => {
+			const runtime = OrchestratorRuntime.global();
+			const parent = orchestratorParent();
+			await runtime.suspendScope(runtime.ownerScope(parent), scopedAsyncJobManager);
+		});
+		session.setSessionSwitchReconciler(async () => {
+			syncAgentRegistrySessionScope();
+			await OrchestratorRuntime.global().rehydrate(orchestratorParent(), toolSession);
+		});
 
 		const scheduledToolRegistrations = new WeakMap<RegisteredTool, Promise<void>>();
 		const scheduleToolRegistration = (registered: RegisteredTool, signal?: AbortSignal): Promise<void> => {
@@ -2981,18 +2980,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
-		if (agentKind === "main") {
-			await OrchestratorRuntime.global().rehydrate({
-				cwd: sessionManager.getCwd(),
-				getAgentId: () => resolvedAgentId,
-				getSessionId: () => sessionManager.getSessionId(),
-				getSessionFile: () => sessionManager.getSessionFile() ?? null,
-				sessionManager,
-				asyncJobManager: scopedAsyncJobManager,
-				settings,
-				getActiveModelString,
-			});
-		}
+		await OrchestratorRuntime.global().rehydrate(orchestratorParent(), toolSession);
 
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpDebouncePostmortem: (() => void) | undefined;
@@ -3004,9 +2992,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				let shouldDisposeSharedAsyncJobManager = false;
 				try {
 					session.beginDispose();
+					const orchestrator = OrchestratorRuntime.global();
+					await orchestrator.suspendScope(orchestrator.ownerScope(orchestratorParent()), scopedAsyncJobManager);
 					if (agentKind === "main") {
-						const orchestrator = OrchestratorRuntime.global();
-						await orchestrator.suspendScope(orchestrator.ownerScope(orchestratorParent()), scopedAsyncJobManager);
 						const hasOtherMain =
 							registeredAgentRef !== undefined &&
 							agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef);

@@ -111,6 +111,7 @@ export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetai
 		const configuredMaxHeight = this.session.settings.get("computer.maxHeight");
 		const snapshot: ComputerSessionSnapshot = {
 			cwd: this.session.cwd,
+			outputArtifact: await this.session.allocateOutputArtifact?.("computer-original").catch(() => undefined),
 			sessionId: this.session.getEvalSessionId?.() ?? this.session.getSessionId?.() ?? "computer",
 			captureMaxWidth: coordinateSafe
 				? Math.min(configuredMaxWidth, COORDINATE_SAFE_MAX_CAPTURE_WIDTH)

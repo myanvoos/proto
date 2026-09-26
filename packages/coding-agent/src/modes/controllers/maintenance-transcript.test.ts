@@ -48,7 +48,8 @@ for (const mode of ["auto context-full", "auto remote", "manual"] as const) {
 				settings: { get: () => false },
 				viewSession: {
 					isStreaming: false,
-					buildTranscriptSessionContext: () => ({ messages: messages.map(message => ({ ...message })) }),
+					sessionManager: { getLatestCompactionEntry: () => ({ type: "compaction", summary: summary.summary }) },
+					buildDisplaySessionContext: () => ({ messages: messages.map(message => ({ ...message })) }),
 				},
 				session: {
 					compact: async () => ({ summary: summary.summary, firstKeptEntryId: "tail", tokensBefore: 1000 }),

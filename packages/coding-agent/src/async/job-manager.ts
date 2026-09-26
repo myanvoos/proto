@@ -1,4 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import type { MonitorDetails } from "../monitor/types";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -18,7 +20,16 @@ interface PollEscalationState {
 	lastPollEndAt: number;
 }
 
-export type AsyncJobType = "bash" | "worker";
+export type AsyncJobType = "bash" | "worker" | "monitor";
+
+export interface AsyncJobEvent {
+	jobId: string;
+	label: string;
+	sequence: number;
+	kind: "output" | "exit" | "limit" | "timeout" | "error";
+	text: string;
+	timestamp: number;
+}
 
 export interface AsyncJob {
 	id: string;
@@ -32,6 +43,8 @@ export interface AsyncJob {
 	errorText?: string;
 
 	latestDetails?: Record<string, unknown>;
+	monitor?: MonitorDetails;
+	events?: AsyncJobEvent[];
 
 	ownerId?: string;
 
@@ -40,23 +53,57 @@ export interface AsyncJob {
 	queued?: boolean;
 }
 
-type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+type AsyncJobDeliverySink = (
+	jobId: string,
+	text: string,
+	job?: AsyncJob,
+	event?: AsyncJobEvent,
+) => void | Promise<void>;
 type AsyncJobCapacityWaiter = (error?: Error) => void;
 
-interface AsyncJobManagerOptions {
+export interface AsyncJobManagerOptions {
 	onJobComplete?: AsyncJobDeliverySink;
+	/** Direct finite registrations; queued work uses its external runnable scheduler and total admission below. */
 	maxRunningJobs?: number;
+	/** Includes queued turns, pre-allocation reservations, and cancelled work still cleaning up. */
+	maxTotalJobs?: number;
+	maxTotalBytes?: number;
+	maxOwnerJobs?: number;
+	maxOwnerBytes?: number;
 	retentionMs?: number;
+	maxRetainedJobs?: number;
+	maxRetainedBytes?: number;
+	maxDeliveryBytes?: number;
+	maxDeliveries?: number;
+	maxDeliveryCalls?: number;
+	deliveryRetentionMs?: number;
+	deliveryTimeoutMs?: number;
+}
+
+export interface AsyncJobAdmission {
+	/** Re-estimates unused admission atomically; rejection preserves its original byte charge. */
+	resize(bytes: number): void;
+	/** Releases an unused reservation. After registration, only callback settlement releases it. */
+	release(): void;
+}
+
+interface AdmissionState {
+	ownerId?: string;
+	bytes: number;
+	registered: boolean;
 }
 
 interface AsyncJobDelivery {
+	event?: AsyncJobEvent;
 	jobId: string;
 	text: string;
 	attempt: number;
 	nextAttemptAt: number;
-	lastError?: string;
 	ownerId?: string;
-	promise?: Promise<void>;
+	timer?: NodeJS.Timeout;
+	bytes: number;
+	expiresAt: number;
+	expired?: boolean;
 }
 
 export interface AsyncJobDeliveryState {
@@ -64,6 +111,10 @@ export interface AsyncJobDeliveryState {
 	delivering: boolean;
 	nextRetryAt?: number;
 	pendingJobIds: string[];
+	retainedBytes: number;
+	/** Timed-out calls still own a slot and their payload until the sink actually settles. */
+	unresolvedCalls: number;
+	dropped: number;
 }
 
 interface AsyncJobReapResult {
@@ -74,6 +125,7 @@ interface AsyncJobReapResult {
 
 export interface AsyncJobRegisterOptions {
 	id?: string;
+	monitor?: MonitorDetails;
 
 	ownerId?: string;
 
@@ -81,10 +133,14 @@ export interface AsyncJobRegisterOptions {
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
 
 	queued?: boolean;
+	/** Callback input bytes beyond its label and monitor command metadata, unless admission was reserved earlier. */
+	bytes?: number;
+	admission?: AsyncJobAdmission;
 }
 
 interface AsyncJobFilter {
 	ownerId?: string;
+	excludeMonitors?: boolean;
 }
 
 export class AsyncJobManager {
@@ -105,44 +161,131 @@ export class AsyncJobManager {
 	readonly #jobs = new Map<string, AsyncJob>();
 	readonly #deliveries: AsyncJobDelivery[] = [];
 	readonly #inFlightDeliveries: AsyncJobDelivery[] = [];
+	readonly #retainedDeliveries = new Set<AsyncJobDelivery>();
+	#deliveryBytes = 0;
+	#droppedDeliveries = 0;
+	#deliveryExpiryTimer: NodeJS.Timeout | undefined;
 	readonly #suppressedDeliveries = new Set<string>();
 	readonly #watchedJobs = new Set<string>();
+	readonly #eventSequences = new Map<string, number>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
-	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
+	readonly #pollEscalation = new LRUCache<string | undefined, PollEscalationState>({
+		max: 256,
+		maxSize: 64 * 1024,
+		sizeCalculation: (_value, key) => 32 + (key?.length ?? 0) * 2,
+		ttl: POLL_ESCALATION_RESET_MS,
+	});
+	readonly #admissions = new Map<AsyncJobAdmission, AdmissionState>();
+	readonly #unsettledJobs = new Set<string>();
+	readonly #retainedJobs = new Map<string, number>();
+	#retainedJobBytes = 0;
+	#nextJobId = 1;
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
 	readonly #capacityWaiters = new Set<AsyncJobCapacityWaiter>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
+	readonly #maxTotalJobs: number;
+	readonly #maxTotalBytes: number;
+	readonly #maxOwnerJobs: number;
+	readonly #maxOwnerBytes: number;
 	readonly #retentionMs: number;
+	readonly #maxRetainedJobs: number;
+	readonly #maxRetainedBytes: number;
+	readonly #maxDeliveryBytes: number;
+	readonly #maxDeliveries: number;
+	readonly #maxDeliveryCalls: number;
+	readonly #deliveryRetentionMs: number;
+	readonly #deliveryTimeoutMs: number;
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
 	#deliveryClosed = false;
 
 	#filterJobs(jobs: Iterable<AsyncJob>, filter?: AsyncJobFilter): AsyncJob[] {
-		const ownerId = filter?.ownerId;
-		if (!ownerId) return Array.from(jobs);
-		const out: AsyncJob[] = [];
-		for (const job of jobs) {
-			if (job.ownerId === ownerId) out.push(job);
-		}
-		return out;
+		return Array.from(jobs).filter(
+			job =>
+				(!filter?.ownerId || job.ownerId === filter.ownerId) &&
+				(!filter?.excludeMonitors || job.type !== "monitor" || job.status !== "running"),
+		);
 	}
 
 	constructor(options: AsyncJobManagerOptions) {
 		this.#onJobComplete = options.onJobComplete;
 		this.#maxRunningJobs = Math.max(1, Math.floor(options.maxRunningJobs ?? DEFAULT_MAX_RUNNING_JOBS));
+		this.#maxTotalJobs = Math.max(1, Math.floor(options.maxTotalJobs ?? this.#maxRunningJobs * 4));
+		this.#maxTotalBytes = Math.max(1, Math.floor(options.maxTotalBytes ?? 64 * 1024 * 1024));
+		this.#maxOwnerJobs = Math.max(1, Math.floor(options.maxOwnerJobs ?? this.#maxTotalJobs));
+		this.#maxOwnerBytes = Math.max(1, Math.floor(options.maxOwnerBytes ?? 16 * 1024 * 1024));
 		this.#retentionMs = Math.max(0, Math.floor(options.retentionMs ?? DEFAULT_RETENTION_MS));
+		this.#maxRetainedJobs = Math.max(0, Math.floor(options.maxRetainedJobs ?? 256));
+		this.#maxRetainedBytes = Math.max(0, Math.floor(options.maxRetainedBytes ?? 16 * 1024 * 1024));
+		this.#maxDeliveryBytes = Math.max(1, Math.floor(options.maxDeliveryBytes ?? 8 * 1024 * 1024));
+		this.#maxDeliveries = Math.max(1, Math.floor(options.maxDeliveries ?? 256));
+		this.#maxDeliveryCalls = Math.max(1, Math.floor(options.maxDeliveryCalls ?? 8));
+		this.#deliveryRetentionMs = Math.max(1, Math.floor(options.deliveryRetentionMs ?? DEFAULT_RETENTION_MS));
+		this.#deliveryTimeoutMs = Math.max(1, Math.floor(options.deliveryTimeoutMs ?? 30_000));
+	}
+
+	#checkAdmission(bytes: number, ownerId: string | undefined, exclude?: AsyncJobAdmission): void {
+		if (this.#disposed) throw new Error("Async job manager is disposed");
+		if (!Number.isSafeInteger(bytes) || bytes < 0)
+			throw new Error("Async job admission bytes must be a nonnegative integer");
+		let totalBytes = 0;
+		let ownerBytes = 0;
+		let ownerJobs = 0;
+		for (const [admission, state] of this.#admissions) {
+			if (admission === exclude) continue;
+			totalBytes += state.bytes;
+			if (state.ownerId === ownerId) {
+				ownerBytes += state.bytes;
+				ownerJobs++;
+			}
+		}
+		if (this.#admissions.size - (exclude ? 1 : 0) >= this.#maxTotalJobs || ownerJobs >= this.#maxOwnerJobs) {
+			throw new Error("Background job admission limit reached. Wait for outstanding work to settle.");
+		}
+		if (totalBytes + bytes > this.#maxTotalBytes || ownerBytes + bytes > this.#maxOwnerBytes) {
+			throw new Error(
+				"Background job admission byte limit reached. Reduce queued input or wait for work to settle.",
+			);
+		}
+	}
+
+	reserve(options: { bytes?: number; ownerId?: string } = {}): AsyncJobAdmission {
+		const bytes = options.bytes ?? 0;
+		this.#checkAdmission(bytes, options.ownerId);
+		const admission: AsyncJobAdmission = {
+			resize: bytes => {
+				const state = this.#admissions.get(admission);
+				if (!state || state.registered) throw new Error("Async job admission is unavailable for resizing");
+				this.#checkAdmission(bytes, state.ownerId, admission);
+				const previousBytes = state.bytes;
+				state.bytes = bytes;
+				if (bytes < previousBytes) this.#notifyCapacityAvailable();
+			},
+			release: () => {
+				if (this.#admissions.get(admission)?.registered !== false) return;
+				this.#admissions.delete(admission);
+				this.#notifyCapacityAvailable();
+			},
+		};
+		this.#admissions.set(admission, { bytes, ownerId: options.ownerId, registered: false });
+		return admission;
 	}
 
 	get atCapacity(): boolean {
 		if (this.#disposed) return true;
 
-		let activeCount = 0;
-		for (const job of this.#jobs.values()) {
-			if (job.status === "running" && !job.queued) activeCount++;
+		return this.#runningCount() >= this.#maxRunningJobs || this.#admissions.size >= this.#maxTotalJobs;
+	}
+
+	#runningCount(): number {
+		let count = 0;
+		for (const id of this.#unsettledJobs) {
+			const job = this.#jobs.get(id);
+			if (job && job.type !== "monitor" && !job.queued) count++;
 		}
-		return activeCount >= this.#maxRunningJobs;
+		return count;
 	}
 
 	onCapacityAvailable(callback: (error?: Error) => void): () => void {
@@ -165,6 +308,7 @@ export class AsyncJobManager {
 			jobId: string;
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			emitEvent: (kind: AsyncJobEvent["kind"], text: string) => void;
 
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -174,15 +318,33 @@ export class AsyncJobManager {
 			throw new Error("Async job manager is disposed");
 		}
 
-		let activeCount = 0;
-		for (const existing of this.#jobs.values()) {
-			if (existing.status === "running" && !existing.queued) activeCount++;
-		}
-		if (activeCount >= this.#maxRunningJobs) {
+		if (type === "monitor" && !options?.ownerId) throw new Error("Monitor jobs require an owner");
+		if (type !== "monitor" && !options?.queued && this.#runningCount() >= this.#maxRunningJobs) {
 			throw new Error(
-				`Background job limit reached (${this.#maxRunningJobs}). Wait for running jobs to finish or cancel one.`,
+				`Background job limit reached (${this.#maxRunningJobs}). Wait for outstanding work to settle.`,
 			);
 		}
+		const bytes = options?.bytes ?? 0;
+		if (!Number.isSafeInteger(bytes) || bytes < 0)
+			throw new Error("Async job admission bytes must be a nonnegative integer");
+		const admission =
+			options?.admission ??
+			this.reserve({
+				ownerId: options?.ownerId,
+				bytes:
+					bytes +
+					[
+						label,
+						options?.monitor?.command ?? "",
+						options?.monitor?.cwd ?? "",
+						options?.monitor?.match ?? "",
+					].reduce((total, text) => total + Buffer.byteLength(text), 0),
+			});
+		const state = this.#admissions.get(admission);
+		if (!state || state.registered || state.ownerId !== options?.ownerId) {
+			throw new Error("Async job admission is unavailable or belongs to another owner");
+		}
+		state.registered = true;
 
 		const id = this.#resolveJobId(options?.id);
 		this.#suppressedDeliveries.delete(id);
@@ -200,9 +362,12 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			queued: options?.queued === true,
+			monitor: options?.monitor,
+			...(type === "monitor" ? { events: [] } : {}),
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
+			if (job.status !== "running" || this.#disposed) return;
 			if (details) job.latestDetails = details;
 			if (!options?.onProgress) return;
 			try {
@@ -215,39 +380,34 @@ export class AsyncJobManager {
 			}
 		};
 		this.#jobs.set(id, job);
+		this.#unsettledJobs.add(id);
 		job.promise = (async () => {
 			try {
 				const text = await run({
 					jobId: id,
 					signal: abortController.signal,
 					reportProgress,
+					emitEvent: (kind, text) => this.#emitEvent(job, kind, text),
 					markRunning: () => {
 						job.queued = false;
 					},
 				});
-				if (job.status === "cancelled") {
-					job.resultText = text;
-					this.#notifyCapacityAvailable();
-					this.#scheduleEviction(id);
-					return;
-				}
-				job.status = "completed";
 				job.resultText = text;
-				this.#notifyCapacityAvailable();
-				this.#enqueueDelivery(id, text);
-				this.#scheduleEviction(id);
-			} catch (error) {
-				if (job.status === "cancelled") {
-					job.errorText = error instanceof Error ? error.message : String(error);
-					this.#scheduleEviction(id);
-					return;
+				if (job.status !== "cancelled") {
+					job.status = "completed";
+					if (type !== "monitor") this.#enqueueDelivery(id, text);
 				}
-				const errorText = error instanceof Error ? error.message : String(error);
-				job.status = "failed";
-				job.errorText = errorText;
-				this.#notifyCapacityAvailable();
-				this.#enqueueDelivery(id, errorText);
+			} catch (error) {
+				job.errorText = error instanceof Error ? error.message : String(error);
+				if (job.status !== "cancelled") {
+					job.status = "failed";
+					if (type !== "monitor") this.#enqueueDelivery(id, job.errorText);
+				}
+			} finally {
+				this.#unsettledJobs.delete(id);
+				this.#admissions.delete(admission);
 				this.#scheduleEviction(id);
+				this.#notifyCapacityAvailable();
 			}
 		})();
 
@@ -260,8 +420,8 @@ export class AsyncJobManager {
 		if (filter?.ownerId && job.ownerId !== filter.ownerId) return false;
 		if (job.status !== "running") return false;
 		job.status = "cancelled";
+		this.acknowledgeEvents(job.events ?? []);
 		job.abortController.abort();
-		this.#notifyCapacityAvailable();
 		return true;
 	}
 
@@ -297,6 +457,20 @@ export class AsyncJobManager {
 			delivering: inFlightDeliveries.length > 0 || (this.#deliveryLoop !== undefined && deliveries.length > 0),
 			nextRetryAt,
 			pendingJobIds: deliveries.concat(inFlightDeliveries).map(delivery => delivery.jobId),
+			retainedBytes: [...this.#retainedDeliveries]
+				.filter(
+					delivery =>
+						(!filter?.ownerId || delivery.ownerId === filter.ownerId) &&
+						(!filter?.excludeMonitors || !delivery.event),
+				)
+				.reduce((total, delivery) => total + delivery.bytes, 0),
+			unresolvedCalls: this.#inFlightDeliveries.filter(
+				delivery =>
+					delivery.expired &&
+					(!filter?.ownerId || delivery.ownerId === filter.ownerId) &&
+					(!filter?.excludeMonitors || !delivery.event),
+			).length,
+			dropped: this.#droppedDeliveries,
 		};
 	}
 
@@ -306,11 +480,14 @@ export class AsyncJobManager {
 
 	watchJobs(jobIds: string[]): number {
 		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
+		let watched = 0;
 		for (const jobId of uniqueJobIds) {
+			if (!this.#jobs.has(jobId)) continue;
 			this.#watchedJobs.add(jobId);
+			watched++;
 		}
 		this.#notifyDeliveryQueueChanged();
-		return uniqueJobIds.length;
+		return watched;
 	}
 
 	unwatchJobs(jobIds: string[]): number {
@@ -321,6 +498,8 @@ export class AsyncJobManager {
 				removed += 1;
 			}
 		}
+		this.#notifyDeliveryQueueChanged();
+		this.#ensureDeliveryLoop();
 		return removed;
 	}
 
@@ -342,15 +521,14 @@ export class AsyncJobManager {
 		if (uniqueJobIds.length === 0) return 0;
 
 		for (const jobId of uniqueJobIds) {
-			this.#suppressedDeliveries.add(jobId);
+			const job = this.#jobs.get(jobId);
+			if (job && job.type !== "monitor") this.#suppressedDeliveries.add(jobId);
 		}
 
 		const before = this.#deliveries.length;
-		this.#deliveries.splice(
-			0,
-			this.#deliveries.length,
-			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId)),
-		);
+		for (const delivery of [...this.#deliveries]) {
+			if (this.#isDeliverySuppressed(delivery)) this.#releaseDelivery(delivery);
+		}
 		this.#notifyDeliveryQueueChanged();
 		return before - this.#deliveries.length;
 	}
@@ -374,12 +552,12 @@ export class AsyncJobManager {
 		this.#cancelJobs(filter, reason);
 	}
 
-	#cancelJobs(filter?: AsyncJobFilter, reason?: unknown, notifyCapacity = true): void {
+	#cancelJobs(filter?: AsyncJobFilter, reason?: unknown): void {
 		for (const job of this.getRunningJobs(filter)) {
 			job.status = "cancelled";
+			this.acknowledgeEvents(job.events ?? []);
 			job.abortController.abort(reason);
 		}
-		if (notifyCapacity) this.#notifyCapacityAvailable();
 	}
 
 	evictCompletedJobs(filter?: AsyncJobFilter): number {
@@ -398,21 +576,30 @@ export class AsyncJobManager {
 
 	registerDeliverySink(ownerId: string, sink: AsyncJobDeliverySink): () => void {
 		this.#deliverySinks.set(ownerId, sink);
+		this.#notifyDeliveryQueueChanged();
 		return () => {
-			if (this.#deliverySinks.get(ownerId) === sink) this.#deliverySinks.delete(ownerId);
+			if (this.#deliverySinks.get(ownerId) !== sink) return;
+			this.#deliverySinks.delete(ownerId);
+			this.#pollEscalation.delete(ownerId);
+			this.#notifyDeliveryQueueChanged();
 		};
 	}
 
 	async waitForOwnerJobs(
 		ownerId: string,
-		options?: { timeoutMs?: number; excludeSuppressed?: boolean },
+		options?: { timeoutMs?: number; excludeSuppressed?: boolean; excludeMonitors?: boolean },
 	): Promise<boolean> {
 		const deadline =
 			options?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + Math.max(0, options.timeoutMs);
 		const awaited = new Set<string>();
 		for (;;) {
-			const pending = this.#filterJobs(this.#jobs.values(), { ownerId }).filter(
-				job => !awaited.has(job.id) && (options?.excludeSuppressed !== true || !this.isDeliverySuppressed(job.id)),
+			const pending = this.#filterJobs(this.#jobs.values(), {
+				ownerId,
+				excludeMonitors: options?.excludeMonitors,
+			}).filter(
+				job =>
+					!awaited.has(job.id) &&
+					(job.type === "monitor" || options?.excludeSuppressed !== true || !this.isDeliverySuppressed(job.id)),
 			);
 			if (pending.length === 0) return true;
 			for (const job of pending) awaited.add(job.id);
@@ -424,17 +611,21 @@ export class AsyncJobManager {
 		}
 	}
 
-	async cancelAndReapOwnerJobs(ownerId: string, deadlineAt: number): Promise<AsyncJobReapResult> {
-		this.cancelAll({ ownerId });
+	async cancelAndReapOwnerJobs(
+		ownerId: string,
+		deadlineAt: number,
+		options?: { excludeMonitors?: boolean },
+	): Promise<AsyncJobReapResult> {
+		this.cancelAll({ ownerId, excludeMonitors: options?.excludeMonitors });
 		const timeoutMs = Math.max(0, deadlineAt - Date.now());
-		const settled = await this.waitForOwnerJobs(ownerId, { timeoutMs });
+		const settled = await this.waitForOwnerJobs(ownerId, { timeoutMs, excludeMonitors: options?.excludeMonitors });
 		if (settled) {
 			return { settled: true, pendingJobIds: [], completion: Promise.resolve() };
 		}
-		const pendingJobIds = this.getAllJobs({ ownerId })
-			.filter(job => job.status === "running" || job.status === "cancelled")
+		const pendingJobIds = this.getAllJobs({ ownerId, excludeMonitors: options?.excludeMonitors })
+			.filter(job => this.#unsettledJobs.has(job.id))
 			.map(job => job.id);
-		const completion = this.waitForOwnerJobs(ownerId).then(() => {});
+		const completion = this.waitForOwnerJobs(ownerId, options).then(() => {});
 		return { settled: false, pendingJobIds, completion };
 	}
 
@@ -460,53 +651,21 @@ export class AsyncJobManager {
 	}
 
 	async drainDeliveries(options?: { timeoutMs?: number; filter?: AsyncJobFilter }): Promise<boolean> {
-		const timeoutMs = options?.timeoutMs;
-		const filter = options?.filter;
-		const hasDeadline = timeoutMs !== undefined;
-		const deadline = hasDeadline ? Date.now() + Math.max(timeoutMs, 0) : Number.POSITIVE_INFINITY;
-
-		while (this.hasPendingDeliveries(filter)) {
-			if (filter?.ownerId) {
-				const delivered = await this.#deliverNextFiltered(filter, deadline);
-				if (delivered) continue;
-				return false;
-			}
-			const inFlightDeliveries = this.#filterInFlightDeliveries();
-			if (inFlightDeliveries.length > 0 && this.#filterDeliveries().length === 0) {
-				const delivered = await this.#waitForDeliveryPromise(inFlightDeliveries[0]?.promise, deadline);
-				if (delivered) continue;
-				return false;
-			}
-
+		const deadline =
+			options?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + Math.max(options.timeoutMs, 0);
+		while (this.hasPendingDeliveries(options?.filter)) {
+			if (Date.now() >= deadline) return false;
+			const changed = this.#deliveryQueueChanged.promise;
 			this.#ensureDeliveryLoop();
-			const loop = this.#deliveryLoop;
-			if (!loop) {
-				continue;
-			}
-
-			if (!hasDeadline) {
-				await loop;
-				continue;
-			}
-
-			const remainingMs = deadline - Date.now();
-			if (remainingMs <= 0) {
-				return false;
-			}
-
-			await this.#waitForDeliveryPromise(loop, deadline);
-			if (Date.now() >= deadline && this.hasPendingDeliveries(filter)) {
-				return false;
-			}
+			if (!(await this.#waitForDeliveryPromise(changed, deadline))) return false;
 		}
-
 		return true;
 	}
 
 	async dispose(options?: { timeoutMs?: number }): Promise<boolean> {
 		this.#disposed = true;
 		this.#clearEvictionTimers();
-		this.#cancelJobs(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON, false);
+		this.#cancelJobs(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
 		this.#notifyCapacityAvailable(new Error("Async job manager is disposed"));
 		const timeoutMs = Math.max(options?.timeoutMs ?? 3_000, 0);
 		const deadline = Date.now() + timeoutMs;
@@ -514,12 +673,25 @@ export class AsyncJobManager {
 		const drained = await this.drainDeliveries({ timeoutMs: Math.max(deadline - Date.now(), 0) });
 		this.#clearEvictionTimers();
 		this.#deliveryClosed = true;
+		for (const delivery of this.#inFlightDeliveries) {
+			clearTimeout(delivery.timer);
+			delivery.timer = undefined;
+		}
+		clearTimeout(this.#deliveryExpiryTimer);
+		this.#deliveryExpiryTimer = undefined;
+		this.#retainedDeliveries.clear();
+		this.#deliveryBytes = 0;
 		this.#jobs.clear();
+		this.#admissions.clear();
+		this.#unsettledJobs.clear();
+		this.#retainedJobs.clear();
+		this.#retainedJobBytes = 0;
 		this.#deliveries.length = 0;
 		this.#notifyDeliveryQueueChanged();
 		this.#inFlightDeliveries.length = 0;
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
+		this.#eventSequences.clear();
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
 		return jobsSettled && drained;
@@ -547,13 +719,9 @@ export class AsyncJobManager {
 	#resolveJobId(preferredId?: string): string {
 		preferredId = preferredId?.trim();
 		if (!preferredId) {
-			let candidate = 1;
 			while (true) {
-				const id = `bg_${candidate}`;
-				if (!this.#jobs.has(id)) {
-					return id;
-				}
-				candidate += 1;
+				const id = `bg_${this.#nextJobId++}`;
+				if (!this.#jobs.has(id)) return id;
 			}
 		}
 
@@ -574,11 +742,54 @@ export class AsyncJobManager {
 		this.#evictionTimers.delete(jobId);
 		this.#suppressedDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
-		return this.#jobs.delete(jobId);
+		this.#eventSequences.delete(jobId);
+		const retainedBytes = this.#retainedJobs.get(jobId);
+		if (retainedBytes !== undefined) {
+			this.#retainedJobBytes -= retainedBytes;
+			this.#retainedJobs.delete(jobId);
+		}
+		const ownerId = this.#jobs.get(jobId)?.ownerId;
+		const deleted = this.#jobs.delete(jobId);
+		if (![...this.#jobs.values()].some(job => job.ownerId === ownerId)) this.#pollEscalation.delete(ownerId);
+		return deleted;
 	}
 
 	#scheduleEviction(jobId: string): void {
-		if (this.#disposed) return;
+		const job = this.#jobs.get(jobId);
+		if (this.#disposed || !job || this.#unsettledJobs.has(jobId) || job.events?.length) return;
+		if (!this.#retainedJobs.has(jobId)) {
+			// Account UTF-16 storage as well as UTF-8 serialization, not only the result preview.
+			let details = "";
+			try {
+				details = JSON.stringify(job.latestDetails ?? {}) ?? "";
+			} catch {
+				job.latestDetails = undefined;
+			}
+			const bytes = [
+				job.id,
+				job.ownerId ?? "",
+				job.agentId ?? "",
+				job.label,
+				job.resultText ?? "",
+				job.errorText ?? "",
+				details,
+				job.monitor?.command ?? "",
+				job.monitor?.cwd ?? "",
+				job.monitor?.match ?? "",
+			].reduce((total, text) => total + Math.max(text.length * 2, Buffer.byteLength(text)), 0);
+			if (bytes > this.#maxRetainedBytes) {
+				this.#evictJob(jobId);
+				return;
+			}
+			this.#retainedJobs.set(jobId, bytes);
+			this.#retainedJobBytes += bytes;
+			while (this.#retainedJobs.size > this.#maxRetainedJobs || this.#retainedJobBytes > this.#maxRetainedBytes) {
+				const oldest = this.#retainedJobs.keys().next().value;
+				if (oldest === undefined) break;
+				this.#evictJob(oldest);
+			}
+			if (!this.#jobs.has(jobId)) return;
+		}
 		if (this.#retentionMs <= 0) {
 			this.#evictJob(jobId);
 			return;
@@ -601,54 +812,86 @@ export class AsyncJobManager {
 		this.#evictionTimers.clear();
 	}
 
-	#filterDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
-		const ownerId = filter?.ownerId;
-		if (!ownerId) return this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId));
-		return this.#deliveries.filter(
-			delivery => delivery.ownerId === ownerId && !this.isDeliverySuppressed(delivery.jobId),
+	#deliveryMatches(delivery: AsyncJobDelivery, filter?: AsyncJobFilter): boolean {
+		return (
+			!delivery.expired &&
+			(!filter?.ownerId || delivery.ownerId === filter.ownerId) &&
+			(!filter?.excludeMonitors || !delivery.event) &&
+			!this.#isDeliverySuppressed(delivery) &&
+			!this.#isEventWatched(delivery)
 		);
+	}
+
+	#filterDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
+		return this.#deliveries.filter(delivery => this.#deliveryMatches(delivery, filter));
 	}
 
 	#filterInFlightDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
-		const ownerId = filter?.ownerId;
-		if (!ownerId) return this.#inFlightDeliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId));
-		return this.#inFlightDeliveries.filter(
-			delivery => delivery.ownerId === ownerId && !this.isDeliverySuppressed(delivery.jobId),
-		);
+		return this.#inFlightDeliveries.filter(delivery => this.#deliveryMatches(delivery, filter));
 	}
 
-	async #deliverNextFiltered(filter: AsyncJobFilter, deadline: number): Promise<boolean> {
-		while (true) {
-			let selected: AsyncJobDelivery | undefined;
-			for (const delivery of this.#deliveries) {
-				if (delivery.ownerId !== filter.ownerId) continue;
-				if (this.isDeliverySuppressed(delivery.jobId)) continue;
-				if (!selected || delivery.nextAttemptAt < selected.nextAttemptAt) {
-					selected = delivery;
-				}
-			}
+	#emitEvent(job: AsyncJob, kind: AsyncJobEvent["kind"], text: string): void {
+		if (job.type !== "monitor" || job.status !== "running" || this.#disposed) return;
+		const sequence = (this.#eventSequences.get(job.id) ?? 0) + 1;
+		this.#eventSequences.set(job.id, sequence);
+		const event: AsyncJobEvent = { jobId: job.id, label: job.label, sequence, kind, text, timestamp: Date.now() };
+		const delivery = this.#createDelivery(job.id, text, event);
+		if (!delivery) return;
+		job.events?.push(event);
+		this.#queueDelivery(delivery);
+	}
 
-			if (!selected) {
-				const inFlight = this.#filterInFlightDeliveries(filter);
-				if (inFlight.length === 0) return true;
-				return this.#waitForDeliveryPromise(inFlight[0]?.promise, deadline);
-			}
+	isEventAcknowledged(event: AsyncJobEvent): boolean {
+		const job = this.#jobs.get(event.jobId);
+		return !job || job.status === "cancelled" || !job.events?.includes(event);
+	}
 
-			const now = Date.now();
-			if (selected.nextAttemptAt > now) {
-				if (selected.nextAttemptAt > deadline) return false;
-				await this.#waitForDeliveryQueueChange(selected.nextAttemptAt - now);
-				continue;
-			}
-
-			const index = this.#deliveries.indexOf(selected);
-			if (index === -1) continue;
-			this.#deliveries.splice(index, 1);
-			this.#notifyDeliveryQueueChanged();
-			if (this.isDeliverySuppressed(selected.jobId)) continue;
-
-			return this.#waitForDeliveryPromise(this.#deliverDelivery(selected), deadline);
+	acknowledgeEvents(events: readonly AsyncJobEvent[]): void {
+		const acknowledged = new Set(events);
+		for (const id of new Set(events.map(event => event.jobId))) {
+			const job = this.#jobs.get(id);
+			if (!job) continue;
+			job.events = job.events?.filter(event => !acknowledged.has(event));
+			if (job.status === "completed" || job.status === "failed") this.#scheduleEviction(id);
 		}
+		for (const delivery of this.#retainedDeliveries) {
+			if (delivery.event && acknowledged.has(delivery.event)) this.#releaseDelivery(delivery);
+		}
+		this.#notifyDeliveryQueueChanged();
+	}
+
+	takeEvents(jobIds: string[], filter?: AsyncJobFilter): AsyncJobEvent[] {
+		const ids = new Set(jobIds);
+		const events = this.#filterJobs(this.#jobs.values(), filter)
+			.filter(job => ids.has(job.id))
+			.flatMap(job => job.events ?? [])
+			.filter(event => !this.isEventAcknowledged(event));
+		this.acknowledgeEvents(events);
+		return events;
+	}
+
+	async waitForEvents(jobIds: string[], signal: AbortSignal): Promise<void> {
+		const aborted = Promise.withResolvers<void>();
+		const onAbort = () => aborted.resolve();
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			while (!signal.aborted) {
+				if (jobIds.some(id => this.#jobs.get(id)?.events?.some(event => !this.isEventAcknowledged(event)))) return;
+				await Promise.race([this.#deliveryQueueChanged.promise, aborted.promise]);
+			}
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	#isDeliverySuppressed(delivery: AsyncJobDelivery): boolean {
+		return delivery.event ? this.isEventAcknowledged(delivery.event) : this.isDeliverySuppressed(delivery.jobId);
+	}
+
+	#isEventWatched(delivery: AsyncJobDelivery): boolean {
+		return (
+			delivery.event !== undefined && this.#watchedJobs.has(delivery.jobId) && !this.#isDeliverySuppressed(delivery)
+		);
 	}
 
 	isDeliverySuppressed(jobId: string): boolean {
@@ -656,58 +899,135 @@ export class AsyncJobManager {
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
-		if (this.isDeliverySuppressed(jobId)) {
-			return;
-		}
-		this.#queueDelivery({
+		if (this.isDeliverySuppressed(jobId) || this.#deliveryClosed) return;
+		const delivery = this.#createDelivery(jobId, text);
+		if (!delivery) return;
+		this.#queueDelivery(delivery);
+	}
+
+	#createDelivery(jobId: string, text: string, event?: AsyncJobEvent): AsyncJobDelivery | undefined {
+		if (this.#deliveryClosed) return undefined;
+		const ownerId = this.#jobs.get(jobId)?.ownerId;
+		const bytes = [text, jobId, ownerId ?? "", event?.label ?? ""].reduce(
+			(total, value) => total + Math.max(value.length * 2, Buffer.byteLength(value)),
+			0,
+		);
+		const delivery: AsyncJobDelivery = {
 			jobId,
 			text,
+			event,
+			ownerId,
+			bytes,
 			attempt: 0,
 			nextAttemptAt: Date.now(),
-			ownerId: this.#jobs.get(jobId)?.ownerId,
-		});
-		this.#ensureDeliveryLoop();
+			expiresAt: Date.now() + this.#deliveryRetentionMs,
+		};
+		if (bytes > this.#maxDeliveryBytes) {
+			this.#dropDelivery(delivery, "payload exceeds delivery byte limit");
+			return undefined;
+		}
+		for (const retained of this.#retainedDeliveries) {
+			if (
+				this.#deliveryBytes + bytes <= this.#maxDeliveryBytes &&
+				this.#retainedDeliveries.size < this.#maxDeliveries
+			)
+				break;
+			if (!this.#inFlightDeliveries.includes(retained)) this.#dropDelivery(retained, "delivery backlog limit");
+		}
+		if (
+			this.#deliveryBytes + bytes > this.#maxDeliveryBytes ||
+			this.#retainedDeliveries.size >= this.#maxDeliveries
+		) {
+			this.#dropDelivery(delivery, "unresolved delivery calls occupy delivery budget");
+			return undefined;
+		}
+		this.#retainedDeliveries.add(delivery);
+		this.#deliveryBytes += bytes;
+		this.#scheduleDeliveryExpiry();
+		return delivery;
+	}
+
+	#releaseDelivery(delivery: AsyncJobDelivery): void {
+		const index = this.#deliveries.indexOf(delivery);
+		if (index >= 0) this.#deliveries.splice(index, 1);
+		if (!this.#inFlightDeliveries.includes(delivery) && this.#retainedDeliveries.delete(delivery)) {
+			this.#deliveryBytes -= delivery.bytes;
+		}
+		this.#scheduleDeliveryExpiry();
+		this.#notifyDeliveryQueueChanged();
+	}
+
+	#dropDelivery(delivery: AsyncJobDelivery, reason: string): void {
+		if (delivery.expired) return;
+		delivery.expired = true;
+		this.#droppedDeliveries++;
+		logger.warn("Async job delivery dead-lettered", { jobId: delivery.jobId, ownerId: delivery.ownerId, reason });
+		if (delivery.event) this.acknowledgeEvents([delivery.event]);
+		this.#releaseDelivery(delivery);
+	}
+
+	#scheduleDeliveryExpiry(): void {
+		clearTimeout(this.#deliveryExpiryTimer);
+		this.#deliveryExpiryTimer = undefined;
+		if (this.#deliveryClosed) return;
+		let next = Number.POSITIVE_INFINITY;
+		for (const delivery of this.#retainedDeliveries) {
+			if (!delivery.expired) next = Math.min(next, delivery.expiresAt);
+		}
+		if (!Number.isFinite(next)) return;
+		this.#deliveryExpiryTimer = setTimeout(
+			() => {
+				this.#deliveryExpiryTimer = undefined;
+				for (const delivery of this.#retainedDeliveries) {
+					if (delivery.expiresAt <= Date.now()) this.#dropDelivery(delivery, "delivery retention expired");
+				}
+				this.#scheduleDeliveryExpiry();
+			},
+			Math.max(0, next - Date.now()),
+		);
+		this.#deliveryExpiryTimer.unref();
 	}
 
 	#ensureDeliveryLoop(): void {
-		if (this.#deliveryLoop) {
-			return;
-		}
-
+		if (this.#deliveryLoop || this.#deliveryClosed) return;
 		this.#deliveryLoop = this.#runDeliveryLoop()
 			.catch(error => {
 				logger.error("Async job delivery loop crashed", { error: String(error) });
 			})
 			.finally(() => {
 				this.#deliveryLoop = undefined;
-				if (this.#deliveries.length > 0) {
-					this.#ensureDeliveryLoop();
-				}
+				if (this.#filterDeliveries().length > 0) this.#ensureDeliveryLoop();
 			});
 	}
 
 	async #runDeliveryLoop(): Promise<void> {
-		while (this.#deliveries.length > 0) {
-			const delivery = this.#deliveries[0];
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
+		while (!this.#deliveryClosed) {
+			for (const delivery of [...this.#deliveries]) {
+				if (this.#isDeliverySuppressed(delivery)) this.#releaseDelivery(delivery);
+			}
+			const available = this.#filterDeliveries();
+			if (available.length === 0) return;
+			const now = Date.now();
+			const delivery = available.find(
+				candidate =>
+					candidate.nextAttemptAt <= now &&
+					this.#inFlightDeliveries.length < this.#maxDeliveryCalls &&
+					!this.#inFlightDeliveries.some(active => active.ownerId === candidate.ownerId),
+			);
+			if (delivery) {
+				this.#deliveries.splice(this.#deliveries.indexOf(delivery), 1);
+				// The call owns capacity until actual settlement, even after its delivery deadline.
+				this.#deliverDelivery(delivery);
 				continue;
 			}
-			const waitMs = delivery.nextAttemptAt - Date.now();
-			if (waitMs > 0) {
-				await this.#waitForDeliveryQueueChange(waitMs);
-				continue;
-			}
-			if (this.#deliveries[0] !== delivery) {
-				continue;
-			}
-			if (this.isDeliverySuppressed(delivery.jobId)) {
-				this.#deliveries.shift();
-				continue;
-			}
-
-			this.#deliveries.shift();
-			await this.#deliverDelivery(delivery);
+			const wakeAt = Math.min(
+				...available.map(candidate =>
+					candidate.nextAttemptAt > now
+						? Math.min(candidate.nextAttemptAt, candidate.expiresAt)
+						: candidate.expiresAt,
+				),
+			);
+			await this.#waitForDeliveryQueueChange(Math.max(1, wakeAt - now));
 		}
 	}
 
@@ -716,49 +1036,66 @@ export class AsyncJobManager {
 		return this.#onJobComplete;
 	}
 
-	#deliverDelivery(delivery: AsyncJobDelivery): Promise<void> {
+	#deliverDelivery(delivery: AsyncJobDelivery): void {
 		const sink = this.#resolveDeliverySink(delivery.ownerId);
 		if (!sink) {
-			logger.warn("Async job delivery dead-lettered: no delivery sink", {
-				jobId: delivery.jobId,
-				ownerId: delivery.ownerId,
-			});
-			delivery.promise = Promise.resolve();
-			return delivery.promise;
+			this.#dropDelivery(delivery, "no delivery sink");
+			return;
 		}
-		const promise = (async () => {
-			this.#inFlightDeliveries.push(delivery);
-			try {
-				await sink(delivery.jobId, delivery.text, this.#jobs.get(delivery.jobId));
-			} catch (error) {
-				delivery.attempt += 1;
-				delivery.lastError = error instanceof Error ? error.message : String(error);
+		this.#inFlightDeliveries.push(delivery);
+		const timeoutMs = Math.max(0, Math.min(this.#deliveryTimeoutMs, delivery.expiresAt - Date.now()));
+		delivery.timer = setTimeout(() => {
+			delivery.timer = undefined;
+			this.#dropDelivery(delivery, "delivery sink timed out");
+		}, timeoutMs);
+		delivery.timer.unref();
+		// Keep the call charged until real settlement; timing out must not create another call slot.
+		// Per-call timers are removable: racing a manager-lifetime promise would retain one reaction per call.
+		void Promise.resolve()
+			.then(() => {
+				if (this.#deliveryClosed || delivery.expired || this.#isDeliverySuppressed(delivery)) return;
+				return sink(delivery.jobId, delivery.text, this.#jobs.get(delivery.jobId), delivery.event);
+			})
+			.catch(error => {
+				if (this.#deliveryClosed || delivery.expired || this.#isDeliverySuppressed(delivery)) return;
+				delivery.attempt++;
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
-				if (!this.isDeliverySuppressed(delivery.jobId)) {
-					this.#queueDelivery(delivery);
-				}
+				if (delivery.nextAttemptAt >= delivery.expiresAt)
+					this.#dropDelivery(delivery, "retry exceeds delivery lifetime");
+				else this.#queueDelivery(delivery);
 				logger.warn("Async job completion delivery failed", {
 					jobId: delivery.jobId,
 					attempt: delivery.attempt,
 					nextRetryAt: delivery.nextAttemptAt,
-					error: delivery.lastError,
+					error: error instanceof Error ? error.message : String(error),
 				});
-			} finally {
+			})
+			.finally(() => {
+				clearTimeout(delivery.timer);
+				delivery.timer = undefined;
 				const index = this.#inFlightDeliveries.indexOf(delivery);
-				if (index !== -1) this.#inFlightDeliveries.splice(index, 1);
-				if (this.#deliveries.length > 0) this.#ensureDeliveryLoop();
-			}
-		})();
-		delivery.promise = promise;
-		return promise;
+				if (index >= 0) this.#inFlightDeliveries.splice(index, 1);
+				if (
+					delivery.expired ||
+					this.#isDeliverySuppressed(delivery) ||
+					(!delivery.event && !this.#deliveries.includes(delivery))
+				) {
+					this.#releaseDelivery(delivery);
+				}
+				this.#notifyDeliveryQueueChanged();
+			})
+			.catch(error => {
+				logger.error("Async job delivery cleanup failed", { jobId: delivery.jobId, error: String(error) });
+			});
 	}
 
 	#queueDelivery(delivery: AsyncJobDelivery): void {
-		if (this.#deliveryClosed) return;
+		if (this.#deliveryClosed || delivery.expired) return;
 		const index = this.#deliveries.findIndex(candidate => candidate.nextAttemptAt > delivery.nextAttemptAt);
 		if (index === -1) this.#deliveries.push(delivery);
 		else this.#deliveries.splice(index, 0, delivery);
 		this.#notifyDeliveryQueueChanged();
+		this.#ensureDeliveryLoop();
 	}
 
 	async #waitForDeliveryQueueChange(delayMs: number): Promise<void> {

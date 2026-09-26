@@ -1,6 +1,7 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
+	EDITOR_LIMITS,
 	extractPrintableText,
 	fuzzyMatch,
 	Input,
@@ -8,7 +9,7 @@ import {
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import {
@@ -18,7 +19,7 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
-import type { SessionTreeNode } from "../../session/session-entries";
+import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
@@ -68,6 +69,7 @@ interface FlatNode {
 type FilterMode = TreeFilterMode;
 
 interface ToolCallInfo {
+	entryId: string;
 	name: string;
 	arguments: Record<string, unknown>;
 }
@@ -78,6 +80,7 @@ class TreeList implements Component {
 	#selectedIndex = 0;
 	#filterMode: FilterMode;
 	#searchQuery = "";
+	#searchRejection: string | undefined;
 	#toolCallMap: Map<string, ToolCallInfo> = new Map();
 	#multipleRoots = false;
 	#activePathIds: Set<string> = new Set();
@@ -93,6 +96,7 @@ class TreeList implements Component {
 		private maxVisibleLines: number,
 		initialFilterMode: FilterMode = "default",
 		initialSelectedId?: string,
+		private readonly resolveEntry?: (entryId: string) => SessionEntry | undefined,
 	) {
 		this.#filterMode = initialFilterMode;
 		this.#multipleRoots = tree.length > 1;
@@ -195,7 +199,7 @@ class TreeList implements Component {
 					for (const block of content) {
 						if (typeof block === "object" && block !== null && "type" in block && block.type === "toolCall") {
 							const tc = block as { id: string; name: string; arguments: Record<string, unknown> };
-							this.#toolCallMap.set(tc.id, { name: tc.name, arguments: tc.arguments });
+							this.#toolCallMap.set(tc.id, { entryId: entry.id, name: tc.name, arguments: tc.arguments });
 						}
 					}
 				}
@@ -314,7 +318,8 @@ class TreeList implements Component {
 	}
 
 	#getSearchableText(node: SessionTreeNode): string {
-		const entry = node.entry;
+		// Full payloads are transient search inputs, never retained in the tree.
+		const entry = this.resolveEntry?.(node.entry.id) ?? node.entry;
 		const parts: string[] = [];
 
 		if (node.label) {
@@ -326,7 +331,7 @@ class TreeList implements Component {
 				const msg = entry.message;
 				parts.push(msg.role);
 				if ("content" in msg && msg.content) {
-					parts.push(this.#extractContent(msg.content));
+					parts.push(this.#extractContent(msg.content, false));
 				}
 				if (msg.role === "bashExecution") {
 					const bashMsg = msg as { command?: string };
@@ -339,7 +344,7 @@ class TreeList implements Component {
 				if (typeof entry.content === "string") {
 					parts.push(entry.content);
 				} else {
-					parts.push(this.#extractContent(entry.content));
+					parts.push(this.#extractContent(entry.content, false));
 				}
 				break;
 			}
@@ -400,8 +405,21 @@ class TreeList implements Component {
 
 	invalidate(): void {}
 
+	dispose(): void {
+		this.#flatNodes = [];
+		this.#filteredNodes = [];
+		this.#toolCallMap.clear();
+		this.#activePathIds.clear();
+		this.#searchQuery = "";
+		this.#lastSelectedId = null;
+	}
+
 	getSearchQuery(): string {
 		return this.#searchQuery;
+	}
+
+	getSearchRejection(): string | undefined {
+		return this.#searchRejection;
 	}
 
 	getSelectedNode(): SessionTreeNode | undefined {
@@ -588,7 +606,18 @@ class TreeList implements Component {
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };
-					const toolCall = toolMsg.toolCallId ? this.#toolCallMap.get(toolMsg.toolCallId) : undefined;
+					let toolCall = toolMsg.toolCallId ? this.#toolCallMap.get(toolMsg.toolCallId) : undefined;
+					if (toolCall && this.resolveEntry) {
+						// Only visible tool rows need arguments; keep the map metadata-only.
+						const source = this.resolveEntry(toolCall.entryId);
+						if (source?.type === "message" && source.message.role === "assistant") {
+							const block = source.message.content.find(
+								block => block.type === "toolCall" && block.id === toolMsg.toolCallId,
+							);
+							if (block?.type === "toolCall")
+								toolCall = { entryId: source.id, name: block.name, arguments: block.arguments };
+						}
+					}
 					if (toolCall) {
 						result = theme.fg("muted", this.#formatToolCall(toolCall.name, toolCall.arguments));
 					} else {
@@ -658,9 +687,12 @@ class TreeList implements Component {
 		return isSelected ? theme.bold(result) : result;
 	}
 
-	#extractContent(content: unknown): string {
+	#extractContent(content: unknown, preview = true): string {
 		const maxLen = 200;
-		if (typeof content === "string") return truncateCodePoints(sanitizeTreeText(content), maxLen).trim();
+		if (typeof content === "string") {
+			const text = sanitizeTreeText(content);
+			return (preview ? truncateCodePoints(text, maxLen) : text).trim();
+		}
 		if (Array.isArray(content)) {
 			let result = "";
 			for (const c of content) {
@@ -668,7 +700,7 @@ class TreeList implements Component {
 					// Sanitize before the cap so control-only prefixes cannot hide the
 					// first visible code points from the rendered row.
 					result += sanitizeTreeText((c as { text: string }).text);
-					if (codePointLength(result) >= maxLen) return truncateCodePoints(result, maxLen);
+					if (preview && codePointLength(result) >= maxLen) return truncateCodePoints(result, maxLen);
 				}
 			}
 			return result.trim();
@@ -737,6 +769,7 @@ class TreeList implements Component {
 	}
 
 	handleInput(keyData: string): void {
+		this.#searchRejection = undefined;
 		if (matchesSelectUp(keyData)) {
 			this.#selectedIndex = this.#selectedIndex === 0 ? this.#filteredNodes.length - 1 : this.#selectedIndex - 1;
 		} else if (matchesSelectDown(keyData)) {
@@ -815,6 +848,10 @@ class TreeList implements Component {
 		} else {
 			const printableText = extractPrintableText(keyData);
 			if (printableText) {
+				if (Buffer.byteLength(this.#searchQuery) + Buffer.byteLength(printableText) > EDITOR_LIMITS.draftBytes) {
+					this.#searchRejection = `Search exceeds ${formatBytes(EDITOR_LIMITS.draftBytes)}; input was not inserted`;
+					return;
+				}
 				this.#searchQuery += printableText;
 				this.#applyFilter();
 			}
@@ -828,6 +865,8 @@ class SearchLine implements Component {
 	invalidate(): void {}
 
 	render(width: number): readonly string[] {
+		const rejection = this.treeList.getSearchRejection();
+		if (rejection) return [truncateToWidth(theme.fg("warning", rejection), width)];
 		const query = this.treeList.getSearchQuery();
 		const label = `Search${this.treeList.getFilterLabel()}:`;
 		if (query) {
@@ -905,11 +944,12 @@ export class TreeSelectorComponent extends OverlayPanel {
 		onCancel: () => void,
 		private readonly onLabelChangeCallback?: (entryId: string, label: string | undefined) => void,
 		initialFilterMode: FilterMode = "default",
+		resolveEntry?: (entryId: string) => SessionEntry | undefined,
 	) {
 		super("Session Tree");
 
 		this.#height = Math.max(1, terminalHeight);
-		this.#treeList = new TreeList(tree, currentLeafId, this.#height, initialFilterMode);
+		this.#treeList = new TreeList(tree, currentLeafId, this.#height, initialFilterMode, undefined, resolveEntry);
 		this.#searchLine = new SearchLine(this.#treeList);
 		this.#treeList.onSelect = onSelect;
 		this.#treeList.onCancel = onCancel;
@@ -970,6 +1010,12 @@ export class TreeSelectorComponent extends OverlayPanel {
 		} else {
 			this.#treeList.handleInput(keyData);
 		}
+	}
+
+	override dispose(): void {
+		this.#treeList.dispose();
+		this.#labelInput = null;
+		super.dispose();
 	}
 
 	getTreeList(): TreeList {

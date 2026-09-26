@@ -54,7 +54,6 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { OrchestratorRuntime } from "../../orchestrator/runtime";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
-import { createAgentSession } from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
@@ -125,6 +124,14 @@ import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
+import {
+	canParkForegroundSession,
+	createForegroundSession,
+	enforceBackgroundSessionLimit,
+	formatParkedStatus,
+	parkForegroundSession,
+	swapForegroundSession,
+} from "./foreground-session";
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
@@ -1236,7 +1243,7 @@ export class SelectorController {
 	}
 
 	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void {
-		const tree = this.ctx.sessionManager.getTree();
+		const tree = this.ctx.sessionManager.getTreeForDisplay();
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
 		if (tree.length === 0) {
@@ -1384,6 +1391,7 @@ export class SelectorController {
 					this.ctx.ui.requestRender();
 				},
 				options?.filterMode ?? settings.get("treeFilterMode"),
+				entryId => this.ctx.sessionManager.getEntry(entryId),
 			);
 			return { component: selector, focus: selector };
 		});
@@ -1639,21 +1647,14 @@ export class SelectorController {
 			}
 		}
 
-		const canPark =
-			switchingToDifferentSession &&
-			this.#hasDetachedSessionWork() &&
-			!!previousFile?.endsWith(".jsonl") &&
-			this.ctx.settings.get("session.detachedMainSessions") !== false;
-
 		let parkedOurs = false;
-		if (canPark && previousFile) {
-			detachedSessionHolder.park(previousFile, this.ctx.session, this.ctx.sessionManager);
+		if (switchingToDifferentSession && previousFile && canParkForegroundSession(this.ctx)) {
+			await parkForegroundSession(this.ctx, previousFile);
 			parkedOurs = true;
 		}
 
 		const parkedTarget = switchingToDifferentSession ? detachedSessionHolder.take(sessionPath) : undefined;
 
-		const mutableCtx = this.ctx as unknown as { session: unknown; agent: unknown };
 		let swappedIn = false;
 		if (parkedTarget) {
 			if (!parkedOurs) await this.ctx.session.dispose();
@@ -1661,10 +1662,7 @@ export class SelectorController {
 				detachedSessionHolder.park(sessionPath, parkedTarget.session, parkedTarget.manager);
 				throw new Error(`Cannot reattach ${shortenPath(sessionPath)}: its live agent ownership was lost`);
 			}
-			this.ctx.clearTransientSessionUi();
-			mutableCtx.session = parkedTarget.session;
-			mutableCtx.agent = parkedTarget.session.agent;
-			await this.ctx.attachSessionView(parkedTarget.session);
+			await swapForegroundSession(this.ctx, parkedTarget.session);
 			swappedIn = true;
 		} else if (!parkedOurs) {
 			// AgentSession owns the transaction: a declined or failed cwd change restores the source session.
@@ -1675,15 +1673,16 @@ export class SelectorController {
 		} else if (previousFile) {
 			let created: AgentSession;
 			try {
-				created = await this.#createResumedForegroundSession(sessionPath);
+				const manager = await SessionManager.open(sessionPath, undefined, undefined, {
+					initialCwd: this.ctx.sessionManager.getCwd(),
+				});
+				created = await createForegroundSession(this.ctx, manager);
 			} catch (error) {
-				detachedSessionHolder.delete(previousFile);
+				// Still the foreground session: un-park it rather than tearing it down under the UI.
+				detachedSessionHolder.take(previousFile);
 				throw error;
 			}
-			this.ctx.clearTransientSessionUi();
-			mutableCtx.session = created;
-			mutableCtx.agent = created.agent;
-			await this.ctx.attachSessionView(created);
+			await swapForegroundSession(this.ctx, created);
 			swappedIn = true;
 		}
 		if (!swappedIn) this.ctx.clearTransientSessionUi();
@@ -1703,6 +1702,7 @@ export class SelectorController {
 			recordedCwd && normalizePathForComparison(recordedCwd) !== normalizePathForComparison(newCwd)
 				? recordedCwd
 				: undefined;
+		this.ctx.resetObserverRegistry();
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
@@ -1711,14 +1711,10 @@ export class SelectorController {
 		}
 		await this.ctx.reloadChecklist();
 
-		const evicted = await detachedSessionHolder.evictLRU(8);
-		const evictionNote =
-			evicted.length > 0
-				? ` · background limit reached — closed ${evicted.length} oldest session${evicted.length === 1 ? "" : "s"}`
-				: "";
+		const evictionNote = await enforceBackgroundSessionLimit();
 		let status: string;
 		if (parkedOurs && previousFile) {
-			status = `Parked ${shortenPath(previousFile)} — still thinking in background`;
+			status = formatParkedStatus(previousFile);
 		} else if (wasStreaming && switchingToDifferentSession && !parkedOurs && previousFile?.endsWith(".jsonl")) {
 			status = `Interrupted ${shortenPath(previousFile)} — it was still thinking`;
 		} else {
@@ -1729,36 +1725,6 @@ export class SelectorController {
 		}
 		this.ctx.showStatus(`${status}${evictionNote}`);
 		return true;
-	}
-
-	#hasDetachedSessionWork(): boolean {
-		if (this.ctx.session.isStreaming || this.ctx.session.hasActiveMonitors()) return true;
-		if ((this.ctx.session.getAsyncJobSnapshot()?.running.length ?? 0) > 0) return true;
-		return AgentRegistry.global()
-			.listInFleet(this.ctx.session.getAgentId() ?? MAIN_AGENT_ID)
-			.some(
-				ref =>
-					(ref.kind === "sub" && (ref.status === "running" || ref.status === "idle")) ||
-					(ref.kind === "advisor" && ref.status === "running"),
-			);
-	}
-
-	async #createResumedForegroundSession(sessionPath: string): Promise<AgentSession> {
-		const manager = await SessionManager.open(sessionPath, undefined, undefined, {
-			initialCwd: this.ctx.sessionManager.getCwd(),
-		});
-		const created = await createAgentSession({
-			cwd: manager.getCwd(),
-			sessionManager: manager,
-			settings: this.ctx.settings,
-			modelRegistry: this.ctx.session.modelRegistry,
-			eventBus: this.ctx.eventBus,
-			mcpManager: this.ctx.mcpManager,
-			hasUI: true,
-		});
-		const uiContext = this.ctx.getToolUIContext();
-		if (uiContext) created.setToolUIContext(uiContext, true);
-		return created.session;
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
@@ -2169,7 +2135,7 @@ export class SelectorController {
 
 	/** Browse bookmarks: the session tree filtered to labelled nodes. */
 	showBookmarks(): void {
-		if (!hasLabelledNode(this.ctx.sessionManager.getTree())) {
+		if (!hasLabelledNode(this.ctx.sessionManager.getTreeForDisplay())) {
 			this.ctx.showStatus("No bookmarks yet — /annotate bookmarks the last response");
 			return;
 		}

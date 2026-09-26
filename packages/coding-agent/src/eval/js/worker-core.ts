@@ -1,5 +1,6 @@
 import { ToolError } from "../../tools/tool-errors";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
+import { PythonDisplayBudget } from "../py/display";
 import { JsRuntime, type RuntimeHooks } from "./shared/runtime";
 import type {
 	RunErrorPayload,
@@ -274,9 +275,19 @@ export class WorkerCore {
 	): Promise<void> {
 		const active: ActiveRun = { runId, filename, completionContext, pendingTools: new Map(), floatingRejections: [] };
 		this.#runs.set(runId, active);
+		const displayBudget = new PythonDisplayBudget();
 		const hooks: RuntimeHooks = {
 			onText: (chunk, stream) => this.#transport.send({ type: "text", runId, chunk, stream }),
-			onDisplay: output => this.#transport.send({ type: "display", runId, output }),
+			onDisplay: output => {
+				if (output.type === "status") {
+					this.#transport.send({ type: "display", runId, output });
+					return;
+				}
+				for (const accepted of displayBudget.addKernelOutput(output)) {
+					if (accepted.type !== "markdown") this.#transport.send({ type: "display", runId, output: accepted });
+				}
+				displayBudget.release();
+			},
 			callTool: (name, args, completionInvocationId) => this.#callTool(active, name, args, completionInvocationId),
 		};
 		let result: RunResult;
@@ -301,6 +312,7 @@ export class WorkerCore {
 			this.#runs.delete(runId);
 			this.#rememberCellFile(filename);
 			if (!this.#closing) this.#transport.send(result);
+			displayBudget.release();
 		}
 	}
 

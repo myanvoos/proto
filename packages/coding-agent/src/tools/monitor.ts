@@ -6,7 +6,7 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import type { MonitorSnapshot } from "../monitor";
+import { type MonitorSnapshot, startMonitor } from "../monitor";
 import monitorDescription from "../prompts/tools/monitor.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
@@ -16,55 +16,32 @@ import {
 	formatErrorDetail,
 	formatStatusIcon,
 	PREVIEW_LIMITS,
-	pluralize,
 	replaceTabs,
 	shortenPath,
 	type ToolUIStatus,
 	TRUNCATE_LENGTHS,
 } from "./render-utils";
 
-export type MonitorOperation = "start" | "list" | "stop";
-
 export interface MonitorToolDetails {
-	op: MonitorOperation;
+	op: "start";
 	monitors: MonitorSnapshot[];
-
-	notFound?: string[];
 }
 
 const monitorSchema = type({
-	op: type("'start' | 'list' | 'stop'").describe("monitor operation"),
-	"command?": type("string > 0").describe("start: shell command to watch"),
-	"label?": type("string <= 48").describe("start: short display label"),
-	"cwd?": type("string").describe("start: working directory; defaults to the session directory"),
-	"match?": type("string > 0").describe("start: JS RegExp source; only matching output is reported"),
-	"every?": type("number >= 1").describe("start: poll interval in seconds; omit to stream one long-running process"),
-	"maxEvents?": type("number >= 1").describe(
-		"start: matching output events before the monitor stops itself (terminal status excluded)",
-	),
-	"timeout?": type("number >= 1").describe("start: stop the monitor after this many seconds"),
-	"ids?": type("string[]").describe("stop: monitor ids; omit to stop every running monitor"),
+	op: type("'start'").describe("Start a monitor; manage jobs with fleet"),
+	command: type("string > 0").describe("Shell command to watch"),
+	"label?": type("string <= 48").describe("Short display label"),
+	"cwd?": type("string").describe("Working directory; defaults to the session directory"),
+	"match?": type("string > 0").describe("JS RegExp source; only matching output is reported"),
+	"every?": type("number >= 1").describe("Poll interval in seconds; omit to stream one long-running process"),
+	"maxEvents?": type("number >= 1").describe("Matching output events before stopping (terminal status excluded)"),
+	"timeout?": type("number >= 1").describe("Stop the monitor after this many seconds"),
 });
 
 type MonitorParams = typeof monitorSchema.infer;
 
-function monitorErrorResult(text: string, op: MonitorOperation): AgentToolResult<MonitorToolDetails> {
-	return { content: [{ type: "text", text }], details: { op, monitors: [] }, isError: true };
-}
-
-function describeSnapshotLine(snapshot: MonitorSnapshot): string {
-	const parts = [
-		`${snapshot.id} [${snapshot.status}]`,
-		snapshot.mode,
-		snapshot.label,
-		`${snapshot.eventCount} events (limit ${snapshot.maxEvents} outputs)`,
-	];
-	if (snapshot.match !== undefined) parts.push(`match /${snapshot.match}/u`);
-	if (snapshot.everySeconds !== undefined) parts.push(`every ${snapshot.everySeconds}s`);
-	if (snapshot.timeoutSeconds !== undefined) parts.push(`timeout ${snapshot.timeoutSeconds}s`);
-	if (snapshot.stopReason) parts.push(`stopped: ${snapshot.stopReason}`);
-	if (snapshot.exitCode !== undefined) parts.push(`exit ${snapshot.exitCode}`);
-	return `- ${parts.join(" · ")} — \`${snapshot.command}\``;
+function monitorErrorResult(text: string): AgentToolResult<MonitorToolDetails> {
+	return { content: [{ type: "text", text }], details: { op: "start", monitors: [] }, isError: true };
 }
 
 function describeStart(snapshot: MonitorSnapshot): string {
@@ -84,28 +61,11 @@ function describeStart(snapshot: MonitorSnapshot): string {
 	const stops = [`after ${snapshot.maxEvents} output events`];
 	if (snapshot.timeoutSeconds !== undefined) stops.push(`after ${snapshot.timeoutSeconds}s`);
 	if (snapshot.mode === "stream") stops.push("on process exit");
-	stops.push('on error, or on `op: "stop"`');
+	stops.push('on error, or when cancelled with `fleet op: "cancel"`');
 	lines.push(`Stops ${stops.join(", ")}.`);
 	lines.push(
 		"Each event arrives as a message that wakes you. Do other work now, or end your turn and wait — do NOT poll.",
 	);
-	return lines.join("\n");
-}
-
-function describeList(op: MonitorOperation, monitors: MonitorSnapshot[], notFound: string[]): string {
-	const lines: string[] = [];
-	if (monitors.length === 0) {
-		lines.push(op === "stop" ? "No monitors were stopped." : "No monitors in this session.");
-	} else {
-		const running = monitors.filter(monitor => monitor.status === "running").length;
-		lines.push(
-			op === "stop"
-				? `Stopped ${monitors.length} ${pluralize("monitor", monitors.length)}:`
-				: `${monitors.length} ${pluralize("monitor", monitors.length)} (${running} running):`,
-		);
-		for (const snapshot of monitors) lines.push(describeSnapshotLine(snapshot));
-	}
-	if (notFound.length > 0) lines.push(`Unknown monitor ${pluralize("id", notFound.length)}: ${notFound.join(", ")}`);
 	return lines.join("\n");
 }
 
@@ -139,10 +99,6 @@ export class MonitorTool implements AgentTool<typeof monitorSchema, MonitorToolD
 				timeout: 900,
 			},
 		},
-		{
-			caption: "Stop every running monitor",
-			call: { op: "stop" },
-		},
 	];
 
 	constructor(private readonly session: ToolSession) {
@@ -156,56 +112,33 @@ export class MonitorTool implements AgentTool<typeof monitorSchema, MonitorToolD
 		_onUpdate?: AgentToolUpdateCallback<MonitorToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<MonitorToolDetails>> {
-		const manager = this.session.getMonitorManager?.();
-		if (!manager) {
+		const manager = this.session.asyncJobManager;
+		const ownerId = this.session.getAsyncJobOwnerId?.();
+		if (!manager || !ownerId) {
 			return monitorErrorResult(
-				"Monitors are unavailable in this session — run the command with `bash` or supervise it with `fleet` instead.",
-				params.op,
+				"Monitors require an async job manager and session owner — run the command with `bash` instead.",
 			);
 		}
-
-		switch (params.op) {
-			case "start": {
-				const command = params.command?.trim();
-				if (!command) return monitorErrorResult('`command` is required for op="start".', "start");
-				let snapshot: MonitorSnapshot;
-				try {
-					snapshot = manager.start({
-						command,
-						label: params.label,
-						cwd: params.cwd,
-						match: params.match,
-						everySeconds: params.every,
-						maxEvents: params.maxEvents,
-						timeoutSeconds: params.timeout,
-					});
-				} catch (error) {
-					return monitorErrorResult(error instanceof Error ? error.message : String(error), "start");
-				}
-				return {
-					content: [{ type: "text", text: describeStart(snapshot) }],
-					details: { op: "start", monitors: [snapshot] },
-				};
-			}
-			case "list": {
-				const monitors = manager.list();
-				return {
-					content: [{ type: "text", text: describeList("list", monitors, []) }],
-					details: { op: "list", monitors },
-				};
-			}
-			case "stop": {
-				const ids = params.ids;
-				const notFound = ids ? ids.filter(id => manager.get(id) === undefined) : [];
-				const monitors = manager.stop(ids);
-				const details: MonitorToolDetails = { op: "stop", monitors };
-				if (notFound.length > 0) details.notFound = notFound;
-				return {
-					content: [{ type: "text", text: describeList("stop", monitors, notFound) }],
-					details,
-					isError: notFound.length > 0 && monitors.length === 0 ? true : undefined,
-				};
-			}
+		try {
+			const snapshot = startMonitor(
+				manager,
+				{
+					command: params.command,
+					label: params.label,
+					cwd: params.cwd,
+					match: params.match,
+					everySeconds: params.every,
+					maxEvents: params.maxEvents,
+					timeoutSeconds: params.timeout,
+				},
+				{ ownerId, settings: this.session.settings, cwd: this.session.cwd },
+			);
+			return {
+				content: [{ type: "text", text: describeStart(snapshot) }],
+				details: { op: "start", monitors: [snapshot] },
+			};
+		} catch (error) {
+			return monitorErrorResult(error instanceof Error ? error.message : String(error));
 		}
 	}
 }
@@ -217,7 +150,6 @@ interface MonitorRenderArgs {
 	cwd?: string;
 	match?: string;
 	every?: number;
-	ids?: string[];
 }
 
 function forDisplay(text: string, width: number): string {
@@ -231,20 +163,8 @@ function statusIcon(snapshot: MonitorSnapshot): ToolUIStatus {
 
 function describeCallTarget(args: MonitorRenderArgs | undefined): string {
 	if (!args) return "Monitor";
-	switch (args.op) {
-		case "start": {
-			const target = args.label || args.command || "";
-			return target ? `Monitor ${forDisplay(target, TRUNCATE_LENGTHS.TITLE)}` : "Monitor";
-		}
-		case "stop":
-			return args.ids && args.ids.length > 0
-				? `Stop ${forDisplay(args.ids.join(", "), TRUNCATE_LENGTHS.TITLE)}`
-				: "Stop monitors";
-		case "list":
-			return "Monitors";
-		default:
-			return "Monitor";
-	}
+	const target = args.label || args.command || "";
+	return target ? `Monitor ${forDisplay(target, TRUNCATE_LENGTHS.TITLE)}` : "Monitor";
 }
 
 function callMeta(args: MonitorRenderArgs | undefined, uiTheme: Theme): string[] {
@@ -284,7 +204,6 @@ export const monitorToolRenderer = {
 		}
 
 		const monitors = result.details?.monitors ?? [];
-		const notFound = result.details?.notFound ?? [];
 		if (monitors.length === 0) {
 			const fallback = result.content?.find(content => content.type === "text")?.text || "No monitors";
 			const header = renderStatusLine({ icon: "warning", title: describeCallTarget(args) }, uiTheme);
@@ -297,7 +216,6 @@ export const monitorToolRenderer = {
 
 		const running = monitors.filter(monitor => monitor.status === "running").length;
 		const meta = [uiTheme.fg(running > 0 ? "accent" : "dim", `${running} running`)];
-		if (notFound.length > 0) meta.push(uiTheme.fg("warning", `${notFound.length} unknown`));
 		const header = renderStatusLine(
 			{
 				icon: running > 0 ? "info" : "success",
@@ -339,10 +257,6 @@ export const monitorToolRenderer = {
 			uiTheme,
 		);
 
-		const unknownLine =
-			notFound.length > 0
-				? [uiTheme.fg("warning", `  unknown: ${forDisplay(notFound.join(", "), TRUNCATE_LENGTHS.CONTENT)}`)]
-				: [];
-		return new Text([header, ...lines, ...unknownLine].join("\n"), 0, 0);
+		return new Text([header, ...lines].join("\n"), 0, 0);
 	},
 };

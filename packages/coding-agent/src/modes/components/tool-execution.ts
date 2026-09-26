@@ -195,6 +195,14 @@ export interface ToolExecutionHandle extends Component {
 	seal(): void;
 }
 
+/** A rendered result image plus the inputs that decide whether a rebuild may keep it. */
+interface ToolCardImage {
+	component: Image;
+	data: string;
+	mimeType: string;
+	sizeKey: string;
+}
+
 export const SPINNER_RENDER_INTERVAL_MS = 80;
 
 export const SPINNER_GLYPH_ADVANCE_MS = 80;
@@ -243,7 +251,7 @@ export class ToolExecutionComponent extends Container {
 	#contentText: WidthAwareText;
 
 	#usesContentBox = false;
-	#imageComponents: Image[] = [];
+	#images = new Map<number, ToolCardImage>();
 	#imageSpacers: Spacer[] = [];
 	readonly #instanceId = ++toolExecutionInstanceSeq;
 	#toolName: string;
@@ -758,10 +766,15 @@ export class ToolExecutionComponent extends Container {
 			this.#contentText.invalidate();
 		}
 
-		for (const img of this.#imageComponents) {
-			this.disposeAndRemoveChild(img);
+		// Rebuilds run on every result update of a running tool. An image whose
+		// pixels and size are unchanged keeps its component, and with it its
+		// terminal image id: recreating it would delete the displayed payload
+		// and retransmit the same bytes on each update.
+		const previous = this.#images;
+		this.#images = new Map();
+		for (const image of previous.values()) {
+			this.removeChild(image.component);
 		}
-		this.#imageComponents = [];
 		for (const spacer of this.#imageSpacers) {
 			this.disposeAndRemoveChild(spacer);
 		}
@@ -769,6 +782,8 @@ export class ToolExecutionComponent extends Container {
 
 		if (this.#result) {
 			const imageBlocks = this.#getAllImageBlocks();
+			const imageOptions = resolveImageOptions();
+			const sizeKey = `${imageOptions.maxWidthCells}:${imageOptions.maxHeightCells ?? "-"}`;
 
 			for (let i = 0; i < imageBlocks.length; i++) {
 				const img = imageBlocks[i];
@@ -784,18 +799,33 @@ export class ToolExecutionComponent extends Container {
 					const spacer = new Spacer(1);
 					this.addChild(spacer);
 					this.#imageSpacers.push(spacer);
-					const imageComponent = new Image(
-						imageData,
-						imageMimeType,
-						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ ...resolveImageOptions(), budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
-					);
-					this.#imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
+					let image = previous.get(i);
+					previous.delete(i);
+					if (image?.data !== imageData || image.mimeType !== imageMimeType || image.sizeKey !== sizeKey) {
+						// Release the old payload before the replacement acquires the
+						// shared key, or it would inherit the old id and its pixels.
+						image?.component.dispose();
+						image = {
+							component: new Image(
+								imageData,
+								imageMimeType,
+								{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
+								{ ...imageOptions, budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
+							),
+							data: imageData,
+							mimeType: imageMimeType,
+							sizeKey,
+						};
+					}
+					this.#images.set(i, image);
+					this.addChild(image.component);
 				}
 			}
 		}
-		this.#renderedImageCount = this.#imageComponents.length;
+		for (const image of previous.values()) {
+			image.component.dispose();
+		}
+		this.#renderedImageCount = this.#images.size;
 	}
 
 	#getCallArgsForRender(): unknown {

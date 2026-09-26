@@ -183,7 +183,34 @@ export type ObservableAgentProgress = Omit<AgentProgress, "extractedToolData">;
 
 export function projectAgentProgress(progress: AgentProgress): ObservableAgentProgress {
 	const { extractedToolData: _extractedToolData, ...observable } = progress;
-	return observable;
+	// Progress is a preview, not a second copy of the task, model response, or tool payload.
+	return {
+		...observable,
+		task: oneLineLabel(progress.task, 2048),
+		assignment: progress.assignment === undefined ? undefined : oneLineLabel(progress.assignment, 2048),
+		description: progress.description === undefined ? undefined : oneLineLabel(progress.description, 512),
+		lastIntent: progress.lastIntent === undefined ? undefined : oneLineLabel(progress.lastIntent, 512),
+		currentToolArgs:
+			progress.currentToolArgs === undefined ? undefined : oneLineLabel(progress.currentToolArgs, 1024),
+		recentTools: progress.recentTools.slice(-8).map(tool => ({ ...tool, args: oneLineLabel(tool.args, 512) })),
+		recentOutput: progress.recentOutput.slice(-8).map(line => oneLineLabel(line, 1024)),
+		...(progress.retryState
+			? {
+					retryState: {
+						...progress.retryState,
+						errorMessage: oneLineLabel(progress.retryState.errorMessage, 2048),
+					},
+				}
+			: {}),
+		...(progress.retryFailure
+			? {
+					retryFailure: {
+						...progress.retryFailure,
+						errorMessage: oneLineLabel(progress.retryFailure.errorMessage, 2048),
+					},
+				}
+			: {}),
+	};
 }
 
 export interface SingleResult {

@@ -48,7 +48,7 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import { MONITOR_EVENT_MESSAGE_TYPE } from "../../session/monitor-event";
-import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
+import type { SessionContext, StrippedToolCallsMarker, TranscriptWindow } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
@@ -65,123 +65,13 @@ import {
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
-import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "./transcript-window";
+import { TRANSCRIPT_WINDOW_BYTES, TRANSCRIPT_WINDOW_MESSAGES } from "./transcript-window";
 
 export type TranscriptHistoryDirection = "older" | "newer" | "latest";
-
-export interface TranscriptWindow {
-	start: number;
-	end: number;
-	pageFromLatest: number;
-	totalMessages: number;
-}
 
 /** Collapses tabs and newlines so a queued or scheduled message stays on one rendered row. */
 function previewQueuedMessage(message: string): string {
 	return replaceTabs(message).replace(/\r?\n/g, " ↵ ");
-}
-
-function estimateValueBytes(value: unknown, limit: number): number {
-	const stack: unknown[] = [value];
-	const seen = new WeakSet<object>();
-	let bytes = 0;
-	while (stack.length > 0 && bytes <= limit) {
-		const item = stack.pop();
-		if (typeof item === "string") {
-			bytes += Buffer.byteLength(item);
-		} else if (typeof item === "number" || typeof item === "bigint") {
-			bytes += 16;
-		} else if (typeof item === "boolean") {
-			bytes += 5;
-		} else if (item && typeof item === "object") {
-			if (seen.has(item)) continue;
-			seen.add(item);
-			if (Array.isArray(item)) {
-				for (const child of item) stack.push(child);
-			} else {
-				for (const [key, child] of Object.entries(item)) {
-					bytes += Buffer.byteLength(key);
-					stack.push(child);
-				}
-			}
-		}
-	}
-	return bytes;
-}
-
-function assistantToolCallIds(message: AgentMessage): Set<string> | undefined {
-	if (message.role !== "assistant") return undefined;
-	let ids: Set<string> | undefined;
-	for (const content of message.content) {
-		if (content.type !== "toolCall") continue;
-		ids ??= new Set<string>();
-		ids.add(content.id);
-	}
-	return ids;
-}
-
-function transcriptGroupStart(messages: readonly AgentMessage[], end: number): number {
-	let start = end - 1;
-	if (start <= 0 || messages[start]?.role !== "toolResult") return Math.max(0, start);
-	while (start > 0 && messages[start - 1]?.role === "toolResult") start--;
-	const assistantIndex = start - 1;
-	const assistant = messages[assistantIndex];
-	if (!assistant) return start;
-	const callIds = assistantToolCallIds(assistant);
-	if (!callIds) return start;
-	for (let i = start; i < end; i++) {
-		const result = messages[i];
-		if (result?.role !== "toolResult" || !callIds.has(result.toolCallId)) return start;
-	}
-	return assistantIndex;
-}
-
-/**
- * Select a newest-first transcript page without splitting an assistant and its
- * immediately following matching tool results. Limits are soft: one atomic
- * group or one oversized record remains intact and may exceed them.
- */
-export function selectTranscriptWindow(
-	messages: readonly AgentMessage[],
-	pageFromLatest: number,
-	softMessages = TRANSCRIPT_WINDOW_SOFT_MESSAGES,
-	softBytes = TRANSCRIPT_WINDOW_SOFT_BYTES,
-): TranscriptWindow {
-	const requestedPage = Math.max(0, Math.floor(pageFromLatest));
-	let end = messages.length;
-	let actualPage = 0;
-	while (actualPage <= requestedPage) {
-		const pageEnd = end;
-		let start = end;
-		let count = 0;
-		let bytes = 0;
-		while (start > 0) {
-			const groupStart = transcriptGroupStart(messages, start);
-			const groupCount = start - groupStart;
-			let groupBytes = 0;
-			for (let i = groupStart; i < start; i++) {
-				groupBytes += estimateValueBytes(messages[i], Math.max(0, softBytes - groupBytes) + 1);
-			}
-			if (count > 0 && (count + groupCount > softMessages || bytes + groupBytes > softBytes)) break;
-			start = groupStart;
-			count += groupCount;
-			bytes += groupBytes;
-		}
-		if (actualPage === requestedPage || start === 0) {
-			return { start, end: pageEnd, pageFromLatest: actualPage, totalMessages: messages.length };
-		}
-		end = start;
-		actualPage++;
-	}
-	return { start: 0, end: 0, pageFromLatest: 0, totalMessages: messages.length };
-}
-
-export function transcriptWindowContext(context: SessionContext, window: TranscriptWindow): SessionContext {
-	return {
-		...context,
-		messages: context.messages.slice(window.start, window.end),
-		cacheMissExplainedAt: context.cacheMissExplainedAt?.slice(window.start, window.end),
-	};
 }
 
 const TRANSCRIPT_RENDER_CHUNK_MESSAGES = 32;
@@ -266,8 +156,10 @@ export function resolvePreservedLiveToolCallIds(params: {
 /** Maintenance changes model context, not the already-published transcript. */
 export function appendLatestCompactionSummary(ctx: InteractiveModeContext): void {
 	ctx.lastAssistantUsage = undefined;
+	const entry = ctx.viewSession.sessionManager.getLatestCompactionEntry();
+	if (!entry) return;
 	const summary = ctx.viewSession
-		.buildTranscriptSessionContext()
+		.buildDisplaySessionContext([entry])
 		.messages.findLast(message => message.role === "compactionSummary");
 	if (!summary) return;
 	if (
@@ -291,15 +183,23 @@ export class UiHelpers {
 		return queued;
 	}
 
-	selectVisibleTranscriptContext(
-		fullContext: SessionContext,
-		fullHistory = false,
-	): { context: SessionContext; window: TranscriptWindow } {
-		const window = fullHistory
-			? { start: 0, end: fullContext.messages.length, pageFromLatest: 0, totalMessages: fullContext.messages.length }
-			: selectTranscriptWindow(fullContext.messages, this.#transcriptPageFromLatest);
+	getVisibleTranscriptContext(): { context: SessionContext; window: TranscriptWindow } {
+		const context = this.ctx.viewSession.buildTranscriptSessionContext({
+			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
+			window: {
+				pageFromLatest: this.#transcriptPageFromLatest,
+				maxMessages: TRANSCRIPT_WINDOW_MESSAGES,
+				maxBytes: TRANSCRIPT_WINDOW_BYTES,
+			},
+		});
+		const window = context.window ?? {
+			start: 0,
+			end: context.messages.length,
+			pageFromLatest: 0,
+			totalMessages: context.messages.length,
+		};
 		this.#transcriptPageFromLatest = window.pageFromLatest;
-		return { context: transcriptWindowContext(fullContext, window), window };
+		return { context, window };
 	}
 
 	addTranscriptWindowNotice(container: TranscriptContainer, window: TranscriptWindow): void {
@@ -340,6 +240,7 @@ export class UiHelpers {
 	}
 
 	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
+		const start = this.ctx.chatContainer.children.length;
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -392,6 +293,7 @@ export class UiHelpers {
 					) {
 						const card = buildIrcMessageCard(message, () => this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(card);
+						this.ctx.chatContainer.accountSource(card, message);
 						return [card];
 					}
 					if (message.customType === "advisor") {
@@ -436,7 +338,7 @@ export class UiHelpers {
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					const cached = options?.reuseSettledComponent
-						? this.ctx.transcriptMessageComponents.get(message)
+						? this.ctx.transcriptMessageComponents.get(message)?.deref()
 						: undefined;
 					let userComponent: UserMessageComponent;
 					if (cached instanceof UserMessageComponent) {
@@ -449,7 +351,7 @@ export class UiHelpers {
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
 						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
-						this.ctx.transcriptMessageComponents.set(message, userComponent);
+						this.ctx.transcriptMessageComponents.set(message, new WeakRef(userComponent));
 					}
 					this.ctx.chatContainer.addChild(userComponent);
 				}
@@ -457,14 +359,14 @@ export class UiHelpers {
 			}
 			case "assistant": {
 				const cached = options?.reuseSettledComponent
-					? this.ctx.transcriptMessageComponents.get(message)
+					? this.ctx.transcriptMessageComponents.get(message)?.deref()
 					: undefined;
 				const assistantComponent =
 					cached instanceof AssistantMessageComponent
 						? cached
 						: createAssistantMessageComponent(this.ctx, splitAssistantMessageToolTimeline(message).beforeTools);
 				if (cached !== assistantComponent) {
-					this.ctx.transcriptMessageComponents.set(message, assistantComponent);
+					this.ctx.transcriptMessageComponents.set(message, new WeakRef(assistantComponent));
 				}
 				this.ctx.chatContainer.addChild(assistantComponent);
 				break;
@@ -476,6 +378,8 @@ export class UiHelpers {
 				message satisfies never;
 			}
 		}
+		for (const component of this.ctx.chatContainer.children.slice(start))
+			this.ctx.chatContainer.accountSource(component, message);
 		return [];
 	}
 
@@ -578,7 +482,7 @@ export class UiHelpers {
 				previous.isDisplaceableBlock() &&
 				this.ctx.chatContainer.canRemoveBlock(previous)
 			) {
-				this.ctx.chatContainer.removeChild(previous);
+				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			}
 
 			previous.seal();
@@ -594,7 +498,7 @@ export class UiHelpers {
 			if (previous.canBeDisplacedBy(nextToolName)) {
 				checklistSnapshot = null;
 				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-					this.ctx.chatContainer.removeChild(previous);
+					this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				}
 				previous.seal();
 				return;
@@ -686,6 +590,7 @@ export class UiHelpers {
 								this.ctx.chatContainer.addChild(readGroup);
 							}
 							readGroup.updateArgs(renderArgs, content.id);
+							this.ctx.chatContainer.accountSource(readGroup, renderArgs);
 							readGroup.updateResult(
 								{ content: [{ type: "text", text: errorMessage }], isError: true },
 								false,
@@ -700,6 +605,7 @@ export class UiHelpers {
 								this.ctx.chatContainer.addChild(readGroup);
 							}
 							readGroup.updateArgs(renderArgs, content.id);
+							this.ctx.chatContainer.accountSource(readGroup, renderArgs);
 							this.ctx.pendingTools.set(content.id, readGroup);
 						} else {
 							const normalizedArgs = normalizeToolArgs(renderArgs);
@@ -724,6 +630,7 @@ export class UiHelpers {
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
+					this.ctx.chatContainer.accountSource(component, renderArgs);
 
 					if (hasErrorStop && errorMessage) {
 						component.updateResult(
@@ -773,6 +680,7 @@ export class UiHelpers {
 						const args = readToolCallArgs.get(message.toolCallId);
 						if (args) {
 							readGroup.updateArgs(args, message.toolCallId);
+							this.ctx.chatContainer.accountSource(readGroup, args);
 						}
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
@@ -781,6 +689,7 @@ export class UiHelpers {
 						component.setToolResultImages(message.toolCallId, images);
 					}
 					component.updateResult(message, false, message.toolCallId);
+					this.ctx.chatContainer.accountSource(component, message);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
 					continue;
@@ -789,6 +698,7 @@ export class UiHelpers {
 				const component = this.ctx.pendingTools.get(message.toolCallId);
 				if (component) {
 					component.updateResult(message, false, message.toolCallId);
+					this.ctx.chatContainer.accountSource(component, message);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					if (
 						message.toolName === "fleet" &&
@@ -855,7 +765,7 @@ export class UiHelpers {
 			return false;
 		}
 		const chat = this.ctx.chatContainer;
-		const cut = this.ctx.transcriptMessageComponents.get(message);
+		const cut = this.ctx.transcriptMessageComponents.get(message)?.deref();
 		if (!cut) return false;
 		const index = chat.children.indexOf(cut);
 		if (index < 0) return false;
@@ -864,7 +774,7 @@ export class UiHelpers {
 			if (!chat.canRemoveBlock(chat.children[i]!)) return false;
 		}
 
-		const context = this.ctx.viewSession.buildTranscriptSessionContext();
+		const { context } = this.getVisibleTranscriptContext();
 		for (const remaining of context.messages) {
 			if (remaining === message) return false;
 		}
@@ -875,7 +785,7 @@ export class UiHelpers {
 			child.dispose?.();
 		}
 
-		const retained = new WeakMap<AgentMessage, Component>();
+		const retained = new WeakMap<AgentMessage, WeakRef<Component>>();
 		for (const remaining of context.messages) {
 			const component = this.ctx.transcriptMessageComponents.get(remaining);
 			if (component) retained.set(remaining, component);
@@ -961,18 +871,14 @@ export class UiHelpers {
 		const chatWasAlreadyRendered = this.ctx.initialChatRendered;
 
 		this.ctx.chatContainer = stagedChatContainer;
-		this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+		this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
 		this.ctx.pendingTools = new Map<string, ToolExecutionHandle>();
 		if (resetPendingMessages) this.ctx.pendingMessagesContainer.disposeChildren();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		let fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
-			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
-		});
-		let selection = this.selectVisibleTranscriptContext(fullContext, options.fullHistory);
-		let { context, window } = selection;
-		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+		let { context, window } = this.getVisibleTranscriptContext();
+		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntryCount();
 		const renderOptions = { updateFooter: true };
 		let committed = false;
 		let replayAttempts = 0;
@@ -982,27 +888,23 @@ export class UiHelpers {
 				this.addTranscriptWindowNotice(stagedChatContainer, window);
 				if (this.ctx.viewSession.isStreaming) this.ctx.renderSessionContext(context, renderOptions);
 				else await this.ctx.renderSessionContextIncrementally(context, renderOptions);
-				if (this.ctx.viewSession.sessionManager.getEntries().length === replayEntryCount) break;
+				if (this.ctx.viewSession.sessionManager.getEntryCount() === replayEntryCount) break;
 				replayAttempts++;
 				if (replayAttempts >= TRANSCRIPT_REPLAY_MAX_ATTEMPTS) {
 					logger.warn("renderInitialMessages: transcript replay did not converge; accepting current replay", {
 						attempts: replayAttempts,
 						replayEntryCount,
-						currentEntryCount: this.ctx.viewSession.sessionManager.getEntries().length,
+						currentEntryCount: this.ctx.viewSession.sessionManager.getEntryCount(),
 					});
 					break;
 				}
 				stagedChatContainer.disposeChildren();
-				this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+				this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
 				this.ctx.pendingTools.clear();
 				this.ctx.pendingBashComponents = [];
 				this.ctx.pendingPythonComponents = [];
-				fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
-					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
-				});
-				selection = this.selectVisibleTranscriptContext(fullContext, options.fullHistory);
-				({ context, window } = selection);
-				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+				({ context, window } = this.getVisibleTranscriptContext());
+				replayEntryCount = this.ctx.viewSession.sessionManager.getEntryCount();
 			}
 
 			const replayedChatChildren = [...stagedChatContainer.children];
@@ -1015,8 +917,8 @@ export class UiHelpers {
 			committed = true;
 
 			let latestUsage: Usage | undefined;
-			for (let i = fullContext.messages.length - 1; i >= 0; i--) {
-				const message = fullContext.messages[i];
+			for (let i = context.messages.length - 1; i >= 0; i--) {
+				const message = context.messages[i];
 				if (message?.role !== "assistant") continue;
 				if (message.usage.cacheRead + message.usage.cacheWrite + message.usage.input > 0) {
 					latestUsage = message.usage;
@@ -1025,9 +927,7 @@ export class UiHelpers {
 			}
 			this.ctx.lastAssistantUsage = latestUsage;
 
-			const allEntries = this.ctx.viewSession.sessionManager.getEntries();
-			let compactionCount = 0;
-			for (const entry of allEntries) if (entry.type === "compaction") compactionCount++;
+			const compactionCount = this.ctx.viewSession.sessionManager.getEntryCount("compaction");
 			if (compactionCount > 0) {
 				const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 				this.ctx.showStatus(`Session compacted ${times}`);

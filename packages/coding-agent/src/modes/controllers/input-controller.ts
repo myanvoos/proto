@@ -1,12 +1,12 @@
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
+import { type AutocompleteProvider, EDITOR_LIMITS, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
-import { extractImagePathFromText } from "../../modes/components/custom-editor";
+import { COMPOSER_IMAGE_LIMITS, extractImagePathFromText } from "../../modes/components/custom-editor";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
@@ -28,6 +28,7 @@ import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-
 import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { isUserQueuedMessage, toRestoredQueuedMessage } from "../../session/queued-messages";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
@@ -52,6 +53,7 @@ import {
 	loadImageInput,
 } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
+import { ImageResourceLimitError } from "../../utils/image-resources";
 
 export function shouldSkipHistory(slashText: string): boolean {
 	if (!slashText.startsWith("/")) return false;
@@ -180,6 +182,9 @@ export class InputController {
 	#tapCounts: Record<"left" | "right", number> = { left: 0, right: 0 };
 
 	#pasteCounter = 0;
+	#largePastePending = false;
+	#clipboardPastePending = false;
+	#pathPastePending = false;
 
 	#lastChipsSignature = "";
 
@@ -415,13 +420,14 @@ export class InputController {
 			"app.clipboard.pasteImage",
 			this.ctx.keybindings.getKeys("app.clipboard.pasteImage"),
 		);
+		this.ctx.editor.onInputRejected = reason => this.ctx.showStatus(reason);
 		this.ctx.editor.onPasteImage = () => this.handleImagePaste();
 		this.ctx.editor.onPasteImagePath = path => this.handleImagePathPaste(path);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.pasteTextRaw",
 			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
 		);
-		this.ctx.editor.onPasteTextRaw = () => void this.handleClipboardTextRawPaste();
+		this.ctx.editor.onPasteTextRaw = () => this.handleClipboardTextRawPaste();
 		this.ctx.editor.onLargePaste = (text, lineCount) => this.handleLargePaste(text, lineCount);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.copyPrompt",
@@ -643,7 +649,7 @@ export class InputController {
 				submittedImages?.length &&
 				submittedImages.every((image, index) => this.ctx.editor.pendingImages[index] === image)
 			) {
-				this.ctx.editor.pendingImages.splice(0, submittedImages.length);
+				this.ctx.editor.pendingImages = this.ctx.editor.pendingImages.slice(submittedImages.length);
 				this.ctx.editor.pendingImageLinks.splice(0, submittedImages.length);
 				this.ctx.editor.imageLinks =
 					this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
@@ -1221,75 +1227,119 @@ export class InputController {
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		this.ctx.locallySubmittedUserSignatures.clear();
-
-		const { steering, followUp } = this.ctx.session.clearQueue({ forInterrupt: options?.abort });
-
-		const compactionQueued = this.ctx.compactionQueuedMessages;
-		this.ctx.compactionQueuedMessages = [];
-		const allQueued = [
-			...steering,
-			...compactionQueued.filter(e => e.mode === "steer").map(e => ({ text: e.text, images: e.images })),
-			...followUp,
-			...compactionQueued.filter(e => e.mode === "followUp").map(e => ({ text: e.text, images: e.images })),
-		];
-		if (allQueued.length === 0) {
-			this.ctx.updatePendingMessagesDisplay();
-			if (options?.abort) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
-			}
-			return 0;
-		}
-
-		const queuedImages = allQueued.flatMap(e => e.images ?? []);
-		let queuedText: string;
-		if (queuedImages.length > 0) {
-			const parts: string[] = [];
-			let imageOffset = this.ctx.editor.pendingImages.length;
-			for (const entry of allQueued) {
-				parts.push(shiftImageMarkers(entry.text, imageOffset));
-				if (entry.images && entry.images.length > 0) imageOffset += entry.images.length;
-			}
-			queuedText = parts.join("\n\n");
-		} else {
-			queuedText = allQueued.map(e => e.text).join("\n\n");
-		}
+		// Prepare before clearQueue: an over-budget restore must not erase accepted work.
 		const currentText = options?.currentText ?? this.ctx.editor.getText();
-		const combinedText = [queuedText, currentText].filter(t => t.trim()).join("\n\n");
+		const allQueued = [
+			...this.ctx.session.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(toRestoredQueuedMessage),
+			...this.ctx.compactionQueuedMessages.filter(e => e.mode === "steer"),
+			...this.ctx.session.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(toRestoredQueuedMessage),
+			...this.ctx.compactionQueuedMessages.filter(e => e.mode === "followUp"),
+		];
+		const rejectRestore = (): number => {
+			this.ctx.showStatus("Queued messages exceed the draft limit; messages remain queued");
+			if (options?.abort) void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+			return 0;
+		};
+		const queuedImages = allQueued.flatMap(e => e.images ?? []);
+		const images = [...this.ctx.editor.pendingImages, ...queuedImages];
+		const imageBytes = images.reduce((sum, image) => sum + Buffer.byteLength(image.data), 0);
+		if (images.length > COMPOSER_IMAGE_LIMITS.count || imageBytes > COMPOSER_IMAGE_LIMITS.bytes)
+			return rejectRestore();
 
-		if (queuedImages.length > 0) {
-			this.ctx.editor.pendingImages.push(...queuedImages);
-			this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
-			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+		const parts: string[] = [];
+		let imageOffset = this.ctx.editor.pendingImages.length;
+		let textBytes = 0;
+		for (const entry of allQueued) {
+			// Check before marker replacement, then account for any renumbering growth.
+			if (textBytes + Buffer.byteLength(entry.text) > EDITOR_LIMITS.draftBytes) return rejectRestore();
+			const text = queuedImages.length > 0 ? shiftImageMarkers(entry.text, imageOffset) : entry.text;
+			textBytes += Buffer.byteLength(text) + (parts.length > 0 ? 2 : 0);
+			if (textBytes > EDITOR_LIMITS.draftBytes) return rejectRestore();
+			parts.push(text);
+			imageOffset += entry.images?.length ?? 0;
 		}
-		this.ctx.editor.setCollapsedText(combinedText);
+		const queuedText = parts.join("\n\n");
+		const combinedParts = [queuedText, currentText].filter(t => t.trim());
+		const combinedBytes =
+			combinedParts.reduce((sum, text) => sum + Buffer.byteLength(text), 0) +
+			Math.max(0, combinedParts.length - 1) * 2;
+		if (combinedBytes > EDITOR_LIMITS.draftBytes) return rejectRestore();
+		const combinedText = combinedParts.join("\n\n");
+
+		this.ctx.locallySubmittedUserSignatures.clear();
+		this.ctx.session.clearQueue({ forInterrupt: options?.abort });
+		this.ctx.compactionQueuedMessages = [];
+		if (allQueued.length > 0) {
+			if (queuedImages.length > 0) {
+				this.ctx.editor.pendingImages = images;
+				this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
+				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+			}
+			this.ctx.editor.setCollapsedText(combinedText);
+		}
 		this.ctx.updatePendingMessagesDisplay();
-		if (options?.abort) {
-			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
-		}
+		if (options?.abort) void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 		return allQueued.length;
 	}
 
-	async #insertPendingImage(imageData: ImageContent, dims: ImageDimensions): Promise<void> {
+	async #insertPendingImage(imageData: ImageContent, dims: ImageDimensions): Promise<boolean> {
+		const images = this.ctx.editor.pendingImages;
 		const image: ImageContent = { type: "image", data: imageData.data, mimeType: imageData.mimeType };
+		this.ctx.editor.assertDraftImages([...images, image]);
 		const imageLink = (
 			await materializeImageReferenceLinks([image], this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager))
 		)?.[0];
-		this.ctx.editor.pendingImages.push(image);
-		this.ctx.editor.pendingImageLinks.push(imageLink);
+		if (this.ctx.editor.pendingImages !== images) {
+			this.ctx.showStatus("Draft changed while pasting; image was not attached");
+			return false;
+		}
+		const previousLinks = this.ctx.editor.pendingImageLinks;
+		const previousImageLinks = this.ctx.editor.imageLinks;
+		this.ctx.editor.pendingImages = [...images, image];
+		this.ctx.editor.pendingImageLinks = [...previousLinks, imageLink];
 		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		const imageNum = this.ctx.editor.pendingImages.length;
-		setCachedImageDimensions(image, dims);
+		setCachedImageDimensions(this.ctx.editor.pendingImages[imageNum - 1], dims);
 
 		const expansion = `[Image #${imageNum}, ${dims.width}x${dims.height}]`;
-		this.ctx.editor.insertAtom(chipLabel("image", imageNum), expansion);
+		if (!this.ctx.editor.insertAtom(chipLabel("image", imageNum), expansion)) {
+			this.ctx.editor.pendingImages = images;
+			this.ctx.editor.pendingImageLinks = previousLinks;
+			this.ctx.editor.imageLinks = previousImageLinks;
+			return false;
+		}
 		this.ctx.ui.requestRender();
+		return true;
 	}
 
 	async #normalizeAndInsertPastedImage(
 		image: ImageContent,
 		unsupportedMessage: string,
 		source = "Pasted image",
+	): Promise<boolean> {
+		const images = this.ctx.editor.pendingImages;
+		try {
+			this.ctx.editor.assertDraftImages([...images, image]);
+			return await this.#normalizePastedImage(image, unsupportedMessage, source, images);
+		} catch (error) {
+			if (
+				!(
+					error instanceof ImageResourceLimitError ||
+					error instanceof ImageInputTooLargeError ||
+					error instanceof RangeError
+				)
+			)
+				throw error;
+			this.ctx.showStatus(error.message);
+			return false;
+		}
+	}
+
+	async #normalizePastedImage(
+		image: ImageContent,
+		unsupportedMessage: string,
+		source: string,
+		images: readonly ImageContent[],
 	): Promise<boolean> {
 		let imageData = await ensureSupportedImageInput(image);
 		if (!imageData) {
@@ -1315,10 +1365,15 @@ export class InputController {
 				});
 				imageData = { type: "image", data: resized.data, mimeType: resized.mimeType };
 				if (resized.width && resized.height) dims = { width: resized.width, height: resized.height };
-			} catch {}
+			} catch (error) {
+				if (error instanceof ImageResourceLimitError) throw error;
+			}
 		}
-		await this.#insertPendingImage(imageData, dims);
-		return true;
+		if (this.ctx.editor.pendingImages !== images) {
+			this.ctx.showStatus("Draft changed while decoding; image was not attached");
+			return false;
+		}
+		return this.#insertPendingImage(imageData, dims);
 	}
 
 	async #tryPasteClipboardImage(): Promise<boolean> {
@@ -1349,6 +1404,19 @@ export class InputController {
 	}
 
 	async handleImagePathPaste(path: string): Promise<void> {
+		if (this.#pathPastePending) {
+			this.ctx.showStatus("An image path is still processing; paste was not queued");
+			return;
+		}
+		this.#pathPastePending = true;
+		try {
+			await this.#readImagePathPaste(path);
+		} finally {
+			this.#pathPastePending = false;
+		}
+	}
+
+	async #readImagePathPaste(path: string): Promise<void> {
 		try {
 			const image = await loadImageInput({
 				path,
@@ -1374,7 +1442,11 @@ export class InputController {
 				this.ctx.showStatus(`Pasted image ${this.#displayImagePath(path)} is corrupt or truncated`);
 				return;
 			}
-			if (error instanceof ImageInputTooLargeError) {
+			if (
+				error instanceof ImageInputTooLargeError ||
+				error instanceof ImageResourceLimitError ||
+				error instanceof RangeError
+			) {
 				this.ctx.editor.pasteText(path);
 				this.ctx.ui.requestRender();
 				this.ctx.showStatus(error.message);
@@ -1401,6 +1473,19 @@ export class InputController {
 	}
 
 	async handleImagePaste(): Promise<boolean> {
+		if (this.#clipboardPastePending) {
+			this.ctx.showStatus("Clipboard paste is still processing; paste was not queued");
+			return false;
+		}
+		this.#clipboardPastePending = true;
+		try {
+			return await this.#readClipboardPaste();
+		} finally {
+			this.#clipboardPastePending = false;
+		}
+	}
+
+	async #readClipboardPaste(): Promise<boolean> {
 		try {
 			const focusedNow = this.ctx.ui.getFocused();
 			const promptTarget =
@@ -1448,13 +1533,30 @@ export class InputController {
 			target.pasteText(text);
 			this.ctx.ui.requestRender();
 			return true;
-		} catch {
-			this.ctx.showStatus("Failed to read clipboard");
+		} catch (error) {
+			this.ctx.showStatus(
+				error instanceof RangeError || error instanceof ImageResourceLimitError
+					? error.message
+					: "Failed to read clipboard",
+			);
 			return false;
 		}
 	}
 
 	async handleClipboardTextRawPaste(): Promise<void> {
+		if (this.#clipboardPastePending) {
+			this.ctx.showStatus("Clipboard paste is still processing; paste was not queued");
+			return;
+		}
+		this.#clipboardPastePending = true;
+		try {
+			await this.#readClipboardTextRawPaste();
+		} finally {
+			this.#clipboardPastePending = false;
+		}
+	}
+
+	async #readClipboardTextRawPaste(): Promise<void> {
 		try {
 			const text = await this.clipboard.readText();
 			if (text) {
@@ -1463,8 +1565,8 @@ export class InputController {
 			} else {
 				this.ctx.showStatus("No text in clipboard to paste raw");
 			}
-		} catch {
-			this.ctx.showStatus("Failed to paste raw text from clipboard");
+		} catch (error) {
+			this.ctx.showStatus(error instanceof RangeError ? error.message : "Failed to paste raw text from clipboard");
 		}
 	}
 
@@ -1479,6 +1581,20 @@ export class InputController {
 	}
 
 	async presentLargePasteMenu(text: string, lineCount: number): Promise<void> {
+		if (this.#largePastePending) {
+			this.ctx.showStatus("Another paste menu is open; incoming paste was discarded");
+			return;
+		}
+		if (!this.ctx.editor.canAddAttachment(text)) return;
+		this.#largePastePending = true;
+		try {
+			await this.#showLargePasteMenu(text, lineCount);
+		} finally {
+			this.#largePastePending = false;
+		}
+	}
+
+	async #showLargePasteMenu(text: string, lineCount: number): Promise<void> {
 		const WRAPPED_BLOCK = "Attach as a wrapped block";
 		const LOCAL_FILE = "Attach as local file";
 		const INLINE = "Paste inline";

@@ -6,9 +6,9 @@ import {
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary } from "../../session/streaming-output";
 import type { ToolSession } from "../../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
-import { isEvalTimeoutControlEvent } from "../bridge-timeout";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
-import { executeInVmContext, type JsDisplayOutput } from "./context-manager";
+import { type KernelDisplayOutput, PythonDisplayBudget } from "../py/display";
+import { executeInVmContext } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
 interface JsExecutorOptions {
@@ -53,7 +53,7 @@ export interface JsResult {
 	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
 	summarized?: boolean;
 	actionableDiagnostics?: string[];
-	displayOutputs: JsDisplayOutput[];
+	displayOutputs: KernelDisplayOutput[];
 }
 
 function getExecutionTimeoutMs(options: Pick<JsExecutorOptions, "deadlineMs" | "timeoutMs">): number | undefined {
@@ -85,7 +85,17 @@ function formatJsTimeoutAnnotation(timeoutMs: number | undefined): string {
 }
 
 export async function executeJs(code: string, options: JsExecutorOptions): Promise<JsResult> {
-	const displayOutputs: JsDisplayOutput[] = [];
+	const displayBudget = new PythonDisplayBudget();
+	let resultReady = false;
+	let releaseRequested = false;
+	const releaseOutput = (): void => {
+		if (!resultReady) {
+			releaseRequested = true;
+			return;
+		}
+		outputSink.release();
+		displayBudget.release();
+	};
 	const outputSink = new OutputSink({
 		artifactPath: options.artifactPath,
 		artifactId: options.artifactId,
@@ -110,7 +120,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 		summary: OutputSummary,
 		base: Pick<JsResult, "exitCode" | "cancelled"> & { timedOut?: boolean },
 	): JsResult => {
-		const result: JsResult = { ...summary, ...base, displayOutputs };
+		const result: JsResult = { ...summary, ...base, displayOutputs: displayBudget.kernelOutputs() };
 		const timeout: ExecutionTimeoutMetadata | undefined = result.timedOut
 			? {
 					cause: options.idleTimeoutMs !== undefined ? "idle" : "deadline",
@@ -151,14 +161,14 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 					outputSink.push(chunk);
 					void options.onStream?.(chunk, stream);
 				},
-				retainedBytes: () => outputSink.retainedBytes(),
-				release: () => outputSink.release(),
+				retainedBytes: () => outputSink.retainedBytes() + displayBudget.retainedBytes(),
+				release: releaseOutput,
 				onDisplay: output => {
 					if (output.type === "status") {
 						options.onStatus?.(output.event);
-						if (isEvalTimeoutControlEvent(output.event)) return;
+						return;
 					}
-					displayOutputs.push(output);
+					displayBudget.addKernelOutput(output);
 				},
 			},
 		});
@@ -180,5 +190,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 		return resultWithSummary(summary, { exitCode: 1, cancelled: false });
 	} finally {
 		await outputSink.dispose();
+		resultReady = true;
+		if (releaseRequested) releaseOutput();
 	}
 }

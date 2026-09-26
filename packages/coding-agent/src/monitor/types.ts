@@ -1,5 +1,4 @@
-/** Lifecycle of a monitor. Monitors are session-scoped: they never outlive the session that started them. */
-export type MonitorStatus = "running" | "stopped";
+import type { AsyncJob } from "../async/job-manager";
 
 /**
  * `stream` follows one long-running process and reports each matching output line.
@@ -8,8 +7,6 @@ export type MonitorStatus = "running" | "stopped";
 export type MonitorMode = "stream" | "poll";
 
 export type MonitorStopReason = "manual" | "exit" | "limit" | "timeout" | "error" | "session";
-
-export type MonitorEventKind = "output" | "exit" | "limit" | "timeout" | "error";
 
 export interface MonitorStartSpec {
 	command: string;
@@ -31,26 +28,12 @@ export interface MonitorStartSpec {
 	timeoutSeconds?: number;
 }
 
-export interface MonitorEvent {
-	monitorId: string;
-	label: string;
-	kind: MonitorEventKind;
-	text: string;
-
-	/** 1-based position within this monitor's event stream. */
-	sequence: number;
-	timestamp: number;
-}
-
-export interface MonitorSnapshot {
-	id: string;
-	label: string;
+/** Mutable monitoring metadata; job identity and lifecycle live in AsyncJob. */
+export interface MonitorDetails {
 	command: string;
 	cwd: string;
 	mode: MonitorMode;
 	match?: string;
-	status: MonitorStatus;
-	startedAt: number;
 	stoppedAt?: number;
 	stopReason?: MonitorStopReason;
 	exitCode?: number;
@@ -59,4 +42,11 @@ export interface MonitorSnapshot {
 	everySeconds?: number;
 	timeoutSeconds?: number;
 	lastEventAt?: number;
+}
+
+export interface MonitorSnapshot extends MonitorDetails {
+	id: string;
+	label: string;
+	status: AsyncJob["status"];
+	startTime: number;
 }

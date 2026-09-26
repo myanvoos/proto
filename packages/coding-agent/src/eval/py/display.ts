@@ -1,3 +1,4 @@
+import { materializeString, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import { htmlToBasicMarkdown } from "../../web/scrapers/types";
 
 export interface PythonStatusEvent {
@@ -10,6 +11,7 @@ export type KernelDisplayOutput =
 	| { type: "json"; data: unknown }
 	| { type: "image"; data: string; mimeType: string }
 	| { type: "markdown"; text: string }
+	| { type: "notice"; text: string }
 	| { type: "status"; event: PythonStatusEvent };
 
 function normalizeDisplayText(text: string): string {
@@ -98,6 +100,7 @@ export const PYTHON_DISPLAY_MAX_IMAGE_DECODE_BYTES = 20 * 1024 * 1024;
  */
 export function normalizeKernelDisplayOutput(output: KernelDisplayOutput): PythonDisplayOutput | undefined {
 	if (output.type === "status") return undefined;
+	if (output.type === "notice") return output;
 	if (output.type === "image") {
 		if (output.data.length > (PYTHON_DISPLAY_MAX_IMAGE_DECODE_BYTES / 3) * 4) {
 			return { type: "notice", text: "display image rejected: larger than 20 MiB decoded" };
@@ -148,31 +151,71 @@ export class PythonDisplayBudget {
 	readonly blocks: PythonDisplayOutput[] = [];
 	#images = 0;
 	#textBytes = 0;
-	// JSON-array serialization overhead: 2 for the enclosing brackets plus one
-	// comma per additional block, so the accounting matches the final
-	// JSON.stringify(blocks) byte-for-byte.
+	#blockCount = 0;
 	#persistedBytes = 2;
+	#retainedBytes = 0;
+	#metadataCount = 0;
+	#lastWasNotice = false;
 
-	addKernelOutput(output: KernelDisplayOutput): void {
-		if (output.type === "status" || output.type === "markdown") return;
-		if (output.type === "image") {
-			this.add({ type: "image", data: output.data, mimeType: output.mimeType });
-			return;
+	/** Only bounded, detached values leave the admission gate. */
+	addKernelOutput(output: KernelDisplayOutput): KernelDisplayOutput[] {
+		if (output.type === "status" || output.type === "markdown") return [];
+		const previous = this.blocks.at(-1);
+		if (this.#blockCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
+			this.#appendNotice(`display truncated at ${PYTHON_DISPLAY_MAX_BLOCKS} blocks`);
+		} else {
+			const block = normalizeKernelDisplayOutput(output);
+			if (block) this.add(block);
 		}
-		let text: string;
+		const accepted = this.blocks.at(-1);
+		return accepted && accepted !== previous ? [kernelOutputFromBlock(accepted)] : [];
+	}
+
+	kernelOutputs(): KernelDisplayOutput[] {
+		return this.blocks.map(kernelOutputFromBlock);
+	}
+
+	retainedBytes(): number {
+		return this.#retainedBytes;
+	}
+
+	/** Drop payloads without reopening this run's lifetime admission budget. */
+	release(): void {
+		this.blocks.length = 0;
+		this.#retainedBytes = 0;
+	}
+
+	/** Metadata shares the display byte budget, even when not rendered. */
+	admitMetadata<T>(value: T): T | undefined {
+		if (value === undefined) return undefined;
+		if (this.#metadataCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
+			this.#appendNotice(`display metadata truncated at ${PYTHON_DISPLAY_MAX_BLOCKS} entries`);
+			return undefined;
+		}
+		let text: string | undefined;
 		try {
-			text = JSON.stringify(output.data, null, "\t") ?? "null";
+			text = JSON.stringify(value);
 		} catch {
-			this.#appendNotice("display JSON dropped: not serializable");
-			return;
+			this.#appendNotice("display metadata dropped: not serializable");
+			return undefined;
 		}
-		this.add({ type: "json", text });
+		if (text === undefined) return undefined;
+		const bytes = Buffer.byteLength(text);
+		const notice = "display metadata truncated: 4 MiB persistence budget exceeded";
+		const noticeBytes = Buffer.byteLength(JSON.stringify({ type: "notice", text: notice })) + 1;
+		if (bytes + noticeBytes > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes) {
+			this.#appendNotice(notice);
+			return undefined;
+		}
+		this.#metadataCount++;
+		this.#persistedBytes += bytes;
+		this.#retainedBytes += bytes;
+		return JSON.parse(text) as T;
 	}
 
 	add(block: PythonDisplayOutput): boolean {
-		if (this.blocks.length >= PYTHON_DISPLAY_MAX_BLOCKS) {
-			// The block list is full: recording a notice would itself exceed
-			// the cap, so the truncation state is left as-is.
+		if (this.#blockCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
+			this.#appendNotice(`display truncated at ${PYTHON_DISPLAY_MAX_BLOCKS} blocks`);
 			return false;
 		}
 		if (block.type === "image") {
@@ -180,69 +223,87 @@ export class PythonDisplayBudget {
 				this.#appendNotice(`display truncated at ${PYTHON_DISPLAY_MAX_IMAGES} images`);
 				return false;
 			}
-			// Base64 length is a 4/3 proxy for decoded bytes.
 			if (block.data.length > (PYTHON_DISPLAY_MAX_IMAGE_DECODE_BYTES / 3) * 4) {
 				this.#appendNotice("display image rejected: larger than 20 MiB decoded");
 				return false;
 			}
 		}
 		let accepted = block;
-		if (
-			(block.type === "text" || block.type === "markdown" || block.type === "json") &&
-			Buffer.byteLength(block.text) > PYTHON_DISPLAY_MAX_BLOCK_TEXT
-		) {
-			// Clip on UTF-8 byte budget: the suffix must fit inside the limit,
-			// and the cut may not split a code point.
-			const suffix = `\n… [${Buffer.byteLength(block.text) - PYTHON_DISPLAY_MAX_BLOCK_TEXT} bytes omitted]`;
-			const bytes = Buffer.from(block.text, "utf8");
-			const limit = PYTHON_DISPLAY_MAX_BLOCK_TEXT - Buffer.byteLength(suffix);
-			let end = limit;
-			while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-			accepted = { ...block, text: `${bytes.subarray(0, end).toString("utf8")}${suffix}` };
+		if (block.type !== "image") {
+			const textBytes = Buffer.byteLength(block.text);
+			if (textBytes > PYTHON_DISPLAY_MAX_BLOCK_TEXT) {
+				const suffix = `\n… [${textBytes - PYTHON_DISPLAY_MAX_BLOCK_TEXT} bytes omitted]`;
+				const prefix = truncateHeadBytes(block.text, PYTHON_DISPLAY_MAX_BLOCK_TEXT - Buffer.byteLength(suffix));
+				accepted = { ...block, text: `${prefix.text}${suffix}` };
+			}
 		}
-		const bytes = Buffer.byteLength(JSON.stringify(accepted)) + (this.blocks.length > 0 ? 1 : 0);
+		const bytes = Buffer.byteLength(JSON.stringify(accepted)) + (this.#blockCount > 0 ? 1 : 0);
 		if (bytes > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes) {
 			this.#appendNotice("display output truncated: 4 MiB persistence budget exceeded");
 			return false;
 		}
-		if (accepted.type === "text" || accepted.type === "markdown" || accepted.type === "json") {
-			if (this.#textBytes + accepted.text.length > PYTHON_DISPLAY_MAX_TOTAL_TEXT) {
+		if (accepted.type !== "image") {
+			const textBytes = Buffer.byteLength(accepted.text);
+			if (this.#textBytes + textBytes > PYTHON_DISPLAY_MAX_TOTAL_TEXT) {
 				this.#appendNotice("display text truncated: 256 KiB total cap exceeded");
 				return false;
 			}
-			this.#textBytes += accepted.text.length;
+			this.#textBytes += textBytes;
 		}
+		accepted =
+			accepted.type === "image"
+				? { ...accepted, data: materializeString(accepted.data) }
+				: { ...accepted, text: materializeString(accepted.text) };
 		this.blocks.push(accepted);
+		this.#lastWasNotice = accepted.type === "notice";
+		this.#blockCount++;
 		this.#persistedBytes += bytes;
+		this.#retainedBytes += bytes;
 		if (accepted.type === "image") this.#images++;
 		return true;
 	}
 
-	/** Hydrate already-persisted blocks (they were capped when written). */
+	/** Hydrate persisted blocks through the same admission gate as live output. */
 	adopt(existing: readonly PythonDisplayOutput[]): void {
-		for (const block of existing) {
-			this.blocks.push(block);
-			if (block.type === "image") this.#images++;
-			if (block.type === "text" || block.type === "markdown" || block.type === "json") {
-				this.#textBytes += block.text.length;
-			}
-		}
-		// Exact serialized size computed once, including array structure.
-		this.#persistedBytes = Buffer.byteLength(JSON.stringify(existing));
+		for (const block of existing) this.add(block);
 	}
 
 	#appendNotice(text: string): void {
-		if (this.blocks.length >= PYTHON_DISPLAY_MAX_BLOCKS) return;
-		if (this.blocks[this.blocks.length - 1]?.type === "notice") return;
-		// Notices are metadata: they bypass add()'s caps but must still fit
-		// the persistence budget, or a rejection would push the serialized
-		// output past the limit it exists to enforce.
+		if (this.#lastWasNotice) return;
+		this.#lastWasNotice = true;
 		const notice = { type: "notice", text } as const;
-		const size = Buffer.byteLength(JSON.stringify(notice)) + (this.blocks.length > 0 ? 1 : 0);
+		const size = Buffer.byteLength(JSON.stringify(notice)) + 1;
+		// Keep a visible rejection even when the final accepted block filled the
+		// budget. Replacing that block never admits another unbounded payload.
+		while (
+			this.blocks.length > 0 &&
+			(this.blocks.length >= PYTHON_DISPLAY_MAX_BLOCKS ||
+				size > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes)
+		) {
+			const removed = this.blocks.pop()!;
+			const bytes = Buffer.byteLength(JSON.stringify(removed)) + 1;
+			this.#persistedBytes -= bytes;
+			this.#retainedBytes -= bytes;
+		}
 		if (size > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes) return;
 		this.#persistedBytes += size;
+		this.#retainedBytes += size;
+		this.#blockCount++;
 		this.blocks.push(notice);
 	}
+}
+
+function kernelOutputFromBlock(block: PythonDisplayOutput): KernelDisplayOutput {
+	if (block.type === "image" || block.type === "notice") return block;
+	if (block.type === "json") {
+		try {
+			return { type: "json", data: JSON.parse(block.text) };
+		} catch {
+			// A clipped JSON rendering is text, never a malformed structured value.
+			return { type: "notice", text: block.text };
+		}
+	}
+	return { type: "notice", text: block.text };
 }
 
 function isStatusBundle(data: unknown): boolean {

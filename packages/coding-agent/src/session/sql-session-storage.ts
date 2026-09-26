@@ -48,6 +48,8 @@ interface DialectQueries {
 	replaceIfSize: string;
 
 	upsertAppend: string;
+	appendIfSize: string;
+	readSize: string;
 
 	updateTitle: string;
 
@@ -133,6 +135,8 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 			upsertAppend:
 				`INSERT INTO ${table} (path, content, mtime_ms) VALUES (?, ?, ?) ` +
 				`ON DUPLICATE KEY UPDATE content = CONCAT(content, ?), mtime_ms = ?`,
+			appendIfSize: `UPDATE ${table} SET content = CONCAT(content, ?), mtime_ms = ? WHERE path = ? AND length(content) = ?`,
+			readSize: `SELECT length(content) AS byte_len FROM ${table} WHERE path = ?`,
 			updateTitle: `UPDATE ${table} SET title = ?, title_source = ?, title_updated_at = ?, mtime_ms = ? WHERE path = ?`,
 			delete: `DELETE FROM ${table} WHERE path = ?`,
 			rename: `UPDATE ${table} SET path = ?, mtime_ms = ? WHERE path = ?`,
@@ -190,6 +194,10 @@ function buildQueries(adapter: SqlSessionStorageAdapter, table: string): Dialect
 			`INSERT INTO ${table} (path, content, mtime_ms) ` +
 			`VALUES (${placeholder(1)}, ${placeholder(2)}, ${placeholder(3)}) ` +
 			`ON CONFLICT (path) DO UPDATE SET content = ${tableQualifier} || excluded.content, mtime_ms = excluded.mtime_ms`,
+		appendIfSize:
+			`UPDATE ${table} SET content = content || ${placeholder(1)}, mtime_ms = ${placeholder(2)} ` +
+			`WHERE path = ${placeholder(3)} AND ${byteLengthExpr} = ${placeholder(4)} RETURNING path`,
+		readSize: `SELECT ${byteLengthExpr} AS byte_len FROM ${table} WHERE path = ${placeholder(1)}`,
 		updateTitle: `UPDATE ${table} SET title = ${placeholder(1)}, title_source = ${placeholder(2)}, title_updated_at = ${placeholder(3)}, mtime_ms = ${placeholder(4)} WHERE path = ${placeholder(5)}`,
 		delete: `DELETE FROM ${table} WHERE path = ${placeholder(1)}`,
 		rename: `UPDATE ${table} SET path = ${placeholder(1)}, mtime_ms = ${placeholder(2)} WHERE path = ${placeholder(3)} RETURNING path`,
@@ -355,9 +363,25 @@ class SqlSessionStorageBackend implements SessionStorageBackend {
 		]);
 	}
 
-	async append(path: string, line: string, mtimeMs: number): Promise<void> {
-		const values = this.#adapter === "mysql" ? [path, line, mtimeMs, line, mtimeMs] : [path, line, mtimeMs];
-		await this.#client.unsafe(this.#q.upsertAppend, values);
+	async append(path: string, line: string, mtimeMs: number, expectedSize?: number | null): Promise<void> {
+		if (expectedSize === undefined) {
+			const values = this.#adapter === "mysql" ? [path, line, mtimeMs, line, mtimeMs] : [path, line, mtimeMs];
+			await this.#client.unsafe(this.#q.upsertAppend, values);
+			return;
+		}
+		const result =
+			expectedSize === null
+				? await this.#client.unsafe(this.#q.insertIfMissing, [path, line, mtimeMs, null, null, null])
+				: await this.#client.unsafe(this.#q.appendIfSize, [line, mtimeMs, path, expectedSize]);
+		const written = this.#adapter === "mysql" ? result.affectedRows === 1 : result.length === 1;
+		if (written) return;
+		const rows = (await this.#client.unsafe(this.#q.readSize, [path])) as Array<{
+			byte_len: number | bigint | string;
+		}>;
+		const actualSize = rows[0] ? rowNumber(rows[0].byte_len) : null;
+		// MySQL may report an unchanged row for an empty append with the same timestamp.
+		if (this.#adapter === "mysql" && line === "" && expectedSize !== null && actualSize === expectedSize) return;
+		throw new SessionWriteConflictError(path, expectedSize, actualSize);
 	}
 
 	async truncate(path: string, mtimeMs: number): Promise<void> {

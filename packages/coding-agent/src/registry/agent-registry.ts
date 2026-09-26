@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import { isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
@@ -125,6 +126,8 @@ export class AgentRegistry {
 	}
 
 	static resetGlobalForTests(): void {
+		const current = AgentRegistry.#global;
+		if (current) current.#retired?.close();
 		AgentRegistry.#global = new AgentRegistry();
 	}
 
@@ -132,6 +135,53 @@ export class AgentRegistry {
 	readonly #mainRefs = new Set<AgentRef>();
 	readonly #refsByFleet = new Map<string, Set<AgentRef>>();
 	readonly #listeners = new Set<RegistryListener>();
+	// The transcript remains authoritative across process restarts. An anonymous disk-backed
+	// index keeps this process's dormant identities addressable without rooting every AgentRef.
+	#retired: Database | undefined;
+	readonly #dormant = new Map<string, WeakRef<AgentRef>>();
+	readonly #dormantFinalizer = new FinalizationRegistry<{ id: string; weak: WeakRef<AgentRef> }>(entry => {
+		if (this.#dormant.get(entry.id) === entry.weak) this.#dormant.delete(entry.id);
+	});
+
+	#rememberDormant(ref: AgentRef): void {
+		if (this.#dormant.get(ref.id)?.deref() === ref) return;
+		const weak = new WeakRef(ref);
+		this.#dormant.set(ref.id, weak);
+		this.#dormantFinalizer.register(ref, { id: ref.id, weak });
+	}
+
+	#lookup(id: string): AgentRef | undefined {
+		const current = this.#refs.get(id) ?? this.#dormant.get(id)?.deref();
+		if (current) return current;
+		const row = this.#retired?.query<{ data: string }, [string]>("SELECT data FROM refs WHERE id = ?").get(id);
+		if (!row) return undefined;
+		const ref = JSON.parse(row.data) as AgentRef;
+		this.#rememberDormant(ref);
+		return ref;
+	}
+
+	#retain(ref: AgentRef): void {
+		if (ref.kind === "main" || ref.session || (ref.status !== "parked" && ref.status !== "aborted")) {
+			this.#retired?.query("DELETE FROM refs WHERE id = ?").run(ref.id);
+			this.#dormant.delete(ref.id);
+			this.#refs.set(ref.id, ref);
+			this.#indexRef(ref);
+			return;
+		}
+		if (!this.#retired) {
+			// SQLite's empty filename is a private temporary *disk* database, removed on close.
+			this.#retired = new Database("");
+			this.#retired.run("PRAGMA cache_size = -1024");
+			this.#retired.run("CREATE TABLE refs (id TEXT PRIMARY KEY, fleet TEXT, data TEXT NOT NULL)");
+			this.#retired.run("CREATE INDEX refs_fleet ON refs(fleet)");
+		}
+		this.#retired
+			.query("INSERT OR REPLACE INTO refs (id, fleet, data) VALUES (?, ?, ?)")
+			.run(ref.id, ref.fleetRoot ?? null, JSON.stringify(ref));
+		this.#rememberDormant(ref);
+		this.#unindexRef(ref);
+		if (this.#refs.get(ref.id) === ref) this.#refs.delete(ref.id);
+	}
 
 	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
 		return expected === undefined || ref === expected || ref.session === expected;
@@ -156,7 +206,7 @@ export class AgentRegistry {
 	}
 
 	#resolveRef(id: string, expected?: AgentRefExpectation): AgentRef | undefined {
-		const current = this.#refs.get(id);
+		const current = this.#lookup(id);
 		if (current && this.#matchesExpected(current, expected)) return current;
 		if (id !== MAIN_AGENT_ID || expected === undefined) return undefined;
 		for (const ref of this.#mainRefs) {
@@ -166,7 +216,7 @@ export class AgentRegistry {
 	}
 
 	#resolveRefBySessionFile(id: string, sessionFile: string): AgentRef | undefined {
-		const current = this.#refs.get(id);
+		const current = this.#lookup(id);
 		if (current?.sessionFile === sessionFile) return current;
 		if (id !== MAIN_AGENT_ID) return undefined;
 		for (const ref of this.#mainRefs) {
@@ -182,7 +232,7 @@ export class AgentRegistry {
 
 	register(input: RegisterInput): AgentRef {
 		const now = Date.now();
-		const parentFleetRoot = input.parentId ? this.#refs.get(input.parentId)?.fleetRoot : undefined;
+		const parentFleetRoot = input.parentId ? this.#lookup(input.parentId)?.fleetRoot : undefined;
 		const ref: AgentRef = {
 			id: input.id,
 			label: input.label,
@@ -197,7 +247,7 @@ export class AgentRegistry {
 			activity: input.activity,
 			history: input.history,
 		};
-		const replaced = this.#refs.get(ref.id);
+		const replaced = this.#lookup(ref.id);
 		if (replaced && ref.id !== MAIN_AGENT_ID) this.#unindexRef(replaced);
 		if (ref.id === MAIN_AGENT_ID) this.#mainRefs.add(ref);
 		this.#refs.set(ref.id, ref);
@@ -207,16 +257,14 @@ export class AgentRegistry {
 	}
 
 	registerIfAvailable(input: RegisterInput, expected: AgentRef | null): AgentRef | undefined {
-		const current = this.#refs.get(input.id);
+		const current = this.#lookup(input.id);
 		if (expected === null) return current ? undefined : this.register(input);
 		return current === expected && current.status === "parked" && !current.session ? current : undefined;
 	}
 
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean {
 		const ref =
-			expectedSessionFile === undefined
-				? this.#refs.get(id)
-				: this.#resolveRefBySessionFile(id, expectedSessionFile);
+			expectedSessionFile === undefined ? this.#lookup(id) : this.#resolveRefBySessionFile(id, expectedSessionFile);
 		if (!ref) return false;
 		const definedHistory = Object.fromEntries(
 			Object.entries(history).filter(([, value]) => value !== undefined),
@@ -228,9 +276,7 @@ export class AgentRegistry {
 
 	setLabel(id: string, label: string, expectedSessionFile?: string): boolean {
 		const ref =
-			expectedSessionFile === undefined
-				? this.#refs.get(id)
-				: this.#resolveRefBySessionFile(id, expectedSessionFile);
+			expectedSessionFile === undefined ? this.#lookup(id) : this.#resolveRefBySessionFile(id, expectedSessionFile);
 		const normalized = label.trim();
 		if (!ref || !normalized || ref.label === normalized) return false;
 		ref.label = normalized;
@@ -267,6 +313,7 @@ export class AgentRegistry {
 		}
 		if (ref.status === status) {
 			ref.lastActivity = Date.now();
+			this.#retain(ref);
 			return true;
 		}
 		ref.status = status;
@@ -278,7 +325,7 @@ export class AgentRegistry {
 	}
 
 	setActivity(id: string, activity: string): void {
-		const ref = this.#refs.get(id);
+		const ref = this.#lookup(id);
 		if (!ref) return;
 		if (ref.status !== "running") return;
 		const gist = oneLineLabel(activity);
@@ -300,6 +347,7 @@ export class AgentRegistry {
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();
+		this.#retain(ref);
 		return true;
 	}
 
@@ -307,6 +355,7 @@ export class AgentRegistry {
 		const ref = this.#resolveRef(id, expected);
 		if (!ref) return false;
 		ref.session = null;
+		this.#retain(ref);
 		return true;
 	}
 
@@ -315,7 +364,11 @@ export class AgentRegistry {
 		if (!ref) return false;
 		this.#unindexRef(ref);
 		if (id === MAIN_AGENT_ID) this.#mainRefs.delete(ref);
-		if (this.#refs.get(id) === ref) this.#refs.delete(id);
+		if (this.#lookup(id) === ref) {
+			this.#refs.delete(id);
+			this.#dormant.delete(id);
+			this.#retired?.query("DELETE FROM refs WHERE id = ?").run(id);
+		}
 		this.#emit({ type: "removed", ref });
 		return true;
 	}
@@ -325,7 +378,7 @@ export class AgentRegistry {
 	}
 
 	getInFleet(id: string, fleetRoot: string): AgentRef | undefined {
-		const current = this.#refs.get(id);
+		const current = this.#lookup(id);
 		if (current?.fleetRoot === fleetRoot) return current;
 		if (id !== MAIN_AGENT_ID) return undefined;
 		for (const ref of this.#mainRefs) {
@@ -353,20 +406,31 @@ export class AgentRegistry {
 	}
 
 	list(): AgentRef[] {
-		return [...this.#refs.values()];
+		const refs = [...this.#refs.values()];
+		for (const row of this.#retired?.query<{ id: string }, []>("SELECT id FROM refs").iterate() ?? []) {
+			const ref = this.#lookup(row.id);
+			if (ref) refs.push(ref);
+		}
+		return refs;
 	}
 
 	listInFleet(id: string, scopedFleetRoot?: string): AgentRef[] {
-		const fleetRoot = scopedFleetRoot ?? this.#refs.get(id)?.fleetRoot;
+		const fleetRoot = scopedFleetRoot ?? this.#lookup(id)?.fleetRoot;
 		if (!fleetRoot) return [];
 		const refs = [...(this.#refsByFleet.get(fleetRoot) ?? [])].filter(ref => ref.id !== MAIN_AGENT_ID);
+		for (const row of this.#retired
+			?.query<{ id: string }, [string]>("SELECT id FROM refs WHERE fleet = ?")
+			.iterate(fleetRoot) ?? []) {
+			const ref = this.#lookup(row.id);
+			if (ref) refs.push(ref);
+		}
 		const main = this.getInFleet(MAIN_AGENT_ID, fleetRoot);
 		if (main) refs.unshift(main);
 		return refs;
 	}
 
 	sharesFleet(firstId: string, secondId: string, scopedFleetRoot?: string): boolean {
-		const first = scopedFleetRoot ? this.getInFleet(firstId, scopedFleetRoot) : this.#refs.get(firstId);
+		const first = scopedFleetRoot ? this.getInFleet(firstId, scopedFleetRoot) : this.#lookup(firstId);
 		const fleetRoot = scopedFleetRoot ?? first?.fleetRoot;
 		if (!fleetRoot) return false;
 		const second = this.getInFleet(secondId, fleetRoot);
@@ -392,6 +456,7 @@ export class AgentRegistry {
 	}
 
 	#emit(event: RegistryEvent): void {
+		if (event.type !== "removed") this.#retain(event.ref);
 		for (const listener of this.#listeners) {
 			try {
 				listener(event);

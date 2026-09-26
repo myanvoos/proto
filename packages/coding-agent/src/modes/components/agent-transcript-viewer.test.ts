@@ -1,11 +1,12 @@
 import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
+import { SessionManager } from "../../session/session-manager";
 import { initThemeSync } from "../theme/theme";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 
@@ -81,7 +82,12 @@ function toolResultLine(index: number): string {
 	});
 }
 
-function viewerFor(sessionFile: string, agentId = "probe-agent", requestRender = () => {}): AgentTranscriptViewer {
+function viewerFor(
+	sessionFile: string,
+	agentId = "probe-agent",
+	requestRender = () => {},
+	getTool?: (name: string) => AgentTool | undefined,
+): AgentTranscriptViewer {
 	const registry = new AgentRegistry();
 	registry.register({
 		id: agentId,
@@ -105,6 +111,7 @@ function viewerFor(sessionFile: string, agentId = "probe-agent", requestRender =
 		expandKeys: [],
 		fleetKeys: [],
 		requestRender,
+		getTool,
 		onClose: () => {},
 		onFleetClose: () => {},
 	});
@@ -428,14 +435,17 @@ test("viewer waits for complete UTF-8 JSONL and reloads same-size rewrites", asy
 	}
 });
 
-test("viewer keeps one valid oversized UTF-8 record intact", async () => {
+test("viewer replaces an oversized UTF-8 group with a notice without losing paging access", async () => {
 	const directory = await fs.mkdtemp("/tmp/proto-viewer-oversized-");
 	temporaryDirectories.push(directory);
 	const sessionFile = `${directory}/session.jsonl`;
 	await Bun.write(sessionFile, `${messageLine(`huge-start-${"界".repeat(700_000)}-huge-end`)}\n`);
 	const viewer = viewerFor(sessionFile);
 	try {
-		expect(viewer.render(100).join("\n")).toContain("huge-end");
+		const output = viewer.render(100).join("\n");
+		expect(output).toContain("exceeds the display window");
+		expect(output).not.toContain("huge-end");
+		expect((await Bun.file(sessionFile).text()).includes("huge-end")).toBe(true);
 	} finally {
 		viewer.dispose();
 	}
@@ -455,4 +465,85 @@ test("disposing the viewer stops transcript polling", async () => {
 	vi.advanceTimersByTime(1_000);
 	expect(renders).toBe(atDispose);
 	vi.useRealTimers();
+});
+
+test("catching up after a long pause never constructs cards outside the newest byte window", async () => {
+	const directory = await fs.mkdtemp("/tmp/proto-viewer-catchup-");
+	temporaryDirectories.push(directory);
+	const file = `${directory}/session.jsonl`;
+	await Bun.write(file, `${messageLine("initial")}\n`);
+	vi.useFakeTimers();
+	let cards = 0;
+	const viewer = viewerFor(
+		file,
+		"catchup-agent",
+		() => {},
+		() => {
+			cards++;
+			return undefined;
+		},
+	);
+	try {
+		await fs.appendFile(
+			file,
+			Array.from({ length: 2000 }, (_, index) => `${assistantLine(index)}\n${toolResultLine(index)}\n`).join(""),
+		);
+		vi.advanceTimersByTime(300);
+		expect(viewer.render(100).join("\n")).toContain("tool-result-1999");
+		expect(cards).toBeLessThanOrEqual(256);
+		viewer.handleInput("g");
+		expect(viewer.render(100).join("\n")).toContain("initial");
+	} finally {
+		viewer.dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("oversized streaming tool arguments are omitted before display decoding and recover on a small update", async () => {
+	const directory = await fs.mkdtemp("/tmp/proto-viewer-stream-limit-");
+	temporaryDirectories.push(directory);
+	const file = `${directory}/session.jsonl`;
+	await Bun.write(file, "");
+	const { viewer, emit } = liveViewerFor(file);
+	try {
+		const call = { type: "toolCall" as const, id: "huge", name: "bash", arguments: {} };
+		setStreamingPartialJson(call, `{"command":"${"x".repeat(2 * 1024 * 1024)}`);
+		emit({ type: "message_update", message: { ...assistantMessage(""), content: [call] } } as AgentSessionEvent);
+		expect(viewer.render(100).join("\n")).toContain("exceeds the display window");
+		emit({ type: "message_update", message: assistantMessage("small update after omission") } as AgentSessionEvent);
+		expect(viewer.render(100).join("\n")).toContain("small update after omission");
+	} finally {
+		viewer.dispose();
+	}
+});
+
+test("parked viewer can page durable archived messages and return to a newly grown live tail", async () => {
+	const directory = await fs.mkdtemp("/tmp/proto-viewer-archive-");
+	temporaryDirectories.push(directory);
+	const manager = SessionManager.create(directory, directory);
+	manager.appendMessage({ role: "user", content: "archived-origin", timestamp: 1 });
+	const kept = manager.appendMessage({ role: "user", content: "kept-tail", timestamp: 2 });
+	manager.appendCompaction("archive summary", undefined, kept, 1000);
+	await manager.ensureOnDisk();
+	await manager.flush();
+	await manager.archiveCompactedHistory(kept);
+	const file = manager.getSessionFile()!;
+	const loaded = Promise.withResolvers<void>();
+	let viewer: AgentTranscriptViewer | undefined;
+	viewer = viewerFor(file, "archive-agent", () => {
+		if (viewer?.render(100).join("\n").includes("archived-origin")) loaded.resolve();
+	});
+	try {
+		expect(viewer.render(100).join("\n")).not.toContain("archived-origin");
+		viewer.handleInput("g");
+		await loaded.promise;
+		expect(viewer.render(100).join("\n")).toContain("archived-origin");
+		manager.appendMessage({ role: "user", content: "new-live-tail", timestamp: 3 });
+		await manager.flush();
+		viewer.handleInput("G");
+		expect(viewer.render(100).join("\n")).toContain("new-live-tail");
+	} finally {
+		viewer.dispose();
+		await manager.close();
+	}
 });

@@ -163,3 +163,26 @@ it("deleting a session also removes its stale rewrite backups so listing cannot 
 	expect((await listSessions(source, storage)).map(info => info.path)).not.toContain(sessionFile);
 	expect(fs.existsSync(sessionFile)).toBe(false);
 });
+
+it("an entry appended while ensureOnDisk publishes still reaches the file", async () => {
+	const { cwdA, source } = await fixture();
+	const session = SessionManager.create(cwdA, source);
+	const sessionFile = session.getSessionFile()!;
+	const writeFile = fs.promises.writeFile.bind(fs.promises);
+	let appendedDuringPublish = false;
+	vi.spyOn(fs.promises, "writeFile").mockImplementation(async (target, data, options) => {
+		await writeFile(target, data, options);
+		// The publish holds the session file lock until its rename commits.
+		if (!appendedDuringPublish && path.basename(target.toString()).startsWith(`.${path.basename(sessionFile)}.`)) {
+			appendedDuringPublish = true;
+			session.appendMessage({ role: "user", content: "appended mid-publish", timestamp: 1 });
+		}
+	});
+
+	await session.ensureOnDisk();
+	vi.restoreAllMocks();
+
+	expect(appendedDuringPublish).toBe(true);
+	expect(await Bun.file(sessionFile).text()).toContain("appended mid-publish");
+	await session.close();
+});

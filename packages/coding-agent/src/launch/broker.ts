@@ -8,6 +8,7 @@ import {
 	isEnoent,
 	levenshteinDistance,
 	logger,
+	materializeString,
 	postmortem,
 	procmgr,
 	sanitizeText,
@@ -47,6 +48,8 @@ import { renderTerminalOutput } from "./terminal-output";
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
+const LOG_FOLLOW_CHUNK_BYTES = 64 * 1024;
+const MAX_PENDING_LOG_BYTES = 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
@@ -88,8 +91,11 @@ interface ManagedDaemon {
 	stopRequested: boolean;
 	logReady: boolean;
 	portReady: boolean;
+	/** Raw bounded carry: sanitize after joining chunks so split ANSI escapes stay intact. */
 	readinessBuffer: string;
 	outputOffset: number;
+	detachedDecoder?: TextDecoder;
+	detachedRead?: { generation: number; promise: Promise<void> };
 	readyPattern?: RegExp;
 	restartTimer?: NodeJS.Timeout;
 	consecutiveFailures: number;
@@ -205,6 +211,23 @@ async function fileRangeText(filePath: string, start: number, end: number): Prom
 	}
 }
 
+/** Scan a fixed file snapshot without ever allocating the whole unseen interval. */
+export async function readDaemonLogChunks(
+	file: Bun.BunFile,
+	start: number,
+	end: number,
+	decoder: TextDecoder,
+	onChunk: (text: string, offset: number) => boolean,
+): Promise<void> {
+	let offset = start;
+	while (offset < end) {
+		const bytes = await file.slice(offset, Math.min(end, offset + LOG_FOLLOW_CHUNK_BYTES)).arrayBuffer();
+		if (bytes.byteLength === 0) break;
+		offset += bytes.byteLength;
+		if (!onChunk(decoder.decode(bytes, { stream: true }), offset)) break;
+	}
+}
+
 async function readLogWindow(logPath: string, previousPath: string, window: DaemonLogWindow): Promise<string> {
 	let currentEnd = Math.min(window.currentEnd, await fileSize(logPath));
 	let previousStart = 0;
@@ -231,23 +254,41 @@ async function readLogWindow(logPath: string, previousPath: string, window: Daem
 	]);
 	return `${previous}${current}`;
 }
-class DaemonLog {
+type DaemonLogWriter = Pick<Bun.FileSink, "write" | "flush" | "end">;
+
+export class DaemonLog {
 	readonly #path: string;
 	readonly #previousPath: string;
 	readonly #file: Bun.BunFile;
-	#writer: Bun.FileSink;
+	readonly #onAppend: ((bytes: number) => void) | undefined;
+	#writer: DaemonLogWriter;
 	#currentBytes = 0;
 	#queue: Promise<void> = Promise.resolve();
+	readonly #pending = new Bun.ArrayBufferSink();
+	#pendingBytes = 0;
+	#writingBytes = 0;
+	#omittedBytes = 0;
+	#draining = false;
+	#failure: Error | undefined;
 	#closed = false;
+	#closePromise: Promise<void> | undefined;
 
-	constructor(logPath: string, previousPath: string, file: Bun.BunFile, writer: Bun.FileSink) {
+	constructor(
+		logPath: string,
+		previousPath: string,
+		file: Bun.BunFile,
+		writer: DaemonLogWriter,
+		onAppend?: (bytes: number) => void,
+	) {
 		this.#path = logPath;
 		this.#previousPath = previousPath;
 		this.#file = file;
+		this.#onAppend = onAppend;
 		this.#writer = writer;
+		this.#pending.start({ stream: true, asUint8Array: true, highWaterMark: LOG_FOLLOW_CHUNK_BYTES });
 	}
 
-	static async open(dir: string): Promise<DaemonLog> {
+	static async open(dir: string, onAppend?: (bytes: number) => void): Promise<DaemonLog> {
 		await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 		const logPath = path.join(dir, LOG_FILE);
 		const previousPath = path.join(dir, PREVIOUS_LOG_FILE);
@@ -258,24 +299,81 @@ class DaemonLog {
 			if (!isEnoent(error)) throw error;
 		}
 		const file = Bun.file(logPath);
-		return new DaemonLog(logPath, previousPath, file, file.writer());
+		return new DaemonLog(logPath, previousPath, file, file.writer(), onAppend);
 	}
 
-	append(text: string): string {
-		if (text.length === 0 || this.#closed) return text;
+	/**
+	 * Never block process pipes/PTY callbacks on storage. Keep at most 1 MiB of UTF-8 output pending,
+	 * including the in-flight write; excess output becomes an ordered, byte-counted truncation notice.
+	 * Once a gap opens, admit no more text until its notice is queued, so later output cannot hide the gap.
+	 */
+	append(text: string): void {
+		if (text.length === 0 || this.#closed || this.#failure) return;
 		const bytes = Buffer.byteLength(text, "utf8");
-		this.#queue = this.#queue.then(async () => {
-			if (this.#currentBytes > 0 && this.#currentBytes + bytes > MAX_LOG_BYTES) await this.#rotate();
-			this.#writer.write(text);
-			this.#currentBytes += bytes;
-			await this.#writer.flush();
-		});
-		return text;
+		const available = this.#omittedBytes > 0 ? 0 : MAX_PENDING_LOG_BYTES - this.#pendingBytes - this.#writingBytes;
+		const retained = truncateHeadBytes(text, Math.max(0, available));
+		if (retained.bytes > 0) {
+			// ArrayBufferSink copies into its byte buffer: a retained prefix never pins the source string.
+			this.#pending.write(retained.text);
+			this.#pendingBytes += retained.bytes;
+			this.#onAppend?.(retained.bytes);
+		}
+		this.#omittedBytes += bytes - retained.bytes;
+		if (this.#draining) return;
+		this.#draining = true;
+		this.#queue = this.#queue
+			.then(() => this.#drain())
+			.catch(error => {
+				this.#failure = error instanceof Error ? error : new Error(String(error));
+				this.#pending.end();
+				this.#pendingBytes = 0;
+				this.#omittedBytes = 0;
+				logger.warn("Daemon log storage failed; subsequent output cannot be saved", {
+					path: this.#path,
+					error: this.#failure.message,
+				});
+			});
+	}
+
+	async #drain(): Promise<void> {
+		try {
+			while (this.#pendingBytes > 0 || this.#omittedBytes > 0) {
+				if (this.#pendingBytes > 0) {
+					const chunk = this.#pending.flush();
+					if (typeof chunk === "number") throw new Error("Daemon log buffer did not return bytes");
+					this.#writingBytes = this.#pendingBytes;
+					this.#pendingBytes = 0;
+					await this.#write(chunk, this.#writingBytes);
+					this.#writingBytes = 0;
+				}
+				if (this.#omittedBytes > 0) {
+					// Pending text precedes the gap, including text admitted during the last write.
+					if (this.#pendingBytes > 0) continue;
+					const notice = `\n[daemon log truncated: ${this.#omittedBytes} output bytes omitted while storage was backlogged]\n`;
+					this.#omittedBytes = 0;
+					this.#writingBytes = Buffer.byteLength(notice, "utf8");
+					this.#onAppend?.(this.#writingBytes);
+					await this.#write(notice, this.#writingBytes);
+					this.#writingBytes = 0;
+				}
+			}
+		} finally {
+			this.#writingBytes = 0;
+			this.#draining = false;
+		}
+	}
+
+	async #write(data: string | Uint8Array | ArrayBuffer, bytes: number): Promise<void> {
+		if (this.#currentBytes > 0 && this.#currentBytes + bytes > MAX_LOG_BYTES) await this.#rotate();
+		await this.#writer.write(data);
+		this.#currentBytes += bytes;
+		await this.#writer.flush();
 	}
 
 	read(options: DaemonLogReadOptions): Promise<DaemonLogRead> {
 		const snapshot = this.#queue.then(async () => {
-			await this.#writer.flush();
+			if (this.#failure) throw this.#failure;
+			if (!this.#closed) await this.#writer.flush();
 			return DaemonLog.readFiles(this.#path, this.#previousPath, options);
 		});
 
@@ -286,22 +384,26 @@ class DaemonLog {
 		return snapshot;
 	}
 
-	async close(): Promise<void> {
-		if (this.#closed) return;
+	close(): Promise<void> {
 		this.#closed = true;
-		await this.#queue;
-		await this.#writer.end();
+		this.#closePromise ??= this.#queue.then(async () => {
+			await this.#writer.end();
+			if (this.#failure) throw this.#failure;
+			this.#pending.end();
+		});
+		return this.#closePromise;
 	}
 
 	async readTail(currentEnd: number): Promise<string> {
 		await this.#queue;
+		if (this.#failure) throw this.#failure;
 		return DaemonLog.readTail(this.#path, this.#previousPath, currentEnd);
 	}
 
 	static async readTail(logPath: string, previousPath: string, currentEnd: number): Promise<string> {
 		if (currentEnd <= 0) return "";
 		const window = await readLogWindow(logPath, previousPath, { currentEnd, sinceBytes: currentEnd, head: false });
-		return sanitizeText(window).slice(-READINESS_BUFFER_CHARS);
+		return materializeString(sanitizeText(window).slice(-READINESS_BUFFER_CHARS));
 	}
 
 	static async readFiles(
@@ -742,7 +844,6 @@ class DaemonBroker {
 					detached: spec.detached,
 				},
 				dir,
-				log: await DaemonLog.open(dir),
 				generation: 0,
 				stopRequested: false,
 				logReady: !spec.ready?.log,
@@ -756,6 +857,7 @@ class DaemonBroker {
 				completionSubscriptionId: owner === undefined ? undefined : this.#completionSubscriptions.get(owner),
 				pendingCompletions: [],
 			};
+			record.log = await this.#openLog(record);
 			if (this.#shuttingDown) {
 				await record.log?.close();
 				this.#assertAcceptingRequests();
@@ -779,6 +881,14 @@ class DaemonBroker {
 		return { op: "start", daemon: record.snapshot, readyTimedOut };
 	}
 
+	#openLog(record: ManagedDaemon): Promise<DaemonLog> {
+		return DaemonLog.open(record.dir, bytes => {
+			// Cursors address captured log bytes, including gap notices, never discarded output.
+			record.snapshot.outputBytes += bytes;
+			record.outputOffset += bytes;
+		});
+	}
+
 	async #launch(record: ManagedDaemon): Promise<void> {
 		record.generation++;
 		const generation = record.generation;
@@ -796,6 +906,8 @@ class DaemonBroker {
 		syncReadyPending(record);
 		record.readinessBuffer = "";
 		record.outputOffset = 0;
+		record.detachedDecoder = undefined;
+		record.detachedRead = undefined;
 		this.#persist(record);
 		try {
 			if (record.spec.detached) await this.#launchDetached(record, generation);
@@ -933,45 +1045,62 @@ class DaemonBroker {
 	#onOutput(record: ManagedDaemon, generation: number, raw: string): void {
 		if (generation !== record.generation) return;
 		const output = raw.toWellFormed();
-		const text = record.log?.append(output) ?? output;
-		const bytes = Buffer.byteLength(text, "utf8");
-		record.snapshot.outputBytes += bytes;
-		record.outputOffset += bytes;
-		this.#trackOutput(record, generation, sanitizeText(text));
+		record.log?.append(output);
+		this.#trackOutput(record, generation, output);
 	}
 
-	async #readDetachedOutput(record: ManagedDaemon, generation: number): Promise<void> {
-		if (!record.spec.detached || generation !== record.generation) return;
+	#readDetachedOutput(record: ManagedDaemon, generation: number): Promise<void> {
+		if (!record.spec.detached || generation !== record.generation) return Promise.resolve();
+		if (record.detachedRead?.generation === generation) return record.detachedRead.promise;
+		const promise = this.#followDetachedOutput(record, generation).finally(() => {
+			if (record.detachedRead?.promise === promise) record.detachedRead = undefined;
+		});
+		record.detachedRead = { generation, promise };
+		return promise;
+	}
+
+	async #followDetachedOutput(record: ManagedDaemon, generation: number): Promise<void> {
 		const logPath = path.join(record.dir, LOG_FILE);
-		let size: number;
 		try {
-			size = (await fs.stat(logPath)).size;
+			const size = (await fs.stat(logPath)).size;
+			if (generation !== record.generation) return;
+			if (size < record.outputOffset) {
+				record.outputOffset = 0;
+				record.detachedDecoder = undefined;
+				record.readinessBuffer = "";
+			}
+			if (size === record.outputOffset) return;
+			record.detachedDecoder ??= new TextDecoder();
+			const decoder = record.detachedDecoder;
+			await readDaemonLogChunks(Bun.file(logPath), record.outputOffset, size, decoder, (text, offset) => {
+				if (generation !== record.generation) return false;
+				record.outputOffset = offset;
+				record.snapshot.outputBytes = offset;
+				this.#trackOutput(record, generation, text);
+				return true;
+			});
 		} catch (error) {
-			if (isEnoent(error)) return;
-			throw error;
+			if (!isEnoent(error)) throw error;
 		}
-		if (size < record.outputOffset) record.outputOffset = 0;
-		if (size === record.outputOffset) return;
-		const file = Bun.file(logPath);
-		const raw = await file.slice(record.outputOffset, size).text();
-		if (generation !== record.generation) return;
-		record.outputOffset = size;
-		record.snapshot.outputBytes = size;
-		this.#trackOutput(record, generation, sanitizeText(raw));
 	}
 
 	#trackOutput(record: ManagedDaemon, generation: number, text: string): void {
 		if (generation !== record.generation) return;
-		record.readinessBuffer = (record.readinessBuffer + text).slice(-READINESS_BUFFER_CHARS);
-		if (!record.logReady && record.readyPattern) {
-			const match = record.readyPattern.exec(record.readinessBuffer);
-			if (match) {
-				record.logReady = true;
-				record.snapshot.readyMatch = match[0].slice(0, 500);
-				syncReadyPending(record);
+		// Check each bounded window before trimming: a readiness marker near the start of a large
+		// pipe read or detached catch-up must not disappear behind that read's trailing output.
+		for (let offset = 0; offset < text.length; offset += READINESS_BUFFER_CHARS) {
+			const window = record.readinessBuffer + text.slice(offset, offset + READINESS_BUFFER_CHARS);
+			if (!record.logReady && record.readyPattern) {
+				const match = record.readyPattern.exec(sanitizeText(window));
+				if (match) {
+					record.logReady = true;
+					record.snapshot.readyMatch = materializeString(match[0].slice(0, 500));
+					syncReadyPending(record);
+				}
 			}
+			record.readinessBuffer = materializeString(window.slice(-READINESS_BUFFER_CHARS));
+			this.#markReady(record);
 		}
-		this.#markReady(record);
 	}
 
 	async #refreshDetached(record: ManagedDaemon): Promise<void> {
@@ -1030,9 +1159,14 @@ class DaemonBroker {
 
 	async #settle(record: ManagedDaemon, generation: number, exitCode?: number, error?: string): Promise<void> {
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
+		// A shared catch-up may have snapshotted the file before the process wrote its final output.
+		await record.detachedRead?.promise;
 		await this.#readDetachedOutput(record, generation);
 
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
+		const detachedTail = record.detachedDecoder?.decode();
+		record.detachedDecoder = undefined;
+		if (detachedTail) this.#trackOutput(record, generation, detachedTail);
 		record.process = undefined;
 		record.input = undefined;
 		record.pty = undefined;
@@ -1068,6 +1202,9 @@ class DaemonBroker {
 			return;
 		}
 		record.snapshot.state = failed && !record.stopRequested ? "failed" : "exited";
+		await record.log?.close();
+		record.log = undefined;
+		record.readinessBuffer = "";
 		const completion =
 			record.snapshot.owner !== undefined &&
 			!record.stopRequested &&
@@ -1081,9 +1218,6 @@ class DaemonBroker {
 				: undefined;
 		if (completion) record.pendingCompletions.push(completion);
 		this.#persist(record);
-		await record.log?.close();
-		record.log = undefined;
-		record.readinessBuffer = "";
 		await record.persistQueue;
 		if (
 			completion &&
@@ -1168,7 +1302,7 @@ class DaemonBroker {
 		let terminalOutput: { generation: number; text: string } | undefined;
 		const condition = async (): Promise<boolean> => {
 			if (pattern) {
-				let text = record.readinessBuffer;
+				let text = sanitizeText(record.readinessBuffer);
 				if (terminalState(record.snapshot.state)) {
 					if (terminalOutput?.generation !== record.generation) {
 						const generation = record.generation;
@@ -1266,7 +1400,7 @@ class DaemonBroker {
 		await this.#stopRecord(record, 2_000);
 		this.#assertAcceptingRequests();
 		await record.log?.close();
-		record.log = await DaemonLog.open(record.dir);
+		record.log = await this.#openLog(record);
 		if (this.#shuttingDown) {
 			await record.log.close();
 			record.log = undefined;

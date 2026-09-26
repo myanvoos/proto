@@ -2,7 +2,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
+import { resolveUsedFraction, type ServiceTierFamily, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { errorMessage, formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
@@ -19,11 +20,11 @@ import { buildHelpMarkdown } from "../../modes/utils/help-markdown";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import { appendLatestCompactionSummary } from "../../modes/utils/ui-helpers";
+import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
-import type { NewSessionOptions } from "../../session/session-entries";
-import type { SessionManagerStateSnapshot } from "../../session/session-manager";
+import { SessionManager, type SessionManagerStateSnapshot } from "../../session/session-manager";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "../../slash-commands/builtin-registry";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { renderSessionUsageSummary } from "../../slash-commands/helpers/usage-report";
@@ -33,6 +34,14 @@ import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { collapseSharedUsageReports, formatLimitTitle, summarizeUsageResetCredits } from "../../utils/usage-display";
+import {
+	canParkForegroundSession,
+	createForegroundSession,
+	enforceBackgroundSessionLimit,
+	formatParkedStatus,
+	parkForegroundSession,
+	swapForegroundSession,
+} from "./foreground-session";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	const block = new TranscriptBlock();
@@ -313,16 +322,20 @@ export class CommandController {
 		this.ctx.presentCommandOutput(block);
 	}
 
-	async #runNewSessionFlow(options?: NewSessionOptions, label: string = "New session started"): Promise<void> {
+	async handleClearCommand(): Promise<void> {
 		this.ctx.clearTransientSessionUi();
 
-		if (this.ctx.session.isCompacting) {
-			this.ctx.session.abortCompaction();
-			while (this.ctx.session.isCompacting) {
-				await Bun.sleep(10);
+		// A session with work in flight keeps running in the background, like switching to another session.
+		const parkedFile = canParkForegroundSession(this.ctx) ? await this.#parkIntoNewSession() : undefined;
+		if (!parkedFile) {
+			if (this.ctx.session.isCompacting) {
+				this.ctx.session.abortCompaction();
+				while (this.ctx.session.isCompacting) {
+					await Bun.sleep(10);
+				}
 			}
+			if (!(await this.ctx.session.newSession())) return;
 		}
-		if (!(await this.ctx.session.newSession(options))) return;
 		this.ctx.resetObserverRegistry();
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
@@ -332,13 +345,48 @@ export class CommandController {
 		this.ctx.clearTransientSessionUi();
 		this.ctx.resetTranscript();
 
-		this.ctx.present([new Spacer(1), new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 1)]);
+		this.ctx.present([
+			new Spacer(1),
+			new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
+		]);
 		await this.ctx.reloadChecklist();
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
+		if (parkedFile) this.ctx.showStatus(`${formatParkedStatus(parkedFile)}${await enforceBackgroundSessionLimit()}`);
 	}
 
-	async handleClearCommand(): Promise<void> {
-		await this.#runNewSessionFlow();
+	/**
+	 * Parks the busy foreground session and swaps in a fresh one that keeps its model, thinking level, and service
+	 * tiers, as an in-place new session would. Returns the parked session file.
+	 */
+	async #parkIntoNewSession(): Promise<string> {
+		const previous = this.ctx.session;
+		const previousManager = previous.sessionManager;
+		const previousFile = previousManager.getSessionFile();
+		if (!previousFile) throw new Error("Cannot park a session that has no session file");
+		const created = await createForegroundSession(
+			this.ctx,
+			SessionManager.create(previousManager.getCwd(), previousManager.getSessionDir()),
+		);
+		try {
+			const model = previous.model;
+			if (model && !modelsAreEqual(model, created.model)) {
+				await created.setModelTemporary(model, previous.thinkingLevel);
+			} else {
+				created.setThinkingLevel(previous.thinkingLevel);
+			}
+			const tiers = previous.serviceTierByFamily;
+			for (const family of Object.keys({ ...tiers, ...created.serviceTierByFamily }) as ServiceTierFamily[]) {
+				created.setServiceTierFamily(family, tiers[family]);
+			}
+			await parkForegroundSession(this.ctx, previousFile);
+		} catch (error) {
+			await created.dispose();
+			// Creating the fresh session made it the registry's main agent; the untouched foreground is again.
+			AgentRegistry.global().activateSession(MAIN_AGENT_ID, previous);
+			throw error;
+		}
+		await swapForegroundSession(this.ctx, created);
+		return previousFile;
 	}
 
 	async handleResetContextCommand(): Promise<void> {
@@ -508,6 +556,7 @@ export class CommandController {
 		// one run's output into another run's card.
 		const bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
 		this.ctx.bashComponent = bashComponent;
+		this.ctx.chatContainer.accountSource(bashComponent, command);
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(bashComponent);
@@ -533,6 +582,7 @@ export class CommandController {
 					execution: result.execution,
 				});
 			}
+			this.ctx.chatContainer.accountSource(bashComponent, result);
 			try {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
@@ -630,6 +680,7 @@ export class CommandController {
 		// Capture locally: a later execution must never receive this run's
 		// streamed chunks or display blocks.
 		this.ctx.pythonComponent = component;
+		this.ctx.chatContainer.accountSource(component, code);
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(component);
@@ -649,10 +700,12 @@ export class CommandController {
 					excludeFromContext,
 					onDisplay: output => {
 						component.appendDisplayOutput(output);
+						this.ctx.chatContainer.accountSource(component, output);
 					},
 				},
 			);
 
+			this.ctx.chatContainer.accountSource(component, result);
 			const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 			component.setComplete(result.exitCode, result.cancelled, {
 				output: result.output,

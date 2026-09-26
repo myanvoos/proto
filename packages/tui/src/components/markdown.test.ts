@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SymbolTheme } from "../symbols";
 import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth } from "../utils";
-import { Markdown, type MarkdownTheme } from "./markdown";
+import { clearRenderCache, Markdown, type MarkdownTheme } from "./markdown";
 
 const symbols: SymbolTheme = {
 	cursor: ">",
@@ -434,6 +434,188 @@ test("invalidates Markdown wrapping when the terminal width mode changes", () =>
 	} finally {
 		setHangulCompatibilityJamoWidth(previousWidth);
 	}
+});
+
+describe("Markdown bounded render caches", () => {
+	beforeEach(clearRenderCache);
+	afterEach(clearRenderCache);
+
+	test("evicts hidden source keys within the byte budget while retaining recent renders", () => {
+		let renders = 0;
+		const countingTheme: MarkdownTheme = {
+			...theme,
+			bold: text => {
+				renders++;
+				return `bold:${text}`;
+			},
+		};
+		const render = (index: number): readonly string[] => {
+			const source = `[hidden${index}]: https://example.test/${"x".repeat(1024 * 1024)}\n\n**visible${index}**`;
+			return new Markdown(source, 0, 0, countingTheme).render(40);
+		};
+		for (let index = 0; index < 13; index++) {
+			expect(render(index).join("\n")).toContain(`bold:visible${index}`);
+		}
+		expect(renders).toBe(13);
+		expect(render(12).join("\n")).toContain("bold:visible12");
+		expect(renders).toBe(13);
+		expect(render(0).join("\n")).toContain("bold:visible0");
+		expect(renders).toBe(14);
+	});
+
+	test("renders oversized hidden sources without admitting them to the shared cache", () => {
+		let renders = 0;
+		const countingTheme: MarkdownTheme = {
+			...theme,
+			bold: text => {
+				renders++;
+				return `bold:${text}`;
+			},
+		};
+		const source = `[hidden]: https://example.test/${"x".repeat(2 * 1024 * 1024)}\n\n**visible**`;
+		for (let index = 0; index < 2; index++) {
+			expect(new Markdown(source, 0, 0, countingTheme).render(40).join("\n")).toContain("bold:visible");
+		}
+		expect(renders).toBe(2);
+	});
+
+	test("combines source and rendered storage for per-entry admission", () => {
+		let renders = 0;
+		const countingTheme: MarkdownTheme = {
+			...theme,
+			highlightCode: () => {
+				renders++;
+				return ["rendered ".repeat(96 * 1024)];
+			},
+		};
+		// Each half fits on its own, but their UTF-16 storage together exceeds 4 MiB.
+		const source = `[hidden]: https://example.test/${"x".repeat(1280 * 1024)}\n\n\`\`\`txt\nsmall\n\`\`\``;
+		for (let index = 0; index < 2; index++) {
+			const rows = new Markdown(source, 0, 0, countingTheme).render(80);
+			expect(
+				rows
+					.filter(row => row.includes("rendered"))
+					.join("")
+					.replaceAll(" ", ""),
+			).toBe("rendered".repeat(96 * 1024));
+		}
+		expect(renders).toBe(2);
+	});
+
+	test("keeps mutable theme probes distinct even when their separator bytes coincide", () => {
+		let backgroundProbe = "a\x00b";
+		let headingProbe = "c";
+		let headingLabel = "before";
+		const changingTheme: MarkdownTheme = {
+			...theme,
+			heading: text => (text === "" ? headingProbe : `${headingLabel}:${text}`),
+		};
+		const style = { bgColor: (text: string): string => (text === "\x01" ? backgroundProbe : text) };
+		const source = "# Heading";
+		expect(new Markdown(source, 0, 0, changingTheme, style).render(40).join("\n")).toContain("before:Heading");
+		backgroundProbe = "a";
+		headingProbe = "b\x00c";
+		headingLabel = "after";
+		const rows = new Markdown(source, 0, 0, changingTheme, style).render(40);
+		expect(rows.join("\n")).toContain("after:Heading");
+		expect(rows).toEqual(new Markdown(source, 0, 0, changingTheme, style, 2, false).render(40));
+	});
+
+	test("bounds fresh-process cache residency and detaches sliced source and rendered backing storage", async () => {
+		const source = `
+import { setImmediate } from "node:timers/promises";
+import { clearRenderCache, Markdown, type MarkdownTheme } from "./markdown.ts";
+const identity = (text: string): string => text;
+const theme: MarkdownTheme = {
+	heading: identity, link: identity, linkUrl: identity, code: identity,
+	codeBlock: identity, codeBlockBorder: identity, quote: identity, quoteBorder: identity,
+	hr: identity, listBullet: identity, bold: identity, italic: identity,
+	strikethrough: identity, underline: identity, symbols: ${JSON.stringify(symbols)},
+};
+async function heap(): Promise<number> {
+	Bun.gc(true);
+	Bun.gc(true);
+	await setImmediate();
+	return process.memoryUsage().heapUsed;
+}
+function renderHidden(index: number): void {
+	const text = "[hidden" + index + "]: https://example.test/" + Buffer.alloc(1024 * 1024, 65 + index % 26).toString() + "\\n\\nvisible";
+	new Markdown(text, 0, 0, theme).render(80);
+}
+new Markdown("warmup", 0, 0, theme).render(80);
+const beforeKeys = await heap();
+for (let index = 0; index < 64; index++) renderHidden(index);
+const keyHeapDelta = (await heap()) - beforeKeys;
+clearRenderCache();
+const beforeSlices = await heap();
+function sliceBacking(text: string): string {
+	return (Buffer.alloc(8 * 1024 * 1024, 120).toString() + text).slice(-text.length);
+}
+// OSC 66 rows bypass wrapping, so the cached row really is the highlighter's
+// substring, not a copy already made by the native wrapper. UTF-16 must survive.
+const renderedRow = "\\x1b]66;s=1;" + "visible".repeat(80) + "\\ud800X\\udfff\\x1b\\\\";
+const sliceTheme: MarkdownTheme = { ...theme, highlightCode: () => [sliceBacking(renderedRow)] };
+function renderSlice(index: number): boolean {
+	const text = sliceBacking("[hidden" + index + "]: https://example.test/" + "x".repeat(512) + "\\n\\n\\x60\\x60\\x60text\\nslice-" + index + "\\n\\x60\\x60\\x60");
+	return new Markdown(text, 0, 0, sliceTheme, undefined, 0).render(80).includes(renderedRow);
+}
+let exactRows = true;
+for (let index = 0; index < 12; index++) exactRows = renderSlice(index) && exactRows;
+const sliceHeapDelta = (await heap()) - beforeSlices;
+console.log(JSON.stringify({ keyHeapDelta, sliceHeapDelta, exactRows }));
+`;
+		const proc = Bun.spawn({
+			cmd: [process.execPath, "--eval", source],
+			cwd: import.meta.dir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		const result = JSON.parse(stdout) as { keyHeapDelta: number; sliceHeapDelta: number; exactRows: boolean };
+		// 24 MiB of cache data plus 8 MiB of allocator/renderer overhead; the
+		// original hidden-key regression retained over 129 MiB for this workload.
+		expect(result.keyHeapDelta).toBeLessThan(32 * 1024 * 1024);
+		expect(result.sliceHeapDelta).toBeLessThan(8 * 1024 * 1024);
+		expect(result.exactRows).toBe(true);
+	}, 30_000);
+
+	test("re-admits growing code fragments and renders correctly after source bytes exceed the limit", () => {
+		let firstLineRenders = 0;
+		const shortCode = (text: string): string => text.slice(0, 16);
+		const countingTheme: MarkdownTheme = {
+			...theme,
+			codeBlock: text => {
+				if (text === "anchor") firstLineRenders++;
+				return shortCode(text);
+			},
+		};
+		const markdown = new Markdown("", 0, 0, countingTheme);
+		markdown.transientRenderCache = true;
+		let source = `\`\`\`txt\nanchor\n${"x".repeat(512 * 1024)}\ntail`;
+		markdown.setText(source);
+		markdown.render(40);
+		expect(firstLineRenders).toBe(1);
+		source += " continued";
+		markdown.setText(source);
+		markdown.render(40);
+		expect(firstLineRenders).toBe(1);
+		source += `\n${"y".repeat(768 * 1024)}\nnext`;
+		markdown.setText(source);
+		markdown.render(40);
+		expect(firstLineRenders).toBe(1);
+		source += " final";
+		markdown.setText(source);
+		const rows = markdown.render(40);
+		expect(firstLineRenders).toBe(2);
+		const fresh = new Markdown(source, 0, 0, { ...theme, codeBlock: shortCode });
+		fresh.transientRenderCache = true;
+		expect(rows).toEqual(fresh.render(40));
+	});
 });
 
 describe("Markdown stable streaming source", () => {

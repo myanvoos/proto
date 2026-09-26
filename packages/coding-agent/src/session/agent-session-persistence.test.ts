@@ -394,7 +394,7 @@ test("invalidates persisted candidates after branch and session switches", async
 
 test("updates the candidate index incrementally after appends", async () => {
 	const harness = await createHarness();
-	const getBranchSpy = spyOn(harness.sessionManager, "getBranch");
+	const getBranchSpy = spyOn(harness.sessionManager, "getBranchForStats");
 	try {
 		harness.sessionManager.appendMessage(userMessage("first", TEST_TIMESTAMP));
 		await emitMessage(harness, userMessage("first", TEST_TIMESTAMP));

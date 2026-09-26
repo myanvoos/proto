@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { EDITOR_LIMITS, visibleWidth } from "@oh-my-pi/pi-tui";
 import { SessionManager } from "../../session/session-manager";
 import { initThemeSync, theme } from "../theme/theme";
 import { TreeSelectorComponent } from "./tree-selector";
@@ -153,6 +153,117 @@ test("tree label input survives shrink, saves the selected target, and cancels w
 		expect(labels).toEqual([[answers[17]!, "SAVED"]]);
 		selector.handleInput("\x1bl");
 		expect(plain(selector.render(30))).toContain("[SAVED]");
+	} finally {
+		selector.dispose();
+		await session.close();
+	}
+});
+
+test("tree searches beyond previews without hydrating history for initial rendering", async () => {
+	const session = SessionManager.inMemory();
+	const id = session.appendMessage({
+		role: "user",
+		content: `visible prefix ${"padding ".repeat(200)}buriedneedle`,
+		timestamp: 1,
+	});
+	const tree = session.getTree();
+	const node = tree[0]!;
+	if (node.entry.type !== "message") throw new Error("expected message fixture");
+	node.entry = { ...node.entry, message: { role: "user", content: "visible prefix", timestamp: 1 } };
+	let canHydrate = false;
+	const chosen: string[] = [];
+	const selector = new TreeSelectorComponent(
+		tree,
+		id,
+		24,
+		entryId => chosen.push(entryId),
+		() => {},
+		undefined,
+		"default",
+		entryId => {
+			if (!canHydrate) throw new Error("historical payload accessed while only rendering metadata");
+			return session.getEntry(entryId);
+		},
+	);
+	try {
+		expect(plain(selector.render(90))).toContain("visible prefix");
+		canHydrate = true;
+		selector.handleInput("buriedneedle");
+		selector.handleInput("\r");
+		expect(chosen).toEqual([id]);
+		selector.handleInput("\x1b");
+		canHydrate = false;
+		expect(plain(selector.render(90))).toContain("visible prefix");
+		selector.dispose();
+		expect(selector.getTreeList().getSelectedNode()).toBeUndefined();
+	} finally {
+		selector.dispose();
+		await session.close();
+	}
+});
+
+test("lightweight tree tool rows resolve their original command without retaining full argument maps", async () => {
+	const session = SessionManager.inMemory();
+	session.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "toolCall", id: "tree-tool", name: "bash", arguments: { command: "echo durable-tool-command" } },
+		],
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		stopReason: "toolUse",
+		timestamp: 1,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	});
+	session.appendMessage({
+		role: "toolResult",
+		toolCallId: "tree-tool",
+		toolName: "bash",
+		content: [{ type: "text", text: "done" }],
+		isError: false,
+		timestamp: 2,
+	});
+	const selector = new TreeSelectorComponent(
+		session.getTreeForDisplay(),
+		session.getLeafId(),
+		24,
+		() => {},
+		() => {},
+		undefined,
+		"default",
+		id => session.getEntry(id),
+	);
+	try {
+		expect(plain(selector.render(100))).toContain("durable-tool-command");
+	} finally {
+		selector.dispose();
+		await session.close();
+	}
+});
+
+test("oversized tree search input leaves the current selection usable and reports rejection", async () => {
+	const { session, answers } = fixture();
+	const chosen: string[] = [];
+	const selector = new TreeSelectorComponent(
+		session.getTreeForDisplay(),
+		session.getLeafId(),
+		24,
+		id => chosen.push(id),
+		() => {},
+	);
+	try {
+		selector.handleInput("x".repeat(EDITOR_LIMITS.draftBytes + 1));
+		expect(plain(selector.render(100))).toContain("input was not inserted");
+		selector.handleInput("\r");
+		expect(chosen).toEqual([answers[17]!]);
 	} finally {
 		selector.dispose();
 		await session.close();

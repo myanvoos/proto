@@ -1,5 +1,6 @@
-import { type Component, Container, type HistoryBatch } from "@oh-my-pi/pi-tui";
+import { type Component, Container, type HistoryBatch, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
+import { estimateTranscriptBytes, TRANSCRIPT_WINDOW_BYTES } from "../utils/transcript-window";
 import { isToolActivityComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */
@@ -70,40 +71,10 @@ interface FinalizableBlock {
  */
 type BlockState = "active" | "settled" | "committed";
 
-type PostCommitInteractiveComponent = Component & {
-	isDisplaceableBlock?(): boolean;
-	isDisplacementParticipant?(): boolean;
-};
-
-/**
- * Blocks that remain interactive after commit (displacement, seal-by-identity)
- * must keep their original component; see {@link TranscriptContainer.#compactCommitted}.
- * The participant marker is sealed-inclusive: a sealed fleet/checklist card can
- * still be revived through displacement, so it must never be replaced.
- */
-function isPostCommitInteractive(component: Component): boolean {
-	const candidate = component as PostCommitInteractiveComponent;
-	return candidate.isDisplacementParticipant?.() === true || candidate.isDisplaceableBlock?.() === true;
-}
-
-/** Retains only the rows required to reproduce an already-committed block. */
-class CommittedTranscriptBlock implements Component {
-	readonly original: WeakRef<Component>;
-
-	constructor(
-		readonly rows: readonly string[],
-		original: Component,
-	) {
-		this.original = new WeakRef(original);
-	}
-
-	render(_width: number): readonly string[] {
-		return this.rows;
-	}
-}
-
 interface TranscriptEntry {
 	component: Component;
+	sourceBytes: number;
+	rowBytes: number;
 	state: BlockState;
 	mode: TranscriptBlockMode;
 	stableRows: readonly TranscriptStableRow[];
@@ -154,6 +125,11 @@ type Offered = { width: number } & (
 );
 
 const MAX_LIVE_BLOCKS = 256;
+/** Recent committed replay; durable session history, not this window, is authoritative. */
+export const RETAINED_COMMITTED_BLOCKS = 1000;
+export const RETAINED_COMMITTED_BYTES = TRANSCRIPT_WINDOW_BYTES;
+const REPLAY_WINDOW_NOTICE =
+	"Older transcript blocks left the replay window (1000 blocks / 2 MiB). Full history: Alt+PgUp or /history; saved session data is unchanged.";
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];
@@ -171,6 +147,8 @@ function contentRows(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
+// Accounting follows a component when a staged rebuild moves it to the visible root.
+const sourceBytesByComponent = new WeakMap<Component, number>();
 
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
@@ -186,6 +164,8 @@ function blockMode(component: Component): TranscriptBlockMode {
 function createEntry(component: Component): TranscriptEntry {
 	return {
 		component,
+		sourceBytes: sourceBytesByComponent.get(component) ?? 0,
+		rowBytes: 0,
 		state: "active",
 		mode: blockMode(component),
 		stableRows: EMPTY_STABLE_ROWS,
@@ -245,7 +225,7 @@ export class TranscriptContainer extends Container {
 	#lastLiveLayout: { width: number; blocks: LiveLayoutBlock[] } | undefined;
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new WeakMap<Component, number>();
-	#compactedEntries = new WeakMap<Component, TranscriptEntry>();
+	#historyEvicted = false;
 	// Watchdog for the wedge where an unfinalized frontier block pins pressure
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
@@ -263,20 +243,55 @@ export class TranscriptContainer extends Container {
 		if (this.children.indexOf(component) < 0 || !this.canRemoveBlock(component)) return;
 		super.removeChild(component);
 		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
-		this.#liveGeneration++;
+		this.#clearDerived();
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
-		this.#childStartRows.delete(component);
+	}
+
+	override disposeAndRemoveChild(component: Component): void {
+		if (!this.children.includes(component) || !this.canRemoveBlock(component)) return;
+		this.removeChild(component);
+		component.dispose?.();
+	}
+
+	/** Account hidden source payloads as well as rendered rows, without retaining the source. */
+	accountSource(component: Component, value: unknown): void {
+		const sourceBytes = Math.min(
+			RETAINED_COMMITTED_BYTES + 1,
+			(sourceBytesByComponent.get(component) ?? 0) + estimateTranscriptBytes(value, RETAINED_COMMITTED_BYTES),
+		);
+		sourceBytesByComponent.set(component, sourceBytes);
+		const entry = this.#entries.find(candidate => candidate.component === component);
+		if (entry) entry.sourceBytes = sourceBytes;
+	}
+
+	/** Split extensible live groups before their settled history can pin an unbounded source. */
+	hasSourceCapacity(component: Component): boolean {
+		return (sourceBytesByComponent.get(component) ?? 0) < RETAINED_COMMITTED_BYTES;
+	}
+
+	#clearDerived(): void {
+		this.#liveGeneration++;
+		this.#liveRenderCache = undefined;
+		this.#lastLiveLayout = undefined;
+		this.#childStartRows = new WeakMap<Component, number>();
+		if (this.#renderedRows.length > 0) this.#renderRevision++;
+		this.#renderedRows = EMPTY_ROWS;
+		this.#pinnedFrontier = undefined;
 	}
 
 	override clear(): void {
 		super.clear();
 		this.#entries = [];
 		this.#frontier = 0;
-		this.#liveGeneration++;
 		this.#offered = undefined;
-		this.#childStartRows = new WeakMap<Component, number>();
-		this.#pinnedFrontier = undefined;
 		this.#replayPending = false;
+		this.#historyEvicted = false;
+		this.#clearDerived();
+	}
+
+	override dispose(): void {
+		super.dispose();
+		this.clear();
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -303,8 +318,8 @@ export class TranscriptContainer extends Container {
 	 */
 	resetStableEmission(): void {
 		this.#syncEntries();
-		if (this.#offered?.kind === "append") this.#offered = undefined;
-		this.#liveGeneration++;
+		this.#offered = undefined;
+		this.#clearDerived();
 		for (const entry of this.#entries) {
 			entry.emitted = 0;
 			entry.stableRows = EMPTY_STABLE_ROWS;
@@ -395,6 +410,7 @@ export class TranscriptContainer extends Container {
 		this.#lastLiveLayout = undefined;
 		this.#syncEntries();
 		this.#settleFinalized();
+		this.#trimReplayWindow();
 		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
 		if (live.length === 0 || capacity === 0) {
@@ -685,7 +701,7 @@ export class TranscriptContainer extends Container {
 			if (entry === undefined || shown.index !== this.#frontier || entry.emitted !== shown.emitted) return start;
 			const end = start + shown.rows.length;
 			if (entry.state === "settled" && end < budget) {
-				this.#compactCommitted(entry, layout.width);
+				this.#commit(entry);
 				this.#frontier++;
 				start = end + 1;
 				continue;
@@ -734,7 +750,7 @@ export class TranscriptContainer extends Container {
 			entry.emitted = offered.emittedEnd;
 		} else if (offered.kind === "commit" || offered.kind === "replay") {
 			for (let index = this.#frontier; index < offered.end; index++) {
-				this.#compactCommitted(this.#entries[index]!, offered.width);
+				this.#commit(this.#entries[index]!);
 			}
 			this.#frontier = offered.end;
 			if (offered.kind === "replay" && this.#entries[offered.end]) {
@@ -742,6 +758,7 @@ export class TranscriptContainer extends Container {
 			}
 		}
 		this.#offered = undefined;
+		this.#trimReplayWindow();
 	}
 
 	/**
@@ -766,21 +783,19 @@ export class TranscriptContainer extends Container {
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
 	}
 
-	/** Full semantic render used by exports and non-terminal commands. */
+	/** Full render of the retained window. Export full history from session storage. */
 	override render(width: number): readonly string[] {
 		this.#syncEntries();
 		this.#childStartRows = new WeakMap<Component, number>();
-		const rows: string[] = [];
+		const rows: string[] = this.#historyEvicted
+			? [...wrapTextWithAnsi(REPLAY_WINDOW_NOTICE, Math.max(1, width))]
+			: [];
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
-			if (entry.component instanceof CommittedTranscriptBlock) {
-				const original = entry.component.original.deref();
-				if (original) this.#childStartRows.set(original, rows.length);
-			}
 			rows.push(...block);
 		}
 		if (rows.length !== this.#renderedRows.length || !isRowPrefix(this.#renderedRows, rows)) {
@@ -801,6 +816,7 @@ export class TranscriptContainer extends Container {
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
+		entry.rowBytes = estimateTranscriptBytes(rendered, RETAINED_COMMITTED_BYTES);
 		if (entry.state === "committed" || entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
@@ -961,6 +977,7 @@ export class TranscriptContainer extends Container {
 			// keeps a complete-ledger replay at one render per block.
 			const rendered =
 				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
+			entry.rowBytes = estimateTranscriptBytes(rendered, RETAINED_COMMITTED_BYTES);
 			const emittedRows = index === start ? this.#emittedRowCount(entry, entry.emitted, width, rendered) : 0;
 			const block = rendered.slice(emittedRows);
 			if (block.length > 0) {
@@ -974,7 +991,8 @@ export class TranscriptContainer extends Container {
 	}
 
 	#renderReplay(width: number, end: number, emittedEnd: number): readonly string[] {
-		const rows = Array.from(this.#renderRange(0, end, width, true));
+		const rows = this.#historyEvicted ? [...wrapTextWithAnsi(REPLAY_WINDOW_NOTICE, Math.max(1, width)), ""] : [];
+		rows.push(...this.#renderRange(0, end, width, true));
 		const head = this.#entries[end];
 		if (head?.mode === "appendOnly" && emittedEnd > 0) {
 			rows.push(...this.#renderStablePrefix(head, emittedEnd, width));
@@ -982,27 +1000,9 @@ export class TranscriptContainer extends Container {
 		return rows;
 	}
 
-	#compactCommitted(entry: TranscriptEntry, width: number): void {
+	/** Commit bookkeeping; only the bounded recent replay keeps its component. */
+	#commit(entry: TranscriptEntry): void {
 		if (entry.state === "committed") return;
-		const original = entry.component;
-		// Displaceable blocks (fleet/checklist snapshots) stay interactive after
-		// commit: a same-tool successor seals — never disposes — them, and chat
-		// transcript building addresses them by identity in `children`. Replacing
-		// them with a row-only replay block would break both, so they keep the
-		// original component and only take the committed bookkeeping transition.
-		if (isPostCommitInteractive(original)) {
-			entry.state = "committed";
-			entry.emitted = 0;
-			entry.archived = undefined;
-			return;
-		}
-		this.#setAllocation(original, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-		const replay = new CommittedTranscriptBlock(trimBlankEdges(original.render(width)), original);
-		original.dispose?.();
-		this.#compactedEntries.set(original, entry);
-		const childIndex = this.children.indexOf(original);
-		if (childIndex >= 0) this.children[childIndex] = replay;
-		entry.component = replay;
 		entry.state = "committed";
 		entry.stableRows = EMPTY_STABLE_ROWS;
 		entry.renderedStableByWidth.clear();
@@ -1010,8 +1010,29 @@ export class TranscriptContainer extends Container {
 		entry.emitted = 0;
 		entry.stableFrozen = false;
 		entry.archived = undefined;
-		this.#liveRenderCache = undefined;
-		this.#liveGeneration++;
+	}
+
+	/** Forget acknowledged history only; an in-flight batch and live output remain intact. */
+	#trimReplayWindow(): void {
+		if (this.#offered !== undefined || this.#frontier === 0) return;
+		let bytes = 0;
+		let keepFrom = this.#frontier;
+		while (keepFrom > 0 && this.#frontier - keepFrom < RETAINED_COMMITTED_BLOCKS) {
+			const entry = this.#entries[keepFrom - 1]!;
+			const size = entry.sourceBytes + entry.rowBytes;
+			if (bytes + size > RETAINED_COMMITTED_BYTES) break;
+			bytes += size;
+			keepFrom--;
+		}
+		if (keepFrom === 0) return;
+		const dropped = this.#entries.splice(0, keepFrom);
+		this.children.splice(0, keepFrom);
+		this.#frontier -= keepFrom;
+		this.#historyEvicted = true;
+		this.#clearDerived();
+		// Action cards and image owners have the same lifetime as their replay
+		// blocks. Their normal disposal releases callbacks and terminal payloads.
+		for (const entry of dropped) entry.component.dispose?.();
 	}
 
 	#completeFullyEmittedHeads(width: number): void {
@@ -1022,7 +1043,7 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#emittedRowCount(entry, entry.emitted, width, rendered) !== rendered.length) return;
-			this.#compactCommitted(entry, width);
+			this.#commit(entry);
 			this.#frontier++;
 		}
 	}
@@ -1148,15 +1169,14 @@ export class TranscriptContainer extends Container {
 		)
 			return;
 		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
-		this.#entries = this.children.map(
-			component => existing.get(component) ?? this.#compactedEntries.get(component) ?? createEntry(component),
-		);
+		this.#entries = this.children.map(component => existing.get(component) ?? createEntry(component));
 		for (let index = 0; index < this.#entries.length; index++) {
 			this.children[index] = this.#entries[index]!.component;
 		}
 		this.#liveGeneration++;
 		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
 		if (this.#frontier < 0) this.#frontier = this.#entries.length;
+		this.#clearDerived();
 	}
 }
 

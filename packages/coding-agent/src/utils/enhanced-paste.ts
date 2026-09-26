@@ -1,4 +1,7 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui/editor-limits";
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
+import { MAX_IMAGE_INPUT_BYTES } from "./image-resources";
 
 const OSC5522_PREFIX = "\x1b]5522;";
 const OSC_TERMINATOR_ST = "\x1b\\";
@@ -29,7 +32,9 @@ interface PasteReadState {
 	phase: "reading";
 	kind: PasteReadKind;
 	mimeType: string;
-	chunks: string[];
+	chunks: Uint8Array[];
+	bytes: number;
+	encodedBytes: number;
 }
 
 type PasteState = PasteListingState | PasteReadState;
@@ -58,7 +63,7 @@ function parseMetadata(raw: string): Map<string, string> {
 	for (const part of raw.split(":")) {
 		const eq = part.indexOf("=");
 		if (eq <= 0) continue;
-		metadata.set(part.slice(0, eq), part.slice(eq + 1));
+		metadata.set(materializeString(part.slice(0, eq)), materializeString(part.slice(eq + 1)));
 	}
 	return metadata;
 }
@@ -69,6 +74,7 @@ function parseOsc5522Packet(data: string): Osc5522Packet | undefined {
 	const body = data.slice(OSC5522_PREFIX.length, bodyEnd);
 	const separator = body.indexOf(";");
 	const metadataRaw = separator === -1 ? body : body.slice(0, separator);
+	if (metadataRaw.length > 8192) return undefined;
 	const payload = separator === -1 ? "" : body.slice(separator + 1);
 	return { metadata: parseMetadata(metadataRaw), payload };
 }
@@ -83,6 +89,7 @@ function choosePasteMime(mimes: readonly string[]): { kind: PasteReadKind; mimeT
 export class EnhancedPasteController {
 	#state: PasteState | undefined;
 	#handlers: EnhancedPasteHandlers;
+	#processing = false;
 
 	constructor(handlers: EnhancedPasteHandlers) {
 		this.#handlers = handlers;
@@ -98,9 +105,23 @@ export class EnhancedPasteController {
 	}
 
 	handleInput(data: string): boolean {
+		if (!isOsc5522Packet(data)) return false;
+		if (this.#processing) {
+			this.#handlers.showStatus("An image paste is still processing; incoming enhanced paste was discarded");
+			return true;
+		}
+		if (data.length > Math.ceil(MAX_IMAGE_INPUT_BYTES / 3) * 4 + 8192) {
+			this.#state = undefined;
+			this.#handlers.showStatus("Enhanced paste packet exceeds the image input limit");
+			return true;
+		}
 		const packet = parseOsc5522Packet(data);
-		if (!packet) return false;
-		void this.#handlePacket(packet);
+		if (!packet) {
+			this.#state = undefined;
+			this.#handlers.showStatus("Enhanced paste metadata exceeds its limit");
+			return true;
+		}
+		void this.#handlePacket(packet).catch(error => this.#handlers.showStatus(String(error)));
 		return true;
 	}
 
@@ -147,13 +168,19 @@ export class EnhancedPasteController {
 		if (!mimeType) return;
 
 		if (state.phase === "listing") {
+			if (packet.payload.length > 8192 || state.mimes.length >= 128 || mimeType.length > 256) {
+				this.#state = undefined;
+				this.#handlers.showStatus("Enhanced paste MIME listing exceeds its limit");
+				return;
+			}
 			if (mimeType === MIME_LISTING_TARGET) {
 				if (!packet.payload) return;
 				const listing = decodeBase64Utf8(packet.payload);
 				if (!listing) return;
 				state.kittyDotPayload = true;
 				for (const candidate of listing.split(/\s+/)) {
-					if (candidate && candidate !== MIME_LISTING_TARGET) state.mimes.push(candidate);
+					if (candidate && candidate !== MIME_LISTING_TARGET && state.mimes.length < 128)
+						state.mimes.push(candidate);
 				}
 				return;
 			}
@@ -162,7 +189,21 @@ export class EnhancedPasteController {
 		}
 
 		if (state.mimeType === mimeType && packet.payload) {
-			state.chunks.push(packet.payload);
+			const maxBytes = state.kind === "text" ? EDITOR_LIMITS.draftBytes : MAX_IMAGE_INPUT_BYTES;
+			const bytes = Buffer.byteLength(packet.payload, "base64");
+			const encodedBytes = Buffer.byteLength(packet.payload);
+			if (
+				state.bytes + bytes > maxBytes ||
+				state.encodedBytes + encodedBytes > Math.ceil(maxBytes / 3) * 4 ||
+				state.chunks.length >= 8192
+			) {
+				this.#state = undefined;
+				this.#handlers.showStatus(`Enhanced ${state.kind} paste exceeds its byte/chunk limit and was discarded`);
+				return;
+			}
+			state.chunks.push(Buffer.from(packet.payload, "base64"));
+			state.bytes += bytes;
+			state.encodedBytes += encodedBytes;
 		}
 	}
 
@@ -174,7 +215,8 @@ export class EnhancedPasteController {
 			return;
 		}
 		this.#state = undefined;
-		const bytes = Buffer.concat(state.chunks.map(chunk => Buffer.from(chunk, "base64")));
+		const bytes = Buffer.concat(state.chunks, state.bytes);
+		state.chunks = [];
 		if (bytes.byteLength === 0) {
 			this.#handlers.showStatus("Clipboard paste was empty");
 			return;
@@ -183,11 +225,16 @@ export class EnhancedPasteController {
 			this.#handlers.pasteText(bytes.toString("utf8"));
 			return;
 		}
-		await this.#handlers.pasteImage({
-			type: "image",
-			data: bytes.toString("base64"),
-			mimeType: state.mimeType,
-		});
+		this.#processing = true;
+		try {
+			await this.#handlers.pasteImage({
+				type: "image",
+				data: bytes.toString("base64"),
+				mimeType: state.mimeType,
+			});
+		} finally {
+			this.#processing = false;
+		}
 	}
 
 	#finishListing(state: PasteListingState): void {
@@ -203,6 +250,8 @@ export class EnhancedPasteController {
 			kind: selected.kind,
 			mimeType: selected.mimeType,
 			chunks: [],
+			bytes: 0,
+			encodedBytes: 0,
 		};
 
 		const encodedMime = Buffer.from(selected.mimeType, "utf8").toString("base64");

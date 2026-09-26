@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionInfo } from "../../session/session-listing";
 import { initThemeSync, theme } from "../theme/theme";
-import { SessionSelectorComponent } from "./session-selector";
+import { rankSessionSearchMatches, SessionSelectorComponent } from "./session-selector";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SHIFT_UP = "\x1b[1;2A";
@@ -271,4 +271,39 @@ test("session picker retains selected title at short heights and reports unmatch
 	selector.handleInput("\x1b");
 	selector.handleInput("zzzzzzzz");
 	expect(renderPlain(selector)).toContain("No matching sessions");
+});
+
+describe("session selector cache lifetime", () => {
+	test("a refreshed session is searchable by its new history rather than a stale full-text copy", () => {
+		const session = makeSession(1);
+		session.allMessagesText = "uniqueoldneedle";
+		expect(rankSessionSearchMatches([session], "uniqueoldneedle").map(item => item.id)).toEqual([session.id]);
+		session.allMessagesText = "uniquenewneedle";
+		expect(rankSessionSearchMatches([session], "uniquenewneedle").map(item => item.id)).toEqual([session.id]);
+		expect(rankSessionSearchMatches([session], "uniqueoldneedle")).toEqual([]);
+	});
+
+	test("closing during a global load does not resurrect rows or request rendering", async () => {
+		const pending = Promise.withResolvers<SessionInfo[]>();
+		const selector = new SessionSelectorComponent(
+			[makeSession(1)],
+			() => {},
+			() => {},
+			() => {},
+			{
+				loadAllSessions: () => pending.promise,
+			},
+		);
+		let renders = 0;
+		selector.setOnRequestRender(() => renders++);
+		selector.handleInput("\t");
+		selector.dispose();
+		const rendersAtClose = renders;
+		pending.resolve([makeSession(2)]);
+		await pending.promise;
+		await Promise.resolve();
+		expect(renders).toBe(rendersAtClose);
+		expect(selector.render(90)).toEqual([]);
+		expect(selector.getSessionList().render(90).join("\n")).not.toContain("Session 2");
+	});
 });

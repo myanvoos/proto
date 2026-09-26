@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as path from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { AsyncJobManager } from "../async/job-manager";
 import { resolveAgentSpawnModelSelection } from "../config/model-resolver";
 import { Settings } from "../config/settings";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -15,8 +16,14 @@ function model(provider: string, id: string): Model<Api> {
 }
 
 const AVAILABLE = [model("localprov", "local-stream"), model("localprov", "local-fast")];
+const managers: AsyncJobManager[] = [];
+afterEach(async () => {
+	for (const manager of managers.splice(0)) await manager.dispose({ timeoutMs: 1_000 });
+});
 
 function spawnSession(available: Model<Api>[] = AVAILABLE): ToolSession {
+	const manager = new AsyncJobManager({ retentionMs: 0 });
+	managers.push(manager);
 	return {
 		cwd: path.resolve(import.meta.dir, "../.."),
 		hasUI: false,
@@ -28,12 +35,7 @@ function spawnSession(available: Model<Api>[] = AVAILABLE): ToolSession {
 		getAgentFleetRoot: () => "/spawn-model/fleet",
 		agentRegistry: new AgentRegistry(),
 		modelRegistry: { getAvailable: () => available, getApiKey: async () => undefined },
-		// Registering a job means a worker turn started; a rejected model must never get that far.
-		asyncJobManager: {
-			register: () => {
-				throw new Error("spawn registered a turn job despite an unusable model");
-			},
-		},
+		asyncJobManager: manager,
 	} as unknown as ToolSession;
 }
 

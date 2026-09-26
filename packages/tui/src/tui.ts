@@ -1175,7 +1175,7 @@ export class TUI extends Container {
 
 	#purgeInlineImages(): void {
 		const transmittedIds = this.#imageBudget.takeAllForProtocolReset();
-		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
+		// Tracked ids came from Kitty transmissions, even if the current protocol changed.
 		for (const id of transmittedIds) {
 			this.terminal.write(encodeKittyDeleteImage(id));
 		}
@@ -2193,11 +2193,9 @@ export class TUI extends Container {
 		this.#imageResetPrepared = false;
 		this.#resetImagePurgeIds = [];
 		this.#flushHistoryBeforeStop();
-		// Deliberately leave transmitted images in the terminal's graphics store:
-		// placeholder cells committed to native scrollback render only while their
-		// image data lives, so a delete-by-id here blanks every transcript image
-		// the instant the session exits. The terminal enforces its own store quota
-		// (and live-session ghosts are already bounded by the inline-image budget).
+		// Release our Kitty payloads, including scrollback placements. Other protocols
+		// have no selective resource deletion; their native store remains terminal-owned.
+		this.#purgeInlineImages();
 		this.#clearSixelProbeState();
 		this.#savedViewportBottom = false;
 		this.#stopped = true;

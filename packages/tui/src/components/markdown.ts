@@ -1,4 +1,4 @@
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { materializeString, sanitizeText } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
 	Lexer,
@@ -757,7 +757,6 @@ for (const table of [Lexer.rules.block.normal, Lexer.rules.block.gfm]) {
 const RENDER_CACHE_MAX = 4096;
 const RENDER_CACHE_MAX_SIZE = 24 * 1024 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 4 * 1024 * 1024;
-const INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE = RENDER_CACHE_MAX_SIZE;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
 interface RenderedLine {
@@ -846,14 +845,61 @@ const renderCache = new LRUCache<string, RenderCacheEntry>({
 	sizeCalculation: renderCacheEntrySize,
 });
 
+// Retained strings are materialized UTF-16, not UTF-8 or display columns.
+// Include array slots; the entry-count ceiling also bounds object overhead.
 function renderedLinesCacheSize(lines: readonly string[]): number {
-	let size = lines.length;
-	for (let i = 0; i < lines.length; i++) size += lines[i]!.length;
-	return Math.max(1, size);
+	let size = lines.length * 8;
+	for (const line of lines) size += line.length * 2;
+	return size;
 }
 
-function renderCacheEntrySize(entry: RenderCacheEntry): number {
-	return renderedLinesCacheSize(entry.lines);
+function renderCacheEntrySize(entry: RenderCacheEntry, key: string): number {
+	return key.length * 2 + renderedLinesCacheSize(entry.lines);
+}
+
+const FRAGMENT_STRING_FIELDS = [
+	"type",
+	"nextTokenType",
+	"raw",
+	"codeText",
+	"codeLang",
+	"codeTrailingText",
+	"plainText",
+	"listLastItemRaw",
+	"listLastParagraphRaw",
+	"listLastParagraphText",
+] as const;
+
+function renderedLineCacheSize(line: RenderedLine): number {
+	return 16 + (line.text.length + (line.wrapIndent?.length ?? 0)) * 2;
+}
+
+function incrementalTokenFragmentSize(fragment: IncrementalRenderFragment): number {
+	if (fragment.codeCacheSize !== undefined) return fragment.codeCacheSize;
+	let size = 8; // Numeric source-offset key.
+	for (const field of FRAGMENT_STRING_FIELDS) size += (fragment[field]?.length ?? 0) * 2;
+	for (const line of fragment.wrappedLines) size += renderedLineCacheSize(line);
+	if (fragment.contentLines !== undefined) size += renderedLinesCacheSize(fragment.contentLines);
+	size += (fragment.codeBodyRowCounts?.length ?? 0) * 8;
+	return size;
+}
+
+function materializeRenderedLine(line: RenderedLine): void {
+	line.text = materializeString(line.text);
+	if (line.wrapIndent !== undefined) line.wrapIndent = materializeString(line.wrapIndent);
+}
+
+function materializeTokenFragment(fragment: IncrementalRenderFragment): void {
+	for (const field of FRAGMENT_STRING_FIELDS) {
+		const value = fragment[field];
+		if (value !== undefined) fragment[field] = materializeString(value);
+	}
+	for (const line of fragment.wrappedLines) materializeRenderedLine(line);
+	if (fragment.contentLines !== undefined) {
+		for (let i = 0; i < fragment.contentLines.length; i++) {
+			fragment.contentLines[i] = materializeString(fragment.contentLines[i]!);
+		}
+	}
 }
 
 const HAS_REF_DEF = /^ {0,3}\[(?:\\.|[^\]\\])+\]:/m;
@@ -1407,8 +1453,12 @@ export class Markdown implements Component {
 	#renderFragmentCacheRevision = 0;
 	// This is intentionally per Markdown instance: frozen-prefix rows remain owned by
 	// #streamPrefixLineCache, while this cache covers the mutable suffix only.
-	#incrementalTokenFragments = new Map<number, IncrementalRenderFragment>();
-	#incrementalTokenFragmentsSize = 0;
+	#incrementalTokenFragments = new LRUCache<number, IncrementalRenderFragment>({
+		max: RENDER_CACHE_MAX,
+		maxSize: RENDER_CACHE_MAX_SIZE,
+		maxEntrySize: RENDER_CACHE_MAX_ENTRY_SIZE,
+		sizeCalculation: incrementalTokenFragmentSize,
+	});
 	#renderWrappedLinesScratch: RenderedLine[] = [];
 	#renderContentLinesScratch: string[] = [];
 	#renderTokenSegmentsScratch: Array<{
@@ -1763,7 +1813,8 @@ export class Markdown implements Component {
 			this.#cacheRenderedOutput &&
 			!this.transientRenderCache &&
 			!this.#appendOnlySinceRender &&
-			!this.#streamPrefix
+			!this.#streamPrefix &&
+			normalizedText.length * 2 <= RENDER_CACHE_MAX_ENTRY_SIZE
 		) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
@@ -1811,8 +1862,11 @@ export class Markdown implements Component {
 		this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 		this.#cachedLines = result;
 
-		if (cacheKey !== undefined && this.#cacheRenderedOutput) {
-			renderCache.set(cacheKey, { lines: result });
+		if (cacheKey !== undefined && renderCacheEntrySize({ lines: result }, cacheKey) <= RENDER_CACHE_MAX_ENTRY_SIZE) {
+			// A short key or row may be a slice/rope retaining a much larger source.
+			// Copy only admitted entries so the byte calculation bounds their backing storage.
+			for (let i = 0; i < result.length; i++) result[i] = materializeString(result[i]!);
+			renderCache.set(materializeString(cacheKey), { lines: result });
 		}
 		this.#appendOnlySinceRender = false;
 
@@ -1944,7 +1998,7 @@ export class Markdown implements Component {
 	}
 
 	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.themeRevision}\x00${getWidthConfigEpoch()}`;
+		return `${normalizedText.length}:${normalizedText}|${this.#renderFragmentPrefix(signature)}`;
 	}
 
 	#renderFragmentPrefix(signature: RenderSignature): string {
@@ -2001,10 +2055,6 @@ export class Markdown implements Component {
 		if (cached.type !== token.type || cached.nextTokenType !== nextTokenType || cached.raw !== token.raw) {
 			return undefined;
 		}
-		// Refresh insertion order so the bounded map evicts the least recently used
-		// fragment rather than simply the oldest source offset.
-		this.#incrementalTokenFragments.delete(sourceOffset);
-		this.#incrementalTokenFragments.set(sourceOffset, cached);
 		return cached;
 	}
 
@@ -2024,7 +2074,6 @@ export class Markdown implements Component {
 
 	#appendListPlainParagraphTail(
 		listToken: ListToken,
-		sourceOffset: number,
 		contentWidth: number,
 		signature: RenderSignature,
 		cached: IncrementalTokenFragment,
@@ -2123,7 +2172,6 @@ export class Markdown implements Component {
 		const tailRows = wrapTextWithAnsi(sourceTail + appendedText, rowBodyWidth);
 		if (tailRows.length === 0) return undefined;
 
-		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
 		const leftMargin = padding(signature.paddingX);
 		const rightMargin = padding(signature.paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
@@ -2134,14 +2182,10 @@ export class Markdown implements Component {
 				renderedRow = renderedLine("");
 				wrappedLines[rowIndex] = renderedRow;
 			}
-			renderedRow.text = rowPrefix(rewrapStart + tailIndex) + tailRows[tailIndex]!;
+			renderedRow.text = materializeString(rowPrefix(rewrapStart + tailIndex) + tailRows[tailIndex]!);
 			delete renderedRow.literalCode;
-			contentLines[rowIndex] = this.#formatPlainContentLine(
-				renderedRow.text,
-				signature,
-				leftMargin,
-				rightMargin,
-				bgFn,
+			contentLines[rowIndex] = materializeString(
+				this.#formatPlainContentLine(renderedRow.text, signature, leftMargin, rightMargin, bgFn),
 			);
 			rowIndex++;
 		}
@@ -2150,14 +2194,12 @@ export class Markdown implements Component {
 		const targetLength = paragraphStart + newParagraphLineCount;
 		wrappedLines.length = targetLength;
 		contentLines.length = targetLength;
-		cached.raw = listToken.raw;
-		cached.listLastItemRaw = lastItem.raw;
+		cached.raw = materializeString(listToken.raw);
+		cached.listLastItemRaw = materializeString(lastItem.raw);
 		cached.listLastItemLineCount = cached.listLastItemLineCount - oldParagraphLineCount + newParagraphLineCount;
-		cached.listLastParagraphRaw = finalToken.raw;
-		cached.listLastParagraphText = plainText;
+		cached.listLastParagraphRaw = materializeString(finalToken.raw);
+		cached.listLastParagraphText = materializeString(plainText);
 		cached.listLastParagraphLineCount = newParagraphLineCount;
-		this.#incrementalTokenFragmentsSize +=
-			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
 		return cached;
 	}
 
@@ -2271,34 +2313,32 @@ export class Markdown implements Component {
 			}
 		}
 
-		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, fragment);
-		const previousRawLength = fragment.raw.length;
-		let removedRowsSize = 0;
+		let size = incrementalTokenFragmentSize(fragment);
+		size += (token.raw.length - fragment.raw.length) * 2;
+		size += (token.text.length - fragment.codeText.length) * 2;
+		size += (tailLines.at(-1)!.length - fragment.codeTrailingText.length) * 2;
+		size += (rowCounts.length - 1) * 8;
 		for (let rowIndex = oldTailRowStart; rowIndex < bodyRowEnd; rowIndex++) {
-			removedRowsSize += wrappedLines[rowIndex]!.text.length + 1;
+			size -= renderedLineCacheSize(wrappedLines[rowIndex]!);
+			size -= contentLines[rowIndex]!.length * 2 + 8;
 		}
-		let appendedRowsSize = 0;
-		for (const row of appendedWrappedLines) appendedRowsSize += row.text.length + 1;
-		let removedContentSize = 0;
-		for (let rowIndex = oldTailRowStart; rowIndex < bodyRowEnd; rowIndex++) {
-			removedContentSize += contentLines[rowIndex]!.length + 1;
+		for (const row of appendedWrappedLines) {
+			size += renderedLineCacheSize(row);
+			materializeRenderedLine(row);
 		}
-		let appendedContentSize = 0;
-		for (const line of appendedContentLines) appendedContentSize += line.length + 1;
+		size += renderedLinesCacheSize(appendedContentLines);
+		for (let i = 0; i < appendedContentLines.length; i++) {
+			appendedContentLines[i] = materializeString(appendedContentLines[i]!);
+		}
 		wrappedLines.splice(oldTailRowStart, oldLastRowCount, ...appendedWrappedLines);
 		contentLines.splice(oldTailRowStart, oldLastRowCount, ...appendedContentLines);
 		oldRowCounts.splice(oldRowCounts.length - 1, 1, ...rowCounts);
-		fragment.raw = token.raw;
-		fragment.codeText = token.text;
-		fragment.codeTrailingText = tailLines.at(-1)!;
+		fragment.raw = materializeString(token.raw);
+		fragment.codeText = materializeString(token.text);
+		fragment.codeTrailingText = materializeString(tailLines.at(-1)!);
 		fragment.codeBodyLineCount = newBodyLineCount;
 		fragment.codeBodyRowCountTotal = bodyRowCountTotal - oldLastRowCount + appendedWrappedLines.length;
-		fragment.codeCacheSize =
-			previousFragmentSize +
-			(token.raw.length - previousRawLength) +
-			(appendedRowsSize - removedRowsSize) +
-			(appendedContentSize - removedContentSize);
-		this.#incrementalTokenFragmentsSize += fragment.codeCacheSize - previousFragmentSize;
+		fragment.codeCacheSize = size;
 		return fragment;
 	}
 
@@ -2331,13 +2371,7 @@ export class Markdown implements Component {
 		if (!token.raw.startsWith(cached.raw) || !lastItem.raw.startsWith(cached.listLastItemRaw)) return undefined;
 		if (lastItem.raw.length <= cached.listLastItemRaw.length) return undefined;
 		if (cached.hasSpecialLine) return undefined;
-		const appendedParagraph = this.#appendListPlainParagraphTail(
-			listToken,
-			sourceOffset,
-			contentWidth,
-			signature,
-			cached,
-		);
+		const appendedParagraph = this.#appendListPlainParagraphTail(listToken, contentWidth, signature, cached);
 		if (appendedParagraph !== undefined) return appendedParagraph;
 
 		const wrappedLines = cached.wrappedLines as RenderedLine[];
@@ -2360,7 +2394,6 @@ export class Markdown implements Component {
 			return undefined;
 		}
 
-		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
 		const leftMargin = padding(signature.paddingX);
 		const rightMargin = padding(signature.paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
@@ -2371,25 +2404,19 @@ export class Markdown implements Component {
 				renderedRow = renderedLine("");
 				wrappedLines[rowIndex] = renderedRow;
 			}
-			renderedRow.text = renderedLastItemLine.text;
+			renderedRow.text = materializeString(renderedLastItemLine.text);
 			if (renderedLastItemLine.literalCode) renderedRow.literalCode = true;
 			else delete renderedRow.literalCode;
-			contentLines[rowIndex] = this.#formatPlainContentLine(
-				renderedLastItemLine.text,
-				signature,
-				leftMargin,
-				rightMargin,
-				bgFn,
+			contentLines[rowIndex] = materializeString(
+				this.#formatPlainContentLine(renderedLastItemLine.text, signature, leftMargin, rightMargin, bgFn),
 			);
 			rowIndex++;
 		}
 		wrappedLines.length = rowIndex;
 		contentLines.length = rowIndex;
-		cached.raw = token.raw;
-		cached.listLastItemRaw = lastItem.raw;
+		cached.raw = materializeString(token.raw);
+		cached.listLastItemRaw = materializeString(lastItem.raw);
 		cached.listLastItemLineCount = renderedLastItem.length;
-		this.#incrementalTokenFragmentsSize +=
-			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
 		return cached;
 	}
 
@@ -2446,7 +2473,6 @@ export class Markdown implements Component {
 		const tailRows = wrapTextWithAnsi(sourceTail + appendedText, contentWidth);
 		if (tailRows.length === 0) return undefined;
 
-		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
 		const leftMargin = padding(signature.paddingX);
 		const rightMargin = padding(signature.paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
@@ -2458,9 +2484,11 @@ export class Markdown implements Component {
 				renderedRow = renderedLine("");
 				wrappedLines[rowIndex] = renderedRow;
 			}
-			renderedRow.text = tailRow;
+			renderedRow.text = materializeString(tailRow);
 			delete renderedRow.literalCode;
-			contentLines[rowIndex] = this.#formatPlainContentLine(tailRow, signature, leftMargin, rightMargin, bgFn);
+			contentLines[rowIndex] = materializeString(
+				this.#formatPlainContentLine(tailRow, signature, leftMargin, rightMargin, bgFn),
+			);
 			rowIndex++;
 		}
 
@@ -2475,61 +2503,31 @@ export class Markdown implements Component {
 			renderedRow.text = "";
 			delete renderedRow.literalCode;
 			contentLines[rowIndex] =
-				blankLine ?? this.#formatPlainContentLine("", signature, leftMargin, rightMargin, bgFn);
+				blankLine ?? materializeString(this.#formatPlainContentLine("", signature, leftMargin, rightMargin, bgFn));
 			rowIndex++;
 		}
 		wrappedLines.length = targetLength;
 		contentLines.length = targetLength;
-		cached.raw = token.raw;
-		cached.plainText = plainText;
+		cached.raw = materializeString(token.raw);
+		cached.plainText = materializeString(plainText);
 		cached.plainContentLineCount = newContentCount;
 		cached.startsWithEmptyLine = wrappedLines[0]?.text === "";
-		this.#incrementalTokenFragmentsSize +=
-			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
 		return cached;
-	}
-
-	#incrementalTokenFragmentSize(sourceOffset: number, fragment: IncrementalRenderFragment): number {
-		if (fragment.codeCacheSize !== undefined) return fragment.codeCacheSize;
-		let size = String(sourceOffset).length + fragment.type.length + (fragment.nextTokenType?.length ?? 0);
-		size += fragment.raw.length;
-		for (const line of fragment.wrappedLines) size += line.text.length + 1;
-		if (fragment.contentLines !== undefined) {
-			for (const line of fragment.contentLines) size += line.length + 1;
-		}
-		return Math.max(1, size);
 	}
 
 	#clearIncrementalTokenFragments(): void {
 		this.#incrementalTokenFragments.clear();
-		this.#incrementalTokenFragmentsSize = 0;
-	}
-
-	#deleteIncrementalTokenFragment(sourceOffset: number): void {
-		const fragment = this.#incrementalTokenFragments.get(sourceOffset);
-		if (fragment === undefined) return;
-		this.#incrementalTokenFragments.delete(sourceOffset);
-		this.#incrementalTokenFragmentsSize = Math.max(
-			0,
-			this.#incrementalTokenFragmentsSize - this.#incrementalTokenFragmentSize(sourceOffset, fragment),
-		);
 	}
 
 	#storeTokenFragment(sourceOffset: number, fragment: IncrementalRenderFragment): void {
-		const size = this.#incrementalTokenFragmentSize(sourceOffset, fragment);
+		const size = incrementalTokenFragmentSize(fragment);
 		if (fragment.type === "code") fragment.codeCacheSize = size;
-		this.#deleteIncrementalTokenFragment(sourceOffset);
-		if (size > RENDER_CACHE_MAX_ENTRY_SIZE) return;
-		while (
-			this.#incrementalTokenFragments.size >= RENDER_CACHE_MAX ||
-			this.#incrementalTokenFragmentsSize + size > INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE
-		) {
-			const oldest = this.#incrementalTokenFragments.keys().next();
-			if (oldest.done) break;
-			this.#deleteIncrementalTokenFragment(oldest.value);
+		if (size > RENDER_CACHE_MAX_ENTRY_SIZE) {
+			this.#incrementalTokenFragments.delete(sourceOffset);
+			return;
 		}
+		if (this.#incrementalTokenFragments.peek(sourceOffset) !== fragment) materializeTokenFragment(fragment);
 		this.#incrementalTokenFragments.set(sourceOffset, fragment);
-		this.#incrementalTokenFragmentsSize += size;
 	}
 
 	#renderStreamingContentLines(
@@ -2804,6 +2802,9 @@ export class Markdown implements Component {
 				!fragment.hasSpecialLine &&
 				(!previousLineWasOsc66 || !fragment.startsWithEmptyLine)
 			) {
+				// Appends mutate a retained fragment: re-admit its new size even when
+				// its formatted rows can be reused without the normal store path below.
+				if (segment.storeFragment) this.#storeTokenFragment(segment.sourceOffset, fragment);
 				for (const line of fragment.contentLines) contentLines.push(line);
 				previousLineWasOsc66 = false;
 				continue;

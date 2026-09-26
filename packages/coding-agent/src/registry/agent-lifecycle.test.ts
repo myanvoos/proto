@@ -36,6 +36,7 @@ afterEach(() => {
 describe("revival failure", () => {
 	function fakeSession(disposed: { count: number }): AgentSession {
 		return {
+			hasActiveMonitors: () => false,
 			dispose: async () => {
 				disposed.count++;
 			},
@@ -83,7 +84,7 @@ describe("revival failure", () => {
 
 describe("idle auto-park", () => {
 	function registerIdle(registry: AgentRegistry, id: string, kind: "sub" | "side"): AgentSession {
-		const session = { dispose: async () => {} } as unknown as AgentSession;
+		const session = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
 		registry.register({ id, label: id, kind, session, sessionFile: null, status: "idle" });
 		return session;
 	}
@@ -221,11 +222,12 @@ describe("parking", () => {
 		const lifecycle = new AgentLifecycleManager(registry);
 		let disposed = false;
 		const originalSession = {
+			hasActiveMonitors: () => false,
 			dispose: async () => {
 				disposed = true;
 			},
 		} as unknown as AgentSession;
-		const revivedSession = { dispose: async () => {} } as unknown as AgentSession;
+		const revivedSession = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
 		const ref = registry.register({
 			id: "worker",
 			label: "worker",
@@ -296,6 +298,7 @@ describe("fleet-scoped disposal", () => {
 			fleetRoot: "/fleet-b",
 			status: "idle",
 			session: {
+				hasActiveMonitors: () => false,
 				dispose: async () => {
 					disposed = true;
 				},
@@ -343,6 +346,7 @@ describe("fleet-scoped disposal", () => {
 				return async () => {
 					built.push(ref.id);
 					const session = {
+						hasActiveMonitors: () => false,
 						dispose: async () => {
 							disposed.push(ref.id);
 						},
@@ -388,6 +392,7 @@ describe("fleet-scoped disposal", () => {
 				fleetRoot,
 				status: "idle",
 				session: {
+					hasActiveMonitors: () => false,
 					dispose: async () => {
 						disposed.push(id);
 					},
@@ -407,4 +412,42 @@ describe("fleet-scoped disposal", () => {
 		await lifecycle.dispose();
 		expect(disposed).toEqual(["worker-a", "worker-b"]);
 	});
+});
+
+test("old parked revival blueprints retire without losing durable agent identity or cold revival", async () => {
+	const registry = new AgentRegistry();
+	const lifecycle = new AgentLifecycleManager(registry);
+	const revived = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+	let coldRevives = 0;
+	lifecycle.setPersistedSubagentReviverFactory(
+		async () => async () => {
+			coldRevives++;
+			return revived;
+		},
+		0,
+	);
+	for (let index = 0; index < 132; index++) {
+		const id = `historical-${index}`;
+		const session = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+		registry.register({
+			id,
+			label: id,
+			kind: "sub",
+			session,
+			sessionFile: `/history/${id}.jsonl`,
+			status: "idle",
+			lastActivity: index,
+		});
+		lifecycle.adopt(id, { idleTtlMs: 0, revive: async () => revived });
+		await lifecycle.park(id);
+	}
+	try {
+		const coldId = registry.list().find(ref => !lifecycle.has(ref.id))!.id;
+		expect(registry.get(coldId)?.status).toBe("parked");
+		expect(await lifecycle.ensureLive(coldId)).toBe(revived);
+		expect(coldRevives).toBe(1);
+		expect(registry.get(coldId)?.status).toBe("idle");
+	} finally {
+		await lifecycle.dispose();
+	}
 });

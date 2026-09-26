@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { SessionWriteConflictError } from "./session-storage";
 import { SqlSessionStorage, type SqlSessionStorageClient } from "./sql-session-storage";
 
 async function createSqlite(): Promise<{ client: Bun.SQL; storage: SqlSessionStorage; table: string }> {
@@ -72,5 +73,59 @@ describe("SqlSessionStorage MySQL dialect", () => {
 		expect(replace?.values?.slice(6)).toEqual(["body\n", expect.any(Number), null, null, null]);
 		const append = upserts.find(query => query.sql.includes("CONCAT"));
 		expect(append?.values).toEqual(["/s/m.jsonl", "chunk\n", expect.any(Number), "chunk\n", expect.any(Number)]);
+	});
+});
+
+describe("SqlSessionStorage atomic append", () => {
+	it("rejects stale peers without fetching or replacing the archive body", async () => {
+		const { client, storage } = await createSqlite();
+		try {
+			const archive = "/sessions/archive.jsonl";
+			await storage.appendTextAtomic(archive, "é\n", { expectedSize: null, durable: true });
+			const peer = await SqlSessionStorage.create({ client });
+			const queries = spyOn(client, "unsafe");
+			try {
+				await storage.appendTextAtomic(archive, "next\n", { expectedSize: 3, durable: true });
+				await expect(peer.appendTextAtomic(archive, "stale\n", { expectedSize: 3 })).rejects.toMatchObject({
+					name: "SessionWriteConflictError",
+					expectedSize: 3,
+					actualSize: 8,
+				});
+				expect(peer.statSync(archive).size).toBe(3);
+				expect(
+					queries.mock.calls.every(([sql]) => !sql.includes("SELECT content") && !sql.includes("INSERT")),
+				).toBe(true);
+				expect(queries.mock.calls.flatMap(([, values]) => values ?? [])).not.toContain("é\nnext\n");
+			} finally {
+				queries.mockRestore();
+			}
+			expect(await storage.readText(archive)).toBe("é\nnext\n");
+			await expect(peer.appendTextAtomic(archive, "exists", { expectedSize: null })).rejects.toBeInstanceOf(
+				SessionWriteConflictError,
+			);
+			await peer.refresh();
+			await peer.appendTextAtomic(archive, "retry\n", { expectedSize: 8 });
+			expect(await peer.readText(archive)).toBe("é\nnext\nretry\n");
+		} finally {
+			await client.end();
+		}
+	});
+
+	it("a rejected queued commit guard restores its index without persisting the suffix", async () => {
+		const { client, storage } = await createSqlite();
+		try {
+			const archive = "/sessions/guard.jsonl";
+			await storage.writeText(archive, "seed");
+			let allowed = true;
+			const append = storage.appendTextAtomic(archive, "cancelled", { expectedSize: 4, commitGuard: () => allowed });
+			allowed = false;
+			await append;
+			expect(storage.statSync(archive).size).toBe(4);
+			expect(await storage.readText(archive)).toBe("seed");
+			await storage.appendTextAtomic(archive, "next", { expectedSize: 4 });
+			expect(await storage.readText(archive)).toBe("seednext");
+		} finally {
+			await client.end();
+		}
 	});
 });

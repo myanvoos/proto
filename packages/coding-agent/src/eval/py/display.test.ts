@@ -71,13 +71,12 @@ test("notice recording never pushes the block list past its cap", () => {
 	for (let i = 0; i < 64; i++) {
 		expect(budget.add({ type: "json", text: String(i) })).toBe(true);
 	}
-	// A rejected oversized image at full capacity must not append a 65th
-	// notice block.
+	// Overflow stays visible without appending a 65th presentation block.
 	expect(
 		budget.add({ type: "image", data: "A".repeat(PYTHON_DISPLAY_MAX_PERSISTED_BYTES + 1), mimeType: "image/png" }),
 	).toBe(false);
 	expect(budget.blocks).toHaveLength(64);
-	expect(budget.blocks.every(block => block.type === "json")).toBe(true);
+	expect(budget.blocks.at(-1)?.type).toBe("notice");
 });
 
 test("clipped text blocks stay within the declared per-block byte limit", () => {
@@ -98,4 +97,12 @@ test("multibyte text clips on UTF-8 byte budget without splitting code points", 
 	expect(Buffer.byteLength(block.text)).toBeLessThanOrEqual(PYTHON_DISPLAY_MAX_BLOCK_TEXT);
 	// The final code point survived intact (no U+FFFD replacement split).
 	expect(block.text.endsWith("\u{FFFD}")).toBe(false);
+});
+
+test("metadata admission reserves room to report truncation even at the exact byte ceiling", () => {
+	const budget = new PythonDisplayBudget();
+	const metadata = "x".repeat(PYTHON_DISPLAY_MAX_PERSISTED_BYTES - 4);
+	expect(budget.admitMetadata(metadata)).toBeUndefined();
+	expect(budget.blocks.some(block => block.type === "notice" && block.text.includes("metadata truncated"))).toBe(true);
+	expect(budget.retainedBytes()).toBeLessThan(256);
 });

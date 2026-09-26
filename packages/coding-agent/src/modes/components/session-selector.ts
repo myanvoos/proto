@@ -60,20 +60,10 @@ function sessionSearchText(session: SessionInfo): string {
 	return parts.filter(Boolean).join(" ");
 }
 
-const kSearchTextLower = Symbol("session.searchTextLower");
-
-interface SearchableSessionInfo extends SessionInfo {
-	[kSearchTextLower]?: string;
-}
-
 function sessionTextLower(session: SessionInfo): string {
-	const tagged = session as SearchableSessionInfo;
-	let textLower = tagged[kSearchTextLower];
-	if (textLower === undefined) {
-		textLower = sessionSearchText(session).toLowerCase();
-		tagged[kSearchTextLower] = textLower;
-	}
-	return textLower;
+	// Search text can include complete history. Do not attach another retained
+	// copy to every listed session (or cache stale text across index refreshes).
+	return sessionSearchText(session).toLowerCase();
 }
 
 function tokenizeSessionQuery(query: string): string[] {
@@ -262,7 +252,6 @@ class SessionList implements Component {
 
 	#selectionMoved = false;
 	#formattedDates = new Map<string, CachedSessionDate>();
-	#normalizedMessages = new Map<string, { source: string; value: string }>();
 	#renderedRows = new Map<string, CachedSessionRows>();
 
 	constructor(
@@ -332,14 +321,6 @@ class SessionList implements Component {
 		return value;
 	}
 
-	#normalizedMessage(session: SessionInfo): string {
-		const cached = this.#normalizedMessages.get(session.path);
-		if (cached?.source === session.firstMessage) return cached.value;
-		const value = session.firstMessage.replace(/[\r\n]+/g, " ").trim();
-		this.#normalizedMessages.set(session.path, { source: session.firstMessage, value });
-		return value;
-	}
-
 	#buildSessionRows(
 		session: SessionInfo,
 		rowWidth: number,
@@ -351,7 +332,7 @@ class SessionList implements Component {
 		modified: string,
 	): CachedSessionRows {
 		const sessionTitle = sanitizeSingleLine(session.title ?? "");
-		const normalizedMessage = sanitizeSingleLine(this.#normalizedMessage(session));
+		const normalizedMessage = sanitizeSingleLine(session.firstMessage.replace(/[\r\n]+/g, " ").trim());
 		const normalCursor = padding(cursorWidth);
 		const selectedCursor = theme.fg("accent", cursorSymbol);
 		const maxWidth = rowWidth - cursorWidth;
@@ -415,6 +396,7 @@ class SessionList implements Component {
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, pinnedIds?: ReadonlySet<string>): void {
+		this.#formattedDates.clear();
 		this.#renderedRows.clear();
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
@@ -527,6 +509,14 @@ class SessionList implements Component {
 	}
 
 	dispose(): void {
+		this.#allSessions = [];
+		this.#setFilteredSessions([]);
+		this.#literalRanked = [];
+		this.#fuzzyRanked = [];
+		this.#historyIds = [];
+		this.#hitRows = [];
+		this.#formattedDates.clear();
+		this.#renderedRows.clear();
 		this.#scanGeneration++;
 		if (this.#scanTimer !== undefined) {
 			clearTimeout(this.#scanTimer);
@@ -596,6 +586,8 @@ class SessionList implements Component {
 		if (this.#searchRows > 1) lines.push("");
 
 		if (this.#filteredSessions.length === 0) {
+			this.#formattedDates.clear();
+			this.#renderedRows.clear();
 			if (this.#searchInput.getValue().trim()) {
 				lines.push(truncateToWidth(theme.fg("muted", "No matching sessions"), width));
 			} else if (this.#showCwd) {
@@ -627,6 +619,14 @@ class SessionList implements Component {
 			}
 		}
 
+		// Cache only this viewport, not every row visited during a long search.
+		const visiblePaths = new Set(filtered.slice(startIndex, endIndex).map(session => session.path));
+		for (const key of this.#formattedDates.keys()) {
+			if (!visiblePaths.has(key)) this.#formattedDates.delete(key);
+		}
+		for (const key of this.#renderedRows.keys()) {
+			if (!visiblePaths.has(key)) this.#renderedRows.delete(key);
+		}
 		const sessionLines: string[] = [];
 		const sessionRowIndex: number[] = [];
 		const overflow = startIndex > 0 || endIndex < filtered.length;
@@ -857,6 +857,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	#scope: "folder" | "all" = "folder";
 	#toggling = false;
 	#inputLocked = false;
+	#disposed = false;
 
 	#listLineOffset = 0;
 
@@ -935,7 +936,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	 * transcript; with cold scan rows that fold is seconds of work.
 	 */
 	#ensureGlobalLoadStarted(): void {
-		if (this.#globalLoadStarted || this.#globalSessions || !this.#loadAllSessions) return;
+		if (this.#disposed || this.#globalLoadStarted || this.#globalSessions || !this.#loadAllSessions) return;
 		this.#globalLoadStarted = true;
 		this.#globalSessionsPromise = this.#startGlobalLoad();
 	}
@@ -949,7 +950,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	async #toggleScope(): Promise<void> {
-		if (this.#toggling || this.#confirmationDialog) return;
+		if (this.#disposed || this.#toggling || this.#confirmationDialog) return;
 		if (this.#scope === "folder") {
 			let global = this.#globalSessions;
 			if (!global) {
@@ -965,6 +966,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 				try {
 					global = await this.#globalSessionsPromise;
 				} catch (err) {
+					if (this.#disposed) return;
 					// Drop the failed attempt so the next toggle retries with a fresh load.
 					this.#globalSessionsPromise = null;
 					this.#showError(err instanceof Error ? err.message : String(err));
@@ -972,6 +974,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 					this.#onRequestRender?.();
 					return;
 				}
+				if (this.#disposed) return;
 				this.#globalSessions = global;
 				this.#messageContainer.clear();
 				this.#toggling = false;
@@ -999,7 +1002,13 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	override dispose(): void {
+		this.#disposed = true;
 		this.#sessionList.dispose();
+		this.#folderSessions = [];
+		this.#globalSessions = null;
+		this.#globalSessionsPromise = null;
+		this.#confirmationDialog = null;
+		this.#onRequestRender = undefined;
 		super.dispose();
 	}
 
@@ -1075,6 +1084,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	override render(width: number): readonly string[] {
+		if (this.#disposed) return [];
 		this.#ensureGlobalLoadStarted();
 		const layout = getDialogViewport(this.#getTerminalRows());
 		const innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
@@ -1122,7 +1132,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	}
 
 	handleInput(keyData: string): void {
-		if (this.#inputLocked) return;
+		if (this.#disposed || this.#inputLocked) return;
 		if (keyData.startsWith("\x1b[<")) {
 			this.#handleMouse(keyData);
 			return;

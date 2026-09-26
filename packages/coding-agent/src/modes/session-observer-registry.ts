@@ -1,6 +1,7 @@
 import type { AgentRef } from "../registry/agent-registry";
 import type { ObservableAgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { projectAgentProgress, WORKER_SUBAGENT_LIFECYCLE_CHANNEL, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import { oneLineLabel } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
 
 export interface ObservableSession {
@@ -21,6 +22,8 @@ export interface ObservableSession {
 }
 
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
+
+const MAX_RECENT_SESSIONS = 128;
 
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	started: "active",
@@ -44,7 +47,26 @@ export class SessionObserverRegistry {
 	}
 
 	#notifyListeners(kind: SessionObserverChangeKind): void {
+		this.#trimCompleted();
 		for (const cb of this.#listeners) cb(kind);
+	}
+
+	#trimCompleted(): void {
+		const completed = [...this.#sessions.values()].filter(
+			session => session.kind !== "main" && session.status !== "active",
+		);
+		completed.sort(
+			(left, right) =>
+				right.lastUpdate - left.lastUpdate || this.#getStableOrder(right) - this.#getStableOrder(left),
+		);
+		for (const session of completed.slice(MAX_RECENT_SESSIONS)) {
+			this.#sessions.delete(session.id);
+			this.#sortOrderById.delete(session.id);
+		}
+		const groups = new Set([...this.#sessions.values()].map(session => session.parentToolCallId));
+		for (const id of this.#parentSortOrderById.keys()) {
+			if (!groups.has(id)) this.#parentSortOrderById.delete(id);
+		}
 	}
 
 	#ensureSortOrder(id: string): number {
@@ -170,6 +192,7 @@ export class SessionObserverRegistry {
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
 
+				const description = payload.description === undefined ? undefined : oneLineLabel(payload.description, 512);
 				const sortOrder = this.#ensureSortOrder(payload.id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 				const existing = this.#sessions.get(payload.id);
@@ -179,15 +202,15 @@ export class SessionObserverRegistry {
 					existing.index = payload.index;
 					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 					existing.detached = payload.detached ?? existing.detached;
-					if (payload.description) existing.description = payload.description;
+					if (description) existing.description = description;
 					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
 				} else {
 					this.#sessions.set(payload.id, {
 						id: payload.id,
 						kind: "subagent",
-						label: payload.description ?? `Subagent #${payload.index}`,
+						label: description ?? `Subagent #${payload.index}`,
 						agent: payload.agent,
-						description: payload.description,
+						description,
 						status,
 						sessionFile: payload.sessionFile,
 						parentToolCallId: payload.parentToolCallId,

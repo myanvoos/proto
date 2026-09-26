@@ -399,7 +399,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	proseOnlyThinking = true;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
-	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+	transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
 	pendingBashComponents: BashExecutionComponent[] = [];
 	bashComponent: BashExecutionComponent | undefined = undefined;
 	pendingPythonComponents: EvalExecutionComponent[] = [];
@@ -1288,7 +1288,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
 		for (const component of this.#optimisticUserMessageComponents) {
-			this.chatContainer.removeChild(component);
+			this.chatContainer.disposeAndRemoveChild(component);
 		}
 		this.#optimisticUserMessageComponents = [];
 		this.addMessageToChat(message, options);
@@ -1310,7 +1310,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	reconcileOptimisticSkillMessage(message: AgentMessage): void {
 		this.optimisticSkillMessagePending = false;
 		for (const component of this.#optimisticSkillMessageComponents) {
-			this.chatContainer.removeChild(component);
+			this.chatContainer.disposeAndRemoveChild(component);
 		}
 		this.#optimisticSkillMessageComponents = [];
 		this.addMessageToChat(message);
@@ -1320,7 +1320,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.optimisticSkillMessagePending = false;
 		if (this.#optimisticSkillMessageComponents.length === 0) return;
 		for (const component of this.#optimisticSkillMessageComponents) {
-			this.chatContainer.removeChild(component);
+			this.chatContainer.disposeAndRemoveChild(component);
 		}
 		this.#optimisticSkillMessageComponents = [];
 	}
@@ -1540,18 +1540,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		const previousChildren = [...this.chatContainer.children];
 		this.chatContainer.clear();
 
-		const fullContext = this.viewSession.buildTranscriptSessionContext();
+		const { context, window } = this.#uiHelpers.getVisibleTranscriptContext();
 		const preservedLiveToolCallIds = resolvePreservedLiveToolCallIds({
 			livePendingTools,
 			liveComponents,
-			messages: fullContext.messages,
+			messages: context.messages,
 		});
-		const { context, window } = this.#uiHelpers.selectVisibleTranscriptContext(fullContext);
 
-		const retained = new WeakMap<AgentMessage, Component>();
+		const retained = new WeakMap<AgentMessage, WeakRef<Component>>();
 		for (const message of context.messages) {
 			const component = this.transcriptMessageComponents.get(message);
-			if (component) retained.set(message, component);
+			if (component && previousChildren.includes(component.deref()!)) retained.set(message, component);
 		}
 		this.transcriptMessageComponents = retained;
 		this.#uiHelpers.addTranscriptWindowNotice(this.chatContainer, window);
@@ -2662,7 +2661,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetTranscript(): void {
-		this.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+		this.transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
 		this.chatContainer.dispose();
 		this.chatContainer.clear();
 	}
@@ -3052,9 +3051,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.#sideQuestionController.dispose();
-		if (await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true })) {
-			this.resetObserverRegistry();
-		}
+		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
 	}
 
 	handleSessionDeleteCommand(): Promise<void> {

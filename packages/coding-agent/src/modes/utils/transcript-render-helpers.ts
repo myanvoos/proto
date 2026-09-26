@@ -3,7 +3,6 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../../async";
 import type { DaemonSnapshot } from "../../launch/protocol";
-import type { MonitorEvent, MonitorEventKind } from "../../monitor/types";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -11,7 +10,7 @@ import {
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
-import type { MonitorEventDetails } from "../../session/monitor-event";
+import type { MonitorEventDetails, PersistedMonitorEvent } from "../../session/monitor-event";
 import { createIrcMessageCard } from "../../tools/fleet";
 import {
 	formatMoreItems,
@@ -122,7 +121,7 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 	return new ToolActivityContainer(block);
 }
 
-function monitorEventHeading(kind: MonitorEventKind): {
+function monitorEventHeading(kind: PersistedMonitorEvent["kind"]): {
 	glyph: string;
 	color: "success" | "warning" | "error";
 	text: string;
@@ -153,7 +152,7 @@ function monitorEventBodyLines(text: string): string[] {
 export function buildMonitorEventBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = (message as CustomMessage<MonitorEventDetails>).details;
 	const block = new TranscriptBlock();
-	const events: MonitorEvent[] = details?.events ?? [];
+	const events: PersistedMonitorEvent[] = details?.events ?? [];
 	if (events.length === 0 && typeof message.content === "string") {
 		block.addChild(new Text(theme.fg("dim", `${theme.status.done} ${message.content}`), 1, 0));
 	}

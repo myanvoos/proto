@@ -82,8 +82,6 @@ export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<H
 export interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
 	clearTerminalHistory?: boolean;
-	/** Offline rendering bypasses interactive transcript paging. */
-	fullHistory?: boolean;
 }
 
 export interface RenderSessionContextOptions {
@@ -160,7 +158,7 @@ export interface InteractiveModeContext {
 	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
 
-	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
+	transcriptMessageComponents: WeakMap<AgentMessage, WeakRef<Component>>;
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
 	bashComponent: BashExecutionComponent | undefined;

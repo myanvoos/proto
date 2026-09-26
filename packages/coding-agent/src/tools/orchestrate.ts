@@ -8,13 +8,13 @@ import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
 import type {
 	KillOutcome,
-	OrchestratorRuntime,
 	SendOutcome,
 	WaitOutcome,
 	WorkerReceipt,
 	WorkerScreen,
 	WorkerTurnState,
 } from "../orchestrator/runtime";
+import { OrchestratorRuntime } from "../orchestrator/runtime";
 import orchestrateKillDescription from "../prompts/tools/orchestrate-kill.md" with { type: "text" };
 import orchestrateListDescription from "../prompts/tools/orchestrate-list.md" with { type: "text" };
 import orchestrateSendDescription from "../prompts/tools/orchestrate-send.md" with { type: "text" };
@@ -22,7 +22,7 @@ import orchestrateSpawnDescription from "../prompts/tools/orchestrate-spawn.md" 
 import orchestrateWaitDescription from "../prompts/tools/orchestrate-wait.md" with { type: "text" };
 import { discoverAgents } from "../task/discovery";
 import { renderSpawnSummary } from "../task/spawn-summary";
-import type { runStructuredSubagent as RunStructuredSubagent } from "../task/structured-subagent";
+import { runStructuredSubagent } from "../task/structured-subagent";
 import { oneLineLabel } from "../task/types";
 import { WORKER_EFFORTS, type WorkerEffort } from "../thinking";
 import { renderStatusLine } from "../tui";
@@ -114,21 +114,8 @@ export interface OrchestrateToolDetails {
 	killed?: KillOutcome;
 }
 
-let orchestratorRuntimeModule: { OrchestratorRuntime: { global: () => OrchestratorRuntime } } | undefined;
-async function getOrchestratorRuntimeModule() {
-	orchestratorRuntimeModule ??= await import("../orchestrator/runtime");
-	return orchestratorRuntimeModule;
-}
-
-let spawnSubagentModule: { runStructuredSubagent: typeof RunStructuredSubagent } | undefined;
-async function getSpawnSubagentModule() {
-	spawnSubagentModule ??= await import("../task/structured-subagent");
-	return spawnSubagentModule;
-}
-
 async function screensOf(session: ToolSession, ids?: string[]): Promise<WorkerScreen[]> {
-	const runtime = (await getOrchestratorRuntimeModule()).OrchestratorRuntime;
-	return runtime.global().screens(session, ids);
+	return OrchestratorRuntime.global().screens(session, ids);
 }
 
 function textResult(text: string, details: OrchestrateToolDetails): AgentToolResult<OrchestrateToolDetails> {
@@ -198,11 +185,11 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 				screens: await screensOf(this.session),
 			});
 		}
-		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
+		const registry = OrchestratorRuntime.global();
 		const label = validateWorkerLabel(params.label);
 		if (params.isolated === true) {
 			try {
-				const execution = await (await getSpawnSubagentModule()).runStructuredSubagent({
+				const execution = await runStructuredSubagent({
 					session: this.session,
 					invocationKind: "worker",
 					assignment: params.message.trim(),
@@ -283,7 +270,7 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		params: typeof orchestrateSendSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
 		assertKnownParams("orchestrate_send", params, ["to", "message", "model"]);
-		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().send(this.session, {
+		const outcome = await OrchestratorRuntime.global().send(this.session, {
 			session: params.to,
 			message: params.message,
 			...(params.model !== undefined ? { model: params.model } : {}),
@@ -324,7 +311,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		onUpdate?: AgentToolUpdateCallback<OrchestrateToolDetails>,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
 		assertKnownParams("orchestrate_wait", params, ["ids", "timeoutMs"]);
-		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
+		const registry = OrchestratorRuntime.global();
 
 		const emitProgress = (): void => {
 			// Re-snapshot per tick: worker state/tool/turn fields are live, and
@@ -409,10 +396,7 @@ export class OrchestrateKillTool implements AgentTool<typeof orchestrateKillSche
 		params: typeof orchestrateKillSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
 		assertKnownParams("orchestrate_kill", params, ["id"]);
-		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().kill(
-			this.session,
-			params.id,
-		);
+		const outcome = await OrchestratorRuntime.global().kill(this.session, params.id);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
 			`Worker \`${outcome.id}\` (label \`${outcome.label}\`) is terminal; receipt=${outcome.receipt.status}, reason=${outcome.receipt.reason ?? "explicit-kill"}.${cancelNote} Recover at history://${outcome.id} or agent://${outcome.id}.`,

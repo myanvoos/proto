@@ -1,7 +1,8 @@
 import { encodeSixel } from "@oh-my-pi/pi-natives";
-import { stripControlChars } from "@oh-my-pi/pi-utils";
+import { parseImageMetadata, stripControlChars } from "@oh-my-pi/pi-utils";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
+import { TERMINAL_IMAGE_LIMITS } from "./image-limits";
 import {
 	detectKittyUnicodePlaceholdersSupport,
 	getKittyGraphics,
@@ -943,6 +944,7 @@ export function getWebpDimensions(base64Data: string): ImageDimensions | null {
 }
 
 export function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | null {
+	if (Buffer.byteLength(base64Data) > TERMINAL_IMAGE_LIMITS.imageBytes) return null;
 	const dimensions = readImageDimensions(base64Data, mimeType);
 	// Zero (or nonsensical) header dimensions produce NaN/Infinity geometry
 	// downstream; treat the image as unreadable and fall back to text.
@@ -971,10 +973,11 @@ export function renderImage(
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions = {},
 ): { sequence?: string; lines?: string[]; rows: number; transmit?: string } | null {
-	if (!TERMINAL.imageProtocol) {
+	if (!TERMINAL.imageProtocol || Buffer.byteLength(base64Data) > TERMINAL_IMAGE_LIMITS.imageBytes) {
 		return null;
 	}
 	if (
+		imageDimensions.widthPx * imageDimensions.heightPx > TERMINAL_IMAGE_LIMITS.pixels ||
 		!Number.isFinite(imageDimensions.widthPx) ||
 		!Number.isFinite(imageDimensions.heightPx) ||
 		imageDimensions.widthPx <= 0 ||
@@ -983,6 +986,9 @@ export function renderImage(
 		return null;
 	}
 
+	const header = parseImageMetadata(Buffer.from(base64Data, "base64"));
+	if (header?.width && header.height && header.width * header.height > TERMINAL_IMAGE_LIMITS.pixels) return null;
+	if (TERMINAL.imageProtocol === ImageProtocol.Sixel && (!header?.width || !header.height)) return null;
 	const cellDims = getCellDimensions();
 	const fit = calculateImageFit(imageDimensions, options, cellDims);
 
@@ -1029,6 +1035,7 @@ export function renderImage(
 			const heightScale = targetHeightPx / rawHeightPx;
 			const targetWidthPx = Math.max(1, Math.round(fit.columns * cellDims.widthPx * heightScale));
 			const rows = Math.max(1, Math.ceil(targetHeightPx / cellDims.heightPx));
+			if (targetWidthPx * targetHeightPx > TERMINAL_IMAGE_LIMITS.pixels) return null;
 			const decoded = new Uint8Array(Buffer.from(base64Data, "base64"));
 			const sequence = encodeSixel(decoded, targetWidthPx, targetHeightPx);
 			return { sequence, rows };

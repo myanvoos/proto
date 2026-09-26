@@ -1,7 +1,9 @@
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
+
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
-export type PasteResult = { handled: false } | { handled: true; pasteContent?: string };
+export type PasteResult = { handled: false } | { handled: true; pasteContent?: string; rejected?: true };
 
 const REENCODED_CTRL_CSI_U = /\x1b\[(\d+);5u/g;
 const REENCODED_CTRL_XTERM = /\x1b\[27;5;(\d+)~/g;
@@ -23,7 +25,8 @@ export type BracketedPasteHandlerOptions = {
 	byteLimit?: number;
 };
 
-const DEFAULT_BYTE_LIMIT = 64 * 1024 * 1024;
+// Oversized pastes are discarded, never replayed as keys; drain through the terminator.
+export const DEFAULT_PASTE_BYTE_LIMIT = 4 * 1024 * 1024;
 
 function stripPasteMarkers(text: string): string {
 	return text.replaceAll(PASTE_END, "").replaceAll(PASTE_START, "");
@@ -31,50 +34,69 @@ function stripPasteMarkers(text: string): string {
 
 export class BracketedPasteHandler {
 	#buffer = "";
+	#bytes = 0;
+	#markerTail = "";
+	#overflow = false;
 	#active = false;
 	readonly #byteLimit: number;
 
 	constructor(options: BracketedPasteHandlerOptions = {}) {
-		this.#byteLimit = options.byteLimit ?? DEFAULT_BYTE_LIMIT;
+		this.#byteLimit = options.byteLimit ?? DEFAULT_PASTE_BYTE_LIMIT;
+		if (!Number.isSafeInteger(this.#byteLimit) || this.#byteLimit < 0) {
+			throw new RangeError("Paste byte limit must be a nonnegative safe integer");
+		}
+	}
+
+	get active(): boolean {
+		return this.#active;
 	}
 
 	clear(): void {
 		this.#buffer = "";
+		this.#bytes = 0;
+		this.#markerTail = "";
+		this.#overflow = false;
 		this.#active = false;
 	}
 
 	process(data: string): PasteResult {
-		if (data.includes(PASTE_START)) {
+		if (!this.#active && data.includes(PASTE_START)) {
+			this.clear();
 			this.#active = true;
-			this.#buffer = "";
 			data = data.replace(PASTE_START, "");
 		}
-
 		if (!this.#active) return { handled: false };
 
-		this.#buffer += data;
-
-		const endIndex = this.#buffer.indexOf(PASTE_END);
-		if (endIndex !== -1) {
-			// Nothing stops pasted text from containing the terminator itself, and a terminal that
-			// splits a burst mid-payload looks identical. Everything that arrives with the
-			// terminator therefore stays paste content: replaying the tail as key input is how a
-			// pasted file gets to press Enter.
-			const pasteContent = stripPasteMarkers(this.#buffer);
-
-			this.#buffer = "";
-			this.#active = false;
-
-			return { handled: true, pasteContent };
+		const chunk = this.#markerTail + data;
+		const ended = chunk.includes(PASTE_END);
+		let tailLength = 0;
+		if (!ended) {
+			for (let length = 1; length < PASTE_END.length; length++) {
+				if (chunk.endsWith(PASTE_END.slice(0, length))) tailLength = length;
+			}
 		}
-
-		if (this.#buffer.length > this.#byteLimit) {
+		this.#markerTail = materializeString(chunk.slice(chunk.length - tailLength));
+		let rejected = false;
+		if (!this.#overflow) {
+			const content = stripPasteMarkers(chunk.slice(0, chunk.length - tailLength));
+			const bytes = Buffer.byteLength(content);
+			if (bytes > this.#byteLimit - this.#bytes) {
+				this.#overflow = true;
+				this.#buffer = "";
+				this.#bytes = 0;
+				rejected = true;
+			} else {
+				this.#buffer += materializeString(content);
+				this.#bytes += bytes;
+			}
+		}
+		if (ended) {
+			// Never replay the rest of the terminator's burst as keystrokes.
 			const pasteContent = this.#buffer;
-			this.#buffer = "";
-			this.#active = false;
-			return { handled: true, pasteContent };
+			const overflow = this.#overflow;
+			this.clear();
+			return overflow ? { handled: true, rejected: true } : { handled: true, pasteContent };
 		}
-
-		return { handled: true };
+		return rejected ? { handled: true, rejected: true } : { handled: true };
 	}
 }

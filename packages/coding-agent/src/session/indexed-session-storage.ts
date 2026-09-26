@@ -41,7 +41,7 @@ export interface SessionStorageBackend {
 		title?: SessionTitleUpdate,
 		expectedSize?: number | null,
 	): Promise<void>;
-	append(path: string, line: string, mtimeMs: number): Promise<void>;
+	append(path: string, line: string, mtimeMs: number, expectedSize?: number | null): Promise<void>;
 	updateSessionTitle(path: string, title: SessionTitleUpdate, mtimeMs: number): Promise<void>;
 	truncate(path: string, mtimeMs: number): Promise<void>;
 	remove(paths: string[]): Promise<void>;
@@ -344,6 +344,12 @@ export class IndexedSessionStorage implements SessionStorage {
 		}
 	}
 
+	async appendTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		if (options?.commitGuard && !options.commitGuard()) return;
+		this.#assertExpectedSize(path, options?.expectedSize);
+		await this.#queueWriterChange(path, content, () => undefined, options, false);
+	}
+
 	async rename(src: string, dst: string): Promise<void> {
 		await this.#awaitPath(src);
 		await this.#awaitPath(dst);
@@ -426,7 +432,13 @@ export class IndexedSessionStorage implements SessionStorage {
 		return this.#queueWriterChange(path, line, getError);
 	}
 
-	#queueWriterChange(path: string, line: string | null, getError: () => Error | undefined): Promise<void> {
+	#queueWriterChange(
+		path: string,
+		line: string | null,
+		getError: () => Error | undefined,
+		options?: WriteTextAtomicOptions,
+		trackDrain = true,
+	): Promise<void> {
 		const previous = this.#index.get(path);
 		const mtimeMs = this.#allocMtimeMs();
 		const change: WriterIndexChange = { previous, next: writerIndexEntry(previous, line, mtimeMs), line };
@@ -437,31 +449,34 @@ export class IndexedSessionStorage implements SessionStorage {
 		return this.#enqueuePath(
 			path,
 			async () => {
+				let committed = false;
 				try {
 					const error = getError();
 					if (error) throw error;
+					if (options?.commitGuard && !options.commitGuard()) return;
 					if (line === null) await this.#backend.truncate(path, mtimeMs);
-					else await this.#backend.append(path, line, mtimeMs);
-				} catch (err) {
-					// Rebase only descendants of this optimistic change. A later full write
-					// replaces the entry, so it must not be rolled back with this writer.
-					let before = change.next;
-					let restored = change.previous;
-					for (const pending of changes) {
-						if (pending.previous !== before) continue;
-						pending.previous = restored;
-						before = pending.next;
-						pending.next = writerIndexEntry(restored, pending.line, pending.next.mtimeMs);
-						restored = pending.next;
-					}
-					if (this.#index.get(path) === before) this.#restoreIndex(path, restored);
-					throw err;
+					else await this.#backend.append(path, line, mtimeMs, options?.expectedSize);
+					committed = true;
 				} finally {
+					if (!committed) {
+						// Rebase only descendants of this optimistic change. A later full write
+						// replaces the entry, so it must not be rolled back with this writer.
+						let before = change.next;
+						let restored = change.previous;
+						for (const pending of changes) {
+							if (pending.previous !== before) continue;
+							pending.previous = restored;
+							before = pending.next;
+							pending.next = writerIndexEntry(restored, pending.line, pending.next.mtimeMs);
+							restored = pending.next;
+						}
+						if (this.#index.get(path) === before) this.#restoreIndex(path, restored);
+					}
 					changes.splice(changes.indexOf(change), 1);
 					if (changes.length === 0) this.#writerChanges.delete(path);
 				}
 			},
-			{ trackDrain: true },
+			{ trackDrain },
 		);
 	}
 

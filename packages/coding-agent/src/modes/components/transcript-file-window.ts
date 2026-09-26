@@ -1,11 +1,20 @@
 import * as fs from "node:fs";
 
 const SCAN_BYTES = 64 * 1024;
+
+/** An omitted record/group keeps its disk interval, but never its oversized payload. */
+export interface TranscriptFileRecord {
+	start: number;
+	end: number;
+	text?: string;
+}
+
 export interface TranscriptFileWindow {
 	start: number;
 	end: number;
-	text: string;
+	records: TranscriptFileRecord[];
 }
+
 export function readFileRangeSync(file: string, offset: number, length: number): Buffer {
 	if (length <= 0) return Buffer.alloc(0);
 	const fd = fs.openSync(file, "r");
@@ -17,27 +26,23 @@ export function readFileRangeSync(file: string, offset: number, length: number):
 		fs.closeSync(fd);
 	}
 }
-/** Page boundary: user/assistant record; assistant tool calls remain with all following results. */
-function isGroupBoundary(line: Buffer): boolean {
+
+/** Tool results stay with their assistant. An oversized opaque row is an omitted boundary. */
+function classifyRecord(record: TranscriptFileRecord): { boundary: boolean; renderUnits: number } {
+	if (record.text === undefined) return { boundary: true, renderUnits: 1 };
 	try {
-		const value = JSON.parse(line.toString("utf-8")) as { type?: unknown; message?: { role?: unknown } };
-		return value.type === "message" && (value.message?.role === "user" || value.message?.role === "assistant");
+		const value = JSON.parse(record.text) as { type?: unknown; message?: { role?: unknown; content?: unknown } };
+		const assistant = value.type === "message" && value.message?.role === "assistant";
+		return {
+			boundary: value.type === "message" && (value.message?.role === "user" || assistant),
+			// A tool call can add a card and a following assistant segment even if its JSON is tiny.
+			renderUnits: assistant && Array.isArray(value.message?.content) ? 1 + value.message.content.length * 2 : 1,
+		};
 	} catch {
-		return false;
+		return { boundary: false, renderUnits: 1 };
 	}
 }
-function boundaries(buffer: Buffer, absoluteStart: number, firstLineComplete = false): number[] {
-	const found: number[] = [];
-	let lineStart = absoluteStart === 0 || firstLineComplete ? 0 : buffer.indexOf(0x0a) + 1;
-	if (lineStart === 0 && absoluteStart > 0 && !firstLineComplete) return found;
-	while (lineStart < buffer.byteLength) {
-		const newline = buffer.indexOf(0x0a, lineStart);
-		if (newline < 0) break;
-		if (isGroupBoundary(buffer.subarray(lineStart, newline))) found.push(absoluteStart + lineStart);
-		lineStart = newline + 1;
-	}
-	return found;
-}
+
 function completeEnd(file: string, size: number): number {
 	for (let cursor = size; cursor > 0; ) {
 		const start = Math.max(0, cursor - SCAN_BYTES);
@@ -48,60 +53,177 @@ function completeEnd(file: string, size: number): number {
 	}
 	return 0;
 }
-function alignedStart(file: string, candidate: number, end: number, maxGroups: number): number {
-	let start = candidate;
-	let buffer = readFileRangeSync(file, start, end - start);
-	for (;;) {
-		const firstLineComplete = start === 0 || readFileRangeSync(file, start - 1, 1)[0] === 0x0a;
-		const found = boundaries(buffer, start, firstLineComplete);
-		if (found.length > 0) return found[Math.max(0, found.length - maxGroups)];
-		if (start === 0) return 0;
-		const previous = Math.max(0, start - SCAN_BYTES);
-		buffer = Buffer.concat([readFileRangeSync(file, previous, start - previous), buffer]);
-		start = previous;
+
+/** Scan fixed-size chunks; even one enormous JSONL row never allocates its full span. */
+function* readRecords(
+	file: string,
+	start: number,
+	end: number,
+	maxBytes: number,
+	reverse: boolean,
+): Generator<TranscriptFileRecord> {
+	let parts: Buffer[] = [];
+	let recordEdge = reverse ? end : start;
+	let cursor = reverse ? end : start;
+	while (reverse ? cursor > start : cursor < end) {
+		const chunkStart = reverse ? Math.max(start, cursor - SCAN_BYTES) : cursor;
+		const chunkEnd = reverse ? cursor : Math.min(end, cursor + SCAN_BYTES);
+		const chunk = readFileRangeSync(file, chunkStart, chunkEnd - chunkStart);
+		if (reverse) {
+			let right = chunk.length;
+			for (let index = chunk.length - 1; index >= 0; index--) {
+				if (chunk[index] !== 0x0a || chunkStart + index + 1 === recordEdge) continue;
+				const left = index + 1;
+				const recordStart = chunkStart + left;
+				if (recordEdge - recordStart <= maxBytes) parts.push(chunk.subarray(left, right));
+				yield {
+					start: recordStart,
+					end: recordEdge,
+					text:
+						recordEdge - recordStart <= maxBytes ? Buffer.concat(parts.reverse()).toString("utf-8") : undefined,
+				};
+				parts = [];
+				recordEdge = recordStart;
+				right = left;
+			}
+			if (recordEdge - chunkStart <= maxBytes) parts.push(chunk.subarray(0, right));
+			else parts = [];
+			cursor = chunkStart;
+		} else {
+			let left = 0;
+			for (let index = 0; index < chunk.length; index++) {
+				if (chunk[index] !== 0x0a) continue;
+				const recordEnd = chunkStart + index + 1;
+				if (recordEnd - recordEdge <= maxBytes) parts.push(chunk.subarray(left, index + 1));
+				yield {
+					start: recordEdge,
+					end: recordEnd,
+					text: recordEnd - recordEdge <= maxBytes ? Buffer.concat(parts).toString("utf-8") : undefined,
+				};
+				parts = [];
+				recordEdge = recordEnd;
+				left = index + 1;
+			}
+			if (chunkEnd - recordEdge <= maxBytes) parts.push(chunk.subarray(left));
+			else parts = [];
+			cursor = chunkEnd;
+		}
+	}
+	if (reverse && recordEdge > start) {
+		yield {
+			start,
+			end: recordEdge,
+			text: recordEdge - start <= maxBytes ? Buffer.concat(parts.reverse()).toString("utf-8") : undefined,
+		};
 	}
 }
-function readWindow(file: string, start: number, end: number): TranscriptFileWindow {
-	return { start, end, text: readFileRangeSync(file, start, end - start).toString("utf-8") };
+
+interface RecordGroup {
+	renderUnits: number;
+	start: number;
+	end: number;
+	records: TranscriptFileRecord[];
 }
+
+function* readGroups(
+	file: string,
+	start: number,
+	end: number,
+	maxBytes: number,
+	maxRecords: number,
+	reverse: boolean,
+): Generator<RecordGroup> {
+	let group: RecordGroup | undefined;
+	let omitted = false;
+	for (const record of readRecords(file, start, end, maxBytes, reverse)) {
+		const { boundary, renderUnits } = classifyRecord(record);
+		if (!reverse && boundary && group) {
+			yield group;
+			group = undefined;
+		}
+		if (!group) {
+			group = { start: record.start, end: record.end, records: [], renderUnits: 0 };
+			omitted = false;
+		}
+		group.start = Math.min(group.start, record.start);
+		group.end = Math.max(group.end, record.end);
+		group.renderUnits += renderUnits;
+		omitted ||=
+			record.text === undefined ||
+			group.end - group.start > maxBytes ||
+			group.records.length >= maxRecords ||
+			group.renderUnits > maxRecords * 2;
+		if (omitted) group.records = [{ start: group.start, end: group.end }];
+		else if (reverse) group.records.unshift(record);
+		else group.records.push(record);
+		if (reverse && boundary) {
+			yield group;
+			group = undefined;
+		}
+	}
+	if (group) yield group;
+}
+
+function readWindow(
+	file: string,
+	start: number,
+	end: number,
+	maxBytes: number,
+	maxGroups: number,
+	reverse: boolean,
+): TranscriptFileWindow {
+	const groups: RecordGroup[] = [];
+	let bytes = 0;
+	let recordCount = 0;
+	let renderUnits = 0;
+	const maxRecords = maxGroups * 2;
+	for (const group of readGroups(file, start, end, maxBytes, maxRecords, reverse)) {
+		const size = group.end - group.start;
+		if (
+			groups.length > 0 &&
+			(bytes + size > maxBytes ||
+				recordCount + group.records.length > maxRecords ||
+				renderUnits + group.renderUnits > maxRecords * 2)
+		)
+			break;
+		if (reverse) groups.unshift(group);
+		else groups.push(group);
+		bytes += size;
+		recordCount += group.records.length;
+		renderUnits += group.renderUnits;
+		if (groups.length >= maxGroups || bytes >= maxBytes || recordCount >= maxRecords) break;
+	}
+	return {
+		start: groups[0]?.start ?? end,
+		end: groups.at(-1)?.end ?? end,
+		records: groups.flatMap(group => group.records),
+	};
+}
+
 export function readTranscriptTail(
 	file: string,
 	size: number,
-	softBytes: number,
+	maxBytes: number,
 	maxGroups: number,
 ): TranscriptFileWindow {
-	const end = completeEnd(file, size);
-	if (end === 0) return { start: 0, end: 0, text: "" };
-	return readWindow(file, alignedStart(file, Math.max(0, end - softBytes), end, maxGroups), end);
+	return readWindow(file, 0, completeEnd(file, size), maxBytes, maxGroups, true);
 }
+
 export function readTranscriptBefore(
 	file: string,
 	end: number,
-	softBytes: number,
+	maxBytes: number,
 	maxGroups: number,
 ): TranscriptFileWindow {
-	if (end <= 0) return { start: 0, end: 0, text: "" };
-	return readWindow(file, alignedStart(file, Math.max(0, end - softBytes), end, maxGroups), end);
+	return readWindow(file, 0, end, maxBytes, maxGroups, true);
 }
+
 export function readTranscriptAfter(
 	file: string,
 	start: number,
 	size: number,
-	softBytes: number,
+	maxBytes: number,
 	maxGroups: number,
 ): TranscriptFileWindow {
-	const finalEnd = completeEnd(file, size);
-	if (start >= finalEnd) return { start: finalEnd, end: finalEnd, text: "" };
-	let end = Math.min(finalEnd, start + SCAN_BYTES);
-	for (;;) {
-		const buffer = readFileRangeSync(file, start, end - start);
-		const found = boundaries(buffer, start).filter(offset => offset > start);
-		const groupEnd = found[maxGroups - 1];
-		const byteEnd = found.find(offset => offset - start >= softBytes);
-		const boundary =
-			groupEnd === undefined ? byteEnd : byteEnd === undefined ? groupEnd : Math.min(groupEnd, byteEnd);
-		if (boundary !== undefined) return readWindow(file, start, boundary);
-		if (end === finalEnd) return readWindow(file, start, finalEnd);
-		end = Math.min(finalEnd, end + SCAN_BYTES);
-	}
+	return readWindow(file, start, completeEnd(file, size), maxBytes, maxGroups, false);
 }

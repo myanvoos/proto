@@ -1,3 +1,4 @@
+import { AsyncJobManager } from "../../src/async/job-manager";
 import { Settings } from "../../src/config/settings";
 import { IrcBus } from "../../src/irc/bus";
 import { OrchestratorRuntime } from "../../src/orchestrator/runtime";
@@ -36,7 +37,9 @@ runtime.registerRecordForTests({
 	state: "running",
 	jobId: "worker-round-trip-t1",
 });
+const manager = new AsyncJobManager({ retentionMs: 0 });
 const session: ToolSession = {
+	asyncJobManager: manager,
 	cwd: process.cwd(),
 	hasUI: false,
 	settings: Settings.isolated({ "launch.enabled": true }),
@@ -92,3 +95,5 @@ console.log(
 		killedId: killed.details?.killed?.id,
 	}),
 );
+
+await manager.dispose({ timeoutMs: 1_000 });

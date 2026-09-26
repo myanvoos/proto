@@ -1,4 +1,4 @@
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, isEnotdir, logger, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import {
@@ -7,10 +7,18 @@ import {
 	isBlobRef,
 	parseBlobRef,
 	resolveImageData,
+	resolveImageDataSync,
 	resolveImageDataUrl,
+	resolveImageDataUrlSync,
 } from "./blob-store";
 import { buildSessionContext } from "./session-context";
-import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
+import {
+	CURRENT_SESSION_VERSION,
+	type FileEntry,
+	type RawFileEntry,
+	type SessionEntry,
+	type SessionHeader,
+} from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
 import { isImageBlock, isImageDataPayload, isPersistedReplayBlobRef } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
@@ -54,6 +62,8 @@ export interface LoadSessionOptions {
 	preserveInvalidHeader?: boolean;
 	/** Propagate ENOENT/ENOTDIR instead of treating the path as a new empty session. */
 	throwIfMissing?: boolean;
+	/** Replace parsed payloads only for current-version sessions; legacy migrations require intact entries. */
+	retainEntry?: (entry: SessionEntry) => SessionEntry;
 }
 
 export interface SessionArchiveRecord {
@@ -72,6 +82,8 @@ export interface SessionArchive {
 export interface SessionLoadResult {
 	entries: FileEntry[];
 	archivedEntryIds?: Set<string>;
+	/** Validated archive snapshot size; null means absent, undefined means unsafe to append. */
+	archiveSize?: number | null;
 	titleSlot: SessionTitleUpdate | undefined;
 	malformedRecords: number;
 	/** Malformed newline-terminated records, which are not safe to discard during resume. */
@@ -92,52 +104,95 @@ export function sessionArchivePath(sessionFile: string): string {
 interface LoadedSessionArchive {
 	archive: SessionArchive;
 	entriesById: Map<string, FileEntry>;
+	signatures: Map<string, bigint>;
+	size: number;
+}
+
+class RetainEntryError extends Error {}
+
+function retainLoadedEntry(entry: FileEntry, retainEntry?: LoadSessionOptions["retainEntry"]): FileEntry {
+	if (!retainEntry || entry.type === "session") return entry;
+	try {
+		return retainEntry(entry);
+	} catch (error) {
+		throw new RetainEntryError("Cannot retain session entry", { cause: error });
+	}
+}
+
+/** Each line is an independent gzip envelope. A legacy single envelope is also one line. */
+async function* archiveBatches(storage: SessionStorage, archivePath: string, size: number): AsyncGenerator<string> {
+	let pending = "";
+	for (let offset = 0; offset < size; offset += STREAM_PARSE_BATCH_BYTES) {
+		pending += await storage.readTextRange(archivePath, offset, Math.min(size, offset + STREAM_PARSE_BATCH_BYTES));
+		while (true) {
+			const newline = pending.indexOf("\n");
+			if (newline === -1) break;
+			const line = pending.slice(0, newline).trim();
+			pending = pending.slice(newline + 1);
+			if (line) yield line;
+		}
+	}
+	if (pending.trim()) yield pending.trim();
 }
 
 async function loadSessionArchiveWithEntries(
 	filePath: string,
 	storage: SessionStorage,
 	sessionId: string,
+	retainEntry?: LoadSessionOptions["retainEntry"],
+	retainLines = false,
+	activeSignatures?: ReadonlyMap<string, bigint>,
 ): Promise<LoadedSessionArchive | undefined> {
 	const archivePath = sessionArchivePath(filePath);
 	if (!(await storage.exists(archivePath))) return undefined;
-	const encoded = (await storage.readText(archivePath)).trim();
-	let archive: unknown;
-	try {
-		archive = JSON.parse(gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"));
-	} catch (error) {
-		throw new Error(`Session archive is corrupt: ${archivePath}`, { cause: error });
-	}
-	if (typeof archive !== "object" || archive === null) throw new Error(`Session archive is invalid: ${archivePath}`);
-	const candidate = archive as Partial<SessionArchive>;
-	if (
-		candidate.version !== 1 ||
-		candidate.sessionId !== sessionId ||
-		typeof candidate.sessionFile !== "string" ||
-		!Array.isArray(candidate.records)
-	) {
-		// A copied artifact directory may carry the source session archive alongside a fork.
-		if (candidate.sessionId !== sessionId) return undefined;
-		throw new Error(`Session archive is invalid: ${archivePath}`);
-	}
-	const recordIds = new Set<string>();
+	const size = storage.statSync(archivePath).size;
+	const archive: SessionArchive = { version: 1, sessionId, sessionFile: filePath, records: [] };
 	const entriesById = new Map<string, FileEntry>();
-	for (const record of candidate.records) {
+	const signatures = new Map<string, bigint>();
+	let batches = 0;
+	for await (const encoded of archiveBatches(storage, archivePath, size)) {
+		let value: unknown;
+		try {
+			value = JSON.parse(gunzipSync(Buffer.from(encoded, "base64")).toString("utf8"));
+		} catch (error) {
+			throw new Error(`Session archive is corrupt: ${archivePath}`, { cause: error });
+		}
+		if (typeof value !== "object" || value === null) throw new Error(`Session archive is invalid: ${archivePath}`);
+		const candidate = value as Partial<SessionArchive>;
 		if (
-			typeof record !== "object" ||
-			record === null ||
-			typeof record.id !== "string" ||
-			!(record.beforeId === null || typeof record.beforeId === "string") ||
-			typeof record.line !== "string"
+			candidate.version !== 1 ||
+			candidate.sessionId !== sessionId ||
+			typeof candidate.sessionFile !== "string" ||
+			!Array.isArray(candidate.records)
 		) {
 			throw new Error(`Session archive is invalid: ${archivePath}`);
 		}
-		if (recordIds.has(record.id)) throw new Error(`Session archive has duplicate entry IDs: ${archivePath}`);
-		const validatedRecord = record as SessionArchiveRecord;
-		entriesById.set(record.id, parseArchivedEntry(validatedRecord));
-		recordIds.add(record.id);
+		batches++;
+		for (const record of candidate.records) {
+			if (
+				typeof record !== "object" ||
+				record === null ||
+				typeof record.id !== "string" ||
+				!(record.beforeId === null || typeof record.beforeId === "string") ||
+				typeof record.line !== "string"
+			) {
+				throw new Error(`Session archive is invalid: ${archivePath}`);
+			}
+			if (entriesById.has(record.id)) throw new Error(`Session archive has duplicate entry IDs: ${archivePath}`);
+			const entry = parseArchivedEntry(record);
+			const signature = Bun.hash.wyhash(JSON.stringify(entry));
+			if (activeSignatures?.has(record.id) && activeSignatures.get(record.id) !== signature) {
+				throw new Error("Session archive entry ID collides with the active transcript");
+			}
+			signatures.set(record.id, signature);
+			entriesById.set(record.id, retainLoadedEntry(entry, retainEntry));
+			archive.records.push({ id: record.id, beforeId: record.beforeId, line: retainLines ? record.line : "" });
+			// Do not keep source payloads alive until the rest of this batch finishes spilling.
+			if (!retainLines) record.line = "";
+		}
 	}
-	return { archive: candidate as SessionArchive, entriesById };
+	if (batches === 0) throw new Error(`Session archive is empty: ${archivePath}`);
+	return { archive, entriesById, signatures, size };
 }
 
 export async function loadSessionArchive(
@@ -145,11 +200,44 @@ export async function loadSessionArchive(
 	storage: SessionStorage,
 	sessionId: string,
 ): Promise<SessionArchive | undefined> {
-	return (await loadSessionArchiveWithEntries(filePath, storage, sessionId))?.archive;
+	return (await loadSessionArchiveWithEntries(filePath, storage, sessionId, undefined, true))?.archive;
 }
 
-function archiveDoesNotCollide(archive: SessionArchive, activeIds: ReadonlySet<string>): boolean {
-	return archive.records.every(record => !activeIds.has(record.id));
+/** Append only new records, using the previously validated snapshot as the stale-writer fence. */
+export async function appendSessionArchive(
+	filePath: string,
+	storage: SessionStorage,
+	batch: SessionArchive,
+	expectedSize: number | null,
+): Promise<number> {
+	if (
+		(expectedSize !== null && (!Number.isSafeInteger(expectedSize) || expectedSize < 0)) ||
+		batch.version !== 1 ||
+		!batch.sessionId ||
+		batch.sessionFile !== filePath ||
+		batch.records.length === 0
+	) {
+		throw new Error("Invalid session archive batch");
+	}
+	const ids = new Set<string>();
+	for (const record of batch.records) {
+		if (ids.has(record.id) || !(record.beforeId === null || typeof record.beforeId === "string")) {
+			throw new Error("Invalid session archive batch");
+		}
+		parseArchivedEntry(record);
+		ids.add(record.id);
+	}
+	// Leading newline also terminates legacy archives, which did not have a final newline.
+	const encoded = `${expectedSize === null ? "" : "\n"}${gzipSync(JSON.stringify(batch)).toString("base64")}\n`;
+	await storage.appendTextAtomic(sessionArchivePath(filePath), encoded, { expectedSize, durable: true });
+	return (expectedSize ?? 0) + Buffer.byteLength(encoded, "utf8");
+}
+
+function archiveDoesNotCollide(archive: LoadedSessionArchive, activeSignatures: ReadonlyMap<string, bigint>): boolean {
+	return archive.archive.records.every(
+		record =>
+			!activeSignatures.has(record.id) || activeSignatures.get(record.id) === archive.signatures.get(record.id),
+	);
 }
 
 function warnInvalidArchive(filePath: string, error: unknown): void {
@@ -193,23 +281,36 @@ function hydrateArchivedEntries(
 		),
 	);
 	const result: FileEntry[] = [];
+	const emitted = new Set<string>();
 	const appendRecords = (anchor: string | null): void => {
-		for (const record of byAnchor.get(anchor) ?? []) {
-			if (activeIds.has(record.id)) continue;
-			const entry = entriesById.get(record.id);
-			if (!entry) throw new Error(`Session archive entry ${record.id} was not validated`);
-			result.push(entry);
+		const stack: Array<{ id: string; emit: boolean }> = [];
+		for (const record of (byAnchor.get(anchor) ?? []).toReversed()) {
+			if (!activeIds.has(record.id)) stack.push({ id: record.id, emit: false });
 		}
-		byAnchor.delete(anchor);
+		while (stack.length > 0) {
+			const item = stack.pop()!;
+			if (item.emit) {
+				const entry = entriesById.get(item.id);
+				if (!entry) throw new Error(`Session archive entry ${item.id} was not validated`);
+				result.push(entry);
+				continue;
+			}
+			if (emitted.has(item.id)) throw new Error("Session archive contains an anchor cycle");
+			emitted.add(item.id);
+			stack.push({ id: item.id, emit: true });
+			for (const record of (byAnchor.get(item.id) ?? []).toReversed()) {
+				if (!activeIds.has(record.id)) stack.push({ id: record.id, emit: false });
+			}
+		}
 	};
 	for (const entry of entries) {
-		if (typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string") {
-			appendRecords(entry.id);
-			result.push(entry);
-		} else result.push(entry);
+		if (typeof entry.id === "string") appendRecords(entry.id);
+		result.push(entry);
 	}
 	appendRecords(null);
-	if (byAnchor.size > 0) throw new Error("Session archive references an entry missing from the active transcript");
+	if (records.some(record => !activeIds.has(record.id) && !emitted.has(record.id))) {
+		throw new Error("Session archive references a missing entry or contains an anchor cycle");
+	}
 	return { entries: result, ids };
 }
 
@@ -361,7 +462,8 @@ export async function visitEntriesFromFileStream(
 				if (shouldYieldToMacrotask()) await yieldToMacrotask();
 			}
 			if (stopped) break;
-			if (error) {
+			// parseChunk reports incomplete JSON as no progress, even with a terminating newline.
+			if (error || (read === 0 && !done)) {
 				const nextNewline = input.indexOf("\n", read);
 				if (nextNewline === -1) break;
 				if (input.slice(read, nextNewline).trim().length > 0) {
@@ -411,16 +513,20 @@ export async function visitEntriesFromFileStream(
 
 export async function loadEntriesFromFileStream(
 	filePath: string,
-	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
+	options?: Pick<LoadSessionOptions, "throwIfMissing" | "retainEntry">,
 ): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
 	let malformedCompleteRecords = 0;
 	let bytesConsumed = 0;
+	let retainCurrentVersion = false;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
-			entries.push(entry);
+			if (entries.length === 0) {
+				retainCurrentVersion = isValidSessionHeader(entry) && entry.version === CURRENT_SESSION_VERSION;
+			}
+			entries.push(retainLoadedEntry(entry, retainCurrentVersion ? options?.retainEntry : undefined));
 		},
 		{
 			onMalformedRecord: kind => {
@@ -458,45 +564,43 @@ async function loadWithKnownSize(
 	options: LoadSessionOptions,
 ): Promise<SessionLoadResult> {
 	let loaded: SessionLoadResult;
-	if (shouldStreamEntries(storage, size)) {
-		loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options.throwIfMissing });
+	const activeSignatures = new Map<string, bigint>();
+	const retainEntry = (entry: SessionEntry): SessionEntry => {
+		activeSignatures.set(entry.id, Bun.hash.wyhash(JSON.stringify(entry)));
+		return options.retainEntry?.(entry) ?? entry;
+	};
+	if (shouldStreamEntries(storage, size) || (options.retainEntry && storage instanceof FileSessionStorage)) {
+		loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options.throwIfMissing, retainEntry });
 	} else {
 		const content = await storage.readText(filePath);
 		loaded = { ...parseSessionContent(content), sourceSize: Buffer.byteLength(content, "utf8") };
+		if (isValidSessionHeader(loaded.entries[0]) && loaded.entries[0].version === CURRENT_SESSION_VERSION) {
+			loaded.entries = loaded.entries.map(entry => retainLoadedEntry(entry, retainEntry));
+		}
 	}
 	if (loaded.invalidHeader && !options.preserveInvalidHeader) return { ...loaded, entries: [] };
 	const header = loaded.entries[0];
 	if (header?.type !== "session" || typeof header.id !== "string") return loaded;
-	let archive: SessionArchive | undefined;
-	let archiveEntriesById = new Map<string, FileEntry>();
+	for (const entry of loaded.entries) {
+		if (!activeSignatures.has(entry.id)) activeSignatures.set(entry.id, Bun.hash.wyhash(JSON.stringify(entry)));
+	}
 	try {
-		const loadedArchive = await loadSessionArchiveWithEntries(filePath, storage, header.id);
-		archive = loadedArchive?.archive;
-		archiveEntriesById = loadedArchive?.entriesById ?? archiveEntriesById;
-		if (
-			archive &&
-			!archiveDoesNotCollide(
-				archive,
-				new Set(
-					loaded.entries.flatMap(entry =>
-						typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string"
-							? [entry.id]
-							: [],
-					),
-				),
-			)
-		) {
+		const archive = await loadSessionArchiveWithEntries(
+			filePath,
+			storage,
+			header.id,
+			header.version === CURRENT_SESSION_VERSION ? options.retainEntry : undefined,
+			false,
+			activeSignatures,
+		);
+		if (!archive) return { ...loaded, archiveSize: null };
+		if (!archiveDoesNotCollide(archive, activeSignatures)) {
 			throw new Error("Session archive entry ID collides with the active transcript");
 		}
+		const hydrated = hydrateArchivedEntries(loaded.entries, archive.archive.records, archive.entriesById);
+		return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids, archiveSize: archive.size };
 	} catch (error) {
-		warnInvalidArchive(filePath, error);
-		return loaded;
-	}
-	if (!archive || archive.records.length === 0) return loaded;
-	try {
-		const hydrated = hydrateArchivedEntries(loaded.entries, archive.records, archiveEntriesById);
-		return { ...loaded, entries: hydrated.entries, archivedEntryIds: hydrated.ids };
-	} catch (error) {
+		if (error instanceof RetainEntryError) throw error;
 		warnInvalidArchive(filePath, error);
 		return loaded;
 	}
@@ -519,6 +623,7 @@ export async function loadSessionFile(
 				malformedCompleteRecords: 0,
 				invalidHeader: false,
 				sourceSize: null,
+				archiveSize: null,
 			};
 		}
 		throw err;
@@ -549,87 +654,52 @@ export async function visitEntriesFromFile(
 			{ maxRecords: 1 },
 		);
 		if (!isValidSessionHeader(firstEntry)) return;
-		let archive: SessionArchive | undefined;
-		let archiveEntriesById = new Map<string, FileEntry>();
+		let archive: LoadedSessionArchive | undefined;
 		try {
-			const loadedArchive = await loadSessionArchiveWithEntries(filePath, storage, firstEntry.id);
-			archive = loadedArchive?.archive;
-			archiveEntriesById = loadedArchive?.entriesById ?? archiveEntriesById;
+			archive = await loadSessionArchiveWithEntries(filePath, storage, firstEntry.id);
 		} catch (error) {
 			warnInvalidArchive(filePath, error);
-			archive = undefined;
 		}
-		if (archive?.records.length) {
-			const activeIds = new Set<string>();
-			// Active-file errors must propagate; only sidecar validation failures are ignored.
+		let ordered: FileEntry[] | undefined;
+		const activeIds = new Set<string>();
+		if (archive) {
+			const activeSignatures = new Map<string, bigint>();
+			const active: FileEntry[] = [];
+			// Validate the complete anchor graph before emitting anything from the sidecar.
 			await visitEntriesFromFileStream(filePath, entry => {
-				if (typeof entry.id === "string") activeIds.add(entry.id);
+				activeIds.add(entry.id);
+				activeSignatures.set(entry.id, Bun.hash.wyhash(JSON.stringify(entry)));
+				active.push({ type: entry.type, id: entry.id } as FileEntry);
 			});
 			try {
-				if (!archiveDoesNotCollide(archive, activeIds)) {
+				if (!archiveDoesNotCollide(archive, activeSignatures)) {
 					throw new Error("Session archive entry ID collides with the active transcript");
 				}
-				if (archive.records.some(record => record.beforeId !== null && !activeIds.has(record.beforeId))) {
-					throw new Error("Session archive references an entry missing from the active transcript");
-				}
+				ordered = hydrateArchivedEntries(active, archive.archive.records, archive.entriesById).entries;
 			} catch (error) {
 				warnInvalidArchive(filePath, error);
-				archive = undefined;
 			}
 		}
-		if (!archive || archive.records.length === 0) {
-			let sawFirstEntry = false;
-			await visitEntriesFromFileStream(filePath, entry => {
-				if (!sawFirstEntry) {
-					sawFirstEntry = true;
-					if (!isValidSessionHeader(entry)) return false;
-				}
-				return visit(entry);
-			});
-			return;
-		}
-		const byAnchor = new Map<string | null, SessionArchiveRecord[]>();
-		const byId = new Map(archive.records.map(record => [record.id, record]));
-		for (const record of archive.records) {
-			const group = byAnchor.get(record.beforeId) ?? [];
-			group.push(record);
-			byAnchor.set(record.beforeId, group);
-		}
-		const activeArchivedIds = new Set<string>();
-		const activeIds = new Set<string>();
-		const appendBefore = (anchor: string | null): boolean => {
-			for (const record of byAnchor.get(anchor) ?? []) {
-				if (activeArchivedIds.has(record.id)) continue;
-				const archivedEntry = archiveEntriesById.get(record.id);
-				if (!archivedEntry) throw new Error(`Session archive entry ${record.id} was not validated`);
-				if (visit(archivedEntry) === false) return false;
+		let cursor = 0;
+		let stopped = false;
+		const appendArchived = (): boolean => {
+			while (ordered && cursor < ordered.length && !activeIds.has(ordered[cursor]!.id)) {
+				if (visit(ordered[cursor++]!) === false) return false;
 			}
-			byAnchor.delete(anchor);
 			return true;
 		};
-		let sawFirstEntry = false;
-		let stopped = false;
 		await visitEntriesFromFileStream(filePath, entry => {
-			if (!sawFirstEntry) {
-				sawFirstEntry = true;
-				if (!isValidSessionHeader(entry)) return false;
+			if (!appendArchived()) {
+				stopped = true;
+				return false;
 			}
-			if (typeof entry.id === "string") {
-				activeIds.add(entry.id);
-				if (byId.has(entry.id)) activeArchivedIds.add(entry.id);
-				if (!appendBefore(entry.id)) {
-					stopped = true;
-					return false;
-				}
+			cursor++;
+			if (visit(entry) === false) {
+				stopped = true;
+				return false;
 			}
-			const keepGoing = visit(entry);
-			if (keepGoing === false) stopped = true;
-			return keepGoing;
 		});
-		if (!stopped && !appendBefore(null)) stopped = true;
-		if (!stopped && [...byAnchor.keys()].some(anchor => anchor !== null && !activeIds.has(anchor))) {
-			throw new Error("Session archive references an entry missing from the active transcript");
-		}
+		if (!stopped) appendArchived();
 		return;
 	}
 
@@ -761,6 +831,97 @@ async function resolvePersistedBlobRefs(
 		}),
 	);
 	return value;
+}
+
+function resolvePersistedBlobRefsSync(value: unknown, blobStore: BlobStore, key?: string): unknown {
+	if (isPersistedReplayBlobRef(value)) {
+		const hash = parseBlobRef(value.__protoReplayBlob);
+		if (!hash) return value;
+		const buffer = blobStore.getSync(hash);
+		if (!buffer) {
+			logger.warn("Blob not found for persisted replay payload", { hash });
+			return value;
+		}
+		try {
+			const parsed: unknown = JSON.parse(buffer.toString("utf8"));
+			return resolvePersistedBlobRefsSync(parsed, blobStore, key);
+		} catch (error) {
+			logger.warn("Invalid persisted replay payload blob", {
+				hash,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return value;
+		}
+	}
+	if (shouldResolveImagePayload(value, key)) {
+		value.data = resolveImageDataSync(blobStore, value.data);
+		return value;
+	}
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index++) {
+			value[index] = resolvePersistedBlobRefsSync(value[index], blobStore, key);
+		}
+		return value;
+	}
+	if (typeof value !== "object" || value === null) return value;
+	if (
+		"type" in value &&
+		value.type === "image_generation_call" &&
+		"result" in value &&
+		typeof value.result === "string" &&
+		isBlobRef(value.result)
+	) {
+		value.result = resolveImageDataSync(blobStore, value.result);
+	}
+	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
+		value.image_url = resolveImageDataUrlSync(blobStore, value.image_url);
+	}
+	for (const [childKey, item] of Object.entries(value)) {
+		(value as Record<string, unknown>)[childKey] = resolvePersistedBlobRefsSync(item, blobStore, childKey);
+	}
+	return value;
+}
+
+/** Conservative additional hydration bytes. Replay blobs may hide further references, so remain unbounded. */
+export function estimateResolvedBlobBytes(value: unknown, blobStore: BlobStore, key?: string): number {
+	if (typeof value !== "object" || value === null) return 0;
+	if (isPersistedReplayBlobRef(value)) return Number.POSITIVE_INFINITY;
+	if (Array.isArray(value)) {
+		return value.reduce((total, item) => total + estimateResolvedBlobBytes(item, blobStore, key), 0);
+	}
+	let reference: string | undefined;
+	if (shouldResolveImagePayload(value, key)) reference = value.data;
+	else if (
+		"type" in value &&
+		value.type === "image_generation_call" &&
+		"result" in value &&
+		typeof value.result === "string" &&
+		isBlobRef(value.result)
+	)
+		reference = value.result;
+	let bytes = 0;
+	const estimate = (ref: string): number => {
+		const hash = parseBlobRef(ref);
+		if (!hash) return 0;
+		try {
+			const size = blobStore.sizeSync(hash);
+			return size === null ? 0 : (size + 2) * 4;
+		} catch {
+			return Number.POSITIVE_INFINITY;
+		}
+	};
+	if (reference) bytes += estimate(reference);
+	if (hasImageUrl(value) && isBlobRef(value.image_url)) bytes += estimate(value.image_url);
+	for (const [childKey, item] of Object.entries(value)) {
+		bytes += estimateResolvedBlobBytes(item, blobStore, childKey);
+	}
+	return bytes;
+}
+
+export function resolveBlobRefsInEntriesSync(entries: FileEntry[], blobStore: BlobStore): void {
+	for (const entry of entries) {
+		if (entry.type !== "session" && containsBlobRef(entry)) resolvePersistedBlobRefsSync(entry, blobStore);
+	}
 }
 
 function containsBlobRef(value: unknown, key?: string): boolean {

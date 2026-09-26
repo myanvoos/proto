@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { processFileArguments } from "../cli/file-processor";
+import type { FileMentionMessage } from "../session/messages";
+import { generateFileMentionMessages } from "./file-mentions";
 import {
 	ImageDecodeError,
 	loadImageAttachmentInput,
@@ -10,6 +13,12 @@ import {
 	normalizeModelContextImages,
 	UnsupportedImageConversionError,
 } from "./image-loading";
+import {
+	MAX_IMAGE_INPUT_BYTES,
+	MAX_IMAGE_PIXELS,
+	MAX_PENDING_IMAGE_INPUTS,
+	reserveImageInput,
+} from "./image-resources";
 
 // A real 1x1 PNG, and a file that only looks like a PNG: correct signature, undecodable body.
 const VALID_PNG_BASE64 =
@@ -94,4 +103,83 @@ test("a corrupt image attachment is rejected while a decodable one loads", async
 		autoResize: false,
 	});
 	expect(loaded?.data).toBe(VALID_PNG_BASE64);
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+test("file mentions and CLI skip over-limit image files before native decoding", async () => {
+	await withTempDir(async directory => {
+		const file = path.join(directory, "large.png");
+		await Bun.write(file, Buffer.from(VALID_PNG_BASE64, "base64"));
+		await fs.truncate(file, MAX_IMAGE_INPUT_BYTES + 1);
+		const metadata = spyOn(Bun.Image.prototype, "metadata");
+		spyOn(console, "error").mockImplementation(() => {});
+		const messages = await generateFileMentionMessages([file], directory);
+		const mentioned = (messages[0] as FileMentionMessage).files[0];
+		expect(mentioned?.skippedReason).toBe("tooLarge");
+		expect(mentioned?.image).toBeUndefined();
+		const processed = await processFileArguments([file]);
+		expect(processed.images).toEqual([]);
+		expect(processed.text).toContain("skipped: too large");
+		expect(metadata).not.toHaveBeenCalled();
+	});
+});
+
+test("file mentions and CLI propagate pixel admission errors instead of attaching original bytes", async () => {
+	await withTempDir(async directory => {
+		const file = path.join(directory, "bomb.png");
+		const bytes = Buffer.from(VALID_PNG_BASE64, "base64");
+		bytes.writeUInt32BE(MAX_IMAGE_PIXELS + 1, 16);
+		await Bun.write(file, bytes);
+		const metadata = spyOn(Bun.Image.prototype, "metadata");
+		await expect(generateFileMentionMessages([file], directory)).rejects.toMatchObject({ reason: "oversized" });
+		await expect(processFileArguments([file])).rejects.toMatchObject({ reason: "oversized" });
+		expect(metadata).not.toHaveBeenCalled();
+	});
+});
+
+test("file callers reject busy admission and recover after input leases release", async () => {
+	await withTempDir(async directory => {
+		const file = path.join(directory, "valid.png");
+		await Bun.write(file, Buffer.from(VALID_PNG_BASE64, "base64"));
+		const leases = Array.from({ length: MAX_PENDING_IMAGE_INPUTS }, () => reserveImageInput(1));
+		const metadata = spyOn(Bun.Image.prototype, "metadata");
+		try {
+			await expect(generateFileMentionMessages([file], directory)).rejects.toMatchObject({ reason: "busy" });
+			await expect(processFileArguments([file])).rejects.toMatchObject({ reason: "busy" });
+			expect(metadata).not.toHaveBeenCalled();
+		} finally {
+			for (const lease of leases) lease.release();
+		}
+		const processed = await processFileArguments([file], { autoResizeImages: false });
+		expect(processed.images).toEqual([{ type: "image", mimeType: "image/png", data: VALID_PNG_BASE64 }]);
+	});
+});
+
+test("an image growing after admission reads only the reserved bytes plus one before rejecting", async () => {
+	await withTempDir(async directory => {
+		const file = path.join(directory, "growing.png");
+		const bytes = Buffer.from(VALID_PNG_BASE64, "base64");
+		await Bun.write(file, bytes);
+		const prototype: Bun.BunFile = Object.getPrototypeOf(Bun.file(file));
+		const stat = prototype.stat;
+		const arrayBuffer = prototype.arrayBuffer;
+		let allocatedBytes = 0;
+		spyOn(prototype, "stat").mockImplementationOnce(async function (this: Bun.BunFile) {
+			const admitted = await stat.call(this);
+			await fs.truncate(file, MAX_IMAGE_INPUT_BYTES + 1);
+			return admitted;
+		});
+		spyOn(prototype, "arrayBuffer").mockImplementation(async function (this: Bun.BunFile) {
+			const result = await arrayBuffer.call(this);
+			allocatedBytes += result.byteLength;
+			return result;
+		});
+		const metadata = spyOn(Bun.Image.prototype, "metadata");
+		await expect(
+			loadImageInput({ path: file, cwd: directory, autoResize: false, detectedMimeType: "image/png" }),
+		).rejects.toMatchObject({ reason: "oversized" });
+		expect(allocatedBytes).toBe(bytes.length + 1);
+		expect(metadata).not.toHaveBeenCalled();
+	});
 });

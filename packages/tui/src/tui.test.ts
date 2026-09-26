@@ -93,6 +93,9 @@ frameTui.invalidate();
 frameTui.requestRender(true);
 flush();
 const frameOutput = frameTerminal.writes.join("");
+frameTerminal.writes.length = 0;
+frameTui.stop();
+const stoppedImageDeletes = frameTerminal.writes.join("").includes("a=d,d=I");
 
 const tallTerminal = new FakeTerminal();
 const tallTui = new TUI(tallTerminal, false, { renderScheduler: scheduler });
@@ -173,6 +176,7 @@ flush();
 const fullscreenCappedTransmits = (cappedTerminal.writes.join("").match(/a=t,/g) || []).length;
 
 console.log(JSON.stringify({
+	stoppedImageDeletes,
 	frameTransmitted: frameOutput.includes("a=t,"),
 	framePlacement: frameOutput.includes("a=p,"),
 	tallTransmitted: tallOutput.includes("a=t,"),
@@ -209,6 +213,7 @@ console.log(JSON.stringify({
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
 	const result = JSON.parse(stdout) as {
+		stoppedImageDeletes: boolean;
 		frameTransmitted: boolean;
 		framePlacement: boolean;
 		tallTransmitted: boolean;
@@ -225,6 +230,7 @@ console.log(JSON.stringify({
 		hiddenOverlayDeletes: boolean;
 		fullscreenExitDeletes: boolean;
 	};
+	expect(result.stoppedImageDeletes).toBe(true);
 	expect(result.frameTransmitted).toBe(true);
 	expect(result.framePlacement).toBe(true);
 	expect(result.tallTransmitted).toBe(true);

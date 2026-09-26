@@ -123,3 +123,68 @@ test("serializes overlapping cells before the next cell can replace file attribu
 		core.dispose();
 	}
 }, 5_000);
+
+test("large rich displays are bounded before worker transport and overflow is visible", async () => {
+	const transport = new TestTransport();
+	const core = new WorkerCore(transport, { mode: "isolated", interceptUnhandledRejections: () => () => {} });
+	const snapshot = { cwd: process.cwd(), sessionId: `worker-display:${crypto.randomUUID()}` };
+	try {
+		transport.dispatch({ type: "init", snapshot });
+		transport.dispatch({
+			type: "run",
+			runId: "large-display",
+			filename: "large-display.js",
+			snapshot,
+			code: 'for (let i = 0; i < 16; i++) display({ i, text: "x".repeat(1024 * 1024) });',
+		});
+		expect(await transport.waitFor(isResult("large-display"))).toEqual({
+			type: "result",
+			runId: "large-display",
+			ok: true,
+		});
+		const displays = transport.sent.flatMap(message =>
+			message.type === "display" && message.output.type !== "status" ? [message.output] : [],
+		);
+		expect(Buffer.byteLength(JSON.stringify(displays))).toBeLessThan(257 * 1024);
+		expect(displays.some(output => output.type === "notice" && output.text.includes("omitted"))).toBe(true);
+	} finally {
+		core.dispose();
+	}
+});
+
+test("late rich displays retain their originating run after the producer drains its budget", async () => {
+	const transport = new TestTransport();
+	const core = new WorkerCore(transport, { mode: "isolated", interceptUnhandledRejections: () => () => {} });
+	const snapshot = { cwd: process.cwd(), sessionId: `worker-late-display:${crypto.randomUUID()}` };
+	try {
+		transport.dispatch({ type: "init", snapshot });
+		transport.dispatch({
+			type: "run",
+			runId: "origin",
+			filename: "origin.js",
+			snapshot,
+			code: "var lateGate = Promise.withResolvers(); void lateGate.promise.then(() => display({late:true}));",
+		});
+		await transport.waitFor(isResult("origin"));
+		transport.dispatch({
+			type: "run",
+			runId: "trigger",
+			filename: "trigger.js",
+			snapshot,
+			code: "lateGate.resolve();",
+		});
+		await transport.waitFor(isResult("trigger"));
+		expect(transport.sent).toContainEqual({
+			type: "display",
+			runId: "origin",
+			output: { type: "json", data: { late: true } },
+		});
+		expect(
+			transport.sent.some(
+				message => message.type === "display" && message.runId === "trigger" && message.output.type === "json",
+			),
+		).toBe(false);
+	} finally {
+		core.dispose();
+	}
+});

@@ -134,14 +134,16 @@ describe("persisted subagent revival fails closed", () => {
 		const sessionFile = await createPersistedSession(cwd);
 		const ref = createRef(sessionFile);
 		const reviver = await createReviver(cwd, ref);
-		const originalReadText = FileSessionStorage.prototype.readText;
-		vi.spyOn(FileSessionStorage.prototype, "readText").mockImplementationOnce(async function (
+		// The archive probe follows the completed active-file stream. Delete at that snapshot boundary,
+		// before open's cwd probe and authoritative reread, rather than intercepting the old whole-file read.
+		const originalExists = FileSessionStorage.prototype.exists;
+		vi.spyOn(FileSessionStorage.prototype, "exists").mockImplementationOnce(async function (
 			this: FileSessionStorage,
 			filePath: string,
 		) {
-			const text = await originalReadText.call(this, filePath);
-			await fs.rm(filePath);
-			return text;
+			const exists = await originalExists.call(this, filePath);
+			if (filePath === `${sessionFile}.archive.jsonl.gz`) await fs.rm(sessionFile);
+			return exists;
 		});
 
 		await expect(reviver(ref)).rejects.toThrow(/ENOENT/);

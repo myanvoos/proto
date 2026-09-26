@@ -535,7 +535,8 @@ async function runInteractiveMode(
 
 	while (true) {
 		const input = await mode.getUserInput();
-		await submitInteractiveInput(mode, session, input);
+		// Not the startup `session`: switching sessions can swap a different AgentSession into the foreground.
+		await submitInteractiveInput(mode, mode.session, input);
 	}
 }
 

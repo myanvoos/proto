@@ -20,7 +20,6 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import type { MCPManager } from "../mcp";
-import type { MonitorManager } from "../monitor";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -151,6 +150,9 @@ export interface ToolSession {
 		| "flush"
 		| "getBranch"
 		| "getEntries"
+		| "getCustomEntries"
+		| "iterateCustomEntries"
+		| "getEntry"
 		| "getSubagentUsage"
 		| "recordSubagentUsage"
 	>;
@@ -214,9 +216,6 @@ export interface ToolSession {
 	agentOutputManager?: AgentOutputManager;
 
 	asyncJobManager?: AsyncJobManager;
-
-	/** Session-scoped monitors; absent until the owning session finishes construction. */
-	getMonitorManager?: () => MonitorManager | undefined;
 
 	mcpManager?: MCPManager;
 
@@ -477,7 +476,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "monitor") return (session.taskDepth ?? 0) === 0 && session.settings.get("monitor.enabled");
+		if (name === "monitor") return session.asyncJobManager !== undefined && session.settings.get("monitor.enabled");
 		if (name === "fleet") return !restrictToolNames && session.enableIrc !== false;
 		if (name === "manage_skill")
 			return (

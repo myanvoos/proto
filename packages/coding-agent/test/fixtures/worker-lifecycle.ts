@@ -111,6 +111,13 @@ function weakSession(id: string): WeakRef<AgentSession> {
 	return new WeakRef(session);
 }
 
+async function listWorkerScope(id: string): Promise<void> {
+	const worker = AgentRegistry.global().get(id)?.session;
+	const list = worker?.getToolForEvalBridge("orchestrate_list");
+	if (!list) throw new Error(`worker ${id} has no orchestration list tool`);
+	await list.execute("list-before-release", {});
+}
+
 function countCollected(refs: WeakRef<object>[]): number {
 	return refs.filter(ref => ref.deref() === undefined).length;
 }
@@ -204,7 +211,7 @@ async function runLifecycle(
 		getModelString: () => undefined,
 	} as ToolSession;
 	const runtime = OrchestratorRuntime.global();
-	const agent = { ...getBundledAgent("worker")!, tools: ["yield"] } as AgentDefinition;
+	const agent = { ...getBundledAgent("worker")!, tools: ["yield", "orchestrate_list"] } as AgentDefinition;
 	const model = modelRegistry.find("lifecycle-fixture", "lifecycle-fixture-model");
 	if (!model) throw new Error("failed to register deterministic lifecycle fixture model");
 	runtime.setWorkerResolutionForTesting(agent, model);
@@ -237,6 +244,7 @@ async function runLifecycle(
 		await runtime.wait(session, { sessions: ids });
 		const completedScreens = runtime.screens(session, ids);
 		if (completedScreens.some(screen => screen.turnState !== "idle")) throw new Error("workers did not become idle");
+		await Promise.all(ids.map(listWorkerScope));
 		const sessionRefs = ids.map(weakSession);
 
 		const lifecycle = AgentLifecycleManager.global();
@@ -262,6 +270,7 @@ async function runLifecycle(
 		if (provider.requests() !== count * 2) {
 			throw new Error(`expected one provider request per worker turn, received ${provider.requests()}`);
 		}
+		await Promise.all(ids.map(listWorkerScope));
 		const revivedSessionRefs = ids.map(weakSession);
 
 		for (const id of ids) await runtime.kill(session, id);
@@ -289,6 +298,8 @@ async function runLifecycle(
 	}
 }
 
-const workers = positiveOption("--workers", 1);
-const payloadKiB = positiveOption("--payload-kib", 16);
-console.log(JSON.stringify(await runLifecycle(workers, payloadKiB)));
+if (import.meta.main) {
+	const workers = positiveOption("--workers", 1);
+	const payloadKiB = positiveOption("--payload-kib", 16);
+	console.log(JSON.stringify(await runLifecycle(workers, payloadKiB)));
+}

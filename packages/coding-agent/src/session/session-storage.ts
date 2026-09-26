@@ -84,6 +84,7 @@ export interface SessionStorage {
 	readBytesRange(path: string, start: number, end: number): Promise<Uint8Array>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
+	appendTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	rename(path: string, nextPath: string): Promise<void>;
 	unlink(path: string): Promise<void>;
 	deleteSessionWithArtifacts(sessionPath: string): Promise<void>;
@@ -339,6 +340,58 @@ export class FileSessionStorage implements SessionStorage {
 			await this.#writeTextAtomicLocked(fpath, content, options);
 		} finally {
 			lock.release();
+		}
+	}
+
+	async appendTextAtomic(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
+		let fd: number | undefined;
+		try {
+			if (options?.commitGuard && !options.commitGuard()) return;
+			this.#assertExpectedSize(fpath, options?.expectedSize);
+			const dir = path.dirname(fpath);
+			this.ensureDirSync(dir);
+			let existed = true;
+			try {
+				fd = fs.openSync(fpath, "r+");
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+				fd = fs.openSync(fpath, "wx+");
+				existed = false;
+			}
+			const originalSize = fs.fstatSync(fd).size;
+			try {
+				const bytes = Buffer.from(content, "utf8");
+				let offset = 0;
+				while (offset < bytes.length) {
+					const written = fs.writeSync(fd, bytes, offset, bytes.length - offset, originalSize + offset);
+					if (written === 0) throw new Error(`Session append made no progress: ${fpath}`);
+					offset += written;
+				}
+				if (options?.durable) {
+					fs.fsyncSync(fd);
+					this.#syncDirectory(dir);
+				}
+			} catch (error) {
+				try {
+					fs.ftruncateSync(fd, originalSize);
+					if (!existed) fs.unlinkSync(fpath);
+					if (options?.durable) {
+						fs.fsyncSync(fd);
+						this.#syncDirectory(dir);
+					}
+				} catch (rollbackError) {
+					throw new AggregateError([error, rollbackError], `Session append rollback failed: ${fpath}`);
+				}
+				throw error;
+			}
+		} finally {
+			try {
+				if (fd !== undefined) fs.closeSync(fd);
+			} finally {
+				lock.release();
+			}
 		}
 	}
 
@@ -836,6 +889,15 @@ export class MemorySessionStorage implements SessionStorage {
 			return Promise.reject(err);
 		}
 		return Promise.resolve();
+	}
+
+	async appendTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		if (options?.commitGuard && !options.commitGuard()) return;
+		const actualSize = this.#files.get(path)?.size ?? null;
+		if (options?.expectedSize !== undefined && actualSize !== options.expectedSize) {
+			throw new SessionWriteConflictError(path, options.expectedSize, actualSize);
+		}
+		this.appendSync(path, content);
 	}
 
 	rename(path: string, nextPath: string): Promise<void> {

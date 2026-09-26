@@ -1,3 +1,5 @@
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
+import { TERMINAL_IMAGE_LIMITS, type TerminalImageLimits } from "../image-limits";
 import { getKittyGraphics } from "../kitty-graphics";
 import {
 	getCellDimensions,
@@ -64,6 +66,10 @@ function nextPlacementSalt(): number {
 
 export class ImageBudget {
 	#cap: number;
+	readonly #limits: TerminalImageLimits;
+	#sourceBytes = 0;
+	#imageCosts = new Map<number, number>();
+	#transportCosts = new Map<number, number>();
 	#requestRender: () => void;
 	#nextId = nextImageIdSeed();
 	#keyToId = new Map<string, number>();
@@ -96,9 +102,32 @@ export class ImageBudget {
 
 	#watchedPlacements = new Set<PlacementEmitState>();
 
-	constructor(cap: number = DEFAULT_MAX_INLINE_IMAGES, requestRender: () => void = () => {}) {
+	constructor(
+		cap: number = DEFAULT_MAX_INLINE_IMAGES,
+		requestRender: () => void = () => {},
+		limits: Partial<TerminalImageLimits> = {},
+	) {
+		this.#limits = { ...TERMINAL_IMAGE_LIMITS, ...limits };
+		for (const value of Object.values(this.#limits)) {
+			if (!Number.isSafeInteger(value) || value <= 0)
+				throw new RangeError("Image resource limits must be positive safe integers");
+		}
 		this.#cap = normalizeCap(cap);
 		this.#requestRender = requestRender;
+	}
+
+	retainSource(bytes: number): boolean {
+		if (bytes > this.#limits.imageBytes || this.#sourceBytes + bytes > this.#limits.sourceBytes) return false;
+		this.#sourceBytes += bytes;
+		return true;
+	}
+
+	releaseSource(bytes: number): void {
+		this.#sourceBytes = Math.max(0, this.#sourceBytes - bytes);
+	}
+
+	registerImageCost(id: number, encodedBytes: number, pixels: number): void {
+		this.#imageCosts.set(id, Math.max(this.#imageCosts.get(id) ?? 0, encodedBytes, pixels * 4));
 	}
 
 	get cap(): number {
@@ -254,6 +283,7 @@ export class ImageBudget {
 				this.#purgeIds.push(imageId);
 				this.#residentIds.delete(imageId);
 				this.#transportById.delete(imageId);
+				this.#transportCosts.delete(imageId);
 				this.#deletePlacementState(imageId);
 			}
 			this.#forgetKeyForId(imageId);
@@ -299,6 +329,7 @@ export class ImageBudget {
 			if (transport === "queued") {
 				this.#queuedSequences.delete(id);
 				this.#transportById.set(id, "absent");
+				this.#transportCosts.delete(id);
 			} else if (transport === "resident") {
 				this.#purgeIds.push(id);
 				this.#residentIds.delete(id);
@@ -306,6 +337,7 @@ export class ImageBudget {
 				// is written; drop the transport entry so the id becomes
 				// reusable after the drain.
 				this.#transportById.delete(id);
+				this.#transportCosts.delete(id);
 			}
 			this.#deletePlacementState(id);
 			this.#forgetKeyForId(id);
@@ -344,6 +376,7 @@ export class ImageBudget {
 				if (this.#transportById.get(id) === "queued") {
 					this.#queuedSequences.delete(id);
 					this.#transportById.delete(id);
+					this.#transportCosts.delete(id);
 				}
 				continue;
 			}
@@ -352,10 +385,12 @@ export class ImageBudget {
 			if (transport === "queued") {
 				this.#queuedSequences.delete(id);
 				this.#transportById.delete(id);
+				this.#transportCosts.delete(id);
 			} else if (transport === "resident") {
 				this.#purgeIds.push(id);
 				this.#residentIds.delete(id);
 				this.#transportById.delete(id);
+				this.#transportCosts.delete(id);
 			}
 			this.#decisionById.delete(id);
 			this.#deletePlacementState(id);
@@ -415,6 +450,7 @@ export class ImageBudget {
 		const resident = [...this.#residentIds, ...this.#purgeIds];
 		this.#decisionById.clear();
 		this.#transportById.clear();
+		this.#transportCosts.clear();
 		this.#queuedSequences.clear();
 		this.#residentIds.clear();
 		this.#purgeIds = [];
@@ -467,12 +503,15 @@ export class ImageBudget {
 		if (transport === "queued") {
 			this.#queuedSequences.delete(imageId);
 			this.#transportById.delete(imageId);
+			this.#transportCosts.delete(imageId);
 		} else if (transport === "resident") {
 			this.#purgeIds.push(imageId);
 			this.#residentIds.delete(imageId);
 			this.#transportById.delete(imageId);
+			this.#transportCosts.delete(imageId);
 		}
 		this.#decisionById.delete(imageId);
+		this.#imageCosts.delete(imageId);
 		this.#deletePlacementState(imageId);
 	}
 
@@ -507,10 +546,12 @@ export class ImageBudget {
 			this.#keyRefCounts.delete(imageKey);
 		}
 		this.#idToKey.delete(id);
+		this.#imageCosts.delete(id);
 		const transport = this.#transportById.get(id) ?? "absent";
 		if (transport === "queued") {
 			this.#queuedSequences.delete(id);
 			this.#transportById.delete(id);
+			this.#transportCosts.delete(id);
 		} else if (transport === "resident") {
 			this.#purgeIds.push(id);
 			this.#residentIds.delete(id);
@@ -518,8 +559,10 @@ export class ImageBudget {
 			// purge queue (its delete is not written yet) and becomes truly
 			// free once takePurgeIds drains it.
 			this.#transportById.delete(id);
+			this.#transportCosts.delete(id);
 		} else {
 			this.#transportById.delete(id);
+			this.#transportCosts.delete(id);
 		}
 		this.#decisionById.delete(id);
 		this.#deletePlacementState(id);
@@ -625,13 +668,33 @@ export class ImageBudget {
 		}
 	}
 
-	enqueueTransmit(imageId: number, sequence: string): void {
-		// Invariant 6: enqueueing is not transmitting. A queued payload
-		// reserves its capacity slot but stays distinguishable from a resident
-		// one until markTransmitWritten observes the actual terminal write.
-		if ((this.#transportById.get(imageId) ?? "absent") !== "absent") return;
+	enqueueTransmit(imageId: number, sequence: string): boolean {
+		if ((this.#transportById.get(imageId) ?? "absent") !== "absent") return true;
+		const bytes = Buffer.byteLength(sequence);
+		let queuedBytes = bytes;
+		for (const queued of this.#queuedSequences.values()) queuedBytes += Buffer.byteLength(queued);
+		const cost = Math.max(bytes, this.#imageCosts.get(imageId) ?? 0);
+		if (queuedBytes > this.#limits.queuedBytes || cost > this.#limits.residentBytes) return false;
+		let residentBytes = cost;
+		for (const retained of this.#transportCosts.values()) residentBytes += retained;
+		// Old offscreen graphics may be discarded; visible images are never silently replaced.
+		for (const id of this.#residentIds) {
+			if (residentBytes <= this.#limits.residentBytes && this.#transportCosts.size < this.#limits.residentCount)
+				break;
+			if (this.#decisionById.get(id) !== "offscreen" || this.#passObserved.has(id)) continue;
+			residentBytes -= this.#transportCosts.get(id) ?? 0;
+			this.#residentIds.delete(id);
+			this.#transportCosts.delete(id);
+			this.#transportById.delete(id);
+			this.#deletePlacementState(id);
+			this.#purgeIds.push(id);
+		}
+		if (residentBytes > this.#limits.residentBytes || this.#transportCosts.size >= this.#limits.residentCount)
+			return false;
 		this.#transportById.set(imageId, "queued");
-		this.#queuedSequences.set(imageId, sequence);
+		this.#transportCosts.set(imageId, cost);
+		this.#queuedSequences.set(imageId, materializeString(sequence));
+		return true;
 	}
 
 	hasPendingTransmits(): boolean {
@@ -659,11 +722,13 @@ export class ImageBudget {
 				if (!filter(id)) {
 					this.#queuedSequences.delete(id);
 					this.#transportById.delete(id);
+					this.#transportCosts.delete(id);
 					void sequence;
 				}
 			}
 		}
 		for (const id of ids) this.#queuedSequences.delete(id);
+		this.#generation++;
 		return { ids, sequences };
 	}
 
@@ -697,6 +762,9 @@ function normalizeCap(cap: number): number {
 
 export class Image implements Component {
 	#base64Data: string;
+	#sourceBytes = 0;
+	#sourceRejected = false;
+	#disposed = false;
 	#mimeType: string;
 	#dimensions: ImageDimensions;
 	#theme: ImageTheme;
@@ -725,13 +793,28 @@ export class Image implements Component {
 		options: ImageOptions = {},
 		dimensions?: ImageDimensions,
 	) {
-		this.#base64Data = base64Data;
 		this.#mimeType = mimeType;
 		this.#theme = theme;
 		this.#options = options;
-		this.#dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
+		const bytes = Buffer.byteLength(base64Data);
+		this.#sourceRejected = bytes > TERMINAL_IMAGE_LIMITS.imageBytes;
+		const intrinsic = !this.#sourceRejected ? getImageDimensions(base64Data, mimeType) : null;
+		this.#dimensions = dimensions || intrinsic || { widthPx: 800, heightPx: 600 };
+		if (intrinsic && intrinsic.widthPx * intrinsic.heightPx > TERMINAL_IMAGE_LIMITS.pixels)
+			this.#sourceRejected = true;
+		const pixels = this.#dimensions.widthPx * this.#dimensions.heightPx;
+		this.#sourceRejected ||= !Number.isSafeInteger(pixels) || pixels <= 0 || pixels > TERMINAL_IMAGE_LIMITS.pixels;
 		this.#budget = options.budget;
-		this.#imageId = options.budget ? options.budget.acquireId(options.imageKey) : undefined;
+		if (!this.#sourceRejected && this.#budget && !this.#budget.retainSource(bytes)) this.#sourceRejected = true;
+		this.#sourceBytes = this.#sourceRejected ? 0 : bytes;
+		this.#base64Data = this.#sourceRejected ? "" : materializeString(base64Data);
+		this.#imageId = this.#budget && !this.#sourceRejected ? this.#budget.acquireId(options.imageKey) : undefined;
+		if (this.#imageId !== undefined)
+			this.#budget?.registerImageCost(
+				this.#imageId,
+				bytes,
+				Math.max(pixels, (intrinsic?.widthPx ?? 0) * (intrinsic?.heightPx ?? 0)),
+			);
 	}
 
 	invalidate(): void {
@@ -740,6 +823,11 @@ export class Image implements Component {
 	}
 
 	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#budget?.releaseSource(this.#sourceBytes);
+		this.#sourceBytes = 0;
+		this.#base64Data = "";
 		// A disposed Image (transcript rebuild, card removal) must release its
 		// budget identity: without this, every rebuild leaks the key, the id,
 		// and the resident terminal payload of the abandoned card.
@@ -755,10 +843,13 @@ export class Image implements Component {
 			}
 		}
 		this.#budget = undefined;
+		this.#options = {};
+		this.#imageId = undefined;
 		this.#cachedLines = undefined;
 	}
 
 	render(width: number): readonly string[] {
+		if (this.#disposed || this.#sourceRejected) return this.#fallbackLines(this.#sourceRejected);
 		const imageProtocol = TERMINAL.imageProtocol;
 		const hasProtocol = imageProtocol != null;
 		const cellDimensions = getCellDimensions();
@@ -795,7 +886,7 @@ export class Image implements Component {
 			});
 
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
-				this.#budget.enqueueTransmit(this.#imageId, result.transmit);
+				if (!this.#budget.enqueueTransmit(this.#imageId, result.transmit)) return this.#fallbackLines(true);
 			}
 
 			if (result?.lines) {
@@ -837,9 +928,10 @@ export class Image implements Component {
 		return lines;
 	}
 
-	#fallbackLines(): string[] {
+	#fallbackLines(resourceLimited = false): string[] {
 		const fallback = this.#theme.fallbackColor(
-			imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
+			imageFallback(this.#mimeType, this.#dimensions, this.#options.filename) +
+				(resourceLimited ? " [inline image limit exceeded]" : ""),
 		);
 		if (this.#renderedGraphicRows <= 1) return [fallback];
 		const lines: string[] = [];

@@ -102,6 +102,42 @@ function concatChunks(chunks: readonly Uint8Array[], length: number): Uint8Array
 
 const DEFAULT_STDERR_CAPTURE_BYTES = 1 * 1024 * 1024;
 
+export interface ProcessTerminationOptions {
+	detached?: boolean;
+	/** An inherited output pipe is still being read; required for an exited detached leader. */
+	hasOpenPipes?: boolean;
+	gracefulMs?: number;
+	timeoutMs?: number;
+}
+
+/** Terminate an owned subprocess using its native identity captured at spawn time. */
+export function terminateProcess(
+	proc: Pick<Subprocess, "pid" | "exitCode">,
+	identity: Process | null,
+	options: ProcessTerminationOptions = {},
+): Promise<boolean> {
+	const exited = proc.exitCode !== null || identity?.status() === "exited";
+	if (exited) {
+		if (!options.detached || !options.hasOpenPipes || process.platform === "win32") return Promise.resolve(true);
+		// A pipe-holding member of the owned detached group can outlive its leader. Signal before any await;
+		// never retry the numeric group id after cleanup/EOF, when that id may have been recycled.
+		try {
+			process.kill(-proc.pid, "SIGKILL");
+			return Promise.resolve(true);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") return Promise.resolve(true);
+			return Promise.reject(error);
+		}
+	}
+	return (
+		identity?.terminate({
+			group: options.detached,
+			gracefulMs: options.gracefulMs,
+			timeoutMs: options.timeoutMs,
+		}) ?? Promise.resolve(false)
+	);
+}
+
 export class ChildProcess<In extends InMask = InMask> {
 	#nothrow = false;
 	#stderrTail = "";
@@ -124,6 +160,7 @@ export class ChildProcess<In extends InMask = InMask> {
 	// Termination in flight after kill(); aborted results wait for it before reporting.
 	#terminating?: Promise<boolean | void>;
 	#terminateGroup: boolean;
+	readonly #identity: Process | null;
 
 	constructor(
 		readonly proc: PipedSubprocess<In>,
@@ -135,6 +172,7 @@ export class ChildProcess<In extends InMask = InMask> {
 		this.#maxStdoutBytes = normalizeOutputLimit(outputLimits.maxStdoutBytes);
 		this.#maxStderrBytes = normalizeOutputLimit(outputLimits.maxStderrBytes) ?? DEFAULT_STDERR_CAPTURE_BYTES;
 		this.#terminateGroup = terminateGroup;
+		this.#identity = Process.fromPid(proc.pid);
 		if (retainFullStderr) this.#stderrChunks = [];
 
 		const dec = new TextDecoder();
@@ -269,25 +307,12 @@ export class ChildProcess<In extends InMask = InMask> {
 			// report the later deadline.
 			if (this.proc.exitCode !== null) this.#exitReason = reason;
 		}
-		if (this.proc.exitCode !== null && this.#terminateGroup && this.#openPipeReaders > 0) {
-			// A detached child leads its own process group. Once the leader exits the native handle cannot rediscover
-			// the group id, but a pipe-holding descendant keeps that exact group alive.
-			try {
-				process.kill(-this.proc.pid, "SIGKILL");
-			} catch {}
-			this.#terminating = Promise.resolve();
-			return;
-		}
-		if (!this.proc.killed) {
-			const options =
-				gracefulMs === undefined
-					? this.#terminateGroup
-						? { group: true }
-						: undefined
-					: { gracefulMs, group: this.#terminateGroup };
-			this.#terminating = Process.fromPid(this.proc.pid)
-				?.terminate(options)
-				?.catch(e => void e);
+		if (!this.proc.killed || (this.proc.exitCode !== null && this.#terminateGroup && this.#openPipeReaders > 0)) {
+			this.#terminating = terminateProcess(this.proc, this.#identity, {
+				detached: this.#terminateGroup,
+				hasOpenPipes: this.#openPipeReaders > 0,
+				gracefulMs,
+			}).catch(e => void e);
 		}
 	}
 

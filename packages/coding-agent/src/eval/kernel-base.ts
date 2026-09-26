@@ -713,8 +713,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			const oldest = this.#completedOutputSinks.keys().next().value;
 			if (oldest === undefined) break;
 			const removed = this.#completedOutputSinks.get(oldest);
-			this.#evictCompletedOutputSink(oldest);
 			retainedBytes -= Math.max(0, removed?.retainedOutputBytes?.() ?? 0);
+			this.#evictCompletedOutputSink(oldest);
 		}
 	}
 

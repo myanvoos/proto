@@ -2,11 +2,12 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
-import type { AsyncJob, AsyncJobManager, AsyncJobType } from "../../async";
+import type { AsyncJob, AsyncJobEvent, AsyncJobManager, AsyncJobType } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
+import type { MonitorDetails } from "../../monitor/types";
 import { formatAsyncJobTextForContext } from "../../session/async-job-delivery";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { readSessionLiveState } from "../../session/session-liveness";
@@ -36,7 +37,7 @@ const WAIT_DURATION_MS: Record<string, number> = {
 export function isWaitingPollDetails(details: unknown): boolean {
 	const d = details as CoordinationDetails | undefined;
 	if (!d || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
-	if (d.cancelled?.length) return false;
+	if (d.cancelled?.length || d.jobs.some(job => job.events?.length)) return false;
 	return d.jobs.every(job => job?.status === "running");
 }
 
@@ -119,6 +120,7 @@ interface TrackedJobLike {
 	label: string;
 	startTime: number;
 	latestDetails?: Record<string, unknown>;
+	monitor?: MonitorDetails;
 	resultText?: string;
 	errorText?: string;
 }
@@ -156,6 +158,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 			label: latest.label,
 			durationMs: Math.max(0, now - latest.startTime),
 			...(resolvedModel ? { resolvedModel } : {}),
+			...(latest.monitor ? { monitor: { ...latest.monitor } } : {}),
 			...(latest.resultText ? { resultText: latest.resultText } : {}),
 			...(latest.errorText ? { errorText: latest.errorText } : {}),
 		};
@@ -187,6 +190,16 @@ async function forContext(
 	return formatted;
 }
 
+function describeMonitorJob(monitor: MonitorDetails): string {
+	const parts = [monitor.mode, `${monitor.eventCount} events (limit ${monitor.maxEvents} outputs)`];
+	if (monitor.match !== undefined) parts.push(`match /${monitor.match}/u`);
+	if (monitor.everySeconds !== undefined) parts.push(`every ${monitor.everySeconds}s`);
+	if (monitor.timeoutSeconds !== undefined) parts.push(`timeout ${monitor.timeoutSeconds}s`);
+	if (monitor.stopReason) parts.push(`stopped: ${monitor.stopReason}`);
+	if (monitor.exitCode !== undefined) parts.push(`exit ${monitor.exitCode}`);
+	return `${parts.join(" · ")} — command: ${monitor.command}`;
+}
+
 export async function buildJobResult(
 	session: ToolSession,
 	manager: AsyncJobManager,
@@ -194,6 +207,7 @@ export async function buildJobResult(
 	jobs: TrackedJobLike[],
 	cancelOutcomes: CancelOutcome[],
 	agents: AgentActivitySnapshot[] = [],
+	receivedEvents?: AsyncJobEvent[],
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const seen = new Set<string>();
 	const uniqueJobs = jobs.filter(j => {
@@ -202,6 +216,19 @@ export async function buildJobResult(
 		return true;
 	});
 	const jobResults = snapshotJobs(session, uniqueJobs);
+	const ownerId = session.getAsyncJobOwnerId?.() ?? session.getAgentId?.() ?? undefined;
+	const events =
+		receivedEvents ??
+		(op === "wait"
+			? manager.takeEvents(
+					jobResults.map(job => job.id),
+					ownerId ? { ownerId } : undefined,
+				)
+			: []);
+	for (const job of jobResults) {
+		const received = events.filter(event => event.jobId === job.id);
+		if (received.length > 0) job.events = received;
+	}
 
 	manager.acknowledgeDeliveries(jobResults.filter(j => j.status !== "running").map(j => j.id));
 
@@ -220,11 +247,19 @@ export async function buildJobResult(
 		lines.push("");
 	}
 
+	if (events.length > 0) {
+		lines.push(`## Monitor events (${events.length})\n`);
+		for (const event of events) {
+			lines.push(`### ${event.jobId} — ${event.kind} #${event.sequence}`, event.text, "");
+		}
+	}
+
 	if (completed.length > 0) {
 		lines.push(`## Completed (${completed.length})\n`);
 		for (const j of completed) {
 			lines.push(`### ${j.id} [${j.type}] — ${j.status}`);
 			lines.push(`Label: ${j.label}`);
+			if (j.monitor) lines.push(describeMonitorJob(j.monitor));
 			if (j.resultText) {
 				lines.push("```", await forContext(session, j.id, "result", j.resultText), "```");
 			}
@@ -239,6 +274,7 @@ export async function buildJobResult(
 		lines.push(`## Still Running (${running.length})\n`);
 		for (const j of running) {
 			lines.push(`- \`${j.id}\` [${j.type}] — ${j.label}`);
+			if (j.monitor) lines.push(`  ${describeMonitorJob(j.monitor)}`);
 		}
 	}
 
@@ -492,7 +528,7 @@ export function jobsRenderResult(
 	const isPollCall = args ? !args.list && (!args.cancel || args.cancel.length === 0 || args.poll !== undefined) : true;
 
 	if (!options.isPartial && isPollCall && agents.length === 0) {
-		jobs = jobs.filter(job => job.status !== "running");
+		jobs = jobs.filter(job => job.status !== "running" || job.events?.length);
 		if (jobs.length === 0) {
 			return new Text("", 0, 0);
 		}
@@ -501,7 +537,9 @@ export function jobsRenderResult(
 	const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
 	for (const job of jobs) counts[job.status]++;
 
+	const eventCount = jobs.reduce((count, job) => count + (job.events?.length ?? 0), 0);
 	const meta: string[] = [];
+	if (eventCount > 0) meta.push(uiTheme.fg("accent", `${eventCount} events`));
 	if (counts.completed > 0) meta.push(uiTheme.fg("success", `${counts.completed} done`));
 	if (counts.failed > 0) meta.push(uiTheme.fg("error", `${counts.failed} failed`));
 	if (counts.cancelled > 0) meta.push(uiTheme.fg("warning", `${counts.cancelled} cancelled`));
@@ -513,13 +551,15 @@ export function jobsRenderResult(
 		counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
 	const jobsNoun = jobs.length === 1 ? "job" : "jobs";
 	const description =
-		jobs.length === 0
-			? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
-			: counts.running > 0
-				? counts.running === jobs.length
-					? `waiting on ${jobs.length} ${jobsNoun}`
-					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
-				: `${jobs.length} ${jobsNoun} settled`;
+		eventCount > 0
+			? "monitor events received"
+			: jobs.length === 0
+				? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
+				: counts.running > 0
+					? counts.running === jobs.length
+						? `waiting on ${jobs.length} ${jobsNoun}`
+						: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
+					: `${jobs.length} ${jobsNoun} settled`;
 
 	const header = renderStatusLine(
 		{
@@ -609,7 +649,12 @@ export function jobsRenderResult(
 						}
 
 						const preview = flattenStructuredPreview(
-							stripTaskResultEnvelope(job.errorText?.trim() || job.resultText?.trim() || ""),
+							stripTaskResultEnvelope(
+								job.events?.map(event => event.text).join("\n") ||
+									job.errorText?.trim() ||
+									job.resultText?.trim() ||
+									"",
+							),
 						);
 						if (preview) {
 							const maxLines = expanded ? PREVIEW_LINES_EXPANDED : PREVIEW_LINES_COLLAPSED;

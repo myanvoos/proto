@@ -56,6 +56,7 @@ export interface DaemonSnapshot {
 	exitCode?: number;
 	exitReason?: string;
 	restartCount: number;
+	/** Captured log byte cursor: includes truncation notices, excludes omitted output. */
 	outputBytes: number;
 	owner?: string;
 	readyMatch?: string;

@@ -15,6 +15,7 @@ import {
 export type AgentReviver = (expected: AgentRef) => Promise<AgentSession>;
 
 const AGENT_RELEASE_GRACE_MS = 5000;
+const MAX_PARKED_LOCAL_REVIVERS = 128;
 
 /** Marks a stopped agent so its row renders as stopped rather than failed after the session ends. */
 export async function persistAgentTombstone(sessionFile: string): Promise<void> {
@@ -106,6 +107,26 @@ export class AgentLifecycleManager {
 	setPersistedSubagentReviverFactory(factory: PersistedSubagentReviverFactory, idleTtlMs: number): void {
 		this.#persistedReviverFactory = factory;
 		this.#persistedReviveTtlMs = idleTtlMs;
+		this.#trimParkedRevivers();
+	}
+
+	#trimParkedRevivers(): void {
+		if (!this.#persistedReviverFactory) return;
+		const parked = [...this.#adopted.values()].filter(
+			adopted =>
+				adopted.ref.status === "parked" &&
+				adopted.ref.sessionFile &&
+				!adopted.ref.session &&
+				adopted.ref.kind === "sub" &&
+				adopted.ref.id !== this.#focusHeldId &&
+				!this.#parks.has(adopted.ref.id) &&
+				!this.#revivals.has(adopted.ref.id),
+		);
+		parked.sort((left, right) => right.ref.lastActivity - left.ref.lastActivity);
+		for (const adopted of parked.slice(MAX_PARKED_LOCAL_REVIVERS)) {
+			clearTimeout(adopted.timer);
+			this.#adopted.delete(adopted.ref.id);
+		}
 	}
 
 	adopt(id: string, opts: AdoptOptions, expected?: AgentRefExpectation): void {
@@ -180,6 +201,11 @@ export class AgentLifecycleManager {
 		if (!ref || adopted.ref !== ref) return;
 		const session = ref.session;
 		if (!session) return;
+		// Parking disposes the session. A live monitor must retain its owner and wake sink.
+		if (session.hasActiveMonitors()) {
+			this.#armTimer(id, adopted);
+			return;
+		}
 
 		if (adopted.timer) {
 			clearTimeout(adopted.timer);
@@ -208,6 +234,10 @@ export class AgentLifecycleManager {
 				const live = this.#registry.get(id);
 				if (live !== ref || !live.session || live.session !== session) return;
 				if (this.#adopted.get(id)?.ref !== ref) return;
+				if (session.hasActiveMonitors()) {
+					this.#armTimer(id, adopted);
+					return;
+				}
 
 				park.detached = true;
 				this.#registry.detachSession(id, ref);
@@ -220,6 +250,7 @@ export class AgentLifecycleManager {
 				}
 			} finally {
 				if (this.#parks.get(id) === park) this.#parks.delete(id);
+				this.#trimParkedRevivers();
 			}
 		})();
 

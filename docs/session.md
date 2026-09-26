@@ -64,11 +64,11 @@ The default session directory is the harness's choice, not the user's, so a dire
 
 An explicitly requested location still fails fast with the same sentence pair: `--session-dir` is rejected as a usage error before startup, and any other explicit resume path throws `SessionDirectoryError` (`session-paths.ts`), which the CLI renders as `Error: <message>` plus a dimmed hint and exit 1.
 
-### Oversized entries and their temporary copies
+### Resident metadata and temporary entry copies
 
-Entries larger than `MAX_PERSIST_CHARS` are truncated in the file copy, and the full version is spilled to a per-process directory under the system temp root (`proto-session-history-*`), keyed by entry id and cached in memory up to 8 MiB. A record with no usable id — possible only in a hand-edited file — is never spilled, because two such records would share one key; it stays whole in memory instead.
+Session managers keep bounded human-readable previews plus structural metadata resident. Raw entries are backed by per-process temporary files (`proto-session-history-*`), keyed by entry id, and hydrated through a cache capped at 64 entries and 8 MiB. A record with no usable id — possible only in a hand-edited file — cannot share this keyed storage and remains inline. Ordinary strings larger than `MAX_PERSIST_CHARS` still have a truncated durable representation; their complete current-process version exists only in temporary storage. Signed/encrypted provider replay content and images retain their separate durable blob handling.
 
-That directory is a cache, not storage: the session file on disk already holds the truncated copy. When a spill file cannot be read back — a temp cleaner removed the directory, the file is corrupt, or it holds another entry — the entry degrades to its truncated form and the session keeps running. The mapping is forgotten so the failure is not retried on every read, the next oversized entry re-creates the directory at full fidelity, and the user gets one `warning` notice naming the entry, the session file, the temp path, the fact that the session file was not modified, and the advice to exclude `proto-session-history-*` from temp cleanup. Before this, the read threw `Raw session entry file is missing for <id>`, which failed every later operation that materializes history — subagent spawn, compaction, recovery — until the process was restarted.
+Temporary entry files are not durable history. When a temporary file cannot be read back — a cleaner removed it, it is corrupt, or it holds another entry — the manager warns once and permits display from the bounded preview. The failed mapping is marked lost to avoid repeated reads. A rewrite cannot use that preview to overwrite durable history: it fails closed until the session is reopened, leaving the original saved bytes unchanged. The warning identifies the entry/session/temp path and recommends excluding `proto-session-history-*` from temporary-directory cleanup.
 
 ### Ownership
 
@@ -427,7 +427,7 @@ The underlying model is append-only tree + mutable leaf pointer:
 - `resetLeaf()` sets `leafId = null`; next append creates a new root entry (`parentId: null`).
 - `branchWithSummary()` sets leaf to branch target and appends a `branch_summary` entry.
 
-`getEntries()` returns all non-header entries in insertion order. Existing entries are not deleted in normal operation; rewrites preserve logical history while updating representation (migrations, move, targeted rewrite helpers).
+`getEntries()` returns all non-header entries in insertion order. Existing entries are not deleted in normal operation; rewrites preserve logical history while updating representation (migrations, move, targeted rewrite helpers). These explicit collection APIs hydrate their requested payloads. For bounded access, `iterateEntries()` / `iterateBranch()` / `iterateCustomEntries()` load one selected entry at a time, `getTreeForDisplay()` / `getBranchForStats()` use metadata, and windowed transcript reconstruction admits semantic groups before hydration. Active model context hydrates only the current compaction/reset window. See [interactive memory and resource limits](./interactive-memory.md) for UI and fleet ownership policies.
 
 ## Context Reconstruction (`buildSessionContext`)
 
@@ -529,5 +529,7 @@ Recent/most-recent scans read only a 4 KiB prefix. Full lists read that prefix p
 - FTS5 index: `history_fts` with trigger-maintained sync
 - Deduplicates consecutive identical prompts using in-memory last-prompt cache
 - Inserts are batched through an async drain queue (~100 ms delay) so prompt capture does not block turn execution
+- Durable prompt capture accepts up to 16 MiB; editor recall hydrates at most 4 MiB per prompt and 8 MiB per result set, selecting by numeric SQL metadata before reading payloads
+- Legacy normalization streams through file-backed temporary storage; oversized legacy rows remain unchanged on disk and are excluded from editor recall
 
 Use session files for conversation graph/state replay; use `HistoryStorage` for prompt history UX.

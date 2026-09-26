@@ -51,3 +51,32 @@ test("spawn registration is immediately indexed and a deleted transcript is inva
 		unregister();
 	}
 });
+
+test("concurrent transcript registrations survive root-cache eviction and cold lookup", async () => {
+	const unregisters: Array<() => void> = [];
+	const accepted = new Map<string, string>();
+	try {
+		for (let index = 0; index < 20; index++) {
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-history-index-eviction-"));
+			roots.push(root);
+			unregisters.push(registerArtifactsDir(root));
+			const workerFiles = Array.from({ length: 4 }, (_, worker) => ({
+				id: `indexed-${index}-${worker}`,
+				file: path.join(root, `indexed-${index}-${worker}.jsonl`),
+			}));
+			await Promise.all(
+				workerFiles.map(async ({ id, file }) => {
+					await Bun.write(file, '{"type":"session"}\n');
+					await registerSessionFile(id, file);
+					accepted.set(id, file);
+				}),
+			);
+		}
+		const first = accepted.get("indexed-0-0")!;
+		expect(await findSessionFileFromDisk("INDEXED-0-0")).toBe(first);
+		const listed = await sessionFilesFromDisk();
+		for (const [id, file] of accepted) expect(listed.get(id)).toBe(file);
+	} finally {
+		for (const unregister of unregisters) unregister();
+	}
+});

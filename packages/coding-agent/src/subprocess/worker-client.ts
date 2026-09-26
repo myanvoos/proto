@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Process } from "@oh-my-pi/pi-natives";
 import {
 	$env,
 	isBunTestRuntime,
@@ -11,6 +12,7 @@ import {
 	stripGitRepoLocationEnv,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
+import { terminateProcess } from "@oh-my-pi/pi-utils/ptree";
 import type { Subprocess } from "bun";
 
 type WorkerLogMessage = {
@@ -46,6 +48,8 @@ export interface SpawnedSubprocess<Outbound> {
 	intentionalExit: { value: boolean };
 
 	stderrDrained: Promise<void>;
+	snapshotDescendants(): void;
+	terminate(): Promise<void>;
 }
 
 const STDERR_TAIL_LIMIT_BYTES = 16 * 1024;
@@ -153,6 +157,52 @@ export function createWorkerSubprocess<Outbound>(options: {
 		},
 	});
 
+	const identity = Process.fromPid(proc.pid);
+	const descendants = new Map<number, Process>();
+	const snapshotDescendants = (): void => {
+		for (const [pid, child] of descendants) {
+			if (child.status() === "exited") descendants.delete(pid);
+		}
+		const pending = identity ? [identity, ...descendants.values()] : [...descendants.values()];
+		const visited = new Set<number>();
+		for (let index = 0; index < pending.length; index++) {
+			const parent = pending[index];
+			if (visited.has(parent.pid)) continue;
+			visited.add(parent.pid);
+			for (const child of parent.children()) {
+				descendants.set(child.pid, child);
+				pending.push(child);
+			}
+		}
+	};
+	let termination: Promise<void> | undefined;
+	const terminate = (): Promise<void> => {
+		intentionalExit.value = true;
+		termination ??= (async () => {
+			// Snapshot before signalling: a dying root may orphan TERM-resistant children.
+			// Native identities avoid signalling unrelated processes after PID reuse.
+			snapshotDescendants();
+			const rootExited = await terminateProcess(proc, identity, {
+				detached: options.detached,
+				gracefulMs: -1,
+				timeoutMs: 1_000,
+			});
+			const exited = await Promise.all(
+				[...descendants.values()].map(child => child.terminate({ gracefulMs: -1, timeoutMs: 1_000 })),
+			);
+			if (!rootExited || exited.some(confirmed => !confirmed)) {
+				throw new Error(`${options.exitLabel} process tree shutdown not confirmed`);
+			}
+			await proc.exited;
+			await stderrDrained.promise;
+			descendants.clear();
+		})().catch(error => {
+			termination = undefined;
+			throw error;
+		});
+		return termination;
+	};
+
 	let faulted = false;
 	unregisterFault = postmortem.registerWorkerIpcFaultHandler(cause => {
 		if (faulted) return;
@@ -160,14 +210,19 @@ export function createWorkerSubprocess<Outbound>(options: {
 		const err = new Error(`${options.exitLabel}: worker sent a malformed IPC frame; recycling worker`, { cause });
 		for (const handler of errors) handler(err);
 
-		intentionalExit.value = true;
-		try {
-			proc.kill("SIGKILL");
-		} catch {}
+		void terminate().catch(error => logger.warn("Worker process tree shutdown failed", { error }));
 	});
 
 	if (!isBunTestRuntime() && options.unref !== false) proc.unref();
-	return { proc, inbound, errors, intentionalExit, stderrDrained: stderrDrained.promise };
+	return {
+		proc,
+		inbound,
+		errors,
+		intentionalExit,
+		stderrDrained: stderrDrained.promise,
+		snapshotDescendants,
+		terminate,
+	};
 }
 
 class StderrTail {
@@ -266,7 +321,7 @@ export function createWorkerHandle<Inbound, Outbound>(
 	spawned: SpawnedSubprocess<Outbound>,
 	send: (message: Inbound) => void,
 ): WorkerHandle<Inbound, Outbound> {
-	const { proc, inbound, errors, intentionalExit } = spawned;
+	const { inbound, errors } = spawned;
 	return {
 		send,
 		onMessage(handler) {
@@ -277,12 +332,7 @@ export function createWorkerHandle<Inbound, Outbound>(
 			errors.add(handler);
 			return () => errors.delete(handler);
 		},
-		async terminate() {
-			intentionalExit.value = true;
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
-		},
+		terminate: () => spawned.terminate(),
 	};
 }
 

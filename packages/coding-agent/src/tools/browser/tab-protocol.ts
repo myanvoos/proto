@@ -37,6 +37,7 @@ export interface ScreenshotResult {
 
 export interface SessionSnapshot {
 	cwd: string;
+	outputArtifact?: { path?: string; id?: string };
 	browserScreenshotDir?: string;
 
 	excludeWebP?: boolean;

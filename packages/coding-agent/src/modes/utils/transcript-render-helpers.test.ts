@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import type { AsyncJobEvent } from "../../async/job-manager";
 import { Settings } from "../../config/settings";
-import type { MonitorEvent } from "../../monitor/types";
 import type { CustomMessage } from "../../session/messages";
-import { MONITOR_EVENT_MESSAGE_TYPE, type MonitorEventDetails } from "../../session/monitor-event";
+import {
+	buildMonitorEventBatchMessage,
+	MONITOR_EVENT_MESSAGE_TYPE,
+	type MonitorEventDetails,
+	type PersistedMonitorEvent,
+} from "../../session/monitor-event";
 import { initTheme } from "../theme/theme";
 import { buildAsyncResultBlock, buildMonitorEventBlock } from "./transcript-render-helpers";
 
@@ -11,7 +16,7 @@ await initTheme(false, false, "proto");
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
-function monitorMessage(events: MonitorEvent[]): CustomMessage<MonitorEventDetails> {
+function monitorMessage(events: PersistedMonitorEvent[]): CustomMessage<MonitorEventDetails> {
 	return {
 		role: "custom",
 		customType: MONITOR_EVENT_MESSAGE_TYPE,
@@ -23,7 +28,7 @@ function monitorMessage(events: MonitorEvent[]): CustomMessage<MonitorEventDetai
 	};
 }
 
-test("monitor event block renders sanitized, truncated output", () => {
+test("stored monitor event identities render with sanitized, truncated output", () => {
 	const longTail = "x".repeat(400);
 	const block = buildMonitorEventBlock(
 		monitorMessage([
@@ -55,6 +60,34 @@ test("monitor event block renders sanitized, truncated output", () => {
 	expect(rendered).toContain("col   umn");
 	expect(rendered).not.toContain(longTail);
 	expect(rendered).toContain("…");
+});
+
+test("new monitor events retain the stored identity contract and render their job identity", () => {
+	const event: AsyncJobEvent = {
+		jobId: "bg_monitor_17",
+		label: "deployment",
+		sequence: 3,
+		kind: "exit",
+		text: "Deployment watcher exited with code 0",
+		timestamp: 1_700_000_000_000,
+	};
+	const message = buildMonitorEventBatchMessage([event]);
+	expect(message).not.toBeNull();
+	expect(message!.details?.events).toEqual([
+		{
+			monitorId: "bg_monitor_17",
+			label: "deployment",
+			sequence: 3,
+			kind: "exit",
+			text: "Deployment watcher exited with code 0",
+			timestamp: 1_700_000_000_000,
+		},
+	]);
+	expect(message!.content).toContain("bg_monitor_17");
+	const rendered = buildMonitorEventBlock(message!).render(200).join("\n").replace(ANSI, "");
+	expect(rendered).toContain("bg_monitor_17");
+	expect(rendered).toContain("Monitor exited");
+	expect(rendered).toContain("Deployment watcher exited with code 0");
 });
 
 function asyncResultMessage(jobs: Array<{ jobId: string; status?: string }>): CustomMessage<unknown> {

@@ -1,4 +1,6 @@
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
 import { BracketedPasteHandler, decodeReencodedPasteControls } from "../bracketed-paste";
+import { EDITOR_LIMITS } from "../editor-limits";
 import { getKeybindings } from "../keybindings";
 import { extractPrintableText } from "../keys";
 import { KillRing } from "../kill-ring";
@@ -22,6 +24,7 @@ interface InputState {
 	value: string;
 	cursor: number;
 	isSimpleValue: boolean;
+	bytes: number;
 }
 
 const SIMPLE_VALUE_PATTERN = /^[\x20-\x7e]*$/u;
@@ -37,6 +40,7 @@ export class Input implements Component, Focusable {
 	mask = false;
 	onSubmit?: (value: string) => void;
 	onEscape?: () => void;
+	onInputRejected?: (reason: string) => void;
 
 	focused: boolean = false;
 
@@ -52,10 +56,11 @@ export class Input implements Component, Focusable {
 	}
 
 	setValue(value: string): void {
+		if (!this.#acceptBytes(Buffer.byteLength(value))) return;
 		this.#undoStack.length = 0;
 		this.#lastAction = null;
 		this.#pasteHandler.clear();
-		this.#value = value;
+		this.#value = materializeString(value);
 		this.#isSimpleValue = SIMPLE_VALUE_PATTERN.test(value);
 
 		this.#cursor = value.length;
@@ -72,6 +77,7 @@ export class Input implements Component, Focusable {
 	handleInput(data: string): void {
 		const paste = this.#pasteHandler.process(data);
 		if (paste.handled) {
+			if (paste.rejected) this.onInputRejected?.("Paste exceeds the 4 MiB UTF-8 limit and was discarded");
 			if (paste.pasteContent !== undefined) this.#handlePaste(paste.pasteContent);
 			return;
 		}
@@ -187,6 +193,7 @@ export class Input implements Component, Focusable {
 	}
 
 	#insertCharacter(text: string): void {
+		if (!this.#acceptBytes(Buffer.byteLength(this.#value) + Buffer.byteLength(text))) return;
 		const isWordChunk = [...segmenter.segment(text)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
 
 		if (!isWordChunk || this.#lastAction !== "type-word") {
@@ -306,6 +313,7 @@ export class Input implements Component, Focusable {
 			return;
 		}
 
+		if (!this.#acceptBytes(Buffer.byteLength(this.#value) + Buffer.byteLength(text))) return;
 		this.#pushUndo();
 		this.#value = this.#value.slice(0, this.#cursor) + text + this.#value.slice(this.#cursor);
 		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(text);
@@ -326,14 +334,42 @@ export class Input implements Component, Focusable {
 
 		this.#killRing.rotate();
 		const text = this.#killRing.peek() ?? "";
+		if (!this.#acceptBytes(Buffer.byteLength(this.#value) + Buffer.byteLength(text))) {
+			this.#undo();
+			return;
+		}
 		this.#value = this.#value.slice(0, this.#cursor) + text + this.#value.slice(this.#cursor);
 		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(text);
 		this.#cursor += text.length;
 		this.#lastAction = "yank";
 	}
 
+	#acceptBytes(bytes: number): boolean {
+		if (bytes <= EDITOR_LIMITS.draftBytes) return true;
+		this.onInputRejected?.("Input exceeds the 4 MiB UTF-8 limit; edit was not inserted");
+		return false;
+	}
+
+	dispose(): void {
+		this.#value = "";
+		this.#cursor = 0;
+		this.#undoStack = [];
+		this.#killRing.clear();
+		this.#pasteHandler.clear();
+		this.onSubmit = undefined;
+		this.onEscape = undefined;
+		this.onInputRejected = undefined;
+	}
+
 	#pushUndo(): void {
-		this.#undoStack.push({ value: this.#value, cursor: this.#cursor, isSimpleValue: this.#isSimpleValue });
+		this.#undoStack.push({
+			value: materializeString(this.#value),
+			cursor: this.#cursor,
+			isSimpleValue: this.#isSimpleValue,
+			bytes: Buffer.byteLength(this.#value),
+		});
+		let bytes = this.#undoStack.reduce((sum, snapshot) => sum + snapshot.bytes, 0);
+		while (this.#undoStack.length > 100 || bytes > EDITOR_LIMITS.undoBytes) bytes -= this.#undoStack.shift()!.bytes;
 	}
 
 	#undo(): void {
@@ -364,6 +400,7 @@ export class Input implements Component, Focusable {
 	}
 
 	#handlePaste(pastedText: string): void {
+		if (!this.#acceptBytes(Buffer.byteLength(pastedText))) return;
 		this.#lastAction = null;
 
 		const cleanText = replaceTabs(
@@ -372,7 +409,8 @@ export class Input implements Component, Focusable {
 			.normalize("NFC")
 			.replace(/[\x00-\x1F\x7F\x80-\x9F]/g, "");
 
-		if (cleanText.length === 0) return;
+		if (cleanText.length === 0 || !this.#acceptBytes(Buffer.byteLength(this.#value) + Buffer.byteLength(cleanText)))
+			return;
 		this.#pushUndo();
 
 		this.#value = this.#value.slice(0, this.#cursor) + cleanText + this.#value.slice(this.#cursor);

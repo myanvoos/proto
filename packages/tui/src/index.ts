@@ -21,6 +21,7 @@ export * from "./deccara";
 export * from "./desktop-notify";
 
 export type * from "./editor-component";
+export * from "./editor-limits";
 
 export * from "./fuzzy";
 

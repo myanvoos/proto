@@ -83,6 +83,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import type { AsyncJobEvent } from "../async/job-manager";
 import { reset as resetCapabilities } from "../capability";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
@@ -135,8 +136,6 @@ import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
-import { MonitorManager } from "../monitor";
-import type { MonitorEvent } from "../monitor/types";
 import type { OrchestratorParent } from "../orchestrator/runtime";
 import goalChecklistContextPrompt from "../prompts/goals/goal-checklist-context.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
@@ -576,11 +575,11 @@ export class AgentSession {
 
 	#asyncDeliveryEpoch = 0;
 
-	readonly #monitors: MonitorManager;
-	#monitorDisposeTask: Promise<void> | undefined;
+	#asyncDeliveryOwnerId: string | undefined;
+	#asyncCleanupTask: Promise<void> | undefined;
 
 	readonly #irc: IrcBridge;
-	#ircWakeTurnObserver:
+	#wakeTurnObserver:
 		| ((records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
 
@@ -605,7 +604,7 @@ export class AgentSession {
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
-	#persistedMessageIndex: { anchor: string; messagesByKey: Map<string, AgentMessage[]> } | undefined;
+	#persistedMessageIndex: { anchor: string; messagesByKey: Map<string, string[]> } | undefined;
 
 	#customCommands: LoadedCustomCommand[] = [];
 
@@ -778,7 +777,7 @@ export class AgentSession {
 		}
 		let finishObservation: ((error?: unknown) => void | Promise<void>) | undefined;
 		try {
-			finishObservation = this.#ircWakeTurnObserver?.(records);
+			finishObservation = this.#wakeTurnObserver?.(records);
 		} catch (error) {
 			logger.warn("IRC wake turn observer failed to start", { error: String(error) });
 		}
@@ -1126,11 +1125,32 @@ export class AgentSession {
 			injectIdle: async messages => {
 				const first = messages[0];
 				if (!first) return;
+				const monitorMessages = messages.filter(
+					(message): message is CustomMessage =>
+						message.role === "custom" && message.customType === MONITOR_EVENT_MESSAGE_TYPE,
+				);
+				let finishObservation: ((error?: unknown) => void | Promise<void>) | undefined;
+				try {
+					if (monitorMessages.length > 0) finishObservation = this.#wakeTurnObserver?.(monitorMessages);
+				} catch (error) {
+					logger.warn("Monitor wake turn observer failed to start", { error: String(error) });
+				}
+				this.#resetPromptMaintenanceState();
 				this.#beginInFlight();
+				let turnError: unknown;
 				try {
 					await this.agent.prompt(messages.length === 1 ? first : messages);
+				} catch (error) {
+					turnError = error;
+					throw error;
 				} finally {
-					this.#endInFlight();
+					this.#endInFlight(async () => {
+						try {
+							await finishObservation?.(turnError);
+						} catch (error) {
+							logger.warn("Monitor wake turn observer failed to finish", { error: String(error) });
+						}
+					});
 				}
 			},
 			scheduleIdleFlush: run => {
@@ -1162,15 +1182,6 @@ export class AgentSession {
 			isStale: entry =>
 				this.#isDisposed || !isLaunchCompletionOwner(entry.owner, this.sessionManager.getSessionId()),
 			build: buildLaunchCompletionBatchMessage,
-		});
-		this.#monitors = new MonitorManager({
-			deliver: event => this.#deliverMonitorEvent(event),
-			settings: this.settings,
-			cwd: () => this.sessionManager.getCwd(),
-		});
-		this.yieldQueue.register<MonitorEvent>(MONITOR_EVENT_MESSAGE_TYPE, {
-			isStale: () => this.#isDisposed,
-			build: buildMonitorEventBatchMessage,
 		});
 
 		this.agent.hasIrcInterrupts = () => this.#irc.hasInterrupts();
@@ -1282,17 +1293,7 @@ export class AgentSession {
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
 
-		const asyncJobOwnerId = this.getAsyncJobOwnerId();
-		if (this.#asyncJobManager && asyncJobOwnerId) {
-			const manager = this.#asyncJobManager;
-			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(asyncJobOwnerId, (jobId, text, job) =>
-				this.#deliverAsyncJobResult(manager, jobId, text, job),
-			);
-			this.yieldQueue.register<AsyncResultEntry>("async-result", {
-				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
-				build: buildAsyncResultBatchMessage,
-			});
-		}
+		this.#registerAsyncDeliverySink();
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
 		});
@@ -1623,42 +1624,83 @@ export class AgentSession {
 		return { running, recent, delivery };
 	}
 
-	#cancelOwnAsyncJobs(reason?: unknown): void {
-		if (!this.#agentId) return;
+	#registerAsyncDeliverySink(): void {
 		const manager = this.#asyncJobManager;
-		manager?.cancelAll({ ownerId: this.getAsyncJobOwnerId() ?? undefined }, reason);
-		manager?.evictCompletedJobs({ ownerId: this.getAsyncJobOwnerId() ?? undefined });
-
-		this.#asyncDeliveryEpoch += 1;
-		this.yieldQueue.clear("async-result");
+		const ownerId = this.getAsyncJobOwnerId();
+		if (!manager || !ownerId || this.#asyncDeliveryOwnerId === ownerId) return;
+		this.#unregisterAsyncDeliverySink?.();
+		this.#asyncDeliveryOwnerId = ownerId;
+		const epoch = this.#asyncDeliveryEpoch;
+		this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(ownerId, (jobId, text, job, event) => {
+			if (this.#isDisposed || epoch !== this.#asyncDeliveryEpoch || ownerId !== this.getAsyncJobOwnerId()) return;
+			if (event) {
+				this.yieldQueue.enqueue(MONITOR_EVENT_MESSAGE_TYPE, { event, epoch });
+				this.yieldQueue.requestIdleFlush();
+				return;
+			}
+			return this.#deliverAsyncJobResult(manager, jobId, text, job);
+		});
+		this.yieldQueue.register<AsyncResultEntry>(ASYNC_RESULT_MESSAGE_TYPE, {
+			isStale: entry =>
+				this.#isDisposed || entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
+			build: buildAsyncResultBatchMessage,
+		});
+		this.yieldQueue.register<{ event: AsyncJobEvent; epoch: number }>(MONITOR_EVENT_MESSAGE_TYPE, {
+			isStale: entry =>
+				this.#isDisposed ||
+				entry.epoch !== this.#asyncDeliveryEpoch ||
+				manager.isDeliverySuppressed(entry.event.jobId) ||
+				manager.isEventAcknowledged(entry.event),
+			build: entries => {
+				const events = entries.map(entry => entry.event);
+				const message = buildMonitorEventBatchMessage(events);
+				if (message) manager.acknowledgeEvents(events);
+				return message;
+			},
+		});
 	}
 
-	get monitorManager(): MonitorManager {
-		return this.#monitors;
+	#cancelOwnAsyncJobs(reason?: unknown): void {
+		const ownerId = this.#asyncDeliveryOwnerId ?? this.getAsyncJobOwnerId();
+		if (!ownerId) return;
+		const manager = this.#asyncJobManager;
+		const monitors = manager?.getAllJobs({ ownerId }).filter(job => job.type === "monitor") ?? [];
+		manager?.cancelAll({ ownerId }, reason);
+		if (manager) {
+			const previous = this.#asyncCleanupTask;
+			// Finite jobs retain their manager's bounded shutdown; monitor processes must be reaped
+			// even when this session does not own the shared manager.
+			this.#asyncCleanupTask = Promise.all([previous, ...monitors.map(job => job.promise)]).then(() => {
+				manager.evictCompletedJobs({ ownerId });
+			});
+		}
+		this.#asyncDeliveryEpoch += 1;
+		this.#unregisterAsyncDeliverySink?.();
+		this.#unregisterAsyncDeliverySink = undefined;
+		this.#asyncDeliveryOwnerId = undefined;
+		this.yieldQueue.clear(ASYNC_RESULT_MESSAGE_TYPE);
+		this.yieldQueue.clear(MONITOR_EVENT_MESSAGE_TYPE);
+		if (!this.#isDisposed) this.#registerAsyncDeliverySink();
 	}
 
 	hasActiveMonitors(): boolean {
-		return this.#monitors.hasActive() || this.yieldQueue.has(MONITOR_EVENT_MESSAGE_TYPE);
+		const ownerId = this.getAsyncJobOwnerId();
+		return (
+			Boolean(ownerId && this.#asyncJobManager?.getRunningJobs({ ownerId }).some(job => job.type === "monitor")) ||
+			this.yieldQueue.has(MONITOR_EVENT_MESSAGE_TYPE)
+		);
 	}
 
-	#deliverMonitorEvent(event: MonitorEvent): void {
-		if (this.#isDisposed) return;
-		this.yieldQueue.enqueue<MonitorEvent>(MONITOR_EVENT_MESSAGE_TYPE, event);
-		this.yieldQueue.requestIdleFlush();
-	}
-
-	// Monitors are deliberately absent from #hasPendingAsyncWake(): that predicate backs
-	// settleAsyncWork() and the willContinue agent-end signal, and a monitor is an open-ended
-	// wait that may never settle, so folding it in would hang shutdown.
 	#hasPendingAsyncWake(): boolean {
 		const manager = this.#asyncJobManager;
-		if (!manager) return false;
-		const asyncJobOwnerId = this.getAsyncJobOwnerId();
-		const ownerFilter = asyncJobOwnerId ? { ownerId: asyncJobOwnerId } : undefined;
+		const ownerId = this.getAsyncJobOwnerId();
+		if (!manager || !ownerId) return false;
+		const ownerFilter = { ownerId, excludeMonitors: true };
 		return (
 			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
 			manager.hasPendingDeliveries(ownerFilter) ||
-			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE)
+			this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE) ||
+			this.yieldQueue.has(MONITOR_EVENT_MESSAGE_TYPE)
 		);
 	}
 
@@ -1668,9 +1710,10 @@ export class AgentSession {
 
 	async settleAsyncWork(): Promise<void> {
 		const manager = this.#asyncJobManager;
-		if (!manager || !this.#agentId) return;
-		await manager.waitForOwnerJobs(this.getAsyncJobOwnerId() ?? this.#agentId, { excludeSuppressed: true });
-		await manager.drainDeliveries({ filter: { ownerId: this.getAsyncJobOwnerId() ?? this.#agentId } });
+		const ownerId = this.getAsyncJobOwnerId();
+		if (!manager || !ownerId) return;
+		await manager.waitForOwnerJobs(ownerId, { excludeSuppressed: true, excludeMonitors: true });
+		await manager.drainDeliveries({ filter: { ownerId, excludeMonitors: true } });
 		await this.waitForIdle();
 	}
 
@@ -1743,7 +1786,7 @@ export class AgentSession {
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
+		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getActiveBranch());
 		if (pendingToolCalls.length === 0 && !this.sessionManager.hasAssistantMessage()) {
 			return;
 		}
@@ -1919,7 +1962,7 @@ export class AgentSession {
 		return `${this.sessionManager.getSessionFile() ?? ""}\u0000${this.sessionManager.getLeafId() ?? ""}`;
 	}
 
-	#ensurePersistedMessageIndex(): Map<string, AgentMessage[]> {
+	#ensurePersistedMessageIndex(): Map<string, string[]> {
 		const anchor = this.#persistedMessageIndexAnchor();
 		let cache = this.#persistedMessageIndex;
 		if (cache === undefined || cache.anchor !== anchor) {
@@ -1929,15 +1972,15 @@ export class AgentSession {
 		return cache.messagesByKey;
 	}
 
-	#buildPersistedMessageIndex(): Map<string, AgentMessage[]> {
-		const messagesByKey = new Map<string, AgentMessage[]>();
-		for (const entry of this.sessionManager.getBranch()) {
+	#buildPersistedMessageIndex(): Map<string, string[]> {
+		const messagesByKey = new Map<string, string[]>();
+		for (const entry of this.sessionManager.getBranchForStats()) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
 			if (key === undefined) continue;
 			const candidates = messagesByKey.get(key);
-			if (candidates) candidates.push(entry.message);
-			else messagesByKey.set(key, [entry.message]);
+			if (candidates) candidates.push(entry.id);
+			else messagesByKey.set(key, [entry.id]);
 		}
 		return messagesByKey;
 	}
@@ -1952,15 +1995,19 @@ export class AgentSession {
 		if (key === undefined) return false;
 		const candidates = this.#ensurePersistedMessageIndex().get(key);
 		return (
-			candidates?.some(
-				candidate =>
+			candidates?.some(id => {
+				const entry = this.sessionManager.getEntry(id);
+				if (entry?.type !== "message") return false;
+				const candidate = entry.message;
+				return (
 					sameMessageContent(candidate, message) &&
 					!(
 						candidate.role === "assistant" &&
 						message.role === "assistant" &&
 						candidate.errorMessage !== message.errorMessage
-					),
-			) ?? false
+					)
+				);
+			}) ?? false
 		);
 	}
 
@@ -1983,8 +2030,8 @@ export class AgentSession {
 		if (wasFresh && cache) {
 			if (key !== undefined) {
 				const candidates = cache.messagesByKey.get(key);
-				if (candidates) candidates.push(message);
-				else cache.messagesByKey.set(key, [message]);
+				if (candidates) candidates.push(entryId);
+				else cache.messagesByKey.set(key, [entryId]);
 			}
 			cache.anchor = this.#persistedMessageIndexAnchor();
 		}
@@ -2341,11 +2388,14 @@ export class AgentSession {
 					);
 				}
 				if (semanticResult?.toolName === "checkpoint" && !isError) {
-					const entries = this.sessionManager.getEntries();
+					const entries = this.sessionManager.getBranchForStats();
 					let checkpointEntryId: string | null = null;
 					for (let i = entries.length - 1; i >= 0; i--) {
 						const entry = entries[i];
-						if (entry.type === "message" && entry.message === event.message) {
+						if (
+							entry.type === "message" &&
+							sessionMessagePersistenceKey(entry.message) === sessionMessagePersistenceKey(event.message)
+						) {
 							checkpointEntryId = entry.id;
 							break;
 						}
@@ -3239,6 +3289,8 @@ export class AgentSession {
 
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		if (this.#asyncDeliveryOwnerId && this.#asyncDeliveryOwnerId !== currentSessionId) this.#cancelOwnAsyncJobs();
+		this.#registerAsyncDeliverySink();
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -3331,7 +3383,7 @@ export class AgentSession {
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
-		this.#monitorDisposeTask ??= this.#monitors.dispose();
+		this.#cancelOwnAsyncJobs();
 		this.#eval.beginDispose();
 	}
 
@@ -3347,6 +3399,7 @@ export class AgentSession {
 		const manager = this.#ownedAsyncJobManager;
 
 		this.#cancelOwnAsyncJobs(manager ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
+		await this.#asyncCleanupTask;
 		if (!manager || this.#shouldDisposeOwnedAsyncJobManager?.() === false) return;
 
 		try {
@@ -3439,7 +3492,6 @@ export class AgentSession {
 		const results = await Promise.allSettled([
 			this.#bash.dispose(),
 			this.#disposeOwnedAsyncJobs(),
-			this.#monitorDisposeTask,
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
@@ -3942,7 +3994,7 @@ export class AgentSession {
 	}
 
 	buildTranscriptSessionContext(
-		options?: Pick<BuildSessionContextOptions, "collapseCompactedHistory" | "keepDanglingToolCalls">,
+		options?: Pick<BuildSessionContextOptions, "collapseCompactedHistory" | "keepDanglingToolCalls" | "window">,
 	): SessionContext {
 		return this.#providerBoundary.buildTranscriptSessionContext(options);
 	}
@@ -4060,8 +4112,11 @@ export class AgentSession {
 		let completed: CompletedRewindState | undefined;
 		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
 		let messageCount = 0;
-		for (const entry of this.sessionManager.getBranch()) {
-			if (entry.type === "message") messageCount++;
+		for (const indexed of this.sessionManager.getBranchForStats()) {
+			if (indexed.type === "message") messageCount++;
+			if (indexed.type !== "message" || indexed.message.role !== "toolResult") continue;
+			const entry = this.sessionManager.getEntry(indexed.id);
+			if (!entry) continue;
 			if (isSuccessfulCheckpointEntry(entry)) {
 				completed = undefined;
 				pending = {
@@ -6269,10 +6324,10 @@ export class AgentSession {
 		return this.#irc.deliver(msg, opts);
 	}
 
-	setIrcWakeTurnObserver(
+	setWakeTurnObserver(
 		observer: ((records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
 	): void {
-		this.#ircWakeTurnObserver = observer;
+		this.#wakeTurnObserver = observer;
 	}
 
 	emitIrcRelayObservation(record: CustomMessage): void {
@@ -6573,7 +6628,7 @@ export class AgentSession {
 
 				const model = this.model;
 				if (model) {
-					const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+					const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getActiveBranch(), {
 						api: model.api,
 						provider: model.provider,
 						model: model.id,
@@ -6586,10 +6641,10 @@ export class AgentSession {
 				}
 
 				const hasThinkingEntry = this.sessionManager
-					.getBranch()
+					.getBranchForStats()
 					.some(entry => entry.type === "thinking_level_change");
 				const hasServiceTierEntry = this.sessionManager
-					.getBranch()
+					.getBranchForStats()
 					.some(entry => entry.type === "service_tier_change");
 				const defaultThinkingLevel = parseThinkingLevel(this.settings.get("defaultThinkingLevel"));
 				const configuredServiceTierByFamily = buildServiceTierByFamily(
@@ -7237,7 +7292,7 @@ export class AgentSession {
 	}
 
 	getUserMessagesForBranching(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
+		const entries = this.sessionManager.iterateEntries();
 		const result: Array<{ entryId: string; text: string }> = [];
 
 		for (const entry of entries) {

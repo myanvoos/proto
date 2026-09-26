@@ -18,7 +18,7 @@ import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
 import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { copyToClipboard, readTextFromClipboard } from "../../utils/clipboard";
-import { cloneSafe, RunOutput } from "../browser/run-output";
+import { RunOutput } from "../browser/run-output";
 import {
 	bindRunFacade,
 	markHandled,
@@ -193,7 +193,7 @@ async function captureScreenshot(
 	const destination = path.join(os.tmpdir(), `proto-computer-${Snowflake.next()}.png`);
 	await Bun.write(destination, frame.data);
 	const scaled = frame.width !== frame.sourceWidth || frame.height !== frame.sourceHeight;
-	context.screenshots.push({
+	const admitted = context.output.admitMetadata({
 		path: destination,
 		width: frame.width,
 		height: frame.height,
@@ -201,6 +201,7 @@ async function captureScreenshot(
 		sourceHeight: frame.sourceHeight,
 		target: frame.target,
 	});
+	if (admitted) context.screenshots.push(admitted);
 	if (!options?.silent) {
 		context.output.push({
 			type: "text",
@@ -490,7 +491,7 @@ export class ComputerWorkerCore {
 		const signal = AbortSignal.any([timeoutSignal, ac.signal, runAc.signal]);
 		const active: ActiveRun = { id: message.id, ac, signal, pendingTools: new Map() };
 		this.#active = active;
-		const output = new RunOutput();
+		const output = new RunOutput(message.session.outputArtifact);
 		const screenshots: ComputerScreenshot[] = [];
 		const runContext: ComputerRunContext = {
 			signal,
@@ -564,6 +565,7 @@ export class ComputerWorkerCore {
 			if (this.#active?.id === message.id) this.#active = null;
 		}
 		if (failure !== undefined) {
+			await output.dispose();
 			this.#transport.send({ type: "result", id: message.id, ok: false, error: errorPayload(failure.error) });
 			return;
 		}
@@ -578,13 +580,14 @@ export class ComputerWorkerCore {
 					ok: false,
 					error: errorPayload(nativeError(error)),
 				});
+				await output.dispose();
 				return;
 			}
 			this.#transport.send({
 				type: "result",
 				id: message.id,
 				ok: true,
-				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots, capabilities },
+				payload: { ...(await output.finish(returnValue)), screenshots, capabilities },
 			});
 		}
 	}

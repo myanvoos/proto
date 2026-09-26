@@ -1,5 +1,5 @@
 import { isAnthropicServerToolHistoryBlock } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
-import { countNewlines } from "@oh-my-pi/pi-utils";
+import { countNewlines, materializeString } from "@oh-my-pi/pi-utils";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
@@ -185,7 +185,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 				return obj;
 			}
 			const limit = Math.max(0, MAX_PERSIST_CHARS - TRUNCATION_NOTICE.length);
-			return `${truncateString(obj, limit)}${TRUNCATION_NOTICE}`;
+			return materializeString(`${truncateString(obj, limit)}${TRUNCATION_NOTICE}`);
 		}
 		return obj;
 	}

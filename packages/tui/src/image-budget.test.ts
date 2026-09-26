@@ -732,3 +732,38 @@ test("takeTransmitBatch filter cancels payloads for unpainted ids", () => {
 	expect(batch.sequences).toEqual(["P"]);
 	expect(budget.takeTransmitBatch().sequences).toEqual([]);
 });
+
+test("transport byte admission rejects overflow before queuing and releases cancelled capacity", () => {
+	const budget = new ImageBudget(8, () => {}, { queuedBytes: 8, residentBytes: 16 });
+	expect(budget.enqueueTransmit(1, "éééé")).toBe(true);
+	expect(budget.enqueueTransmit(2, "a")).toBe(false);
+	expect(budget.takeTransmitBatch().ids).toEqual([1]);
+	budget.releaseImageById(1);
+	expect(budget.enqueueTransmit(2, "12345678")).toBe(true);
+	expect(budget.takeTransmitBatch().sequences).toEqual(["12345678"]);
+});
+
+test("terminal residency evicts oldest offscreen payloads instead of growing across frames", () => {
+	const budget = new ImageBudget(8, () => {}, { residentBytes: 12, residentCount: 2 });
+	budget.beginPass("full");
+	budget.observe(1);
+	budget.endPass();
+	budget.enqueueTransmit(1, "12345678");
+	budget.markTransmitWritten(budget.takeTransmitBatch().ids);
+	budget.beginPass("full");
+	budget.observe(2);
+	budget.endPass();
+	expect(budget.enqueueTransmit(2, "abcdefgh")).toBe(true);
+	expect(budget.takePurgeIds()).toEqual([1]);
+	budget.markTransmitWritten(budget.takeTransmitBatch().ids);
+	expect(budget.takeAllForProtocolReset()).toEqual([2]);
+});
+
+test("decoded pixel estimates reject transport even when encoded bytes are tiny", () => {
+	const budget = new ImageBudget(8, () => {}, { residentBytes: 16 });
+	budget.registerImageCost(1, 4, 5);
+	expect(budget.enqueueTransmit(1, "data")).toBe(false);
+	expect(budget.hasPendingTransmits()).toBe(false);
+	budget.registerImageCost(2, 4, 4);
+	expect(budget.enqueueTransmit(2, "data")).toBe(true);
+});
