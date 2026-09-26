@@ -13,7 +13,7 @@ Runs commands in the agent shell{{#if hasKernelBridge}}; bare {{#if py}}`python`
 - Dependent steps → one call chained with `&&`; a failed call does not stop calls already queued behind it.
 {{#if asyncEnabled}}- `async: true` without `lane` runs in its own fresh lane: none of `main`'s shell{{#if hasKernelBridge}} or kernel{{/if}} state. Needs that state → pass `lane:"main"` (later `main` calls queue behind it). `async` does not extend `timeout`.
 {{/if}}{{#if autoBackgroundEnabled}}- Foreground calls still running after {{autoBackgroundThresholdSeconds}}s become background jobs whose results arrive later. `timeout` bounds the job (`0` = no deadline), not the foreground wait.
-{{/if}}{{#if hasLaunch}}- Services, dev servers, watchers, debuggers, REPLs MUST run under {{#if launchViaXd}}`xd fleet --op start`{{else}}`fleet` (`op:"start"`){{/if}}, not `&` or `async`.
+{{/if}}{{#if hasLaunch}}- Services, dev servers, watchers, debuggers, REPLs MUST run under {{#if launchViaXd}}`xd jobs --op start`{{else}}`jobs` (`op:"start"`){{/if}}, not `&` or `async`.
 {{/if}}- `<shell> state lost`{{#if hasKernelBridge}} / `<kernel> state lost`{{/if}} notice → earlier state in that lane is gone; rebuild it before reuse.
 - `env` for multiline or quote-heavy values. `pty: true` only for interactive programs (`sudo`, `ssh`).
 - `&` on builtins, functions, or subshells runs in-process: `$!` is an id ≥ 4194304 that works with `wait`/`kill`/`jobs` but not `ps`/`/proc`. External binaries get real PIDs.
@@ -57,7 +57,7 @@ JS{{/if}}
 {{/if}}- A bare final expression displays its value, like a notebook. Byte-only producers: {{#if py}}`_ = sys.stdout.buffer.write(data)`{{/if}}{{#ifAll py js}}; JS {{/ifAll}}{{#if js}}`void process.stdout.write(data)`{{/if}}.
 - Shell exports and `env` reach cells. Stdin piped into {{#if py}}`python -c CODE`{{/if}}{{#ifAll py js}} / {{/ifAll}}{{#if js}}`node -e CODE`{{/if}} is program input; stdout/stderr are binary-safe{{#if py}} (`sys.stdin.buffer`, `sys.stdout.buffer`){{/if}}.
 - Orchestration (`agent()`, `parallel()`, `pipeline()`) → write the script to `fleet://<name>.{{#if py}}py{{else}}mjs{{/if}}` (session scratch dir), run `{{#if py}}python{{else}}node{{/if}} fleet://<name>.{{#if py}}py{{else}}mjs{{/if}}`. Fix and re-run the file instead of resending code; with `checkpoint` + `resume`, finished items are skipped.
-- `xd kernel` inspects, resets, closes, or retargets kernels (interpreter, container/SSH host); configuration changes need a reset.
+- `xd context --resource kernel` inspects, resets, closes, or retargets interpreters (local, container, or SSH); configuration changes need a reset. Use `--resource lane` for whole-lane lifecycle control from another lane.
 
 ### Editing files
 
@@ -106,11 +106,11 @@ fs.writeFileSync("src/route.js", source.replace(old, String.raw`const PATTERN = 
 
 ## `xd` devices
 
-`xd` is an agent-shell builtin, not on PATH: `bash -c`, `fleet` processes, and user terminals lack it.
+`xd` is an agent-shell builtin, not on PATH: `bash -c`, supervised processes, and user terminals lack it.
 - `xd <tool> ?` prints the device's docs and CLI usage.
 - Flags map to schema fields: `xd browser --action run --name main`. Positionals fill unflagged scalar fields in usage order: `xd read src/foo.ts:50-200`.
 - Arrays: repeat the flag (one entry each, commas kept), or pass one value split on unescaped commas (`\,` = literal comma), or a JSON array.
-- Regex/code/message payloads: single-quoted strings, `xd monitor --op start --match 'ERR [0-9]+'`. A `-` value reads that flag from stdin:
+- Regex/code/message payloads: single-quoted strings, `xd jobs --op watch --command 'bun run probe' --match 'ERR [0-9]+'`. A `-` value reads that flag from stdin:
 ```sh
 printf '%s' 'return await tab.observe();' | xd browser --action run --name main --code -
 ```

@@ -4,7 +4,6 @@ import type {
 	AgentTool,
 	AgentToolContext,
 	StreamFn,
-	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -29,8 +28,7 @@ import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import type { AgentOutputManager } from "../task/output-manager";
-import { resolveSpawnPolicy } from "../task/spawn-policy";
-import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
+import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
 import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { setExcludedSearchProviders, setSearchProviderOrder } from "../web/search/provider";
@@ -39,8 +37,8 @@ import type { WorkspaceTree } from "../workspace-tree";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import type { ChecklistPhase } from "./checklist";
 import type { CheckpointState, CompletedRewindState } from "./checkpoint";
-import { KernelTool } from "./kernel";
-import type { XdevState } from "./xdev";
+import { ContextTool } from "./context";
+import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
 export type * from "../goals";
@@ -54,15 +52,14 @@ export type * from "./checklist";
 export type * from "./checkpoint";
 export type * from "./computer";
 export type * from "./computer/supervisor";
+export type * from "./context";
 export * from "./essential-tools";
 export type * from "./eval-backends";
 export type * from "./fleet";
 export type * from "./image-gen";
 export type * from "./inspect-media";
-export type * from "./kernel";
+export type * from "./jobs";
 export type * from "./manage-skill";
-export type * from "./monitor";
-export type * from "./orchestrate";
 export type * from "./read";
 export type * from "./report-tool-issue";
 export type * from "./resolve";
@@ -284,26 +281,7 @@ export const DISABLED_TOOL_NAMES: Record<string, true> = {
 	read: true,
 };
 
-export const ORCHESTRATE_TOOL_NAMES = [
-	"orchestrate_spawn",
-	"orchestrate_send",
-	"orchestrate_wait",
-	"orchestrate_kill",
-	"orchestrate_list",
-] as const;
-
-const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
-	ask: true,
-	checklist: true,
-	web_search: true,
-	inspect_media: true,
-};
-const XDEV_TRANSPORT_TOOLS: Record<string, true> = { bash: true };
-
-export function isMountableUnderXdev(tool: { name: string; loadMode?: ToolLoadMode }): boolean {
-	if (tool.name in XDEV_TRANSPORT_TOOLS || tool.name in XDEV_KEEP_TOP_LEVEL) return false;
-	return tool.loadMode === "discoverable";
-}
+export { isMountableUnderXdev } from "./xdev";
 
 export function supportsExternalThinking(model: Model | null | undefined): boolean {
 	if (!model) return false;
@@ -370,7 +348,7 @@ export { isSearchProviderId, setExcludedSearchProviders, setSearchProviderOrder 
 
 // Runtime-registry exception: static imports here would put every optional tool implementation on the boot path.
 export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
-	kernel: s => new KernelTool(s),
+	context: s => new ContextTool(s),
 	bash: async s => new (await import("./bash")).BashTool(s),
 	ask: async s => (await import("./ask")).AskTool.createIf(s),
 	inspect_media: async s => new (await import("./inspect-media")).InspectMediaTool(s),
@@ -378,13 +356,8 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory
 	computer: async s => new (await import("./computer")).ComputerTool(s),
 	checkpoint: async s => (await import("./checkpoint")).CheckpointTool.createIf(s),
 	rewind: async s => (await import("./checkpoint")).RewindTool.createIf(s),
-	orchestrate_spawn: async s => (await import("./orchestrate")).OrchestrateSpawnTool.create(s),
-	orchestrate_send: async s => new (await import("./orchestrate")).OrchestrateSendTool(s),
-	orchestrate_wait: async s => new (await import("./orchestrate")).OrchestrateWaitTool(s),
-	orchestrate_kill: async s => new (await import("./orchestrate")).OrchestrateKillTool(s),
-	orchestrate_list: async s => new (await import("./orchestrate")).OrchestrateListTool(s),
-	fleet: async s => new (await import("./fleet")).FleetTool(s),
-	monitor: async s => new (await import("./monitor")).MonitorTool(s),
+	jobs: async s => new (await import("./jobs")).JobsTool(s),
+	fleet: async s => (await import("./fleet")).FleetTool.create(s),
 	checklist: async s => new (await import("./checklist")).ChecklistTool(s),
 	web_search: async s => new (await import("../web/search")).WebSearchTool(s),
 	manage_skill: async s => (await import("./manage-skill")).ManageSkillTool.createIf(s),
@@ -479,21 +452,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "monitor") return session.asyncJobManager !== undefined && session.settings.get("monitor.enabled");
-		if (name === "fleet") return !restrictToolNames && session.enableIrc !== false;
+		// Domain devices authorize each operation; messaging policy must not disable worker control.
+		if (name === "fleet" || name === "jobs") return true;
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name.startsWith("orchestrate_")) {
-			const depth = session.taskDepth ?? 0;
-			if (depth === 0) return true;
-			return (
-				resolveSpawnPolicy(session.getSessionSpawns()).enabled &&
-				canSpawnAtDepth(session.settings.get("orchestrator.maxRecursionDepth") ?? 2, depth)
-			);
-		}
 		return true;
 	};
 	if (includeYield && requestedTools && !requestedTools.includes("yield")) {

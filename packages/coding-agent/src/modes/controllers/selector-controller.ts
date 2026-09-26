@@ -376,7 +376,7 @@ export class SelectorController {
 
 	/**
 	 * Stops a worker through the orchestrator so its in-flight turn is cancelled, the way
-	 * `orchestrate_kill` does. False when this session owns no worker with that id — a fleet
+	 * `fleet terminate` does. False when this session owns no worker with that id — a fleet
 	 * agent or a persisted subagent, which the caller tears down through the lifecycle instead.
 	 */
 	async #stopOrchestratedWorker(id: string): Promise<boolean> {

@@ -1,24 +1,13 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { AsyncJobEvent, AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
-import type { MonitorDetails } from "../../monitor/types";
-import type { LaunchParams, LaunchToolDetails } from "./launch";
+import type { JobRef } from "../../jobs/contracts";
+import type { KillOutcome, WorkerReceipt, WorkerReceiptStatus, WorkerScreen } from "../../orchestrator/runtime";
 
-export type FleetOp =
-	| "send"
-	| "wait"
-	| "inbox"
-	| "list"
-	| "jobs"
-	| "cancel"
-	| "start"
-	| "ps"
-	| "logs"
-	| "stop"
-	| "restart"
-	| "describe";
+export type FleetOp = "spawn" | "send" | "message" | "list" | "inspect" | "inbox" | "terminate";
 
-interface FleetPeerInfo {
+export type FleetListScope = "owned" | "visible";
+
+export interface FleetPeerInfo {
 	id: string;
 	label: string;
 	kind: string;
@@ -30,70 +19,50 @@ interface FleetPeerInfo {
 	activity?: string;
 }
 
-export interface JobSnapshot {
-	id: string;
-	type: AsyncJobType;
-	status: "running" | "completed" | "failed" | "cancelled";
+/** Tracked worker input: the turn it became and the execution that runs it. */
+export interface FleetTurnReceipt {
+	workerId: string;
 	label: string;
-	durationMs: number;
-
-	monitor?: MonitorDetails;
-	events?: AsyncJobEvent[];
-	resolvedModel?: string;
-	resultText?: string;
-	errorText?: string;
+	turn: number;
+	job: JobRef;
+	status: WorkerReceiptStatus;
+	/** `turn` started a new turn, `steered` joined the running one, `queued` waits behind it. */
+	mode: "turn" | "steered" | "queued";
 }
 
-type CancelStatus = "cancelled" | "not_found" | "already_completed";
-
-export interface CancelOutcome {
-	id: string;
-	status: CancelStatus;
-	message: string;
-}
-
-export interface AgentActivitySnapshot {
-	id: string;
-	parentId?: string;
-
-	activity?: string;
-
-	ageMs: number;
-
-	live: boolean;
-}
-
-export interface CoordinationDetails {
+export interface FleetDetails {
 	op?: FleetOp;
 	senderId?: string;
-	id?: string;
+	scope?: FleetListScope;
+	/** Owned workers (list/inspect/spawn/send/terminate). */
+	screens?: WorkerScreen[];
+	spawned?: { id: string; label: string; agent: string };
+	receipt?: FleetTurnReceipt;
+	/** Rejected or terminal receipt for tracked input the runtime refused. */
+	rejected?: WorkerReceipt;
+	terminated?: KillOutcome;
+	/** Peer message recipient (`message`). */
+	to?: string;
 	receipts?: IrcDeliveryReceipt[];
-
-	waited?: IrcMessage | null;
 	inbox?: IrcMessage[];
 	peers?: FleetPeerInfo[];
-	jobs?: JobSnapshot[];
-	cancelled?: { id: string; status: CancelStatus }[];
-
-	agents?: AgentActivitySnapshot[];
 }
 
-export type FleetDetails = CoordinationDetails | LaunchToolDetails;
-
-export type FleetRenderArgs = {
+export interface FleetRenderArgs {
 	op?: string;
+	agent?: string;
+	label?: string;
+	id?: string;
 	to?: string;
-	from?: string;
 	message?: string;
+	model?: string;
 	replyTo?: string;
-	await?: boolean;
-	timeoutMs?: number;
 	peek?: boolean;
-	ids?: string[];
-	all?: boolean;
-} & Partial<Omit<LaunchParams, "op">>;
+	scope?: string;
+	isolated?: boolean;
+}
 
-export function fleetErrorResult(text: string, details: CoordinationDetails): AgentToolResult<FleetDetails> {
+export function fleetErrorResult(text: string, details: FleetDetails): AgentToolResult<FleetDetails> {
 	return {
 		content: [{ type: "text", text }],
 		details,

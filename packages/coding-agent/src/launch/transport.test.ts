@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolSession } from "../tools";
-import { executeLaunch } from "../tools/fleet/launch";
+import { executeLaunch } from "../tools/jobs/launch";
 import { closeDaemonClients, daemonClientForProject } from "./client";
 import { daemonRuntimeDir } from "./paths";
 

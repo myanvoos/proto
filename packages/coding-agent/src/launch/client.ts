@@ -6,6 +6,7 @@ import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker
 import { canonicalProjectDir, daemonBrokerEndpoint, daemonRuntimeDir } from "./paths";
 import {
 	DAEMON_BROKER_WORKER_ARG,
+	DAEMON_CAPABILITY_PROCESS_IDENTITY,
 	DAEMON_IDLE_GRACE_ENV,
 	DAEMON_MAX_TIMEOUT_MS,
 	DAEMON_PROJECT_DIR_ENV,
@@ -17,6 +18,7 @@ import {
 	type DaemonWireMessage,
 	parseDaemonRpcResult,
 	parseDaemonWireMessage,
+	requiresProcessIdentity,
 } from "./protocol";
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -42,6 +44,23 @@ interface DaemonCompletionUnregisterOptions {
 	preservePending?: boolean;
 }
 
+/**
+ * The running broker predates a required capability. Raised before any identity-checked request
+ * is sent, so an old broker can never fall back to name-only control, and nothing is stopped.
+ */
+export class DaemonBrokerIncompatibleError extends Error {
+	constructor(
+		readonly capability: string,
+		readonly protocolVersion: number | undefined,
+		projectDir: string,
+	) {
+		super(
+			`The process broker serving ${projectDir} speaks protocol ${protocolVersion ?? 1} without ${capability} support, so processes cannot be controlled by immutable reference. Nothing was changed and its services keep running. Stop them with \`proto ps stop <name>\` (list them with \`proto ps\`); the old broker exits once idle and the next request starts a current one.`,
+		);
+		this.name = "DaemonBrokerIncompatibleError";
+	}
+}
+
 export interface DaemonBrokerClient {
 	onCompletion(
 		owner: string,
@@ -52,6 +71,8 @@ export interface DaemonBrokerClient {
 	/** Runtime directory this client's broker endpoint lives in. */
 	readonly runtimeDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
+	/** Confirms the connected broker advertises `capability`; throws DaemonBrokerIncompatibleError otherwise. */
+	ensureCapability(capability: string, signal?: AbortSignal): Promise<void>;
 	close(): void;
 }
 
@@ -90,6 +111,7 @@ function requestTimeoutMs(operation: DaemonOperation): number {
 			return (operation.spec.ready?.timeoutMs ?? CONNECT_TIMEOUT_MS) + 5_000;
 		case "wait":
 		case "logs":
+		case "read":
 		case "stop":
 			return operation.timeoutMs + 5_000;
 		case "restart":
@@ -142,6 +164,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #inFlightCompletionIds = new Set<string>();
 	readonly #completionSubscriptionId = crypto.randomUUID();
 	#socket: net.Socket | undefined;
+	/** Handshake result for one connection: a reconnect may reach a different broker process. */
+	#handshake: { socket: net.Socket; ping: Promise<Extract<DaemonRpcResult, { op: "ping" }>> } | undefined;
 	#connectPromise: Promise<void> | undefined;
 	#buffer = "";
 	#closed = false;
@@ -156,14 +180,49 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#idleGraceMs = options.idleGraceMs;
 	}
 
+	async ensureCapability(capability: string, signal?: AbortSignal): Promise<void> {
+		await this.#handshakeSocket(capability, signal);
+	}
+
+	async #handshakeSocket(capability: string, signal?: AbortSignal): Promise<net.Socket> {
+		await this.#connect();
+		const socket = this.#socket;
+		if (!socket || socket.destroyed) throw new Error("Daemon broker socket is unavailable");
+		let handshake = this.#handshake;
+		if (handshake?.socket !== socket) {
+			handshake = {
+				socket,
+				ping: this.request({ op: "ping" }, signal) as Promise<Extract<DaemonRpcResult, { op: "ping" }>>,
+			};
+			this.#handshake = handshake;
+			handshake.ping.catch(() => {
+				if (this.#handshake === handshake) this.#handshake = undefined;
+			});
+		}
+		const ping = await handshake.ping;
+		if (this.#socket !== socket) {
+			throw new DaemonBrokerRejectedError("Daemon broker connection changed during the capability handshake", true);
+		}
+		if (!ping.capabilities?.includes(capability)) {
+			throw new DaemonBrokerIncompatibleError(capability, ping.protocolVersion, this.projectDir);
+		}
+		return socket;
+	}
+
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
+		const verified = requiresProcessIdentity(operation)
+			? await this.#handshakeSocket(DAEMON_CAPABILITY_PROCESS_IDENTITY, signal)
+			: undefined;
 		await this.#connect();
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
 		const socket = this.#socket;
 		if (!socket || socket.destroyed) throw new Error("Daemon broker socket is unavailable");
+		if (verified && socket !== verified) {
+			throw new DaemonBrokerRejectedError("Daemon broker connection changed during the capability handshake", true);
+		}
 
 		const completionUnsubscribes = [...this.#completionUnsubscribes];
 		const completionReplays = [...this.#completionReplays];
@@ -380,7 +439,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			clearTimeout(pending.timer);
 			pending.removeAbort?.();
 			if (!response.ok) {
-				pending.reject(new DaemonBrokerRejectedError(response.error, response.retryable === true));
+				pending.reject(new DaemonBrokerRejectedError(response.error, response.retryable === true, response.code));
 				continue;
 			}
 			try {

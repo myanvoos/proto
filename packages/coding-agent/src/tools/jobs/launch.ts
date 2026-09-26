@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { type DaemonBrokerClient, daemonClientForProject } from "../../launch/client";
 import type {
@@ -12,7 +13,11 @@ import type {
 	DaemonSpec,
 	DaemonState,
 } from "../../launch/protocol";
-import { DAEMON_MAX_TIMEOUT_MS, DaemonBrokerRejectedError } from "../../launch/protocol";
+import {
+	DAEMON_CAPABILITY_PROCESS_IDENTITY,
+	DAEMON_MAX_TIMEOUT_MS,
+	DaemonBrokerRejectedError,
+} from "../../launch/protocol";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import type { ToolSession } from "..";
@@ -48,6 +53,23 @@ interface CompletionLease {
 	hasConcurrentRequest: () => boolean;
 }
 
+/**
+ * Process incarnations whose completion one path already consumed for a session. A completion is
+ * reported once: by an explicit `jobs wait` on the process or by automatic delivery, never both.
+ */
+const claimedCompletions = new WeakMap<ToolSession, LRUCache<string, true>>();
+
+export function claimProcessCompletion(session: ToolSession, processId: string): boolean {
+	let claimed = claimedCompletions.get(session);
+	if (!claimed) {
+		claimed = new LRUCache<string, true>({ max: 512 });
+		claimedCompletions.set(session, claimed);
+	}
+	if (claimed.has(processId)) return false;
+	claimed.set(processId, true);
+	return true;
+}
+
 const completionRegistrations = new WeakMap<
 	ToolSession,
 	Map<DaemonBrokerClient, Map<string, CompletionRegistration>>
@@ -73,6 +95,8 @@ function registerCompletionSink(
 	if (!registration) {
 		const unregister = client.onCompletion(owner, notification => {
 			if (session.isDisposed?.()) throw new Error("Session disposed before launch completion delivery");
+			// An explicit wait already reported this exit; acknowledge it without a second delivery.
+			if (!claimProcessCompletion(session, notification.daemon.id)) return;
 			const delivery = session.queueLaunchCompletion?.(notification);
 			if (!delivery) throw new Error("Session cannot accept launch completion delivery");
 			return delivery;
@@ -113,6 +137,8 @@ function registerCompletionSink(
 export interface LaunchParams {
 	op: "start" | "list" | "logs" | "wait" | "send" | "stop" | "restart" | "describe";
 	name?: string;
+	/** Immutable incarnation the name must still refer to; a mismatch fails instead of retargeting. */
+	expectedId?: string;
 	application?: string;
 	args?: string[];
 	env?: Record<string, string>;
@@ -244,6 +270,10 @@ function sendData(params: LaunchParams): SendData {
 	return { data: data || undefined, enter, keys: keys.length > 0 ? keys : undefined };
 }
 
+function identity(params: LaunchParams): { expectedId?: string } {
+	return params.expectedId === undefined ? {} : { expectedId: params.expectedId };
+}
+
 function operationFor(params: LaunchParams, session: ToolSession): DaemonOperation {
 	switch (params.op) {
 		case "start":
@@ -257,6 +287,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 			return {
 				op: "logs",
 				name: requiredName(params),
+				...identity(params),
 				lines: Math.min(1_000, Math.floor(params.lines ?? 100)),
 				head: params.head ?? false,
 				grep: params.grep,
@@ -269,6 +300,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 			return {
 				op: "wait",
 				name: requiredName(params),
+				...identity(params),
 				for: params.for ?? "exit",
 				pattern: params.pattern,
 				timeoutMs: boundedTimeoutMs(params.timeoutMs, 30_000),
@@ -277,15 +309,21 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 			return {
 				op: "send",
 				name: requiredName(params),
+				...identity(params),
 				...sendData(params),
 				signal: params.signal,
 			};
 		case "stop":
-			return { op: "stop", name: requiredName(params), timeoutMs: boundedTimeoutMs(params.timeoutMs, 5_000) };
+			return {
+				op: "stop",
+				name: requiredName(params),
+				...identity(params),
+				timeoutMs: boundedTimeoutMs(params.timeoutMs, 5_000),
+			};
 		case "restart":
-			return { op: "restart", name: requiredName(params) };
+			return { op: "restart", name: requiredName(params), ...identity(params) };
 		case "describe":
-			return { op: "describe", name: requiredName(params) };
+			return { op: "describe", name: requiredName(params), ...identity(params) };
 	}
 }
 
@@ -338,6 +376,7 @@ function launchOutcome(
 function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	switch (result.op) {
 		case "ping":
+		case "read":
 		case "shutdown":
 			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
 		case "start":
@@ -409,6 +448,7 @@ async function toolDetails(result: DaemonRpcResult): Promise<LaunchToolDetails> 
 		case "describe":
 			return { op: "describe", daemon: result.daemon, spec: result.spec };
 		case "ping":
+		case "read":
 		case "shutdown":
 			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
 	}
@@ -421,6 +461,8 @@ export async function executeLaunch(
 ): Promise<AgentToolResult<LaunchToolDetails>> {
 	const client = await daemonClientForProject(session.cwd);
 	const operation = operationFor(params, session);
+	// Refuse before any side effect when the broker cannot honor immutable process references.
+	if (params.op !== "list") await client.ensureCapability(DAEMON_CAPABILITY_PROCESS_IDENTITY, signal);
 	const owner = operation.op === "start" ? operation.owner : undefined;
 	const resumedOwner = params.op !== "start" ? (session.getSessionId?.() ?? undefined) : undefined;
 	const completionLease = owner
@@ -522,13 +564,18 @@ function callMeta(args: LaunchRenderArgs): string[] {
 	return meta.map(entry => previewLine(replaceTabs(sanitizeText(entry)), TRUNCATE_LENGTHS.SHORT));
 }
 
-export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOptions, theme: Theme): Component {
+export function launchRenderCall(
+	args: LaunchRenderArgs,
+	options: RenderResultOptions,
+	theme: Theme,
+	title = `Process ${args.op ?? "…"}`,
+): Component {
 	const target = args.name ?? args.application;
 	const header = renderStatusLine(
 		{
 			icon: options.spinnerFrame !== undefined ? "running" : "pending",
 			spinnerFrame: options.spinnerFrame,
-			title: `Launch ${args.op ?? "…"}`,
+			title,
 			description: target ? replaceTabs(sanitizeText(target)) : undefined,
 			meta: callMeta(args),
 		},
@@ -542,6 +589,7 @@ export function launchRenderResult(
 	options: RenderResultOptions,
 	theme: Theme,
 	args?: LaunchRenderArgs,
+	title?: string,
 ): Component {
 	const details = result.details;
 	const params = args ?? {};
@@ -665,7 +713,7 @@ export function launchRenderResult(
 				: options.isPartial
 					? { icon: "pending" as const }
 					: { iconOverride: theme.styledSymbol("tool.launch", "accent") }),
-			title: `Launch ${op ?? ""}`.trimEnd(),
+			title: title ?? `Process ${op ?? ""}`.trimEnd(),
 			description: description ? replaceTabs(sanitizeText(description)) : undefined,
 			meta,
 		},

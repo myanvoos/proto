@@ -31,8 +31,8 @@ Upstream builtins with **no proto equivalent**: `edit`, `write`, `glob`, `grep`,
 |---|---|
 | `edit` / `write` / `glob` / `grep` / `ast_grep` | Bash is the mutation and search surface (rg/fd built into the shell); `read` gained selectors, structural outlines, and recovery ranges; kernel helpers edit with anchor/occurrence assertions |
 | `eval` | Persistent Python/JS kernel cells inside bash (`python -c`/`node -e` become stateful cells) |
-| `task` | `orchestrate_spawn/send/wait/kill/list` — persistent addressable workers |
-| `hub` | `fleet` — peer messaging + jobs + process supervision in one tool |
+| `task` | `fleet` `spawn`/`send`/`list`/`inspect`/`terminate` — persistent addressable workers, with turn waits in `jobs` |
+| `hub` | `fleet` peer messaging; executions, processes, and watches in `jobs` |
 | `lsp` / `debug` (DAP) | Dropped entirely (no LSP/DAP runtime; the stale `docs/tools/debug.md` leftover was removed) |
 | `github` | Dropped — gh CLI via bash, web search, MCP |
 | `security_scan` | Dropped |
@@ -40,7 +40,7 @@ Upstream builtins with **no proto equivalent**: `edit`, `write`, `glob`, `grep`,
 | `ast_edit` | Dropped — kernel/bash edits |
 
 Proto keeps: `read`, `bash`, `ask`, `inspect_media` (new), `browser`, `computer`,
-`checkpoint`, `rewind`, `orchestrate_*` (new), `fleet` (new), `monitor` (new), `checklist`,
+`checkpoint`, `rewind`, `context` (new), `fleet` (new), `jobs` (new), `checklist`,
 `web_search`, `manage_skill`; hidden: `yield`, `goal`, `think`.
 
 ## Removed docs

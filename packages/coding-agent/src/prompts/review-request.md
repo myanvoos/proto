@@ -23,7 +23,7 @@ _No files to review._
 
 ### Distribution Guidelines
 
-Use one `orchestrate_spawn` call per reviewer with `agent: "reviewer"`; issue parallel calls in one message.
+Use one `fleet spawn` call per reviewer with `agent: "reviewer"`; issue parallel calls in one message.
 {{#when agentCount "==" 1}}Create exactly **1 reviewer worker**.{{else}}Spawn **{{agentCount}} reviewer workers** in parallel.{{/when}}
 {{#if multiAgent}}
 Group files by locality, e.g.:

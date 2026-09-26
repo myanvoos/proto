@@ -73,7 +73,7 @@ function assistant(text: string, content: AssistantMessage["content"] = [{ type:
 }
 
 // Regression: a worker woken by a fleet message answered "24", was then steered and answered with the message
-// text; orchestrate_wait reported the turn as "24ack from Main (dogfood fleet send test)".
+// text; jobs wait reported the turn as "24ack from Main (dogfood fleet send test)".
 test("a wake turn's result is only its final answer, not every reply glued together", async () => {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	let wakeObserver:

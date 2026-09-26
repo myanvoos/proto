@@ -6,7 +6,7 @@ import type { Server } from "bun";
 import { daemonClientForProject } from "../launch/client";
 import type { DaemonSnapshot } from "../launch/protocol";
 import type { ToolSession } from "../tools";
-import { executeLaunch } from "../tools/fleet/launch";
+import { executeLaunch } from "../tools/jobs/launch";
 import { ToolError } from "../tools/tool-errors";
 import pythonClient from "./delegation/proto_session.py" with { type: "text" };
 import javascriptClient from "./delegation/proto-session.mjs.txt" with { type: "text" };
@@ -75,20 +75,15 @@ const ARTIFACT_OPS: Record<string, true> = { artifact_publish: true, artifact_re
 // There is deliberately no escalation switch: granting a name cannot override this boundary.
 const EXECUTION_TOOLS: Record<string, true> = {
 	bash: true,
-	kernel: true,
+	context: true,
 	python: true,
 	javascript: true,
 	js: true,
 	agent: true,
 	fleet: true,
-	monitor: true,
+	jobs: true,
 	browser: true,
 	computer: true,
-	orchestrate_spawn: true,
-	orchestrate_send: true,
-	orchestrate_wait: true,
-	orchestrate_kill: true,
-	orchestrate_list: true,
 	checkpoint: true,
 	rewind: true,
 	manage_skill: true,

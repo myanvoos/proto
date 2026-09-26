@@ -2,13 +2,22 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Control surfaces are now `context` (lanes/interpreters), `fleet` (workers/messages), and `jobs` (executions/processes/watches/waits); `orchestrate_*`, `kernel`, `monitor`, and fleet's old job/process operations are removed without executable aliases
+- Control calls require an explicit `op`; tracked worker input uses `fleet send`, peer delivery uses `fleet message`, and worker-turn waits use the returned job reference with `jobs wait`
+- `jobs list` and `inspect` no longer acknowledge results; only explicit waits, inbox drains, or automatic delivery consume them
+- Process control requires immutable incarnation references and a protocol-2 broker; incompatible brokers are reported without stopping their existing services or falling back to name-only control
+- `xd context --resource kernel` languages are `python`, `node`, and `bun` (replacing `javascript`): `node`/`nodejs` cells run on the Node.js found on PATH and `bun` cells on Bun, each with its own state; node kernels are local-only
+- Monitors require background execution (`async.enabled`) to be enabled
+
 ### Added
 
 - JavaScript cells expose `symbols()` and `blockRange()` like Python
 - Execution records report `queuedAt` separately from the real `startedAt`
 - Streaming, binary-safe Python and JavaScript kernel pipes with live program input and output backpressure
 - Live tool and background-job event iterators with replay cursors, visible gaps, cancellation, and final results
-- A discoverable `kernel` tool for named runtime startup, inspection, reset, close, interpreter selection, and bounded keepalive
+- A discoverable `context` tool for owner-scoped lane reset/close and named interpreter startup, inspection, reset, close, selection, and bounded keepalive
 - Immutable artifact values and validated image, audio, and video inputs for kernel completions
 - Explicit, expiring session-tool delegation for ordinary Python and JavaScript scripts, with revocation and managed launches
 - Selected data and binary binding save/restore across kernel resets and between Python, Node, and Bun kernels, without heap snapshots or code replay
@@ -16,12 +25,6 @@
 - Bash execution lanes, queryable command-stage and device results, and safe Python/JavaScript kernel-state inspection with restart notices
 - Checked multi-file edit previews and guarded commits with rollback/conflict reporting
 - Settled batch results, bounded cooperative deadlines/cancellation, streaming pipelines, and explicit checkpoint resumption in kernel orchestration helpers
-
-### Breaking Changes
-
-- `xd kernel` languages are `python`, `node`, and `bun` (replacing `javascript`): `node`/`nodejs` cells run on the Node.js found on PATH and `bun` cells on Bun, each with its own state; node kernels are local-only
-- Monitor listing and stopping now use `fleet jobs` and `fleet cancel`; `monitor` only starts watches
-- Monitors require background execution (`async.enabled`) to be enabled
 
 ### Changed
 
@@ -32,26 +35,27 @@
 - Failed background Bash jobs report the failure reason as the error and keep their output separately
 - Interactive redraws keep a bounded recent transcript; older saved messages remain available through paged history and full exports
 - Fleets, interpreter requests, background results, rich displays, and editor attachments now enforce byte-aware admission limits with explicit overflow feedback
-- Monitors appear as background jobs, and `fleet wait` returns their next event without stopping the watch
+- `jobs watch` observes existing jobs or processes without owning them; command-probe watches reap their own helpers, and `jobs wait` returns events without stopping subscriptions
 - Bash tool docs are reorganized around what agents decide: per-lane ordering and state, `async` cells starting without kernel state, routing inside pipelines vs `bash -c`/`xargs`, and an edit example whose anchor assertion runs before the replacement streams; rarely used kernel helpers are condensed, with Python details available through `help(fn)`
 - `xd` usage (flags, arrays, stdin payloads, exit codes) is documented once in the bash tool docs instead of also in the system prompt
-- The system prompt says when to use `orchestrate_spawn` workers versus kernel `agent()`/`parallel()` fan-out
+- The system prompt says when to use `fleet spawn` workers versus kernel `agent()`/`parallel()` fan-out
 - Python commands run as kernel cells on the interpreter the shell would run: `.venv/bin/python` and `python3.13` are kernel cells too, bare `python` follows an activated venv or exported `PATH`, and a lane keeps one Python kernel per interpreter
-- `xd kernel` `interpreter` picks one of a lane's Python kernels for `inspect`, `close`, and `keepalive`
+- `xd context --resource kernel` `interpreter` picks one of a lane's Python kernels for `inspect`, `close`, and `keepalive`
 
 ### Fixed
 
+- Resetting a busy lane reports its active and queued background commands as cancelled rather than failed
 - Python kernel cells import project modules as a fresh `python` would: edits made between or within cells (by the kernel, subprocesses, or host tools) are picked up, a `cd` re-resolves module names, and the cell's own `PYTHONPATH` applies; a note names earlier bindings that still hold old code, and rebuilt C extensions are reported instead of silently kept
 - Python kernel `sys.path` no longer accumulates every earlier cell's working directory
 - Python cell tracebacks no longer include kernel runner frames
 - A Python older than 3.10 runs a `python` command as a plain process with a one-time note instead of failing the cell
 - A virtual environment's `python` and its base interpreter no longer share one kernel
-- `xd monitor start …` and other single-literal flags parse in flag and positional form
-- Bash tool docs tell agents to run services under `xd fleet --op start` when fleet is mounted as an `xd` device, and drop the fleet rule when process supervision is disabled
+- Single-literal device flags parse in flag and positional form
+- Bash tool docs tell agents to run services under `xd jobs --op start` when jobs is mounted as an `xd` device, and drop the supervision rule when it is disabled
 - `xd` boolean flags followed by `true`/`false` take it as their value instead of shifting positionals (`--pty false` was silently ignored)
 - MCP device docs show only the JSON argument forms the devices accept
-- `xd fleet list`, `xd fleet jobs`, and other leading op words select the fleet operation
-- Fleet `send` `keys` accept control chords such as `C-d`, `ctrl+c`, and `^D`
+- `xd context`, `xd fleet`, and `xd jobs` accept leading operation words without assigning subsequent arguments to unrelated operations
+- Jobs `input` `keys` accept control chords such as `C-d`, `ctrl+c`, and `^D`
 - Matplotlib figures closed before the end of a Python cell still display
 - Kernel `display()` output appears in order with stdout, and `display("text")` shows plain text without quotes
 - `proto_path`/`protoPath` errors name the missing skill or the accessor for non-file URLs
@@ -110,9 +114,9 @@
 - `<kernel> note:` lines count lines and changes from the whole write instead of its capped preview, which reported large files as 398 lines or fewer
 - Bash truncation footers name the lines actually shown before and after a middle elision instead of assuming an even head/tail split
 - Streamed output that fills the head window partway through a multibyte character keeps its original order
-- `agent://<id>` keeps a worker's last answer when `orchestrate_kill` cancels a turn that had produced nothing yet
+- `agent://<id>` keeps a worker's last answer when `fleet terminate` cancels a turn that had produced nothing yet
 - After an interrupt pauses the active goal, the next user prompt tells the model the goal is paused and how to resume it
-- `fleet restart` waits for the retained readiness conditions and reports readiness like `start`, instead of returning while the process is still starting
+- `jobs restart` waits for the retained readiness conditions and reports readiness like `start`, instead of returning while the process is still starting
 - MCP tool calls that hit the client-side request timeout name the server and how to raise the limit (per-server `timeout` or `PROTO_MCP_TIMEOUT_MS`)
 - Subagent MCP calls honor the configured request timeout (including `0` and `PROTO_MCP_TIMEOUT_MS`) instead of a fixed 60-second cap
 - Bash tool docs name common utilities as shell builtins (a backgrounded builtin's `$!` is not an OS PID) and document that `python3` routes to the kernel like `python`

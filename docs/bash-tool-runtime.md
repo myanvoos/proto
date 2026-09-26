@@ -26,7 +26,7 @@ When xdev is enabled, model-facing Bash runs use the Brush shell parser and regi
 
 The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `xdDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
 
-`xd` exists only inside the agent's Brush shell. `fleet` processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `xd` binary exists on `PATH`.
+`xd` exists only inside the agent's Brush shell. Supervised processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `xd` binary exists on `PATH`.
 
 Without positional JSON, `xd` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | xd read`. Positional JSON wins when both are supplied. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
 
@@ -53,7 +53,7 @@ Recognized cell forms are:
 - `python fleet://<name>.py` for a script staged under the internal `fleet://` URL.
 - Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without a bridge use an external interpreter.
 
-A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `xd kernel start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
+A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `xd context --resource kernel --op start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
 
 For example:
 
@@ -87,7 +87,7 @@ Text output follows the Bash output stream. JSON values, images, and kernel stat
 
 - Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
 - Variables, imports, definitions, and running tasks survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
-- Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM. The discoverable `kernel` tool provides explicit lane start, inspect, reset, close, and keepalive operations outside the executing cell.
+- Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM. The discoverable `context` tool provides explicit kernel start, inspect, reset, close, and keepalive operations, plus whole-lane inspection and reset, from outside the executing cell.
 - Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution; death during execution leaves completion uncertain and does not replay the cell. Check partial side effects before retrying. The next cell reports the changed generation and lost state.
 
 Interactive terminal input is not supported by routed cells. For inline-code invocations, pipe or redirect program data and read `sys.stdin` / `process.stdin`; stdin-only invocations still interpret their stdin as code. Shell exports, inline assignments and tool `env` overrides reach the cell, and stderr remains redirectable separately.
@@ -98,15 +98,15 @@ The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd
 
 ## Explicit kernel lifecycle and targets
 
-Use `xd kernel` from the Brush shell (or call the discoverable `kernel` tool directly) to manage a named language/lane without entering that kernel's execution queue:
+Use `xd context` from the Brush shell (or call the discoverable `context` tool directly) to manage a named language/lane without entering that kernel's execution queue:
 
 ```bash
-xd kernel '{"op":"list"}'
-xd kernel '{"op":"start","language":"python","lane":"analysis","interpreter":"/work/.venv/bin/python","cwd":"/work"}'
-xd kernel '{"op":"inspect","language":"python","lane":"analysis"}'
-xd kernel '{"op":"keepalive","language":"python","lane":"analysis","ttlMs":600000}'
-xd kernel '{"op":"reset","language":"python","lane":"analysis"}'
-xd kernel '{"op":"close","language":"python","lane":"analysis","force":true}'
+xd context '{"resource":"kernel","op":"list"}'
+xd context '{"resource":"kernel","op":"start","language":"python","lane":"analysis","interpreter":"/work/.venv/bin/python","cwd":"/work"}'
+xd context '{"resource":"kernel","op":"inspect","language":"python","lane":"analysis"}'
+xd context '{"resource":"kernel","op":"keepalive","language":"python","lane":"analysis","ttlMs":600000}'
+xd context '{"resource":"kernel","op":"reset","language":"python","lane":"analysis"}'
+xd context '{"resource":"kernel","op":"close","language":"python","lane":"analysis","force":true}'
 ```
 
 The paths above must already exist. Execute subsequent interpreter cells with the matching Bash `lane`. Configuration belongs to the owner session and language/lane; changing an existing configuration requires `reset`, not silent replacement. Reset discards variables but retains the selected environment unless explicitly overridden. Close releases the runtime and forgets its lane configuration; subsequent implicit cells use local defaults, so explicitly start/configure a remote lane again before reuse. Closing busy work requires explicit `force:true`, which cancels it. Inspect/list and forced close remain available during an executing cell. Keepalive is a bounded lease (at most one hour), not an immortal kernel; owner disposal still closes owned runtimes.
@@ -114,8 +114,8 @@ The paths above must already exist. Execute subsequent interpreter cells with th
 Python and Bun kernels support local, existing-container, and SSH targets; Node kernels run on the local host only (use `bun` or `python` for SSH/container targets):
 
 ```bash
-xd kernel '{"op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
-xd kernel '{"op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
+xd context '{"resource":"kernel","op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
+xd context '{"resource":"kernel","op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
 ```
 
 Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.

@@ -161,7 +161,7 @@ test("an aborted turn keeps its cancellation reason instead of a failure notice"
 	}
 });
 
-// Regression: a worker answered, a fleet message then woke it, and `orchestrate_kill` cancelled that turn before it
+// Regression: a worker answered, a fleet message then woke it, and `fleet terminate` cancelled that turn before it
 // produced anything. The empty turn overwrote `<id>.md`, so `agent://<id>` came back empty.
 test("a killed turn that produced nothing keeps the previous answer at agent://<id>", async () => {
 	const id = "killed-wake-turn";

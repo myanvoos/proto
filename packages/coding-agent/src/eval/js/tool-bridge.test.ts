@@ -3,14 +3,14 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../../async";
 import type { ToolSession } from "../../tools";
 import { CheckpointTool, RewindTool } from "../../tools/checkpoint";
-import { FleetTool } from "../../tools/fleet";
+import { JobsTool } from "../../tools/jobs";
 import { callSessionTool } from "./tool-bridge";
 
 function sessionWith(manager: AsyncJobManager): ToolSession {
 	const session = { asyncJobManager: manager } as unknown as ToolSession;
-	const fleet = new FleetTool(session);
+	const jobs = new JobsTool(session);
 	(session as { getToolByName?: (name: string) => unknown }).getToolByName = name =>
-		name === fleet.name ? fleet : undefined;
+		name === jobs.name ? jobs : undefined;
 	return session;
 }
 
@@ -18,10 +18,10 @@ test("kernel tool calls reach a strict tool without the harness intent field", a
 	const manager = new AsyncJobManager({});
 	try {
 		const session = sessionWith(manager);
-		const value = await callSessionTool("fleet", { op: "jobs" }, { session });
+		const value = await callSessionTool("jobs", { op: "list", kind: "job" }, { session });
 		const text = typeof value === "string" ? value : ((value as { text?: string })?.text ?? "");
-		expect(text).not.toContain("Unknown fleet parameter");
-		expect(text).toContain("No background jobs.");
+		expect(text).not.toContain("Unknown jobs parameter");
+		expect(value).toMatchObject({ details: { op: "list", jobs: [] } });
 		expect(typeof value === "string" ? undefined : (value as { hasError?: boolean }).hasError).toBeUndefined();
 	} finally {
 		await manager.dispose();
@@ -32,10 +32,14 @@ test("an explicit intent argument is dropped for tools that do not declare it", 
 	const manager = new AsyncJobManager({});
 	try {
 		const session = sessionWith(manager);
-		const value = await callSessionTool("fleet", { [INTENT_FIELD]: "checking jobs", op: "jobs" }, { session });
+		const value = await callSessionTool(
+			"jobs",
+			{ [INTENT_FIELD]: "checking jobs", op: "list", kind: "job" },
+			{ session },
+		);
 		const text = typeof value === "string" ? value : ((value as { text?: string })?.text ?? "");
-		expect(text).not.toContain("Unknown fleet parameter");
-		expect(text).toContain("No background jobs.");
+		expect(text).not.toContain("Unknown jobs parameter");
+		expect(value).toMatchObject({ details: { op: "list", jobs: [] } });
 	} finally {
 		await manager.dispose();
 	}

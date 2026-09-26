@@ -180,15 +180,15 @@ describe("parseXdevCliArgs", () => {
 	});
 
 	test("single-literal (const) props parse as enums in flag and positional form", () => {
-		const monitorSchema = schemaOf(type({ op: type("'start'"), command: "string", "match?": "string" }));
-		const monitor = (argv: string[]) => parseXdevCliArgs(monitorSchema, argv, { deviceName: "monitor" }).args;
-		expect(monitor(["start", "echo hi"])).toEqual({ op: "start", command: "echo hi" });
-		expect(monitor(["--op", "start", "--command", "echo hi", "--match", "READY"])).toEqual({
-			op: "start",
+		const watchSchema = schemaOf(type({ op: type("'watch'"), command: "string", "match?": "string" }));
+		const watch = (argv: string[]) => parseXdevCliArgs(watchSchema, argv, { deviceName: "probe" }).args;
+		expect(watch(["watch", "echo hi"])).toEqual({ op: "watch", command: "echo hi" });
+		expect(watch(["--op", "watch", "--command", "echo hi", "--match", "READY"])).toEqual({
+			op: "watch",
 			command: "echo hi",
 			match: "READY",
 		});
-		expect(() => monitor(["--op", "stop", "--command", "x"])).toThrow(/--op expects one of 'start'/);
+		expect(() => watch(["--op", "stop", "--command", "x"])).toThrow(/--op expects one of 'watch'/);
 	});
 
 	test("a bare boolean flag consumes a following true/false literal as its value", () => {
@@ -201,23 +201,29 @@ describe("parseXdevCliArgs", () => {
 
 	describe("leading op positional", () => {
 		const fleetSchema = schemaOf(
-			type({ "op?": type("'send' | 'list' | 'jobs'"), "to?": "string", "message?": "string" }),
+			type({ op: type("'send' | 'list' | 'message'"), "to?": "string", "message?": "string" }),
 		);
 		const fleet = (argv: string[]) => parseXdevCliArgs(fleetSchema, argv, { deviceName: "fleet" }).args;
 
-		test("a first positional matching an op value selects the op", () => {
+		test("a first positional selects the explicit operation", () => {
 			expect(fleet(["list"])).toEqual({ op: "list" });
-			expect(fleet(["jobs"])).toEqual({ op: "jobs" });
-			expect(fleet(["send", "peer-1", "hi"])).toEqual({ op: "send", to: "peer-1", message: "hi" });
+			expect(fleet(["message", "--to", "peer-1", "--message", "hi"])).toEqual({
+				op: "message",
+				to: "peer-1",
+				message: "hi",
+			});
 		});
 
-		test("other positionals keep filling the device positional order", () => {
-			expect(fleet(["peer-1", "hello there"])).toEqual({ to: "peer-1", message: "hello there" });
-			expect(fleet(["--op", "send", "list", "hi"])).toEqual({ op: "send", to: "list", message: "hi" });
+		test("recipients never imply an operation or become worker ids", () => {
+			expect(() => fleet(["peer-1", "hello there"])).toThrow();
+			expect(() => fleet(["--op", "send", "list", "hi"])).toThrow();
 		});
 
-		test("usage synopsis shows the optional op positional first", () => {
-			expect(formatCliUsageSynopsis("fleet", fleetSchema)).toBe("xd fleet [<send|list|jobs>] [<to>] [<message>]");
+		test("usage advertises the operation and named fields", () => {
+			const usage = formatCliUsageSynopsis("fleet", fleetSchema);
+			expect(usage).toContain("send|list|message");
+			expect(usage).toContain("--to");
+			expect(usage).toContain("--message");
 		});
 	});
 });
@@ -266,8 +272,8 @@ describe("formatCliUsageSynopsis", () => {
 	});
 
 	test("single-literal props render as their literal value", () => {
-		const monitorSchema = schemaOf(type({ op: type("'start'"), command: "string", "match?": "string" }));
-		expect(formatCliUsageSynopsis("monitor", monitorSchema)).toBe("xd monitor <start> <command> [<match>]");
+		const watchSchema = schemaOf(type({ op: type("'watch'"), command: "string", "match?": "string" }));
+		expect(formatCliUsageSynopsis("probe", watchSchema)).toBe("xd probe <watch> <command> [<match>]");
 	});
 
 	test("empty schema renders bare invocation", () => {

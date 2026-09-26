@@ -360,7 +360,7 @@ from_env().call("calculate", {"op":"hold"})
 		const client = await daemonClientForProject(f.session.cwd);
 		await expect(
 			client.request({ op: "stop", name: "held", expectedId: "not-the-launched-process", timeoutMs: 100 }),
-		).rejects.toThrow("identity changed");
+		).rejects.toThrow("is stale");
 		expect(f.active).toBe(1);
 		await runEvalDelegation({ op: "delegation_revoke", id: lease.lease.id }, { session: f.session });
 		await f.stopped;

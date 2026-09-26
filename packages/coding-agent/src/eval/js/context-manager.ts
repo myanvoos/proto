@@ -1,4 +1,5 @@
 import { logger, Snowflake, untilAborted, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { currentExecutionOrigin, type ExecutionOrigin } from "../../jobs/origin";
 import {
 	createWorkerHandle,
 	createWorkerSubprocess,
@@ -68,6 +69,7 @@ interface WorkerHandle {
 }
 
 interface PendingRun {
+	executionOrigin?: ExecutionOrigin;
 	input: KernelInputReader;
 	decoders: Record<"stdout" | "stderr", TextDecoder>;
 	runId: string;
@@ -497,6 +499,7 @@ async function runOnce(
 		resolve,
 		reject,
 		toolCalls: new Map(),
+		executionOrigin: currentExecutionOrigin(),
 		completionContext: options.completionContext,
 		deferDepth: 0,
 		aborted: false,
@@ -893,6 +896,7 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 	try {
 		const value = await callSessionTool(msg.name, msg.args, {
 			session: pending.toolSession,
+			executionOrigin: pending.executionOrigin,
 			cwd: pending.bridgeCwd,
 			signal: ctrl.signal,
 			completionContext: pending.completionContext,

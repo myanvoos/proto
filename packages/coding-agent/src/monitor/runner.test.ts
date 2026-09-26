@@ -77,7 +77,7 @@ test("stream mode stops itself once maxEvents output events are delivered", asyn
 	await manager.getJob(started.id)!.promise;
 	await waitFor(() => events.some(event => event.kind === "limit"));
 
-	expect(events.map(event => event.text)).toEqual(["a", "b", "Event limit reached (2); the monitor stopped itself."]);
+	expect(events.map(event => event.text)).toEqual(["a", "b", "Event limit reached (2); the watch stopped itself."]);
 	const stopped = snapshot(started.id);
 	expect(stopped?.stopReason).toBe("limit");
 	expect(stopped?.status).toBe("completed");
@@ -88,7 +88,7 @@ for (const mode of ["stream", "poll"] as const) {
 		const { manager, events, start, snapshot } = createManager();
 		const started = start({
 			command: "printf '%2097152s' x",
-			...(mode === "poll" ? { everySeconds: 1 } : {}),
+			...(mode === "poll" ? { everyMs: 1_000 } : {}),
 		});
 		await manager.getJob(started.id)!.promise;
 		await waitFor(() => events.length > 0);
@@ -101,7 +101,7 @@ for (const mode of ["stream", "poll"] as const) {
 
 test("poll mode reports changed output once and skips identical repeats", async () => {
 	const { events, start, snapshot } = createManager();
-	const started = start({ command: "echo steady", everySeconds: 1, label: "ci" });
+	const started = start({ command: "echo steady", everyMs: 1_000, label: "ci" });
 	expect(started.mode).toBe("poll");
 
 	await waitFor(() => events.length > 0);
@@ -115,7 +115,7 @@ test("poll mode reports changed output once and skips identical repeats", async 
 
 test("poll mode lets a healthy slow command finish instead of timing it out", async () => {
 	const { events, start, snapshot } = createManager();
-	const started = start({ command: "sleep 4; echo steady", everySeconds: 1 });
+	const started = start({ command: "sleep 4; echo steady", everyMs: 1_000 });
 
 	await waitFor(() => events.some(event => event.kind === "output"));
 
@@ -195,7 +195,7 @@ test("monitor owner concurrency is independent of runnable-job capacity within t
 	manager.register("bash", "finite", () => finish.promise);
 	try {
 		for (let i = 0; i < limit; i++) start({ command: "sleep 30" });
-		expect(() => start({ command: "sleep 30" })).toThrow(/Too many monitors/);
+		expect(() => start({ command: "sleep 30" })).toThrow(/Too many watches/);
 		const other = start({ command: "sleep 30" }, "other-owner");
 		expect(manager.getJob(other.id)?.ownerId).toBe("other-owner");
 		expect(manager.atCapacity).toBe(true);
@@ -209,8 +209,8 @@ for (const mode of ["stream", "poll"] as const) {
 		const { manager, events, start, snapshot } = createManager();
 		const started = start({
 			command: "sleep 30",
-			timeoutSeconds: 1,
-			...(mode === "poll" ? { everySeconds: 1 } : {}),
+			timeoutMs: 1_000,
+			...(mode === "poll" ? { everyMs: 1_000 } : {}),
 		});
 		await manager.getJob(started.id)!.promise;
 		await waitFor(() => events.length > 0);
@@ -282,7 +282,7 @@ test("poll output can match again after an intervening nonmatching value", async
 		const { manager, events, start } = createManager(directory);
 		const started = start({
 			command: "value=$(cat value); printf '%s' \"$value\"; printf '%s' \"$value\" > observed",
-			everySeconds: 1,
+			everyMs: 1_000,
 			match: "ready",
 			maxEvents: 2,
 		});
@@ -317,8 +317,8 @@ test("invalid options do not register jobs", () => {
 	const { manager, start } = createManager();
 	for (const spec of [
 		{ command: " " },
-		{ command: "true", everySeconds: 0 },
-		{ command: "true", timeoutSeconds: Number.POSITIVE_INFINITY },
+		{ command: "true", everyMs: 0 },
+		{ command: "true", timeoutMs: Number.POSITIVE_INFINITY },
 		{ command: "true", maxEvents: Number.NaN },
 	])
 		expect(() => start(spec)).toThrow();

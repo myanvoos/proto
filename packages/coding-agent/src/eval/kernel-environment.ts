@@ -54,6 +54,16 @@ export function setKernelLaneConfiguration(
 	}
 }
 
+/** Every retained configuration of one owner, keyed by language and kernel session id. */
+export function listKernelLaneConfigurations(
+	ownerId: string,
+): { language: KernelLanguage; sessionId: string; configuration: KernelLaneConfiguration }[] {
+	return [...(configurations.get(ownerId) ?? [])].map(([key, configuration]) => {
+		const [language, sessionId] = JSON.parse(key) as [KernelLanguage, string];
+		return { language, sessionId, configuration };
+	});
+}
+
 export function clearKernelLaneConfigurations(language: KernelLanguage, ownerId?: string): void {
 	for (const [owner, owned] of configurations) {
 		if (ownerId !== undefined && ownerId !== owner) continue;

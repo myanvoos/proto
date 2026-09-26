@@ -61,7 +61,7 @@ test("a large on-disk history is streamed into an explicitly reported bounded tr
 	expect(resource.content).not.toContain("EARLIEST-MARKER");
 });
 
-// Regression: after orchestrate_kill, history:// listed the worker as `aborted` while fleet and orchestrate_list
+// Regression: after fleet terminate, history:// listed the worker as `aborted` while fleet and fleet list
 // reported `lifecycle=terminal`; history must speak the same lifecycle vocabulary.
 test("history:// reports agents in the shared lifecycle vocabulary", async () => {
 	root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-history-lifecycle-"));

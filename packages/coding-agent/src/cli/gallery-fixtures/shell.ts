@@ -1,3 +1,4 @@
+import type { JobsDetails } from "../../tools/jobs";
 import type { GalleryFixture } from "./types";
 
 export const shellFixtures: Record<string, GalleryFixture> = {
@@ -143,9 +144,9 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	fleet_start: {
-		label: "Fleet start",
-		renderer: "fleet",
+	jobs_start: {
+		label: "Jobs start",
+		renderer: "jobs",
 		streamingArgs: { op: "start", name: "web" },
 		args: {
 			op: "start",
@@ -158,39 +159,50 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 			content: [
 				{
 					type: "text",
-					text: "Started web: ready pid=51234 uptime=1.2s restarts=0\nReady: Local: http://localhost:5173",
+					text: 'Started web: ready pid=51234 uptime=1.2s restarts=0\nReady log matched: Local: http://localhost:5173/\nRef: {"kind":"process","id":"d-1","name":"web"}',
 				},
 			],
 			details: {
 				op: "start",
-				daemon: {
-					name: "web",
-					id: "d-1",
-					state: "ready",
-					pid: 51234,
-					createdAt: 0,
-					startedAt: Date.now() - 1_200,
-					readyAt: Date.now(),
-					restartCount: 0,
-					outputBytes: 2048,
-					readyMatch: "Local:   http://localhost:5173/",
-					persist: false,
-					detached: false,
+				ref: { kind: "process", id: "d-1", name: "web" },
+				process: {
+					op: "start",
+					daemon: {
+						name: "web",
+						id: "d-1",
+						state: "ready",
+						pid: 51234,
+						createdAt: 0,
+						startedAt: Date.now() - 1_200,
+						readyAt: Date.now(),
+						restartCount: 0,
+						outputBytes: 2048,
+						readyMatch: "Local:   http://localhost:5173/",
+						persist: false,
+						detached: false,
+					},
+					timedOut: false,
 				},
-				timedOut: false,
-			},
+			} satisfies JobsDetails,
 		},
 		errorResult: {
-			content: [{ type: "text", text: "start requires application" }],
+			content: [{ type: "text", text: "start requires name and application." }],
 			isError: true,
-			details: { op: "start" },
+			details: { op: "start" } satisfies JobsDetails,
 		},
 	},
 
-	fleet_logs: {
-		label: "Fleet logs",
-		renderer: "fleet",
-		args: { op: "logs", name: "comp-debug", lines: 100, follow: true, cursor: 233_512, timeoutMs: 30_000 },
+	jobs_logs: {
+		label: "Jobs logs",
+		renderer: "jobs",
+		args: {
+			op: "logs",
+			target: { kind: "process", id: "d-2", name: "comp-debug" },
+			lines: 100,
+			follow: true,
+			cursor: 233_512,
+			timeoutMs: 30_000,
+		},
 		result: {
 			content: [
 				{
@@ -206,22 +218,30 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "logs",
-				cursor: 233_797,
-				timedOut: false,
-				state: "ready",
-				terminalRows: [
-					"\x1b[0mBreakpoint 1: 3 locations.",
-					"\x1b[0m(lldb) run",
-					"\x1b[0mProcess 726 launched: '/tmp/compiler'",
-					"\x1b[0mframe #0: 0x0000000100012f80 compiler`parse_expression",
-					"\x1b[0m\x1b[1;38;5;2m(lldb)\x1b[0m ",
-				],
-			},
+				process: {
+					op: "logs",
+					cursor: 233_797,
+					timedOut: false,
+					state: "ready",
+					terminalRows: [
+						"\x1b[0mBreakpoint 1: 3 locations.",
+						"\x1b[0m(lldb) run",
+						"\x1b[0mProcess 726 launched: '/tmp/compiler'",
+						"\x1b[0mframe #0: 0x0000000100012f80 compiler`parse_expression",
+						"\x1b[0m\x1b[1;38;5;2m(lldb)\x1b[0m ",
+					],
+				},
+			} satisfies JobsDetails,
 		},
 		errorResult: {
-			content: [{ type: "text", text: "No daemon named web" }],
+			content: [
+				{
+					type: "text",
+					text: "Process comp-debug reference d-2 is stale: the name now belongs to incarnation d-3. Use the reference returned by start/restart/list; a stale reference never controls a replacement.",
+				},
+			],
 			isError: true,
-			details: { op: "logs" },
+			details: { op: "logs" } satisfies JobsDetails,
 		},
 	},
 };

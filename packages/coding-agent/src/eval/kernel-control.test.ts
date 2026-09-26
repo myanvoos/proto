@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import type { ToolSession } from "../tools";
-import { KernelTool } from "../tools/kernel";
+import { ContextTool } from "../tools/context";
 import type { ExecutorBackendResult } from "./backend";
 import { bunBackend, nodeBackend } from "./js";
 import { disposeVmContextsByOwner } from "./js/context-manager";
@@ -117,10 +117,10 @@ for (const language of KERNEL_LANGUAGES) {
 			const cwd = path.join(temp.path(), "environment");
 			await fs.mkdir(cwd);
 			const interpreterSetting = session.settings.get("python.interpreter");
-			const tool = new KernelTool(session);
-			expect(tool.loadMode).toBe("discoverable");
-			const first = await tool.execute("start", { op: "start", language, lane: "alpha", cwd });
-			expect(first.details?.kernel).toMatchObject({
+			const tool = new ContextTool(session);
+			const first = await tool.execute("start", { resource: "kernel", op: "start", language, lane: "alpha", cwd });
+			if (first.details?.resource !== "kernel") throw new Error("expected a kernel result");
+			expect(first.details.kernel).toMatchObject({
 				language,
 				lane: "alpha",
 				state: "idle",
@@ -142,8 +142,9 @@ for (const language of KERNEL_LANGUAGES) {
 				(await execute(session, language, "alpha", language === "python" ? "print(marker)" : "console.log(marker)"))
 					.output,
 			).toContain("41");
-			const list = await tool.execute("list", { op: "list", language });
-			expect(list.details?.kernels?.map(item => item.lane)).toEqual(["alpha", "beta"]);
+			const list = await tool.execute("list", { resource: "kernel", op: "list", language });
+			if (list.details?.resource !== "kernel") throw new Error("expected a kernel result");
+			expect(list.details.kernels?.map(item => item.lane)).toEqual(["alpha", "beta"]);
 			await expect(
 				handleKernelControl(session, { op: "start", language, lane: "alpha", cwd: temp.path() }),
 			).rejects.toThrow("use reset");

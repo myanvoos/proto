@@ -76,8 +76,9 @@ ${BUILTIN_TOOL_NAMES.map(name => `  ${name}`).join("\n")}
   bash runs shell commands and supported Python/JavaScript kernel cells.
   Mounted tools are available through \`xd <tool> '<json>'\` inside bash.
   Use \`xd <tool> ?\` for a mounted tool's documentation and schema.
-  orchestrate_spawn/send/wait/kill/list manage persistent worker conversations.
-  fleet handles peer messaging, background jobs, and supervised processes.
+  fleet manages persistent workers and peer messaging.
+  jobs controls executions, supervised processes, watches, and waiting.
+  context controls lanes and interpreter lifecycles.
 
 ${chalk.bold("Plugin Options:")}
   --plugin-dir <path>        Load plugin from directory (repeatable)

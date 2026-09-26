@@ -4,7 +4,7 @@ Mode: custom instructions.
 
 ## Distribution
 
-Use `orchestrate_spawn` with `agent: "reviewer"`. Create exactly **1 reviewer worker**; assignment MUST include custom instructions.
+Use `fleet spawn` with `agent: "reviewer"`. Create exactly **1 reviewer worker**; assignment MUST include custom instructions.
 
 ## Reviewer Instructions
 

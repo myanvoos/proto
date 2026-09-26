@@ -1,6 +1,7 @@
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
 import { INTENT_FIELD, nearestNames } from "@oh-my-pi/pi-utils";
+import { type ExecutionOrigin, withExecutionOrigin } from "../../jobs/origin";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
@@ -45,6 +46,7 @@ function acquireNestedLane(session: ToolSession): { lane: string; release(): voi
 
 export interface ToolBridgeOptions {
 	session: ToolSession;
+	executionOrigin?: ExecutionOrigin;
 	/** Host-side cwd of the calling kernel cell; bridged tools resolve relative paths against it. */
 	cwd?: string;
 	signal?: AbortSignal;
@@ -163,7 +165,8 @@ function summarizeToolResult(
 }
 
 export async function callSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
-	return await runWithBridgeCwd(options.session, options.cwd, () => dispatchSessionTool(name, args, options));
+	const run = () => runWithBridgeCwd(options.session, options.cwd, () => dispatchSessionTool(name, args, options));
+	return await (options.executionOrigin ? withExecutionOrigin(options.executionOrigin, run) : run());
 }
 
 async function dispatchSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {

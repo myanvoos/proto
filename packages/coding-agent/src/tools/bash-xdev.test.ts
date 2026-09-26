@@ -5,10 +5,12 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Shell } from "@oh-my-pi/pi-natives";
 import { formatBackgroundNotice } from "../async";
+import { disposeBashSessions } from "../exec/bash-executor";
 import type { Skill } from "../extensibility/skills";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+import { ContextTool } from "./context";
 import { ReadTool } from "./read";
 import { toolRenderers } from "./renderers";
 import { ToolAbortError } from "./tool-errors";
@@ -125,6 +127,30 @@ function renderBashResult(
 	);
 	return stripAnsi(component.render(90).join("\n"));
 }
+
+test("xd cannot reset its own lane and rejected control preserves shell state", async () => {
+	await withBash(async (bash, _state, session) => {
+		session.getSessionId = () => session.cwd;
+		const context = new ContextTool(session);
+		session.xdev!.tools.set("context", context);
+		session.xdev!.mountedNames.add("context");
+		try {
+			const rejected = await bash.execute("self-reset", {
+				command: "ORIGIN_MARKER=retained; xd context --op reset --resource lane --lane work",
+				lane: "work",
+			});
+			expect(rejected.details?.exitCode, textOf(rejected)).toBe(1);
+			const next = await bash.execute("after-rejected-reset", {
+				command: 'printf "%s" "$ORIGIN_MARKER"',
+				lane: "work",
+			});
+			expect(next.isError).not.toBe(true);
+			expect(textOf(next)).toContain("retained");
+		} finally {
+			await disposeBashSessions(session.cwd);
+		}
+	});
+}, 10_000);
 
 test("multiple semicolon-separated xd calls dispatch in order", async () => {
 	await withBash(async (bash, state) => {

@@ -21,7 +21,7 @@ export type PythonCellRoute = { kind: "kernel"; interpreter?: string } | { kind:
 export interface PythonCellRouteOptions {
 	/** Directory default-interpreter discovery runs from (project `.venv`). */
 	cwd: string;
-	/** Interpreter pinned by `xd kernel` for this lane; bare names use it. */
+	/** Interpreter pinned by context kernel start/reset for this lane; bare names use it. */
 	laneInterpreter?: string;
 	/** The `python.interpreter` setting. */
 	settingInterpreter?: string;
@@ -33,7 +33,7 @@ export interface PythonCellRouteOptions {
  * - a command naming an interpreter (`.venv/bin/python`, `python3.13`) runs on it;
  * - bare `python`/`python3` follows the cell's own PATH (an activated venv, an
  *   exported PATH) when that selects a different interpreter than the host's
- *   PATH does. An untouched shell, or a lane pinned by `xd kernel`, keeps the
+ *   PATH does. An untouched shell, or a lane pinned by context kernel start/reset, keeps the
  *   default: pinned or configured interpreter, project `.venv`, managed env.
  * The default kernel's own interpreter maps back to the default, so a lane
  * holds one kernel per interpreter.

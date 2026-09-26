@@ -1,121 +1,87 @@
 # fleet
 
-> The single agent-coordination surface: peer messaging over the process-global mailbox bus, background-job control, and supervision of shared long-running processes.
-
-Merged from the former `irc`, `job`, and `launch` tools; each op family keeps its old behavior and rendering.
+> Agent identity, tracked worker turns, and peer messages. Shell jobs, process
+> supervision, watches, and blocking waits belong to [`jobs`](jobs.md).
 
 ## Source
-- Entry: `packages/coding-agent/src/tools/fleet/index.ts` (schema, `FleetTool`, unified `wait`, renderer dispatch)
-- Messaging half: `packages/coding-agent/src/tools/fleet/messaging.ts`
-- Jobs half: `packages/coding-agent/src/tools/fleet/jobs.ts`
-- Launch half: `packages/coding-agent/src/tools/fleet/launch.ts`
-- Shared types: `packages/coding-agent/src/tools/fleet/types.ts`
+- Entry: `packages/coding-agent/src/tools/fleet/index.ts` — flat wire schema, strict per-op validation, per-op authorization, `FleetTool`, `fleetToolRenderer`
+- Worker ops and worker cards: `packages/coding-agent/src/tools/fleet/workers.ts`
+- Peer messaging and message cards: `packages/coding-agent/src/tools/fleet/messaging.ts`
+- Result types: `packages/coding-agent/src/tools/fleet/types.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/fleet.md`
-- Key collaborators:
-  - `packages/coding-agent/src/irc/bus.ts` — process-global `IrcBus`: per-agent mailboxes, delivery, waiter matching.
-  - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory and status.
-  - `packages/coding-agent/src/registry/agent-lifecycle.ts` — revival of parked recipients on direct send.
-  - `packages/coding-agent/src/session/agent-session.ts` — `deliverIrcMessage(...)`: recipient-side injection and wake turns.
-  - `packages/coding-agent/src/async/job-manager.ts` — job registry, cancellation, delivery suppression, smart poll ladder.
-  - `packages/coding-agent/src/launch/client.ts` / `broker.ts` / `presence.ts` / `protocol.ts` — process-supervision broker.
-  - `packages/coding-agent/src/config/settings-schema.ts` — `irc.timeoutMs`, `async.pollWaitDuration`, `launch.enabled`.
+- Collaborators:
+  - `packages/coding-agent/src/orchestrator/runtime.ts` — worker records, one `worker` job per turn (`<worker-id>-t<turn>`), queue/steer admission, park/revive, tombstones, `withWaitPermit`.
+  - `packages/coding-agent/src/registry/agent-registry.ts`, `agent-lifecycle.ts` — agent directory, visibility, parking and revival.
+  - `packages/coding-agent/src/irc/bus.ts` — process-global mailboxes for peer messages.
+  - `packages/coding-agent/src/async/job-manager.ts` — the turn jobs `jobs` observes, waits on, and cancels.
 
 ## Inputs
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `op` | `"send" \| "wait" \| "inbox" \| "list" \| "jobs" \| "cancel" \| "start" \| "ps" \| "logs" \| "stop" \| "restart" \| "describe"` | Yes | Operation. |
-| `id` | `string` | `send` (peer) | `send`: recipient agent id, or `"all"` for broadcast. `wait` (pure message wait): only accept a message from this agent id. Mutually exclusive with `name`. |
-| `message` | `string` | `send` (peer) | Message body. Empty-after-trim is rejected. |
-| `replyTo` | `string` | No | `send`: message id being answered. |
-| `await` | `boolean` | No | Peer `send`: after delivery, block until the next message from that peer arrives. Invalid with `id: "all"`. |
-| `ids` | `string[]` | No | `wait`: job ids to watch (omit = all running jobs); `cancel`: job ids to kill (required). |
-| `timeoutMs` | `number` | No | Milliseconds for peer `send` with `await`, message/job `wait`, and `logs`/`stop`/readiness windows; `0` waits indefinitely where supported. Defaults to `irc.timeoutMs` for a reply/pure-message wait, to the poll window when jobs are watched, and to 30000 for process readiness. |
-| `peek` | `boolean` | No | `inbox`: leave messages in the process-global bus mailbox. Note that messages already buffered on the live recipient session are still drained into this result by the current implementation. |
-| `name` | `string` | process ops | Stable project-scoped launch name (1-48 chars). On `send`/`wait` it routes the op to the process broker. |
-| `application`, `args`, `env`, `cwd`, `pty`, `ready`, `restart`, `persist`, `detached` | — | `start` | Launch spec, unchanged from the former `launch` tool. |
-| `lines`, `head`, `grep`, `follow`, `cursor` | — | `logs` | Log window controls, unchanged. |
-| `for`, `pattern` | — | `wait` (name) | Process lifecycle condition / output regex. |
-| `text`, `enter`, `keys`, `signal` | — | `send` (name) | Process stdin / terminal keys / signal. |
+`op` is required. Fields outside the chosen op's set are rejected before any side effect.
 
-## Op families and dispatch
-- **Messaging** — `send` (with `id`), `inbox`, `list`, and pure-message `wait` with `id`. Fire-and-forget sends return delivery receipts (`injected`/`woken`/`revived`/`failed`); direct sends can revive parked agents, while broadcasts target visible live peers without reviving every parked agent. `await: true` waits for one reply after delivery. A busy recipient with async execution disabled may auto-reply rather than strand an awaiting sender.
-- **Jobs** — `wait` (bare or with `ids`), `cancel`, `jobs`. Owner-scoped visibility, watch/unwatch delivery suppression, `acknowledgeDeliveries` on returned completions, 500 ms `onUpdate` snapshots while waiting, and the `async.pollWaitDuration` fixed/smart wait window. `jobs` is the former job-list snapshot plus the roster of running subagents with no running job entry.
-- **Processes** — `start`, `ps`, `logs`, `stop`, `restart`, `describe`, plus `send`/`wait` when they carry `name`. Exact behavior of the former `launch` tool; `ps` is the broker's `list`, scoped by default to processes launched from the current session (including its exited records); `all: true` lists every record for the project directory. See the launch sections below.
+| `op` | Required | Optional |
+| --- | --- | --- |
+| `spawn` | `message` | `agent`, `label`, `model`, `effort` (`lo`\|`med`\|`hi`), `outputSchema`, `schemaMode` (`permissive`\|`strict`), `isolated` |
+| `send` | `id`, `message` | `model` |
+| `message` | `to`, `message` | `replyTo` |
+| `list` | — | `scope` (`owned` default \| `visible`) |
+| `inspect` | `id` | — |
+| `inbox` | — | `peek` |
+| `terminate` | `id` | — |
 
-`send` with both `id` and `name` is rejected as ambiguous. `wait` routes by target: `name` → process wait; otherwise the unified coordination wait.
+`id` always names a worker the caller owns; `to` names a peer agent id or `"all"`.
+Labels (`[A-Za-z0-9_-]{1,48}`, rejected rather than rewritten) are display text and never route.
 
-## The unified `wait`
-One blocking primitive. It resolves job legs (explicit `ids`, owner-scoped and silently filtered, or every running job the caller owns) and — when the session can message peers — parks a bus waiter, then races:
-- every watched running job's `job.promise`,
-- the first matching incoming message (`id`-filtered when given),
-- the wait window — explicit `timeoutMs` if passed (`0` = no window), else `manager.nextPollWaitMs(...)` under `smart` or the fixed `async.pollWaitDuration`,
-- the tool-call abort signal.
+## Worker control (tracked)
+- `spawn` resolves agent type, spawn policy, recursion depth, disabled agents, model/role
+  (including the role's model bank) and output schema before a worker id or job is allocated;
+  an unresolvable model allocates nothing. It returns a turn receipt for turn 1.
+- `send` addresses an owned worker by id:
+  - streaming worker → steered into the running turn (`mode: "steered"`, same job);
+  - idle or parked worker → a new turn job (`mode: "turn"`), reviving a parked worker;
+  - busy, non-streaming worker → a queued turn registered immediately as its own queued job
+    (`mode: "queued"`), started when the current turn settles.
+  Full steering or turn queues are rejected with a `rejected` receipt and nothing is enqueued.
+  `model` switches this and later turns and is validated like spawn.
+- Turn receipts are `{ workerId, label, turn, job: { kind: "job", id }, status, mode }`.
+  `status` keeps the runtime's `accepted` / `queued` / `delivered` / `rejected` / `terminal`
+  distinctions. Waiting uses `jobs` `wait` on `receipt.job`; fleet has no blocking wait.
+- Cancelling a turn job through `jobs` ends that turn only; a cancelled queued turn is removed
+  from the worker's queue and keeps its turn number. The worker stays addressable.
+- `terminate` tombstones the worker, cancels its in-flight turn and every queued turn job, and
+  reports `history://<id>` / `agent://<id>` recovery refs. The id is not addressable afterward.
+- `isolated: true` runs once in an isolated workspace copy, applies successful changes back,
+  blocks until done, and leaves no addressable worker.
+- `list` (owned) and `inspect` report lifecycle (`live`/`parked`/`terminal`) and turn state
+  (`starting`/`running`/`idle`) separately, plus model, turn count, current, last and queued
+  turn job ids, usage, and terminal recovery refs.
 
-Outcomes:
-- A message wins (even a photo-finish: a message consumed by the bus waiter is never dropped) → the message is returned exactly like the former `irc wait` (`details.waited`), and the jobs keep running; their results still self-deliver.
-- A job settles or the window elapses → a job snapshot exactly like the former `job` poll (`details.jobs`, `## Completed` / `## Still Running` sections). An all-running snapshot is flagged `useless` and rendered as a displaceable waiting frame that the next `fleet` call supersedes.
-- No job legs: pure message wait with peer liveness (bounded by `irc.timeoutMs`); with no running peers either, it returns `No running background jobs to wait for.` immediately (plus the jobless running-agent roster when one exists).
-- Explicit `ids` that match nothing visible → `No matching jobs found for IDs: ...` with per-id agent hints (`history://<id>`), never a hang.
-- A message already buffered on the session satisfies the wait before anything is watched.
+## Peer messaging (untracked)
+- `message` delivers to one peer or broadcasts to visible peers. Receipts report transport
+  only: `effect: "injected"` (no turn started), `effect: "wake_requested"` (turn start not
+  confirmed), `revived` (session loaded). A peer message never returns a turn receipt.
+- `inbox` drains queued messages; `peek: true` leaves bus messages in place.
+- `list` with `scope: "visible"` lists peers in the caller's fleet with unread counts.
+- Blocking for a reply uses `jobs` `wait` with a mailbox selector.
 
-Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window was actually used (no explicit `timeoutMs`).
+## Authorization
+Checked in the handler for every call, independent of tool registration:
+- `spawn`/`send` require an enabled spawn policy (`getSessionSpawns`) and a task depth within
+  `orchestrator.maxRecursionDepth`. They do not require peer messaging.
+- `message`, `inbox`, and `list` with `scope: "visible"` require peer messaging (agent
+  registry, caller agent id, `enableIrc !== false`). Recursion limits do not affect them.
+- `inspect`, `terminate`, and owned `list` resolve only workers owned by the caller's scope
+  (agent id, parent session id and file).
 
 ## Outputs
-- Messaging and job results: single text block plus `details: CoordinationDetails` — `{ op, senderId?, id?, receipts?, waited?, inbox?, peers?, jobs?, cancelled?, agents? }`. Shapes are unchanged from the former tools except that job-op details now carry `op` (`"wait" | "cancel" | "jobs"`).
-- Process results: `details: LaunchToolDetails` — `{ op, daemon?, daemons?, cursor?, timedOut?, state?, terminalRows?, matched?, spec? }`, unchanged from the former `launch` tool (internally `ps` stores the broker op `list`).
-- Streaming: job-watching waits emit `onUpdate` every 500 ms with fresh snapshots; everything else is single-shot.
+Single text block plus `details: FleetDetails` —
+`{ op, senderId?, scope?, screens?, spawned?, receipt?, rejected?, terminated?, to?, receipts?, inbox?, peers? }`.
+Runtime refusals are `isError` results; a refused tracked input carries its receipt in `rejected`.
 
-## Availability
-- The tool is registered discoverable (`loadMode: "discoverable"`); mount it explicitly or call it through `xd` when it is not in the essential set.
-- Messaging ops require an `AgentRegistry` and a caller agent id; otherwise they return `Peer messaging is unavailable in this session.` (`isIrcEnabled` still gates the peer-roster prompt sections: true for every subagent and for any session that can still spawn subagents).
-- Job ops require `session.asyncJobManager`; otherwise `Async execution is disabled; no background jobs are available.`
-- Process ops require `launch.enabled`; otherwise `Process supervision is disabled (launch.enabled=false).`
-
-## Starting and readiness (processes)
-`application` and `args` are separate fields, so callers do not need shell quoting:
-
-```json
-{
-  "op": "start",
-  "name": "web",
-  "application": "bun",
-  "args": ["run", "dev"],
-  "ready": { "log": "Local:.*http", "port": 5173, "timeoutMs": 30000 }
-}
-```
-
-Defaults: `cwd` = session directory, `args: []`, `env: {}`, `pty: true`, `restart: "no"`, `persist: false`, `detached: false`, readiness `timeoutMs` 30000. `detached: true` implies `persist`, forces `pty: false`, and disables stdin. `ready.log` is a regex over captured output; `ready.port` probes TCP at `ready.host` (default `127.0.0.1`); when both are present, both must pass. A readiness timeout leaves the process running and reports its state. `restart` relaunches the retained spec and waits for its readiness conditions the same way before it returns.
-
-Names are stable and unique within one project directory. A live name must be stopped or restarted; starting a completed name creates a new launch and rotates its prior output log.
-
-## Logs, input, signals (processes)
-```json
-{"op":"logs","name":"web","grep":"error|warn","lines":50}
-{"op":"logs","name":"web","follow":true,"cursor":1842,"timeoutMs":30000}
-{"op":"send","name":"debugger","text":"breakpoint set --name main"}
-{"op":"send","name":"debugger","keys":["CTRL_C"]}
-```
-Each logs result returns a byte cursor; `follow: true` waits until output advances beyond it, the process exits, or the timeout elapses. The broker keeps a 25 MiB current log plus one rotated log. Keys: `ENTER`, `TAB`, `ESCAPE`, `CTRL_C`, `CTRL_D`, arrows. Signals: `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGKILL`. Input is one shared stream across all project clients.
-
-## Cross-instance lifecycle (processes)
-Unchanged from the former `launch` tool: the first process op starts a detached broker over a private socket under `~/.proto/run/daemons/<project-hash>/`; every proto instance in the project shares names, logs, and state. After the last proto process exits, the broker stops non-persistent processes and exits. `persist: true` opts out of last-client teardown; restart policies (`no`/`on-failure`/`always`) use bounded exponential backoff up to 30 s.
-
-## Limits & Caps
-- Mailboxes: 100 messages per agent (`MAILBOX_CAP`); oldest dropped beyond the cap.
-- `irc.timeoutMs` default `120_000`; `0` disables; negative/non-finite fall back to the default.
-- Poll window: `async.pollWaitDuration` — `5s`/`10s`/`30s`/`1m`/`5m`/`smart` (default); smart ladder `[5s..5m]` climbing per back-to-back wait, resetting after 60 s without waiting.
-- Job retention 5 min; manager max-running fallback 15; `async.maxJobs` clamped 1..100.
-- Launch names 1-48 chars; `ready.port` 1..65535; `logs`/`wait`/`stop` timeouts capped at one hour.
-
-## Errors
-- Most validation/availability failures are text results with `isError: true`: messaging unavailable, missing `to`/`message`, self-send (`Cannot send a message to yourself.`), `await` with `to:"all"`, `to`+`name` on one send, missing `ids` on `cancel`, and launch disabled. The async-disabled `jobs`/`cancel` response is an exception: it returns `Async execution is disabled; no background jobs are available.` with an empty job list and no `isError` flag.
-- Launch validation (missing `name`/`application`, bad `ready.port`, unsupported key) throws `ToolError`, exactly as before.
-- A `wait` timeout is a normal result (`waited: null` or an all-running snapshot flagged `useless`), never an error.
-- Per-recipient delivery failures surface as `failed` receipts; `send` is `isError` only when nothing was delivered.
-
-## Notes
-- The IRC bus, agent registry, job manager, and launch broker are unchanged subsystems; only the tool surface merged.
-- A running recipient still gets messages injected as non-interrupting asides (`irc:incoming` custom messages, `prompts/system/irc-incoming.md`); replies are real turns.
-- Messaging a parked agent revives it — the only resume primitive; the task tool has no `resume` parameter.
-- TUI rendering is preserved per family: messaging cards (`IRC ➤ / ⟵` headers), job waiting frames (displaceable, shimmering rows), and launch frames render byte-identically to the pre-merge tools; the `fleet` renderer only dispatches.
+## Rendering
+`fleetToolRenderer` draws worker composer frames for `spawn`/`send` (with the receipt's turn
+and job), worker TV cards for owned `list`/`inspect`, and message/inbox/peer cards for peer ops.
+Transcripts written before fleet became agents-only are rendered as history: legacy peer
+`send` calls keep message cards, and process/job results retain their cards through
+render-only adapters. Removed tool names use the historical fallback. None of these
+historical paths makes a retired operation executable.

@@ -1,571 +1,357 @@
 import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
-import { IrcBus } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import fleetDescription from "../../prompts/tools/fleet.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
+import { discoverAgents } from "../../task/discovery";
+import { resolveSpawnPolicy } from "../../task/spawn-policy";
+import { canSpawnAtDepth } from "../../task/types";
+import { WORKER_EFFORTS, type WorkerEffort } from "../../thinking";
+import { renderStatusLine, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
-import {
-	buildJobResult,
-	executeCancel,
-	executeJobsSnapshot,
-	jobsRenderCall,
-	jobsRenderResult,
-	noMatchingJobsResult,
-	nothingToWaitForResult,
-	resolvePollWindow,
-	snapshotJobs,
-	visibleJobs,
-} from "./jobs";
-import {
-	executeLaunch,
-	type LaunchParams,
-	type LaunchRenderArgs,
-	type LaunchToolDetails,
-	launchRenderCall,
-	launchRenderResult,
-} from "./launch";
-import {
-	drainPendingInbox,
-	executeInbox,
-	executeList,
-	executeMessageWait,
-	executeSend,
-	messageResult,
-	messagingRenderCall,
-	messagingRenderResult,
-	normalizeIrcTimeoutMs,
-} from "./messaging";
+import { replaceTabs } from "../render-utils";
+import { ToolError } from "../tool-errors";
+import { executeInbox, executeList, executeMessage, messagingRenderCall, messagingRenderResult } from "./messaging";
 import { type FleetDetails, type FleetOp, type FleetRenderArgs, fleetErrorResult } from "./types";
+import {
+	executeInspect,
+	executeOwnedList,
+	executeSend,
+	executeSpawn,
+	executeTerminate,
+	workerRenderCall,
+	workerRenderResult,
+} from "./workers";
 
-export { isWaitingPollDetails } from "./jobs";
-export type { LaunchParams, LaunchToolDetails } from "./launch";
 export { createIrcMessageCard, isIrcEnabled } from "./messaging";
 export * from "./types";
 
 const fleetSchema = type({
-	"op?": type(
-		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
-	).describe(
-		"fleet operation; inferred as 'send' when to/message/text/keys are given, as 'wait' when from/for/pattern are given",
+	op: type("'spawn' | 'send' | 'message' | 'list' | 'inspect' | 'inbox' | 'terminate'").describe(
+		"spawn/send/terminate/inspect: owned workers (tracked turns); message/inbox: peer communication; list: owned or visible agents",
 	),
-	"to?": type("string").describe('send: recipient agent id or "all"'),
-	"from?": type("string").describe("wait: only accept a message from this agent id"),
-	"message?": type("string").describe("send: message body"),
-	"replyTo?": type("string").describe("send: message id being answered"),
-	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
-	"ids?": type("string[]").describe(
-		"wait: job ids (monitor: next event; others: completion); omit for all running jobs; cancel: job ids to kill",
+	"id?": type("string > 0").describe("send/inspect/terminate: canonical id of a worker you own"),
+	"to?": type("string > 0").describe('message: recipient peer id, or "all" to broadcast'),
+	"message?": type("string > 0").describe("spawn: first instruction; send: worker input; message: peer message body"),
+	"agent?": type("string > 0").describe("spawn: worker agent type; omit for the parent-permitted default"),
+	"label?": type("string <= 48").describe("spawn: display label ([A-Za-z0-9_-]{1,48}); never an address"),
+	"model?": type("string > 0").describe(
+		"spawn/send: role alias like `@worker` or concrete model id; validated before any worker or turn is allocated",
 	),
-	"timeoutMs?": type("number").describe(
-		"wait/logs/stop/readiness timeout in milliseconds (0 waits indefinitely where supported)",
+	"effort?": type("'lo' | 'med' | 'hi'").describe("spawn: thinking-effort hint for the worker's turns"),
+	"outputSchema?": type("object | boolean | string | null").describe(
+		"spawn: JSON Schema for each worker turn's final response",
+	),
+	"schemaMode?": type("'permissive' | 'strict'").describe("spawn: schema enforcement policy; default permissive"),
+	"isolated?": type("boolean").describe(
+		"spawn: run once in an isolated workspace copy and apply successful changes back; the worker is terminal afterward",
+	),
+	"replyTo?": type("string > 0").describe("message: id of the message being answered"),
+	"scope?": type("'owned' | 'visible'").describe(
+		"list: owned (default) = your workers; visible = peers you can message",
 	),
 	"peek?": type("boolean").describe("inbox: list messages without consuming them"),
-	"all?": type("boolean").describe(
-		"ps: list every process record in the project directory; default false (this session only)",
-	),
-	"name?": type("string <= 48").describe("process ops: stable project-scoped launch name"),
-	"application?": type("string > 0").describe("start: executable or application path"),
-	"args?": type("string[]").describe("start: argv passed directly to the application"),
-	"env?": type({ "[string]": "string" }).describe("start: extra environment variables"),
-	"cwd?": type("string").describe("start: working directory; defaults to the session directory"),
-	"pty?": type("boolean").describe("start: allocate an interactive PTY; default true"),
-	"ready?": type({
-		"log?": type("string > 0").describe("regex matched against output"),
-		"port?": type("number").describe("TCP port that must accept connections"),
-		"host?": type("string > 0").describe("TCP readiness host; default 127.0.0.1"),
-		"timeoutMs?": type("number > 0").describe("milliseconds to wait; default 30000"),
-	}).describe("start: readiness conditions; all supplied conditions must pass"),
-	"restart?": type("'no' | 'on-failure' | 'always'").describe("start: restart policy; default no"),
-	"persist?": type("boolean").describe("start: survive the last proto client exiting; default false"),
-	"detached?": type("boolean").describe(
-		"start: survive every proto and broker exit; implies persist and disables PTY input",
-	),
-	"lines?": type("number > 0").describe("logs: output lines; default 100, max 1000"),
-	"head?": type("boolean").describe("logs: read from the beginning instead of the tail"),
-	"grep?": type("string > 0").describe("logs: regex filter"),
-	"follow?": type("boolean").describe("logs: wait for output newer than cursor"),
-	"cursor?": type("number >= 0").describe("logs: output cursor returned by an earlier call"),
-	"for?": type("'ready' | 'exit'").describe("wait with name: lifecycle condition; default exit"),
-	"pattern?": type("string > 0").describe("wait with name: output regex; takes precedence over for"),
-	"text?": type("string > 0").describe("send with name: stdin text"),
-	"enter?": type("boolean").describe("send with name: append Enter after text; default true"),
-	"keys?": type("string[]").describe(
-		"send with name: terminal keys after text, case-insensitive: Enter, Tab, Escape, Up, Down, Left, Right, or control chords C-<letter> (also ctrl+d, ctrl-d, ^D) — e.g. C-c interrupt, C-d EOF",
-	),
-	"signal?": type("'SIGINT' | 'SIGTERM' | 'SIGHUP' | 'SIGQUIT' | 'SIGKILL'").describe(
-		"send with name: process-tree signal",
-	),
 });
 
 type FleetParams = typeof fleetSchema.infer;
+type FleetField = Exclude<keyof FleetParams, "op">;
 
-/** Resolves the fleet op: explicit `op`, else the only op the supplied fields could belong to. */
-function resolveFleetOp(params: Partial<FleetParams>): FleetOp | undefined {
-	if (params.op) return params.op;
-	if (
-		params.to !== undefined ||
-		params.message !== undefined ||
-		params.text !== undefined ||
-		params.keys !== undefined
-	) {
-		return "send";
-	}
-	if (params.from !== undefined || params.for !== undefined || params.pattern !== undefined) return "wait";
-	return undefined;
+const FLEET_FIELDS: readonly FleetField[] = [
+	"id",
+	"to",
+	"message",
+	"agent",
+	"label",
+	"model",
+	"effort",
+	"outputSchema",
+	"schemaMode",
+	"isolated",
+	"replyTo",
+	"scope",
+	"peek",
+];
+
+const OP_FIELDS: Record<FleetOp, { required: readonly FleetField[]; optional: readonly FleetField[] }> = {
+	spawn: {
+		required: ["message"],
+		optional: ["agent", "label", "model", "effort", "outputSchema", "schemaMode", "isolated"],
+	},
+	send: { required: ["id", "message"], optional: ["model"] },
+	message: { required: ["to", "message"], optional: ["replyTo"] },
+	list: { required: [], optional: ["scope"] },
+	inspect: { required: ["id"], optional: [] },
+	inbox: { required: [], optional: ["peek"] },
+	terminate: { required: ["id"], optional: [] },
+};
+
+const FLEET_OPS = Object.keys(OP_FIELDS) as FleetOp[];
+
+function isFleetOp(value: unknown): value is FleetOp {
+	return typeof value === "string" && Object.hasOwn(OP_FIELDS, value);
 }
 
-const FLEET_PARAM_KEYS: Record<string, true> = {
-	op: true,
-	to: true,
-	from: true,
-	message: true,
-	replyTo: true,
-	await: true,
-	ids: true,
-	timeoutMs: true,
-	peek: true,
-	all: true,
-	name: true,
-	application: true,
-	args: true,
-	env: true,
-	cwd: true,
-	pty: true,
-	ready: true,
-	restart: true,
-	persist: true,
-	detached: true,
-	lines: true,
-	head: true,
-	grep: true,
-	follow: true,
-	cursor: true,
-	for: true,
-	pattern: true,
-	text: true,
-	enter: true,
-	keys: true,
-	signal: true,
-};
+/** Strict per-op shape check; runs before any side effect, including for direct typed calls. */
+function validateFleetParams(params: Record<string, unknown>): string | undefined {
+	const unknown = Object.keys(params).filter(key => key !== "op" && !FLEET_FIELDS.includes(key as FleetField));
+	if (unknown.length > 0) {
+		return `Unknown fleet parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`;
+	}
+	const op = params.op;
+	if (!isFleetOp(op)) return `\`op\` is required: one of ${FLEET_OPS.join(", ")}.`;
+	const { required, optional } = OP_FIELDS[op];
+	const accepted = [...required, ...optional];
+	const irrelevant = Object.keys(params).filter(
+		key => key !== "op" && params[key] !== undefined && !accepted.includes(key as FleetField),
+	);
+	if (irrelevant.length > 0) {
+		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "none";
+		return `op "${op}" does not accept ${irrelevant.join(", ")}; accepted: ${acceptedText}.`;
+	}
+	const missing = required.filter(key => typeof params[key] !== "string" || !(params[key] as string).trim());
+	if (missing.length > 0) return `op "${op}" requires ${missing.join(", ")}.`;
+	if (params.effort !== undefined && !WORKER_EFFORTS.includes(params.effort as WorkerEffort)) {
+		return `Invalid effort ${JSON.stringify(params.effort)}. Use "lo", "med", or "hi".`;
+	}
+	if (params.scope !== undefined && params.scope !== "owned" && params.scope !== "visible") {
+		return `Invalid scope ${JSON.stringify(params.scope)}. Use "owned" or "visible".`;
+	}
+	if (params.label !== undefined && !/^[A-Za-z0-9_-]{1,48}$/.test(String(params.label))) {
+		return "Worker label must be 1–48 characters using only ASCII letters, digits, underscore, or hyphen.";
+	}
+	return undefined;
+}
 
 interface MessagingDeps {
 	registry: AgentRegistry;
 	senderId: string;
 	fleetRoot?: string;
-	settings: ToolSession["settings"];
 }
-
-const PROGRESS_INTERVAL_MS = 500;
 
 export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 	readonly name = "fleet";
 	readonly label = "Fleet";
-	readonly summary = "Message peer agents, control background jobs, and supervise long-running processes";
+	readonly summary = "Spawn and steer owned workers; message peer agents";
 	readonly description: string;
 	readonly parameters = fleetSchema;
 	readonly strict = true;
-	readonly interruptible = (params: Partial<FleetParams>): boolean => {
-		const op = resolveFleetOp(params);
-		if (op === "wait") return true;
-		return op === "logs" && params.follow === true;
-	};
 	readonly loadMode = "discoverable";
 
-	readonly examples: readonly ToolExample<typeof fleetSchema.infer>[] = [
+	readonly examples: readonly ToolExample<FleetParams>[] = [
 		{
-			caption: "List peers",
-			call: { op: "list" },
+			caption: "Spawn a worker; its receipt names the turn job to wait on",
+			call: { op: "spawn", label: "parser", message: "Fix the tokenizer in src/lex.ts; run its tests." },
 		},
 		{
-			caption: "Fire-and-forget DM — op inferred as send; same send wakes idle/parked peers",
-			call: {
-				to: "AuthLoader",
-				message: "Still touching src/server/auth.ts? I need to add a 401 path.",
-			},
+			caption: "Tracked follow-up for an owned worker (by immutable id)",
+			call: { op: "send", id: "worker-1a2b3c", message: "Also cover the empty-input case." },
 		},
 		{
-			caption: "Round-trip when you cannot proceed without the answer",
-			call: {
-				op: "send",
-				to: "Main",
-				message: "JWT or session cookies for the auth flow?",
-				await: true,
-			},
+			caption: "Untracked peer message; delivery never proves a turn started",
+			call: { op: "message", to: "Main", message: "Blocked: JWT or session cookies?" },
 		},
-		{
-			caption: "Completely blocked: wait for the first finished job or incoming message",
-			call: { op: "wait" },
-		},
-		{
-			caption: "Block until a specific peer answers",
-			call: { op: "wait", from: "AuthLoader", timeoutMs: 60_000 },
-		},
-		{
-			caption: "Kill a hung background job",
-			call: { op: "cancel", ids: ["bash_a1b2c3"] },
-		},
-		{
-			caption: "Snapshot every background job without waiting",
-			call: { op: "jobs" },
-		},
-		{
-			caption: "Start a dev server and wait for its log banner and port",
-			call: {
-				op: "start",
-				name: "web",
-				application: "bun",
-				args: ["run", "dev"],
-				ready: { log: "Local:.*http", port: 5173, timeoutMs: 30_000 },
-			},
-		},
-		{
-			caption: "Follow process output after a cursor",
-			call: { op: "logs", name: "web", follow: true, cursor: 1842, timeoutMs: 30_000 },
-		},
-		{
-			caption: "Drive a REPL/debugger over stdin",
-			call: { op: "send", name: "debugger", text: "breakpoint set --name main" },
-		},
-		{
-			caption: "Interrupt a process",
-			call: { op: "send", name: "debugger", keys: ["CTRL_C"] },
-		},
-		{
-			caption: "Block until a process is ready",
-			call: { op: "wait", name: "web", for: "ready", timeoutMs: 30_000 },
-		},
+		{ caption: "Your workers", call: { op: "list" } },
+		{ caption: "Peers you can message", call: { op: "list", scope: "visible" } },
+		{ caption: "Terminate an owned worker", call: { op: "terminate", id: "worker-1a2b3c" } },
 	];
 
-	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(fleetDescription);
+	constructor(
+		private readonly session: ToolSession,
+		agents: Array<{ name: string; description: string }> = [],
+	) {
+		this.description = prompt.render(fleetDescription, { agents });
 	}
 
-	#messaging(): MessagingDeps | null {
+	static async create(session: ToolSession): Promise<FleetTool> {
+		const { agents } = await discoverAgents(session.cwd);
+		return new FleetTool(
+			session,
+			agents.map(agent => ({ name: agent.name, description: agent.description })),
+		);
+	}
+
+	#messaging(): MessagingDeps | undefined {
+		if (this.session.enableIrc === false) return undefined;
 		const registry = this.session.agentRegistry;
-		const senderId = this.session.getAgentId?.() ?? null;
-		if (!registry || !senderId) return null;
-		return { registry, senderId, fleetRoot: this.session.getAgentFleetRoot?.(), settings: this.session.settings };
+		const senderId = this.session.getAgentId?.() ?? undefined;
+		if (!registry || !senderId) return undefined;
+		return { registry, senderId, fleetRoot: this.session.getAgentFleetRoot?.() };
+	}
+
+	/** Spawning and tracked turns follow the parent's spawn policy and recursion depth. */
+	#workerControlDenial(): string | undefined {
+		const policy = resolveSpawnPolicy(this.session.getSessionSpawns());
+		if (!policy.enabled) return "Worker control is unavailable: this agent's spawn policy allows no workers.";
+		const depth = this.session.taskDepth ?? 0;
+		const maxDepth = this.session.settings.get("orchestrator.maxRecursionDepth") ?? 2;
+		if (!canSpawnAtDepth(maxDepth, depth)) {
+			return `Worker control is unavailable at task depth ${depth} (orchestrator.maxRecursionDepth=${maxDepth}).`;
+		}
+		return undefined;
+	}
+
+	#authorize(op: FleetOp, params: FleetParams): string | undefined {
+		switch (op) {
+			case "spawn":
+			case "send":
+				return this.#workerControlDenial();
+			case "message":
+			case "inbox":
+				return this.#messaging() ? undefined : "Peer messaging is unavailable in this session.";
+			case "list":
+				return params.scope === "visible" && !this.#messaging()
+					? 'Peer messaging is unavailable in this session; only scope "owned" can be listed.'
+					: undefined;
+			case "inspect":
+			case "terminate":
+				// Owner scope is enforced by the runtime: only workers this session owns resolve.
+				return undefined;
+		}
 	}
 
 	async execute(
 		_toolCallId: string,
 		params: FleetParams,
 		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
-		_context?: AgentToolContext,
 	): Promise<AgentToolResult<FleetDetails>> {
-		const op = resolveFleetOp(params);
-		const unknown = Object.keys(params).filter(key => FLEET_PARAM_KEYS[key] !== true);
-		if (unknown.length > 0) {
-			return fleetErrorResult(`Unknown fleet parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`, {
-				op,
-			});
+		const invalid = validateFleetParams(params as Record<string, unknown>);
+		const op = isFleetOp(params.op) ? params.op : undefined;
+		if (invalid || !op) return fleetErrorResult(invalid ?? "`op` is required.", op ? { op } : {});
+		const denied = this.#authorize(op, params);
+		if (denied) return fleetErrorResult(denied, { op });
+		try {
+			return await this.#dispatch(op, params, signal);
+		} catch (error) {
+			if (error instanceof ToolError) return fleetErrorResult(error.message, { op });
+			throw error;
 		}
-		if (!op) {
-			return fleetErrorResult(
-				"`op` is required (one of send, wait, inbox, list, jobs, cancel, start, ps, logs, stop, restart, describe); `to` + `message` alone is treated as send.",
-				{ op },
-			);
-		}
-		if (params.ready && Object.keys(params.ready).some(key => !["log", "port", "host", "timeoutMs"].includes(key))) {
-			return fleetErrorResult("Unknown fleet readiness parameter.", { op });
-		}
+	}
+
+	async #dispatch(op: FleetOp, params: FleetParams, signal?: AbortSignal): Promise<AgentToolResult<FleetDetails>> {
 		switch (op) {
+			case "spawn":
+				return executeSpawn(
+					this.session,
+					{
+						message: params.message!,
+						...(params.agent !== undefined ? { agent: params.agent } : {}),
+						...(params.label !== undefined ? { label: params.label } : {}),
+						...(params.model !== undefined ? { model: params.model } : {}),
+						...(params.effort !== undefined ? { effort: params.effort } : {}),
+						...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
+						...(params.schemaMode !== undefined ? { schemaMode: params.schemaMode } : {}),
+						...(params.isolated !== undefined ? { isolated: params.isolated } : {}),
+					},
+					signal,
+				);
+			case "send":
+				return executeSend(this.session, {
+					id: params.id!,
+					message: params.message!,
+					...(params.model !== undefined ? { model: params.model } : {}),
+				});
+			case "terminate":
+				return executeTerminate(this.session, params.id!);
+			case "inspect":
+				return executeInspect(this.session, params.id!);
 			case "list": {
-				const messaging = this.#messaging();
-				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "list" });
+				if (params.scope !== "visible") return executeOwnedList(this.session);
+				const messaging = this.#messaging()!;
 				return executeList(messaging.registry, messaging.senderId, messaging.fleetRoot);
 			}
-			case "send": {
-				const toPeer = params.to?.trim();
-				const toProcess = params.name?.trim();
-				if (toPeer && toProcess) {
-					return fleetErrorResult('`to` (peer) and `name` (process) are mutually exclusive for op="send".', {
-						op: "send",
-					});
-				}
-				if (toProcess) return this.#launch(params, "send", signal);
-				const messaging = this.#messaging();
-				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "send" });
-				return executeSend(messaging, params, signal);
-			}
+			case "message":
+				return executeMessage(this.#messaging()!, {
+					to: params.to!,
+					message: params.message!,
+					...(params.replyTo !== undefined ? { replyTo: params.replyTo } : {}),
+				});
 			case "inbox": {
-				const messaging = this.#messaging();
-				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });
+				const messaging = this.#messaging()!;
 				return executeInbox(messaging.registry, messaging.senderId, params.peek, messaging.fleetRoot);
 			}
-			case "wait":
-				if (params.name?.trim()) return this.#launch(params, "wait", signal);
-				return this.#executeWait(params, signal, onUpdate);
-			case "cancel": {
-				const manager = this.session.asyncJobManager;
-				if (!manager) return this.#asyncDisabled("cancel");
-				if (!params.ids?.length) {
-					return fleetErrorResult('`ids` is required for op="cancel".', { op: "cancel", jobs: [] });
-				}
-				return await executeCancel(this.session, manager, this.#ownerId(), params.ids);
-			}
-			case "jobs": {
-				const manager = this.session.asyncJobManager;
-				if (!manager) return this.#asyncDisabled("jobs");
-				return await executeJobsSnapshot(this.session, manager, this.#ownerId());
-			}
-			case "start":
-			case "ps":
-			case "logs":
-			case "stop":
-			case "restart":
-			case "describe":
-				return this.#launch(params, op === "ps" ? "list" : op, signal);
-			default:
-				return fleetErrorResult("Unknown fleet op.", { op });
-		}
-	}
-
-	#ownerId(): string | undefined {
-		return this.session.getAsyncJobOwnerId?.() ?? this.session.getAgentId?.() ?? undefined;
-	}
-
-	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<FleetDetails> {
-		return {
-			content: [{ type: "text", text: "Async execution is disabled; no background jobs are available." }],
-			details: { op, jobs: [] },
-		};
-	}
-
-	async #launch(
-		params: FleetParams,
-		op: LaunchParams["op"],
-		signal?: AbortSignal,
-	): Promise<AgentToolResult<FleetDetails>> {
-		if (!this.session.settings.get("launch.enabled")) {
-			return fleetErrorResult("Process supervision is disabled (launch.enabled=false).", { op });
-		}
-		const { op: _fleetOp, ...rest } = params;
-		return executeLaunch(this.session, { ...rest, op }, signal);
-	}
-
-	async #executeWait(
-		params: FleetParams,
-		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
-	): Promise<AgentToolResult<FleetDetails>> {
-		const messaging = this.#messaging();
-		const manager = this.session.asyncJobManager;
-		const ownerId = this.#ownerId();
-		const from = params.from?.trim() || undefined;
-
-		if (messaging) {
-			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from, messaging.fleetRoot);
-			if (pending) return messageResult(messaging.senderId, pending);
-		}
-
-		const ids = params.ids;
-		const jobsToWatch = manager
-			? ids?.length
-				? visibleJobs(manager, ids, ownerId)
-				: manager.getRunningJobs(ownerId ? { ownerId } : undefined)
-			: [];
-		if (manager && ids?.length && jobsToWatch.length === 0) {
-			return noMatchingJobsResult(this.session, ids);
-		}
-		const runningJobs = jobsToWatch.filter(j => j.status === "running");
-		if (manager && jobsToWatch.some(job => job.events?.length)) {
-			return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
-		}
-		if (manager && jobsToWatch.length > 0 && runningJobs.length === 0) {
-			return await buildJobResult(this.session, manager, "wait", jobsToWatch, []);
-		}
-
-		if (!manager || runningJobs.length === 0) {
-			if (!messaging) return nothingToWaitForResult(this.session);
-
-			const queued = IrcBus.global().take(messaging.senderId, from, messaging.fleetRoot);
-			if (queued) return messageResult(messaging.senderId, queued);
-			if (!from) {
-				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId, messaging.fleetRoot).length > 0;
-				if (!hasActivePeer) return nothingToWaitForResult(this.session);
-			}
-			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
-		}
-
-		const window = resolvePollWindow(this.session, manager, ownerId);
-		const windowMs = params.timeoutMs !== undefined ? normalizeIrcTimeoutMs(params.timeoutMs) : window.waitMs;
-		const usedSmartWindow = window.smart && params.timeoutMs === undefined;
-
-		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
-		const eventAbort = new AbortController();
-		const monitorIds = runningJobs.filter(job => job.type === "monitor").map(job => job.id);
-		if (manager && monitorIds.length > 0) racePromises.push(manager.waitForEvents(monitorIds, eventAbort.signal));
-
-		const busAbort = messaging ? new AbortController() : undefined;
-		const busCancelled = new Error("fleet wait settled");
-		let removeBusAbortListener: (() => void) | undefined;
-		const busLeg =
-			messaging && busAbort
-				? IrcBus.global()
-						.wait(messaging.senderId, { from }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
-						.then(
-							message => ({ message, error: null as Error | null }),
-							error => ({
-								message: null,
-								error:
-									error === busCancelled ? null : error instanceof Error ? error : new Error(String(error)),
-							}),
-						)
-				: undefined;
-		if (busLeg) racePromises.push(busLeg);
-		if (busAbort && signal) {
-			if (signal.aborted) {
-				busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("fleet wait aborted"));
-			} else {
-				const onAbort = (): void => {
-					busAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("fleet wait aborted"));
-				};
-				signal.addEventListener("abort", onAbort, { once: true });
-				removeBusAbortListener = () => signal.removeEventListener("abort", onAbort);
-			}
-		}
-
-		const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
-		const timeoutHandle = windowMs > 0 ? setTimeout(() => timeoutResolve(), windowMs) : undefined;
-		if (timeoutHandle) racePromises.push(timeoutPromise);
-
-		const watchedJobIds = runningJobs.map(job => job.id);
-		manager.watchJobs(watchedJobIds);
-
-		const emitProgress = () => {
-			if (!onUpdate) return;
-			onUpdate({
-				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobsToWatch) },
-			});
-		};
-		const progressTimer = onUpdate ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
-		emitProgress();
-
-		try {
-			if (signal) {
-				const { promise: abortPromise, resolve: abortResolve } = Promise.withResolvers<void>();
-				const onAbort = () => abortResolve();
-				signal.addEventListener("abort", onAbort, { once: true });
-				racePromises.push(abortPromise);
-				try {
-					await Promise.race(racePromises);
-				} finally {
-					signal.removeEventListener("abort", onAbort);
-				}
-			} else {
-				await Promise.race(racePromises);
-			}
-			busAbort?.abort(busCancelled);
-			if (busLeg && messaging) {
-				const settled = await busLeg;
-				if (settled.message) return messageResult(messaging.senderId, settled.message);
-			}
-			// Consume the winning events before releasing the watch to asynchronous delivery.
-			const events = signal?.aborted ? [] : manager.takeEvents(watchedJobIds, ownerId ? { ownerId } : undefined);
-			return await buildJobResult(this.session, manager, "wait", jobsToWatch, [], [], events);
-		} finally {
-			eventAbort.abort();
-			manager.unwatchJobs(watchedJobIds);
-			if (timeoutHandle) clearTimeout(timeoutHandle);
-			if (progressTimer) clearInterval(progressTimer);
-			busAbort?.abort(busCancelled);
-			removeBusAbortListener?.();
-			if (usedSmartWindow) {
-				manager.recordPollWaitEnd(ownerId);
-			}
 		}
 	}
 }
 
-const LAUNCH_OPS: Record<string, true> = {
-	start: true,
-	ps: true,
-	logs: true,
-	stop: true,
-	restart: true,
-	describe: true,
-};
-
-function isLaunchStyleArgs(args: FleetRenderArgs | undefined): boolean {
-	if (!args?.op) return false;
-	if (LAUNCH_OPS[args.op]) return true;
-	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to;
+function isPeerRender(args: FleetRenderArgs | undefined, details?: FleetDetails): boolean {
+	const op = details?.op ?? args?.op;
+	if (op === "message" || op === "inbox") return true;
+	return op === "list" && (details?.scope ?? args?.scope) === "visible";
 }
 
-function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
-	switch (args?.op) {
-		case "jobs":
-		case "cancel":
-			return true;
-		case "wait":
-			return !!args.ids?.length || (!args.from && !args.name);
-		default:
-			return false;
+type RenderedResult = { content: Array<{ type: string; text?: string }>; details?: FleetDetails; isError?: boolean };
+
+/**
+ * Transcripts written before fleet became agents-only carry peer `send` calls and job/process ops.
+ * They render as history — peer sends as message cards, everything else as a plain status row.
+ */
+function historicalOp(args: FleetRenderArgs | undefined, details?: FleetDetails): string | undefined {
+	const op = (details?.op as string | undefined) ?? args?.op;
+	if (op === undefined) return undefined;
+	// Tracked sends address `id`; a legacy peer send carried `to` and returned delivery receipts.
+	const legacyPeerSend = op === "send" && args?.id === undefined && (args?.to !== undefined || !!details?.receipts);
+	return isFleetOp(op) && !legacyPeerSend ? undefined : op;
+}
+
+function renderHistorical(
+	op: string,
+	result: RenderedResult | undefined,
+	options: RenderResultOptions,
+	uiTheme: Theme,
+	args: FleetRenderArgs | undefined,
+): Component {
+	if (op === "send") {
+		const legacy = result?.details as (FleetDetails & { id?: string }) | undefined;
+		const messageArgs = { ...args, op: "message" };
+		if (!result) return messagingRenderCall(messageArgs, options, uiTheme);
+		const details: FleetDetails = { ...legacy, op: "message", to: legacy?.to ?? legacy?.id ?? args?.to };
+		return messagingRenderResult({ ...result, details }, options, uiTheme, messageArgs);
 	}
-}
-
-function isLaunchDetails(details: FleetDetails): details is LaunchToolDetails {
-	return (
-		"daemon" in details ||
-		"daemons" in details ||
-		"terminalRows" in details ||
-		"spec" in details ||
-		"state" in details ||
-		"cursor" in details
+	const text = result?.content.find(part => part.type === "text")?.text?.split("\n")[0] ?? "";
+	return new Text(
+		renderStatusLine(
+			{
+				icon: result ? (result.isError ? "error" : "done") : "pending",
+				title: `Fleet ${truncateToWidth(replaceTabs(op), 24)}`,
+				meta: text ? [uiTheme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(text)), 80))] : [],
+			},
+			uiTheme,
+		),
+		0,
+		0,
 	);
-}
-
-function toLaunchArgs(args: FleetRenderArgs | undefined): LaunchRenderArgs {
-	if (!args) return {};
-	const { op, ...rest } = args;
-	return { ...rest, op: op === "ps" ? "list" : op };
 }
 
 export const fleetToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
-
-	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as FleetRenderArgs | undefined),
+	animatedPendingPreview: (args: unknown): boolean => {
+		const renderArgs = args as FleetRenderArgs | undefined;
+		return (renderArgs?.op === "spawn" || renderArgs?.op === "send") && historicalOp(renderArgs) === undefined;
+	},
 
 	renderCall(args: FleetRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-		if (isLaunchStyleArgs(args)) return launchRenderCall(toLaunchArgs(args), options, uiTheme);
-		return isJobStyleArgs(args)
-			? jobsRenderCall(args, options, uiTheme)
-			: messagingRenderCall(args, options, uiTheme);
+		const legacy = historicalOp(args);
+		if (legacy !== undefined) return renderHistorical(legacy, undefined, options, uiTheme, args);
+		return isPeerRender(args)
+			? messagingRenderCall(args, options, uiTheme)
+			: workerRenderCall(args, options, uiTheme);
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: FleetDetails; isError?: boolean },
+		result: RenderedResult,
 		options: RenderResultOptions,
 		uiTheme: Theme,
 		args?: FleetRenderArgs,
 	): Component {
-		const details = result.details;
-		if (details && isLaunchDetails(details)) {
-			return launchRenderResult({ ...result, details }, options, uiTheme, toLaunchArgs(args));
-		}
-		const coordination = details;
-		if (coordination && (Array.isArray(coordination.jobs) || Array.isArray(coordination.agents))) {
-			return jobsRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		}
-		if (
-			coordination &&
-			("receipts" in coordination || "waited" in coordination || "inbox" in coordination || "peers" in coordination)
-		) {
-			return messagingRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		}
-
-		if (isLaunchStyleArgs(args))
-			return launchRenderResult({ ...result, details: undefined }, options, uiTheme, toLaunchArgs(args));
-		if (isJobStyleArgs(args)) return jobsRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		return messagingRenderResult({ ...result, details: coordination }, options, uiTheme, args);
+		const legacy = historicalOp(args, result.details);
+		if (legacy !== undefined) return renderHistorical(legacy, result, options, uiTheme, args);
+		return isPeerRender(args, result.details)
+			? messagingRenderResult(result, options, uiTheme, args)
+			: workerRenderResult(result, options, uiTheme, args);
 	},
 };

@@ -23,14 +23,40 @@ interface PollEscalationState {
 
 export type AsyncJobType = "bash" | "worker" | "monitor";
 
+/**
+ * `output` and `gap` are observations; every other kind is terminal for the emitting watch.
+ * `gap` reports source output that was not retained, `replaced` a source incarnation that ended
+ * because a new one took its name.
+ */
+export type AsyncJobEventKind = "output" | "gap" | "exit" | "replaced" | "limit" | "timeout" | "error";
+
 export interface AsyncJobEvent {
 	jobId: string;
 	label: string;
 	sequence: number;
-	kind: "output" | "exit" | "limit" | "timeout" | "error";
+	kind: AsyncJobEventKind;
 	text: string;
 	timestamp: number;
 }
+
+/** A non-consuming page of retained watch events after an event-sequence cursor. */
+export interface AsyncJobEventPage {
+	events: AsyncJobEvent[];
+	/** Highest sequence returned, or the caller's cursor when nothing newer is retained. */
+	cursor: number;
+	/** Sequences after the cursor that expired from retention before this read. */
+	gap?: { from: number; to: number };
+	/** More retained events follow `cursor`. */
+	more: boolean;
+}
+
+interface AsyncJobEventHistory {
+	events: AsyncJobEvent[];
+	bytes: number;
+}
+
+const EVENT_HISTORY_MAX_EVENTS = 64;
+const EVENT_HISTORY_MAX_BYTES = 64 * 1024;
 
 export interface AsyncJob {
 	id: string;
@@ -173,6 +199,10 @@ export class AsyncJobFailure extends Error {
 	}
 }
 
+function eventBytes(event: AsyncJobEvent): number {
+	return Math.max(event.text.length * 2, Buffer.byteLength(event.text)) + 64;
+}
+
 function failureDeliveryText(job: AsyncJob): string {
 	return job.resultText ? `${job.resultText}\n\nError: ${job.errorText ?? ""}` : (job.errorText ?? "");
 }
@@ -201,7 +231,10 @@ export class AsyncJobManager {
 	#droppedDeliveries = 0;
 	#deliveryExpiryTimer: NodeJS.Timeout | undefined;
 	readonly #suppressedDeliveries = new Set<string>();
-	readonly #watchedJobs = new Set<string>();
+	/** Lease counts: overlapping explicit waits on one job each hold their own suppression. */
+	readonly #watchedJobs = new Map<string, number>();
+	readonly #eventHistory = new Map<string, AsyncJobEventHistory>();
+	readonly #jobSubscribers = new Map<string, Set<AsyncJobObserver>>();
 	readonly #eventSequences = new Map<string, number>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new LRUCache<string | undefined, PollEscalationState>({
@@ -343,8 +376,29 @@ export class AsyncJobManager {
 		return this.#jobObservers.run([...(this.#jobObservers.getStore() ?? []), { observer, signal }], run);
 	}
 
+	/**
+	 * Observe one existing job independently of its delivery: the subscription never consumes or
+	 * acknowledges anything, and removing it leaves the job running.
+	 */
+	subscribe(jobId: string, observer: AsyncJobObserver): () => void {
+		if (!this.#jobs.has(jobId)) throw new Error(`Unknown job ${jobId}`);
+		let subscribers = this.#jobSubscribers.get(jobId);
+		if (!subscribers) {
+			subscribers = new Set();
+			this.#jobSubscribers.set(jobId, subscribers);
+		}
+		subscribers.add(observer);
+		return () => {
+			const current = this.#jobSubscribers.get(jobId);
+			if (!current?.delete(observer) || current.size > 0) return;
+			this.#jobSubscribers.delete(jobId);
+		};
+	}
+
 	#observe(observers: readonly AsyncJobObserverScope[], observation: AsyncJobObservation): void {
-		for (const { observer } of observers) {
+		const subscribers = this.#jobSubscribers.get(observation.job.id);
+		const all = subscribers ? [...observers, ...[...subscribers].map(observer => ({ observer }))] : observers;
+		for (const { observer } of all) {
 			try {
 				observer(observation);
 			} catch (error) {
@@ -364,7 +418,7 @@ export class AsyncJobManager {
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
 			setResult: (value: unknown) => void;
-			emitEvent: (kind: AsyncJobEvent["kind"], text: string) => void;
+			emitEvent: (kind: AsyncJobEventKind, text: string) => void;
 
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -497,6 +551,11 @@ export class AsyncJobManager {
 		return this.#jobs.get(id);
 	}
 
+	/** A cancelled job may still be tearing down; only callback settlement ends it. */
+	isSettled(id: string): boolean {
+		return this.#jobs.has(id) && !this.#unsettledJobs.has(id);
+	}
+
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#filterJobs(this.#jobs.values(), filter).filter(job => job.status === "running");
 	}
@@ -551,7 +610,7 @@ export class AsyncJobManager {
 		let watched = 0;
 		for (const jobId of uniqueJobIds) {
 			if (!this.#jobs.has(jobId)) continue;
-			this.#watchedJobs.add(jobId);
+			this.#watchedJobs.set(jobId, (this.#watchedJobs.get(jobId) ?? 0) + 1);
 			watched++;
 		}
 		this.#notifyDeliveryQueueChanged();
@@ -562,8 +621,29 @@ export class AsyncJobManager {
 		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
 		let removed = 0;
 		for (const jobId of uniqueJobIds) {
-			if (this.#watchedJobs.delete(jobId)) {
-				removed += 1;
+			const leases = this.#watchedJobs.get(jobId);
+			if (leases === undefined) continue;
+			if (leases > 1) {
+				this.#watchedJobs.set(jobId, leases - 1);
+				continue;
+			}
+			this.#watchedJobs.delete(jobId);
+			removed += 1;
+			// A job that settled while watched never queued its delivery. When the wait that watched it
+			// did not consume it (it lost a photo finish or was interrupted), auto-delivery takes over.
+			const job = this.#jobs.get(jobId);
+			if (
+				job &&
+				job.type !== "monitor" &&
+				(job.status === "completed" || job.status === "failed") &&
+				!this.#suppressedDeliveries.has(jobId) &&
+				!this.#deliveries.some(delivery => delivery.jobId === jobId) &&
+				!this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId)
+			) {
+				this.#enqueueDelivery(
+					jobId,
+					job.status === "completed" ? (job.resultText ?? "") : failureDeliveryText(job),
+				);
 			}
 		}
 		this.#notifyDeliveryQueueChanged();
@@ -760,6 +840,8 @@ export class AsyncJobManager {
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
 		this.#eventSequences.clear();
+		this.#eventHistory.clear();
+		this.#jobSubscribers.clear();
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
 		return jobsSettled && drained;
@@ -811,6 +893,8 @@ export class AsyncJobManager {
 		this.#suppressedDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
 		this.#eventSequences.delete(jobId);
+		this.#eventHistory.delete(jobId);
+		this.#jobSubscribers.delete(jobId);
 		const retainedBytes = this.#retainedJobs.get(jobId);
 		if (retainedBytes !== undefined) {
 			this.#retainedJobBytes -= retainedBytes;
@@ -845,7 +929,10 @@ export class AsyncJobManager {
 				job.monitor?.command ?? "",
 				job.monitor?.cwd ?? "",
 				job.monitor?.match ?? "",
-			].reduce((total, text) => total + Math.max(text.length * 2, Buffer.byteLength(text)), 0);
+			].reduce(
+				(total, text) => total + Math.max(text.length * 2, Buffer.byteLength(text)),
+				this.#eventHistory.get(jobId)?.bytes ?? 0,
+			);
 			if (bytes > this.#maxRetainedBytes) {
 				this.#evictJob(jobId);
 				return;
@@ -904,11 +991,50 @@ export class AsyncJobManager {
 		const sequence = (this.#eventSequences.get(job.id) ?? 0) + 1;
 		this.#eventSequences.set(job.id, sequence);
 		const event: AsyncJobEvent = { jobId: job.id, label: job.label, sequence, kind, text, timestamp: Date.now() };
+		this.#recordEventHistory(event);
 		const delivery = this.#createDelivery(job.id, text, event);
 		if (!delivery) return event;
 		job.events?.push(event);
 		this.#queueDelivery(delivery);
 		return event;
+	}
+
+	#recordEventHistory(event: AsyncJobEvent): void {
+		let history = this.#eventHistory.get(event.jobId);
+		if (!history) {
+			history = { events: [], bytes: 0 };
+			this.#eventHistory.set(event.jobId, history);
+		}
+		history.events.push(event);
+		history.bytes += eventBytes(event);
+		while (
+			history.events.length > 1 &&
+			(history.events.length > EVENT_HISTORY_MAX_EVENTS || history.bytes > EVENT_HISTORY_MAX_BYTES)
+		) {
+			history.bytes -= eventBytes(history.events.shift()!);
+		}
+	}
+
+	/**
+	 * Retained watch events after `afterSequence`, without acknowledging them. Expired sequences are
+	 * reported as a gap rather than skipped silently.
+	 */
+	readEvents(jobId: string, afterSequence: number, limit = EVENT_HISTORY_MAX_EVENTS): AsyncJobEventPage {
+		const history = this.#eventHistory.get(jobId)?.events ?? [];
+		const newer = history.filter(event => event.sequence > afterSequence);
+		const emitted = this.#eventSequences.get(jobId) ?? 0;
+		const firstRetained = newer[0]?.sequence ?? emitted + 1;
+		const gap =
+			firstRetained > afterSequence + 1 && afterSequence < emitted
+				? { from: afterSequence + 1, to: Math.min(firstRetained - 1, emitted) }
+				: undefined;
+		const events = newer.slice(0, Math.max(1, limit));
+		return {
+			events,
+			cursor: events.at(-1)?.sequence ?? Math.max(afterSequence, gap?.to ?? afterSequence),
+			...(gap ? { gap } : {}),
+			more: newer.length > events.length,
+		};
 	}
 
 	isEventAcknowledged(event: AsyncJobEvent): boolean {

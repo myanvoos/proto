@@ -60,7 +60,7 @@ unpublished suffix, not a second copy of the whole message.
 
 Mutable tool previews remain viewport-local until finalization. A large active
 block may have a clipped head in the live viewport; clipping is not retirement
-and does not discard its source. Displaceable checklist/fleet snapshots may be
+and does not discard its source. Displaceable checklist/jobs snapshots may be
 replaced only while uncommitted. Once retired, changes require an explicit
 replay rather than silently rewriting terminal history.
 

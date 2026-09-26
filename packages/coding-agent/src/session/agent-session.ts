@@ -586,6 +586,7 @@ export class AgentSession {
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
 	#scoutAllowedBySpawnPolicy = true;
+	readonly spawns: string;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#inheritedProviderPromptCacheKey: string | undefined;
@@ -1289,6 +1290,7 @@ export class AgentSession {
 		// transient provider errors after it stay retryable (the buffering contract print mode sets explicitly).
 		this.#textOutputCommitted = this.#agentKind === "main";
 		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
+		this.spawns = config.spawns ?? "*";
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
@@ -1548,7 +1550,7 @@ export class AgentSession {
 
 	/**
 	 * Lets the UI address this session's orchestrator scope — stopping a worker from the agents
-	 * view has to reach the same scope `orchestrate_kill` does, and only the session factory knows
+	 * view has to reach the same scope `fleet terminate` does, and only the session factory knows
 	 * the resolved agent id and scoped job manager that identify it.
 	 */
 	setOrchestratorParent(parent: (() => OrchestratorParent) | undefined): void {
@@ -4309,7 +4311,7 @@ export class AgentSession {
 		}
 		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
 			const enabledToolNames = this.getEnabledToolNames();
-			if (enabledToolNames.includes("orchestrate_spawn") && enabledToolNames.includes("bash")) {
+			if (enabledToolNames.includes("fleet") && enabledToolNames.includes("bash")) {
 				keywordNotices.push({
 					role: "custom",
 					customType: "workflow-notice",

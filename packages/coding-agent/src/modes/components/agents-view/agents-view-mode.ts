@@ -169,7 +169,7 @@ interface AgentsViewActions {
 	showStatus: (message: string) => void;
 
 	/**
-	 * Terminates an orchestrator-managed worker the way `orchestrate_kill` does, cancelling its
+	 * Terminates an orchestrator-managed worker the way `fleet terminate` does, cancelling its
 	 * in-flight turn. Resolves false when the id is not one of this session's workers.
 	 */
 	stopWorker?: (id: string) => Promise<boolean>;

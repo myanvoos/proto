@@ -37,7 +37,7 @@ export async function hasAgentTombstone(sessionFile: string): Promise<boolean> {
 
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 
-/** Public lifecycle vocabulary shared by fleet, orchestrate, and history://; `aborted` is the registry's terminal state. */
+/** Public lifecycle vocabulary shared by fleet and history://; `aborted` is the registry's terminal state. */
 export interface AgentLifecycleState {
 	lifecycle: "live" | "parked" | "terminal";
 	/** Absent once terminal: a terminal agent has no turns. */

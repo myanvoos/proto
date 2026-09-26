@@ -178,7 +178,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		process.stderr.write(
 			`Warning: the run ended with ${active.length} worker turn${active.length === 1 ? "" : "s"} still running; ` +
 				`${active.length === 1 ? "it was" : "they were"} terminated: ${detail}. ` +
-				"Wait for workers with orchestrate_wait before finishing.\n",
+				"Wait for workers with jobs wait before finishing.\n",
 		);
 	};
 

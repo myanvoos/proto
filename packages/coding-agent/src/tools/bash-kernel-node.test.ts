@@ -20,7 +20,7 @@ const NODE = $which("node");
 interface Harness {
 	cwd: string;
 	run(command: string, options?: { lane?: string; env?: Record<string, string> }): Promise<Cell>;
-	kernel: Tool;
+	context: Tool;
 }
 
 interface Cell {
@@ -54,7 +54,7 @@ async function fixture(run: (harness: Harness) => Promise<void>): Promise<void> 
 		asyncJobManager: jobs,
 	};
 	try {
-		await createTools(session, ["bash", "kernel", "read"]);
+		await createTools(session, ["bash", "context", "read"]);
 		const tools = session.toolRegistry!;
 		session.getToolByName = name => tools.get(name);
 		session.getToolForEvalBridge = name => tools.get(name);
@@ -62,7 +62,7 @@ async function fixture(run: (harness: Harness) => Promise<void>): Promise<void> 
 		const bash = tools.get("bash")!;
 		await run({
 			cwd,
-			kernel: tools.get("kernel")!,
+			context: tools.get("context")!,
 			async run(command, options) {
 				const result = await bash.execute("node-cell", { command, timeout: 60, ...options });
 				return {
@@ -224,14 +224,19 @@ describe.skipIf(!NODE)("node bash cells", () => {
 	}, 60_000);
 
 	test("announce lost state once after the lane's kernel is reset", async () => {
-		await fixture(async ({ run, kernel }) => {
+		await fixture(async ({ run, context }) => {
 			const seeded = await run("node -e 'var resetMarker = 7; console.log(\"seeded\", resetMarker)'", {
 				lane: "resettable",
 			});
 			expect(seeded.output).toContain("seeded 7");
 			expect(seeded.output).not.toContain("<kernel> state lost:");
 
-			const reset = await kernel.execute("reset-node", { op: "reset", language: "node", lane: "resettable" });
+			const reset = await context.execute("reset-node", {
+				resource: "kernel",
+				op: "reset",
+				language: "node",
+				lane: "resettable",
+			});
 			expect(reset.isError).not.toBe(true);
 
 			const inspect = "node -e 'console.log(\"marker=\" + typeof resetMarker)'";

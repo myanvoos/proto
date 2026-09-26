@@ -3,12 +3,20 @@ import { logger, ptree, readBytesWithLimit, readLines, sanitizeText, withTimeout
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, type AsyncJobManager } from "../async/job-manager";
 import type { Settings } from "../config/settings";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
-import type { MonitorDetails, MonitorSnapshot, MonitorStartSpec, MonitorStopReason } from "./types";
+import type {
+	MonitorDetails,
+	MonitorSnapshot,
+	MonitorStartSpec,
+	MonitorStopReason,
+	WatchSource,
+	WatchSourceEnd,
+} from "./types";
 
 const MAX_EVENT_TEXT_CHARS = 1_200;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const STOP_GRACE_MS = 2_000;
 const TERMINATION_TIMEOUT_MS = STOP_GRACE_MS + 1_000;
+const MIN_INTERVAL_MS = 1_000;
 
 type RunContext = Parameters<Parameters<AsyncJobManager["register"]>[2]>[0];
 
@@ -26,13 +34,15 @@ export function startMonitor(
 	spec: MonitorStartSpec,
 	options: { ownerId: string; settings: Settings; cwd: string },
 ): MonitorSnapshot {
-	if (!options.ownerId) throw new Error("An async job owner is required to start a monitor");
-	const command = spec.command.trim();
-	if (!command) throw new Error("command is required to start a monitor");
+	if (!options.ownerId) throw new Error("An async job owner is required to start a watch");
+	const command = spec.command?.trim();
+	if (command !== undefined && spec.source) throw new Error("A watch takes either a source or a command, not both");
+	if (!command && !spec.source) throw new Error("A watch requires a source reference or a non-empty command");
+	if (spec.source && spec.everyMs !== undefined) throw new Error("everyMs applies only to command probes");
 	const active = manager.getRunningJobs({ ownerId: options.ownerId }).filter(job => job.type === "monitor").length;
 	const limit = Math.max(1, options.settings.get("monitor.maxConcurrent"));
 	if (active >= limit) {
-		throw new Error(`Too many monitors running (${active}/${limit}); cancel one with fleet before starting another`);
+		throw new Error(`Too many watches running (${active}/${limit}); unwatch one before starting another`);
 	}
 	let matcher: RegExp | undefined;
 	if (spec.match !== undefined) {
@@ -42,29 +52,30 @@ export function startMonitor(
 			throw new Error(`match is not a valid regular expression: ${errorText(error)}`);
 		}
 	}
-	for (const [name, value] of [
-		["every", spec.everySeconds],
-		["maxEvents", spec.maxEvents],
-		["timeout", spec.timeoutSeconds],
+	for (const [name, value, minimum] of [
+		["everyMs", spec.everyMs, MIN_INTERVAL_MS],
+		["maxEvents", spec.maxEvents, 1],
+		["timeoutMs", spec.timeoutMs, MIN_INTERVAL_MS],
 	] as const) {
-		if (value !== undefined && (!Number.isFinite(value) || value < 1)) {
-			throw new Error(`${name} must be a finite number of at least 1`);
+		if (value !== undefined && (!Number.isFinite(value) || value < minimum)) {
+			throw new Error(`${name} must be a finite number of at least ${minimum}`);
 		}
 	}
 	const details: MonitorDetails = {
-		command,
-		cwd: spec.cwd?.trim() || options.cwd,
-		mode: spec.everySeconds === undefined ? "stream" : "poll",
+		mode: spec.source ? "source" : spec.everyMs === undefined ? "stream" : "poll",
+		...(command ? { command, cwd: spec.cwd?.trim() || options.cwd } : {}),
+		...(spec.source ? { source: spec.source.ref, sourceDescription: spec.source.description } : {}),
 		match: spec.match,
 		eventCount: 0,
 		maxEvents: spec.maxEvents ?? Math.max(1, options.settings.get("monitor.maxEvents")),
-		everySeconds: spec.everySeconds,
-		timeoutSeconds: spec.timeoutSeconds,
+		everyMs: spec.everyMs,
+		timeoutMs: spec.timeoutMs,
 	};
+	const source = spec.source;
 	const id = manager.register(
 		"monitor",
-		spec.label?.trim() || "monitor",
-		ctx => new MonitorRunner(ctx, details, matcher, options.settings).run(),
+		spec.label?.trim() || (source ? source.description : "watch"),
+		ctx => new MonitorRunner(ctx, details, matcher, options.settings, source).run(),
 		{ ownerId: options.ownerId, monitor: details },
 	);
 	return snapshotMonitor(manager.getJob(id)!)!;
@@ -79,12 +90,14 @@ class MonitorRunner {
 	#cleanup: Promise<void> = Promise.resolve();
 	#outputCount = 0;
 	#error?: string;
+	#sourceEnd?: WatchSourceEnd;
 
 	constructor(
 		private readonly ctx: RunContext,
 		private readonly details: MonitorDetails,
 		private readonly matcher: RegExp | undefined,
 		private readonly settings: Settings,
+		private readonly source: WatchSource | undefined,
 	) {}
 
 	async run(): Promise<string> {
@@ -92,13 +105,14 @@ class MonitorRunner {
 			this.#finish(this.ctx.signal.reason === ASYNC_JOB_MANAGER_SHUTDOWN_REASON ? "session" : "manual");
 		this.ctx.signal.addEventListener("abort", onAbort, { once: true });
 		const timeout =
-			this.details.timeoutSeconds === undefined
+			this.details.timeoutMs === undefined
 				? undefined
-				: setTimeout(() => this.#finish("timeout"), this.details.timeoutSeconds * 1_000);
+				: setTimeout(() => this.#finish("timeout"), this.details.timeoutMs);
 		try {
 			if (this.ctx.signal.aborted) onAbort();
 			if (!this.#abort.signal.aborted) {
-				if (this.details.mode === "stream") await this.#stream();
+				if (this.source) await this.#observe(this.source);
+				else if (this.details.mode === "stream") await this.#stream();
 				else await this.#poll();
 			}
 		} catch (error) {
@@ -109,26 +123,50 @@ class MonitorRunner {
 			await this.#cleanup;
 		}
 		const reason = this.details.stopReason;
-		const text =
-			reason === "exit"
-				? `Monitored process exited with code ${this.details.exitCode ?? "unknown"}; the monitor is no longer running.`
+		const text = this.#sourceEnd
+			? `${this.#sourceEnd.text} The watch is no longer running.`
+			: reason === "exit"
+				? `Watched command exited with code ${this.details.exitCode ?? "unknown"}; the watch is no longer running.`
 				: reason === "limit"
-					? `Event limit reached (${this.details.maxEvents}); the monitor stopped itself.`
+					? `Event limit reached (${this.details.maxEvents}); the watch stopped itself.`
 					: reason === "timeout"
-						? `Monitor timed out after ${this.details.timeoutSeconds}s and stopped.`
+						? `Watch timed out after ${this.details.timeoutMs}ms and stopped.`
 						: reason === "error"
-							? `Monitor failed: ${this.#error ?? "unknown error"}`
-							: `Monitor stopped (${reason}).`;
-		if (reason === "exit" || reason === "limit" || reason === "timeout" || reason === "error") {
+							? `Watch failed: ${this.#error ?? "unknown error"}`
+							: `Watch stopped (${reason}).`;
+		if (
+			reason === "exit" ||
+			reason === "replaced" ||
+			reason === "limit" ||
+			reason === "timeout" ||
+			reason === "error"
+		) {
 			this.#emit(reason, text);
 		}
 		if (reason === "error") throw new Error(text);
 		return text;
 	}
 
+	/** Observe a source owned elsewhere; stopping this watch aborts only the observation. */
+	async #observe(source: WatchSource): Promise<void> {
+		const end = await source.observe(
+			{
+				line: text => this.#output(sanitizeText(text).trimEnd()),
+				gap: text => {
+					if (!this.#abort.signal.aborted) this.#emit("gap", text);
+				},
+			},
+			this.#abort.signal,
+		);
+		if (this.#abort.signal.aborted) return;
+		this.#sourceEnd = end;
+		this.#finish(end.reason, end.exitCode);
+	}
+
 	#spawn(): Bun.Subprocess {
 		const { shell, args, env, prefix } = this.settings.getShellConfig();
-		const command = prefix ? `${prefix} ${this.details.command}` : this.details.command;
+		const probe = this.details.command ?? "";
+		const command = prefix ? `${prefix} ${probe}` : probe;
 		const child = Bun.spawn([shell, ...args, command], {
 			cwd: this.details.cwd,
 			env: { ...env, ...buildNonInteractiveEnv() },
@@ -186,7 +224,7 @@ class MonitorRunner {
 	async #readText(stream: ReadableStream<Uint8Array>): Promise<string> {
 		const { bytes, truncated } = await readBytesWithLimit(stream, MAX_CAPTURE_BYTES, this.#abort.signal);
 		if (truncated)
-			throw new Error(`Monitor output exceeds the ${MAX_CAPTURE_BYTES}-byte limit; filter the command output`);
+			throw new Error(`Watch output exceeds the ${MAX_CAPTURE_BYTES}-byte limit; filter the command output`);
 		return new TextDecoder().decode(bytes);
 	}
 
@@ -222,7 +260,7 @@ class MonitorRunner {
 					this.#abort.signal.removeEventListener("abort", done);
 					resolve();
 				};
-				const timer = setTimeout(done, (this.details.everySeconds ?? 1) * 1_000);
+				const timer = setTimeout(done, this.details.everyMs ?? MIN_INTERVAL_MS);
 				this.#abort.signal.addEventListener("abort", done, { once: true });
 			});
 		}
@@ -272,10 +310,10 @@ class MonitorRunner {
 					child.exited,
 				]),
 				TERMINATION_TIMEOUT_MS,
-				`Timed out terminating monitor process ${this.ctx.jobId}`,
+				`Timed out terminating watch helper ${this.ctx.jobId}`,
 			);
 		} catch (error) {
-			logger.debug("Monitor process termination failed", { jobId: this.ctx.jobId, error: errorText(error) });
+			logger.debug("Watch helper termination failed", { jobId: this.ctx.jobId, error: errorText(error) });
 		}
 	}
 }

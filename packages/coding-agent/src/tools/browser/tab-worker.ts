@@ -312,7 +312,7 @@ function fileUrlNavigationError(url: string, error: unknown): ToolError {
 	const detail = error instanceof Error ? error.message : String(error);
 	return new ToolError(
 		`Unable to open ${url}: ${detail}. file:// is not reachable from the shared headless browser; ` +
-			"serve the file over HTTP (for example, fleet start python3 -m http.server) or pass app.path for a local Chromium.",
+			"serve the file over HTTP (for example, xd jobs --op start --name web --application python3 --args=-m,http.server) or pass app.path for a local Chromium.",
 	);
 }
 

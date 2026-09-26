@@ -3,7 +3,16 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Process, Shell } from "@oh-my-pi/pi-natives";
-import { disposeAllBashSessions, disposeBashSessions, executeBash, registerBashSessionOwner } from "./bash-executor";
+import {
+	beginBashLaneControl,
+	disposeAllBashSessions,
+	disposeBashSessions,
+	executeBash,
+	LaneCancelledError,
+	listBashLanes,
+	registerBashSessionOwner,
+	reserveBashLane,
+} from "./bash-executor";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -122,6 +131,48 @@ test("only a session-owned lane reports a shell lost by an earlier call", async 
 			`lane ${lane} shell exited with code 3`,
 		);
 		expect((await executeBash("true", { lane, sessionKey })).shellStateLost).toBeUndefined();
+	} finally {
+		await disposeBashSessions(sessionKey);
+	}
+});
+
+test("a lane control barrier cancels pre-barrier reservations and admits later ones only after it finishes", async () => {
+	const sessionKey = `bash-lane-barrier-${crypto.randomUUID()}`;
+	const active = reserveBashLane({ sessionKey, lane: "work" });
+	const queued = reserveBashLane({ sessionKey, lane: "work" });
+	await active.ready;
+	const control = beginBashLaneControl(sessionKey, "work");
+	const later = reserveBashLane({ sessionKey, lane: "work" });
+	expect(control.pending()).toEqual({ active: 1, queued: 1 });
+
+	expect(control.cancel("reset")).toEqual({ active: 1, queued: 1 });
+	expect(active.signal.reason).toBeInstanceOf(LaneCancelledError);
+	await expect(queued.ready).rejects.toThrow("lane work was reset");
+	expect(later.signal.aborted).toBe(false);
+
+	active.release();
+	active.release();
+	await control.drain();
+	// The pre-barrier slot is gone, yet the later reservation still waits for the teardown to finish.
+	expect(listBashLanes(sessionKey)).toMatchObject([{ lane: "work", queued: 1, controlling: true }]);
+	expect(listBashLanes(sessionKey)[0].activeSince).toBeUndefined();
+
+	control.finish();
+	control.finish();
+	await later.ready;
+	expect(listBashLanes(sessionKey)).toMatchObject([{ lane: "work", queued: 0, controlling: false }]);
+	later.release();
+	queued.release();
+	expect(listBashLanes(sessionKey)).toEqual([]);
+});
+
+test("an ephemeral lane leaves no shell behind once its command finishes", async () => {
+	const sessionKey = `bash-ephemeral-lane-${crypto.randomUUID()}`;
+	try {
+		await executeBash("export EPHEMERAL=1", { sessionKey, lane: "async:job", ephemeral: true });
+		expect(listBashLanes(sessionKey)).toEqual([]);
+		await executeBash("export KEPT=1", { sessionKey, lane: "named" });
+		expect(listBashLanes(sessionKey)).toMatchObject([{ lane: "named", shell: "live" }]);
 	} finally {
 		await disposeBashSessions(sessionKey);
 	}

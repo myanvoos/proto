@@ -342,3 +342,65 @@ test("zero retention retains terminal monitor events until the owner consumes th
 		await manager.dispose();
 	}
 });
+
+test("overlapping wait leases keep a job suppressed until the last one ends, then deliver it once", async () => {
+	const manager = new AsyncJobManager({});
+	const delivered: string[] = [];
+	manager.registerDeliverySink("owner", jobId => {
+		delivered.push(jobId);
+	});
+	const finish = Promise.withResolvers<string>();
+	try {
+		const id = manager.register("bash", "job", async () => finish.promise, { ownerId: "owner" });
+		manager.watchJobs([id]);
+		manager.watchJobs([id]);
+		finish.resolve("done");
+		await manager.getJob(id)!.promise;
+		// The first wait ends without consuming: the second still holds the job.
+		manager.unwatchJobs([id]);
+		await manager.drainDeliveries();
+		expect(delivered).toEqual([]);
+		expect(manager.isDeliverySuppressed(id)).toBe(true);
+		// The last lease ends unconsumed, so the settled result falls back to automatic delivery.
+		manager.unwatchJobs([id]);
+		await manager.drainDeliveries();
+		expect(delivered).toEqual([id]);
+	} finally {
+		await manager.dispose();
+	}
+});
+
+test("a job subscription observes progress and settlement without affecting delivery", async () => {
+	const manager = new AsyncJobManager({});
+	const delivered: string[] = [];
+	manager.registerDeliverySink("owner", (_id, text) => {
+		delivered.push(text);
+	});
+	const finish = Promise.withResolvers<string>();
+	let report: (text: string) => Promise<void> = async () => {};
+	try {
+		const id = manager.register(
+			"bash",
+			"job",
+			async ({ reportProgress }) => {
+				report = reportProgress;
+				return finish.promise;
+			},
+			{ ownerId: "owner" },
+		);
+		const seen: string[] = [];
+		const unsubscribe = manager.subscribe(id, observation => {
+			seen.push(observation.kind === "progress" ? observation.text : observation.kind);
+		});
+		await report("half");
+		unsubscribe();
+		await report("ignored after unsubscribe");
+		finish.resolve("result");
+		await manager.getJob(id)!.promise;
+		await manager.drainDeliveries();
+		expect(seen).toEqual(["half"]);
+		expect(delivered).toEqual(["result"]);
+	} finally {
+		await manager.dispose();
+	}
+});

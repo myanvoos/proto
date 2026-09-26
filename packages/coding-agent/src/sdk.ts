@@ -190,7 +190,6 @@ import {
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
-	ORCHESTRATE_TOOL_NAMES,
 	releaseComputerSessionsForOwner,
 	supportsExternalThinking,
 	type Tool,
@@ -199,7 +198,7 @@ import {
 } from "./tools";
 import { BashTool } from "./tools/bash";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
-import { ToolContextStore } from "./tools/context";
+import { ToolContextStore } from "./tools/context-store";
 import { isIrcEnabled } from "./tools/fleet";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { ReadTool } from "./tools/read";
@@ -1295,6 +1294,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const resolvedAgentDisplayName =
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
 	const agentKind = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const);
+	// Merging peer messaging into fleet must not grant worker authority to restricted
+	// or explicitly tooled subagents. Main sessions keep their existing worker defaults.
+	const sessionSpawns =
+		options.spawns ?? (options.toolNames !== undefined && (restrictToolNames || agentKind !== "main") ? "" : "*");
 	// `/side --agent` clones are structurally subagents but are a user-owned background conversation:
 	// the `side` kind is what exempts them from the idle-TTL auto-park every other subagent gets.
 	const registryKind: AgentKind = isSideAgentId(resolvedAgentId) ? "side" : agentKind;
@@ -1386,7 +1389,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentRegistry,
 
 			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
-			getSessionSpawns: () => options.spawns ?? "*",
+			getSessionSpawns: () => sessionSpawns,
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
@@ -1488,7 +1491,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const effectiveToolNames =
 			!restrictToolNames && agentKind === "main" && options.toolNames
-				? [...new Set([...options.toolNames, ...ORCHESTRATE_TOOL_NAMES])]
+				? [...new Set([...options.toolNames, "fleet", "jobs"])]
 				: options.toolNames;
 
 		await logger.time("createAllTools", createTools, toolSession, effectiveToolNames);
@@ -2376,7 +2379,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				orchestratorMaxConcurrency: settings.get("orchestrator.maxConcurrency"),
 				scoutAvailable: isScoutSpawnable(
 					settings.get("orchestrator.disabledAgents") as string[] | undefined,
-					options.spawns ?? "*",
+					sessionSpawns,
 				),
 				fleetEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
@@ -2771,7 +2774,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			sessionManager,
 			initialAdvisorCosts,
 			settings,
-			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
+			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, sessionSpawns),
+			spawns: sessionSpawns,
 			evalKernelOwnerId,
 
 			ownedAsyncJobManager: asyncJobManager,
@@ -2813,7 +2817,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getXdevToolEntries: () => (toolSession.xdev ? xdevEntries(toolSession.xdev) : []),
 			xdev: toolSession.xdev,
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
-			requiredToolNames: !restrictToolNames && agentKind === "main" ? new Set(ORCHESTRATE_TOOL_NAMES) : undefined,
+			requiredToolNames: !restrictToolNames && agentKind === "main" ? new Set(["fleet", "jobs"]) : undefined,
 			setActiveToolNames: setSessionActiveToolNames,
 			getMcpServerInstructions: mcpManager
 				? () => {

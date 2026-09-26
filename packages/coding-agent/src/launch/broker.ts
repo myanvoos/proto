@@ -22,10 +22,14 @@ import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
+	DAEMON_BROKER_CAPABILITIES,
 	DAEMON_BROKER_WORKER_ARG,
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_MAX_READ_BYTES,
 	DAEMON_MAX_REQUEST_BYTES,
+	DAEMON_MAX_TIMEOUT_MS,
 	DAEMON_PROJECT_DIR_ENV,
+	DAEMON_PROTOCOL_VERSION,
 	DAEMON_PTY_COLUMNS,
 	DAEMON_PTY_ROWS,
 	DAEMON_RUNTIME_DIR_ENV,
@@ -50,6 +54,8 @@ const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
 const LOG_FOLLOW_CHUNK_BYTES = 64 * 1024;
 const MAX_PENDING_LOG_BYTES = 1024 * 1024;
+/** Recent output kept in memory per record for cursor-addressed `read`s. */
+const OUTPUT_RING_BYTES = 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
@@ -79,9 +85,81 @@ interface ManagedProcess {
 	unref(): void;
 }
 
+/**
+ * Recent captured output addressed by the same byte cursors `logs` reports. Chunks are contiguous:
+ * a discontinuity (a cursor space that restarted or skipped) clears the ring, so a reader behind
+ * `start` or ahead of `end` observes an explicit loss instead of misaligned text.
+ */
+interface OutputRing {
+	start: number;
+	end: number;
+	bytes: number;
+	chunks: { start: number; end: number; text: string }[];
+}
+
+function newOutputRing(cursor: number): OutputRing {
+	return { start: cursor, end: cursor, bytes: 0, chunks: [] };
+}
+
+function appendOutput(ring: OutputRing, start: number, end: number, text: string): void {
+	if (end <= start) return;
+	if (start !== ring.end) {
+		ring.chunks = [];
+		ring.bytes = 0;
+		ring.start = start;
+	}
+	ring.chunks.push({ start, end, text });
+	ring.end = end;
+	ring.bytes += end - start;
+	while (ring.chunks.length > 1 && ring.bytes > OUTPUT_RING_BYTES) {
+		const dropped = ring.chunks.shift()!;
+		ring.bytes -= dropped.end - dropped.start;
+		ring.start = ring.chunks[0]!.start;
+	}
+}
+
+interface OutputRead {
+	text: string;
+	cursor: number;
+	nextCursor: number;
+	omittedBytes: number;
+	reset: boolean;
+}
+
+function readOutput(ring: OutputRing, cursor: number, maxBytes: number): OutputRead {
+	const reset = cursor > ring.end;
+	const begin = reset || cursor < ring.start ? ring.start : cursor;
+	const omittedBytes = !reset && cursor < ring.start ? ring.start - cursor : 0;
+	let text = "";
+	let next = begin;
+	for (const chunk of ring.chunks) {
+		if (chunk.end <= begin) continue;
+		if (next > begin && next - begin >= maxBytes) break;
+		if (chunk.start < begin) {
+			// A caller-supplied cursor may split a chunk; slice by UTF-8 bytes.
+			text += Buffer.from(chunk.text, "utf8")
+				.subarray(begin - chunk.start)
+				.toString("utf8");
+		} else {
+			text += chunk.text;
+		}
+		next = chunk.end;
+	}
+	return { text, cursor: begin, nextCursor: next, omittedBytes, reset };
+}
+
+function staleReference(name: string, expectedId: string, currentId: string): DaemonBrokerRejectedError {
+	return new DaemonBrokerRejectedError(
+		`Process ${name} reference ${expectedId} is stale: the name now belongs to incarnation ${currentId}. Use the reference returned by start/restart/list; a stale reference never controls a replacement.`,
+		false,
+		"stale-reference",
+	);
+}
+
 interface ManagedDaemon {
 	spec: DaemonSpec;
 	snapshot: DaemonSnapshot;
+	output: OutputRing;
 	dir: string;
 	log?: DaemonLog;
 	process?: ManagedProcess;
@@ -260,7 +338,7 @@ export class DaemonLog {
 	readonly #path: string;
 	readonly #previousPath: string;
 	readonly #file: Bun.BunFile;
-	readonly #onAppend: ((bytes: number) => void) | undefined;
+	readonly #onAppend: ((bytes: number, text: string) => void) | undefined;
 	#writer: DaemonLogWriter;
 	#currentBytes = 0;
 	#queue: Promise<void> = Promise.resolve();
@@ -278,7 +356,7 @@ export class DaemonLog {
 		previousPath: string,
 		file: Bun.BunFile,
 		writer: DaemonLogWriter,
-		onAppend?: (bytes: number) => void,
+		onAppend?: (bytes: number, text: string) => void,
 	) {
 		this.#path = logPath;
 		this.#previousPath = previousPath;
@@ -288,7 +366,7 @@ export class DaemonLog {
 		this.#pending.start({ stream: true, asUint8Array: true, highWaterMark: LOG_FOLLOW_CHUNK_BYTES });
 	}
 
-	static async open(dir: string, onAppend?: (bytes: number) => void): Promise<DaemonLog> {
+	static async open(dir: string, onAppend?: (bytes: number, text: string) => void): Promise<DaemonLog> {
 		await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 		const logPath = path.join(dir, LOG_FILE);
 		const previousPath = path.join(dir, PREVIOUS_LOG_FILE);
@@ -316,7 +394,7 @@ export class DaemonLog {
 			// ArrayBufferSink copies into its byte buffer: a retained prefix never pins the source string.
 			this.#pending.write(retained.text);
 			this.#pendingBytes += retained.bytes;
-			this.#onAppend?.(retained.bytes);
+			this.#onAppend?.(retained.bytes, retained.text);
 		}
 		this.#omittedBytes += bytes - retained.bytes;
 		if (this.#draining) return;
@@ -352,7 +430,7 @@ export class DaemonLog {
 					const notice = `\n[daemon log truncated: ${this.#omittedBytes} output bytes omitted while storage was backlogged]\n`;
 					this.#omittedBytes = 0;
 					this.#writingBytes = Buffer.byteLength(notice, "utf8");
-					this.#onAppend?.(this.#writingBytes);
+					this.#onAppend?.(this.#writingBytes, notice);
 					await this.#write(notice, this.#writingBytes);
 					this.#writingBytes = 0;
 				}
@@ -743,6 +821,7 @@ class DaemonBroker {
 					ok: false,
 					error: message,
 					...(error instanceof DaemonBrokerRejectedError && error.retryable ? { retryable: true } : {}),
+					...(error instanceof DaemonBrokerRejectedError && error.code ? { code: error.code } : {}),
 				})}\n`,
 			);
 		}
@@ -758,7 +837,12 @@ class DaemonBroker {
 		this.#assertAcceptingRequests();
 		switch (operation.op) {
 			case "ping":
-				return { op: "ping", projectDir: this.#projectDir };
+				return {
+					op: "ping",
+					projectDir: this.#projectDir,
+					protocolVersion: DAEMON_PROTOCOL_VERSION,
+					capabilities: [...DAEMON_BROKER_CAPABILITIES],
+				};
 			case "start":
 				return this.#start(operation.spec, operation.owner);
 			case "list": {
@@ -778,20 +862,19 @@ class DaemonBroker {
 				return this.#logs(operation);
 			case "wait":
 				return this.#wait(operation);
+			case "read":
+				return this.#read(operation);
 			case "send":
 				return this.#send(operation);
 			case "stop": {
-				const record = this.#record(operation.name);
-				if (operation.expectedId !== undefined && operation.expectedId !== record.snapshot.id) {
-					throw new Error("Daemon identity changed before stop");
-				}
+				const record = this.#record(operation.name, operation.expectedId);
 				await this.#stopRecord(record, operation.timeoutMs);
 				return { op: "stop", daemon: record.snapshot };
 			}
 			case "restart":
-				return this.#restart(operation.name);
+				return this.#restart(operation.name, operation.expectedId);
 			case "describe": {
-				const record = this.#record(operation.name);
+				const record = this.#record(operation.name, operation.expectedId);
 				await this.#refreshDetached(record);
 				return { op: "describe", daemon: record.snapshot, spec: record.spec };
 			}
@@ -846,6 +929,7 @@ class DaemonBroker {
 					persist: spec.persist,
 					detached: spec.detached,
 				},
+				output: newOutputRing(0),
 				dir,
 				generation: 0,
 				stopRequested: false,
@@ -889,10 +973,12 @@ class DaemonBroker {
 	}
 
 	#openLog(record: ManagedDaemon): Promise<DaemonLog> {
-		return DaemonLog.open(record.dir, bytes => {
+		return DaemonLog.open(record.dir, (bytes, text) => {
 			// Cursors address captured log bytes, including gap notices, never discarded output.
+			const start = record.snapshot.outputBytes;
 			record.snapshot.outputBytes += bytes;
 			record.outputOffset += bytes;
+			appendOutput(record.output, start, record.snapshot.outputBytes, text);
 		});
 	}
 
@@ -1084,6 +1170,7 @@ class DaemonBroker {
 			const decoder = record.detachedDecoder;
 			await readDaemonLogChunks(Bun.file(logPath), record.outputOffset, size, decoder, (text, offset) => {
 				if (generation !== record.generation) return false;
+				appendOutput(record.output, record.outputOffset, offset, text);
 				record.outputOffset = offset;
 				record.snapshot.outputBytes = offset;
 				this.#trackOutput(record, generation, text);
@@ -1241,7 +1328,7 @@ class DaemonBroker {
 	}
 
 	async #logs(operation: Extract<DaemonOperation, { op: "logs" }>): Promise<DaemonRpcResult> {
-		const record = this.#record(operation.name);
+		const record = this.#record(operation.name, operation.expectedId);
 		await this.#refreshDetached(record);
 		const cursor = operation.cursor ?? record.snapshot.outputBytes;
 		let timedOut = false;
@@ -1293,7 +1380,7 @@ class DaemonBroker {
 	}
 
 	async #wait(operation: Extract<DaemonOperation, { op: "wait" }>): Promise<DaemonRpcResult> {
-		const record = this.#record(operation.name);
+		const record = this.#record(operation.name, operation.expectedId);
 		await this.#refreshDetached(record);
 		let matched: string | undefined;
 		let pattern: RegExp | undefined;
@@ -1357,8 +1444,34 @@ class DaemonBroker {
 		throw new Error(`Daemon ${record.spec.name} stdin is unavailable`);
 	}
 
+	async #read(operation: Extract<DaemonOperation, { op: "read" }>): Promise<DaemonRpcResult> {
+		const record = this.#record(operation.name, operation.expectedId);
+		await this.#refreshDetached(record);
+		const ring = record.output;
+		let timedOut = false;
+		if (ring.end === operation.cursor && !terminalState(record.snapshot.state) && operation.timeoutMs > 0) {
+			const changed = await this.#waitUntil(
+				record,
+				() =>
+					record.output !== ring ||
+					ring.end !== operation.cursor ||
+					terminalState(record.snapshot.state) ||
+					record.snapshot.id !== operation.expectedId,
+				Math.min(operation.timeoutMs, DAEMON_MAX_TIMEOUT_MS),
+			);
+			timedOut = !changed;
+		}
+		// An explicit restart during the wait replaced the incarnation this read was pinned to.
+		if (record.snapshot.id !== operation.expectedId) {
+			throw staleReference(record.snapshot.name, operation.expectedId, record.snapshot.id);
+		}
+		const maxBytes = Math.max(1, Math.min(DAEMON_MAX_READ_BYTES, Math.floor(operation.maxBytes)));
+		const output = readOutput(record.output, operation.cursor, maxBytes);
+		return { op: "read", daemon: record.snapshot, ...output, timedOut };
+	}
+
 	async #send(operation: Extract<DaemonOperation, { op: "send" }>): Promise<DaemonRpcResult> {
-		const record = this.#record(operation.name);
+		const record = this.#record(operation.name, operation.expectedId);
 		await this.#refreshDetached(record);
 		if (terminalState(record.snapshot.state) || record.snapshot.state === "stopping") {
 			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
@@ -1405,10 +1518,15 @@ class DaemonBroker {
 		if (!settled && record.pty) record.pty.kill();
 	}
 
-	async #restart(name: string): Promise<DaemonRpcResult> {
-		const record = this.#record(name);
+	async #restart(name: string, expectedId?: string): Promise<DaemonRpcResult> {
+		const record = this.#record(name, expectedId);
+		// An explicit restart is a new incarnation. Retire the old id before stopping, so readers
+		// pinned to it observe a replacement rather than an ordinary exit.
+		record.snapshot.id = crypto.randomUUID();
+		record.snapshot.createdAt = Date.now();
 		await this.#stopRecord(record, 2_000);
 		this.#assertAcceptingRequests();
+		record.output = newOutputRing(record.snapshot.outputBytes);
 		await record.log?.close();
 		record.log = await this.#openLog(record);
 		if (this.#shuttingDown) {
@@ -1439,10 +1557,13 @@ class DaemonBroker {
 		return condition();
 	}
 
-	#record(name: string): ManagedDaemon {
+	#record(name: string, expectedId?: string): ManagedDaemon {
 		const record = this.#records.get(name);
-		if (record) return record;
-		throw new Error(`Unknown daemon ${name}${availableHint([...this.#records.keys()], name)}`);
+		if (!record) throw new Error(`Unknown daemon ${name}${availableHint([...this.#records.keys()], name)}`);
+		if (expectedId !== undefined && expectedId !== record.snapshot.id) {
+			throw staleReference(name, expectedId, record.snapshot.id);
+		}
+		return record;
 	}
 
 	#persist(record: ManagedDaemon): void {
@@ -1529,6 +1650,7 @@ class DaemonBroker {
 				const record: ManagedDaemon = {
 					spec,
 					snapshot,
+					output: newOutputRing(snapshot.outputBytes),
 					dir,
 					generation: 0,
 					stopRequested: !detached || snapshot.state === "stopping",

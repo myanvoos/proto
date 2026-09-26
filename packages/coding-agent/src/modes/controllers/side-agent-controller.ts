@@ -123,6 +123,8 @@ export class SideAgentController {
 							thinkingLevel,
 							systemPrompt,
 							toolNames,
+							// A clone keeps exactly its parent's worker authority, not the explicit-list default.
+							spawns: session.spawns,
 							providerSessionId: `${parentSessionId}:side:${Snowflake.next()}`,
 							providerPromptCacheKey: parentPromptCacheKey,
 							modelRegistry,
@@ -151,6 +153,7 @@ export class SideAgentController {
 							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
 							task: trimmedWork,
 							tools: clone.getEnabledToolNames(),
+							spawns: clone.spawns,
 						});
 						const abortClone = () => {
 							void clone?.abort();

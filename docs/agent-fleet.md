@@ -101,7 +101,7 @@ Agent Fleet is the human-facing live session view. Adjacent commands and interna
 - `/jobs` prints a snapshot of running and recently settled asynchronous tool jobs. It does not replace the per-agent transcript or control view.
 - `history://<id>` gives the coding agent a concise transcript for a live or parked subagent.
 - `agent://<id>` resolves a subagent's saved final output artifact; it is not the live transcript.
-- `fleet` `list` exposes the peer roster to the coding agent, and `fleet` `send` steers or follows up with a normal subagent programmatically. Messaging a parked subagent revives it.
+- `fleet` `list` shows owned workers by default; `scope:"visible"` shows reachable peers. `fleet` `send` steers or follows up with an owned worker (reviving it when parked), while `fleet` `message` sends untracked peer communication. Turn receipts name the job to wait on with `jobs` `wait`.
 
 Advisor rows are intentionally excluded from the agent-facing `fleet`, `history://`, and `agent://` peer workflows.
 

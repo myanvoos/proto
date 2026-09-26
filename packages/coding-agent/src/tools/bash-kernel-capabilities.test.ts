@@ -39,7 +39,7 @@ async function fixture(run: (tools: Map<string, Tool>, cwd: string) => Promise<v
 		asyncJobManager: jobs,
 	};
 	try {
-		await createTools(session, ["bash", "kernel", "read"]);
+		await createTools(session, ["bash", "context", "read"]);
 		const tools = session.toolRegistry!;
 		session.getToolByName = name => tools.get(name);
 		session.getToolForEvalBridge = name => tools.get(name);
@@ -100,7 +100,7 @@ if ((await delegations()).leases.find(item => item.id === lease.lease.id).state 
 	test(`${language} restores selected state and usable artifact handles after an outside-kernel reset`, async () => {
 		await fixture(async tools => {
 			const bash = tools.get("bash")!;
-			const kernel = tools.get("kernel")!;
+			const context = tools.get("context")!;
 			const seed =
 				language === "python"
 					? `
@@ -121,7 +121,12 @@ await saveState("selected.json", ["items", "blob", "previous_generation"]);
 				command: `${command} <<'CELL'\n${seed}\nCELL`,
 			});
 			expect(seeded.isError).not.toBe(true);
-			const reset = await kernel.execute("reset-capabilities", { op: "reset", language, lane: "analysis" });
+			const reset = await context.execute("reset-capabilities", {
+				resource: "kernel",
+				op: "reset",
+				language,
+				lane: "analysis",
+			});
 			expect(reset.isError).not.toBe(true);
 			const restore =
 				language === "python"

@@ -68,8 +68,8 @@ function stepFor(lane: string, turn: number): Step {
 	if (turn === 0) {
 		return {
 			call: {
-				name: "orchestrate_spawn",
-				args: { message: "LANE_w1 do long work", label: WORKER_LABEL, i: "Spawning" },
+				name: "fleet",
+				args: { op: "spawn", message: "LANE_w1 do long work", label: WORKER_LABEL, i: "Spawning" },
 			},
 		};
 	}
@@ -197,5 +197,5 @@ test("print mode names the worker turns it terminates instead of ending silently
 	expect(await stdout).toContain("MAIN DONE");
 	expect(err).toContain("still running");
 	expect(err).toContain(WORKER_LABEL);
-	expect(err).toContain("orchestrate_wait");
+	expect(err).toContain("jobs wait");
 }, 90_000);

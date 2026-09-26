@@ -16,9 +16,7 @@ import {
 	replaceTabs,
 	type ToolUIColor,
 } from "../render-utils";
-import { type CoordinationDetails, type FleetRenderArgs, fleetErrorResult } from "./types";
-
-const DEFAULT_IRC_TIMEOUT_MS = 120_000;
+import { type FleetDetails, type FleetPeerInfo, type FleetRenderArgs, fleetErrorResult } from "./types";
 
 export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
 	return true;
@@ -27,18 +25,6 @@ export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
 function formatIncoming(msg: IrcMessage): string {
 	const replyTag = msg.replyTo ? ` (reply to ${msg.replyTo})` : "";
 	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
-}
-
-export function normalizeIrcTimeoutMs(value: number): number {
-	if (value === 0) return 0;
-
-	if (!Number.isFinite(value) || value < 0) return DEFAULT_IRC_TIMEOUT_MS;
-	return Math.max(1, Math.trunc(value));
-}
-
-function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number {
-	if (explicit !== undefined) return normalizeIrcTimeoutMs(explicit);
-	return normalizeIrcTimeoutMs(settings.get("irc.timeoutMs"));
 }
 
 export function drainPendingInbox(
@@ -53,18 +39,11 @@ export function drainPendingInbox(
 		: undefined;
 }
 
-export function messageResult(senderId: string, waited: IrcMessage): AgentToolResult<CoordinationDetails> {
-	return {
-		content: [{ type: "text", text: formatIncoming(waited) }],
-		details: { op: "wait", senderId, waited },
-	};
-}
-
 export async function executeList(
 	registry: AgentRegistry,
 	senderId: string,
 	fleetRoot?: string,
-): Promise<AgentToolResult<CoordinationDetails>> {
+): Promise<AgentToolResult<FleetDetails>> {
 	let refs = registry.listInFleet(senderId, fleetRoot);
 	if (!refs.some(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")) {
 		const { registerPersistedSubagents } = await import("../../registry/persisted-agents");
@@ -74,7 +53,7 @@ export async function executeList(
 	}
 
 	const bus = IrcBus.global();
-	const peers = refs
+	const peers: FleetPeerInfo[] = refs
 		.filter(ref => ref.id !== senderId && ref.kind !== "advisor")
 		.map(ref => ({
 			id: ref.id,
@@ -109,192 +88,68 @@ export async function executeList(
 	}
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
-		details: { op: "list", senderId, peers },
+		details: { op: "list", scope: "visible", senderId, peers },
 	};
 }
 
-interface FleetSendParams {
-	to?: string;
-	message?: string;
+interface FleetMessageParams {
+	to: string;
+	message: string;
 	replyTo?: string;
-	await?: boolean;
-	timeoutMs?: number;
 }
 
-export async function executeSend(
-	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
-	params: FleetSendParams,
-	signal?: AbortSignal,
-): Promise<AgentToolResult<CoordinationDetails>> {
-	const { registry, senderId, fleetRoot, settings } = deps;
-	const to = params.to?.trim();
-	const message = params.message?.trim();
-	if (!to) {
-		return fleetErrorResult('`to` is required for op="send".', { op: "send", senderId });
-	}
-	if (!message) {
-		return fleetErrorResult('`message` is required for op="send".', { op: "send", senderId });
-	}
+/** Peer communication: delivery receipts only; a delivered message never proves a turn started. */
+export async function executeMessage(
+	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string },
+	params: FleetMessageParams,
+): Promise<AgentToolResult<FleetDetails>> {
+	const { registry, senderId, fleetRoot } = deps;
+	const to = params.to.trim();
+	const message = params.message.trim();
 	if (to === senderId) {
-		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", senderId, id: to });
+		return fleetErrorResult("Cannot send a message to yourself.", { op: "message", senderId, to });
 	}
 	const isBroadcast = to === "all";
-	if (isBroadcast && params.await) {
-		return fleetErrorResult('`await` is invalid with to:"all" — broadcasts have no single replier.', {
-			op: "send",
-			senderId,
-			id: to,
-		});
-	}
-
 	const bus = IrcBus.global();
-	let waited: IrcMessage | null | undefined;
-	const timeoutMs = params.await ? resolveMessageTimeoutMs(settings, params.timeoutMs) : undefined;
-	const awaitAbort = params.await ? new AbortController() : undefined;
-	const awaitCancelled = new Error("IRC await cancelled");
-	let removeAwaitAbortListener: (() => void) | undefined;
-	const waiting = params.await
-		? bus
-				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
-					drainPending: false,
-					fleetRoot,
-					liveness: { registry, senderId },
-				})
-				.then(
-					message => ({ message, error: null as Error | null }),
-					error => ({
-						message: null,
-						error: error === awaitCancelled ? null : error instanceof Error ? error : new Error(String(error)),
-					}),
-				)
-		: undefined;
-	if (params.await && signal && awaitAbort) {
-		if (signal.aborted) {
-			awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted"));
-		} else {
-			const onAbort = (): void => {
-				awaitAbort.abort(signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted"));
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			removeAwaitAbortListener = () => signal.removeEventListener("abort", onAbort);
-		}
-	}
-
-	try {
-		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
-
-		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
-		const receipts = await Promise.all(
-			targets.map(target =>
-				bus.send(
-					{ from: senderId, to: target, body: message, replyTo: params.replyTo },
-
-					{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined, fleetRoot },
-				),
+	const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
+	const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
+	const receipts = await Promise.all(
+		targets.map(target =>
+			bus.send(
+				{ from: senderId, to: target, body: message, replyTo: params.replyTo },
+				{ suppressRelay: suppressRelay || undefined, fleetRoot },
 			),
-		);
+		),
+	);
 
-		const lines: string[] = [];
-		const accepted = receipts.filter(receipt => receipt.outcome === "delivered" || receipt.outcome === "queued");
-		if (targets.length === 0) {
-			lines.push("No live peers to broadcast to.");
-		} else if (accepted.length === 0) {
-			lines.push("No recipients accepted the message.");
-		} else {
-			const deliveredCount = accepted.filter(receipt => receipt.outcome === "delivered").length;
-			const queuedCount = accepted.length - deliveredCount;
-			lines.push(`Accepted by ${accepted.length} peer(s): ${deliveredCount} delivered, ${queuedCount} queued.`);
-		}
-		for (const receipt of receipts) {
-			const effect =
-				receipt.effect === "injected"
-					? "; injected into an existing consumer; no worker turn was started"
-					: receipt.effect === "wake_requested"
-						? "; wake requested; turn start is not confirmed"
-						: "";
-			const revival = receipt.revived ? "; session revived" : "";
-			const detail = receipt.error ? ` — ${receipt.error}` : "";
-			lines.push(`- ${receipt.to}: ${receipt.outcome}${effect}${revival}${detail}`);
-		}
-
-		if (params.await && waiting && timeoutMs !== undefined) {
-			lines.push("");
-			if (accepted.length > 0) {
-				const reply = await waiting;
-				if (reply.error) {
-					if (signal?.aborted) {
-						lines.push(
-							`Send delivered but the reply wait was interrupted before ${to} answered. ` +
-								"Check `inbox` or `wait` again after handling the interrupt.",
-						);
-					} else {
-						throw reply.error;
-					}
-				} else {
-					waited = reply.message;
-					if (waited) {
-						lines.push(`Reply from ${waited.from}:`);
-						lines.push(waited.body);
-					} else {
-						lines.push(
-							`No reply from ${to} within ${formatDuration(timeoutMs)}. ` +
-								"They may answer later — check `inbox` or `wait` again.",
-						);
-					}
-				}
-			} else {
-				awaitAbort?.abort(awaitCancelled);
-				const reply = await waiting;
-				if (reply.error) throw reply.error;
-			}
-		}
-
-		return {
-			content: [{ type: "text", text: lines.join("\n") }],
-			details: {
-				op: "send",
-				senderId,
-				id: to,
-				receipts,
-				...(waited !== undefined ? { waited } : {}),
-			},
-			isError: accepted.length === 0 && targets.length > 0,
-		};
-	} finally {
-		awaitAbort?.abort(awaitCancelled);
-		removeAwaitAbortListener?.();
+	const lines: string[] = [];
+	const accepted = receipts.filter(receipt => receipt.outcome === "delivered" || receipt.outcome === "queued");
+	if (targets.length === 0) {
+		lines.push("No live peers to broadcast to.");
+	} else if (accepted.length === 0) {
+		lines.push("No recipients accepted the message.");
+	} else {
+		const deliveredCount = accepted.filter(receipt => receipt.outcome === "delivered").length;
+		const queuedCount = accepted.length - deliveredCount;
+		lines.push(`Accepted by ${accepted.length} peer(s): ${deliveredCount} delivered, ${queuedCount} queued.`);
 	}
-}
-
-export async function executeMessageWait(
-	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
-	params: { from?: string; timeoutMs?: number },
-	signal?: AbortSignal,
-): Promise<AgentToolResult<CoordinationDetails>> {
-	const { registry, senderId, fleetRoot, settings } = deps;
-	const from = params.from?.trim() || undefined;
-	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
-	try {
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
-			fleetRoot,
-			liveness: { registry, senderId },
-		});
-		if (!waited) {
-			const filterNote = from ? ` from ${from}` : "";
-			return {
-				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
-				details: { op: "wait", senderId, waited: null },
-
-				useless: true,
-			};
-		}
-		return messageResult(senderId, waited);
-	} catch (error) {
-		if (signal?.aborted) {
-			throw error;
-		}
-		return fleetErrorResult(error instanceof Error ? error.message : String(error), { op: "wait", senderId });
+	for (const receipt of receipts) {
+		const effect =
+			receipt.effect === "injected"
+				? "; injected into an existing consumer; no worker turn was started"
+				: receipt.effect === "wake_requested"
+					? "; wake requested; turn start is not confirmed"
+					: "";
+		const revival = receipt.revived ? "; session revived" : "";
+		const detail = receipt.error ? ` — ${receipt.error}` : "";
+		lines.push(`- ${receipt.to}: ${receipt.outcome}${effect}${revival}${detail}`);
 	}
+
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: { op: "message", senderId, to, receipts },
+		isError: accepted.length === 0 && targets.length > 0,
+	};
 }
 
 export function executeInbox(
@@ -302,7 +157,7 @@ export function executeInbox(
 	senderId: string,
 	peek?: boolean,
 	fleetRoot?: string,
-): AgentToolResult<CoordinationDetails> {
+): AgentToolResult<FleetDetails> {
 	const busMessages = IrcBus.global().inbox(senderId, { peek, fleetRoot });
 	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	const pendingMessages =
@@ -391,10 +246,8 @@ function bodyLines(
 
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
-		case "send":
+		case "message":
 			return `Fleet ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
-		case "wait":
-			return `Fleet ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
 		case "inbox":
 			return "Fleet inbox";
 		case "list":
@@ -406,12 +259,10 @@ function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 
 function callMeta(args: FleetRenderArgs | undefined): string[] {
 	const meta: string[] = [];
-	if (args?.op === "send") {
+	if (args?.op === "message") {
 		if (args.to === "all") meta.push("broadcast");
-		if (args.await) meta.push("await reply");
 		if (args.replyTo) meta.push("reply");
 	}
-	if (args?.op === "wait" && args.timeoutMs) meta.push(`timeout ${formatDuration(args.timeoutMs)}`);
 	if (args?.op === "inbox" && args.peek) meta.push("peek");
 	return meta;
 }
@@ -466,15 +317,15 @@ export function createIrcMessageCard(
 	);
 }
 
-function renderSendResult(
+function renderMessageResult(
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
-	details: Partial<CoordinationDetails>,
+	details: Partial<FleetDetails>,
 	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
 	const receipts = details.receipts ?? [];
-	const to = sanitizeText(details.id ?? args?.to?.trim() ?? "?");
+	const to = sanitizeText(details.to ?? args?.to?.trim() ?? "?");
 	const title = `Fleet ${theme.nav.selected} ${to}`;
 
 	if (receipts.length === 0) {
@@ -489,8 +340,6 @@ function renderSendResult(
 
 	const accepted = receipts.filter(receipt => receipt.outcome === "delivered" || receipt.outcome === "queued");
 	const failedCount = receipts.length - accepted.length;
-	const waited = details.waited;
-	const timedOut = waited === null;
 
 	const meta: string[] = [];
 	if (to === "all") meta.push("broadcast");
@@ -504,13 +353,8 @@ function renderSendResult(
 		if (accepted.length > 0) meta.push(theme.fg("success", `${accepted.length} accepted`));
 		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
 	}
-	if (timedOut) meta.push(theme.fg("warning", "no reply"));
 
-	const icon = result.isError
-		? { icon: "error" as const }
-		: timedOut
-			? { icon: "warning" as const }
-			: { iconOverride: ircGlyph(theme) };
+	const icon = result.isError ? { icon: "error" as const } : { iconOverride: ircGlyph(theme) };
 	const lines = [renderStatusLine({ ...icon, title, meta }, theme)];
 
 	const sent = args?.message?.trim();
@@ -545,50 +389,11 @@ function renderSendResult(
 		);
 	}
 
-	if (waited) {
-		const age = messageAge(waited.ts);
-		lines.push(
-			`  ${theme.fg("dim", theme.nav.back)} ${theme.fg("accent", sanitizeText(waited.from))}${age ? ` ${theme.fg("dim", age)}` : ""}`,
-		);
-		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
-	} else if (timedOut) {
-		lines.push(`  ${theme.fg("warning", "No reply yet — they may answer later; check inbox or wait again.")}`);
-	}
 	return lines;
 }
 
-function renderWaitResult(
-	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
-	details: Partial<CoordinationDetails>,
-	args: FleetRenderArgs | undefined,
-	expanded: boolean,
-	theme: Theme,
-): string[] {
-	const waited = details.waited;
-	if (!waited) {
-		const text = textContent(result) || "No message arrived.";
-		return [
-			renderStatusLine(
-				{
-					icon: "warning",
-					title: `Fleet ${theme.nav.back} ${args?.from?.trim() || "anyone"}`,
-					meta: ["timed out"],
-				},
-				theme,
-			),
-			`  ${theme.fg("muted", replaceTabs(text))}`,
-		];
-	}
-	const meta = [messageAge(waited.ts)];
-	if (waited.replyTo) meta.push("reply");
-	return [
-		renderStatusLine({ iconOverride: ircGlyph(theme), title: `Fleet ${theme.nav.back} ${waited.from}`, meta }, theme),
-		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
-	];
-}
-
 function renderInboxResult(
-	details: Partial<CoordinationDetails>,
+	details: Partial<FleetDetails>,
 	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
@@ -618,7 +423,7 @@ function renderInboxResult(
 	return [header, ...items];
 }
 
-function renderListResult(details: Partial<CoordinationDetails>, expanded: boolean, theme: Theme): string[] {
+function renderListResult(details: Partial<FleetDetails>, expanded: boolean, theme: Theme): string[] {
 	const peers = [...(details.peers ?? [])].sort(
 		(a, b) =>
 			(PEER_STATE_ORDER[`${a.lifecycle}/${a.turnState ?? "idle"}`] ?? 9) -
@@ -657,16 +462,14 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 
 function buildResultLines(
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
-	details: Partial<CoordinationDetails>,
+	details: Partial<FleetDetails>,
 	args: FleetRenderArgs | undefined,
 	expanded: boolean,
 	theme: Theme,
 ): string[] {
 	switch (details.op ?? args?.op) {
-		case "send":
-			return renderSendResult(result, details, args, expanded, theme);
-		case "wait":
-			return renderWaitResult(result, details, args, expanded, theme);
+		case "message":
+			return renderMessageResult(result, details, args, expanded, theme);
 		case "inbox":
 			return result.isError
 				? renderErrorResult(result, args, theme)
@@ -689,19 +492,19 @@ export function messagingRenderCall(args: FleetRenderArgs, _options: RenderResul
 	const lines = [
 		renderStatusLine({ icon: "pending", title: callTitle(args, uiTheme), meta: callMeta(args) }, uiTheme),
 	];
-	if (args?.op === "send" && args.message?.trim()) {
+	if (args?.op === "message" && args.message?.trim()) {
 		lines.push(...bodyLines(args.message, false, uiTheme, { indent: "  ", tone: "dim", collapsedLines: 1 }));
 	}
 	return new Text(lines.join("\n"), 0, 0);
 }
 
 export function messagingRenderResult(
-	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
+	result: { content: Array<{ type: string; text?: string }>; details?: FleetDetails; isError?: boolean },
 	options: RenderResultOptions,
 	uiTheme: Theme,
 	args?: FleetRenderArgs,
 ): Component {
-	const details: Partial<CoordinationDetails> = result.details ?? {};
+	const details: Partial<FleetDetails> = result.details ?? {};
 	return createCachedComponent(
 		() => options.expanded,
 		(width, expanded) =>

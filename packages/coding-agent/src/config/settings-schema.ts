@@ -265,7 +265,7 @@ const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
-const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["fleet"];
+const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["jobs"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	{
@@ -277,20 +277,20 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		pattern: "^\\s*nohup\\s+|(?<!&)\\&\\s*$",
 		tool: "fleet",
 		message:
-			'Use the `fleet` tool (`op:"start"`) instead of nohup or background shell syntax so the process stays observable and managed.',
+			'Use the `jobs` tool (`op:"start"`) instead of nohup or background shell syntax so the process stays observable and managed.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
 		tool: "fleet",
 		message:
-			'Use the `fleet` tool (`op:"start"`) for services, watchers, and debuggers so other proto instances can observe and control them.',
+			'Use the `jobs` tool (`op:"start"`) for services, watchers, and debuggers so other proto instances can observe and control them.',
 	},
 	{
 		pattern:
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?\\S+|cargo\\s+watch|watchexec|pytest|vitest|jest|tsc)(?:.|\\n)*(?:--watch|-w)(?:\\s|$)",
 		tool: "fleet",
-		message: 'Use the `fleet` tool (`op:"start"`) for watch mode so its output, input, and lifecycle stay managed.',
+		message: 'Use the `jobs` tool (`op:"start"`) for watch mode so its output, input, and lifecycle stay managed.',
 	},
 ];
 
@@ -2763,7 +2763,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Available Tools",
 			label: "Launch",
-			description: "Enable the launch tool for supervising shared long-running project processes",
+			description: "Enable `jobs` process supervision for shared long-running project processes",
 		},
 	},
 	"generate_image.enabled": {
@@ -3054,7 +3054,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "Max Poll Time",
 			description:
-				"How long a `fleet` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
+				"How long a `jobs` wait watches executions before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
 			options: [
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
@@ -3072,8 +3072,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
-			label: "Monitor",
-			description: "Enable the monitor tool for watching background output and waiting on events",
+			label: "Watches",
+			description: "Enable `jobs` watches for observing output and waking on events",
 		},
 	},
 
@@ -3083,8 +3083,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "Max Monitors",
-			description: "How many monitors may run at once in one session",
+			label: "Max Watches",
+			description: "How many watches may run at once in one session",
 		},
 	},
 
@@ -3094,8 +3094,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "Monitor Event Limit",
-			description: "Default number of events a single monitor delivers before it stops itself",
+			label: "Watch Event Limit",
+			description: "Default number of events a single watch delivers before it stops itself",
 		},
 	},
 	"irc.timeoutMs": {
@@ -3106,7 +3106,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Execution",
 			label: "IRC Timeout",
 			description:
-				"Default timeout for fleet message waits (and send await:true) in milliseconds; 0 disables the timeout",
+				"Default timeout for a `jobs` mailbox wait on peer messages in milliseconds; 0 disables the timeout",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "30000", label: "30 seconds" },
@@ -3449,7 +3449,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Workers",
 			label: "Maximum Per-Spawn Effort",
 			description:
-				"Maximum reasoning effort allowed for the orchestrate_spawn per-worker effort hint. Lower values prevent callers from escalating workers above this ceiling; the default preserves the model's full range.",
+				"Maximum reasoning effort allowed for the fleet per-worker effort hint. Lower values prevent callers from escalating workers above this ceiling; the default preserves the model's full range.",
 			options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 		},
 	},

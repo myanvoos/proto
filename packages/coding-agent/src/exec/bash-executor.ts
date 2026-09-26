@@ -26,6 +26,8 @@ interface BashExecutorOptions {
 	laneReservation?: BashLaneReservation;
 	/** Called once the lane admits the command, just before it starts executing. */
 	onStart?: () => void;
+	/** The lane is never reused (an anonymous async lane): discard its shell afterward unless background children live. */
+	ephemeral?: boolean;
 	sessionOwner?: BashSessionOwner;
 
 	env?: Record<string, string>;
@@ -128,7 +130,91 @@ interface QuarantinedShellSession {
 }
 
 const shellSessionQuarantines = new Map<string, QuarantinedShellSession>();
-const shellLanes = new Map<string, Promise<void>>();
+
+/** Why a lane cancelled reservations it had accepted. */
+export type BashLaneCancelCause = "reset" | "close" | "dispose";
+
+export class LaneCancelledError extends Error {
+	override readonly name = "LaneCancelledError";
+	constructor(
+		readonly lane: string,
+		readonly trigger: BashLaneCancelCause,
+	) {
+		super(
+			trigger === "dispose"
+				? `Command cancelled: lane ${lane} belongs to a disposed session`
+				: `Command cancelled: lane ${lane} was ${trigger === "reset" ? "reset" : "closed"} by context control`,
+		);
+	}
+}
+
+interface LaneSlot {
+	readonly admission: PromiseWithResolvers<void>;
+	/** Settles once the slot leaves the lane, by release or by cancellation before admission. */
+	readonly released: PromiseWithResolvers<void>;
+	readonly abort: AbortController;
+	readonly queuedAt: number;
+	admittedAt?: number;
+}
+
+interface ShellLane {
+	readonly key: string;
+	readonly sessionKey: string | undefined;
+	readonly lane: string;
+	/** FIFO; only the head may be admitted. */
+	readonly slots: LaneSlot[];
+	/** Destructive controls in progress; nothing is admitted while any is up. */
+	barriers: number;
+}
+
+const shellLanes = new Map<string, ShellLane>();
+
+function laneKey(sessionKey: string | undefined, lane: string): string {
+	return JSON.stringify([sessionKey ?? "", lane]);
+}
+
+function admitNextSlot(record: ShellLane): void {
+	if (record.barriers > 0) return;
+	const head = record.slots[0];
+	if (!head) {
+		if (shellLanes.get(record.key) === record) shellLanes.delete(record.key);
+		return;
+	}
+	if (head.admittedAt !== undefined) return;
+	head.admittedAt = Date.now();
+	head.admission.resolve();
+}
+
+function removeSlot(record: ShellLane, slot: LaneSlot): void {
+	const index = record.slots.indexOf(slot);
+	if (index === -1) return;
+	record.slots.splice(index, 1);
+	slot.released.resolve();
+	admitNextSlot(record);
+}
+
+/** Aborts accepted reservations; queued ones reject and never run, the admitted one observes its signal. */
+function cancelSlots(
+	record: ShellLane,
+	slots: readonly LaneSlot[],
+	cause: BashLaneCancelCause,
+): { active: number; queued: number } {
+	const cancelled = { active: 0, queued: 0 };
+	for (const slot of slots) {
+		if (!record.slots.includes(slot) || slot.abort.signal.aborted) continue;
+		if (slot.admittedAt === undefined) cancelled.queued++;
+		else cancelled.active++;
+		const error = new LaneCancelledError(record.lane, cause);
+		slot.abort.abort(error);
+		if (slot.admittedAt === undefined) {
+			slot.admission.reject(error);
+			record.slots.splice(record.slots.indexOf(slot), 1);
+			slot.released.resolve();
+		}
+	}
+	admitNextSlot(record);
+	return cancelled;
+}
 /**
  * Why a lane's persistent shell was discarded (`exit`, timeout, cancellation,
  * crash), keyed by shell session key. The next call on the lane reports it once,
@@ -365,6 +451,9 @@ function collectShellsForSession(sessionId: string): Set<Shell> {
 	for (const sessionKey of [...lostShellStates.keys()]) {
 		if (belongsToSession(sessionKey, sessionId)) lostShellStates.delete(sessionKey);
 	}
+	for (const record of [...shellLanes.values()]) {
+		if (record.sessionKey === sessionId) cancelSlots(record, [...record.slots], "dispose");
+	}
 	return shells;
 }
 
@@ -589,10 +678,23 @@ function resolveUserShellConfig(settings: Settings, baseConfig: ShellConfig): Sh
 export interface BashLaneReservation {
 	readonly sessionKey: string | undefined;
 	readonly lane: string;
-	/** Resolves once every earlier reservation on the same lane has been released. */
+	/**
+	 * Resolves once every earlier reservation on the same lane has been released
+	 * and no lane control is in progress. Rejects with {@link LaneCancelledError}
+	 * when a lane reset/close/disposal cancels the reservation before admission.
+	 */
 	readonly ready: Promise<void>;
+	/** Aborted (reason: {@link LaneCancelledError}) when lane control cancels this reservation, queued or admitted. */
+	readonly signal: AbortSignal;
 	/** Idempotent; admits the next reservation on the lane. */
 	release(): void;
+}
+
+function validateLane(lane: string | undefined): string {
+	if (lane !== undefined && (lane.length === 0 || lane.length > 128)) {
+		throw new Error("lane must contain 1–128 characters");
+	}
+	return lane ?? "main";
 }
 
 /**
@@ -601,27 +703,34 @@ export interface BashLaneReservation {
  * they were issued, not the order their preparation finished.
  */
 export function reserveBashLane(options: { sessionKey?: string; lane?: string }): BashLaneReservation {
-	if (options.lane !== undefined && (options.lane.length === 0 || options.lane.length > 128)) {
-		throw new Error("lane must contain 1–128 characters");
+	const lane = validateLane(options.lane);
+	const key = laneKey(options.sessionKey, lane);
+	let record = shellLanes.get(key);
+	if (!record) {
+		record = { key, sessionKey: options.sessionKey, lane, slots: [], barriers: 0 };
+		shellLanes.set(key, record);
 	}
-	const lane = options.lane ?? "main";
-	const key = JSON.stringify([options.sessionKey ?? "", lane]);
-	const ready = shellLanes.get(key) ?? Promise.resolve();
-	const gate = Promise.withResolvers<void>();
-	const queued = ready.then(() => gate.promise);
-	shellLanes.set(key, queued);
+	const slot: LaneSlot = {
+		admission: Promise.withResolvers<void>(),
+		released: Promise.withResolvers<void>(),
+		abort: new AbortController(),
+		queuedAt: Date.now(),
+	};
+	// A cancelled reservation whose holder never awaits `ready` must not surface as an unhandled rejection.
+	slot.admission.promise.catch(() => undefined);
+	record.slots.push(slot);
+	admitNextSlot(record);
+	const owner = record;
 	let released = false;
 	return {
 		sessionKey: options.sessionKey,
 		lane,
-		ready,
+		ready: slot.admission.promise,
+		signal: slot.abort.signal,
 		release: () => {
 			if (released) return;
 			released = true;
-			gate.resolve();
-			void queued.then(() => {
-				if (shellLanes.get(key) === queued) shellLanes.delete(key);
-			});
+			removeSlot(owner, slot);
 		},
 	};
 }
@@ -629,26 +738,206 @@ export function reserveBashLane(options: { sessionKey?: string; lane?: string })
 export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
 	const reservation =
 		options?.laneReservation ?? reserveBashLane({ sessionKey: options?.sessionKey, lane: options?.lane });
+	const signal = options?.signal ? AbortSignal.any([options.signal, reservation.signal]) : reservation.signal;
 	try {
 		if (reservation.sessionKey !== options?.sessionKey || reservation.lane !== (options?.lane ?? "main")) {
 			throw new Error("Lane reservation does not match the command's session and lane");
 		}
-		if (options?.signal) await untilAborted(options.signal, () => reservation.ready);
-		else await reservation.ready;
-		options?.signal?.throwIfAborted();
+		await untilAborted(signal, () => reservation.ready);
+		signal.throwIfAborted();
 		options?.onStart?.();
-		return await executeBashInLane(command, options);
+		return await executeBashInLane(command, { ...options, signal });
 	} catch (error) {
-		if (!options?.signal?.aborted) throw error;
+		if (!signal.aborted) throw error;
 		const result: BashResult = {
 			exitCode: undefined,
 			cancelled: true,
-			...(await new OutputSink({}).dump("Command cancelled")),
+			...(await new OutputSink({}).dump(cancelledAnnotation(signal))),
 		};
 		return { ...result, execution: executionMetadataForResult(result, { summary: result }) };
 	} finally {
 		reservation.release();
 	}
+}
+
+/** Queue and shell state of one lane; never heap values, environment, or command text. */
+export interface BashLaneSnapshot {
+	lane: string;
+	/** Epoch ms the admitted command left the queue; absent when nothing runs. */
+	activeSince?: number;
+	/** Reservations waiting behind the active command or a lane control. */
+	queued: number;
+	/** A reset/close is tearing the lane down; new work waits for it. */
+	controlling: boolean;
+	/**
+	 * `live`: a persistent shell holds lane state; `quarantined`: an interrupted
+	 * shell is still being cleaned up; `retained`: a discarded shell is kept only
+	 * for its background children; `none`: the next command starts a fresh shell.
+	 */
+	shell: "live" | "quarantined" | "retained" | "none";
+	/** A discarded shell's loss is reported to the next command on this lane. */
+	stateLossPending: boolean;
+}
+
+/** The lane a shell session key belongs to, when it belongs to `sessionKey`. */
+function shellLaneOf(shellSessionKey: string, sessionKey: string): string | undefined {
+	const separator = shellSessionKey.indexOf("\n");
+	const head = separator === -1 ? shellSessionKey : shellSessionKey.slice(0, separator);
+	if (head === sessionKey) return "main";
+	const prefix = `${sessionKey}:lane:`;
+	if (!head.startsWith(prefix)) return undefined;
+	try {
+		return decodeURIComponent(head.slice(prefix.length));
+	} catch {
+		return undefined;
+	}
+}
+
+function requireLaneOwner(sessionKey: string): void {
+	if (!sessionKey) throw new Error("Lane control requires a session id");
+}
+
+/** Every lane `sessionKey` owns that has queued work, a shell, or a pending loss notice. */
+export function listBashLanes(sessionKey: string): BashLaneSnapshot[] {
+	requireLaneOwner(sessionKey);
+	const lanes = new Map<string, BashLaneSnapshot>();
+	const entry = (lane: string): BashLaneSnapshot => {
+		let snapshot = lanes.get(lane);
+		if (!snapshot) {
+			snapshot = { lane, queued: 0, controlling: false, shell: "none", stateLossPending: false };
+			lanes.set(lane, snapshot);
+		}
+		return snapshot;
+	};
+	for (const record of shellLanes.values()) {
+		if (record.sessionKey !== sessionKey) continue;
+		const snapshot = entry(record.lane);
+		const head = record.slots[0];
+		if (head?.admittedAt !== undefined) snapshot.activeSince = head.admittedAt;
+		snapshot.queued = record.slots.filter(slot => slot.admittedAt === undefined).length;
+		snapshot.controlling = record.barriers > 0;
+	}
+	const shellStates: [string, BashLaneSnapshot["shell"]][] = [
+		...[...retainedShells.values()].map(record => [record.sessionKey, "retained"] as [string, "retained"]),
+		...[...shellSessionQuarantines.keys()].map(key => [key, "quarantined"] as [string, "quarantined"]),
+		...[...shellSessions.keys()].map(key => [key, "live"] as [string, "live"]),
+	];
+	for (const [key, state] of shellStates) {
+		const lane = shellLaneOf(key, sessionKey);
+		if (lane !== undefined) entry(lane).shell = state;
+	}
+	for (const key of lostShellStates.keys()) {
+		const lane = shellLaneOf(key, sessionKey);
+		if (lane !== undefined) entry(lane).stateLossPending = true;
+	}
+	return [...lanes.values()].sort((a, b) => a.lane.localeCompare(b.lane));
+}
+
+/** How long lane teardown waits for a cancelled command to hand back its slot before discarding its shell anyway. */
+const LANE_CONTROL_DRAIN_MS = 5_000;
+
+/**
+ * A destructive lane control in progress. Created synchronously: from then on no
+ * reservation is admitted until {@link BashLaneControl.finish}. Only reservations
+ * accepted before the barrier are cancelled; later ones run on the replacement.
+ */
+export interface BashLaneControl {
+	readonly lane: string;
+	/** Reservations accepted before the barrier that have not been released. */
+	pending(): { active: number; queued: number };
+	/** Cancels every pre-barrier reservation; queued ones never run. */
+	cancel(cause: Exclude<BashLaneCancelCause, "dispose">): { active: number; queued: number };
+	/** Waits (bounded) until the cancelled admitted command released its slot. */
+	drain(): Promise<void>;
+	/**
+	 * Discards the lane's shells (live, quarantined, retained with background
+	 * children). `notice` is reported once to the next command; undefined forgets
+	 * any pending loss notice. Returns the number of shells closed.
+	 */
+	discardShells(notice: string | undefined): Promise<number>;
+	/** Lifts the barrier and admits later reservations. Idempotent. */
+	finish(): void;
+}
+
+export function beginBashLaneControl(sessionKey: string, lane: string): BashLaneControl {
+	requireLaneOwner(sessionKey);
+	validateLane(lane);
+	const key = laneKey(sessionKey, lane);
+	let record = shellLanes.get(key);
+	if (!record) {
+		record = { key, sessionKey, lane, slots: [], barriers: 0 };
+		shellLanes.set(key, record);
+	}
+	const owner = record;
+	owner.barriers++;
+	const before = [...owner.slots];
+	let finished = false;
+	const live = () => before.filter(slot => owner.slots.includes(slot));
+	return {
+		lane,
+		pending: () => {
+			const slots = live();
+			const active = slots.filter(slot => slot.admittedAt !== undefined).length;
+			return { active, queued: slots.length - active };
+		},
+		cancel: cause => cancelSlots(owner, before, cause),
+		drain: async () => {
+			const released = Promise.all(before.map(slot => slot.released.promise));
+			// A command that ignores its abort must not wedge the control; its shell is discarded next anyway.
+			await withTimeout(released, LANE_CONTROL_DRAIN_MS, "Timed out draining lane").catch(() => undefined);
+		},
+		discardShells: async notice => {
+			const shells = new Set<Shell>();
+			const inLane = (shellSessionKey: string) => shellLaneOf(shellSessionKey, sessionKey) === lane;
+			const touched = new Set<string>();
+			for (const [shellSessionKey, shell] of shellSessions) {
+				if (!inLane(shellSessionKey)) continue;
+				shellSessions.delete(shellSessionKey);
+				shells.add(shell);
+				touched.add(shellSessionKey);
+			}
+			for (const [shellSessionKey, quarantined] of shellSessionQuarantines) {
+				if (!inLane(shellSessionKey)) continue;
+				shellSessionQuarantines.delete(shellSessionKey);
+				shells.add(quarantined.shell);
+				touched.add(shellSessionKey);
+			}
+			for (const shellSessionKey of [...brokenShellSessions]) {
+				if (!inLane(shellSessionKey)) continue;
+				brokenShellSessions.delete(shellSessionKey);
+				touched.add(shellSessionKey);
+			}
+			for (const [shell, active] of activeShells) {
+				if (!inLane(active.sessionKey)) continue;
+				active.abortController.abort();
+				shells.add(shell);
+			}
+			for (const retained of [...retainedShells.values()]) {
+				if (!inLane(retained.sessionKey)) continue;
+				removeRetainedShell(retained);
+				shells.add(retained.shell);
+			}
+			for (const shellSessionKey of [...lostShellStates.keys()]) {
+				if (!inLane(shellSessionKey)) continue;
+				lostShellStates.delete(shellSessionKey);
+				touched.add(shellSessionKey);
+			}
+			if (notice !== undefined) for (const shellSessionKey of touched) lostShellStates.set(shellSessionKey, notice);
+			await Promise.all([...shells].map(shell => closeShell(shell)));
+			return shells.size;
+		},
+		finish: () => {
+			if (finished) return;
+			finished = true;
+			owner.barriers--;
+			admitNextSlot(owner);
+		},
+	};
+}
+
+/** Names the lane control that cancelled a command instead of a bare cancellation. */
+function cancelledAnnotation(signal: AbortSignal | undefined): string {
+	return signal?.reason instanceof LaneCancelledError ? signal.reason.message : "Command cancelled";
 }
 
 async function executeBashInLane(command: string, options?: BashExecutorOptions): Promise<BashResult> {
@@ -708,7 +997,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		return withExecutionMetadata({
 			exitCode: undefined,
 			cancelled: true,
-			...(await sink.dump("Command cancelled")),
+			...(await sink.dump(cancelledAnnotation(options?.signal))),
 		});
 	}
 
@@ -844,7 +1133,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				...(await sink.dump(
 					winner.kind === "timeout" && deadlineTimeoutMs !== undefined
 						? `Command timed out after ${Math.round(deadlineTimeoutMs / 1000)} seconds`
-						: "Command cancelled",
+						: cancelledAnnotation(options?.signal),
 				)),
 			});
 		}
@@ -885,7 +1174,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				shellStateLost,
 				stageRecords: winner.result.stageRecords,
 				xdDispatches: winner.result.xdDispatches,
-				...(await sink.dump("Command cancelled")),
+				...(await sink.dump(cancelledAnnotation(options?.signal))),
 			});
 		}
 
@@ -935,14 +1224,15 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		}
 		if (ownsPersistentSession) {
 			const disposed = isDisposedSessionKey(sessionKey, sessionOwner);
-			const asynchronous = options?.sessionKey?.includes(":async:") === true;
+			const ephemeral = options?.ephemeral === true;
 			// Without a session id every caller shares one shell, so the loss has no owner to report it to.
-			if (lostShell && options?.sessionKey && !asynchronous && !disposed) lostShellStates.set(sessionKey, lostShell);
-			if (resetSession || asynchronous || disposed) {
+			if (lostShell && options?.sessionKey && !ephemeral && !disposed) lostShellStates.set(sessionKey, lostShell);
+			if (resetSession || ephemeral || disposed) {
 				if (shellSessions.get(sessionKey) === executionShell) shellSessions.delete(sessionKey);
 
 				if (!resetSession && !disposed && shellSession) {
 					await retainShellWithLiveBackgroundJobs(shellSession, sessionKey, sessionOwner);
+					if (!retainedShells.has(shellSession)) await closeShell(shellSession);
 				} else if (disposed) {
 					await closeShell(executionShell);
 				}

@@ -32,6 +32,7 @@ import { getBundledAgent } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
+import { type JobSnapshot, JobsTool } from "../tools/jobs";
 import { OrchestratorRuntime } from "./runtime";
 import { claimWakeTurn } from "./wake-turns";
 
@@ -351,6 +352,23 @@ async function controlledFixture(
 	};
 }
 
+/** Resolve the worker listing's current turn references, then exercise the public execution wait. */
+async function waitForWorkers(
+	runtime: OrchestratorRuntime,
+	session: ToolSession,
+	ids: string[],
+	timeoutMs = 5_000,
+): Promise<JobSnapshot[]> {
+	const targets = runtime.screens(session, ids).map(worker => {
+		const id = worker.turnJobId ?? worker.lastJobId;
+		if (!id) throw new Error(`Worker ${worker.id} has no turn job`);
+		return { kind: "job" as const, id };
+	});
+	const result = await new JobsTool(session).execute("wait-turns", { op: "wait", targets, timeoutMs });
+	expect(result.isError, JSON.stringify(result)).not.toBe(true);
+	return result.details!.jobs!;
+}
+
 test("parking releases a worker's session from memory while it stays resumable in place", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const ids = [
@@ -358,7 +376,7 @@ test("parking releases a worker's session from memory while it stays resumable i
 		(await runtime.spawn(session, { message: "second worker" })).id,
 	];
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: ids });
+	await waitForWorkers(runtime, session, ids);
 	const registry = AgentRegistry.global();
 	const sessions = ids.map(id => new WeakRef<object>(registry.get(id)!.session!));
 
@@ -369,9 +387,9 @@ test("parking releases a worker's session from memory while it stays resumable i
 	const resumed = await runtime.send(session, { session: ids[0]!, message: "resume after park" });
 	expect(resumed.id).toBe(ids[0]);
 	await manager.waitForAll();
-	const settled = await runtime.wait(session, { sessions: [ids[0]!], timeoutMs: 1_000 });
-	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
-	expect(settled.settled[0]?.resultText).toContain("controlled turn complete");
+	const settled = await waitForWorkers(runtime, session, [ids[0]!], 1_000);
+	expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${ids[0]!}-t2` } }]);
+	expect(settled[0]?.resultText).toContain("controlled turn complete");
 	expect(registry.get(ids[1])).toMatchObject({ status: "parked", session: null });
 }, 30_000);
 
@@ -430,7 +448,7 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 		session.mcpManager = undefined;
 		const { id } = await runtime.spawn(session, { message: "worker with pending MCP initialization" });
 		await manager.waitForAll();
-		await runtime.wait(session, { sessions: [id] });
+		await waitForWorkers(runtime, session, [id]);
 		await withTimeout(received.promise, 5_000, "Worker did not start its owned MCP handshake");
 		const registry = AgentRegistry.global();
 		const sessions = [new WeakRef<object>(registry.get(id)!.session!)];
@@ -444,8 +462,8 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 		const resumed = await runtime.send(session, { session: id, message: "resume after cancelled MCP handshake" });
 		expect(resumed.id).toBe(id);
 		await manager.waitForAll();
-		const settled = await runtime.wait(session, { sessions: [id], timeoutMs: 1_000 });
-		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
+		const settled = await waitForWorkers(runtime, session, [id], 1_000);
+		expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${id}-t2` } }]);
 		expect(completedHandshakes).toBe(1);
 	} finally {
 		try {
@@ -477,9 +495,9 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 		ids.push(spawned.id);
 	}
 	await manager.waitForAll();
-	const waits = await runtime.wait(session, { sessions: ids, timeoutMs: 1_000 });
-	expect(waits.settled).toHaveLength(4);
-	const output = waits.settled.map(entry => entry.resultText).join("\n");
+	const waits = await waitForWorkers(runtime, session, ids, 1_000);
+	expect(waits).toHaveLength(4);
+	const output = waits.map(entry => entry.resultText).join("\n");
 	expect(output).toMatch(/PARENT (?:false|False)/);
 	expect(output).toMatch(/A (?:false|False)/);
 	expect(output).not.toMatch(/PARENT (?:true|True)/);
@@ -490,9 +508,9 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 	expect(followup.id).toBe(firstWorker);
 	expect(followup.receipt.status).toBe("accepted");
 	await manager.waitForAll();
-	const followupWait = await runtime.wait(session, { sessions: [firstWorker], timeoutMs: 1_000 });
-	expect(followupWait.settled).toHaveLength(1);
-	expect(followupWait.settled[0]?.resultText).toMatch(/CONTEXT (?:True|true)/);
+	const followupWait = await waitForWorkers(runtime, session, [firstWorker], 1_000);
+	expect(followupWait).toHaveLength(1);
+	expect(followupWait[0]?.resultText).toMatch(/CONTEXT (?:True|true)/);
 
 	await AgentLifecycleManager.global().park(firstWorker);
 	const parked = AgentRegistry.global().get(firstWorker);
@@ -501,9 +519,9 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 	const revival = await runtime.send(session, { session: firstWorker, message: "worker-a-py-revival" });
 	expect(revival.id).toBe(firstWorker);
 	await manager.waitForAll();
-	const revivalWait = await runtime.wait(session, { sessions: [firstWorker], timeoutMs: 1_000 });
-	expect(revivalWait.settled).toHaveLength(1);
-	expect(revivalWait.settled[0]?.resultText).toMatch(/CONTEXT (?:True|true)/);
+	const revivalWait = await waitForWorkers(runtime, session, [firstWorker], 1_000);
+	expect(revivalWait).toHaveLength(1);
+	expect(revivalWait[0]?.resultText).toMatch(/CONTEXT (?:True|true)/);
 
 	const sharedA = new BashTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
 	const sharedB = new BashTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
@@ -543,7 +561,7 @@ test("independent messages queued behind a busy worker run as separate turns ins
 	const capacityWorker = await runtime.spawn(session, { message: "capacity worker initial" });
 	const queuedWorker = await runtime.spawn(session, { message: "queued worker initial" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [capacityWorker.id, queuedWorker.id] });
+	await waitForWorkers(runtime, session, [capacityWorker.id, queuedWorker.id]);
 	try {
 		await runtime.send(session, { session: capacityWorker.id, message: "hold-capacity" });
 		await withTimeout(capacityHeld.promise, 5_000, "Capacity worker did not start");
@@ -589,7 +607,7 @@ test("a queued follow-up runs after its own job releases the async job cap", asy
 	});
 	const worker = await runtime.spawn(session, { message: "initial turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	try {
 		await runtime.send(session, { session: worker.id, message: "hold-turn" });
 		const queued = await runtime.send(session, { session: worker.id, message: "queued-followup" });
@@ -601,9 +619,56 @@ test("a queued follow-up runs after its own job releases the async job cap", asy
 		release.resolve();
 	}
 	await manager.waitForAll();
-	const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 1_000 });
-	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 3 } }]);
+	const settled = await waitForWorkers(runtime, session, [worker.id], 1_000);
+	expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t3` } }]);
 	expect(runtime.screens(session, [worker.id])).toMatchObject([{ queued: 0, lifecycle: "live" }]);
+}, 30_000);
+
+test("queued turns are real jobs from acceptance, and cancelling a turn job keeps the worker addressable", async () => {
+	const holdStarted = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		const text = JSON.stringify(context.messages.findLast(message => message.role === "user"));
+		void (async () => {
+			if (text.includes("hold-turn")) {
+				holdStarted.resolve();
+				await release.promise;
+			}
+			pushToolCall(stream, model, call("yield-result", "yield", { result: { data: "done" } }));
+		})();
+		return stream;
+	};
+	const { runtime, session, manager } = await controlledFixture({ streamFn, maxConcurrency: 2 });
+	const worker = await runtime.spawn(session, { message: "initial turn" });
+	await manager.waitForAll();
+	await waitForWorkers(runtime, session, [worker.id]);
+	try {
+		// Sent before the held turn streams, so these are distinct queued turns rather than steers.
+		const held = await runtime.send(session, { session: worker.id, message: "hold-turn" });
+		const dropped = await runtime.send(session, { session: worker.id, message: "queued-dropped" });
+		const kept = await runtime.send(session, { session: worker.id, message: "queued-kept" });
+		await withTimeout(holdStarted.promise, 5_000, "Held worker turn did not start");
+		// A queued receipt names an execution that already exists, so it can be waited on or cancelled.
+		expect(dropped).toMatchObject({ mode: "queued", receipt: { status: "queued", turn: 3 } });
+		expect(manager.getJob(dropped.jobId)).toMatchObject({ status: "running", queued: true });
+		expect(manager.cancel(dropped.jobId)).toBe(true);
+		await manager.getJob(dropped.jobId)?.promise;
+		expect(runtime.screens(session, [worker.id])).toMatchObject([{ queued: 1, queuedJobIds: [kept.jobId] }]);
+		// Cancelling the running turn job ends that turn only; the next queued turn still runs.
+		expect(manager.cancel(held.jobId)).toBe(true);
+		release.resolve();
+		await withTimeout(manager.waitForAll(), 5_000, "Queued turn did not run after its predecessor was cancelled");
+		expect(manager.getJob(held.jobId)?.status).toBe("cancelled");
+		expect(manager.getJob(kept.jobId)?.status).toBe("completed");
+		const next = await runtime.send(session, { session: worker.id, message: "after-cancel" });
+		expect(next).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 5 } });
+		await manager.waitForAll();
+		expect(manager.getJob(next.jobId)?.status).toBe("completed");
+		expect(runtime.screens(session, [worker.id])).toMatchObject([{ lifecycle: "live", addressable: true }]);
+	} finally {
+		release.resolve();
+	}
 }, 30_000);
 
 test("terminal unsaved-parent workers release and remove owned artifact directories", async () => {
@@ -611,7 +676,7 @@ test("terminal unsaved-parent workers release and remove owned artifact director
 	const { runtime, session, manager } = await controlledFixture({ unsavedParent: true });
 	const worker = await runtime.spawn(session, { message: "temporary artifacts" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	const afterRun = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith("proto-worker-"));
 	const created = afterRun.filter(name => !before.has(name));
 	expect(created).toHaveLength(1);
@@ -695,7 +760,7 @@ function yieldingProvider(gates = new Map<string, Promise<void>>()): StreamFn {
 	};
 }
 
-test("repeated worker submissions merge into the single result orchestrate_wait delivers", async () => {
+test("repeated worker submissions merge into the single result the turn job delivers", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: multiSubmitProvider() });
 	const worker = await runtime.spawn(session, {
 		message: "submit sections before finalizing",
@@ -710,9 +775,9 @@ test("repeated worker submissions merge into the single result orchestrate_wait 
 		},
 	});
 	await manager.waitForAll();
-	const outcome = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-	expect(outcome.settled).toHaveLength(1);
-	const settled = outcome.settled[0];
+	const outcome = await waitForWorkers(runtime, session, [worker.id], 5_000);
+	expect(outcome).toHaveLength(1);
+	const settled = outcome[0];
 	expect(settled?.status).toBe("completed");
 	// Every submission survives: earlier sections are not replaced by the later ones, and the
 	// data-less terminal yield finalizes them instead of blanking the result.
@@ -726,10 +791,10 @@ test("failed turn-settlement persistence cannot strand a worker as running or ac
 	const { runtime, session, manager, sessionManager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const worker = await runtime.spawn(session, { message: "initial turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 
 	const flush = sessionManager.flush.bind(sessionManager);
-	let queuedMode: string | undefined;
+	let queued: { mode: string; jobId: string } | undefined;
 	const persistence = spyOn(sessionManager, "flush").mockImplementation(async () => {
 		const last = sessionManager.getEntries().at(-1);
 		if (
@@ -738,8 +803,7 @@ test("failed turn-settlement persistence cannot strand a worker as running or ac
 			(last.data as { action?: string; turn?: number }).action === "turn-settled" &&
 			(last.data as { turn?: number }).turn === 2
 		) {
-			queuedMode = (await runtime.send(session, { session: worker.id, message: "queued before storage failure" }))
-				.mode;
+			queued = await runtime.send(session, { session: worker.id, message: "queued before storage failure" });
 			throw new Error("controlled settlement storage failure");
 		}
 		await flush();
@@ -747,12 +811,12 @@ test("failed turn-settlement persistence cannot strand a worker as running or ac
 	try {
 		await runtime.send(session, { session: worker.id, message: "finish despite broken storage" });
 		await manager.waitForAll();
-		const result = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 100 });
-		expect(result.stillRunning).toEqual([]);
-		expect(result.settled).toHaveLength(1);
-		expect(result.settled[0]).toMatchObject({ status: "failed", receipt: { turn: 2 } });
-		expect(result.settled[0]?.resultText).toContain("controlled settlement storage failure");
-		expect(queuedMode).toBe("queued");
+		const result = await waitForWorkers(runtime, session, [worker.id], 100);
+		expect(result.filter(job => job.status === "running")).toEqual([]);
+		expect(result).toHaveLength(1);
+		expect(result[0]).toMatchObject({ status: "failed", ref: { kind: "job", id: `${worker.id}-t2` } });
+		expect(result[0]?.errorText).toContain("controlled settlement storage failure");
+		expect(queued?.mode).toBe("queued");
 		expect(runtime.screens(session, [worker.id])).toMatchObject([
 			{
 				lifecycle: "terminal",
@@ -762,7 +826,9 @@ test("failed turn-settlement persistence cannot strand a worker as running or ac
 				terminal: { reason: "unrecoverable", lastTurn: 2 },
 			},
 		]);
-		expect(manager.getAllJobs()).toHaveLength(2);
+		// The accepted follow-up's job is cancelled with the worker instead of running on it.
+		expect(manager.getAllJobs()).toHaveLength(3);
+		expect(manager.getJob(queued!.jobId)?.status).toBe("cancelled");
 		expect(AgentRegistry.global().get(worker.id)).toMatchObject({ status: "aborted", session: null });
 		await expect(
 			runtime.send(session, { session: worker.id, message: "must not be silently queued" }),
@@ -783,7 +849,7 @@ test("a cancelled concurrency-queued turn keeps its number and retries receive a
 	const first = await runtime.spawn(session, { message: "first worker" });
 	const second = await runtime.spawn(session, { message: "second worker" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [first.id, second.id] });
+	await waitForWorkers(runtime, session, [first.id, second.id]);
 	try {
 		await runtime.send(session, { session: first.id, message: "hold-capacity" });
 		const queued = await runtime.send(session, { session: second.id, message: "cancel before provider starts" });
@@ -791,30 +857,30 @@ test("a cancelled concurrency-queued turn keeps its number and retries receive a
 		expect(queued.jobId).toBe(`${second.id}-t2`);
 		expect(manager.cancel(queued.jobId!)).toBe(true);
 		await manager.getJob(queued.jobId!)!.promise;
-		const cancellation = await runtime.wait(session, { sessions: [second.id], timeoutMs: 100 });
-		expect(cancellation.settled).toMatchObject([{ status: "cancelled", receipt: { status: "rejected", turn: 2 } }]);
-		expect(cancellation.stillRunning).toEqual([]);
+		const cancellation = await waitForWorkers(runtime, session, [second.id], 100);
+		expect(cancellation).toMatchObject([{ status: "cancelled", ref: { kind: "job", id: `${second.id}-t2` } }]);
+		expect(cancellation.filter(job => job.status === "running")).toEqual([]);
 
 		const retried = await runtime.send(session, { session: second.id, message: "retry cancelled work" });
 		expect(retried.receipt.turn).toBe(3);
 		expect(retried.jobId).toBe(`${second.id}-t3`);
 		blocked.resolve();
 		await manager.waitForAll();
-		const completed = await runtime.wait(session, { sessions: [second.id], timeoutMs: 100 });
-		expect(completed.settled).toMatchObject([{ status: "completed", receipt: { turn: 3 } }]);
+		const completed = await waitForWorkers(runtime, session, [second.id], 100);
+		expect(completed).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${second.id}-t3` } }]);
 	} finally {
 		blocked.resolve();
 	}
 }, 30_000);
 
-test("wait receipts identify the watched turn even when a queued followup starts before delivery", async () => {
+test("job waits identify the watched turn even when a queued followup starts before delivery", async () => {
 	const blocked = Promise.withResolvers<void>();
 	const gates = new Map<string, Promise<void>>();
 	gates.set("hold-watched-turn", blocked.promise);
 	const { runtime, session, manager, sessionManager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
 	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	const flush = sessionManager.flush.bind(sessionManager);
 	let queued = false;
 	const persistence = spyOn(sessionManager, "flush").mockImplementation(async () => {
@@ -835,13 +901,13 @@ test("wait receipts identify the watched turn even when a queued followup starts
 	});
 	try {
 		const watched = await runtime.send(session, { session: worker.id, message: "hold-watched-turn" });
-		const waiting = runtime.wait(session, { sessions: [worker.id], timeoutMs: 1_000 });
+		const waiting = waitForWorkers(runtime, session, [worker.id], 1_000);
 		blocked.resolve();
 		const result = await waiting;
-		expect(result.settled).toMatchObject([{ jobId: watched.jobId, receipt: { turn: 2, jobId: watched.jobId } }]);
+		expect(result).toMatchObject([{ ref: { kind: "job", id: watched.jobId } }]);
 		await manager.waitForAll();
-		const followupResult = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 100 });
-		expect(followupResult.settled).toMatchObject([{ jobId: `${worker.id}-t3`, receipt: { turn: 3 } }]);
+		const followupResult = await waitForWorkers(runtime, session, [worker.id], 100);
+		expect(followupResult).toMatchObject([{ ref: { kind: "job", id: `${worker.id}-t3` } }]);
 	} finally {
 		blocked.resolve();
 		persistence.mockRestore();
@@ -856,7 +922,7 @@ test("killing a later active turn retains that job in terminal recovery instead 
 	runtime.setTeardownGraceForTesting(20);
 	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	try {
 		const active = await runtime.send(session, { session: worker.id, message: "hold-terminal-turn" });
 		const killed = await runtime.kill(session, worker.id);
@@ -901,8 +967,8 @@ test("a turn started by an IRC wake is tracked, delivered once, and keeps turn n
 	const { runtime, session, manager, model } = await controlledFixture({ streamFn: yieldingProvider() });
 	const worker = await runtime.spawn(session, { message: "first turn" });
 	await manager.waitForAll();
-	const first = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-	expect(first.settled).toMatchObject([{ status: "completed", receipt: { turn: 1 } }]);
+	const first = await waitForWorkers(runtime, session, [worker.id], 5_000);
+	expect(first).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t1` } }]);
 
 	// What the executor does when a fleet message wakes this worker.
 	const claim = claimWakeTurn(worker.id, "please do phase two");
@@ -924,32 +990,39 @@ test("a turn started by an IRC wake is tracked, delivered once, and keeps turn n
 		requests: 1,
 		resolvedModel: `${model.provider}/${model.id}`,
 	});
-	const woken = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-	expect(woken.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered", turn: 2 } }]);
-	expect(woken.settled[0]?.resultText).toContain("PHASE-TWO-ANSWER");
+	const woken = await waitForWorkers(runtime, session, [worker.id], 5_000);
+	expect(woken).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t2` } }]);
+	expect(woken[0]?.resultText).toContain("PHASE-TWO-ANSWER");
 
-	// Exactly once: a second wait must not re-deliver the same turn.
-	const again = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 100 });
-	expect(again.settled).toEqual([]);
+	// Waiting acknowledges the wake-turn job; it is no longer pending automatic delivery.
+	expect(manager.getDeliveryState({ ownerId: session.getAsyncJobOwnerId!()! }).pendingJobIds).not.toContain(
+		`${worker.id}-t2`,
+	);
 
 	// The wake consumed turn 2, so the next orchestrator turn is 3 rather than a repeat of 2.
 	const sent = await runtime.send(session, { session: worker.id, message: "third turn" });
 	expect(sent).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 3 } });
 	await manager.waitForAll();
-	const third = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-	expect(third.settled).toMatchObject([{ status: "completed", receipt: { turn: 3 } }]);
+	const third = await waitForWorkers(runtime, session, [worker.id], 5_000);
+	expect(third).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t3` } }]);
 	expect(runtime.screens(session, [worker.id])).toMatchObject([{ turns: 3, turnState: "idle" }]);
 }, 30_000);
 
-test("a bare wait delivers a turn that settled before the parent got back to waiting", async () => {
+test("a turn receipt can be waited on after its worker already became idle", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const worker = await runtime.spawn(session, { message: "settles before the wait" });
 	await manager.waitForAll();
 	expect(runtime.screens(session, [worker.id])).toMatchObject([{ turnState: "idle", turns: 1 }]);
 
-	const outcome = await runtime.wait(session, { timeoutMs: 5_000 });
-	expect(outcome.settled).toMatchObject([{ id: worker.id, status: "completed", receipt: { turn: 1 } }]);
-	expect(await runtime.wait(session, { timeoutMs: 100 })).toMatchObject({ settled: [] });
+	const outcome = await new JobsTool(session).execute("settled-turn", {
+		op: "wait",
+		targets: [{ kind: "job", id: worker.jobId }],
+		timeoutMs: 5_000,
+	});
+	expect(outcome.details?.jobs).toMatchObject([{ ref: { kind: "job", id: worker.jobId }, status: "completed" }]);
+	expect(manager.getDeliveryState({ ownerId: session.getAsyncJobOwnerId!()! }).pendingJobIds).not.toContain(
+		worker.jobId,
+	);
 }, 30_000);
 
 test("a woken turn is left untracked when the worker is already running a tracked turn", async () => {
@@ -1016,7 +1089,7 @@ test("send model= resumes an idle worker onto the requested model", async () => 
 	authStorage.setRuntimeApiKey("openai", "test-key");
 	const worker = await runtime.spawn(session, { message: "first turn on the spawn model" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	expect(requestedModels).toEqual(["controlled-model"]);
 
 	const sent = await runtime.send(session, {
@@ -1026,8 +1099,8 @@ test("send model= resumes an idle worker onto the requested model", async () => 
 	});
 	expect(sent).toMatchObject({ id: worker.id, mode: "turn", receipt: { status: "accepted", turn: 2 } });
 	await manager.waitForAll();
-	const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
+	const settled = await waitForWorkers(runtime, session, [worker.id], 5_000);
+	expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t2` } }]);
 	// The resumed turn issued its request on the switched model, not the spawn model.
 	expect(requestedModels).toEqual(["controlled-model", "gpt-4.1-mini"]);
 	// The switch persists: a plain follow-up after the switch stays on the new model.
@@ -1045,7 +1118,7 @@ test("send model= rejects an unmatched model without touching the worker", async
 	authStorage.setRuntimeApiKey("openai", "test-key");
 	const worker = await runtime.spawn(session, { message: "baseline turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	const screensBefore = runtime.screens(session, [worker.id]);
 
 	await expect(
@@ -1093,8 +1166,8 @@ test("send model= on a streaming worker switches the running turn mid-task", asy
 		expect(sent.mode).toBe("steered");
 		blocked.resolve();
 		await manager.waitForAll();
-		const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
-		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 1 } }]);
+		const settled = await waitForWorkers(runtime, session, [worker.id], 5_000);
+		expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t1` } }]);
 		expect(requestedModels.length).toBeGreaterThan(requestsBeforeSwitch);
 		for (const modelId of requestedModels.slice(requestsBeforeSwitch)) {
 			expect(modelId).toBe("gpt-4.1-mini");
@@ -1133,7 +1206,7 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
 	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
-	await runtime.wait(session, { sessions: [worker.id] });
+	await waitForWorkers(runtime, session, [worker.id]);
 	const live = AgentRegistry.global().get(worker.id)?.session;
 	expect(live).toBeDefined();
 	const running = Promise.withResolvers<void>();
@@ -1153,8 +1226,8 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 		blocked.resolve();
 		await external;
 		await manager.waitForAll();
-		const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 1_000 });
-		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered", turn: 2 } }]);
+		const settled = await waitForWorkers(runtime, session, [worker.id], 1_000);
+		expect(settled).toMatchObject([{ status: "completed", ref: { kind: "job", id: `${worker.id}-t2` } }]);
 		expect(runtime.screens(session, [worker.id])).toMatchObject([
 			{ lifecycle: "live", turnState: "idle", addressable: true, turns: 2 },
 		]);
@@ -1182,13 +1255,15 @@ test("omitting an agent uses the parent's permitted default instead of rejecting
 	const restricted = { ...session, taskDepth: 1, getSessionSpawns: () => "scout" };
 	const worker = await runtime.spawn(restricted, { message: "permitted default worker" });
 	await manager.waitForAll();
-	const result = await runtime.wait(restricted, { sessions: [worker.id], timeoutMs: 1_000 });
-	expect(result.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered" } }]);
+	const result = await waitForWorkers(runtime, restricted, [worker.id], 1_000);
+	expect(result).toMatchObject([{ status: "completed", ref: { kind: "job", id: worker.jobId } }]);
 });
 
 test("a nested worker wait returns runnable capacity at concurrency one", async () => {
 	let childStarted = false;
-	let waitTimedOut: boolean | undefined;
+	let childJobId: string | undefined;
+	let childStatusWhenWaitReturned: string | undefined;
+	let waitFailed: boolean | undefined;
 	const streamFn: StreamFn = (model, context) => {
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
@@ -1198,36 +1273,43 @@ test("a nested worker wait returns runnable capacity at concurrency one", async 
 				pushToolCall(stream, model, call("child-yield", "yield", { result: { data: "child completed" } }));
 				return;
 			}
-			const waited = context.messages.findLast(
-				entry => entry.role === "toolResult" && entry.toolName === "orchestrate_wait",
-			);
+			const waited = context.messages.findLast(entry => entry.role === "toolResult" && entry.toolName === "jobs");
 			if (waited?.role === "toolResult") {
-				waitTimedOut = (waited.details as { wait?: { timedOut: boolean } })?.wait?.timedOut;
+				waitFailed = waited.isError === true;
+				childStatusWhenWaitReturned = childJobId ? manager.getJob(childJobId)?.status : undefined;
 				pushToolCall(stream, model, call("parent-yield", "yield", { result: { data: "parent completed" } }));
 				return;
 			}
-			const spawned = context.messages.findLast(
-				entry => entry.role === "toolResult" && entry.toolName === "orchestrate_spawn",
-			);
+			const spawned = context.messages.findLast(entry => entry.role === "toolResult" && entry.toolName === "fleet");
 			if (spawned?.role === "toolResult") {
-				const id = (spawned.details as { spawned?: { id: string } })?.spawned?.id;
-				pushToolCall(stream, model, call("nested-wait", "orchestrate_wait", { ids: [id], timeoutMs: 5_000 }));
+				childJobId = (spawned.details as { receipt?: { job: { id: string } } })?.receipt?.job.id;
+				pushToolCall(
+					stream,
+					model,
+					call("nested-wait", "jobs", {
+						op: "wait",
+						targets: [{ kind: "job", id: childJobId }],
+						timeoutMs: 5_000,
+					}),
+				);
 				return;
 			}
-			pushToolCall(stream, model, call("nested-spawn", "orchestrate_spawn", { message: "nested-child" }));
+			pushToolCall(stream, model, call("nested-spawn", "fleet", { op: "spawn", message: "nested-child" }));
 		});
 		return stream;
 	};
 	const { runtime, session, manager } = await controlledFixture({
 		streamFn,
 		maxConcurrency: 1,
-		tools: ["yield", "orchestrate_spawn", "orchestrate_wait", "orchestrate_list"],
+		tools: ["yield", "fleet", "jobs"],
 	});
 	const parent = await runtime.spawn(session, { message: "nested-parent" });
 	await withTimeout(manager.waitForAll(), 10_000, "nested worker starved behind its waiting parent's permit");
 	expect(childStarted).toBe(true);
-	expect(waitTimedOut).toBe(false);
-	expect((await runtime.wait(session, { sessions: [parent.id] })).settled).toMatchObject([{ status: "completed" }]);
+	expect(waitFailed).toBe(false);
+	// The parent's wait returned because its child's turn completed, not because the window elapsed.
+	expect(childStatusWhenWaitReturned).toBe("completed");
+	expect(await waitForWorkers(runtime, session, [parent.id])).toMatchObject([{ status: "completed" }]);
 }, 30_000);
 
 test("spawn admission rejects queued count and schema bytes before persisting identities, then cancellation frees it", async () => {
@@ -1386,7 +1468,13 @@ test("accepted turns queued before worker allocation survive cold restart with t
 		expect(observedInputs).toHaveLength(9);
 		for (let index = 0; index < 9; index++)
 			expect(observedInputs.some(input => input.includes(`cold-queued-${index}`))).toBe(true);
-		expect((await restored.wait(coldSession, { sessions: queued.map(worker => worker.id) })).settled).toHaveLength(9);
+		expect(
+			await waitForWorkers(
+				restored,
+				coldSession,
+				queued.map(worker => worker.id),
+			),
+		).toHaveLength(9);
 	} finally {
 		await restored.suspendScope(restored.ownerScope(coldSession), manager);
 		await reopened.close();
@@ -1409,28 +1497,35 @@ test("a cold revived worker restores its own grandchildren and can continue thei
 				return;
 			}
 			const recent = context.messages.slice(userIndex + 1);
-			const completed = recent.some(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_wait");
+			const completed = recent.some(entry => entry.role === "toolResult" && entry.toolName === "jobs");
 			if (completed) {
 				pushToolCall(stream, model, call("parent-result", "yield", { result: { data: "nested turn complete" } }));
 				return;
 			}
-			const spawned = recent.find(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_spawn");
-			if (spawned?.role === "toolResult") grandchildId = (spawned.details as { spawned: { id: string } }).spawned.id;
-			const sent = recent.some(entry => entry.role === "toolResult" && entry.toolName === "orchestrate_send");
-			if (spawned || sent) {
+			const tracked = recent.findLast(entry => entry.role === "toolResult" && entry.toolName === "fleet");
+			const receipt =
+				tracked?.role === "toolResult"
+					? (tracked.details as { receipt?: { workerId: string; job: { id: string } } }).receipt
+					: undefined;
+			if (receipt) {
+				grandchildId = receipt.workerId;
 				pushToolCall(
 					stream,
 					model,
-					call("wait-grandchild", "orchestrate_wait", { ids: [grandchildId], timeoutMs: 5_000 }),
+					call("wait-grandchild", "jobs", {
+						op: "wait",
+						targets: [{ kind: "job", id: receipt.job.id }],
+						timeoutMs: 5_000,
+					}),
 				);
 			} else if (user.includes("cold-parent-followup")) {
 				pushToolCall(
 					stream,
 					model,
-					call("send-grandchild", "orchestrate_send", { to: grandchildId, message: "grandchild-task resumed" }),
+					call("send-grandchild", "fleet", { op: "send", id: grandchildId, message: "grandchild-task resumed" }),
 				);
 			} else {
-				pushToolCall(stream, model, call("spawn-grandchild", "orchestrate_spawn", { message: "grandchild-task" }));
+				pushToolCall(stream, model, call("spawn-grandchild", "fleet", { op: "spawn", message: "grandchild-task" }));
 			}
 		});
 		return stream;
@@ -1438,7 +1533,7 @@ test("a cold revived worker restores its own grandchildren and can continue thei
 	const fixture = await controlledFixture({
 		streamFn,
 		maxConcurrency: 1,
-		tools: ["yield", "orchestrate_spawn", "orchestrate_send", "orchestrate_wait", "orchestrate_list"],
+		tools: ["yield", "fleet", "jobs"],
 	});
 	const { runtime, session, manager, agent, model } = fixture;
 	const parent = await runtime.spawn(session, { message: "warm-parent-turn" });
@@ -1487,8 +1582,8 @@ test("a cold revived worker restores its own grandchildren and can continue thei
 		expect(await coldRuntime.rehydrate(session)).toBe(1);
 		await coldRuntime.send(session, { session: parent.id, message: "cold-parent-followup" });
 		await withTimeout(manager.waitForAll(), 10_000, "nested cold turns failed to settle");
-		const outcome = await coldRuntime.wait(session, { sessions: [parent.id] });
-		expect(outcome.settled).toMatchObject([{ status: "completed" }]);
+		const outcome = await waitForWorkers(coldRuntime, session, [parent.id]);
+		expect(outcome).toMatchObject([{ status: "completed" }]);
 		expect(
 			AgentRegistry.global()
 				.get(grandchildId!)
@@ -1598,9 +1693,7 @@ test("a restart after accepting the runnable turn but before child initializatio
 		expect(await restored.rehydrate(coldSession, coldSession)).toBe(1);
 		await manager.waitForAll();
 		expect(restored.listIds(coldSession)).toEqual([accepted.id]);
-		expect((await restored.wait(coldSession, { sessions: [accepted.id] })).settled).toMatchObject([
-			{ status: "completed" },
-		]);
+		expect(await waitForWorkers(restored, coldSession, [accepted.id])).toMatchObject([{ status: "completed" }]);
 	} finally {
 		await restored.suspendScope(restored.ownerScope(coldSession), manager);
 		await reopened.close();

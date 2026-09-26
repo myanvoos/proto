@@ -11,7 +11,7 @@ import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import { attachWakeTurnMonitor } from "../task/executor";
-import type { MonitorToolDetails } from "../tools/monitor";
+import type { JobsDetails } from "../tools/jobs";
 import type { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { MONITOR_EVENT_MESSAGE_TYPE } from "./monitor-event";
@@ -129,11 +129,11 @@ function answerTurns(harness: Harness): Promise<void> {
 }
 
 async function start(harness: Harness, command: string, label = "deploy") {
-	const tool = harness.session.getToolByName("monitor");
+	const tool = harness.session.getToolByName("jobs");
 	expect(tool).toBeDefined();
-	const result = await tool!.execute("start-monitor", { op: "start", command, label, match: "READY", maxEvents: 100 });
+	const result = await tool!.execute("start-watch", { op: "watch", command, label, match: "READY", maxEvents: 100 });
 	expect(result.isError).toBeUndefined();
-	return (result.details as MonitorToolDetails).monitors[0]!;
+	return (result.details as JobsDetails).ref!;
 }
 
 async function sharedHarnesses(
@@ -216,7 +216,7 @@ test("a registered subagent monitor wakes only its owner and invokes the wake-tu
 	});
 }, 30_000);
 
-test("fleet lists and cancels monitor jobs without leaking owner events or hanging settlement", async () => {
+test("jobs lists and unwatches monitor jobs without leaking owner events or hanging settlement", async () => {
 	await sharedHarnesses(async (manager, _registry, parent, worker, sibling) => {
 		for (const harness of [parent, worker, sibling]) answerTurns(harness);
 		const own = await start(worker, "sleep 60", "worker monitor");
@@ -224,11 +224,11 @@ test("fleet lists and cancels monitor jobs without leaking owner events or hangi
 		expect(worker.session.hasPendingAsyncWork()).toBe(false);
 		await worker.session.settleAsyncWork();
 		expect(manager.getJob(own.id)?.status).toBe("running");
-		const fleet = worker.session.getToolByName("fleet")!;
-		const listed = await fleet.execute("list", { op: "jobs" });
+		const jobs = worker.session.getToolByName("jobs")!;
+		const listed = await jobs.execute("list", { op: "list", kind: "watch" });
 		const text = listed.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
 		expect(text).toContain(own.id);
-		const cancelled = await fleet.execute("cancel", { op: "cancel", ids: [own.id] });
+		const cancelled = await jobs.execute("unwatch", { op: "unwatch", target: own });
 		expect(cancelled.isError).toBeUndefined();
 		await worker.session.settleAsyncWork();
 		expect(manager.getJob(own.id)?.status).toBe("cancelled");
@@ -276,7 +276,7 @@ test("idle worker parking retains active monitor owner until cancellation", asyn
 			await lifecycle.park("monitor-worker");
 			expect(registry.get("monitor-worker")?.session).toBe(worker.session);
 			expect(worker.session.isDisposed).toBe(false);
-			await worker.session.getToolByName("fleet")!.execute("cancel", { op: "cancel", ids: [monitor.id] });
+			await worker.session.getToolByName("jobs")!.execute("unwatch", { op: "unwatch", target: monitor });
 			await worker.session.settleAsyncWork();
 			await lifecycle.park("monitor-worker");
 			expect(registry.get("monitor-worker")?.status).toBe("parked");
@@ -287,7 +287,7 @@ test("idle worker parking retains active monitor owner until cancellation", asyn
 	});
 }, 30_000);
 
-test("async disabled hides the monitor tool even with a shared manager", async () => {
+test("async disabled refuses watch creation even with a shared manager", async () => {
 	const previous = AsyncJobManager.instance();
 	const manager = new AsyncJobManager({});
 	AsyncJobManager.setInstance(manager);
@@ -299,7 +299,11 @@ test("async disabled hides the monitor tool even with a shared manager", async (
 	});
 	try {
 		expect(harness.session.asyncJobManager).toBeUndefined();
-		expect(harness.session.getToolByName("monitor")).toBeUndefined();
+		const denied = await harness.session
+			.getToolByName("jobs")!
+			.execute("denied", { op: "watch", command: "printf not-run" });
+		expect(denied.isError).toBe(true);
+		expect(manager.getRunningJobs()).toEqual([]);
 	} finally {
 		await closeHarness(harness);
 		await manager.dispose();
@@ -307,7 +311,7 @@ test("async disabled hides the monitor tool even with a shared manager", async (
 	}
 }, 30_000);
 
-test("fleet event consumption invalidates an already queued lazy monitor yield", async () => {
+test("jobs wait consumption invalidates an already queued lazy monitor yield", async () => {
 	await sharedHarnesses(async (manager, _registry, parent, worker, sibling) => {
 		const queued = Promise.withResolvers<Array<() => unknown>>();
 		const enqueue = worker.session.yieldQueue.enqueue.bind(worker.session.yieldQueue);
@@ -319,8 +323,8 @@ test("fleet event consumption invalidates an already queued lazy monitor yield",
 			const monitor = await start(worker, "printf 'READY once\n'; sleep 60");
 			const lazy = await queued.promise;
 			const waiting = await worker.session
-				.getToolByName("fleet")!
-				.execute("wait", { op: "wait", ids: [monitor.id] });
+				.getToolByName("jobs")!
+				.execute("wait", { op: "wait", targets: [monitor] });
 			expect(waiting.content.map(part => (part.type === "text" ? part.text : "")).join("\n")).toContain(
 				"READY once",
 			);

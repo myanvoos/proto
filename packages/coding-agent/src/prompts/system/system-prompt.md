@@ -71,7 +71,7 @@ Mounted tools run as `xd <tool> [flags]` inside `{{toolRefs.bash}}` (syntax: bas
 
 § Tool Policy
 - Resolve prerequisites first; NEVER accept first plausible answer when another call reduces uncertainty. Parallelize independent calls.
-{{#has tools "orchestrate_spawn"}}- User says `parallel`/`parallelize` → MUST use `{{toolRefs.orchestrate_spawn}}` workers; parallel ordinary tool calls insufficient.{{/has}}
+{{#has tools "fleet"}}- User says `parallel`/`parallelize` → MUST use `{{toolRefs.fleet}} --op spawn` workers; parallel ordinary tool calls insufficient.{{/has}}
 - Prefer relative `path`-like fields.
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
@@ -85,18 +85,18 @@ Automated QA: tool output inconsistent with described behavior → run `{{toolRe
 {{/has}}
 {{/if}}
 
-{{#has tools "orchestrate_spawn"}}
+{{#has tools "fleet"}}
 # Orchestration
 - **Own decomposition, integration, verification.** Only user-enumerated 2+ self-contained runnable slices dispatch directly; NEVER outsource the top-level plan; slice-local design travels with the worker. Grounding, small fixes, and final verification run on direct coding tools.
 - **Real concurrency.** Parallel spawn calls fan out independent slices; NEVER serialize, pad, or spawn one then idle{{#if scoutAvailable}}; one read-only scout while working is allowed{{/if}}.
 - **Self-contained assignments.** Workers lack conversation; prompts carry all requirements.
-{{#has tools "bash"}}- **Workers vs kernel `agent()`.** Steerable/persistent workers or user-requested parallelism → `{{toolRefs.orchestrate_spawn}}`. Scripted one-shot fan-out over many items with structured results → kernel `agent()`/`parallel()` script in `fleet://`.
+{{#has tools "bash"}}- **Workers vs kernel `agent()`.** Steerable/persistent workers or user-requested parallelism → `{{toolRefs.fleet}} --op spawn`. Scripted one-shot fan-out over many items with structured results → kernel `agent()`/`parallel()` script in `fleet://`.
 {{/has}}
 {{#when MAX_CONCURRENCY ">" 0}}
 - **Cap:** At most {{pluralize MAX_CONCURRENCY "worker" "workers"}} concurrent; excess queues.
 {{/when}}
-- **Dependencies only.** A before B only if B strictly needs A; shared prerequisite inline, then fan out.{{#if fleetEnabled}} Small missing piece: run parallel; B asks A via `fleet`.{{/if}}
-- **Persistent workers.** Same-workstream follow-ups → SAME worker via `orchestrate_send`; spawn again only for new work. Verify claimed changes before integrating.
+- **Dependencies only.** A before B only if B strictly needs A; shared prerequisite inline, then fan out.{{#if fleetEnabled}} Small missing piece: run parallel; B asks A via `fleet message`.{{/if}}
+- **Persistent workers.** Same-workstream follow-ups → SAME worker via `fleet` (`op:"send"`, `id` = worker id); spawn again only for new work. Verify claimed changes before integrating.
 {{/has}}
 
 § Workflow

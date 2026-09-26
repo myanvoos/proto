@@ -11,13 +11,32 @@ export const DAEMON_IDLE_GRACE_ENV = "PROTO_DAEMON_IDLE_GRACE_MS";
 
 export const DAEMON_MAX_REQUEST_BYTES = 1024 * 1024;
 
-/** Upper bound on every timeout the fleet tool hands the broker, readiness waits included. */
+/** Upper bound on every timeout the jobs tool hands the broker, readiness waits included. */
 export const DAEMON_MAX_TIMEOUT_MS = 3_600_000;
+
+/**
+ * Wire protocol spoken by this broker. Version 2 adds incarnation-checked control (`expectedId` on
+ * every name-addressed operation, a new id per explicit restart) and the cursor-addressed `read`.
+ * Older brokers silently ignore unknown fields, so clients must confirm the capability before
+ * sending an identity-checked request instead of trusting a name-only fallback.
+ */
+export const DAEMON_PROTOCOL_VERSION = 2;
+
+export const DAEMON_CAPABILITY_PROCESS_IDENTITY = "process-identity";
+
+export const DAEMON_BROKER_CAPABILITIES: readonly string[] = [DAEMON_CAPABILITY_PROCESS_IDENTITY];
+
+/** Bytes one `read` may return; callers continue from `nextCursor`. */
+export const DAEMON_MAX_READ_BYTES = 256 * 1024;
+
+/** `stale-reference`: `expectedId` names an incarnation the process name no longer refers to. */
+export type DaemonErrorCode = "stale-reference";
 
 export class DaemonBrokerRejectedError extends Error {
 	constructor(
 		message: string,
 		readonly retryable = false,
+		readonly code?: DaemonErrorCode,
 	) {
 		super(message);
 	}
@@ -80,6 +99,7 @@ export type DaemonOperation =
 	| {
 			op: "logs";
 			name: string;
+			expectedId?: string;
 			lines: number;
 			head: boolean;
 			grep?: string;
@@ -89,22 +109,39 @@ export type DaemonOperation =
 			renderTerminalRows?: boolean;
 			timeoutMs: number;
 	  }
-	| { op: "wait"; name: string; for: "ready" | "exit"; pattern?: string; timeoutMs: number }
+	| { op: "wait"; name: string; expectedId?: string; for: "ready" | "exit"; pattern?: string; timeoutMs: number }
+	| {
+			/** Raw captured output after a log byte cursor, bounded, with explicit loss accounting. */
+			op: "read";
+			name: string;
+			expectedId: string;
+			cursor: number;
+			maxBytes: number;
+			/** Milliseconds to wait for output newer than `cursor`; 0 returns immediately. */
+			timeoutMs: number;
+	  }
 	| {
 			op: "send";
 			name: string;
+			expectedId?: string;
 			data?: string;
 			enter?: boolean;
 			keys?: string[];
 			signal?: DaemonSignal;
 	  }
 	| { op: "stop"; name: string; timeoutMs: number; expectedId?: string }
-	| { op: "restart"; name: string }
-	| { op: "describe"; name: string }
+	| { op: "restart"; name: string; expectedId?: string }
+	| { op: "describe"; name: string; expectedId?: string }
 	| { op: "shutdown" };
 
 export type DaemonRpcResult =
-	| { op: "ping"; projectDir: string }
+	| {
+			op: "ping";
+			projectDir: string;
+			/** Absent from brokers that predate the handshake (protocol 1). */
+			protocolVersion?: number;
+			capabilities?: string[];
+	  }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
 	| {
@@ -120,6 +157,19 @@ export type DaemonRpcResult =
 			state: DaemonState;
 	  }
 	| { op: "wait"; daemon: DaemonSnapshot; matched?: string; timedOut: boolean }
+	| {
+			op: "read";
+			daemon: DaemonSnapshot;
+			text: string;
+			/** Cursor the returned text starts at: the request cursor unless output was lost. */
+			cursor: number;
+			nextCursor: number;
+			/** Bytes between the request cursor and `cursor` that are no longer retained. */
+			omittedBytes: number;
+			/** The process's cursor space restarted (e.g. relaunch or broker recovery) since `cursor`. */
+			reset: boolean;
+			timedOut: boolean;
+	  }
 	| { op: "send"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
 	| { op: "restart"; daemon: DaemonSnapshot; readyTimedOut: boolean; ready?: DaemonReadySpec }
@@ -141,7 +191,7 @@ export interface DaemonWireRequest {
 
 type DaemonWireResponse =
 	| { id: string; ok: true; result: unknown }
-	| { id: string; ok: false; error: string; retryable?: boolean };
+	| { id: string; ok: false; error: string; retryable?: boolean; code?: DaemonErrorCode };
 
 export interface DaemonCompletionNotification {
 	event: "daemon-completed";
@@ -341,6 +391,7 @@ function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 			ok: false,
 			error: stringValue(source.error, "response.error"),
 			retryable: optionalBoolean(source.retryable, "response.retryable"),
+			...(source.code === "stale-reference" ? { code: source.code } : {}),
 		};
 	}
 	throw new Error("response.ok must be a boolean");
@@ -357,6 +408,26 @@ export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 		};
 	}
 	return parseDaemonWireResponse(value);
+}
+
+function expectedIdField(source: Record<string, unknown>): { expectedId?: string } {
+	return source.expectedId === undefined ? {} : { expectedId: stringValue(source.expectedId, "operation.expectedId") };
+}
+
+/** Operations whose name lookup must be pinned to one incarnation by a protocol-2 broker. */
+export function requiresProcessIdentity(operation: DaemonOperation): boolean {
+	switch (operation.op) {
+		case "read":
+			return true;
+		case "logs":
+		case "wait":
+		case "send":
+		case "restart":
+		case "describe":
+			return operation.expectedId !== undefined;
+		default:
+			return false;
+	}
 }
 
 function parseDaemonOperation(value: unknown): DaemonOperation {
@@ -385,6 +456,7 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 			return {
 				op,
 				name: stringValue(source.name, "operation.name"),
+				...expectedIdField(source),
 				lines: numberValue(source.lines, "operation.lines"),
 				head: booleanValue(source.head, "operation.head"),
 				grep: optionalString(source.grep, "operation.grep"),
@@ -399,15 +471,26 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 			return {
 				op,
 				name: stringValue(source.name, "operation.name"),
+				...expectedIdField(source),
 				for: target,
 				pattern: optionalString(source.pattern, "operation.pattern"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
 			};
 		}
+		case "read":
+			return {
+				op,
+				name: stringValue(source.name, "operation.name"),
+				expectedId: stringValue(source.expectedId, "operation.expectedId"),
+				cursor: numberValue(source.cursor, "operation.cursor"),
+				maxBytes: numberValue(source.maxBytes, "operation.maxBytes"),
+				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
+			};
 		case "send":
 			return {
 				op,
 				name: stringValue(source.name, "operation.name"),
+				...expectedIdField(source),
 				data: optionalString(source.data, "operation.data"),
 				enter: optionalBoolean(source.enter, "operation.enter"),
 				keys: source.keys === undefined ? undefined : stringArray(source.keys, "operation.keys"),
@@ -418,13 +501,11 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
-				...(source.expectedId === undefined
-					? {}
-					: { expectedId: stringValue(source.expectedId, "operation.expectedId") }),
+				...expectedIdField(source),
 			};
 		case "restart":
 		case "describe":
-			return { op, name: stringValue(source.name, "operation.name") };
+			return { op, name: stringValue(source.name, "operation.name"), ...expectedIdField(source) };
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -434,7 +515,16 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 	const source = record(value, `${operation.op} result`);
 	switch (operation.op) {
 		case "ping":
-			return { op: "ping", projectDir: stringValue(source.projectDir, "result.projectDir") };
+			return {
+				op: "ping",
+				projectDir: stringValue(source.projectDir, "result.projectDir"),
+				...(source.protocolVersion === undefined
+					? {}
+					: { protocolVersion: numberValue(source.protocolVersion, "result.protocolVersion") }),
+				...(source.capabilities === undefined
+					? {}
+					: { capabilities: stringArray(source.capabilities, "result.capabilities") }),
+			};
 		case "start":
 			return {
 				op: "start",
@@ -463,6 +553,17 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 				op: "wait",
 				daemon: parseDaemonSnapshot(source.daemon),
 				matched: optionalRawString(source.matched, "result.matched"),
+				timedOut: booleanValue(source.timedOut, "result.timedOut"),
+			};
+		case "read":
+			return {
+				op: "read",
+				daemon: parseDaemonSnapshot(source.daemon),
+				text: rawString(source.text, "result.text"),
+				cursor: numberValue(source.cursor, "result.cursor"),
+				nextCursor: numberValue(source.nextCursor, "result.nextCursor"),
+				omittedBytes: numberValue(source.omittedBytes, "result.omittedBytes"),
+				reset: booleanValue(source.reset, "result.reset"),
 				timedOut: booleanValue(source.timedOut, "result.timedOut"),
 			};
 		case "send":

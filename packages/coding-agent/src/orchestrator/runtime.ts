@@ -55,8 +55,6 @@ const TURN_TRACE_CAP = 40;
 
 const TRACE_LINE_MAX = 120;
 
-const DEFAULT_WAIT_TIMEOUT_MS = 15 * 60_000;
-
 const RESPONSE_PREVIEW_MAX = 6000;
 
 const TEARDOWN_GRACE_MS = 5_000;
@@ -161,6 +159,16 @@ interface ResolvedWorkerSchema {
 	outputSchemaSource: StructuredSubagentSchemaSource;
 }
 
+interface QueuedTurn {
+	message: string;
+	turn: number;
+	jobId: string;
+	/** Makes this the active turn synchronously and lets its job proceed to the runnable scheduler. */
+	start: () => void;
+	/** Cancels the queued job; its admission is released when the job settles. */
+	cancel: () => void;
+}
+
 interface WorkerTurn {
 	jobId: string;
 	message: string;
@@ -225,8 +233,6 @@ interface WorkerRecord {
 	};
 
 	lastJobId?: string;
-	/** Delivery watermark belongs to the worker, not a process-lifetime job-id set. */
-	waitedTurn?: number;
 
 	/** Spend of every settled turn of this worker, as attributed to the owning session. */
 	usage: WorkerUsage;
@@ -240,7 +246,8 @@ interface WorkerRecord {
 	steeringCleanups?: Set<() => void>;
 	steeringInFlight?: { count: number; bytes: number };
 
-	queue: Array<{ message: string; turn: number; admission: AsyncJobAdmission }>;
+	/** Accepted follow-ups, each already registered as its own queued turn job. */
+	queue: QueuedTurn[];
 	turnCount: number;
 	killed: boolean;
 
@@ -265,6 +272,12 @@ export interface WorkerScreen {
 	model?: string;
 	turns: number;
 	queued: number;
+	/** Job running the current turn, when one is in flight. */
+	turnJobId?: string;
+	/** Job of the most recently settled turn. */
+	lastJobId?: string;
+	/** Jobs of accepted follow-up turns waiting behind the current one, in order. */
+	queuedJobIds: string[];
 
 	/** Spend attributed to this worker so far, across its settled turns. */
 	usage?: WorkerUsage;
@@ -306,7 +319,7 @@ export interface SendOutcome {
 	id: string;
 	label: string;
 	mode: "turn" | "steered" | "queued";
-	jobId?: string;
+	jobId: string;
 	receipt: WorkerReceipt;
 }
 
@@ -317,19 +330,6 @@ export interface KillOutcome {
 	receipt: WorkerReceipt;
 }
 
-export interface WaitOutcome {
-	settled: Array<{
-		id: string;
-		label: string;
-		jobId: string;
-		status: "completed" | "failed" | "cancelled";
-		resultText: string;
-		receipt: WorkerReceipt;
-	}>;
-
-	stillRunning: string[];
-	timedOut: boolean;
-}
 type TeardownStatus = "pending" | "settled" | "failed";
 
 interface TrackedTeardown {
@@ -928,7 +928,7 @@ export class OrchestratorRuntime {
 		if (!record || !matchesScope(record, scope)) {
 			const roster = this.#listIds(scope);
 			throw new ToolError(
-				`Unknown worker "${id}".${roster.length > 0 ? ` Active workers: ${roster.join(", ")}` : " No workers — spawn one with orchestrate_spawn."}`,
+				`Unknown worker "${id}".${roster.length > 0 ? ` Active workers: ${roster.join(", ")}` : ' No owned workers — spawn one with fleet op "spawn".'}`,
 			);
 		}
 		if (this.#coldRecords.has(record.id)) this.#setRecord(scope, record);
@@ -948,8 +948,8 @@ export class OrchestratorRuntime {
 	}
 
 	#clearPendingMessages(record: WorkerRecord): void {
-		for (const queued of record.queue) queued.admission.release();
-		record.queue.length = 0;
+		const queued = record.queue.splice(0);
+		for (const entry of queued) entry.cancel();
 		for (const cleanup of record.steeringCleanups ?? []) cleanup();
 		record.steeringCleanups = undefined;
 	}
@@ -1178,6 +1178,9 @@ export class OrchestratorRuntime {
 				model: this.#displayModel(session, record),
 				turns: record.turnCount,
 				queued: record.queue.length,
+				...(record.turn ? { turnJobId: record.turn.jobId } : {}),
+				...(record.lastJobId ? { lastJobId: record.lastJobId } : {}),
+				queuedJobIds: record.queue.map(entry => entry.jobId),
 				...(record.usage.turns > 0 ? { usage: { ...record.usage } } : {}),
 				turnStartedAt: record.turn?.startedAt,
 				turnMessage: record.turn ? firstLine(record.turn.message, 80) : undefined,
@@ -1748,7 +1751,7 @@ export class OrchestratorRuntime {
 				const pending = steering.length + inFlight.count;
 				const bytes = steering.reduce((total, text) => total + Buffer.byteLength(text), inFlight.bytes);
 				if (pending >= MAX_QUEUED_TURNS || bytes + Buffer.byteLength(message) > MAX_QUEUED_TURN_BYTES) {
-					const reason = `Worker "${record.id}" already has ${pending}/${MAX_QUEUED_TURNS} steering messages (${bytes}/${MAX_QUEUED_TURN_BYTES} bytes) its current turn has not read yet. Wait for the turn to settle (orchestrate_wait), then retry this message.`;
+					const reason = `Worker "${record.id}" already has ${pending}/${MAX_QUEUED_TURNS} steering messages (${bytes}/${MAX_QUEUED_TURN_BYTES} bytes) its current turn has not read yet. Wait for the turn job to settle (jobs op "wait"), then retry this message.`;
 					throw new ToolError(reason, {
 						receipt: this.#receipt(record, "rejected", record.turnCount, record.turn.jobId, reason),
 					});
@@ -1802,21 +1805,34 @@ export class OrchestratorRuntime {
 			}
 			const queuedBytes = record.queue.reduce((total, item) => total + Buffer.byteLength(item.message), 0);
 			const messageBytes = Buffer.byteLength(message);
-			const queuedTurn = record.turnCount + record.queue.length + 1;
+			// Turn numbers are reserved at acceptance; a cancelled queued turn keeps its number.
+			const queuedTurn = (record.queue.at(-1)?.turn ?? record.turnCount) + 1;
 			if (record.queue.length >= MAX_QUEUED_TURNS || queuedBytes + messageBytes > MAX_QUEUED_TURN_BYTES) {
 				const reason = `Worker "${record.id}" follow-up queue is full (${record.queue.length}/${MAX_QUEUED_TURNS} turns, ${queuedBytes}/${MAX_QUEUED_TURN_BYTES} bytes). Wait for a turn to settle, then retry this message.`;
 				throw new ToolError(reason, {
 					receipt: this.#receipt(record, "rejected", queuedTurn, record.turn.jobId, reason),
 				});
 			}
-			const admission = this.#manager(session).reserve({ ownerId: record.jobOwnerId, bytes: messageBytes });
-			record.queue.push({ message, turn: queuedTurn, admission });
+			const manager = this.#manager(session);
+			const admission = manager.reserve({ ownerId: record.jobOwnerId, bytes: messageBytes });
+			let jobId: string;
+			try {
+				jobId = this.#registerTurnJob(session, manager, record, message, {
+					first: false,
+					admission,
+					queuedTurn,
+				});
+			} catch (error) {
+				admission.release();
+				throw error;
+			}
 			record.lastActivityAt = Date.now();
 			return {
 				id: record.id,
 				label: record.label,
 				mode: "queued",
-				receipt: this.#receipt(record, "queued", queuedTurn),
+				jobId,
+				receipt: this.#receipt(record, "queued", queuedTurn, jobId),
 			};
 		}
 
@@ -1840,115 +1856,29 @@ export class OrchestratorRuntime {
 			receipt: this.#receipt(record, "accepted", record.turnCount, jobId),
 		};
 	}
-	async wait(
-		session: ToolSession,
-		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
-	): Promise<WaitOutcome> {
-		const scope = this.#activeScope(session);
-		const manager = this.#manager(session);
-		this.#resumePending(session, scope);
-
-		// A bare wait covers turns in flight *and* turns that settled before the parent got here:
-		// a result that was never delivered is exactly what the parent is waiting for.
-		const watched = args.sessions?.length
-			? args.sessions.map(id => this.#record(scope, id))
-			: [...this.#scopeRecords(scope).values()].filter(
-					record =>
-						record.turn !== undefined ||
-						(record.lastJobId !== undefined && record.waitedTurn !== record.turnCount),
-				);
-
-		const snapshots: Array<{ record: WorkerRecord; jobId: string; turn: number }> = [];
-		for (const record of watched) {
-			const jobId = record.turn?.jobId ?? record.lastJobId;
-			if (jobId) snapshots.push({ record, jobId, turn: record.turnCount });
+	/**
+	 * Runs a blocking wait on behalf of `session`. When the caller is itself a worker whose turn
+	 * holds a runnable-concurrency permit, the permit is lent back to the scheduler for the
+	 * duration of `run` and reacquired afterwards, so a parent waiting on its own children cannot
+	 * starve them at `orchestrator.maxConcurrency`. Overlapping waits share one release.
+	 */
+	async withWaitPermit<T>(session: OrchestratorParent, run: () => Promise<T>): Promise<T> {
+		const runnable = this.#runnableTurns.get(session.getAgentId?.() ?? MAIN_AGENT_ID);
+		if (!runnable) return run();
+		runnable.waits++;
+		if (runnable.held) {
+			runnable.held = false;
+			runnable.semaphore.release();
 		}
-
-		const collectSettled = (): WaitOutcome["settled"] => {
-			const settled: WaitOutcome["settled"] = [];
-			for (const { record, jobId, turn } of snapshots) {
-				if ((record.waitedTurn ?? 0) >= turn) continue;
-				const job = manager.getJob(jobId);
-				if (!job || job.status === "running") continue;
-				const receiptStatus: WorkerReceiptStatus =
-					job.status === "cancelled" ? (record.state === "dead" ? "terminal" : "rejected") : "delivered";
-				settled.push({
-					id: record.id,
-					label: record.label,
-					jobId,
-					status: job.status,
-					resultText: job.resultText ?? job.errorText ?? "(no output)",
-					receipt: this.#receipt(record, receiptStatus, turn, jobId, job.errorText),
-				});
-			}
-			return settled;
-		};
-
-		const runningJobs: AsyncJob[] = [];
-		for (const { jobId } of snapshots) {
-			const job = manager.getJob(jobId);
-			if (job?.status === "running") runningJobs.push(job);
-		}
-
-		let waitEndedByTimeout = false;
-		if (runningJobs.length > 0 && collectSettled().length === 0) {
-			const timeoutMs = Math.max(1, Math.trunc(args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS));
-			const watchedJobIds = runningJobs.map(job => job.id);
-			manager.watchJobs(watchedJobIds);
-			const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<"timeout">();
-			const timeoutHandle = setTimeout(() => timeoutResolve("timeout"), timeoutMs);
-			const racePromises: Array<Promise<"settled" | "timeout" | "aborted">> = [
-				...runningJobs.map(job => job.promise.then(() => "settled" as const)),
-				timeoutPromise,
-			];
-			let abortCleanup: (() => void) | undefined;
-			if (args.signal) {
-				const { promise: abortPromise, resolve: abortResolve } = Promise.withResolvers<"aborted">();
-				const onAbort = () => abortResolve("aborted");
-				if (args.signal.aborted) {
-					onAbort();
-				} else {
-					args.signal.addEventListener("abort", onAbort, { once: true });
-					abortCleanup = () => args.signal?.removeEventListener("abort", onAbort);
-				}
-				racePromises.push(abortPromise);
-			}
-			const runnable = this.#runnableTurns.get(scope.ownerId);
-			if (runnable) {
-				runnable.waits++;
-				if (runnable.held) {
-					runnable.held = false;
-					runnable.semaphore.release();
-				}
-			}
-			try {
-				waitEndedByTimeout = (await Promise.race(racePromises)) === "timeout";
-			} finally {
-				manager.unwatchJobs(watchedJobIds);
-				clearTimeout(timeoutHandle);
-				abortCleanup?.();
-				if (runnable && --runnable.waits === 0 && !runnable.signal.aborted) {
-					await runnable.semaphore.acquire(runnable.signal);
-					if (runnable.waits === 0) runnable.held = true;
-					else runnable.semaphore.release();
-				}
+		try {
+			return await run();
+		} finally {
+			if (--runnable.waits === 0 && !runnable.signal.aborted) {
+				await runnable.semaphore.acquire(runnable.signal);
+				if (runnable.waits === 0) runnable.held = true;
+				else runnable.semaphore.release();
 			}
 		}
-
-		const settled = collectSettled();
-		for (const { record, turn, jobId } of snapshots) {
-			if (settled.some(entry => entry.jobId === jobId)) {
-				record.waitedTurn = Math.max(record.waitedTurn ?? 0, turn);
-				if (this.#coldRecords.has(record.id))
-					this.#retiredRecords
-						?.query("UPDATE records SET data = ? WHERE id = ?")
-						.run(JSON.stringify(record), record.id);
-			}
-		}
-		manager.acknowledgeDeliveries(settled.map(entry => entry.jobId));
-
-		const stillRunning = watched.filter(record => record.turn !== undefined).map(record => record.id);
-		return { settled, stillRunning, timedOut: waitEndedByTimeout && settled.length === 0 };
 	}
 
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
@@ -2042,7 +1972,7 @@ export class OrchestratorRuntime {
 
 	/**
 	 * Terminate a worker the caller addressed by agent id, using the same cancellation
-	 * `orchestrate_kill` uses. Returns false when this scope owns no such worker, so callers
+	 * fleet `terminate` uses. Returns false when this scope owns no such worker, so callers
 	 * holding a registry ref (the agents view stop key) can fall back to plain session teardown.
 	 */
 	async killIfManaged(session: OrchestratorParent, id: string): Promise<KillOutcome | undefined> {
@@ -2283,7 +2213,7 @@ export class OrchestratorRuntime {
 		};
 	}
 
-	/** Folds a running turn's activity into the record the list and wait surfaces read. */
+	/** Folds a running turn's activity into the record the worker listing reads. */
 	#turnProgressHandler(record: WorkerRecord, turn: WorkerTurn): (progress: AgentProgress) => void {
 		return (progress: AgentProgress): void => {
 			if (record.state === "dead" || record.terminal) return;
@@ -2356,7 +2286,7 @@ export class OrchestratorRuntime {
 
 	/**
 	 * Tracks a turn an IRC wake started on a worker this scope owns, so the wake result is delivered
-	 * through `orchestrate_wait` exactly once and the turn is visible while it runs. Returns undefined
+	 * to its owner exactly once and the turn is visible while it runs. Returns undefined
 	 * when the worker cannot take a turn here, leaving the wake turn untracked as before.
 	 */
 	#claimWakeTurn(scope: OwnerScope, record: WorkerRecord, task: string): WakeTurnClaim | undefined {
@@ -2411,9 +2341,17 @@ export class OrchestratorRuntime {
 		manager: AsyncJobManager,
 		record: WorkerRecord,
 		message: string,
-		options: { first: boolean; admission?: AsyncJobAdmission; external?: Promise<ExternalTurnOutcome> },
+		options: {
+			first: boolean;
+			admission?: AsyncJobAdmission;
+			external?: Promise<ExternalTurnOutcome>;
+			/** Registers the job now but keeps it behind the active turn until `#finishTurn` starts it. */
+			queuedTurn?: number;
+		},
 	): string {
-		const turnIndex = record.turnCount + 1;
+		const turnIndex = options.queuedTurn ?? record.turnCount + 1;
+		const gate = options.queuedTurn !== undefined ? Promise.withResolvers<void>() : undefined;
+		let queuedEntry: QueuedTurn | undefined;
 		const turn: WorkerTurn = {
 			jobId: "",
 			message,
@@ -2428,6 +2366,13 @@ export class OrchestratorRuntime {
 			"worker",
 			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal, markRunning }) => {
+				if (gate && !(await this.#awaitQueuedTurn(gate.promise, signal)) && record.turn !== turn) {
+					const index = queuedEntry ? record.queue.indexOf(queuedEntry) : -1;
+					if (index >= 0) record.queue.splice(index, 1);
+					throw new WorkerTurnError(
+						`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] queued turn cancelled before it started`,
+					);
+				}
 				const runnable = { semaphore, signal, held: false, waits: 0 };
 				let started = false;
 				try {
@@ -2458,10 +2403,10 @@ export class OrchestratorRuntime {
 						const result = options.external
 							? await this.#awaitExternalTurn(options.external, signal)
 							: await this.#runOwnTurn(session, record, message, signal, onProgress, options.first);
-						return await this.#settleTurn(session, manager, record, turn, ownJobId, turnIndex, result);
+						return await this.#settleTurn(session, record, turn, ownJobId, turnIndex, result);
 					} catch (error) {
 						if (error instanceof WorkerTurnError) throw error;
-						await this.#finishTurn(session, manager, record, ownJobId);
+						await this.#finishTurn(session, record, ownJobId);
 						const reason = error instanceof Error ? error.message : String(error);
 						record.lastActivity = firstLine(`turn failed: ${reason}`);
 						throw new WorkerTurnError(
@@ -2470,7 +2415,7 @@ export class OrchestratorRuntime {
 					}
 				} catch (error) {
 					if (started) throw error;
-					await this.#finishTurn(session, manager, record, ownJobId);
+					await this.#finishTurn(session, record, ownJobId);
 					const reason = error instanceof Error ? error.message : String(error);
 					throw new WorkerTurnError(
 						`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn cancelled while queued: ${reason}`,
@@ -2491,17 +2436,45 @@ export class OrchestratorRuntime {
 		);
 		turn.jobId = jobId;
 		// Reservation precedes semaphore acquisition so cancellation cannot reuse a turn identity.
-		record.turnCount = turnIndex;
-		record.turn = turn;
+		const activate = (): void => {
+			turn.startedAt = Date.now();
+			record.turnCount = turnIndex;
+			record.turn = turn;
+		};
+		if (!gate) {
+			activate();
+			return jobId;
+		}
+		queuedEntry = {
+			message,
+			turn: turnIndex,
+			jobId,
+			start: () => {
+				activate();
+				gate.resolve();
+			},
+			cancel: () => {
+				manager.cancel(jobId, { ownerId: record.jobOwnerId });
+			},
+		};
+		record.queue.push(queuedEntry);
 		return jobId;
 	}
 
-	async #finishTurn(
-		session: ToolSession,
-		manager: AsyncJobManager,
-		record: WorkerRecord,
-		settledJobId: string,
-	): Promise<void> {
+	/** Resolves true once a queued turn is started, false when its job is cancelled first. */
+	async #awaitQueuedTurn(started: Promise<void>, signal: AbortSignal): Promise<boolean> {
+		if (signal.aborted) return false;
+		const { promise: aborted, resolve } = Promise.withResolvers<false>();
+		const onAbort = () => resolve(false);
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			return await Promise.race([started.then(() => true as const), aborted]);
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	async #finishTurn(session: ToolSession, record: WorkerRecord, settledJobId: string): Promise<void> {
 		if (record.lastJobId === settledJobId && record.turn?.jobId !== settledJobId) return;
 		record.lastJobId = settledJobId;
 		for (const cleanup of record.steeringCleanups ?? []) cleanup();
@@ -2574,22 +2547,12 @@ export class OrchestratorRuntime {
 			record.turn = undefined;
 			return;
 		}
-		// Every follow-up already owns a reservation. Transfer it directly to a queued job;
-		// waiting for total capacity here would wait on our own reserved message.
-		const next = record.queue.shift()!;
-		record.turn = undefined;
-		try {
-			this.#registerTurnJob(session, manager, record, next.message, { first: false, admission: next.admission });
-		} catch (error) {
-			next.admission.release();
-			this.#markRecordTerminal(record, "unrecoverable", "terminal: queued follow-up could not start");
-			throw error;
-		}
+		// Every follow-up is already a registered queued job holding its own admission.
+		record.queue.shift()!.start();
 	}
 
 	async #settleTurn(
 		session: ToolSession,
-		manager: AsyncJobManager,
 		record: WorkerRecord,
 		turn: WorkerTurn,
 		settledJobId: string,
@@ -2633,7 +2596,7 @@ export class OrchestratorRuntime {
 		}
 
 		// Hold record.turn until persistence and rendering are ready; concurrent sends queue safely.
-		await this.#finishTurn(session, manager, record, settledJobId);
+		await this.#finishTurn(session, record, settledJobId);
 		let text: string;
 		try {
 			text = prompt

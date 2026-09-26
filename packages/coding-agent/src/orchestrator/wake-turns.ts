@@ -2,9 +2,9 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentProgress, SingleResult } from "../task/types";
 
 /**
- * A worker turn started by an IRC or monitor wake rather than by `orchestrate_send` still belongs to whoever
- * owns the worker: its result has to reach that owner's `orchestrate_wait`, and the turn has to be
- * visible in `orchestrate_list` while it runs. The executor drives the turn and the orchestrator
+ * A worker turn started by an IRC or monitor wake rather than by fleet `send` still belongs to whoever
+ * owns the worker: its result has to reach that owner through the turn's job, and the turn has to be
+ * visible in the owner's fleet listing while it runs. The executor drives the turn and the orchestrator
  * owns the bookkeeping, so the two meet here instead of importing each other.
  */
 export interface WakeTurnClaim {

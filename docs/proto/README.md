@@ -13,8 +13,8 @@ embodies.
 
 The one-paragraph version: proto converges the model's world onto a few deep surfaces —
 bash (with a persistent Python/JS kernel and `xd` device dispatch inside it), `read` with
-selectors and outlines, and a small orchestration family (`orchestrate_*`, `fleet`,
-`monitor`) — keeps sessions alive after the terminal closes (`proto attach`, parked
+selectors and outlines, and a small control-plane family (`context`, `fleet`,
+`jobs`) — keeps sessions alive after the terminal closes (`proto attach`, parked
 sessions, goals with budgets, scheduled queues), teaches the model the exact contract at
 every failure point (shape-first tool docs, argument normalization with repair notes,
 bounded outputs with escape hatches), keeps knowledge in reviewable files instead of a

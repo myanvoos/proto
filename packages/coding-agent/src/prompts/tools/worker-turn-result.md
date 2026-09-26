@@ -15,7 +15,7 @@
 {{/if}}
 {{#if alive}}
 <receipt status="delivered" worker="{{id}}" turn="{{turn}}" />
-Worker `{{id}}` (label `{{label}}`) is idle and retains this conversation — continue it with orchestrate_send using the immutable worker id. Transcript: history://{{id}}
+Worker `{{id}}` (label `{{label}}`) is idle and retains this conversation — continue it with fleet send using the immutable worker id. Transcript: history://{{id}}
 {{else}}
 <receipt status="terminal" worker="{{id}}" turn="{{turn}}" />
 Worker `{{id}}` is terminal; recover context from history://{{id}} or output agent://{{id}} before spawning a replacement.

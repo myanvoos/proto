@@ -1862,7 +1862,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 				? `[${droppedBytes} earlier bytes of output dropped; only the most recent output was retained]\n${rawOutput}`
 				: rawOutput;
 		if (wasAborted && !artifactContent.trim() && Bun.file(candidatePath).size > 0) {
-			// An aborted turn that produced nothing (e.g. a wake turn cut short by `orchestrate_kill`) keeps the
+			// An aborted turn that produced nothing (e.g. a wake turn cut short by `fleet terminate`) keeps the
 			// previous turn's output, which `agent://<id>` serves; no counts for a write that did not happen.
 			outputPath = candidatePath;
 		} else {
@@ -2194,7 +2194,7 @@ interface FollowUpTurnOptions {
 
 	modelRole?: string;
 
-	/** Model switch to apply to the resumed session before this turn runs (orchestrate_send model=). */
+	/** Model switch to apply to the resumed session before this turn runs (fleet send model=). */
 	modelOverride?: string | string[];
 
 	outputSchema?: unknown;
@@ -2486,27 +2486,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth > maxRecursionDepth;
 	const ircEnabled = options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth);
 
-	const orchestrationTools = [
-		"orchestrate_spawn",
-		"orchestrate_send",
-		"orchestrate_wait",
-		"orchestrate_kill",
-		"orchestrate_list",
-	];
-	let toolNames: string[] | undefined;
-	if (agent.tools && agent.tools.length > 0) {
-		toolNames = agent.tools;
-		if (agent.spawns !== undefined && !atMaxDepth) {
-			toolNames = [...new Set([...toolNames, ...orchestrationTools])];
-		}
-	}
-
-	if (atMaxDepth && toolNames) {
-		toolNames = toolNames.filter(name => !orchestrationTools.includes(name));
-	}
-
-	if (toolNames && !options.restrictToolNames && !toolNames.includes("fleet")) {
-		toolNames = [...toolNames, "fleet"];
+	let toolNames = agent.tools?.length ? [...agent.tools] : undefined;
+	// Recursion caps restrict spawn operations, not parent messaging or job control.
+	if (toolNames && !options.restrictToolNames) {
+		toolNames = [...new Set([...toolNames, "fleet", "jobs"])];
 	}
 	if (toolNames?.includes("exec")) {
 		toolNames = Array.from(new Set([...toolNames.filter(name => name !== "exec"), "bash"]));

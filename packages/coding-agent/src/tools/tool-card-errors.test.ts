@@ -7,7 +7,7 @@ import { formatErrorDetail, formatErrorMessage } from "./render-utils";
 initThemeSync();
 
 const VALIDATION_MESSAGE = [
-	'Validation failed for tool "monitor":',
+	'Validation failed for tool "jobs":',
 	'  - op: op must be "start", "list" or "stop" (was "watch")',
 	"",
 	"Received arguments:",

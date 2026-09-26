@@ -16,7 +16,7 @@ test("required properties describe their expectation without a missing-value cla
 
 test("constraint failures state the real constraint and the real value", () => {
 	const schema = type({
-		to: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
+		to: type("string > 0").describe("worker id from fleet spawn / fleet list"),
 		lines: type("number > 0").describe("output lines; default 100, max 1000"),
 	});
 
@@ -27,7 +27,7 @@ test("constraint failures state the real constraint and the real value", () => {
 });
 
 test("documented descriptions still explain missing values", () => {
-	const schema = type({ to: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list") });
+	const schema = type({ to: type("string > 0").describe("worker id from fleet spawn / fleet list") });
 
 	let message = "";
 	try {
@@ -36,7 +36,7 @@ test("documented descriptions still explain missing values", () => {
 		message = error instanceof Error ? error.message : String(error);
 	}
 
-	expect(message).toBe("to is required (worker id from orchestrate_spawn / orchestrate_list)");
+	expect(message).toBe("to is required (worker id from fleet spawn / fleet list)");
 });
 
 test("long string values report their length instead of flooding the message", () => {

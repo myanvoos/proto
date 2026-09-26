@@ -10,8 +10,9 @@ import { checklistToolRenderer } from "./checklist";
 import { computerToolRenderer } from "./computer-renderer";
 import { fleetToolRenderer } from "./fleet";
 import { inspectMediaToolRenderer } from "./inspect-media-renderer";
-import { monitorToolRenderer } from "./monitor";
-import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
+import { jobsToolRenderer } from "./jobs";
+import { type LaunchRenderArgs, type LaunchToolDetails, launchRenderCall, launchRenderResult } from "./jobs/launch";
+import type { JobSnapshot, JobsDetails } from "./jobs/types";
 import { readToolRenderer } from "./read";
 import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
@@ -98,6 +99,85 @@ function getBashXdRenderer(): ToolRenderer {
 	return bashXdRendererInstance;
 }
 
+/** Process ops that `fleet` owned before the split; their details already match the jobs renderers. */
+const LEGACY_PROCESS_OPS: Record<string, true> = {
+	start: true,
+	ps: true,
+	logs: true,
+	stop: true,
+	restart: true,
+	describe: true,
+};
+
+interface LegacyFleetDetails {
+	op?: string;
+	daemon?: unknown;
+	daemons?: unknown;
+	waited?: unknown;
+	jobs?: Array<Omit<JobSnapshot, "ref" | "settled"> & { id: string }>;
+}
+
+/**
+ * Transcripts written before fleet became agents-only stored process and job results under the
+ * `fleet` name. Their payloads are exactly what the jobs renderers consume, so replay keeps the
+ * original cards instead of degrading a resumed session to a single status line.
+ */
+function legacyJobsCard(args: unknown, details: LegacyFleetDetails | undefined): "process" | "jobs" | undefined {
+	const argRecord = (args ?? {}) as Record<string, unknown>;
+	const op = details?.op ?? (typeof argRecord.op === "string" ? argRecord.op : undefined);
+	if (op === undefined) return undefined;
+	if (details?.daemon !== undefined || details?.daemons !== undefined) return "process";
+	if (Object.hasOwn(LEGACY_PROCESS_OPS, op)) return "process";
+	// A retired process `send` addressed a process name; a peer send addressed an agent.
+	if (op === "send" && typeof argRecord.name === "string") return "process";
+	if (details?.waited === undefined && Array.isArray(details?.jobs)) return "jobs";
+	return undefined;
+}
+
+/** Legacy job snapshots identified jobs by bare id; the jobs card renders discriminated references. */
+function legacyJobsDetails(details: LegacyFleetDetails): JobsDetails {
+	return {
+		op: "list",
+		jobs: (details.jobs ?? []).map(job => ({
+			...job,
+			settled: job.status !== "running",
+			ref: { kind: job.type === "monitor" ? ("watch" as const) : ("job" as const), id: job.id },
+		})),
+	};
+}
+
+let fleetRendererInstance: ToolRenderer | undefined;
+
+function getFleetRenderer(): ToolRenderer {
+	fleetRendererInstance ??= {
+		...(fleetToolRenderer as ToolRenderer),
+		renderCall(args: unknown, options: RenderResultOptions, uiTheme: Theme): Component {
+			if (legacyJobsCard(args, undefined) === "process") {
+				return launchRenderCall(args as LaunchRenderArgs, options, uiTheme);
+			}
+			return (fleetToolRenderer as ToolRenderer).renderCall(args, options, uiTheme);
+		},
+		renderResult(result, options, uiTheme, args): Component {
+			const details = result.details as LegacyFleetDetails | undefined;
+			const legacy = legacyJobsCard(args, details);
+			if (legacy === "process") {
+				return launchRenderResult(
+					{ ...result, details: details as LaunchToolDetails },
+					options,
+					uiTheme,
+					args as LaunchRenderArgs,
+				);
+			}
+			if (legacy === "jobs" && details) {
+				return jobsToolRenderer.renderResult({ ...result, details: legacyJobsDetails(details) }, options, uiTheme, {
+					op: "list",
+				});
+			}
+			return (fleetToolRenderer as ToolRenderer).renderResult(result, options, uiTheme, args);
+		},
+	};
+	return fleetRendererInstance;
+}
 export const toolRenderers: Record<string, ToolRenderer> = {
 	ask: askToolRenderer as ToolRenderer,
 	get bash(): ToolRenderer {
@@ -108,9 +188,9 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	inspect_media: inspectMediaToolRenderer as ToolRenderer,
 
 	get fleet(): ToolRenderer {
-		return fleetToolRenderer as ToolRenderer;
+		return getFleetRenderer();
 	},
-	monitor: monitorToolRenderer as ToolRenderer,
+	jobs: jobsToolRenderer as ToolRenderer,
 	read: readToolRenderer as ToolRenderer,
 
 	resolve: resolveRenderer as ToolRenderer,
@@ -119,11 +199,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	checklist: checklistToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
-	...(Object.fromEntries(
-		(
-			["orchestrate_spawn", "orchestrate_send", "orchestrate_wait", "orchestrate_kill", "orchestrate_list"] as const
-		).map(name => [name, createOrchestrateToolRenderer(name.split("_")[1] as OrchestrateOp) as ToolRenderer]),
-	) as Record<string, ToolRenderer>),
 };
 
 setXdevRendererLookup(name => toolRenderers[name]);

@@ -113,9 +113,9 @@ function weakSession(id: string): WeakRef<AgentSession> {
 
 async function listWorkerScope(id: string): Promise<void> {
 	const worker = AgentRegistry.global().get(id)?.session;
-	const list = worker?.getToolForEvalBridge("orchestrate_list");
-	if (!list) throw new Error(`worker ${id} has no orchestration list tool`);
-	await list.execute("list-before-release", {});
+	const fleet = worker?.getToolForEvalBridge("fleet");
+	if (!fleet) throw new Error(`worker ${id} has no fleet tool`);
+	await fleet.execute("list-before-release", { op: "list" });
 }
 
 function countCollected(refs: WeakRef<object>[]): number {
@@ -211,7 +211,7 @@ async function runLifecycle(
 		getModelString: () => undefined,
 	} as ToolSession;
 	const runtime = OrchestratorRuntime.global();
-	const agent = { ...getBundledAgent("worker")!, tools: ["yield", "orchestrate_list"] } as AgentDefinition;
+	const agent = { ...getBundledAgent("worker")!, tools: ["yield", "fleet"] } as AgentDefinition;
 	const model = modelRegistry.find("lifecycle-fixture", "lifecycle-fixture-model");
 	if (!model) throw new Error("failed to register deterministic lifecycle fixture model");
 	runtime.setWorkerResolutionForTesting(agent, model);
@@ -241,7 +241,6 @@ async function runLifecycle(
 
 		started.resolve();
 		await manager.waitForAll();
-		await runtime.wait(session, { sessions: ids });
 		const completedScreens = runtime.screens(session, ids);
 		if (completedScreens.some(screen => screen.turnState !== "idle")) throw new Error("workers did not become idle");
 		await Promise.all(ids.map(listWorkerScope));
@@ -259,7 +258,6 @@ async function runLifecycle(
 
 		for (const id of ids) await runtime.send(session, { session: id, message: "deterministic revival turn" });
 		await manager.waitForAll();
-		await runtime.wait(session, { sessions: ids });
 		const revivedScreens = runtime.screens(session, ids);
 		if (revivedScreens.some(screen => screen.turnState !== "idle"))
 			throw new Error("workers did not revive and settle");

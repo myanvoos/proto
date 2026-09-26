@@ -1,10 +1,12 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { currentExecutionOrigin, type ExecutionOrigin } from "../../jobs/origin";
 import type { ToolSession } from "../../tools";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
 export interface PyToolBridgeEntry {
 	toolSession: ToolSession;
+	executionOrigin?: ExecutionOrigin;
 	/** Host-side cwd of the cell that owns this run; absent for remote kernel targets. */
 	cwd?: string;
 
@@ -42,6 +44,7 @@ export async function callSessionToolPromptOnAbort(
 	}
 	const call = callSessionTool(name, args, {
 		session: entry.toolSession,
+		executionOrigin: entry.executionOrigin,
 		cwd: entry.cwd,
 		signal: entry.signal,
 		emitStatus: entry.emitStatus,
@@ -164,6 +167,7 @@ function bridgeRegistrationKey(sessionId: string, runId: string): string {
 
 export function registerPyToolBridge(sessionId: string, runId: string, entry: PyToolBridgeEntry): () => void {
 	const key = bridgeRegistrationKey(sessionId, runId);
+	entry = { ...entry, executionOrigin: entry.executionOrigin ?? currentExecutionOrigin() };
 	registrations.set(key, entry);
 	return () => {
 		if (registrations.get(key) === entry) {

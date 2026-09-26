@@ -19,7 +19,7 @@ function formatAgo(timestamp: number): string {
 	return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** `lifecycle=<state>[ · turn=<state>]`, matching how fleet and orchestrate_list report the same agent. */
+/** `lifecycle=<state>[ · turn=<state>]`, matching how fleet and fleet list report the same agent. */
 function formatLifecycle(status: AgentStatus): string {
 	const { lifecycle, turnState } = agentLifecycle(status);
 	return turnState ? `lifecycle=${lifecycle} · turn=${turnState}` : `lifecycle=${lifecycle}`;

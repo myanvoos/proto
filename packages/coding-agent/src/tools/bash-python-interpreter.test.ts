@@ -2,10 +2,10 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { handleKernelControl } from "../eval/kernel-control";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
+import { handleContextControl } from "./context";
 
 // A `python` command runs its kernel cell on the interpreter the shell would
 // run for it: a named interpreter, or whatever the cell's PATH selects.
@@ -110,21 +110,23 @@ test("a named interpreter that does not exist fails as the shell reports it", as
 	});
 }, 60_000);
 
-test("xd kernel picks one of a lane's interpreter kernels by interpreter", async () => {
+test("context kernel control picks one of a lane's interpreter kernels by interpreter", async () => {
 	await withDir("pyinterp-control-", async (dir, bash) => {
 		const venv = await makeVenv(dir);
 		const session = stubSession(dir);
 		await bash.execute("default", { command: "python3 -c 'x = 1'" });
 		await bash.execute("named", { command: "env313/bin/python -c 'x = 2'" });
 
-		await expect(handleKernelControl(session, { op: "inspect", language: "python" })).rejects.toThrow(
-			/has kernels for .*pass interpreter/,
-		);
-		const picked = await handleKernelControl(session, {
+		await expect(
+			handleContextControl(session, { resource: "kernel", op: "inspect", language: "python" }),
+		).rejects.toThrow(/has kernels for .*pass interpreter/);
+		const picked = await handleContextControl(session, {
+			resource: "kernel",
 			op: "inspect",
 			language: "python",
 			interpreter: "env313/bin/python",
 		});
+		if (picked.resource !== "kernel") throw new Error("expected a kernel result");
 		expect(picked.kernel?.interpreter).toBe(path.join(venv, "bin", "python"));
 	});
 }, 60_000);

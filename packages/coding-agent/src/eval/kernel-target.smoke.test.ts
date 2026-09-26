@@ -77,11 +77,12 @@ for (const target of targets) {
 				"bash.direnv": "off",
 			});
 			try {
-				await createTools(session, ["bash", "kernel"]);
-				const kernel = session.toolRegistry!.get("kernel")!;
+				await createTools(session, ["bash", "context"]);
+				const context = session.toolRegistry!.get("context")!;
 				const bash = session.toolRegistry!.get("bash")!;
 				const lane = `target-${language}`;
-				const started = await kernel.execute("target-start", {
+				const started = await context.execute("target-start", {
+					resource: "kernel",
 					op: "start",
 					language,
 					lane,
@@ -110,7 +111,8 @@ for (const target of targets) {
 					]),
 				);
 				for (const explicitInterpreter of [false, true]) {
-					const reset = await kernel.execute("target-reset", {
+					const reset = await context.execute("target-reset", {
+						resource: "kernel",
 						op: "reset",
 						language,
 						lane,
@@ -144,10 +146,12 @@ ${read}
 					);
 					expect(restarted.generation).not.toBe(initial.generation);
 					if (!explicitInterpreter) expect(restarted.environment).toEqual(initial.environment);
-					const listed = await kernel.execute("target-list", { op: "list", language, lane });
+					const listed = await context.execute("target-list", { resource: "kernel", op: "list", language, lane });
 					expect((listed.details as KernelControlResult).kernels).toHaveLength(1);
 				}
-				expect((await kernel.execute("target-close", { op: "close", language, lane })).isError).not.toBe(true);
+				expect(
+					(await context.execute("target-close", { resource: "kernel", op: "close", language, lane })).isError,
+				).not.toBe(true);
 			} finally {
 				await Promise.all([
 					disposeBashSessions(owner),

@@ -3,6 +3,7 @@ import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Socket, TCPSocketListener } from "bun";
 import { resolveFleetRoot } from "../internal-urls";
+import { withExecutionOrigin } from "../jobs/origin";
 import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { readInterpreterSetting } from "./backend-helpers";
@@ -598,66 +599,74 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 				if (text) await sendBytes(socket, Buffer.from(`${text}\n`), "stdout");
 			}
 		};
-		const result = await backend.execute(request.code, {
-			cwd: configuration?.cwd ?? session.cwd,
-			runCwd: configuration?.cwd ?? request.cwd,
-			interpreter,
-			target: configuration?.target,
-			shellEnv: request.shellEnv,
-			stdin: request.stdin ? createInput(socket) : undefined,
-			sessionId: kernelLaneSessionId(session, context.completionContext?.lane),
-			sessionFile: session.getSessionFile?.() ?? undefined,
-			kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
-			completionContext,
-			signal: abort.signal,
-			session,
-			reset: false,
-			onChunk: () => {},
-			onBytes: (chunk, stream) => sendBytes(socket, chunk, stream),
-			onDisplay: async output => {
-				if (output.type === "status") return;
-				streamedDisplays++;
-				await renderDisplay(output);
+		const result = await withExecutionOrigin(
+			{
+				lane: context.completionContext?.lane ?? "main",
+				kind: "kernel",
+				language: request.lang === "py" ? "python" : request.lang,
 			},
-			onStatus: event => {
-				if (isEvalTimeoutControlEvent(event)) return;
-				if (event.op === "execution-query") {
-					context.queriedExecutions = true;
-					return;
-				}
-				if (event.op === "kernel-state" && typeof event.generation === "string") {
-					let known = generations.get(session);
-					if (!known) {
-						known = new LRUCache({ max: 32 });
-						generations.set(session, known);
-					}
-					// A lane holds one python kernel per interpreter; each has its own generation.
-					const lane = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
-					const key = routedInterpreter ? `${lane} (${routedInterpreter})` : lane;
-					const previous = known.get(key);
-					if (previous && previous !== event.generation)
-						sendOutput(
-							socket,
-							`<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.\n`,
-							"stderr",
-						);
-					known.set(key, event.generation);
-				}
-				// File-observation correctness needs only mutation identity, not retained rich hunks.
-				if (typeof event.path === "string" && ["write", "delete", "revert"].includes(event.op)) {
-					upsertStatusEvent(cellStatusEvents, { op: event.op, path: event.path });
-				}
-				const previous = context.displayBudget.blocks.at(-1);
-				const admitted = context.displayBudget.admitMetadata(event, statusEventKey(event));
-				if (admitted) {
-					upsertStatusEvent(context.statusEvents, admitted);
-					context.onStatusEvent?.(admitted);
-				} else {
-					const notice = context.displayBudget.blocks.at(-1);
-					if (notice?.type === "notice" && notice !== previous) sendOutput(socket, `${notice.text}\n`);
-				}
-			},
-		});
+			() =>
+				backend.execute(request.code, {
+					cwd: configuration?.cwd ?? session.cwd,
+					runCwd: configuration?.cwd ?? request.cwd,
+					interpreter,
+					target: configuration?.target,
+					shellEnv: request.shellEnv,
+					stdin: request.stdin ? createInput(socket) : undefined,
+					sessionId: kernelLaneSessionId(session, context.completionContext?.lane),
+					sessionFile: session.getSessionFile?.() ?? undefined,
+					kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
+					completionContext,
+					signal: abort.signal,
+					session,
+					reset: false,
+					onChunk: () => {},
+					onBytes: (chunk, stream) => sendBytes(socket, chunk, stream),
+					onDisplay: async output => {
+						if (output.type === "status") return;
+						streamedDisplays++;
+						await renderDisplay(output);
+					},
+					onStatus: event => {
+						if (isEvalTimeoutControlEvent(event)) return;
+						if (event.op === "execution-query") {
+							context.queriedExecutions = true;
+							return;
+						}
+						if (event.op === "kernel-state" && typeof event.generation === "string") {
+							let known = generations.get(session);
+							if (!known) {
+								known = new LRUCache({ max: 32 });
+								generations.set(session, known);
+							}
+							// A lane holds one python kernel per interpreter; each has its own generation.
+							const lane = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
+							const key = routedInterpreter ? `${lane} (${routedInterpreter})` : lane;
+							const previous = known.get(key);
+							if (previous && previous !== event.generation)
+								sendOutput(
+									socket,
+									`<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.\n`,
+									"stderr",
+								);
+							known.set(key, event.generation);
+						}
+						// File-observation correctness needs only mutation identity, not retained rich hunks.
+						if (typeof event.path === "string" && ["write", "delete", "revert"].includes(event.op)) {
+							upsertStatusEvent(cellStatusEvents, { op: event.op, path: event.path });
+						}
+						const previous = context.displayBudget.blocks.at(-1);
+						const admitted = context.displayBudget.admitMetadata(event, statusEventKey(event));
+						if (admitted) {
+							upsertStatusEvent(context.statusEvents, admitted);
+							context.onStatusEvent?.(admitted);
+						} else {
+							const notice = context.displayBudget.blocks.at(-1);
+							if (notice?.type === "notice" && notice !== previous) sendOutput(socket, `${notice.text}\n`);
+						}
+					},
+				}),
+		);
 		// A backend that does not stream displays reports them only in its result.
 		for (const output of result.displayOutputs.slice(streamedDisplays)) await renderDisplay(output);
 		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);

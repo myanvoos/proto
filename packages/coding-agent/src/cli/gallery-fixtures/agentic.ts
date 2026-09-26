@@ -1,57 +1,122 @@
 import type { FleetDetails } from "../../tools/fleet";
-import type { OrchestrateToolDetails } from "../../tools/orchestrate";
+import type { JobsDetails } from "../../tools/jobs";
 import type { GalleryFixture } from "./types";
 
 const FIXTURE_NOW = Date.now();
+const WORKER_ID = "worker-7181122334455667001";
+
+const runningWorker = {
+	id: WORKER_ID,
+	label: "AuthLoader",
+	agent: "worker",
+	lifecycle: "live" as const,
+	turnState: "running" as const,
+	turns: 1,
+	queued: 0,
+	turnJobId: `${WORKER_ID}-t1`,
+	queuedJobIds: [],
+	model: "anthropic/claude-opus-5-5",
+	turnStartedAt: FIXTURE_NOW - 3_000,
+	turnMessage: "Inspect the session-cookie validation flow",
+	trace: ["read(packages/server/src/auth/session.ts)"],
+	outputTail: ["Tracing cookie verification…"],
+	lastActivityAt: FIXTURE_NOW,
+};
 
 export const agenticFixtures: Record<string, GalleryFixture> = {
-	orchestrate_spawn: {
-		label: "Orchestrate spawn",
+	fleet_spawn: {
+		label: "Fleet spawn",
 		customRendered: true,
+		renderer: "fleet",
 		streamingArgs: {
-			agent: "worker",
+			op: "spawn",
 			label: "AuthLoader",
 			message: "Inspect packages/server/src/auth/session.ts",
 		},
 		args: {
-			agent: "worker",
+			op: "spawn",
 			label: "AuthLoader",
 			message: "Inspect the session-cookie validation flow and report gaps.",
 		},
 		result: {
-			content: [{ type: "text", text: "Spawned worker `AuthLoader`." }],
+			content: [{ type: "text", text: `Spawned \`worker\` worker \`${WORKER_ID}\` (label \`AuthLoader\`).` }],
 			details: {
 				op: "spawn",
-				spawned: { id: "AuthLoader", agent: "worker", jobId: "AuthLoader-t1" },
-				screens: [
-					{
-						id: "AuthLoader",
-						agent: "worker",
-						lifecycle: "live",
-						turnState: "running",
-						turns: 1,
-						queued: 0,
-						turnStartedAt: FIXTURE_NOW - 3_000,
-						turnMessage: "Inspect the session-cookie validation flow",
-						trace: ["read(packages/server/src/auth/session.ts)"],
-						outputTail: ["Tracing cookie verification…"],
-						lastActivityAt: FIXTURE_NOW,
-					},
-				],
-			} satisfies OrchestrateToolDetails,
+				spawned: { id: WORKER_ID, label: "AuthLoader", agent: "worker" },
+				receipt: {
+					workerId: WORKER_ID,
+					label: "AuthLoader",
+					turn: 1,
+					job: { kind: "job", id: `${WORKER_ID}-t1` },
+					status: "accepted",
+					mode: "turn",
+				},
+				screens: [runningWorker],
+			} satisfies FleetDetails,
+		},
+		errorResult: {
+			isError: true,
+			content: [
+				{
+					type: "text",
+					text: 'Model "nonexistent/model-xyz" did not match any available model. Available: anthropic/claude-opus-5-5.',
+				},
+			],
+			details: { op: "spawn", screens: [] } satisfies FleetDetails,
 		},
 	},
 
 	fleet_send: {
-		label: "Fleet send",
+		label: "Fleet send (tracked)",
+		customRendered: true,
+		renderer: "fleet",
+		streamingArgs: { op: "send", id: WORKER_ID, message: "Also cover the" },
+		args: { op: "send", id: WORKER_ID, message: "Also cover the expired-cookie path." },
+		result: {
+			content: [{ type: "text", text: `Queued turn 2 for busy worker \`${WORKER_ID}\`; receipt: queued.` }],
+			details: {
+				op: "send",
+				receipt: {
+					workerId: WORKER_ID,
+					label: "AuthLoader",
+					turn: 2,
+					job: { kind: "job", id: `${WORKER_ID}-t2` },
+					status: "queued",
+					mode: "queued",
+				},
+				screens: [{ ...runningWorker, queued: 1, queuedJobIds: [`${WORKER_ID}-t2`] }],
+			} satisfies FleetDetails,
+		},
+		errorResult: {
+			isError: true,
+			content: [{ type: "text", text: `Unknown worker "AuthLoader". Active workers: ${WORKER_ID}` }],
+			details: { op: "send", screens: [runningWorker] } satisfies FleetDetails,
+		},
+	},
+
+	fleet_workers: {
+		label: "Fleet workers",
+		customRendered: true,
+		renderer: "fleet",
+		streamingArgs: { op: "list" },
+		args: { op: "list" },
+		result: {
+			content: [
+				{ type: "text", text: `- \`${WORKER_ID}\` (label \`AuthLoader\`) [worker] lifecycle=live · turn=running` },
+			],
+			details: { op: "list", scope: "owned", screens: [runningWorker] } satisfies FleetDetails,
+		},
+	},
+
+	fleet_message: {
+		label: "Fleet message",
 		renderer: "fleet",
 
-		streamingArgs: { op: "send", to: "AuthLoader", message: "Are you still touching" },
+		streamingArgs: { op: "message", to: "AuthLoader", message: "Are you still touching" },
 		args: {
-			op: "send",
-			id: "AuthLoader",
+			op: "message",
+			to: WORKER_ID,
 			message: "Are you still touching src/server/auth.ts? I need to add a 401 path.",
-			await: true,
 		},
 		result: {
 			content: [
@@ -59,26 +124,15 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					type: "text",
 					text: [
 						"Accepted by 1 peer(s): 1 delivered, 0 queued.",
-						"- AuthLoader: delivered; wake requested; turn start is not confirmed; session revived",
-						"",
-						"Reply from AuthLoader:",
-						"Done with auth.ts — go ahead, just rebase past my session-store rename.",
+						`- ${WORKER_ID}: delivered; wake requested; turn start is not confirmed; session revived`,
 					].join("\n"),
 				},
 			],
 			details: {
-				op: "send",
+				op: "message",
 				senderId: "Main",
-				id: "AuthLoader",
-				receipts: [{ to: "AuthLoader", outcome: "delivered", effect: "wake_requested", revived: true }],
-				waited: {
-					id: "7181122334455667789",
-					from: "AuthLoader",
-					to: "Main",
-					body: "Done with auth.ts — go ahead, just rebase past my session-store rename.",
-					ts: FIXTURE_NOW - 5_000,
-					replyTo: "7181122334455667788",
-				},
+				to: WORKER_ID,
+				receipts: [{ to: WORKER_ID, outcome: "delivered", effect: "wake_requested", revived: true }],
 			} satisfies FleetDetails,
 		},
 		errorResult: {
@@ -90,37 +144,10 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				},
 			],
 			details: {
-				op: "send",
+				op: "message",
 				senderId: "Main",
-				id: "RateLimiter",
+				to: "RateLimiter",
 				receipts: [{ to: "RateLimiter", outcome: "rejected", error: 'unknown agent "RateLimiter"' }],
-			} satisfies FleetDetails,
-		},
-	},
-
-	fleet_wait: {
-		label: "Fleet wait",
-		customRendered: true,
-		renderer: "fleet",
-		streamingArgs: { op: "wait", from: "AuthLoader" },
-		args: { op: "wait", id: "AuthLoader", timeoutMs: 60_000 },
-		result: {
-			content: [
-				{
-					type: "text",
-					text: "[7181122334455667790] AuthLoader: session-store rename is merged; auth.ts is yours.",
-				},
-			],
-			details: {
-				op: "wait",
-				senderId: "Main",
-				waited: {
-					id: "7181122334455667790",
-					from: "AuthLoader",
-					to: "Main",
-					body: "session-store rename is merged; auth.ts is yours.",
-					ts: FIXTURE_NOW - 30_000,
-				},
 			} satisfies FleetDetails,
 		},
 	},
@@ -175,8 +202,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		label: "Fleet peers",
 		customRendered: true,
 		renderer: "fleet",
-		streamingArgs: { op: "list" },
-		args: { op: "list" },
+		streamingArgs: { op: "list", scope: "visible" },
+		args: { op: "list", scope: "visible" },
 		result: {
 			content: [
 				{
@@ -192,6 +219,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "list",
+				scope: "visible",
 				senderId: "Main",
 				peers: [
 					{
@@ -220,7 +248,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		errorResult: {
 			isError: true,
 			content: [{ type: "text", text: "IRC list failed: agent fleet is unavailable." }],
-			details: { op: "list" } satisfies FleetDetails,
+			details: { op: "list", scope: "visible" } satisfies FleetDetails,
 		},
 	},
 
@@ -279,60 +307,63 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	fleet_jobs: {
-		label: "Fleet jobs",
-		renderer: "fleet",
+	jobs_wait: {
+		label: "Jobs wait",
+		renderer: "jobs",
 
-		streamingArgs: { op: "wait", ids: ["job_a1"] },
-		args: { op: "wait", ids: ["job_a1", "job_b2", "job_c3"] },
+		streamingArgs: { op: "wait", targets: [{ kind: "job", id: "job_a1" }] },
+		args: {
+			op: "wait",
+			targets: [
+				{ kind: "job", id: "job_a1" },
+				{ kind: "job", id: "job_b2" },
+				{ kind: "job", id: "job_c3" },
+			],
+		},
 		result: {
 			content: [{ type: "text", text: "3 jobs settled." }],
 			details: {
 				op: "wait",
 				jobs: [
 					{
-						id: "job_a1",
+						ref: { kind: "job", id: "job_a1" },
 						type: "bash",
 						status: "completed",
+						settled: true,
 						label: "bun test packages/server/test/auth.test.ts",
 						durationMs: 18_400,
 						resultText: "42 pass, 0 fail (18.4s)",
 					},
 					{
-						id: "job_b2",
+						ref: { kind: "job", id: "job_b2" },
 						type: "worker",
 						status: "completed",
+						settled: true,
 						label: "Migrate rate limiter to a sliding window",
 						durationMs: 96_700,
 						resultText: "Rewrote rate-limit.ts to a token-bucket; added per-account keys.",
 					},
 					{
-						id: "job_c3",
+						ref: { kind: "job", id: "job_c3" },
 						type: "bash",
 						status: "failed",
+						settled: true,
 						label: "bunx biome check packages/server/src/auth",
 						durationMs: 4_100,
 						errorText: "biome: 2 errors in tokens.ts — noUnusedVariables, useConst",
 					},
 				],
-			},
+			} satisfies JobsDetails,
 		},
 		errorResult: {
 			isError: true,
-			content: [{ type: "text", text: "1 job failed." }],
-			details: {
-				op: "wait",
-				jobs: [
-					{
-						id: "job_d4",
-						type: "worker",
-						status: "failed",
-						label: "Refactor the session store to Redis",
-						durationMs: 52_300,
-						errorText: "Subagent exited 1: Redis connection string is missing.",
-					},
-				],
-			},
+			content: [
+				{
+					type: "text",
+					text: 'No owned job job_d4. It expired, belongs to another owner, or has a different kind; list your references with op "list".',
+				},
+			],
+			details: { op: "wait" } satisfies JobsDetails,
 		},
 	},
 };

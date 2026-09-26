@@ -23,7 +23,7 @@ does funnels through surfaces that are already general:
   `tool.<name>()`, `budget`, `completion()`). omp keeps eval as a separate tool; proto makes
   it a mode of the universal surface.
 - **Orchestration is a few verbs, not a platform.** omp's `task` + `hub` (+ irc/job/launch
-  machinery) become `orchestrate_{spawn,send,wait,kill,list}`, `fleet`, and `monitor` —
+  machinery) become `context`, `fleet`, and `jobs` —
   persistent workers addressable by immutable id, peer messaging, process supervision, and an
   event watcher that wakes the model.
 
@@ -106,9 +106,9 @@ proto more than omp did. The convergence is visible:
 |---|---|---|
 | Persistent execution state | Python REPL kernel, snapshot/revival | Persistent py/JS kernel cells inside bash |
 | Durable sessions | Daemon supervisor + resident workers, reattach | `proto attach` + daemon-supervised session host |
-| Delegation as primitive | `rlm.spawn`, admission handles, agent messaging | `orchestrate_*` workers, `fleet` peer messaging, receipts |
+| Delegation as primitive | `rlm.spawn`, admission handles, agent messaging | `fleet` workers, `fleet` peer messaging, receipts |
 | Bounded autonomy | Persistent goals, autonomous mode, quality gates, budgets | Goal mode with token/wall-clock budgets, strict completion audit |
-| Event-driven continuation | Heartbeats, schedules | `monitor` wake-on-match, `/queue` timed delivery |
+| Event-driven continuation | Heartbeats, schedules | `jobs` watch wake-on-match, `/queue` timed delivery |
 | Addressable artifacts | Parent-scoped child registry, session artifacts | `history://`, `agent://`, `artifact://` internal URLs |
 
 The divergences are equally deliberate: proto stays bash/TypeScript-native (its programmatic

@@ -14,7 +14,7 @@ It covers runtime behavior as implemented today, including precedence, invalid-d
 - [`src/task/spawn-policy.ts`](../packages/coding-agent/src/task/spawn-policy.ts)
 - [`src/task/commands.ts`](../packages/coding-agent/src/task/commands.ts)
 - [`src/prompts/agents/worker.md`](../packages/coding-agent/src/prompts/agents/worker.md)
-- [`src/prompts/tools/orchestrate-spawn.md`](../packages/coding-agent/src/prompts/tools/orchestrate-spawn.md)
+- [`src/prompts/tools/fleet.md`](../packages/coding-agent/src/prompts/tools/fleet.md)
 - [`src/discovery/helpers.ts`](../packages/coding-agent/src/discovery/helpers.ts)
 - [`src/discovery/proto-extension-roots.ts`](../packages/coding-agent/src/discovery/proto-extension-roots.ts)
 - [`src/config.ts`](../packages/coding-agent/src/config.ts)
@@ -40,7 +40,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - `output` is passed through as opaque schema data
 - `read-summarize: false` (normalized to `readSummarize`) forces the subagent's `read` tool to return verbatim file content instead of structural summaries — `runSubprocess` applies it as a `read.summarize.enabled: false` override on the subagent's isolated settings (`src/task/executor.ts`). `scout` and `librarian` ship with it disabled. Defaults to enabled when the field is absent.
 - `model` accepts one selector, CSV, or an array. Entries are tried in order after role aliases are expanded.
-- `thinking-level` / `thinking` selects the agent's configured effort. An `orchestrate_spawn` call's optional `effort` (`lo`, `med`, `hi`) takes precedence at launch. PROTO maps that hint to the selected model's lowest, middle, or highest supported effort, then clamps it to `orchestrator.maxEffort` (default `max`). The ceiling is carried across retry-fallback model switches. If the selected model has no supported effort at or below the ceiling, the spawn fails; models without a controllable effort surface instead fall back to their normal selector.
+- `thinking-level` / `thinking` selects the agent's configured effort. A `fleet` `spawn` call's optional `effort` (`lo`, `med`, `hi`) takes precedence at launch. PROTO maps that hint to the selected model's lowest, middle, or highest supported effort, then clamps it to `orchestrator.maxEffort` (default `max`). The ceiling is carried across retry-fallback model switches. If the selected model has no supported effort at or below the ceiling, the spawn fails; models without a controllable effort surface instead fall back to their normal selector.
 - `blocking: true` makes the parent wait for that agent even when async task execution is enabled
 - `autoloadSkills` names skills from the parent session to inject before the first child prompt; unknown names are ignored
 - `prewalk: true` starts the subagent on its resolved model and hands off to the default prewalk target (the `smol` role) at its first edit/write, exactly like the session-level `--prewalk`; a string value (e.g. `prewalk: "@smol"` or `prewalk: "openai/gpt-5-mini"`) picks a custom target. The `orchestrator.agentPrewalk` settings record (agent name → `"on"` / `"off"` / pattern, configured per agent from the `/agents` browser via its prewalk strip) overrides the frontmatter. Resolution happens in `runSubprocess` (`src/task/executor.ts`). An unavailable target is skipped instead of failing the spawn. A resolved target is skipped only when both its model identity and its effective thinking mode/level match the starting selection after model clamping; a same-model effort downgrade is a real hand-off and still arms and switches at the first edit/write.
@@ -90,9 +90,9 @@ For a dispatch, set the agent name and task:
 
 After dispatch, press `Alt+A` to open [Agent Fleet](./agent-fleet.md). Its live roster shows each worker agent's status, current activity, model, age, and usage. Select an agent to read its transcript and steer it directly; parked agents can be revived from the same view.
 
-### `orchestrate_spawn` tier routing
+### `fleet` spawn tier routing
 
-`orchestrate_spawn` maps `fast` to bundled `lightbot` and `good` to bundled `task`. Both resolve through `orchestrator.agentModelOverrides` before their bundled agent model defaults (`src/orchestrator/runtime.ts`, `src/task/agents.ts`).
+`fleet` `spawn` maps `fast` to bundled `lightbot` and `good` to bundled `task`. Both resolve through `orchestrator.agentModelOverrides` before their bundled agent model defaults (`src/orchestrator/runtime.ts`, `src/task/agents.ts`).
 
 Route these tiers through roles by keeping aliases in `orchestrator.agentModelOverrides` and concrete selectors only in `modelRoles`:
 
@@ -106,7 +106,7 @@ modelRoles:
   good_worker: openai/gpt-5.4:high
 ```
 
-The `orchestrate_spawn` `cli` remains `fast` or `good`; update `modelRoles` to change the worker model.
+The `fleet` `spawn` `cli` remains `fast` or `good`; update `modelRoles` to change the worker model.
 
 ## Bundled agents
 
@@ -216,7 +216,7 @@ Runtime output schema precedence is:
 
 The task item's optional `schemaMode` overrides the parent session mode; the default is `permissive`.
 
-The model-facing prompt (`src/prompts/tools/orchestrate-spawn.md`) tags read-only agents and warns against offloading reasoning to `scout`/`lightbot`.
+The model-facing prompt (`src/prompts/tools/fleet.md`) tags read-only agents and warns against offloading reasoning to `scout`/`lightbot`.
 
 ## Command discovery interaction
 
@@ -253,7 +253,7 @@ If denied: `Cannot spawn '...'. Allowed: ...`.
 
 ### Recursion-depth gating
 
-`orchestrator.maxRecursionDepth` defaults to `2`; a negative value disables the cap. It counts levels of worker-spawned workers, as its settings label says (`0` none, `1` single, `2` double), so the shared policy rejects a spawn only once the spawning worker's own task depth has passed the cap. With the default the main agent (depth 0) spawns a worker at depth 1, that worker may spawn at depth 2, and the deepest worker runs at depth 3. `runSubprocess` removes the `orchestrate_*` tools from a child that lands past the cap and sets its spawn policy empty, so a worker that may not spawn is not offered the tools; the shared policy message is what the kernel `agent()` path reports.
+`orchestrator.maxRecursionDepth` defaults to `2`; a negative value disables the cap. It counts levels of worker-spawned workers, as its settings label says (`0` none, `1` single, `2` double), so the shared policy rejects a spawn only once the spawning worker's own task depth has passed the cap. With the default the main agent (depth 0) spawns a worker at depth 1, that worker may spawn at depth 2, and the deepest worker runs at depth 3. `runSubprocess` sets an empty spawn policy for a child that lands past the cap, so `fleet` refuses its spawn and send operations; the shared policy message is what the kernel `agent()` path reports.
 
-For a restricted agent tool list, `runSubprocess` adds the five `orchestrate_*` tools when `spawns` is declared and depth permits it. It retains `fleet` collaboration unless the session explicitly restricts tool names.
+For a restricted agent tool list, `runSubprocess` still adds `fleet` and `jobs` unless the session explicitly restricts tool names; worker control inside `fleet` stays gated on the declared spawn policy and depth.
 

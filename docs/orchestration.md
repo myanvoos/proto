@@ -1,12 +1,12 @@
 # Orchestration
 
-Every top-level coding agent is an **Orchestrator**. It keeps its ordinary coding tools and always exposes five parent-owned worker controls:
+Every top-level coding agent is an **Orchestrator**. It keeps its ordinary coding tools and controls workers through `fleet`, whose operations are `spawn`, `send`, `message`, `list`, `inspect`, `inbox`, and `terminate`:
 
-- `orchestrate_spawn` starts one persistent worker using any discovered agent type. Optional controls include `name`, `model`, `effort`, `outputSchema`, `schemaMode`, and `isolated`. `model` selects the worker's model (role alias like `@worker` or concrete model id). It is resolved before the worker exists: an unknown role alias or a pattern no available model matches is refused with the known roles or available models, and when the effective role has a `modelRoleBank` the selection must sit in that bank. The selection persists across park/revive.
-- `orchestrate_send` continues an idle or parked worker in the same transcript, steers a streaming turn, or queues a follow-up.
-- `orchestrate_wait` waits for the first snapshotted turn to settle and consumes that delivery exactly once.
-- `orchestrate_kill` terminates a worker while retaining its transcript tombstone.
-- `orchestrate_list` returns the owned worker roster and live activity.
+- `spawn` starts one persistent worker using any discovered agent type. Optional controls include `name`, `model`, `effort`, `outputSchema`, `schemaMode`, and `isolated`. `model` selects the worker's model (role alias like `@worker` or concrete model id). It is resolved before the worker exists: an unknown role alias or a pattern no available model matches is refused with the known roles or available models, and when the effective role has a `modelRoleBank` the selection must sit in that bank. The selection persists across park/revive.
+- `send` continues an idle or parked worker in the same transcript, steers a streaming turn, or queues a follow-up. Every tracked receipt carries the turn's job reference, including a queued turn.
+- `jobs` `op:"wait"` on a receipt's job reference waits for that turn to settle and consumes the delivery exactly once. Cancelling the job cancels the turn; the worker stays addressable.
+- `terminate` tombstones a worker, cancels its turn, and discards its queued input.
+- `list` returns the owned worker roster and live activity; `scope:"visible"` lists reachable peers instead.
 
 Every worker receives the `bash` tool at every task depth. Delegated agents therefore use the same shell and persistent Python/JavaScript kernel-cell surface as the main agent; each worker still owns a separate session and kernel namespace. `isolated: true` is a one-turn terminal worker that uses the existing isolation apply/capture policy and an independent kernel namespace. Recursive workers receive orchestration controls only while `orchestrator.maxRecursionDepth` permits another level.
 
@@ -18,7 +18,7 @@ Worker identity and lifecycle use immutable ids in `AgentRegistry` and `AgentLif
 
 Turn numbers are reserved when a turn is accepted, including while it waits for concurrency capacity. Cancelling a queued turn does not recycle its number. Wait receipts retain the watched turn and job identity even if a queued follow-up starts before delivery; terminal receipts identify the latest accepted turn, not a previous completion.
 
-A worker running a peer-initiated turn remains addressable by its parent. `orchestrate_send` accepts the parent's next turn and waits for the existing streaming turn to settle before starting it; peer activity alone never makes the worker terminal.
+A worker running a peer-initiated turn remains addressable by its parent. `fleet` `send` accepts the parent's next turn and waits for the existing streaming turn to settle before starting it; peer activity alone never makes the worker terminal.
 
 If a completed turn cannot persist its lifecycle settlement, the worker becomes terminal rather than remaining falsely active or accepting follow-ups that cannot run. Queued messages are discarded, the storage error is returned with the failed job, and the worker transcript remains available through its recovery paths. Restore scans ignore transcript names with empty, `.` or `..` worker ids, preventing self- and parent-directory recursion.
 
@@ -36,4 +36,4 @@ If a worker owns its MCP manager rather than sharing the parent's, parking also 
 
 See [memory profiling](./memory-profiling.md) for isolated workloads, process-memory accounting, and measurement limitations.
 
-`fleet` is separate: it handles peer communication plus generic jobs and supervised processes. Use `orchestrate_send` for direct control of a worker owned by the current parent; use `fleet` for peer messaging.
+`fleet` `message` is peer communication rather than worker control: delivery is not evidence that a turn started, and it never returns a turn receipt. Executions, supervised processes, and watches belong to [`jobs`](./tools/jobs.md); lanes and interpreters belong to [`context`](./tools/context.md).

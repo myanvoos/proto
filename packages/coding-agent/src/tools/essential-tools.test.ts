@@ -54,9 +54,9 @@ describe("isMountableUnderXdev", () => {
 	});
 
 	test("mounts discoverable non-transport tools and keeps essential tools native", () => {
-		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "discoverable" })).toBe(true);
-		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "essential" })).toBe(false);
-		expect(isMountableUnderXdev({ name: "orchestrate_spawn" })).toBe(false);
+		expect(isMountableUnderXdev({ name: "fleet", loadMode: "discoverable" })).toBe(true);
+		expect(isMountableUnderXdev({ name: "fleet", loadMode: "essential" })).toBe(false);
+		expect(isMountableUnderXdev({ name: "fleet" })).toBe(false);
 	});
 });
 

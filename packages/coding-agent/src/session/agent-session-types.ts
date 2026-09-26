@@ -94,6 +94,8 @@ export interface AgentSessionConfig {
 	settings: Settings;
 
 	scoutAllowedBySpawnPolicy?: boolean;
+	/** Resolved worker authority, retained by side-session clones. */
+	spawns?: string;
 
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 

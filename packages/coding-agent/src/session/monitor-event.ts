@@ -30,7 +30,7 @@ export function buildMonitorEventBatchMessage(entries: AsyncJobEvent[]): CustomM
 				label: event.label,
 				kind: event.kind,
 				text: event.text,
-				terminal: event.kind !== "output",
+				terminal: event.kind !== "output" && event.kind !== "gap",
 			})),
 		}),
 		display: true,

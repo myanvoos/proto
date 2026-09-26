@@ -19,7 +19,7 @@ import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { CHECKLIST_STRIKE_TOTAL_FRAMES, type ChecklistToolDetails } from "../../tools/checklist";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
-import { isWaitingPollDetails } from "../../tools/fleet";
+import { isWaitingPollDetails } from "../../tools/jobs";
 import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type ToolRenderer, toolRenderers } from "../../tools/renderers";
 import type { XdevState } from "../../tools/xdev";
@@ -29,7 +29,7 @@ import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 
 const COMPOSER_INSET_COLS = 2;
 
-type DisplaceableToolName = "fleet" | "checklist";
+type DisplaceableToolName = "jobs" | "checklist";
 
 function isChecklistToolDetails(details: unknown): details is ChecklistToolDetails {
 	return (
@@ -82,7 +82,7 @@ function displaceableToolName(
 	isPartial: boolean,
 ): DisplaceableToolName | undefined {
 	if (result.isError === true) return undefined;
-	if (toolName === "fleet" && isWaitingPollDetails(result.details)) return "fleet";
+	if (toolName === "jobs" && isWaitingPollDetails(result.details)) return "jobs";
 	if (toolName === "checklist" && !isPartial && isChecklistToolDetails(result.details)) return "checklist";
 	return undefined;
 }
@@ -454,7 +454,7 @@ export class ToolExecutionComponent extends Container {
 			this.#toolName !== "checklist" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
-		const needsSpinner = isLivePartialTool || this.#displaceableByToolName === "fleet";
+		const needsSpinner = isLivePartialTool || this.#displaceableByToolName === "jobs";
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
 			const frame = sharedSpinnerFrame(frameCount);

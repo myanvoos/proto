@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AsyncJobManager } from "../async/job-manager";
+import { Settings } from "../config/settings";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 import { OrchestratorRuntime } from "./runtime";
@@ -12,7 +13,7 @@ function scopedSession(sessionId: string): ToolSession {
 		getSessionFile: () => null,
 		getAgentId: () => "Main",
 		getSessionSpawns: () => null,
-		settings: undefined as never,
+		settings: Settings.isolated(),
 	} as ToolSession;
 }
 
@@ -296,8 +297,8 @@ describe("orchestrator lifecycle identity", () => {
 		for (let index = 0; index < 32; index++) {
 			receipts.push(await runtime.send(session, { session: "busy-worker", message: `follow-up-${index}` }));
 		}
-		expect(receipts[0]?.receipt).toMatchObject({ status: "queued", turn: 2 });
-		expect(receipts.at(-1)?.receipt).toMatchObject({ status: "queued", turn: 33 });
+		expect(receipts[0]?.receipt).toMatchObject({ status: "queued", turn: 2, jobId: "busy-worker-t2" });
+		expect(receipts.at(-1)?.receipt).toMatchObject({ status: "queued", turn: 33, jobId: "busy-worker-t33" });
 		await expect(
 			runtime.send(session, { session: "busy-worker", message: "overflow must be retried" }),
 		).rejects.toThrow("Wait for a turn to settle, then retry this message");
