@@ -928,6 +928,11 @@ export interface ShellRunResult {
   fsObservations: Array<FsObservation>
   xdDispatches: Array<string>
   stageRecords: Array<string>
+  /**
+   * The command ended the persistent session (`exit`, `exec`, top-level
+   * `return`/`break`); the next run starts a fresh shell.
+   */
+  sessionEnded: boolean
 }
 
 export interface SliceResult {

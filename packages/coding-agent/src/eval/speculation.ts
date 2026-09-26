@@ -548,7 +548,7 @@ export function parseStandaloneQuotedHeredoc(command: string): StreamedHeredocCe
 	let i = 0;
 	while (i < command.length && /[ \t\r\n]/u.test(command[i]!)) i++;
 	const executable = readIdentifierAt(command, i);
-	if (!executable || !["python", "python3", "node", "bun"].includes(executable.value)) return undefined;
+	if (!executable || !["python", "python3", "node", "nodejs", "bun"].includes(executable.value)) return undefined;
 	i = executable.end;
 	while (i < command.length && /[ \t]/u.test(command[i]!)) i++;
 	if (command[i] === "-") {
@@ -589,8 +589,7 @@ export function parseStandaloneQuotedHeredoc(command: string): StreamedHeredocCe
 		if (lineEnd < 0) break;
 		cursor = lineEnd + 1;
 	}
-	const language: StreamedCompletionLanguage =
-		executable.value === "node" || executable.value === "bun" ? "js" : "python";
+	const language: StreamedCompletionLanguage = executable.value.startsWith("python") ? "python" : "js";
 	const code = command.slice(bodyStart, bodyEnd);
 	return code.trim().length > 0 ? { language, code, closed } : undefined;
 }

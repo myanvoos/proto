@@ -10,9 +10,16 @@ import {
 	terminateDetachedProcessTree,
 	throwIfAborted,
 } from "../kernel-base";
+import {
+	type KernelTarget,
+	kernelTargetCwd,
+	parseKernelTarget,
+	remoteKernelEnv,
+	spawnKernelTarget,
+} from "../kernel-target";
 import { stageRunnerScript } from "../runner-cache";
 import { PYTHON_PRELUDE } from "./prelude";
-import RUNNER_SCRIPT from "./runner.py" with { type: "text" };
+import { PYTHON_RUNNER_SOURCE as RUNNER_SCRIPT } from "./runner-source";
 import {
 	enumeratePythonRuntimes,
 	filterEnv,
@@ -20,6 +27,7 @@ import {
 	resolveExplicitPythonRuntime,
 	resolvePythonRuntime,
 } from "./runtime";
+import { dispatchPyToolBridge } from "./tool-bridge";
 
 export type {
 	KernelExecuteOptions,
@@ -199,7 +207,16 @@ async function probePythonRuntime(
 }
 
 export class PythonKernel extends BaseKernel {
-	constructor(id: string) {
+	readonly target: KernelTarget;
+	#interpreter?: string;
+
+	get interpreter(): string | undefined {
+		return this.#interpreter;
+	}
+
+	constructor(id: string, target: KernelTarget = { kind: "local" }, interpreter?: string, bridgeSessionId?: string) {
+		const bridgeSessions = new Map<string, string>();
+		let pendingCallbacks = 0;
 		super(id, {
 			languageName: "Python",
 			traceIpc: TRACE_IPC,
@@ -207,24 +224,86 @@ export class PythonKernel extends BaseKernel {
 			interruptEscalationMs: INTERRUPT_ESCALATION_MS,
 			shutdownGraceMs: SHUTDOWN_GRACE_MS,
 			detachedProcessTree: true,
-			buildPayload: (code, msgId, opts) =>
-				JSON.stringify({
+			buildPayload: (code, msgId, opts) => {
+				const session = opts?.env?.PI_TOOL_BRIDGE_SESSION ?? bridgeSessionId;
+				if (session) bridgeSessions.set(msgId, session);
+				return JSON.stringify({
 					id: msgId,
 					code,
-					cwd: opts?.cwd,
-					env: opts?.env,
-					shellEnv: opts?.shellEnv,
-					stdin: opts?.stdin,
+					cwd: target.kind === "local" ? opts?.cwd : (target.cwd ?? opts?.cwd),
+					env:
+						target.kind === "local"
+							? opts?.env
+							: remoteKernelEnv(
+									Object.fromEntries(
+										Object.entries(opts?.env ?? {}).filter(
+											(entry): entry is [string, string] => typeof entry[1] === "string",
+										),
+									),
+								),
+					shellEnv: target.kind === "local" ? opts?.shellEnv : undefined,
+					stdin: Boolean(opts?.stdin),
 					fsObservations: opts?.fsObservations,
 					silent: opts?.silent ?? false,
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),
 					...(opts?.prelude ? { prelude: true } : {}),
-				}),
+				});
+			},
 			buildCancelPayload: msgId => JSON.stringify({ type: "cancel", id: msgId }),
+			onFrame: frame => {
+				if (frame.type === "done" && frame.id) bridgeSessions.delete(frame.id);
+				if (frame.type !== "tool_request") return false;
+				const session = frame.id ? bridgeSessions.get(frame.id) : undefined;
+				const reply = async (): Promise<void> => {
+					try {
+						if (
+							!session ||
+							!frame.id ||
+							!frame.requestId ||
+							!frame.payload ||
+							typeof frame.payload.name !== "string"
+						)
+							throw new Error("No active parent-owned tool bridge run");
+						if (pendingCallbacks >= 64) throw new Error("Kernel tool callback concurrency limit exceeded");
+						pendingCallbacks++;
+						let value: unknown;
+						try {
+							value = await dispatchPyToolBridge(
+								session,
+								frame.id,
+								frame.payload.name,
+								frame.payload.args,
+								frame.payload.completionInvocationId,
+							);
+						} finally {
+							pendingCallbacks--;
+						}
+						await this.writeControl({
+							type: "tool_response",
+							requestId: frame.requestId,
+							reply: { ok: true, value },
+						});
+					} catch (error) {
+						await this.writeControl({
+							type: "tool_response",
+							requestId: frame.requestId,
+							reply: { ok: false, error: { message: error instanceof Error ? error.message : String(error) } },
+						});
+					}
+				};
+				void reply().catch(error =>
+					logger.debug("Kernel target callback transport closed", { error: String(error) }),
+				);
+				return true;
+			},
 		});
+		this.target = target;
+		this.#interpreter = interpreter;
 	}
 
 	static async start(options: KernelStartOptions): Promise<PythonKernel> {
+		const target = parseKernelTarget(options.target);
+		if (target.kind !== "local") return await PythonKernel.#startTarget(options, target);
 		const availability = await logger.time(
 			"PythonKernel.start:availabilityCheck",
 			checkPythonKernelAvailability,
@@ -254,7 +333,14 @@ export class PythonKernel extends BaseKernel {
 		spawnEnv.PYTHONIOENCODING = "utf-8";
 
 		const scriptPath = await stageRunnerScript("proto-python-runner", "py", RUNNER_SCRIPT);
-		const kernel = new PythonKernel(Snowflake.next());
+		const kernel = new PythonKernel(
+			Snowflake.next(),
+			target,
+			runtime.pythonPath,
+			options.env?.PI_TOOL_BRIDGE_SESSION,
+		);
+		spawnEnv.PI_KERNEL_GENERATION = kernel.id;
+		spawnEnv.PI_KERNEL_TARGET = JSON.stringify(target);
 
 		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
 			cwd: options.cwd,
@@ -284,6 +370,49 @@ export class PythonKernel extends BaseKernel {
 				throw new KernelStartupCleanupError(err, () => kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }));
 			}
 			throw err;
+		}
+	}
+
+	static async #startTarget(
+		options: KernelStartOptions,
+		target: Exclude<KernelTarget, { kind: "local" }>,
+	): Promise<PythonKernel> {
+		throwIfAborted(options.signal, "Python target startup aborted");
+		const cwd = kernelTargetCwd(target, options.cwd);
+		const interpreter = options.interpreter ?? target.interpreter ?? "python3";
+		const env: Record<string, string> = {
+			...remoteKernelEnv(options.env),
+			PYTHONUNBUFFERED: "1",
+			PYTHONIOENCODING: "utf-8",
+			PI_KERNEL_STDIO_BRIDGE: "1",
+			PI_KERNEL_REMOTE: "1",
+			PI_KERNEL_TARGET: JSON.stringify(target),
+		};
+		// Self-contained runner, including embedded persistence hooks; compressed source avoids argv limits.
+		const source = Buffer.from(Bun.gzipSync(RUNNER_SCRIPT)).toString("base64");
+		const bootstrap = `import base64,gzip;__file__="<proto-python-runner>";exec(compile(gzip.decompress(base64.b64decode("${source}")),__file__,"exec"))`;
+		const kernel = new PythonKernel(Snowflake.next(), target, interpreter, options.env?.PI_TOOL_BRIDGE_SESSION);
+		env.PI_KERNEL_GENERATION = kernel.id;
+		const spawned = await spawnKernelTarget(target, [interpreter, "-u", "-c", bootstrap], {
+			cwd,
+			discoveryCwd: options.discoveryCwd ?? options.cwd,
+			env,
+		});
+		kernel.setProcess(spawned.proc, spawned.terminate, spawned.interrupt);
+		const budget = (): number =>
+			Math.min(getRemainingTimeMs(options.deadlineMs) ?? STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
+		try {
+			await kernel.executeWithBudget(buildInitScript(cwd, env), options.signal, budget(), "Python target init");
+			await kernel.executeWithBudget(PYTHON_PRELUDE, options.signal, budget(), "Python target prelude", {
+				prelude: true,
+			});
+			kernel.#interpreter = (await kernel.requestStatus(Math.min(budget(), 2_000)))?.interpreter ?? interpreter;
+			return kernel;
+		} catch (error) {
+			const result = await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS });
+			if (!result.confirmed)
+				throw new KernelStartupCleanupError(error, () => kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }));
+			throw error;
 		}
 	}
 }

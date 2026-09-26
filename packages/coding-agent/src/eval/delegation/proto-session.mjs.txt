@@ -1,0 +1,109 @@
+/** Explicit session capabilities for ordinary Node.js 22+ or Bun programs. */
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { request } from "node:http";
+
+const MAX_BYTES = 4 * 1024 * 1024;
+
+export class CapabilityError extends Error {
+	constructor(message, code = "transport") {
+		super(message);
+		this.name = "CapabilityError";
+		this.code = code;
+	}
+}
+
+export class SessionClient {
+	#url;
+	#token;
+	#timeout;
+
+	constructor(config, { timeoutMs = 60_000 } = {}) {
+		let url;
+		try { url = new URL(config.url); } catch { throw new CapabilityError("Invalid session capability configuration", "config"); }
+		if (config.version !== 1 || url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash || !/^\/v1\/delegation\/[a-f0-9-]{36}$/.test(url.pathname) || typeof config.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(config.token)) {
+			throw new CapabilityError("Invalid session capability configuration", "config");
+		}
+		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new CapabilityError("timeoutMs must be finite and positive", "config");
+		this.#url = url;
+		this.#token = config.token;
+		this.#timeout = timeoutMs;
+	}
+
+	static async fromEnv(options) {
+		const filename = process.env.PROTO_SESSION_CAPABILITY;
+		if (!filename) throw new CapabilityError("No explicitly delegated session capability", "config");
+		let config;
+		try {
+			const text = await readFile(filename, "utf8");
+			if (text.length > 16384) throw new Error("oversized config");
+			config = JSON.parse(text);
+		} catch { throw new CapabilityError("Session capability configuration is unavailable", "config"); }
+		return new SessionClient(config, options);
+	}
+
+	toJSON() { return { capability: "<redacted>" }; }
+	[Symbol.for("nodejs.util.inspect.custom")]() { return "SessionClient(capability=<redacted>)"; }
+
+	async #request(operation, payload) {
+		const body = JSON.stringify(payload);
+		if (Buffer.byteLength(body) > 1024 * 1024) throw new CapabilityError("Delegation request is too large", "size");
+		const { promise, resolve, reject } = Promise.withResolvers();
+		const url = new URL(this.#url);
+		url.pathname = `${url.pathname.replace(/\/$/, "")}/${operation}`;
+		// node:http neither follows redirects nor inherits proxy configuration.
+		const outgoing = request(url, { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, response => {
+			const chunks = [];
+			let bytes = 0;
+			response.on("data", chunk => {
+				bytes += chunk.length;
+				if (bytes > MAX_BYTES) {
+					reject(new CapabilityError("Delegation response is too large", "size"));
+					outgoing.destroy();
+				} else chunks.push(chunk);
+			});
+			response.on("error", () => reject(new CapabilityError("Session capability connection failed")));
+			response.on("end", () => {
+				let result;
+				try { result = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+				catch { reject(new CapabilityError("Invalid delegation response", "protocol")); return; }
+				if (!result?.ok) reject(new CapabilityError(result?.error ?? "Delegated request failed", result?.code ?? "protocol"));
+				else resolve(result.value);
+			});
+		});
+		outgoing.on("error", () => reject(new CapabilityError("Session capability connection failed")));
+		outgoing.setTimeout(this.#timeout, () => outgoing.destroy());
+		outgoing.end(body);
+		return promise;
+	}
+
+	async call(name, args = {}, { signal, requestId = randomUUID() } = {}) {
+		signal?.throwIfAborted();
+		const pending = this.#request("call", { id: requestId, name, args });
+		// Retain the HTTP call until cancellation is acknowledged, so cleanup is observable.
+		const onAbort = () => { void this.cancel(requestId).catch(() => {}); };
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try { return await pending; }
+		finally { signal?.removeEventListener("abort", onAbort); }
+	}
+
+	async cancel(requestId) { return (await this.#request("cancel", { id: requestId })).cancelled; }
+
+	async completion(prompt, options = {}) {
+		const value = await this.call("__completion__", { ...options, prompt });
+		return options.schema === undefined ? value.text : JSON.parse(value.text);
+	}
+
+	publishArtifact(value, options = {}) {
+		if (value instanceof Uint8Array) {
+			options = { ...options, kind: "binary", encoding: "base64" };
+			value = Buffer.from(value).toString("base64");
+		}
+		return this.call("__runtime__", { kind: "json", ...options, op: "artifact_publish", value });
+	}
+	readArtifact(ref, options = {}) { return this.call("__runtime__", { ...options, op: "artifact_read", ref }); }
+	resolveArtifact(ref) { return this.call("__runtime__", { op: "artifact_resolve", ref }); }
+}
+
+export const fromEnv = options => SessionClient.fromEnv(options);
+export default SessionClient;

@@ -3,7 +3,10 @@
 use std::io::Write;
 
 use brush_core::{
-	ExecutionExitCode, ExecutionResult, builtins, sys, traps::TrapSignal, ExecutionContext,
+	ExecutionContext, ExecutionExitCode, ExecutionResult, builtins,
+	jobs::{Job, JobState},
+	sys,
+	traps::TrapSignal,
 };
 use clap::Parser;
 
@@ -169,6 +172,18 @@ impl builtins::Command for KillCommand {
 					had_failure = true;
 					continue;
 				};
+				if job.synthetic_pid().is_some() {
+					if !signal_in_shell_job(job, signal) {
+						writeln!(
+							context.stderr(),
+							"{}: {}: failed to send signal",
+							context.command_name,
+							operand
+						)?;
+						had_failure = true;
+					}
+					continue;
+				}
 				#[cfg(unix)]
 				{
 					let mut targets: Vec<i32> = job
@@ -229,6 +244,26 @@ impl builtins::Command for KillCommand {
 					continue;
 				},
 			};
+			// Jobs that run inside the shell (builtins, functions, subshells) report a
+			// synthetic PID for `$!`/`jobs -l`; it is above every real PID, so it is
+			// resolved to its job here instead of reaching kill(2).
+			if let Some(job) = context
+				.shell
+				.jobs_mut()
+				.resolve_process_id(pid)
+				.filter(|job| job.synthetic_pid() == Some(pid))
+			{
+				if !signal_in_shell_job(job, signal) {
+					writeln!(
+						context.stderr(),
+						"{}: {}: failed to send signal",
+						context.command_name,
+						operand
+					)?;
+					had_failure = true;
+				}
+				continue;
+			}
 			if blocks(pid) {
 				writeln!(
 					context.stderr(),
@@ -274,6 +309,13 @@ impl builtins::Command for KillCommand {
 
 
 
+
+fn signal_in_shell_job(job: &mut Job, signal: KillSignal) -> bool {
+	match signal {
+		KillSignal::Probe => !matches!(job.state, JobState::Done),
+		KillSignal::Signal(signal) => job.signal_in_shell(signal).is_ok(),
+	}
+}
 
 fn rewrite_attached_short_options(args: impl IntoIterator<Item = String>) -> Vec<String> {
 	let mut out: Vec<String> = Vec::new();

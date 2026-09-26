@@ -1774,12 +1774,12 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
 				Expansion::from(std::process::id().to_string())
 			},
 			brush_parser::word::SpecialParameter::LastBackgroundProcessId => {
-				if let Some(job) = self.shell.jobs().current_job()
-					&& let Some(pid) = job.representative_pid()
-				{
-					return Expansion::from(pid.to_string());
-				}
-				Expansion::from(String::new())
+				Expansion::from(
+					self
+						.shell
+						.last_background_pid()
+						.map_or_else(String::new, |pid| pid.to_string()),
+				)
 			},
 			brush_parser::word::SpecialParameter::ShellName => Expansion::from(
 				self

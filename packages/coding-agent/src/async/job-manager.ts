@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { logger } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { MonitorDetails } from "../monitor/types";
@@ -41,6 +42,8 @@ export interface AsyncJob {
 	promise: Promise<void>;
 	resultText?: string;
 	errorText?: string;
+	/** Structured terminal value; progress is never used as a substitute. */
+	result?: unknown;
 
 	latestDetails?: Record<string, unknown>;
 	monitor?: MonitorDetails;
@@ -51,6 +54,19 @@ export interface AsyncJob {
 	agentId?: string;
 
 	queued?: boolean;
+}
+
+export type AsyncJobObservation =
+	| { kind: "registered"; job: AsyncJob }
+	| { kind: "progress"; job: AsyncJob; text: string; details?: Record<string, unknown> }
+	| { kind: "event"; job: AsyncJob; event: AsyncJobEvent }
+	| { kind: "settled"; job: AsyncJob };
+
+export type AsyncJobObserver = (observation: AsyncJobObservation) => void;
+
+interface AsyncJobObserverScope {
+	observer: AsyncJobObserver;
+	signal?: AbortSignal;
 }
 
 type AsyncJobDeliverySink = (
@@ -143,6 +159,24 @@ interface AsyncJobFilter {
 	excludeMonitors?: boolean;
 }
 
+/**
+ * A job failure that still produced output: `message` is the reason (the job's
+ * error), `output` is what the job printed (kept as its result text).
+ */
+export class AsyncJobFailure extends Error {
+	constructor(
+		message: string,
+		readonly output: string,
+	) {
+		super(message);
+		this.name = "AsyncJobFailure";
+	}
+}
+
+function failureDeliveryText(job: AsyncJob): string {
+	return job.resultText ? `${job.resultText}\n\nError: ${job.errorText ?? ""}` : (job.errorText ?? "");
+}
+
 export class AsyncJobManager {
 	static #instance: AsyncJobManager | undefined;
 
@@ -159,6 +193,7 @@ export class AsyncJobManager {
 	}
 
 	readonly #jobs = new Map<string, AsyncJob>();
+	readonly #jobObservers = new AsyncLocalStorage<readonly AsyncJobObserverScope[]>();
 	readonly #deliveries: AsyncJobDelivery[] = [];
 	readonly #inFlightDeliveries: AsyncJobDelivery[] = [];
 	readonly #retainedDeliveries = new Set<AsyncJobDelivery>();
@@ -297,8 +332,28 @@ export class AsyncJobManager {
 			callback();
 			return () => {};
 		}
-		this.#capacityWaiters.add(callback);
-		return () => this.#capacityWaiters.delete(callback);
+		const observers = this.#jobObservers.getStore() ?? [];
+		const notify = (error?: Error) => this.#jobObservers.run(observers, callback, error);
+		this.#capacityWaiters.add(notify);
+		return () => this.#capacityWaiters.delete(notify);
+	}
+
+	/** Observe jobs created by this invocation and its asynchronous descendants, without consuming deliveries. */
+	withJobObserver<T>(observer: AsyncJobObserver, run: () => T, signal?: AbortSignal): T {
+		return this.#jobObservers.run([...(this.#jobObservers.getStore() ?? []), { observer, signal }], run);
+	}
+
+	#observe(observers: readonly AsyncJobObserverScope[], observation: AsyncJobObservation): void {
+		for (const { observer } of observers) {
+			try {
+				observer(observation);
+			} catch (error) {
+				logger.warn("Async job observer failed", {
+					jobId: observation.job.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 	}
 
 	register(
@@ -308,12 +363,15 @@ export class AsyncJobManager {
 			jobId: string;
 			signal: AbortSignal;
 			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			setResult: (value: unknown) => void;
 			emitEvent: (kind: AsyncJobEvent["kind"], text: string) => void;
 
 			markRunning: () => void;
 		}) => Promise<string>,
 		options?: AsyncJobRegisterOptions,
 	): string {
+		const observers = this.#jobObservers.getStore() ?? [];
+		for (const scope of observers) scope.signal?.throwIfAborted();
 		if (this.#disposed) {
 			throw new Error("Async job manager is disposed");
 		}
@@ -369,6 +427,7 @@ export class AsyncJobManager {
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
 			if (job.status !== "running" || this.#disposed) return;
 			if (details) job.latestDetails = details;
+			this.#observe(observers, { kind: "progress", job, text, details });
 			if (!options?.onProgress) return;
 			try {
 				await options.onProgress(text, details);
@@ -381,13 +440,20 @@ export class AsyncJobManager {
 		};
 		this.#jobs.set(id, job);
 		this.#unsettledJobs.add(id);
+		this.#observe(observers, { kind: "registered", job });
 		job.promise = (async () => {
 			try {
 				const text = await run({
 					jobId: id,
 					signal: abortController.signal,
 					reportProgress,
-					emitEvent: (kind, text) => this.#emitEvent(job, kind, text),
+					setResult: value => {
+						job.result = value;
+					},
+					emitEvent: (kind, text) => {
+						const event = this.#emitEvent(job, kind, text);
+						if (event) this.#observe(observers, { kind: "event", job, event });
+					},
 					markRunning: () => {
 						job.queued = false;
 					},
@@ -399,13 +465,15 @@ export class AsyncJobManager {
 				}
 			} catch (error) {
 				job.errorText = error instanceof Error ? error.message : String(error);
+				if (error instanceof AsyncJobFailure) job.resultText = error.output;
 				if (job.status !== "cancelled") {
 					job.status = "failed";
-					if (type !== "monitor") this.#enqueueDelivery(id, job.errorText);
+					if (type !== "monitor") this.#enqueueDelivery(id, failureDeliveryText(job));
 				}
 			} finally {
 				this.#unsettledJobs.delete(id);
 				this.#admissions.delete(admission);
+				this.#observe(observers, { kind: "settled", job });
 				this.#scheduleEviction(id);
 				this.#notifyCapacityAvailable();
 			}
@@ -544,7 +612,7 @@ export class AsyncJobManager {
 				this.#deliveries.some(delivery => delivery.jobId === jobId) ||
 				this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
 			if (queued) continue;
-			this.#enqueueDelivery(jobId, job.status === "completed" ? (job.resultText ?? "") : (job.errorText ?? ""));
+			this.#enqueueDelivery(jobId, job.status === "completed" ? (job.resultText ?? "") : failureDeliveryText(job));
 		}
 	}
 
@@ -761,9 +829,10 @@ export class AsyncJobManager {
 			// Account UTF-16 storage as well as UTF-8 serialization, not only the result preview.
 			let details = "";
 			try {
-				details = JSON.stringify(job.latestDetails ?? {}) ?? "";
+				details = JSON.stringify({ details: job.latestDetails, result: job.result }) ?? "";
 			} catch {
 				job.latestDetails = undefined;
+				job.result = undefined;
 			}
 			const bytes = [
 				job.id,
@@ -830,15 +899,16 @@ export class AsyncJobManager {
 		return this.#inFlightDeliveries.filter(delivery => this.#deliveryMatches(delivery, filter));
 	}
 
-	#emitEvent(job: AsyncJob, kind: AsyncJobEvent["kind"], text: string): void {
+	#emitEvent(job: AsyncJob, kind: AsyncJobEvent["kind"], text: string): AsyncJobEvent | undefined {
 		if (job.type !== "monitor" || job.status !== "running" || this.#disposed) return;
 		const sequence = (this.#eventSequences.get(job.id) ?? 0) + 1;
 		this.#eventSequences.set(job.id, sequence);
 		const event: AsyncJobEvent = { jobId: job.id, label: job.label, sequence, kind, text, timestamp: Date.now() };
 		const delivery = this.#createDelivery(job.id, text, event);
-		if (!delivery) return;
+		if (!delivery) return event;
 		job.events?.push(event);
 		this.#queueDelivery(delivery);
+		return event;
 	}
 
 	isEventAcknowledged(event: AsyncJobEvent): boolean {

@@ -37,7 +37,11 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 
 setProcessName(BINARY_NAME);
 
-const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
+// Splitting moves this module into a chunk, where import.meta.main is false even for the CLI entry.
+const isProcessEntry =
+	import.meta.main ||
+	process.env.PI_COMPILED === "true" ||
+	(process.env.PI_BUNDLED === "true" && Bun.main === nodePath.join(import.meta.dir, "cli.js"));
 
 async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 	const [{ renderRootHelp }, { getExtraHelpText }] = await Promise.all([
@@ -80,7 +84,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	}
 	if (arg === JS_EVAL_PROCESS_ARG) {
 		// Keep this worker-only dependency out of the regular CLI startup graph.
-		const { startJsEvalProcess } = await import("./eval/js/process-entry");
+		const { startJsEvalProcess, startJsEvalStdioProcess } = await import("./eval/js/process-entry");
+		if (process.argv.includes("--stdio")) {
+			await startJsEvalStdioProcess(interceptUnhandledRejections);
+			return true;
+		}
 		await runIpcSubprocessWorker<JsWorkerInbound, JsWorkerOutbound>(
 			transport => startJsEvalProcess(transport, interceptUnhandledRejections),
 			{ rethrowConnectedSendErrors: true },

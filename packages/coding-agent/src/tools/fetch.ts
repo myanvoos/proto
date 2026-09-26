@@ -7,6 +7,7 @@ import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } fro
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
 import type { ArchiveFormat } from "@oh-my-pi/pi-utils/ar";
+import type { Element as DomElement } from "@oh-my-pi/pi-utils/dom";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { type Theme, theme } from "../modes/theme/theme";
@@ -471,57 +472,72 @@ function cleanFeedText(text: string): string {
 		.trim();
 }
 
-async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string> {
-	const { parseHTML } = await import("@oh-my-pi/pi-utils/dom");
+interface FeedEntry {
+	title: string;
+	link: string;
+	date: string;
+	summary: string;
+}
+
+function formatFeedMarkdown(title: string, entries: readonly FeedEntry[]): string {
+	let md = `# ${title}\n\n`;
+	for (const entry of entries) {
+		md += `## ${entry.title || "Untitled"}\n`;
+		if (entry.date) md += `*${entry.date}*\n\n`;
+		if (entry.summary) md += `${entry.summary.slice(0, 500)}${entry.summary.length > 500 ? "..." : ""}\n\n`;
+		if (entry.link) md += `[Read more](${entry.link})\n\n`;
+		md += "---\n\n";
+	}
+	return md;
+}
+
+async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string | null> {
+	const { parseHTML, Text: DomText } = await import("@oh-my-pi/pi-utils/dom");
 	try {
 		const doc = parseHTML(content).document;
+		const childText = (parent: DomElement, selector: string): string =>
+			cleanFeedText(parent.querySelector(selector)?.textContent ?? "");
+		const hasContent = (entry: FeedEntry): boolean => entry.title.length > 0 || entry.link.length > 0;
 
 		const channel = doc.querySelector("channel");
 		if (channel) {
-			const title = cleanFeedText(channel.querySelector("title")?.text || "RSS Feed");
-			const items = channel.querySelectorAll("item").slice(0, maxItems);
-
-			let md = `# ${title}\n\n`;
-			for (const item of items) {
-				const itemTitle = cleanFeedText(item.querySelector("title")?.text || "Untitled");
-				const link = cleanFeedText(item.querySelector("link")?.text || "");
-				const pubDate = cleanFeedText(item.querySelector("pubDate")?.text || "");
-				const desc = cleanFeedText(item.querySelector("description")?.text || "");
-
-				md += `## ${itemTitle}\n`;
-				if (pubDate) md += `*${pubDate}*\n\n`;
-				if (desc) md += `${desc.slice(0, 500)}${desc.length > 500 ? "..." : ""}\n\n`;
-				if (link) md += `[Read more](${link})\n\n`;
-				md += "---\n\n";
-			}
-			return md;
+			const entries = channel
+				.querySelectorAll("item")
+				.slice(0, maxItems)
+				.map(item => {
+					const link = item.querySelector("link");
+					const linkSibling = link?.nextSibling;
+					const linkText = link?.textContent || (linkSibling instanceof DomText ? linkSibling.textContent : "");
+					return {
+						title: childText(item, "title"),
+						link: cleanFeedText(linkText),
+						date: childText(item, "pubDate"),
+						summary: childText(item, "description"),
+					};
+				})
+				.filter(hasContent);
+			if (entries.length === 0) return null;
+			return formatFeedMarkdown(childText(channel, "title") || "RSS Feed", entries);
 		}
 
 		const feed = doc.querySelector("feed");
 		if (feed) {
-			const title = cleanFeedText(feed.querySelector("title")?.text || "Atom Feed");
-			const entries = feed.querySelectorAll("entry").slice(0, maxItems);
-
-			let md = `# ${title}\n\n`;
-			for (const entry of entries) {
-				const entryTitle = cleanFeedText(entry.querySelector("title")?.text || "Untitled");
-				const link = entry.querySelector("link")?.getAttribute("href") || "";
-				const updated = cleanFeedText(entry.querySelector("updated")?.text || "");
-				const summary = cleanFeedText(
-					entry.querySelector("summary")?.text || entry.querySelector("content")?.text || "",
-				);
-
-				md += `## ${entryTitle}\n`;
-				if (updated) md += `*${updated}*\n\n`;
-				if (summary) md += `${summary.slice(0, 500)}${summary.length > 500 ? "..." : ""}\n\n`;
-				if (link) md += `[Read more](${link})\n\n`;
-				md += "---\n\n";
-			}
-			return md;
+			const entries = feed
+				.querySelectorAll("entry")
+				.slice(0, maxItems)
+				.map(entry => ({
+					title: childText(entry, "title"),
+					link: entry.querySelector("link")?.getAttribute("href") ?? "",
+					date: childText(entry, "updated"),
+					summary: childText(entry, "summary") || childText(entry, "content"),
+				}))
+				.filter(hasContent);
+			if (entries.length === 0) return null;
+			return formatFeedMarkdown(childText(feed, "title") || "Atom Feed", entries);
 		}
 	} catch {}
 
-	return content;
+	return null;
 }
 
 const REMOTE_READER_MAX_MS = 10_000;
@@ -1242,7 +1258,7 @@ async function renderUrl(
 
 	if (isFeed || (isXml && (rawContent.includes("<rss") || rawContent.includes("<feed")))) {
 		const parsed = await parseFeedToMarkdown(rawContent);
-		const output = finalizeOutput(parsed);
+		const output = finalizeOutput(parsed ?? rawContent);
 		return {
 			url,
 			finalUrl,
@@ -1324,12 +1340,14 @@ async function renderUrl(
 		}
 
 		const feedAlternates = alternates.filter(alt => !alt.endsWith(".md") && !alt.includes("markdown"));
-		for (const altUrl of feedAlternates.slice(0, 2)) {
-			const resolved = altUrl.startsWith("http") ? altUrl : new URL(altUrl, finalUrl).href;
-			const altResult = await loadPage(resolved, { timeout, signal });
-			if (altResult.ok && altResult.content.trim().length > 200) {
-				notes.push(`Used feed alternate: ${resolved}`);
+		const tryFeedAlternate = async (pageContent: string): Promise<FetchRenderResult | null> => {
+			for (const altUrl of feedAlternates.slice(0, 2)) {
+				const resolved = altUrl.startsWith("http") ? altUrl : new URL(altUrl, finalUrl).href;
+				const altResult = await loadPage(resolved, { timeout, signal });
+				if (!altResult.ok) continue;
 				const parsed = await parseFeedToMarkdown(altResult.content);
+				if (!parsed || parsed.trim().length <= pageContent.trim().length) continue;
+				notes.push(`Used feed alternate: ${resolved}`);
 				const output = finalizeOutput(parsed);
 				return {
 					url,
@@ -1342,7 +1360,8 @@ async function renderUrl(
 					notes,
 				};
 			}
-		}
+			return null;
+		};
 
 		if (signal?.aborted) {
 			throw new ToolAbortError();
@@ -1359,6 +1378,9 @@ async function renderUrl(
 		);
 		if (!htmlResult.ok) {
 			notes.push("html rendering failed (no reader backend produced usable output)");
+
+			const feedResult = await tryFeedAlternate("");
+			if (feedResult) return feedResult;
 
 			const llmResult = await tryLlmEndpoints(finalUrl, timeout, signal);
 			if (llmResult) {
@@ -1418,6 +1440,9 @@ async function renderUrl(
 					notes.push(`Binary fetch failed: ${binary.error}`);
 				}
 			}
+
+			const feedResult = await tryFeedAlternate(htmlResult.content);
+			if (feedResult) return feedResult;
 
 			const llmResult = await tryLlmEndpoints(finalUrl, timeout, signal);
 			if (llmResult) {

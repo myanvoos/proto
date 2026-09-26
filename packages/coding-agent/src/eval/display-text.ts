@@ -15,17 +15,12 @@ function formatDisplayJsonForText(value: unknown): string {
 	return text;
 }
 
-export function formatDisplayOutputsForText(outputs: readonly EvalDisplayOutput[]): string {
-	const chunks: string[] = [];
-	let displayIndex = 0;
-	for (const output of outputs) {
-		if (output.type === "notice") {
-			chunks.push(output.text);
-			continue;
-		}
-		if (output.type !== "json") continue;
-		displayIndex++;
-		chunks.push(`display[${displayIndex}]:\n${formatDisplayJsonForText(output.data)}`);
-	}
-	return chunks.join("\n\n");
+/**
+ * Text rendering of one display output for a byte stream, or undefined when
+ * the output has no text form. `jsonIndex` numbers JSON displays within a cell.
+ */
+export function formatDisplayOutputForText(output: EvalDisplayOutput, jsonIndex: number): string | undefined {
+	if (output.type === "notice") return output.text;
+	if (output.type !== "json") return undefined;
+	return `display[${jsonIndex}]:\n${formatDisplayJsonForText(output.data)}`;
 }

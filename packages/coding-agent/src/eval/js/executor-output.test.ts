@@ -20,6 +20,7 @@ test("JavaScript returns bounded rich displays instead of retaining the audit's 
 	const owner = `display-output:${crypto.randomUUID()}`;
 	try {
 		const result = await executeJs('for (let i = 0; i < 16; i++) display({ i, s: "x".repeat(1048576) });', {
+			runtime: "bun",
 			session: toolSession,
 			sessionId: owner,
 			kernelOwnerId: owner,
@@ -39,6 +40,7 @@ test("completed-output eviction cannot erase a large image from the current Java
 	const owner = `display-image:${crypto.randomUUID()}`;
 	try {
 		const result = await executeJs('display({type:"image", data:"A".repeat(1024 * 1024), mimeType:"image/png"});', {
+			runtime: "bun",
 			session: toolSession,
 			sessionId: owner,
 			kernelOwnerId: owner,

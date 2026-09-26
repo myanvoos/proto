@@ -32,6 +32,7 @@ test("JavaScript inspection avoids getters and proxies, bounds previews, and ref
 	const run = async (code: string) => {
 		let output = "";
 		await executeInVmContext({
+			runtime: "bun",
 			sessionKey: ownerId,
 			sessionId: ownerId,
 			ownerId,

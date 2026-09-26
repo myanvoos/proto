@@ -1,4 +1,5 @@
-import { materializeString, truncateHeadBytes } from "@oh-my-pi/pi-utils";
+import { truncateHeadBytes } from "@oh-my-pi/pi-utils/bytes";
+import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
 import { htmlToBasicMarkdown } from "../../web/scrapers/types";
 
 export interface PythonStatusEvent {
@@ -155,6 +156,7 @@ export class PythonDisplayBudget {
 	#persistedBytes = 2;
 	#retainedBytes = 0;
 	#metadataCount = 0;
+	readonly #metadataSnapshots = new Map<string, number>();
 	#lastWasNotice = false;
 
 	/** Only bounded, detached values leave the admission gate. */
@@ -183,12 +185,14 @@ export class PythonDisplayBudget {
 	release(): void {
 		this.blocks.length = 0;
 		this.#retainedBytes = 0;
+		this.#metadataSnapshots.clear();
 	}
 
-	/** Metadata shares the display byte budget, even when not rendered. */
-	admitMetadata<T>(value: T): T | undefined {
+	/** Metadata shares display bytes; keyed snapshots replace their prior count/charge atomically. */
+	admitMetadata<T>(value: T, key?: string): T | undefined {
 		if (value === undefined) return undefined;
-		if (this.#metadataCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
+		const previousBytes = key === undefined ? undefined : this.#metadataSnapshots.get(key);
+		if (previousBytes === undefined && this.#metadataCount >= PYTHON_DISPLAY_MAX_BLOCKS) {
 			this.#appendNotice(`display metadata truncated at ${PYTHON_DISPLAY_MAX_BLOCKS} entries`);
 			return undefined;
 		}
@@ -203,13 +207,14 @@ export class PythonDisplayBudget {
 		const bytes = Buffer.byteLength(text);
 		const notice = "display metadata truncated: 4 MiB persistence budget exceeded";
 		const noticeBytes = Buffer.byteLength(JSON.stringify({ type: "notice", text: notice })) + 1;
-		if (bytes + noticeBytes > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes) {
+		if (bytes + noticeBytes > PYTHON_DISPLAY_MAX_PERSISTED_BYTES - this.#persistedBytes + (previousBytes ?? 0)) {
 			this.#appendNotice(notice);
 			return undefined;
 		}
-		this.#metadataCount++;
-		this.#persistedBytes += bytes;
-		this.#retainedBytes += bytes;
+		if (previousBytes === undefined) this.#metadataCount++;
+		this.#persistedBytes += bytes - (previousBytes ?? 0);
+		this.#retainedBytes += bytes - (previousBytes ?? 0);
+		if (key !== undefined) this.#metadataSnapshots.set(key, bytes);
 		return JSON.parse(text) as T;
 	}
 

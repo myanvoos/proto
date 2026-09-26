@@ -37,6 +37,26 @@ export async function hasAgentTombstone(sessionFile: string): Promise<boolean> {
 
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 
+/** Public lifecycle vocabulary shared by fleet, orchestrate, and history://; `aborted` is the registry's terminal state. */
+export interface AgentLifecycleState {
+	lifecycle: "live" | "parked" | "terminal";
+	/** Absent once terminal: a terminal agent has no turns. */
+	turnState?: "running" | "idle";
+}
+
+export function agentLifecycle(status: AgentStatus): AgentLifecycleState {
+	switch (status) {
+		case "aborted":
+			return { lifecycle: "terminal" };
+		case "parked":
+			return { lifecycle: "parked", turnState: "idle" };
+		case "running":
+			return { lifecycle: "live", turnState: "running" };
+		case "idle":
+			return { lifecycle: "live", turnState: "idle" };
+	}
+}
+
 type AgentDurationKind = "active" | "span" | "unknown";
 
 export type AgentKind = "main" | "sub" | "side" | "advisor";
@@ -162,6 +182,13 @@ export class AgentRegistry {
 
 	#retain(ref: AgentRef): void {
 		if (ref.kind === "main" || ref.session || (ref.status !== "parked" && ref.status !== "aborted")) {
+			// A superseded main ref (another session's `Main` in a detached fleet) stays addressable
+			// through its fleet index; it must not reclaim the primary id slot from the newer main.
+			const current = this.#refs.get(ref.id);
+			if (current && current !== ref && this.#mainRefs.has(ref)) {
+				this.#indexRef(ref);
+				return;
+			}
 			this.#retired?.query("DELETE FROM refs WHERE id = ?").run(ref.id);
 			this.#dormant.delete(ref.id);
 			this.#refs.set(ref.id, ref);

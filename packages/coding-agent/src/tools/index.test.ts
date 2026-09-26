@@ -5,7 +5,8 @@ import { Settings } from "../config/settings";
 import { BUILTIN_TOOLS, createTools, type ToolSession } from ".";
 
 const EXPECTED_SCHEMA_HASHES = {
-	bash: "8b0063176e37e24d72d0bd05afb0b3824fcac83eb0fd3d39c7335fe0063e6ffe",
+	kernel: "9d3fcd0ca9be920de6ecfbf2de6e704258573cade45ed8d48169c9911c67116f",
+	bash: "a090be2f47d17b7fd240e81a2f6b5f66407a382f10d2c3d0bbda1a373ddfe878",
 	ask: "f6461da4127dda24ee2a896b5ef5fee810976e783139aa3de9ac8a681d2825bb",
 	inspect_media: "c27e6e1252710dab5ffc41b493a847af4fe6e47d25168e664a9f3e3f6a1a9f49",
 	browser: "fb75a57dba37513fcdc093e0516a7c889a0eae70ad233cb5fd4e2306719abd57",
@@ -17,7 +18,7 @@ const EXPECTED_SCHEMA_HASHES = {
 	orchestrate_wait: "c5682266ac4050980f8b7c77167a427ab1a8befd0631c4641e3da289bf6a7f75",
 	orchestrate_kill: "c914fe9935c807a74acc19f131e44336f40ed720377ca2260153fce00c7b2f85",
 	orchestrate_list: "32062bdb9024160d3b9816f12ba2f337808ee107449f8bf08d55b0026944f51e",
-	fleet: "a08f035f1cd8c52810e31540a7ae10a2eb28622c9be6ff4c4b8a980fd2de85fc",
+	fleet: "b7c4559ec93bd342115e23ba09b4f3cc55f332c1eecb5107c8f3f26d022d8b31",
 	monitor: "921b8ee2390a5842169740a45443c20c7cfeb3f813730bad08c5d15394a29ce5",
 	checklist: "f1c164b6e734b737b003cd93a8e5ffb45a624486f5e0e8878032b94955892bff",
 	web_search: "0d4dfea8a9d98cfe1831327673162cdd4e1e3cd366f5d440c47c482b2495b67f",

@@ -1,3 +1,5 @@
+// node:timers rather than Bun.sleep: the Node kernel runtime (node-entry.ts) runs this core too.
+import { setTimeout as sleep } from "node:timers/promises";
 import { ToolError } from "../../tools/tool-errors";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { PythonDisplayBudget } from "../py/display";
@@ -10,6 +12,7 @@ import type {
 	WorkerInbound,
 	WorkerOutbound,
 } from "./worker-protocol";
+import { WorkerInput, WorkerOutput } from "./worker-streams";
 
 interface PendingTool {
 	runId: string;
@@ -18,6 +21,7 @@ interface PendingTool {
 }
 
 interface ActiveRun {
+	input: WorkerInput;
 	runId: string;
 	filename: string;
 	completionContext?: EvalCompletionInvocationContext;
@@ -87,6 +91,8 @@ export class WorkerCore {
 	#runQueue: RunMessage[] = [];
 	#drainPromise: Promise<void> | null = null;
 	#closing = false;
+	#outputAcks = new Map<string, () => void>();
+	#outputSequence = 0;
 	#recentCellFiles = new Set<string>();
 	#unsubscribe: () => void;
 	#uninstallRejectionGuard: () => void;
@@ -173,13 +179,20 @@ export class WorkerCore {
 			case "init":
 				try {
 					this.#ensureRuntime(msg.snapshot);
-					this.#transport.send({ type: "ready" });
+					this.#transport.send({ type: "ready", interpreter: process.execPath });
 				} catch (error) {
 					this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 				}
 				return;
 			case "run":
 				this.#enqueueRun(msg);
+				return;
+			case "stdin":
+				this.#runs.get(msg.runId)?.input.feed(msg.data, msg.eof);
+				return;
+			case "output-ack":
+				this.#outputAcks.get(msg.id)?.();
+				this.#outputAcks.delete(msg.id);
 				return;
 			case "tool-reply":
 				this.#deliverToolReply(msg.id, msg.reply);
@@ -231,6 +244,8 @@ export class WorkerCore {
 		}
 		this.#runtime = new JsRuntime({
 			initialCwd: snapshot.cwd,
+			generation: snapshot.generation,
+			target: snapshot.target,
 			sessionId: snapshot.sessionId,
 			localRoots: snapshot.localRoots,
 			trackFileWrites: true,
@@ -273,11 +288,34 @@ export class WorkerCore {
 		snapshot: SessionSnapshot,
 		completionContext?: EvalCompletionInvocationContext,
 	): Promise<void> {
-		const active: ActiveRun = { runId, filename, completionContext, pendingTools: new Map(), floatingRejections: [] };
+		const active: ActiveRun = {
+			runId,
+			filename,
+			completionContext,
+			pendingTools: new Map(),
+			floatingRejections: [],
+			input: new WorkerInput(runId, this.#transport, snapshot.stdin === true),
+		};
 		this.#runs.set(runId, active);
 		const displayBudget = new PythonDisplayBudget();
+		const output = new WorkerOutput(async (chunk, stream) => {
+			if (this.#closing) return;
+			const id = String(++this.#outputSequence);
+			const ack = Promise.withResolvers<void>();
+			this.#outputAcks.set(id, ack.resolve);
+			this.#transport.send(
+				typeof chunk === "string"
+					? { type: "text", runId, id, chunk, stream }
+					: { type: "bytes", runId, id, data: Buffer.from(chunk).toString("base64"), stream },
+			);
+			await ack.promise;
+		});
 		const hooks: RuntimeHooks = {
-			onText: (chunk, stream) => this.#transport.send({ type: "text", runId, chunk, stream }),
+			onText: (chunk, stream) => {
+				void output.write(chunk, stream);
+			},
+			onBytes: (chunk, stream) => output.write(chunk, stream),
+			outputBackpressured: () => output.backpressured(),
 			onDisplay: output => {
 				if (output.type === "status") {
 					this.#transport.send({ type: "display", runId, output });
@@ -298,7 +336,7 @@ export class WorkerCore {
 				runId,
 				cwd: snapshot.cwd,
 				shellEnv: snapshot.shellEnv,
-				stdin: snapshot.stdin,
+				stdin: active.input,
 			});
 			runtime.displayValue(value, hooks);
 			result = { type: "result", runId, ok: true };
@@ -306,9 +344,13 @@ export class WorkerCore {
 			result = { type: "result", runId, ok: false, error: errorPayload(error) };
 		}
 		try {
-			await Bun.sleep(0);
+			await sleep(0);
 			result = foldFloatingRejections(active, result, hooks);
+			await output.flush();
+		} catch (error) {
+			result = { type: "result", runId, ok: false, error: errorPayload(error) };
 		} finally {
+			active.input.destroy();
 			this.#runs.delete(runId);
 			this.#rememberCellFile(filename);
 			if (!this.#closing) this.#transport.send(result);
@@ -366,7 +408,10 @@ export class WorkerCore {
 	}
 
 	#rejectActiveTools(): void {
+		for (const resolve of this.#outputAcks.values()) resolve();
+		this.#outputAcks.clear();
 		for (const active of this.#runs.values()) {
+			active.input.destroy();
 			for (const pending of active.pendingTools.values()) {
 				pending.reject(new ToolError("JS worker closed"));
 			}

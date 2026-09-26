@@ -171,6 +171,15 @@ test("diagnostic summary preserves file, line, category, and message across chun
 	expect(summary.output).toContain("src/check.ts:17: error: actionable failure");
 });
 
+test("an appended diagnostics section does not shift the reported source line range", async () => {
+	const sink = new OutputSink({ maxColumns: 24 });
+	await sink.push("src/check.ts:17: error: actionable failure in a long line\nok\n");
+	const summary = await sink.dump();
+	expect(summary.output).toContain("ACTIONABLE DIAGNOSTICS");
+	const notice = formatOutputNotice(outputMeta().truncationFromSummary(summary, { direction: "tail" }).get());
+	expect(notice).toContain("Showing lines 1-2 of 2");
+});
+
 test("oversized diagnostic lines are skipped until their newline", async () => {
 	const sink = new OutputSink({ spillThreshold: 1 });
 	const oversized = `${"x".repeat(16 * 1024)} error: hidden tail`;
@@ -552,4 +561,13 @@ test("column-cap notices name the unit the cap was enforced in", async () => {
 	);
 	// read caps lines by UTF-16 code units.
 	expect(formatOutputNotice(outputMeta().limits({ columnMax: 8 }).get())).toContain("Some lines truncated to 8 chars");
+});
+
+test("column clipping alone never reports a byte limit", async () => {
+	const sink = new OutputSink({ maxColumns: 8 });
+	await sink.push(`${"x".repeat(40)}\nshort\n`);
+	const summary = await sink.dump();
+	const notice = formatOutputNotice(outputMeta().truncationFromSummary(summary, { direction: "tail" }).get());
+	expect(notice).toContain("Showing lines 1-2 of 2");
+	expect(notice).not.toContain("limit)");
 });

@@ -207,6 +207,10 @@ export class OutputMetaBuilder {
 			shownEnd = startLine + summary.outputLines - 1;
 		}
 
+		// Column clipping alone drops bytes without any byte cap; only a real cap reports a limit.
+		const columnOnly =
+			summary.outputLines >= totalLines &&
+			(summary.columnDroppedBytes ?? 0) >= summary.totalBytes - summary.outputBytes;
 		this.#meta.truncation = {
 			direction,
 			truncatedBy,
@@ -214,6 +218,7 @@ export class OutputMetaBuilder {
 			totalBytes: summary.totalBytes,
 			outputLines: summary.outputLines,
 			outputBytes: summary.outputBytes,
+			maxBytes: truncatedBy === "bytes" && !columnOnly ? summary.outputBytes : undefined,
 			shownRange: { start: shownStart, end: shownEnd },
 			artifactId: summary.artifactId,
 			nextOffset: direction === "head" ? shownEnd + 1 : undefined,
@@ -404,9 +409,9 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 		notice = `Showing ${truncation.outputLines} of ${truncation.totalLines} lines`;
 	}
 
-	if (truncation.truncatedBy === "bytes") {
-		const maxBytes = truncation.maxBytes ?? truncation.outputBytes;
-		notice += ` (${formatBytes(maxBytes)} limit)`;
+	// Only a known byte cap is a "limit"; per-line column clipping shrinks bytes without one.
+	if (truncation.truncatedBy === "bytes" && truncation.maxBytes != null) {
+		notice += ` (${formatBytes(truncation.maxBytes)} limit)`;
 	}
 
 	if (truncation.nextOffset != null) {

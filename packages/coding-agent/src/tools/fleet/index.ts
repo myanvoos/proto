@@ -94,7 +94,9 @@ const fleetSchema = type({
 	"pattern?": type("string > 0").describe("wait with name: output regex; takes precedence over for"),
 	"text?": type("string > 0").describe("send with name: stdin text"),
 	"enter?": type("boolean").describe("send with name: append Enter after text; default true"),
-	"keys?": type("string[]").describe("send with name: terminal keys after text"),
+	"keys?": type("string[]").describe(
+		"send with name: terminal keys after text, case-insensitive: Enter, Tab, Escape, Up, Down, Left, Right, or control chords C-<letter> (also ctrl+d, ctrl-d, ^D) — e.g. C-c interrupt, C-d EOF",
+	),
 	"signal?": type("'SIGINT' | 'SIGTERM' | 'SIGHUP' | 'SIGQUIT' | 'SIGKILL'").describe(
 		"send with name: process-tree signal",
 	),

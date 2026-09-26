@@ -243,6 +243,7 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	#[cfg(all(feature = "util.node", unix))]
 	{
 		m.push(("node", node::node_builtin::<SE>()));
+		m.push(("nodejs", node::node_builtin::<SE>()));
 		m.push(("bun", node::bun_builtin::<SE>()));
 	}
 	#[cfg(all(feature = "util.python", unix))]

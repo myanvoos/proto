@@ -251,6 +251,7 @@ impl<SE: extensions::ShellExtensions> Default for Shell<SE> {
 			last_exit_status: 0,
 			last_exit_status_change_count: 0,
 			last_pipeline_statuses: vec![0],
+			last_background_pid: None,
 			depth: 0,
 			name: None,
 			args: vec![],

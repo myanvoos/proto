@@ -1,9 +1,10 @@
-import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
-import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, nearestNames } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
+import { type EvalArtifactRef, publishEvalArtifact } from "../artifact-values";
 import { EVAL_AST_BRIDGE_NAME, type EvalAstBlockRange, type EvalAstSymbols, runEvalAst } from "../ast-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
 import {
@@ -41,15 +42,18 @@ function acquireNestedLane(session: ToolSession): { lane: string; release(): voi
 	);
 }
 
-interface ToolBridgeOptions {
+export interface ToolBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
 	completionInvocationId?: string;
+	toolCallId?: string;
+	onUpdate?: AgentToolUpdateCallback;
+	onResult?: (result: AgentToolResult) => void;
 }
 
-type ToolValue =
+export type ToolValue =
 	| RuntimeBridgeResult
 	| string
 	| EvalBudgetResult
@@ -61,6 +65,7 @@ type ToolValue =
 			text: string;
 			details?: unknown;
 			images?: Array<{ mimeType: string; data: string }>;
+			artifacts?: EvalArtifactRef[];
 			hasError?: boolean;
 	  };
 function toolResultHasError(result: AgentToolResult): boolean {
@@ -73,11 +78,22 @@ function toolResultHasError(result: AgentToolResult): boolean {
 	return (result.details as { isError?: unknown }).isError === true;
 }
 
+/** Tool names listed when an unknown name has no close match, so the error stays readable. */
+const MAX_LISTED_TOOL_NAMES = 30;
+
+function unknownToolError(session: ToolSession, name: string): ToolError {
+	const available = [...(session.getEvalBridgeToolNames?.() ?? [])].sort();
+	const matches = nearestNames(name, available, 3);
+	if (matches.length > 0) return new ToolError(`Unknown tool: ${name}. Did you mean ${matches.join(", ")}?`);
+	if (available.length === 0) return new ToolError(`Unknown tool: ${name}`);
+	const listed = available.slice(0, MAX_LISTED_TOOL_NAMES).join(", ");
+	const more = available.length > MAX_LISTED_TOOL_NAMES ? `, … ${available.length - MAX_LISTED_TOOL_NAMES} more` : "";
+	return new ToolError(`Unknown tool: ${name}. Available tools: ${listed}${more}`);
+}
+
 function getTool(session: ToolSession, name: string): AgentTool {
 	const tool = session.getToolForEvalBridge ? session.getToolForEvalBridge(name) : session.getToolByName?.(name);
-	if (!tool) {
-		throw new ToolError(`Unknown tool from js runtime: ${name}`);
-	}
+	if (!tool) throw unknownToolError(session, name);
 	return tool;
 }
 
@@ -176,15 +192,17 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			normalizedArgs = { ...record, lane: lease.lane };
 		}
 	}
-	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	const toolCallId = options.toolCallId ?? `js-${name}-${crypto.randomUUID()}`;
 	try {
+		options.signal?.throwIfAborted();
 		const result = await tool.execute(
 			toolCallId,
 			normalizedArgs,
 			options.signal,
-			undefined,
+			options.onUpdate,
 			options.session.getToolContext?.(),
 		);
+		options.onResult?.(result);
 		// Async bash returns before its shell lane is free. Hold the lease through
 		// callback settlement, including cancellation cleanup, not just admission.
 		const details = result.details as { async?: { jobId?: string } } | undefined;
@@ -216,6 +234,20 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			details: result.details,
 		};
 		if (imageBlocks.length > 0) {
+			value.artifacts = [];
+			for (const block of imageBlocks) {
+				value.artifacts.push(
+					await publishEvalArtifact(
+						{
+							kind: "binary",
+							value: block.data,
+							encoding: "base64",
+							mimeType: block.mimeType,
+						},
+						options,
+					),
+				);
+			}
 			value.images = imageBlocks.map(block => ({
 				mimeType: block.mimeType,
 				data: block.data,

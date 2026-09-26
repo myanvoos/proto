@@ -4452,6 +4452,7 @@ version = "18.6.1"
 dependencies = [
  "ansi-width",
  "argmax",
+ "base64 0.22.1",
  "bigdecimal",
  "binary-heap-plus",
  "brush-core",

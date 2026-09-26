@@ -2,8 +2,10 @@ import { afterAll, afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as net from "node:net";
 import type { ToolSession } from "../tools";
 import type { ExecutorBackendResult } from "./backend";
-import jsBackend from "./js";
+import { bunBackend } from "./js";
 import { disposeVmContextsByOwner } from "./js/context-manager";
+import { disposeKernelSessionsByOwner } from "./py/executor";
+import { checkPythonKernelAvailability } from "./py/kernel";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "./shell-bridge";
 
 const KERNEL_OWNER = `shell-bridge-test:${process.pid}`;
@@ -41,12 +43,12 @@ async function connectBridge(bridge: KernelShellBridgeHandle) {
 	return {
 		socket,
 		response: response.promise,
-		request: (code: string) => `${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "js", code })}\n`,
+		request: (code: string) => `${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "bun", code })}\n`,
 	};
 }
 
 afterEach(() => vi.restoreAllMocks());
-afterAll(() => disposeVmContextsByOwner(KERNEL_OWNER));
+afterAll(() => Promise.all([disposeVmContextsByOwner(KERNEL_OWNER), disposeKernelSessionsByOwner(KERNEL_OWNER)]));
 
 // A real socket regression can leave the peer open forever; fake timers cannot
 // drive kernel TCP readiness, so this is an integration-test fail-safe only.
@@ -110,10 +112,10 @@ test("rejects a request that streams past the frame limit without a newline", as
 test("aborts a noisy cell when pending output exceeds its budget and reports the failure", async () => {
 	const emitted = Promise.withResolvers<{ emissions: number; aborted: boolean }>();
 	const outputChunk = "x".repeat(512 * 1024);
-	spyOn(jsBackend, "execute").mockImplementation(async (_code, options) => {
+	spyOn(bunBackend, "execute").mockImplementation(async (_code, options) => {
 		let emissions = 0;
 		while (emissions < 128 && !options.signal?.aborted) {
-			options.onStream?.(outputChunk, "stdout");
+			void options.onBytes?.(Buffer.from(outputChunk), "stdout");
 			emissions++;
 		}
 		emitted.resolve({ emissions, aborted: options.signal?.aborted ?? false });
@@ -142,23 +144,76 @@ test("aborts a noisy cell when pending output exceeds its budget and reports the
 	}
 });
 
-test("a slow shell reader receives complete UTF-8 output and the final exit frame", async () => {
-	const executed = Promise.withResolvers<void>();
-	const execute = jsBackend.execute;
-	spyOn(jsBackend, "execute").mockImplementation(async (...args) => {
-		try {
-			return await execute(...args);
-		} finally {
-			executed.resolve();
-		}
+// A peer may not bypass flow control by sending a second chunk while its
+// consumer is parked. This is independent of TCP buffer sizes and scheduling.
+test("stdin uses one bounded pull credit and rejects unsolicited data", async () => {
+	const consumed = Promise.withResolvers<void>();
+	const aborted = Promise.withResolvers<void>();
+	spyOn(bunBackend, "execute").mockImplementation(async (_code, options) => {
+		const reader = options.stdin!.getReader();
+		const first = await reader.read();
+		expect(first.value?.byteLength).toBe(65536);
+		consumed.resolve();
+		options.signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
+		await aborted.promise;
+		await reader.cancel();
+		return emptyResult(true);
 	});
 	const bridge = registerKernelShellRun(stubSession());
 	const client = await connectBridge(bridge);
+	let credits = 0;
+	let partial = "";
+	client.socket.on("data", chunk => {
+		partial += chunk;
+		while (partial.includes("\n")) {
+			const end = partial.indexOf("\n");
+			const frame = JSON.parse(partial.slice(0, end));
+			partial = partial.slice(end + 1);
+			if (frame.t === "i") {
+				credits++;
+				client.socket.write(
+					`${JSON.stringify({ t: "i", d: Buffer.alloc(65536, 65).toString("base64"), eof: false })}\n`,
+				);
+			}
+		}
+	});
 	try {
-		// Exceed the TCP send buffer without relying on a guessed reader delay.
+		client.socket.write(
+			`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "bun", code: "credit", stdin: true })}\n`,
+		);
+		await within(consumed.promise);
+		expect(credits).toBe(1);
+		client.socket.write(`${JSON.stringify({ t: "i", d: "QQ==", eof: false })}\n`);
+		const response = await within(client.response);
+		expect(response).toContain("Invalid or unrequested kernel stdin frame");
+		expect(credits).toBe(1);
+	} finally {
+		aborted.resolve();
+		client.socket.destroy();
+		bridge.dispose();
+	}
+});
+
+test("a slow shell reader receives complete UTF-8 output and the final exit frame", async () => {
+	const firstWrite = Promise.withResolvers<void>();
+	const execute = bunBackend.execute;
+	spyOn(bunBackend, "execute").mockImplementation(async (code, options) =>
+		execute(code, {
+			...options,
+			onBytes: async (bytes, stream) => {
+				firstWrite.resolve();
+				await options.onBytes?.(bytes, stream);
+			},
+		}),
+	);
+	const bridge = registerKernelShellRun(stubSession());
+	const client = await connectBridge(bridge);
+	try {
+		// Begin reading only after the real worker produces output. Its writes
+		// now await socket backpressure; waiting for execution before resuming deadlocks.
 		client.socket.pause();
 		client.socket.write(client.request('console.log("ü".repeat(8 * 1024 * 1024))'));
-		await executed.promise;
+		await firstWrite.promise;
 		client.socket.resume();
 		const frames: Array<{ t: string; d?: string; c?: number }> = (await client.response)
 			.trim()
@@ -181,7 +236,7 @@ for (const available of [true, false]) {
 	test(`cancelling during backend preflight prevents ${available ? "cell execution" : "external fallback"}`, async () => {
 		const entered = Promise.withResolvers<void>();
 		const availability = Promise.withResolvers<boolean>();
-		spyOn(jsBackend, "isAvailable").mockImplementation(async () => {
+		spyOn(bunBackend, "isAvailable").mockImplementation(async () => {
 			entered.resolve();
 			return availability.promise;
 		});
@@ -202,7 +257,7 @@ for (const available of [true, false]) {
 test("disposing one shell run cancels its pending cell without closing another run's bridge", async () => {
 	const entered = Promise.withResolvers<void>();
 	const availability = Promise.withResolvers<boolean>();
-	spyOn(jsBackend, "isAvailable").mockImplementationOnce(async () => {
+	spyOn(bunBackend, "isAvailable").mockImplementationOnce(async () => {
 		entered.resolve();
 		return availability.promise;
 	});
@@ -281,3 +336,54 @@ test("successive shell runs on one lane retain interpreter state without allocat
 		await disposeVmContextsByOwner(KERNEL_OWNER);
 	}
 }, 30_000);
+
+function stdoutOf(response: string): string {
+	return response
+		.trim()
+		.split("\n")
+		.map(line => JSON.parse(line) as { t: string; d?: string })
+		.filter(frame => frame.t === "o")
+		.map(frame => frame.d)
+		.join("");
+}
+
+const pythonAvailable = (await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true })).ok;
+
+test.skipIf(!pythonAvailable)(
+	"Python display() output streams in order with stdout, strings as plain text",
+	async () => {
+		const bridge = registerKernelShellRun(stubSession());
+		const client = await connectBridge(bridge);
+		try {
+			const code = 'print("before"); display({"a": 1}); display("plain string"); print("after")';
+			client.socket.write(`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "py", code })}\n`);
+			expect(stdoutOf(await within(client.response, 60_000))).toBe(
+				'before\ndisplay[1]:\n{\n  "a": 1\n}\nplain string\nafter\n',
+			);
+		} finally {
+			client.socket.destroy();
+			bridge.dispose();
+		}
+	},
+	90_000,
+);
+
+for (const streams of [true, false]) {
+	test(`a backend that ${streams ? "streams" : "only returns"} displays renders each display exactly once`, async () => {
+		const display = { type: "json" as const, data: { n: 1 } };
+		spyOn(bunBackend, "execute").mockImplementation(async (_code, options) => {
+			await options.onBytes?.(Buffer.from("out\n"), "stdout");
+			if (streams) await options.onDisplay?.(display);
+			return { ...emptyResult(false), displayOutputs: [display] };
+		});
+		const bridge = registerKernelShellRun(stubSession());
+		const client = await connectBridge(bridge);
+		try {
+			client.socket.write(client.request("unused"));
+			expect(stdoutOf(await within(client.response))).toBe('out\ndisplay[1]:\n{\n  "n": 1\n}\n');
+		} finally {
+			client.socket.destroy();
+			bridge.dispose();
+		}
+	});
+}

@@ -272,11 +272,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					throw new Error("schema contains unresolved $ref after dereferencing");
 				}
 				dataSchema = withSectionVariants(resolved);
-			} else {
+			} else if (schemaError) {
 				this.strict = false;
-				dataSchema = looseRecordSchema(
-					schemaError ? schemaDescription : "Structured JSON output (no schema specified)",
-				);
+				dataSchema = looseRecordSchema(schemaDescription);
+			} else {
+				// No schema: the answer itself is the result, so plain text must not be forced into an object.
+				this.strict = false;
+				dataSchema = { description: "Your final answer: plain text, or any JSON value (no schema specified)" };
 			}
 			parameters = wrapYieldParameters(dataSchema);
 			JSON.stringify(parameters);

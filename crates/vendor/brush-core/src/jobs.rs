@@ -1,6 +1,11 @@
 
 
-use std::{collections::VecDeque, fmt::Display, time::Duration};
+use std::{
+	collections::VecDeque,
+	fmt::Display,
+	sync::atomic::{AtomicI32, Ordering},
+	time::Duration,
+};
 
 use futures::FutureExt;
 
@@ -10,6 +15,18 @@ pub(crate) type JobJoinHandle = tokio::task::JoinHandle<Result<ExecutionResult, 
 pub(crate) type JobResult = (Job, Result<ExecutionResult, error::Error>);
 
 const WAIT_NEXT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Jobs that run entirely inside the shell process (builtins, functions,
+/// subshells, compound commands) have no OS process, but `$!`, `jobs -l`,
+/// `wait PID` and `kill PID` still need a PID to name them. Real PIDs stay below
+/// Linux's `PID_MAX_LIMIT` (2^22) and macOS's 99999, so IDs allocated from here
+/// never name, and can never signal, a real process.
+const FIRST_SYNTHETIC_PID: sys::process::ProcessId = 1 << 22;
+static NEXT_SYNTHETIC_PID: AtomicI32 = AtomicI32::new(FIRST_SYNTHETIC_PID);
+
+fn allocate_synthetic_pid() -> sys::process::ProcessId {
+	NEXT_SYNTHETIC_PID.fetch_add(1, Ordering::Relaxed)
+}
 
 
 #[derive(Clone, Copy)]
@@ -65,6 +82,13 @@ impl JobTask {
 
 	pub const fn is_external(&self) -> bool {
 		matches!(self, Self::External(_))
+	}
+
+	fn is_finished(&self) -> bool {
+		match self {
+			Self::External(_) => false,
+			Self::Internal(handle) => handle.is_finished(),
+		}
 	}
 
 
@@ -366,6 +390,12 @@ pub struct Job {
 
 	pgid: Option<sys::process::ProcessId>,
 
+	/// Stands in for the PID of a job with no external process; see
+	/// [`FIRST_SYNTHETIC_PID`].
+	synthetic_pid: Option<sys::process::ProcessId>,
+
+	/// Signal that terminated an in-shell job via [`Job::signal_in_shell`].
+	terminated_by_signal: Option<i32>,
 
 	annotation: JobAnnotation,
 
@@ -399,10 +429,15 @@ impl Job {
 	where
 		I: IntoIterator<Item = JobTask>,
 	{
+		let tasks: VecDeque<JobTask> = tasks.into_iter().collect();
+		let synthetic_pid =
+			(!tasks.iter().any(JobTask::is_external)).then(allocate_synthetic_pid);
 		Self {
 			id: 0,
-			tasks: tasks.into_iter().collect(),
+			tasks,
 			pgid: None,
+			synthetic_pid,
+			terminated_by_signal: None,
 			annotation: JobAnnotation::None,
 			command_line,
 			state,
@@ -466,7 +501,7 @@ impl Job {
 
 		self.state = JobState::Done;
 
-		Ok(result)
+		Ok(result.or_else(|| self.signal_termination_result().map(Ok)))
 	}
 
 
@@ -483,7 +518,7 @@ impl Job {
 		&mut self,
 		wait_for_terminate: bool,
 	) -> Result<ExecutionResult, error::Error> {
-		let mut result = ExecutionResult::success();
+		let mut result = self.signal_termination_result().unwrap_or_else(ExecutionResult::success);
 
 		while let Some(task) = self.tasks.back_mut() {
 			match task.wait(wait_for_terminate).await? {
@@ -547,6 +582,37 @@ impl Job {
 	}
 
 
+	/// Delivers `signal` to a job that has a synthetic PID. There is no OS process
+	/// to signal, so the signal's default action is applied to the job itself:
+	/// terminating signals abort its in-shell tasks (dropping them kills any
+	/// external children they spawned) and `wait` then reports `128 + signal`;
+	/// ignored signals are no-ops; stop signals fail because in-shell work
+	/// cannot be suspended.
+	pub fn signal_in_shell(&mut self, signal: traps::TrapSignal) -> Result<(), error::Error> {
+		let traps::TrapSignal::Signal(os_signal) = signal else {
+			return Err(error::ErrorKind::InvalidSignal(signal.to_string()).into());
+		};
+		if self.synthetic_pid.is_none() || self.tasks.is_empty() {
+			return Err(error::ErrorKind::FailedToSendSignal.into());
+		}
+		match sys::signal::default_disposition(os_signal) {
+			sys::signal::DefaultDisposition::Ignore => Ok(()),
+			sys::signal::DefaultDisposition::Stop => Err(error::ErrorKind::FailedToSendSignal.into()),
+			sys::signal::DefaultDisposition::Terminate { signal_number } => {
+				if self.tasks.iter().any(|task| !task.is_finished()) {
+					self.terminated_by_signal = Some(signal_number);
+					self.abort_internal_tasks();
+				}
+				Ok(())
+			},
+		}
+	}
+
+	fn signal_termination_result(&self) -> Option<ExecutionResult> {
+		let signal_number = u8::try_from(self.terminated_by_signal?).unwrap_or(u8::MAX);
+		Some(ExecutionResult::new(128_u8.saturating_add(signal_number)))
+	}
+
 	pub fn abort_internal_tasks(&mut self) {
 		let mut aborted = false;
 		self.tasks.retain_mut(|task| {
@@ -570,10 +636,11 @@ impl Job {
 	}
 
 	fn contains_process_id(&self, pid: i32) -> bool {
-		self.tasks.iter().any(|task| match task {
-			JobTask::External(process) => process.pid().is_some_and(|process_pid| process_pid == pid),
-			JobTask::Internal(_) => false,
-		})
+		self.synthetic_pid == Some(pid)
+			|| self.tasks.iter().any(|task| match task {
+				JobTask::External(process) => process.pid().is_some_and(|process_pid| process_pid == pid),
+				JobTask::Internal(_) => false,
+			})
 	}
 
 	fn wait_identifier(&self) -> String {
@@ -595,7 +662,19 @@ impl Job {
 	}
 
 
+	/// PID reported for the job (`$!`, `jobs -l`, `wait PID`): its first external
+	/// process, or its synthetic PID when it runs inside the shell.
 	pub fn representative_pid(&self) -> Option<sys::process::ProcessId> {
+		self.external_pid().or(self.synthetic_pid)
+	}
+
+	/// The job's synthetic PID when it runs inside the shell and so names no OS
+	/// process. Signal such jobs with [`Job::signal_in_shell`].
+	pub const fn synthetic_pid(&self) -> Option<sys::process::ProcessId> {
+		self.synthetic_pid
+	}
+
+	fn external_pid(&self) -> Option<sys::process::ProcessId> {
 		for task in &self.tasks {
 			match task {
 				JobTask::External(p) => {
@@ -612,7 +691,7 @@ impl Job {
 
 	pub fn process_group_id(&self) -> Option<sys::process::ProcessId> {
 
-		self.pgid.or_else(|| self.representative_pid())
+		self.pgid.or_else(|| self.external_pid())
 	}
 
 

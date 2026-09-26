@@ -560,11 +560,10 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 					stderr = outcome.stderr;
 					exitCode = outcome.exitCode;
 				} else {
+					// A schemaless string result is the answer itself; only structured data is rendered as JSON.
+					const plainText = typeof completeData === "string" && (assembled.rawText || normalized === undefined);
 					try {
-						rawOutput =
-							assembled.rawText && typeof completeData === "string"
-								? completeData
-								: (JSON.stringify(completeData, null, 2) ?? "null");
+						rawOutput = plainText ? completeData : (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {
 						const errorMessage = err instanceof Error ? err.message : String(err);
 						rawOutput = `{"error":"Failed to serialize yield data: ${errorMessage}"}`;
@@ -855,6 +854,22 @@ function isAsyncResultInjection(message: AgentMessage | undefined): boolean {
 	);
 }
 
+/**
+ * Text of one assistant message, or undefined when it carried none. Retains a generous multiple of the
+ * reported cap so structured-output fallback parsing still sees a whole JSON document, while a runaway
+ * worker cannot grow the heap with text nobody will ever read.
+ */
+function assistantTextOutput(content: readonly unknown[]): TailAccumulator | undefined {
+	const output = new TailAccumulator(MAX_OUTPUT_BYTES * 8);
+	let hasText = false;
+	for (const block of content) {
+		if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") continue;
+		output.push(block.text);
+		hasText ||= block.text.trim().length > 0;
+	}
+	return hasText ? output : undefined;
+}
+
 function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const {
 		index,
@@ -891,10 +906,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		modelRole: args.modelRole,
 	};
 
-	// Retain a generous multiple of the reported cap so structured-output fallback parsing still sees a
-	// whole JSON document, while a runaway worker cannot grow the heap with text nobody will ever read.
-	const outputChunks = new TailAccumulator(MAX_OUTPUT_BYTES * 8);
-	const finalOutputChunks = new TailAccumulator(MAX_OUTPUT_BYTES * 8);
+	// A run's output is its final answer: the text of the last assistant message that carried any. Earlier
+	// narration, and replies to messages that arrived mid-run, are not part of it. `message_end` tracks it
+	// live; each `agent_end` then re-derives it from that run's authoritative message list.
+	let finalAnswer: TailAccumulator | undefined;
 	const RECENT_OUTPUT_TAIL_BYTES = 8 * 1024;
 	let recentOutputTail = "";
 	let recentOutputDirty = false;
@@ -1356,12 +1371,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
 					if (messageContent && Array.isArray(messageContent)) {
+						finalAnswer = assistantTextOutput(messageContent) ?? finalAnswer;
 						for (const block of messageContent) {
 							if (!isRecord(block)) continue;
-							if (block.type === "text" && typeof block.text === "string") {
-								outputChunks.push(block.text);
-								continue;
-							}
 							if (block.type !== "toolCall" || typeof block.name !== "string") continue;
 							if (block.name === "yield" && !yieldCalled) {
 								yieldCallPending = true;
@@ -1437,11 +1449,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						if ((msg as { role?: string })?.role !== "assistant") continue;
 						const messageContent = getMessageContent(msg);
 						if (messageContent && Array.isArray(messageContent)) {
-							for (const block of messageContent) {
-								if (block.type === "text" && block.text) {
-									finalOutputChunks.push(block.text);
-								}
-							}
+							finalAnswer = assistantTextOutput(messageContent) ?? finalAnswer;
 						}
 					}
 				}
@@ -1583,9 +1591,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		attach,
 		captureSalvage,
 		lastAssistantSalvageText: () => lastAssistantSalvageText,
-		rawOutput: () => (finalOutputChunks.isEmpty ? outputChunks.text() : finalOutputChunks.text()),
-		droppedOutputBytes: () =>
-			finalOutputChunks.isEmpty ? outputChunks.droppedBytes : finalOutputChunks.droppedBytes,
+		rawOutput: () => finalAnswer?.text() ?? "",
+		droppedOutputBytes: () => finalAnswer?.droppedBytes ?? 0,
 		scheduleProgress,
 		finish: () => {
 			resolved = true;
@@ -1844,7 +1851,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			outputSchema: args.outputSchema,
 			outputSchemaMode: args.outputSchemaMode,
 			outputSchemaSource: args.outputSchemaSource,
-			lastAssistantText: monitor.lastAssistantSalvageText(),
+			// A data-less terminal yield adopts this run's final answer. The session's last assistant message is
+			// usually the yield call itself (no text), and may belong to an earlier turn of a persistent worker.
+			lastAssistantText: rawOutput || undefined,
 		});
 	} finally {
 		popLoopPhase();

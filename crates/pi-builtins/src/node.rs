@@ -10,14 +10,14 @@ use crate::{
 };
 
 const NODE_SPEC: KernelLang = KernelLang {
-	lang:             "js",
+	lang:             "node",
 	argv:             &JS_ARGV,
 	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
-	interpreters:     &["node"],
+	interpreters:     &["node", "nodejs"],
 };
 
 const BUN_SPEC: KernelLang = KernelLang {
-	lang:             "js",
+	lang:             "bun",
 	argv:             &JS_ARGV,
 	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
 	interpreters:     &["bun"],

@@ -520,7 +520,7 @@ python:
 | `bash.autoBackground.enabled`     | boolean | `false`   | Auto-background long-running commands.                                                                                                                      |
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
 | `eval.py`                         | boolean | `true`    | Python kernel backend used by Bash cells. `PI_PY=0` disables it for the process.                                                                            |
-| `eval.js`                         | boolean | `true`    | JavaScript kernel backend used by Bash cells. `PI_JS=0` disables it for the process.                                                                        |
+| `eval.js`                         | boolean | `true`    | JavaScript kernel backends used by Bash `node`/`nodejs` (Node.js) and `bun` (Bun) cells. `PI_JS=0` disables them for the process.                          |
 | `kernel.speculation.enabled`      | boolean | `true`   | Permit early completion requests from streamed kernel-in-bash code. Requests can be sent and billed before final approval, even if the call is later blocked or cancelled. |
 | `kernel.assertPreflight.enabled`  | boolean | `true`   | Permit bounded local file reads before final tool approval to check supported assertions and interrupt generation early on failure. |
 | `python.kernelMode`               | enum    | `session` | `session` (persistent kernel) or `per-call`.                                                                                                                |

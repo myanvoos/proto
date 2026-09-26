@@ -1,12 +1,17 @@
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
+import type { KernelTarget } from "../kernel-target";
 import type { JsDisplayOutput } from "./shared/types";
 
 export type { JsDisplayOutput } from "./shared/types";
 
 export interface SessionSnapshot {
 	cwd: string;
+	generation?: string;
+	discoveryCwd?: string;
+	target?: KernelTarget;
+	interpreter?: string;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: boolean;
 	sessionId: string;
 
 	localRoots?: Record<string, string>;
@@ -32,13 +37,17 @@ export type WorkerInbound =
 			snapshot: SessionSnapshot;
 			completionContext?: EvalCompletionInvocationContext;
 	  }
+	| { type: "stdin"; runId: string; data: string; eof: boolean }
+	| { type: "output-ack"; id: string }
 	| { type: "tool-reply"; id: string; reply: ToolReply }
 	| { type: "close" };
 
 export type WorkerOutbound =
-	| { type: "ready" }
+	| { type: "ready"; interpreter?: string }
 	| { type: "init-failed"; error: RunErrorPayload }
-	| { type: "text"; runId: string; chunk: string; stream?: "stdout" | "stderr" }
+	| { type: "text"; runId: string; id?: string; chunk: string; stream?: "stdout" | "stderr" }
+	| { type: "bytes"; runId: string; id: string; data: string; stream: "stdout" | "stderr" }
+	| { type: "stdin-request"; runId: string }
 	| { type: "display"; runId: string; output: JsDisplayOutput }
 	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown; completionInvocationId?: string }
 	| { type: "result"; runId: string; ok: true }

@@ -1,6 +1,7 @@
 export const BUILTIN_TOOL_NAMES = [
 	"read",
 	"bash",
+	"kernel",
 	"ask",
 	"inspect_media",
 	"browser",

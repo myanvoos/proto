@@ -100,6 +100,12 @@ pub struct Shell<SE: extensions::ShellExtensions = extensions::DefaultShellExten
 
 	last_pipeline_statuses: Vec<u8>,
 
+	/// `$!`: PID of the most recently started background job. Kept on the shell
+	/// (not derived from the job table) so it survives `wait` reaping the job and
+	/// is inherited by subshells.
+	#[cfg_attr(feature = "serde", serde(skip))]
+	last_background_pid: Option<i32>,
+
 
 	depth: usize,
 
@@ -168,6 +174,7 @@ impl<SE: extensions::ShellExtensions> Clone for Shell<SE> {
 			last_exit_status: self.last_exit_status,
 			last_exit_status_change_count: self.last_exit_status_change_count,
 			last_pipeline_statuses: self.last_pipeline_statuses.clone(),
+			last_background_pid: self.last_background_pid,
 			name: self.name.clone(),
 			args: self.args.clone(),
 			version: self.version.clone(),
@@ -356,6 +363,16 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 			keywords::KEYWORDS.contains(s)
 		}
 	}
+
+	pub const fn last_background_pid(&self) -> Option<i32> {
+		self.last_background_pid
+	}
+
+
+	pub const fn set_last_background_pid(&mut self, pid: Option<i32>) {
+		self.last_background_pid = pid;
+	}
+
 
 	pub(crate) const fn last_exit_status_change_count(&self) -> usize {
 		self.last_exit_status_change_count

@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import { instrumentedCompleteSimple, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model, Tool } from "@oh-my-pi/pi-ai";
+import type { Api, Model, Tool, UserContent } from "@oh-my-pi/pi-ai";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { untilAborted } from "@oh-my-pi/pi-utils";
@@ -16,6 +16,10 @@ import {
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
 import { withBridgeTimeoutPause } from "./bridge-timeout";
+import { MAX_EVAL_COMPLETION_TEXT_BYTES, resolveEvalCompletionContent } from "./completion-content";
+
+export * from "./completion-content";
+
 import type { JsStatusEvent } from "./js/shared/types";
 import type { LiteralCompletionArgs, StreamedCompletionLanguage } from "./speculation";
 
@@ -39,7 +43,7 @@ function asCompletionTier(value: string): CompletionTier | undefined {
 }
 
 const completionArgsSchema = type({
-	prompt: "string>0",
+	prompt: "unknown",
 	"model?": "string>0",
 	"system?": "string",
 	"schema?": { "[string]": "unknown" },
@@ -69,8 +73,9 @@ export interface EvalCompletionResult {
 }
 
 interface ResolvedCompletionRequest {
+	content: UserContent[];
 	parsed: {
-		prompt: string;
+		prompt: unknown;
 		model?: string;
 		system?: string;
 		schema?: Record<string, unknown>;
@@ -129,7 +134,11 @@ function invocationKey(context: EvalCompletionInvocationContext, invocationId: s
 	return `${context.toolCallId}\0${context.generation}\0${invocationId}\0${fingerprint}`;
 }
 
-async function resolveCompletionRequest(args: unknown, session: ToolSession): Promise<ResolvedCompletionRequest> {
+async function resolveCompletionRequest(
+	args: unknown,
+	session: ToolSession,
+	signal?: AbortSignal,
+): Promise<ResolvedCompletionRequest> {
 	const parsed = completionArgsSchema(args);
 	if (parsed instanceof type.errors) {
 		throw new ToolError(`completion() received invalid arguments: ${parsed.summary}`);
@@ -148,6 +157,9 @@ async function resolveCompletionRequest(args: unknown, session: ToolSession): Pr
 	} else {
 		model = resolveRequestedModel(selector, session);
 	}
+	const content = await resolveEvalCompletionContent(parsed.prompt, { session, model, signal });
+	if (parsed.system && Buffer.byteLength(parsed.system) > MAX_EVAL_COMPLETION_TEXT_BYTES)
+		throw new ToolError(`Completion system text exceeds ${MAX_EVAL_COMPLETION_TEXT_BYTES} byte limit`);
 	const registry = session.modelRegistry;
 	const apiKey = await registry?.getApiKey(model);
 	if (!registry || !apiKey) {
@@ -155,7 +167,7 @@ async function resolveCompletionRequest(args: unknown, session: ToolSession): Pr
 			`completion() has no API key for ${formatModelString(model)}. Configure credentials for this provider or choose another model.`,
 		);
 	}
-	return { parsed, selector, tier, model, registry };
+	return { parsed, content, selector, tier, model, registry };
 }
 
 /** Pool entries whose id contains the requested one, so a typo names its neighbours. */
@@ -332,8 +344,8 @@ async function claimEvalCompletion(
 	options: EvalCompletionBridgeOptions,
 ): Promise<EvalCompletionResult | undefined> {
 	const context = options.completionContext;
-	if (!context) return undefined;
-	const fingerprint = resolvedArgsFingerprint(context.language, request.parsed);
+	if (!context || typeof request.parsed.prompt !== "string") return undefined;
+	const fingerprint = resolvedArgsFingerprint(context.language, { ...request.parsed, prompt: request.parsed.prompt });
 	const current = isCurrentContextCandidate(options, fingerprint);
 	if (!current) return undefined;
 	const entries = speculationBySession.get(options.session);
@@ -380,7 +392,7 @@ export async function runEvalCompletion(
 	args: unknown,
 	options: EvalCompletionBridgeOptions,
 ): Promise<EvalCompletionResult> {
-	const request = await resolveCompletionRequest(args, options.session);
+	const request = await resolveCompletionRequest(args, options.session, options.signal);
 	const claimed = await claimEvalCompletion(request, options);
 	if (claimed) {
 		if (!options.suppressStatus) {
@@ -393,8 +405,8 @@ export async function runEvalCompletion(
 		}
 		return claimed;
 	}
-	const { parsed, selector, tier, model, registry } = request;
-	const { prompt, system, schema } = parsed;
+	const { parsed, content, selector, tier, model, registry } = request;
+	const { system, schema } = parsed;
 	const tools: Tool[] | undefined = schema
 		? [
 				{
@@ -412,7 +424,7 @@ export async function runEvalCompletion(
 			model,
 			{
 				systemPrompt,
-				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+				messages: [{ role: "user", content, timestamp: Date.now() }],
 				tools,
 			},
 			{

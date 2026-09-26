@@ -35,7 +35,7 @@ export function createHelpers(ctx: HelperContext): HelperBundle {
 				ctx.emitStatus({ op: "env", key, value, action: "set" });
 				return value;
 			}
-			const result = ctx.env.get(key) ?? Bun.env[key];
+			const result = ctx.env.get(key) ?? process.env[key];
 			ctx.emitStatus({ op: "env", key, value: result, action: "get" });
 			return result;
 		},
@@ -44,7 +44,7 @@ export function createHelpers(ctx: HelperContext): HelperBundle {
 
 function getMergedEnv(ctx: HelperContext): Record<string, string> {
 	const merged: Record<string, string> = {};
-	for (const [key, value] of Object.entries(Bun.env)) {
+	for (const [key, value] of Object.entries(process.env)) {
 		if (typeof value === "string") merged[key] = value;
 	}
 	for (const [key, value] of ctx.env) merged[key] = value;
@@ -56,7 +56,7 @@ const INTERNAL_URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i;
 function resolvePath(ctx: HelperContext, value: string): string {
 	// `~` follows the kernel's own env — an `env("HOME", …)` override wins, as
 	// os.environ does for the Python prelude's expanduser.
-	const expanded = expandTilde(value, ctx.env.get("HOME") ?? Bun.env.HOME);
+	const expanded = expandTilde(value, ctx.env.get("HOME") ?? process.env.HOME);
 	if (path.isAbsolute(expanded)) return path.normalize(expanded);
 	return path.resolve(ctx.cwd(), expanded);
 }
@@ -80,11 +80,58 @@ function resolveHelperPath(ctx: HelperContext, rawPath: string): string {
 		if (!skillName) throw new ToolError("skill:// URL requires a skill name");
 		rootKey = `skill:${skillName}`;
 	}
-	const root = ctx.localRoots()[rootKey];
-	if (!root) {
-		throw new ToolError(`Protocol paths are not supported by this scheme: ${rawPath}`);
-	}
+	const roots = ctx.localRoots();
+	const root = roots[rootKey];
+	if (!root)
+		throw protoPathError(scheme, rawPath, roots, scheme === "skill" ? rootKey.slice("skill:".length) : undefined);
 	return resolveUnderRoot(scheme, root, rawRelative, rawPath);
+}
+
+// Keep wording identical to the Python kernel's proto_path (eval/py/prelude.py).
+const FILE_SCHEMES = ["local", "fleet", "skill"];
+const NON_FILE_SCHEMES: Record<string, true> = {
+	agent: true,
+	artifact: true,
+	conflict: true,
+	history: true,
+	mcp: true,
+	proto: true,
+	rule: true,
+	ssh: true,
+	xd: true,
+};
+
+function protoPathError(
+	scheme: string,
+	rawPath: string,
+	roots: Record<string, string>,
+	skillName: string | undefined,
+): ToolError {
+	const readHint = `tool.read({"path": ${JSON.stringify(rawPath)}})`;
+	if (skillName !== undefined) {
+		const skills = Object.keys(roots)
+			.filter(key => key.startsWith("skill:"))
+			.map(key => key.slice("skill:".length))
+			.sort();
+		const available = skills.length > 0 ? `available skills: ${skills.join(", ")}` : "no skills are installed";
+		return new ToolError(`${rawPath}: no skill named ${JSON.stringify(skillName)} is installed; ${available}`);
+	}
+	if (FILE_SCHEMES.includes(scheme))
+		return new ToolError(`${rawPath}: ${scheme}:// has no filesystem root in this kernel`);
+	if (scheme === "artifact") {
+		return new ToolError(
+			`${rawPath} is not a filesystem path; read it with ${readHint}, or pass a kernel-published artifact ref to readArtifact(ref)`,
+		);
+	}
+	if (scheme === "agent") {
+		return new ToolError(`${rawPath} is not a filesystem path; read it with output(<agent id>) or ${readHint}`);
+	}
+	if (Object.hasOwn(NON_FILE_SCHEMES, scheme))
+		return new ToolError(`${rawPath} is not a filesystem path; read it with ${readHint}`);
+	const supported = FILE_SCHEMES.map(name => `${name}://`).join(", ");
+	return new ToolError(
+		`${rawPath}: unsupported URL scheme ${scheme}://; protoPath resolves plain paths and ${supported}`,
+	);
 }
 
 function resolveUnderRoot(scheme: string, root: string, rawRelative: string, rawPath: string): string {

@@ -16,6 +16,17 @@ __all__ = [
     "BatchError",
     "task_signal",
     "executions",
+    "start_tool",
+    "tool_events",
+    "cancel_tool",
+    "dispose_tool",
+    "delegate",
+    "delegations",
+    "revoke_delegation",
+    "launch_delegated",
+    "publish_artifact",
+    "read_artifact",
+    "resolve_artifact",
     "edit_batch",
     "log",
     "phase",
@@ -31,6 +42,7 @@ if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
     import os, json, math, re, hashlib, stat, sys, threading, weakref, time
+    import base64
     from urllib.parse import unquote
 
     INTENT_FIELD = "i"
@@ -49,9 +61,12 @@ if "__proto_prelude_loaded__" not in globals():
     )
 
     def display(value):
-        """Render a value. Falls back to a JSON+text/plain bundle for plain dict/list/tuple."""
+        """Render a value. Strings render as plain text; plain dict/list/tuple as JSON+text/plain."""
         if any(hasattr(value, attr) for attr in _PRESENTABLE_REPRS):
             _proto_display(value)
+            return
+        if isinstance(value, str):
+            _proto_display({"text/plain": value}, raw=True)
             return
         if isinstance(value, (dict, list, tuple)):
             try:
@@ -244,6 +259,24 @@ if "__proto_prelude_loaded__" not in globals():
         ap = _fs_norm_path(path)
         if ap is not None:
             _FS_STATE["read_seen"].pop(ap, None)
+
+    def _fs_rearm_stamps(stamps) -> None:
+        """Re-arm the stale-write guard at the host-verified stamps of files a
+        checked edit batch left holding content this kernel supplied (the
+        batch's `after`, or its `before` once rolled back). Unlike host
+        observations these replace an existing record: the kernel knows that
+        content, so it counts as read. Files the batch did not leave that way
+        carry no stamp and keep their old record, so external edits still trip."""
+        for entry in stamps or ():
+            if not isinstance(entry, dict):
+                continue
+            ap = _fs_norm_path(entry.get("path"))
+            if ap is None:
+                continue
+            try:
+                _fs_remember_seen(ap, (int(entry["mtimeNs"]), int(entry["size"]), str(entry["sha"])))
+            except (KeyError, TypeError, ValueError):
+                continue
 
     def _fs_check_stale_raw(path) -> None:
         """Abort a write-mode open of a path that changed since the kernel last
@@ -690,6 +723,30 @@ if "__proto_prelude_loaded__" not in globals():
 
     _PROTO_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
 
+    # Keep wording identical to the JS kernel's protoPath (eval/js/shared/helpers.ts).
+    _PROTO_FILE_SCHEMES = ("local", "fleet", "skill")
+    _PROTO_NON_FILE_SCHEMES = ("agent", "artifact", "conflict", "history", "mcp", "proto", "rule", "ssh", "xd")
+
+    def _proto_path_error(scheme: str, path: str, roots: dict, skill_name: str | None = None) -> ValueError:
+        read_hint = f"tool.read({{\"path\": {json.dumps(path, ensure_ascii=False)}}})"
+        if skill_name is not None:
+            skills = sorted(key[len("skill:"):] for key in roots if key.startswith("skill:"))
+            available = f"available skills: {', '.join(skills)}" if skills else "no skills are installed"
+            return ValueError(f"{path}: no skill named {json.dumps(skill_name, ensure_ascii=False)} is installed; {available}")
+        if scheme in _PROTO_FILE_SCHEMES:
+            return ValueError(f"{path}: {scheme}:// has no filesystem root in this kernel")
+        if scheme == "artifact":
+            return ValueError(
+                f"{path} is not a filesystem path; read it with {read_hint}, "
+                "or pass a kernel-published artifact ref to read_artifact(ref)"
+            )
+        if scheme == "agent":
+            return ValueError(f"{path} is not a filesystem path; read it with output(<agent id>) or {read_hint}")
+        if scheme in _PROTO_NON_FILE_SCHEMES:
+            return ValueError(f"{path} is not a filesystem path; read it with {read_hint}")
+        supported = ", ".join(f"{name}://" for name in _PROTO_FILE_SCHEMES)
+        return ValueError(f"{path}: unsupported URL scheme {scheme}://; proto_path resolves plain paths and {supported}")
+
     def proto_path(path: str | Path) -> Path:
         """Resolve a kernel path (plain, `~/…`, or scheme URLs) to a real filesystem Path.
 
@@ -705,7 +762,7 @@ if "__proto_prelude_loaded__" not in globals():
         the tracker emits match filesystem snapshots by the host
         (relative paths there would defeat its already-reported dedupe and
         duplicate every write as a walker event); any other `scheme://` is
-        rejected."""
+        rejected with the accessor that does read it."""
         if not isinstance(path, str):
             return Path(os.path.abspath(os.path.expanduser(path)))
         match = _PROTO_INTERNAL_URL_RE.match(path)
@@ -726,9 +783,11 @@ if "__proto_prelude_loaded__" not in globals():
             root_key = f"skill:{skill_name}"
             if not separator:
                 raw_relative = ""
-        root = roots.get(root_key) if isinstance(roots, dict) else None
+        if not isinstance(roots, dict):
+            roots = {}
+        root = roots.get(root_key)
         if not root:
-            raise ValueError(f"Protocol paths are not supported by this scheme: {path}")
+            raise _proto_path_error(scheme, path, roots, skill_name if scheme == "skill" else None)
         relative = unquote(raw_relative)
         root_path = os.path.abspath(root)
         if relative == "":
@@ -792,13 +851,15 @@ if "__proto_prelude_loaded__" not in globals():
         if lang is not None:
             args["lang"] = lang
         result = _bridge_call("__ast__", args)
-        segments = result.get("segments") if isinstance(result, dict) else None
+        # An unparsed result (no lang, unknown lang, unsupported file type) carries the source
+        # verbatim as one segment; that is not an outline.
+        segments = result.get("segments") if isinstance(result, dict) and result.get("parsed") is True else None
         if not segments:
             hint = "" if path is not None or lang is not None else ' (pass lang=, e.g. lang="python")'
             return f"<no symbols parsed for {label}{hint}>"
         lines = []
         for seg in segments:
-            text = (seg.get("text") or "").strip()
+            text = (seg.get("text") or "").rstrip()
             seg_label = text if text else f"<{seg.get('kind', 'segment')}>"
             lines.append(f"{seg.get('startLine')}-{seg.get('endLine')}: {seg_label}")
         return "\n".join(lines)
@@ -1053,7 +1114,11 @@ if "__proto_prelude_loaded__" not in globals():
     _BRIDGE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _bridge_call(name: str, args: dict, completion_invocation_id=None):
-        """POST one request to the host tool bridge and return its `value`."""
+        """Invoke the active scoped host transport and return its value."""
+        transport = globals().get("__proto_bridge_call__")
+        if callable(transport):
+            task_signal().check()
+            return transport(name, args, completion_invocation_id)
         base, token, session = _tool_proxy_from_env()
         _run_id_getter = globals().get("__proto_current_run_id__")
         _run_id = (
@@ -1467,9 +1532,111 @@ if "__proto_prelude_loaded__" not in globals():
     def executions(id=None, *, limit=20):
         return _bridge_call("__runtime__", {"op": "executions", "limit": limit, **({"id": id} if id is not None else {})})
 
+    def _tool_execution_id(execution):
+        identifier = execution.get("id") if isinstance(execution, dict) else execution
+        if not isinstance(identifier, str) or not identifier:
+            raise TypeError("execution must be a non-empty id or a start_tool handle")
+        return identifier
+
+    def start_tool(name, args=None):
+        """Start an owned tool execution without waiting for its result."""
+        return _bridge_call("__runtime__", {"op": "events_start", "tool": name,
+                                           "args": {} if args is None else args})
+
+    def tool_events(execution, *, cursor=0, limit=128, wait_ms=30000):
+        """Yield retained and live events, including gaps and final completion."""
+        identifier = _tool_execution_id(execution)
+        while True:
+            batch = _bridge_call("__runtime__", {"op": "events_read", "id": identifier,
+                                "cursor": cursor, "limit": limit, "waitMs": wait_ms})
+            gap = batch.get("gap")
+            if gap is not None:
+                yield {"executionId": identifier, "sequence": gap["to"], "kind": "gap",
+                       "data": gap, "terminal": False}
+            yield from batch["events"]
+            cursor = batch["cursor"]
+            if batch["done"]:
+                return
+
+    def cancel_tool(execution, *, wait_ms=30000):
+        return _bridge_call("__runtime__", {"op": "events_cancel", "id": _tool_execution_id(execution),
+                                           "waitMs": wait_ms})
+
+    def dispose_tool(execution):
+        return _bridge_call("__runtime__", {"op": "events_dispose", "id": _tool_execution_id(execution)})
+
+    def _delegation_id(delegation):
+        if isinstance(delegation, dict):
+            delegation = delegation.get("lease", delegation)
+            identifier = delegation.get("id") if isinstance(delegation, dict) else None
+        else:
+            identifier = delegation
+        if not isinstance(identifier, str) or not identifier:
+            raise TypeError("delegation must be a non-empty id or a delegate handle")
+        return identifier
+
+    def delegate(grants, *, ttl_ms=None, max_concurrent=None, max_requests=None, expose=False):
+        """Create a bounded, explicitly scoped lease for external clients."""
+        args = {"op": "delegation_create", "grants": grants, "expose": expose}
+        for key, value in (("ttlMs", ttl_ms), ("maxConcurrent", max_concurrent), ("maxRequests", max_requests)):
+            if value is not None:
+                args[key] = value
+        return _bridge_call("__runtime__", args)
+
+    def delegations():
+        return _bridge_call("__runtime__", {"op": "delegation_list"})
+
+    def revoke_delegation(delegation):
+        return _bridge_call("__runtime__", {"op": "delegation_revoke", "id": _delegation_id(delegation)})
+
+    def launch_delegated(delegation, *, name, application, args=None, cwd=None, env=None):
+        request = {"op": "delegation_launch", "id": _delegation_id(delegation),
+                   "name": name, "application": application}
+        for key, value in (("args", args), ("cwd", cwd), ("env", env)):
+            if value is not None:
+                request[key] = value
+        return _bridge_call("__runtime__", request)
+
+    _ARTIFACT_VALUE_MISSING = object()
+
+    def publish_artifact(value=_ARTIFACT_VALUE_MISSING, *, kind="json", path=None, mime_type=None, encoding=None):
+        """Publish immutable data; path addresses the host, not a remote target."""
+        request = {"op": "artifact_publish", "kind": kind}
+        if value is not _ARTIFACT_VALUE_MISSING:
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                if kind != "binary" or encoding not in (None, "base64"):
+                    raise TypeError("native bytes require kind='binary' and base64 encoding")
+                value = base64.b64encode(value).decode("ascii")
+                encoding = "base64"
+            request["value"] = value
+        for key, item in (("path", path), ("mimeType", mime_type), ("encoding", encoding)):
+            if item is not None:
+                request[key] = str(item) if key == "path" else item
+        return _bridge_call("__runtime__", request)
+
+    def read_artifact(ref, *, offset=0, length=None, encoding=None):
+        request = {"op": "artifact_read", "ref": ref, "offset": offset}
+        if length is not None:
+            request["length"] = length
+        if encoding is not None:
+            request["encoding"] = encoding
+        return _bridge_call("__runtime__", request)
+
+    def resolve_artifact(ref):
+        return _bridge_call("__runtime__", {"op": "artifact_resolve", "ref": ref})
+
     def edit_batch(changes, *, apply=False):
+        """Validate (and with apply=True commit) a checked batch on the host.
+        Applied files join this cell's mutation tracking, so the flush reports
+        them like any kernel write: one status event and `<kernel> note:` per path."""
         resolved = [{**entry, "path": str(proto_path(entry["path"]))} for entry in changes]
-        return _bridge_call("__runtime__", {"op": "edit_batch", "changes": resolved, "apply": apply})
+        if apply:
+            for entry in resolved:
+                _fs_record(entry["path"])
+        result = _bridge_call("__runtime__", {"op": "edit_batch", "changes": resolved, "apply": apply})
+        if isinstance(result, dict):
+            _fs_rearm_stamps(result.pop("stamps", None))
+        return result
 
     def log(message):
         """Emit a status ``log`` event for TUI rendering."""

@@ -1439,10 +1439,10 @@ export class OutputSink {
 
 		const actionable = this.#actionableDiagnostics.filter(line => !body.includes(line));
 		if (this.#truncated && actionable.length > 0) {
+			// The appended section is not source output: outputLines/outputBytes keep describing the
+			// retained source lines, which truncation notices map back onto the artifact's line numbers.
 			const diagnosticSection = `[ACTIONABLE DIAGNOSTICS]\n${actionable.join("\n")}`;
 			body = body.length > 0 ? `${body}\n${diagnosticSection}` : diagnosticSection;
-			outputBytes = Buffer.byteLength(body, "utf-8");
-			outputLines = countLines(body);
 		}
 
 		return {

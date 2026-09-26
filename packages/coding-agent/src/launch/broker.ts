@@ -782,6 +782,9 @@ class DaemonBroker {
 				return this.#send(operation);
 			case "stop": {
 				const record = this.#record(operation.name);
+				if (operation.expectedId !== undefined && operation.expectedId !== record.snapshot.id) {
+					throw new Error("Daemon identity changed before stop");
+				}
 				await this.#stopRecord(record, operation.timeoutMs);
 				return { op: "stop", daemon: record.snapshot };
 			}
@@ -927,7 +930,10 @@ class DaemonBroker {
 		record.pty = session;
 		const options = {
 			cwd: record.spec.cwd,
-			env: workerEnvFromParent({ TERM: "xterm-256color", ...record.spec.env }),
+			env:
+				record.spec.inheritEnv === false
+					? { ...record.spec.env }
+					: workerEnvFromParent({ TERM: "xterm-256color", ...record.spec.env }),
 			cols: DAEMON_PTY_COLUMNS,
 			rows: DAEMON_PTY_ROWS,
 		};
@@ -982,7 +988,7 @@ class DaemonBroker {
 	#launchPipe(record: ManagedDaemon, generation: number): void {
 		const process = Bun.spawn([record.spec.application, ...record.spec.args], {
 			cwd: record.spec.cwd,
-			env: workerEnvFromParent(record.spec.env),
+			env: record.spec.inheritEnv === false ? { ...record.spec.env } : workerEnvFromParent(record.spec.env),
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
@@ -1007,7 +1013,7 @@ class DaemonBroker {
 		try {
 			const process = Bun.spawn([record.spec.application, ...record.spec.args], {
 				cwd: record.spec.cwd,
-				env: workerEnvFromParent(record.spec.env),
+				env: record.spec.inheritEnv === false ? { ...record.spec.env } : workerEnvFromParent(record.spec.env),
 				stdio: ["ignore", output.fd, output.fd],
 				...DAEMON_SPAWN_OPTIONS,
 			});

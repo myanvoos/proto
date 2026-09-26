@@ -5,14 +5,16 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as util from "node:util";
-
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import type { KernelTarget } from "../../kernel-target";
 
 import {
 	beginFileTracking,
 	flushFileTracking,
 	installBunWriteTracking,
 	maybeTrackedModule,
+	noteTouched,
+	rearmReadStamps,
 	trackedFsModule,
 } from "./fs-tracker";
 import { createHelpers, type HelperBundle } from "./helpers";
@@ -20,10 +22,13 @@ import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
 import { wrapCode } from "./rewrite-imports";
+import { type LoadStateOptions, loadKernelState, runtimeInterpreter, type StateResult, saveKernelState } from "./state";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeHooks {
 	onText(chunk: string, stream?: "stdout" | "stderr"): void;
+	onBytes?(chunk: Uint8Array, stream: "stdout" | "stderr"): Promise<void> | void;
+	outputBackpressured?(): boolean;
 	onDisplay(output: JsDisplayOutput): void;
 	callTool(name: string, args: unknown, completionInvocationId?: string): Promise<unknown>;
 }
@@ -41,7 +46,8 @@ function surfaceBridgedToolImages(value: unknown, hooks: RuntimeHooks): unknown 
 		displayed++;
 	}
 	if (displayed === 0) return value;
-	return { ...rest, images: `(${displayed} image${displayed === 1 ? "" : "s"} displayed)` };
+	// Production bridges publish immutable refs; displaying must not destroy machine-usable content.
+	return { ...rest, images: Array.isArray(rest.artifacts) ? rest.artifacts : images };
 }
 
 export interface RunContext {
@@ -55,6 +61,8 @@ export interface RunContext {
 
 export interface RuntimeOptions {
 	initialCwd: string;
+	generation?: string;
+	target?: KernelTarget;
 	sessionId: string;
 
 	extraGlobals?: Record<string, unknown>;
@@ -72,6 +80,19 @@ const PRELUDE_GLOBAL_KEYS = [
 	"BatchError",
 	"executions",
 	"editBatch",
+	"saveState",
+	"loadState",
+	"startTool",
+	"toolEvents",
+	"cancelTool",
+	"disposeTool",
+	"delegate",
+	"delegations",
+	"revokeDelegation",
+	"launchDelegated",
+	"publishArtifact",
+	"readArtifact",
+	"resolveArtifact",
 	"__proto_js_prelude_loaded__",
 	"console",
 	"print",
@@ -88,6 +109,8 @@ const PRELUDE_GLOBAL_KEYS = [
 	"__pool",
 	"protoPath",
 	"env",
+	"symbols",
+	"blockRange",
 ];
 
 function isStrictBase64(s: string): boolean {
@@ -147,9 +170,9 @@ export class JsRuntime {
 	#disposed = false;
 	#runHookResolver = () => this.#als.getStore()?.hooks;
 
-	#ownGlobal(key: string): void {
+	#ownGlobal(key: string, mutable = false): void {
 		if (this.#ownedGlobalKeys.has(key)) return;
-		claimGlobalKey(key, this.#globalOwner);
+		claimGlobalKey(key, this.#globalOwner, mutable);
 		this.#ownedGlobalKeys.add(key);
 	}
 
@@ -162,7 +185,8 @@ export class JsRuntime {
 	#cwd: string;
 	#session: { cwd: string; sessionId: string };
 	readonly sessionId: string;
-	readonly #generation = crypto.randomUUID();
+	readonly #generation: string;
+	readonly #target: KernelTarget;
 	#executionCount = 0;
 	#definitions = new Map<string, number>();
 	#tasks = new Map<string, { id: string; kind: "cell" | "tool"; state: "running"; cell: number }>();
@@ -173,6 +197,8 @@ export class JsRuntime {
 	#localRoots: Record<string, string>;
 
 	constructor(opts: RuntimeOptions) {
+		this.#generation = opts.generation ?? crypto.randomUUID();
+		this.#target = structuredClone(opts.target ?? { kind: "local" });
 		this.#cwd = opts.initialCwd;
 		this.#session = { cwd: opts.initialCwd, sessionId: opts.sessionId };
 		this.sessionId = opts.sessionId;
@@ -218,7 +244,7 @@ export class JsRuntime {
 		code: string,
 		filename: string | undefined,
 		hooks: RuntimeHooks,
-		options: { runId?: string; cwd?: string; shellEnv?: Record<string, string>; stdin?: number[] } = {},
+		options: { runId?: string; cwd?: string; shellEnv?: Record<string, string>; stdin?: Readable } = {},
 	): Promise<unknown> {
 		this.#activateGlobals("run code");
 		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
@@ -241,7 +267,7 @@ export class JsRuntime {
 			this.#env.set(key, value);
 		}
 		const savedStdin = Object.getOwnPropertyDescriptor(process, "stdin");
-		const stdin = Readable.from([Buffer.from(options.stdin ?? [])]);
+		const stdin = options.stdin ?? Readable.from([]);
 		Object.defineProperty(process, "stdin", { configurable: true, get: () => stdin });
 		const context: RunContext = {
 			runId: options.runId ?? crypto.randomUUID(),
@@ -389,6 +415,30 @@ export class JsRuntime {
 		return dynamicRequire;
 	}
 
+	async saveState(snapshotPath: string, names: unknown): Promise<StateResult> {
+		this.#activateGlobals("save state");
+		return await saveKernelState(this.helpers.protoPath(snapshotPath), names, globalThis, this.#baseline);
+	}
+
+	async loadState(snapshotPath: string, options: LoadStateOptions = {}): Promise<StateResult> {
+		this.#activateGlobals("load state");
+		const result = await loadKernelState(
+			this.helpers.protoPath(snapshotPath),
+			globalThis,
+			this.#baseline,
+			options,
+			names => {
+				assertCanUseGlobalOwner(this.#globalOwner, "restore state");
+				for (const name of names) this.#ownGlobal(name, true);
+			},
+		);
+		for (const name of result.names) {
+			this.#definitions.set(name, this.#executionCount);
+			recordGlobalValue(name, this.#globalOwner);
+		}
+		return result;
+	}
+
 	kernelState(options: { limit?: number } = {}): Record<string, unknown> {
 		const limit = options.limit ?? 200;
 		if (!Number.isInteger(limit) || limit < 0 || limit > 1000)
@@ -417,9 +467,12 @@ export class JsRuntime {
 				provenance: "cell",
 			});
 		}
+		const { implementation, version } = runtimeInterpreter();
 		return {
+			target: structuredClone(this.#target),
 			generation: this.#generation,
 			language: "javascript",
+			runtime: { implementation, version },
 			interpreter: process.execPath,
 			cwd: this.#activeCwd(),
 			executionCount: this.#executionCount,
@@ -439,6 +492,8 @@ export class JsRuntime {
 			__proto_session__: this.#session,
 			__proto_helpers__: this.helpers,
 			kernelState: (options?: { limit?: number }) => this.kernelState(options),
+			saveState: (snapshotPath: string, names: unknown) => this.saveState(snapshotPath, names),
+			loadState: (snapshotPath: string, options?: LoadStateOptions) => this.loadState(snapshotPath, options),
 			defs: () => Object.fromEntries([...this.#definitions].filter(([name]) => Object.hasOwn(globalThis, name))),
 			__proto_call_tool__: async (name: string, args: unknown, completionInvocationId?: string) => {
 				const hooks = this.#activeHooks("tool");
@@ -456,23 +511,16 @@ export class JsRuntime {
 				if (!context) return undefined;
 				return String(context.completionInvocationCount++);
 			},
-			__proto_import__: async (source: string, options?: ImportCallOptions) => {
-				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);
-				if (resolved.mode === "local") return resolved.value;
-				const target = resolved.target;
-				const imported = options !== undefined ? await import(target, options) : await import(target);
-				return maybeTrackedModule(target, imported);
-			},
-			__proto_import_from__: async (moduleUrl: string, source: string, options?: ImportCallOptions) => {
-				const resolved = await this.#moduleLoader.resolveForModule(moduleUrl, source, this.#activeCwd());
-				if (resolved.mode === "local") return resolved.value;
-				const target = resolved.target;
-				const imported = options !== undefined ? await import(target, options) : await import(target);
-				return maybeTrackedModule(target, imported);
-			},
+			__proto_import__: (source: string, options?: ImportCallOptions) =>
+				this.#moduleLoader.importForRun(this.#activeCwd(), source, options),
+			__proto_import_from__: (moduleUrl: string, source: string, options?: ImportCallOptions) =>
+				this.#moduleLoader.importForModule(moduleUrl, source, this.#activeCwd(), options),
 			__proto_get_require__: (moduleUrl?: string) => this.#activeRequire(moduleUrl),
 			__proto_get_filename__: (moduleUrl?: string) => this.#moduleFilename(moduleUrl),
 			__proto_get_dirname__: (moduleUrl?: string) => this.#moduleDirname(moduleUrl),
+			// editBatch: host-applied files join the cell's mutation tracking and re-arm the stale-write guard.
+			__proto_fs_note_touched__: noteTouched,
+			__proto_fs_rearm_reads__: rearmReadStamps,
 			__proto_emit_status__: (op: string, data: Record<string, unknown> = {}) => {
 				const event: JsStatusEvent = { op, ...data };
 				this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event });
@@ -500,6 +548,7 @@ export class JsRuntime {
 				hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
 			},
 			__proto_display__: (value: unknown) => this.displayValue(value),
+			__proto_read_text__: (filePath: string) => fs.promises.readFile(filePath, "utf8"),
 			__proto_set_final_expr__: (value: unknown) => {
 				const context = this.#als.getStore();
 				if (!context) {
@@ -544,13 +593,13 @@ export class JsRuntime {
 }
 
 interface GlobalSnapshot {
-	exists: boolean;
-	value: unknown;
+	descriptor: PropertyDescriptor | undefined;
 }
 
 interface GlobalOwnerEntry {
 	owner: symbol;
-	value: unknown;
+	state: GlobalSnapshot;
+	mutable: boolean;
 }
 
 interface GlobalStack {
@@ -561,33 +610,29 @@ interface GlobalStack {
 const GLOBAL_STACKS = new Map<string, GlobalStack>();
 
 function snapshotGlobal(key: string): GlobalSnapshot {
-	return {
-		exists: key in globalThis,
-		value: (globalThis as Record<string, unknown>)[key],
-	};
+	return { descriptor: Object.getOwnPropertyDescriptor(globalThis, key) };
 }
 
 function restoreGlobal(key: string, state: GlobalSnapshot): void {
-	if (state.exists) {
-		(globalThis as Record<string, unknown>)[key] = state.value;
-	} else {
-		delete (globalThis as Record<string, unknown>)[key];
-	}
+	if (state.descriptor) Object.defineProperty(globalThis, key, state.descriptor);
+	else delete (globalThis as Record<string, unknown>)[key];
 }
 
-function claimGlobalKey(key: string, owner: symbol): void {
+function claimGlobalKey(key: string, owner: symbol, mutable = false): void {
 	let stack = GLOBAL_STACKS.get(key);
 	if (!stack) {
 		stack = { base: snapshotGlobal(key), entries: [] };
 		GLOBAL_STACKS.set(key, stack);
 	}
-	stack.entries.push({ owner, value: (globalThis as Record<string, unknown>)[key] });
+	const previous = stack.entries.at(-1);
+	if (previous?.mutable) previous.state = snapshotGlobal(key);
+	stack.entries.push({ owner, state: snapshotGlobal(key), mutable });
 }
 
 function recordGlobalValue(key: string, owner: symbol): void {
 	const stack = GLOBAL_STACKS.get(key);
 	const entry = stack?.entries.findLast(item => item.owner === owner);
-	if (entry) entry.value = (globalThis as Record<string, unknown>)[key];
+	if (entry) entry.state = snapshotGlobal(key);
 }
 
 function releaseGlobalKey(key: string, owner: symbol): void {
@@ -600,7 +645,7 @@ function releaseGlobalKey(key: string, owner: symbol): void {
 	if (!wasTop) return;
 	const next = stack.entries.at(-1);
 	if (next) {
-		(globalThis as Record<string, unknown>)[key] = next.value;
+		restoreGlobal(key, next.state);
 		return;
 	}
 	restoreGlobal(key, stack.base);
@@ -622,9 +667,13 @@ function activateGlobalOwner(owner: symbol, keys: Iterable<string>, action: stri
 		const index = stack?.entries.findIndex(entry => entry.owner === owner) ?? -1;
 		if (!stack || index === -1) throw new Error(`Cannot ${action} on a disposed JS runtime`);
 		const entry = stack.entries[index];
+		// Restored user bindings may be reassigned or deleted between helper calls.
+		if (entry.mutable && index === stack.entries.length - 1) continue;
+		const previous = stack.entries.at(-1);
+		if (previous?.mutable) previous.state = snapshotGlobal(key);
 		stack.entries.splice(index, 1);
 		stack.entries.push(entry);
-		(globalThis as Record<string, unknown>)[key] = entry.value;
+		restoreGlobal(key, entry.state);
 	}
 }
 
@@ -664,7 +713,24 @@ function patchStdioOnce(): void {
 			if (!hooks) return original(chunk, encoding, callback);
 			const cb = typeof encoding === "function" ? encoding : callback;
 			const enc = typeof encoding === "string" ? (encoding as BufferEncoding) : undefined;
-			hooks.onText(chunkToString(chunk, enc), stream === process.stderr ? "stderr" : "stdout");
+			const kind = stream === process.stderr ? "stderr" : "stdout";
+			if (hooks.onBytes) {
+				const bytes = chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk), enc);
+				const write = hooks.onBytes(bytes, kind);
+				if (write) {
+					const backpressured = hooks.outputBackpressured?.() ?? true;
+					void write.then(
+						() => {
+							if (typeof cb === "function") (cb as () => void)();
+							if (backpressured) stream.emit("drain");
+						},
+						error => {
+							if (typeof cb === "function") (cb as (error: Error) => void)(error);
+						},
+					);
+					return !backpressured;
+				}
+			} else hooks.onText(chunkToString(chunk, enc), kind);
 			if (typeof cb === "function") (cb as (error?: Error | null) => void)();
 			return true;
 		};

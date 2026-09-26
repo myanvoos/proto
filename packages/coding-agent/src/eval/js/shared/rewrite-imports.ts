@@ -1,3 +1,4 @@
+import * as nodeModule from "node:module";
 import type * as BabelParser from "@babel/parser";
 
 type BabelImportDeclaration = {
@@ -385,15 +386,34 @@ async function requiresAsyncWrapper(code: string): Promise<boolean> {
 }
 
 type TypeScriptStripLoader = "ts" | "tsx";
+type TypeScriptStripper = (code: string, loader: TypeScriptStripLoader) => string;
 
-const TS_TRANSPILER = new Bun.Transpiler({ loader: "ts" });
-const TSX_TRANSPILER = new Bun.Transpiler({ loader: "tsx" });
+type NodeTypeStripper = (code: string, options: { mode: "strip" | "transform" }) => string;
+
+/**
+ * The same runtime serves Bun and Node kernels (eval/js/node-entry.ts). Bun transpiles TS and TSX;
+ * Node strips TS with `module.stripTypeScriptTypes` (22.13+) and has no JSX transform, so TSX — and
+ * TS on older Node — stays as written and fails as the SyntaxError the interpreter would raise.
+ */
+function createTypeScriptStripper(): TypeScriptStripper | null {
+	if (typeof Bun !== "undefined") {
+		const ts = new Bun.Transpiler({ loader: "ts" });
+		const tsx = new Bun.Transpiler({ loader: "tsx" });
+		return (code, loader) => (loader === "tsx" ? tsx : ts).transformSync(code);
+	}
+	const strip = (nodeModule as { stripTypeScriptTypes?: NodeTypeStripper }).stripTypeScriptTypes;
+	if (typeof strip !== "function") return null;
+	return (code, loader) => (loader === "tsx" ? code : strip(code, { mode: "transform" }));
+}
+
+let typeScriptStripper: TypeScriptStripper | null | undefined;
 
 function stripTypeScript(code: string, options: { force?: boolean; loader?: TypeScriptStripLoader } = {}): string {
 	if (!options.force && !LOOKS_LIKE_TS.test(code)) return code;
+	typeScriptStripper ??= createTypeScriptStripper();
+	if (!typeScriptStripper) return code;
 	try {
-		const transpiler = options.loader === "tsx" ? TSX_TRANSPILER : TS_TRANSPILER;
-		return transpiler.transformSync(code);
+		return typeScriptStripper(code, options.loader ?? "ts");
 	} catch {
 		return code;
 	}

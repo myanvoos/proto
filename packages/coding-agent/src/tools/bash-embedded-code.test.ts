@@ -45,9 +45,16 @@ test("real-interpreter invocations are not kernel cells", () => {
 	expect(detectBashKernelCell("python -i -c 'x'")).toBeUndefined();
 	expect(detectBashKernelCell("node --input-type=module <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
 	expect(detectBashKernelCell("node -u <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
-	// `-c` with program input on stdin falls through to a real interpreter.
-	expect(detectBashKernelCell("curl -s x | python -c 'import json'")).toBeUndefined();
-	expect(detectBashKernelCell("python -c 'x' < in.txt")).toBeUndefined();
+});
+test("program input stays independent of kernel source and retains the mixed shell surface", () => {
+	for (const command of ["curl -s x | python -c 'import json'", "python -c 'import json' < in.txt"]) {
+		expect(detectBashKernelCell(command)).toEqual({ language: "python", code: "import json" });
+		expect(isBashKernelCellMixed(command)).toBe(true);
+		expect(findBashCodeCells(command).map(cell => cell.kernel)).toEqual([true]);
+	}
+	const js = 'cat input.bin | node -e "process.stdin.resume()"';
+	expect(detectBashKernelCell(js)).toEqual({ language: "js", code: "process.stdin.resume()" });
+	expect(isBashKernelCellMixed(js)).toBe(true);
 });
 test("interpreter options the bridge passes through still route to a cell", () => {
 	expect(detectBashKernelCell("python -u -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });

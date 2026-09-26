@@ -7,15 +7,18 @@ import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
 import type { EvalCompletionInvocationContext } from "./completion-bridge";
-import { formatDisplayOutputsForText } from "./display-text";
+import { formatDisplayOutputForText } from "./display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations";
-import jsBackend from "./js";
-import pythonBackend from "./py";
-import { type KernelDisplayOutput, PythonDisplayBudget } from "./py/display";
-import { defaultEvalSessionId } from "./session-id";
+import { bunBackend, namespaceSessionId as jsSessionId, nodeBackend } from "./js";
+import { resolveNodeInterpreter } from "./js/node-runtime";
+import { kernelLaneSessionId, resolveKernelLaneConfiguration } from "./kernel-control";
+import { takeKernelCellTermination } from "./kernel-session-registry";
+import { KERNEL_INPUT_CHUNK_BYTES } from "./kernel-streams";
+import pythonBackend, { namespaceSessionId as pythonSessionId } from "./py";
+import { PythonDisplayBudget } from "./py/display";
 import { findLiteralCompletionCalls } from "./speculation";
-import { upsertStatusEvent } from "./status-events";
-import type { EvalStatusEvent } from "./types";
+import { statusEventKey, upsertStatusEvent } from "./status-events";
+import type { EvalDisplayOutput, EvalStatusEvent } from "./types";
 
 export interface KernelShellBridgeOptions {
 	lane?: string;
@@ -29,11 +32,14 @@ export interface KernelShellBridgeHandle {
 	drainStatusEvents(): EvalStatusEvent[];
 	drainJsonOutputs(): unknown[];
 	queriedExecutions(): boolean;
+	/** Why the last kernel cell was cancelled by something other than this run (e.g. a force-close). */
+	cellFailure(): string | undefined;
 	dispose(): void;
 }
 
 interface RunContext {
 	queriedExecutions: boolean;
+	cellFailure?: string;
 	session: ToolSession;
 	images: ImageContent[];
 	statusEvents: EvalStatusEvent[];
@@ -52,25 +58,41 @@ interface SocketState {
 	scannedBytes: number;
 	started: boolean;
 	abort?: AbortController;
+	stdin?: ReadableStreamDefaultController<Uint8Array>;
+	inputCredit?: PromiseWithResolvers<void>;
+	outputDrain?: PromiseWithResolvers<void>;
 	output: Buffer[];
 	outputOffset: number;
 	outputBytes: number;
+	producerBytes: number;
+	producerWrites: number;
 	ending: boolean;
 	closed: boolean;
+}
+
+/** Kernel cell languages the shell builtins send: `python`, `node`, and `bun` commands. */
+type CellLanguage = "py" | "node" | "bun";
+
+const CELL_BACKENDS = { py: pythonBackend, node: nodeBackend, bun: bunBackend };
+
+/** The kernel session a lane's cells of `lang` run in (the id lifecycle records are keyed by). */
+function cellKernelSessionId(lang: CellLanguage, laneSessionId: string): string {
+	return lang === "py" ? pythonSessionId(laneSessionId) : jsSessionId(laneSessionId, lang);
 }
 
 interface CellRequest {
 	token: string;
 	code: string;
-	lang: "py" | "js";
+	lang: CellLanguage;
 	cwd?: string;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: boolean;
 }
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024;
 const OUTPUT_CHUNK_CHARS = 1024 * 1024;
+const OUTPUT_HIGH_WATER_BYTES = 256 * 1024;
 
 const runs = new Map<string, RunContext>();
 const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
@@ -111,6 +133,7 @@ export function registerKernelShellRun(
 		drainStatusEvents: () => context.statusEvents.splice(0),
 		drainJsonOutputs: () => context.jsonOutputs.splice(0),
 		queriedExecutions: () => context.queriedExecutions,
+		cellFailure: () => context.cellFailure,
 		dispose: () => {
 			if (disposed) return;
 			disposed = true;
@@ -146,6 +169,8 @@ function ensureListener(): TCPSocketListener<SocketState> {
 					output: [],
 					outputOffset: 0,
 					outputBytes: 0,
+					producerBytes: 0,
+					producerWrites: 0,
 					ending: false,
 					closed: false,
 				};
@@ -228,8 +253,70 @@ function pump(socket: Socket<SocketState>): void {
 			void handleRequest(socket, line);
 			continue;
 		}
-		if (parseLine(line)?.t === "c") socket.data.abort?.abort();
+		const frame = parseLine(line);
+		if (frame?.t === "c") socket.data.abort?.abort();
+		else if (frame?.t === "i") receiveInput(socket, frame);
 	}
+}
+
+function createInput(socket: Socket<SocketState>): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>(
+		{
+			start(controller) {
+				socket.data.stdin = controller;
+			},
+			pull() {
+				if (socket.data.closed || socket.data.ending) return;
+				const credit = Promise.withResolvers<void>();
+				socket.data.inputCredit = credit;
+				send(socket, { t: "i" });
+				return credit.promise;
+			},
+			cancel() {
+				closeInput(socket.data);
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+}
+
+function closeInput(state: SocketState, error?: Error): void {
+	const controller = state.stdin;
+	state.stdin = undefined;
+	state.inputCredit?.resolve();
+	state.inputCredit = undefined;
+	if (error) {
+		try {
+			controller?.error(error);
+		} catch {}
+	}
+}
+
+function receiveInput(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
+	const state = socket.data;
+	if (
+		!state.stdin ||
+		!state.inputCredit ||
+		typeof frame.d !== "string" ||
+		frame.d.length > Math.ceil(KERNEL_INPUT_CHUNK_BYTES / 3) * 4 ||
+		!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(frame.d) ||
+		typeof frame.eof !== "boolean"
+	) {
+		failConnection(socket, "Invalid or unrequested kernel stdin frame");
+		return;
+	}
+	const bytes = Buffer.from(frame.d, "base64");
+	if (bytes.length > KERNEL_INPUT_CHUNK_BYTES || (!frame.eof && bytes.length === 0)) {
+		failConnection(socket, "Kernel stdin chunk exceeds credit or is empty without EOF");
+		return;
+	}
+	if (bytes.length) state.stdin.enqueue(bytes);
+	if (frame.eof) {
+		state.stdin.close();
+		state.stdin = undefined;
+	}
+	state.inputCredit.resolve();
+	state.inputCredit = undefined;
 }
 
 function parseLine(line: string): Record<string, unknown> | undefined {
@@ -254,6 +341,9 @@ function failConnection(socket: Socket<SocketState>, message: string): void {
 	const state = socket.data;
 	if (state.closed || state.ending) return;
 	state.abort?.abort(new Error(message));
+	closeInput(state, new Error(message));
+	state.outputDrain?.resolve();
+	state.outputDrain = undefined;
 	clearInput(state);
 	const partialFrame = state.outputOffset > 0 ? state.output[0] : undefined;
 	state.output = partialFrame ? [partialFrame] : [];
@@ -287,6 +377,36 @@ function sendOutput(socket: Socket<SocketState>, output: string, stream: "stdout
 	}
 }
 
+async function sendBytes(socket: Socket<SocketState>, bytes: Uint8Array, stream: "stdout" | "stderr"): Promise<void> {
+	const state = socket.data;
+	if (state.closed || state.ending) return;
+	if (state.producerBytes + bytes.byteLength > MAX_PENDING_OUTPUT_BYTES || state.producerWrites >= 4096) {
+		failConnection(socket, `Kernel shell bridge pending output exceeded ${MAX_PENDING_OUTPUT_BYTES} byte budget`);
+		return;
+	}
+	state.producerBytes += bytes.byteLength;
+	state.producerWrites++;
+	try {
+		for (let offset = 0; offset < bytes.byteLength; offset += KERNEL_INPUT_CHUNK_BYTES) {
+			const state = socket.data;
+			if (state.closed || state.ending) return;
+			const chunk = Buffer.from(bytes.subarray(offset, offset + KERNEL_INPUT_CHUNK_BYTES));
+			const text = chunk.toString("utf8");
+			const frame = Buffer.from(text).equals(chunk)
+				? { t: stream === "stderr" ? "e" : "o", d: text }
+				: { t: stream === "stderr" ? "e" : "o", d: chunk.toString("base64"), encoding: "base64" };
+			if (!send(socket, frame)) return;
+			if (state.outputBytes >= OUTPUT_HIGH_WATER_BYTES) {
+				state.outputDrain ??= Promise.withResolvers<void>();
+				await state.outputDrain.promise;
+			}
+		}
+	} finally {
+		state.producerBytes -= bytes.byteLength;
+		state.producerWrites--;
+	}
+}
+
 function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
 	if (!send(socket, frame)) return;
 	socket.data.ending = true;
@@ -296,6 +416,9 @@ function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): vo
 function closeConnection(socket: Socket<SocketState>): void {
 	if (socket.data.closed) return;
 	socket.data.closed = true;
+	closeInput(socket.data, new Error("Kernel shell input closed"));
+	socket.data.outputDrain?.resolve();
+	socket.data.outputDrain = undefined;
 	socket.data.output.length = 0;
 	socket.data.outputBytes = 0;
 	clearInput(socket.data);
@@ -316,11 +439,15 @@ function flushOutput(socket: Socket<SocketState>): void {
 			}
 			state.outputOffset += written;
 			state.outputBytes -= written;
-			if (state.outputOffset < chunk.length) return;
+			if (state.outputOffset < chunk.length) break;
 			state.output.shift();
 			state.outputOffset = 0;
 		}
-		if (state.ending) socket.end();
+		if (state.outputBytes < OUTPUT_HIGH_WATER_BYTES) {
+			state.outputDrain?.resolve();
+			state.outputDrain = undefined;
+		}
+		if (state.ending && state.outputBytes === 0) socket.end();
 	} catch {
 		closeConnection(socket);
 	}
@@ -329,7 +456,7 @@ function flushOutput(socket: Socket<SocketState>): void {
 function parseRequest(line: string): CellRequest | undefined {
 	const parsed = parseLine(line);
 	if (!parsed || typeof parsed.token !== "string" || typeof parsed.code !== "string") return undefined;
-	if (parsed.lang !== "py" && parsed.lang !== "js") return undefined;
+	if (parsed.lang !== "py" && parsed.lang !== "node" && parsed.lang !== "bun") return undefined;
 	if (
 		parsed.shellEnv !== undefined &&
 		(parsed.shellEnv === null ||
@@ -338,19 +465,13 @@ function parseRequest(line: string): CellRequest | undefined {
 			Object.values(parsed.shellEnv).some(value => typeof value !== "string"))
 	)
 		return undefined;
-	if (
-		parsed.stdin != null &&
-		(!Array.isArray(parsed.stdin) ||
-			parsed.stdin.length > 1024 * 1024 ||
-			parsed.stdin.some(value => !Number.isInteger(value) || value < 0 || value > 255))
-	)
-		return undefined;
+	if (parsed.stdin !== undefined && typeof parsed.stdin !== "boolean") return undefined;
 	return {
 		token: parsed.token,
 		code: parsed.code,
 		lang: parsed.lang,
 		shellEnv: parsed.shellEnv as Record<string, string> | undefined,
-		stdin: (parsed.stdin ?? undefined) as number[] | undefined,
+		stdin: parsed.stdin === true,
 		cwd: typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? parsed.cwd : undefined,
 	};
 }
@@ -372,11 +493,28 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	// model-facing text is stdout only and whose hunks are a TUI affordance.
 	const cellStatusEvents: EvalStatusEvent[] = [];
 	try {
-		const backend = request.lang === "js" ? jsBackend : pythonBackend;
+		const backend = CELL_BACKENDS[request.lang];
 		const backends = resolveEvalBackends(session);
-		const enabled = request.lang === "js" ? backends.js : backends.python;
+		const enabled = request.lang === "py" ? backends.python : backends.js;
+		const configuration = resolveKernelLaneConfiguration(
+			session,
+			request.lang === "py" ? "python" : request.lang,
+			context.completionContext?.lane,
+		);
+		// An explicitly selected interpreter/remote environment is validated at
+		// launch, not against this host's unrelated default Python executable.
+		const selectedRuntime = Boolean(
+			configuration?.interpreter || (configuration?.target && configuration.target.kind !== "local"),
+		);
+		// `node` runs the Node the cell's own PATH names, as the shell would; with none there, the cell
+		// falls through and the builtin reports command-not-found exactly like the shell.
 		const available =
-			enabled && (await untilAborted(abort.signal, () => backend.isAvailable(session).catch(() => false)));
+			enabled &&
+			(selectedRuntime ||
+				(request.lang === "node"
+					? resolveNodeInterpreter(request.shellEnv, configuration?.cwd ?? request.cwd ?? session.cwd) !==
+						undefined
+					: await untilAborted(abort.signal, () => backend.isAvailable(session).catch(() => false))));
 		abort.signal.throwIfAborted();
 		if (!available) {
 			finish(socket, { t: "f" });
@@ -384,25 +522,37 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		}
 		const candidateFingerprints =
 			context.completionContext?.toolCallId && context.completionContext.generation !== undefined
-				? findLiteralCompletionCalls(request.lang === "js" ? "js" : "python", request.code).map(
-						call => call.fingerprint,
-					)
+				? findLiteralCompletionCalls(backend.id, request.code).map(call => call.fingerprint)
 				: [];
 		const completionContext: EvalCompletionInvocationContext | undefined =
 			context.completionContext?.toolCallId && context.completionContext.generation !== undefined
 				? {
 						toolCallId: context.completionContext.toolCallId,
 						generation: context.completionContext.generation,
-						language: request.lang === "js" ? "js" : "python",
+						language: backend.id,
 						candidateFingerprints,
 					}
 				: undefined;
+		// Displays render into the byte stream as they arrive, in order with stdout/stderr.
+		let streamedDisplays = 0;
+		let jsonDisplays = 0;
+		const renderDisplay = async (output: EvalDisplayOutput): Promise<void> => {
+			if (output.type === "markdown" || output.type === "status") return;
+			for (const admitted of context.displayBudget.addKernelOutput(output)) {
+				if (admitted.type === "image") context.images.push(admitted);
+				else if (admitted.type === "json") context.jsonOutputs.push(admitted.data);
+				const text = formatDisplayOutputForText(admitted, admitted.type === "json" ? ++jsonDisplays : jsonDisplays);
+				if (text) await sendBytes(socket, Buffer.from(`${text}\n`), "stdout");
+			}
+		};
 		const result = await backend.execute(request.code, {
-			cwd: session.cwd,
-			runCwd: request.cwd,
+			cwd: configuration?.cwd ?? session.cwd,
+			runCwd: configuration?.cwd ?? request.cwd,
+			interpreter: configuration?.interpreter,
+			target: configuration?.target,
 			shellEnv: request.shellEnv,
-			stdin: request.stdin,
-			sessionId: `${session.getEvalSessionId?.() ?? defaultEvalSessionId(session)}${context.completionContext?.lane && context.completionContext.lane !== "main" ? `:lane:${encodeURIComponent(context.completionContext.lane)}` : ""}`,
+			stdin: request.stdin ? createInput(socket) : undefined,
+			sessionId: kernelLaneSessionId(session, context.completionContext?.lane),
 			sessionFile: session.getSessionFile?.() ?? undefined,
 			kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
 			completionContext,
@@ -410,7 +560,12 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			session,
 			reset: false,
 			onChunk: () => {},
-			onStream: (chunk, stream) => sendOutput(socket, chunk, stream),
+			onBytes: (chunk, stream) => sendBytes(socket, chunk, stream),
+			onDisplay: async output => {
+				if (output.type === "status") return;
+				streamedDisplays++;
+				await renderDisplay(output);
+			},
 			onStatus: event => {
 				if (isEvalTimeoutControlEvent(event)) return;
 				if (event.op === "execution-query") {
@@ -438,7 +593,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 					upsertStatusEvent(cellStatusEvents, { op: event.op, path: event.path });
 				}
 				const previous = context.displayBudget.blocks.at(-1);
-				const admitted = context.displayBudget.admitMetadata(event);
+				const admitted = context.displayBudget.admitMetadata(event, statusEventKey(event));
 				if (admitted) {
 					upsertStatusEvent(context.statusEvents, admitted);
 					context.onStatusEvent?.(admitted);
@@ -448,21 +603,19 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 				}
 			},
 		});
-		const accepted: KernelDisplayOutput[] = [];
-		for (const output of result.displayOutputs) {
-			if (output.type === "markdown" || output.type === "status") continue;
-			for (const admitted of context.displayBudget.addKernelOutput(output)) {
-				accepted.push(admitted);
-				if (admitted.type === "image") {
-					context.images.push(admitted);
-				} else if (admitted.type === "json") {
-					context.jsonOutputs.push(admitted.data);
-				}
+		// A backend that does not stream displays reports them only in its result.
+		for (const output of result.displayOutputs.slice(streamedDisplays)) await renderDisplay(output);
+		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
+		if (result.cancelled && !abort.signal.aborted) {
+			const termination = takeKernelCellTermination(
+				cellKernelSessionId(request.lang, kernelLaneSessionId(session, context.completionContext?.lane)),
+			);
+			if (termination) {
+				const report = `${request.lang}:${context.completionContext?.lane ?? "main"} ${termination}; cell cancelled`;
+				context.cellFailure = `kernel ${report}`;
+				sendOutput(socket, `<kernel> ${report}\n`, "stderr");
 			}
 		}
-		const displayText = formatDisplayOutputsForText(accepted);
-		if (displayText) sendOutput(socket, `${displayText}\n`);
-		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
 	} catch (err) {
 		if (abort.signal.aborted) {

@@ -12,6 +12,7 @@ import {
 	toExecutorBackendResult,
 } from "../backend-helpers";
 import { fsObservationLedgerFor } from "../fs-observations";
+import { kernelTargetCwd, parseKernelTarget } from "../kernel-target";
 import { executePython, type PythonExecutorOptions } from "./executor";
 import { checkPythonKernelAvailability } from "./kernel";
 
@@ -36,27 +37,32 @@ export default {
 
 	async execute(code: string, opts: ExecutorBackendExecOptions): Promise<ExecutorBackendResult> {
 		const kernelMode = readSetting<PythonExecutorOptions["kernelMode"]>(opts.session, "python.kernelMode");
+		const target = parseKernelTarget(opts.target);
+		const remote = target.kind !== "local";
 		const executorOptions: PythonExecutorOptions = {
-			cwd: opts.cwd,
-			runCwd: opts.runCwd,
+			target,
+			cwd: remote ? kernelTargetCwd(target, opts.cwd) : opts.cwd,
+			runCwd: remote ? kernelTargetCwd(target, opts.runCwd ?? opts.cwd) : opts.runCwd,
 			idleTimeoutMs: opts.idleTimeoutMs,
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
 			kernelMode,
-			interpreter: readInterpreterSetting(opts.session),
+			interpreter: opts.interpreter ?? (remote ? target.interpreter : readInterpreterSetting(opts.session)),
 			sessionFile: opts.sessionFile,
 			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,
-			localRoots: resolveEvalUrlRoots(opts.session),
+			localRoots: remote ? undefined : resolveEvalUrlRoots(opts.session),
 			kernelOwnerId: opts.kernelOwnerId,
 			reset: opts.reset,
 			onChunk: opts.onChunk,
 			onStream: opts.onStream,
-			shellEnv: opts.shellEnv,
+			onBytes: opts.onBytes,
+			onDisplay: opts.onDisplay,
+			shellEnv: remote ? undefined : opts.shellEnv,
 			stdin: opts.stdin,
 			onStatus: opts.onStatus,
 			completionContext: opts.completionContext,
 			toolSession: opts.session,
-			fsObservations: fsObservationLedgerFor(opts.session).drain(),
+			fsObservations: remote ? undefined : fsObservationLedgerFor(opts.session).drain(),
 		};
 		const result = await executePython(code, executorOptions);
 		return toExecutorBackendResult(result);

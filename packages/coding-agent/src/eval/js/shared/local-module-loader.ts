@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
@@ -15,12 +16,17 @@ interface LocalModuleEntry {
 	loaded?: Promise<void>;
 }
 
-type LocalImportResolution = { mode: "local"; value: unknown } | { mode: "external"; target: string };
+/** A non-local import: `id` keys the synthetic-module cache; `specifier` names fs modules for tracking. */
+interface ExternalImport {
+	id: string;
+	specifier: string;
+	load(options?: ImportCallOptions): Promise<unknown>;
+}
 
 const LOCAL_MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts"]);
 
 export class LocalModuleLoader {
-	#context: vm.Context;
+	#context: vm.Context | undefined;
 	#sessionTag: string;
 	#moduleMtimes = new Map<string, number>();
 	#moduleDeps = new Map<string, Set<string>>();
@@ -34,20 +40,28 @@ export class LocalModuleLoader {
 	#linkChain: Promise<void> = Promise.resolve();
 
 	constructor(sessionId: string) {
-		this.#context = vm.createContext(globalThis);
-		this.#sessionTag = Bun.hash(sessionId).toString(16);
+		// Node's contextified global compiles modules against separate intrinsics (`[] instanceof Array`
+		// fails across it); its default — the current context — already shares the kernel's globals.
+		this.#context = typeof Bun !== "undefined" ? vm.createContext(globalThis) : undefined;
+		// node:crypto rather than Bun.hash: the Node kernel runtime shares this module.
+		this.#sessionTag = createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
 	}
 
-	async resolveForRun(cwd: string, source: string): Promise<LocalImportResolution> {
+	async importForRun(cwd: string, source: string, options?: ImportCallOptions): Promise<unknown> {
 		this.#refreshTrackedLocalModules();
-		return await this.#resolveFromBase(cwd, source);
+		return await this.#importFromBase(cwd, source, options);
 	}
 
-	async resolveForModule(moduleUrl: string, source: string, cwd: string): Promise<LocalImportResolution> {
+	async importForModule(
+		moduleUrl: string,
+		source: string,
+		cwd: string,
+		options?: ImportCallOptions,
+	): Promise<unknown> {
 		this.#refreshTrackedLocalModules();
 		const modulePath = this.filenameForUrl(moduleUrl);
 		const baseDir = modulePath ? path.dirname(modulePath) : cwd;
-		return await this.#resolveFromBase(baseDir, source);
+		return await this.#importFromBase(baseDir, source, options);
 	}
 
 	requireForFile(moduleUrlOrPath: string | undefined, cwd: string): NodeJS.Require {
@@ -71,13 +85,11 @@ export class LocalModuleLoader {
 		return filename ? path.dirname(filename) : cwd;
 	}
 
-	async #resolveFromBase(baseDir: string, source: string): Promise<LocalImportResolution> {
-		const resolved = resolveImportSpecifier(baseDir, source);
-		if (isLocalPathSpecifier(source) && isManagedLocalModulePath(resolved)) {
-			const module = await this.#loadLocalModule(resolved);
-			return { mode: "local", value: module.namespace };
-		}
-		return { mode: "external", target: normalizeImportTarget(resolved) };
+	async #importFromBase(baseDir: string, source: string, options?: ImportCallOptions): Promise<unknown> {
+		const local = resolveLocalModulePath(baseDir, source);
+		if (local) return (await this.#loadLocalModule(local)).namespace;
+		const external = resolveExternalImport(baseDir, source);
+		return maybeTrackedModule(external.specifier, await external.load(options));
 	}
 
 	async #ensureLocalModule(modulePath: string): Promise<LocalModuleEntry> {
@@ -101,10 +113,8 @@ export class LocalModuleLoader {
 		const moduleDir = path.dirname(modulePath);
 		const localDeps = new Set<string>();
 		for (const specifier of await collectModuleSourceSpecifiers(stripped)) {
-			const resolved = resolveImportSpecifier(moduleDir, specifier);
-			if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-				localDeps.add(resolved);
-			}
+			const local = resolveLocalModulePath(moduleDir, specifier);
+			if (local) localDeps.add(local);
 		}
 		this.#setModuleDependencies(modulePath, localDeps);
 		this.#moduleMtimes.set(modulePath, fs.statSync(modulePath).mtimeMs);
@@ -113,12 +123,16 @@ export class LocalModuleLoader {
 		const identifier = `${fileUrl}?proto-session=${this.#sessionTag}&v=${version}`;
 		const wrappedSource = buildModuleSource(stripped, modulePath);
 		const module = new vm.SourceTextModule(wrappedSource, {
-			context: this.#context,
+			...(this.#context ? { context: this.#context } : {}),
 			identifier,
 			initializeImportMeta: meta => {
-				(meta as { url?: string; path?: string; dir?: string }).url = fileUrl;
-				(meta as { url?: string; path?: string; dir?: string }).path = modulePath;
-				(meta as { url?: string; path?: string; dir?: string }).dir = moduleDir;
+				Object.assign(meta, {
+					url: fileUrl,
+					path: modulePath,
+					dir: moduleDir,
+					filename: modulePath,
+					dirname: moduleDir,
+				});
 			},
 			importModuleDynamically: async specifier => {
 				return await this.#resolveDynamicImport(modulePath, String(specifier));
@@ -168,19 +182,17 @@ export class LocalModuleLoader {
 		if (referrerPath === undefined) {
 			throw new Error(`local module loader: unknown referrer while linking "${specifier}"`);
 		}
-		const resolved = resolveImportSpecifier(path.dirname(referrerPath), specifier);
-		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-			return (await this.#ensureLocalModule(resolved)).module;
-		}
-		return await this.#ensureExternalModule(normalizeImportTarget(resolved));
+		const baseDir = path.dirname(referrerPath);
+		const local = resolveLocalModulePath(baseDir, specifier);
+		if (local) return (await this.#ensureLocalModule(local)).module;
+		return await this.#ensureExternalModule(resolveExternalImport(baseDir, specifier));
 	};
 
 	async #resolveDynamicImport(referrerPath: string, specifier: string): Promise<vm.Module> {
-		const resolved = resolveImportSpecifier(path.dirname(referrerPath), specifier);
-		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
-			return await this.#loadLocalModule(resolved);
-		}
-		return await this.#ensureExternalModule(normalizeImportTarget(resolved));
+		const baseDir = path.dirname(referrerPath);
+		const local = resolveLocalModulePath(baseDir, specifier);
+		if (local) return await this.#loadLocalModule(local);
+		return await this.#ensureExternalModule(resolveExternalImport(baseDir, specifier));
 	}
 
 	#invalidateFailedLoad(rootPath: string): void {
@@ -202,11 +214,11 @@ export class LocalModuleLoader {
 		}
 	}
 
-	async #ensureExternalModule(target: string): Promise<vm.Module> {
-		const existing = this.#externalModules.get(target);
+	async #ensureExternalModule(external: ExternalImport): Promise<vm.Module> {
+		const existing = this.#externalModules.get(external.id);
 		if (existing) return await existing;
 		const loadPromise = (async () => {
-			const namespace = maybeTrackedModule(target, await import(target)) as Record<string, unknown>;
+			const namespace = maybeTrackedModule(external.specifier, await external.load()) as Record<string, unknown>;
 			const exportNames = Object.keys(namespace);
 			const module = new vm.SyntheticModule(
 				exportNames,
@@ -215,7 +227,7 @@ export class LocalModuleLoader {
 						this.setExport(name, namespace[name]);
 					}
 				},
-				{ context: this.#context, identifier: target },
+				{ ...(this.#context ? { context: this.#context } : {}), identifier: external.id },
 			);
 			await module.link(() => {
 				throw new Error("Synthetic external modules have no dependencies");
@@ -223,11 +235,11 @@ export class LocalModuleLoader {
 			await module.evaluate();
 			return module;
 		})();
-		this.#externalModules.set(target, loadPromise);
+		this.#externalModules.set(external.id, loadPromise);
 		try {
 			return await loadPromise;
 		} catch (error) {
-			if (this.#externalModules.get(target) === loadPromise) this.#externalModules.delete(target);
+			if (this.#externalModules.get(external.id) === loadPromise) this.#externalModules.delete(external.id);
 			throw error;
 		}
 	}
@@ -304,6 +316,52 @@ function resolveImportSpecifier(cwd: string, source: string): string {
 	} catch {
 		return source;
 	}
+}
+
+/**
+ * The managed local module a specifier names, if any. Bun resolves as Bun would (extension probing,
+ * tsconfig paths); Node keeps Node's ESM rule that a relative specifier is the exact file.
+ */
+function resolveLocalModulePath(baseDir: string, source: string): string | undefined {
+	if (!isLocalPathSpecifier(source)) return undefined;
+	const resolved =
+		typeof Bun !== "undefined" ? resolveImportSpecifier(baseDir, source) : path.resolve(baseDir, source);
+	if (!isManagedLocalModulePath(resolved)) return undefined;
+	if (typeof Bun === "undefined" && !fs.statSync(resolved, { throwIfNoEntry: false })?.isFile()) return undefined;
+	return resolved;
+}
+
+function resolveExternalImport(baseDir: string, source: string): ExternalImport {
+	if (typeof Bun !== "undefined") {
+		const target = normalizeImportTarget(resolveImportSpecifier(baseDir, source));
+		return {
+			id: target,
+			specifier: target,
+			load: options => (options !== undefined ? import(target, options) : import(target)),
+		};
+	}
+	// Node resolves bare specifiers through the default ESM loader as if imported from a module in baseDir.
+	const referrer = path.join(baseDir, "[eval]");
+	return {
+		id: `${pathToFileURL(referrer).href}\0${source}`,
+		specifier: source,
+		load: options => nodeImporter(referrer)(source, options),
+	};
+}
+
+type NodeImporter = (specifier: string, options?: ImportCallOptions) => Promise<unknown>;
+const nodeImporters = new LRUCache<string, NodeImporter>({ max: 128 });
+
+function nodeImporter(referrer: string): NodeImporter {
+	let importer = nodeImporters.get(referrer);
+	if (!importer) {
+		importer = new vm.Script("(specifier, options) => import(specifier, options)", {
+			filename: referrer,
+			importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+		}).runInThisContext() as NodeImporter;
+		nodeImporters.set(referrer, importer);
+	}
+	return importer;
 }
 
 function isLocalPathSpecifier(source: string): boolean {

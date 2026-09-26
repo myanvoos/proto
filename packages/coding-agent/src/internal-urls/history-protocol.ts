@@ -1,7 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { readLines } from "@oh-my-pi/pi-utils";
-import type { AgentRef } from "../registry/agent-registry";
-import { AgentRegistry } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, type AgentStatus, agentLifecycle } from "../registry/agent-registry";
 import { buildSessionContext } from "../session/session-context";
 import type { FileEntry, SessionEntry, SessionHeader } from "../session/session-entries";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
@@ -20,10 +19,17 @@ function formatAgo(timestamp: number): string {
 	return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** `lifecycle=<state>[ · turn=<state>]`, matching how fleet and orchestrate_list report the same agent. */
+function formatLifecycle(status: AgentStatus): string {
+	const { lifecycle, turnState } = agentLifecycle(status);
+	return turnState ? `lifecycle=${lifecycle} · turn=${turnState}` : `lifecycle=${lifecycle}`;
+}
+
 interface IndexEntry {
 	id: string;
 	label: string;
-	status: string;
+	lifecycle: string;
+	turn: string;
 	kind: string;
 	parent: string;
 	lastActivity: string;
@@ -133,7 +139,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		} else if (ref.sessionFile) {
 			const loaded = await loadBoundedSessionHistory(ref.sessionFile);
 			messages = loaded.messages;
-			notes.push(`Source: session file (read-only, ${ref.status})`);
+			notes.push(`Source: session file (read-only, ${formatLifecycle(ref.status)})`);
 			if (loaded.truncated) {
 				notes.push(
 					`Transcript bounded to the latest ${loaded.retainedEntries} of ${loaded.totalEntries} entries; use the session file for the complete journal.`,
@@ -145,7 +151,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
 		}
 
-		const content = formatSessionHistoryMarkdown(messages, { title: `${ref.id} (${ref.status})` });
+		const content = formatSessionHistoryMarkdown(messages, { title: `${ref.id} (${formatLifecycle(ref.status)})` });
 		return {
 			url: url.href,
 			content,
@@ -180,20 +186,24 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	}
 
 	async #renderIndex(refs: AgentRef[]): Promise<string> {
-		const entries: IndexEntry[] = refs.map(ref => ({
-			id: ref.id,
-			label: ref.label ?? "—",
-			status: ref.status,
-			kind: ref.kind,
-			parent: ref.parentId ?? "—",
-			lastActivity: formatAgo(ref.lastActivity),
-		}));
+		const entries: IndexEntry[] = refs.map(ref => {
+			const { lifecycle, turnState } = agentLifecycle(ref.status);
+			return {
+				id: ref.id,
+				label: ref.label ?? "—",
+				lifecycle,
+				turn: turnState ?? "—",
+				kind: ref.kind,
+				parent: ref.parentId ?? "—",
+				lastActivity: formatAgo(ref.lastActivity),
+			};
+		});
 
 		const registered = new Set(refs.map(ref => ref.id));
 		const disk = await sessionFilesFromDisk();
 		for (const id of disk.keys()) {
 			if (registered.has(id)) continue;
-			entries.push({ id, label: "—", status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
+			entries.push({ id, label: "—", lifecycle: "on disk", turn: "—", kind: "—", parent: "—", lastActivity: "—" });
 		}
 
 		const lines: string[] = ["# Agents", ""];
@@ -201,10 +211,10 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			lines.push("No agents registered.");
 			return `${lines.join("\n")}\n`;
 		}
-		lines.push("| id | label | status | kind | parent | last activity |", "|---|---|---|---|---|---|");
+		lines.push("| id | label | lifecycle | turn | kind | parent | last activity |", "|---|---|---|---|---|---|---|");
 		for (const entry of entries) {
 			lines.push(
-				`| ${entry.id} | ${entry.label} | ${entry.status} | ${entry.kind} | ${entry.parent} | ${entry.lastActivity} |`,
+				`| ${entry.id} | ${entry.label} | ${entry.lifecycle} | ${entry.turn} | ${entry.kind} | ${entry.parent} | ${entry.lastActivity} |`,
 			);
 		}
 		lines.push("", "Read a transcript with `read history://<id>`.");
@@ -219,7 +229,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			seen.add(ref.id);
 			completions.push({
 				value: ref.id,
-				description: `${ref.label ? `${ref.label} · ` : ""}${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
+				description: `${ref.label ? `${ref.label} · ` : ""}${formatLifecycle(ref.status)} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
 			});
 		}
 		const disk = await sessionFilesFromDisk();

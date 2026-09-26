@@ -178,6 +178,48 @@ describe("parseXdevCliArgs", () => {
 	test("empty argv yields empty args for schemas without positionals", () => {
 		expect(parse([])).toEqual({ args: {}, viaJson: false });
 	});
+
+	test("single-literal (const) props parse as enums in flag and positional form", () => {
+		const monitorSchema = schemaOf(type({ op: type("'start'"), command: "string", "match?": "string" }));
+		const monitor = (argv: string[]) => parseXdevCliArgs(monitorSchema, argv, { deviceName: "monitor" }).args;
+		expect(monitor(["start", "echo hi"])).toEqual({ op: "start", command: "echo hi" });
+		expect(monitor(["--op", "start", "--command", "echo hi", "--match", "READY"])).toEqual({
+			op: "start",
+			command: "echo hi",
+			match: "READY",
+		});
+		expect(() => monitor(["--op", "stop", "--command", "x"])).toThrow(/--op expects one of 'start'/);
+	});
+
+	test("a bare boolean flag consumes a following true/false literal as its value", () => {
+		expect(parse(["--flag", "false", "hello"]).args).toEqual({ flag: false, value: "hello" });
+		expect(parse(["--flag", "true", "hello"]).args).toEqual({ flag: true, value: "hello" });
+		// Non-literal tokens after a bare boolean flag stay positional.
+		expect(parse(["--flag", "hello"]).args).toEqual({ flag: true, value: "hello" });
+		expect(parse(["--no-flag", "hello"]).args).toEqual({ flag: false, value: "hello" });
+	});
+
+	describe("leading op positional", () => {
+		const fleetSchema = schemaOf(
+			type({ "op?": type("'send' | 'list' | 'jobs'"), "to?": "string", "message?": "string" }),
+		);
+		const fleet = (argv: string[]) => parseXdevCliArgs(fleetSchema, argv, { deviceName: "fleet" }).args;
+
+		test("a first positional matching an op value selects the op", () => {
+			expect(fleet(["list"])).toEqual({ op: "list" });
+			expect(fleet(["jobs"])).toEqual({ op: "jobs" });
+			expect(fleet(["send", "peer-1", "hi"])).toEqual({ op: "send", to: "peer-1", message: "hi" });
+		});
+
+		test("other positionals keep filling the device positional order", () => {
+			expect(fleet(["peer-1", "hello there"])).toEqual({ to: "peer-1", message: "hello there" });
+			expect(fleet(["--op", "send", "list", "hi"])).toEqual({ op: "send", to: "list", message: "hi" });
+		});
+
+		test("usage synopsis shows the optional op positional first", () => {
+			expect(formatCliUsageSynopsis("fleet", fleetSchema)).toBe("xd fleet [<send|list|jobs>] [<to>] [<message>]");
+		});
+	});
 });
 
 describe("xdevFlagSpecs", () => {
@@ -221,6 +263,11 @@ describe("formatCliUsageSynopsis", () => {
 		);
 		expect(synopsis).toContain("[<flag>]");
 		expect(synopsis).toContain("[<fast|slow>]");
+	});
+
+	test("single-literal props render as their literal value", () => {
+		const monitorSchema = schemaOf(type({ op: type("'start'"), command: "string", "match?": "string" }));
+		expect(formatCliUsageSynopsis("monitor", monitorSchema)).toBe("xd monitor <start> <command> [<match>]");
 	});
 
 	test("empty schema renders bare invocation", () => {

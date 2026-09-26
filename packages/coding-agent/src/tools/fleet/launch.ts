@@ -109,6 +109,8 @@ export interface LaunchParams {
 	application?: string;
 	args?: string[];
 	env?: Record<string, string>;
+	/** Internal callers may opt out of all ambient host environment inheritance. */
+	inheritEnv?: boolean;
 	cwd?: string;
 	pty?: boolean;
 	ready?: { log?: string; port?: number; host?: string; timeoutMs?: number };
@@ -130,17 +132,28 @@ export interface LaunchParams {
 	all?: boolean;
 }
 
-const KEY_INPUT: Record<string, string> = {
+/** Named terminal keys for `send` `keys`, matched case-insensitively. */
+const NAMED_KEY_INPUT: Record<string, string> = {
 	ENTER: "\r",
 	TAB: "\t",
 	ESCAPE: "\u001b",
-	CTRL_C: "\u0003",
-	CTRL_D: "\u0004",
 	UP: "\u001b[A",
 	DOWN: "\u001b[B",
 	RIGHT: "\u001b[C",
 	LEFT: "\u001b[D",
 };
+
+/** Control chords (`C-d`, `ctrl+d`, `ctrl-d`, `ctrl_d`, `^D`) over the C0 range `@`, A-Z, `[ \ ] ^ _`. */
+const CONTROL_CHORD = /^(?:C-|CTRL[-+_]|\^)([@A-Z[\\\]^_])$/;
+
+/** Terminal input bytes for one `keys` entry, or undefined when the name is not recognized. */
+function keyInput(rawKey: string): string | undefined {
+	const key = rawKey.trim().toUpperCase();
+	const named = NAMED_KEY_INPUT[key];
+	if (named !== undefined) return named;
+	const chord = CONTROL_CHORD.exec(key);
+	return chord ? String.fromCharCode(chord[1].charCodeAt(0) & 0x1f) : undefined;
+}
 
 const TERMINAL_STATES: Partial<Record<DaemonState, true>> = { exited: true, failed: true };
 
@@ -183,6 +196,7 @@ function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
 		application: params.application,
 		args: params.args ?? [],
 		env: params.env ?? {},
+		...(params.inheritEnv === undefined ? {} : { inheritEnv: params.inheritEnv }),
 		cwd: resolveToCwd(params.cwd ?? session.cwd, session.cwd),
 		pty: detached ? false : (params.pty ?? true),
 		ready: ready
@@ -210,9 +224,12 @@ function sendData(params: LaunchParams): SendData {
 	const enter = params.text ? (params.enter ?? true) : undefined;
 	const keys: string[] = [];
 	for (const rawKey of params.keys ?? []) {
-		const key = rawKey.trim().toUpperCase();
-		const input = KEY_INPUT[key];
-		if (input === undefined) throw new ToolError(`Unsupported launch key ${rawKey}`);
+		const input = keyInput(rawKey);
+		if (input === undefined) {
+			throw new ToolError(
+				`Unsupported key ${JSON.stringify(rawKey)}; accepted: Enter, Tab, Escape, Up, Down, Left, Right, or a control chord such as C-c, ctrl+d, ^D (letters a-z and @ [ \\ ] ^ _; case-insensitive)`,
+			);
+		}
 		keys.push(input);
 	}
 	return { data: data || undefined, enter, keys: keys.length > 0 ? keys : undefined };

@@ -4,6 +4,25 @@ pub(crate) use nix::sys::signal::Signal;
 
 use crate::{error, sys, traps};
 
+/// What a process that has not trapped `signal` does on receipt.
+pub(crate) enum DefaultDisposition {
+	Terminate { signal_number: i32 },
+	Stop,
+	Ignore,
+}
+
+pub(crate) const fn default_disposition(signal: Signal) -> DefaultDisposition {
+	match signal {
+		Signal::SIGCHLD | Signal::SIGCONT | Signal::SIGURG | Signal::SIGWINCH => {
+			DefaultDisposition::Ignore
+		},
+		Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => {
+			DefaultDisposition::Stop
+		},
+		signal => DefaultDisposition::Terminate { signal_number: signal as i32 },
+	}
+}
+
 pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error::Error> {
 	nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::SIGCONT)
 		.map_err(|_errno| error::ErrorKind::FailedToSendSignal)?;

@@ -18,15 +18,19 @@ import {
 import type { FsObservation } from "../fs-observations";
 import type { JsStatusEvent } from "../js/shared/types";
 import { KernelStartupCleanupError, kernelAdmission } from "../kernel-admission";
+import { clearKernelLaneConfigurations } from "../kernel-environment";
 import {
 	createKernelSessionRegistry,
 	formatSessionKernelTimeoutAnnotation,
 	formatSessionTimeoutAnnotation,
+	type KernelCloseCause,
 	type KernelSession,
+	type KernelSessionInfo,
 	type KernelSessionRegistryContext,
 	normalizeKernelSessionCwd,
 	requireRemainingKernelTimeoutMs,
 } from "../kernel-session-registry";
+import { type KernelTarget, parseKernelTarget } from "../kernel-target";
 import {
 	checkPythonKernelAvailability,
 	type KernelDisplayOutput,
@@ -45,7 +49,7 @@ export interface PythonExecutorOptions {
 
 	runCwd?: string;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: ReadableStream<Uint8Array>;
 
 	timeoutMs?: number;
 
@@ -55,6 +59,7 @@ export interface PythonExecutorOptions {
 
 	onChunk?: (chunk: string) => Promise<void> | void;
 	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 
@@ -67,6 +72,7 @@ export interface PythonExecutorOptions {
 	kernelMode?: PythonKernelMode;
 
 	interpreter?: string;
+	target?: KernelTarget;
 
 	reset?: boolean;
 
@@ -183,10 +189,12 @@ async function startKernel(cwd: string, options: PythonExecutorOptions): Promise
 	requireRemainingTimeoutMs(options.deadlineMs);
 	return await PythonKernel.start({
 		cwd,
+		discoveryCwd: options.toolSession?.cwd ?? cwd,
 		env: buildManagedKernelEnv(options),
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
 		interpreter: options.interpreter,
+		target: options.target,
 	});
 }
 
@@ -304,6 +312,7 @@ async function executeWithKernel(
 }
 
 async function ensureKernelAvailable(cwd: string, options: PythonExecutorOptions): Promise<void> {
+	if (options.target && options.target.kind !== "local") return;
 	const availability = await waitForPromiseWithCancellation(
 		checkPythonKernelAvailability(cwd, options.interpreter, { signal: options.signal }),
 		options,
@@ -368,7 +377,10 @@ async function executePerCall(code: string, cwd: string, options: PythonExecutor
 const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutorOptions, PythonResult, PythonSession>({
 	languageLabel: "Python",
 	cancelledErrorClass: PythonExecutionCancelledError,
-	buildSessionKey: (sessionId, cwd, interpreter) => {
+	buildSessionKey: (sessionId, cwd, interpreter, options) => {
+		if (options.target && options.target.kind !== "local") {
+			return `${sessionId}\0${cwd}\0${interpreter ?? ""}\0${JSON.stringify(parseKernelTarget(options.target))}`;
+		}
 		const normalizedCwd = normalizeKernelSessionCwd(cwd);
 		return `${sessionId}\0${normalizedCwd}\0${normalizeExplicitInterpreter(normalizedCwd, interpreter)}`;
 	},
@@ -391,11 +403,44 @@ const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutor
 		}),
 });
 
+export function listPythonKernelSessions(ownerId?: string): KernelSessionInfo[] {
+	return sessionRegistry.listSessions(ownerId);
+}
+
+export async function startPythonKernelSession(options: PythonExecutorOptions): Promise<KernelSessionInfo> {
+	const cwd = resolvePythonSessionCwd(options);
+	const startOptions = { ...options, cwd, deadlineMs: getExecutionDeadlineMs(options) };
+	startOptions.signal?.throwIfAborted();
+	await ensureKernelAvailable(cwd, startOptions);
+	await ensureToolBridge(startOptions);
+	return await sessionRegistry.startSession(cwd, startOptions);
+}
+
+export async function closePythonKernelSession(
+	sessionKey: string,
+	force = false,
+	ownerId?: string,
+	cause: KernelCloseCause = "close",
+): Promise<void> {
+	await sessionRegistry.closeSession(sessionKey, { force, ownerId, cause });
+}
+
+export function keepalivePythonKernelSession(sessionKey: string, ttlMs: number): KernelSessionInfo {
+	return sessionRegistry.keepaliveSession(sessionKey, ttlMs);
+}
+
+function resolvePythonSessionCwd(options?: PythonExecutorOptions): string {
+	if (options?.target && options.target.kind !== "local") return options.cwd ?? options.target.cwd ?? ".";
+	return normalizeKernelSessionCwd(options?.cwd ?? getProjectDir());
+}
+
 export async function disposeAllKernelSessions(): Promise<void> {
+	clearKernelLaneConfigurations("python");
 	await Promise.all([sessionRegistry.disposeAll(), ...[...perCallKernels].map(shutdownPerCallKernel)]);
 }
 
 export async function disposeKernelSessionsByOwner(ownerId: string): Promise<void> {
+	clearKernelLaneConfigurations("python", ownerId);
 	await Promise.all([
 		sessionRegistry.disposeByOwner(ownerId),
 		...[...perCallKernels].filter(entry => entry.ownerId === ownerId).map(shutdownPerCallKernel),
@@ -411,7 +456,7 @@ export async function executePythonWithKernel(
 }
 
 export async function executePython(code: string, options?: PythonExecutorOptions): Promise<PythonResult> {
-	const cwd = normalizeKernelSessionCwd(options?.cwd ?? getProjectDir());
+	const cwd = resolvePythonSessionCwd(options);
 	const deadlineMs = getExecutionDeadlineMs(options);
 	const executionOptions: PythonExecutorOptions = {
 		...(options ?? {}),

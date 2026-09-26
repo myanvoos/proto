@@ -69,8 +69,6 @@ import {
 	lineEntriesToDisplayText,
 	markMarkdownContentType,
 	prependSuffixResolutionNotice,
-	RANGE_LEADING_CONTEXT_LINES,
-	RANGE_TRAILING_CONTEXT_LINES,
 	READ_CHUNK_SIZE,
 	splitAddressableFileLines,
 } from "./read-format";
@@ -1217,11 +1215,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		const conflictUri = parseConflictUri(readPath);
 		if (conflictUri) {
-			if (conflictUri.id === "*") {
-				throw new ToolError(
-					"Reading `conflict://*` is not supported — wildcards are write-only. Use the `<path>:conflicts` read selector for the full list of conflicts in a file, or read `conflict://<N>` to inspect a single block.",
-				);
-			}
 			return this.#readConflictRegion(conflictUri.id, conflictUri.scope);
 		}
 		const displayMode = resolveFileDisplayMode(this.session);
@@ -1648,19 +1641,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					}
 
 					const rawSelector = isRawSelector(parsed);
-					const requestedStart = offset ? Math.max(0, offset - 1) : 0;
-					const expandContext = shouldExpandRangeContext(absolutePath);
-					const expandStart = expandContext && !rawSelector && offset !== undefined && offset > 1;
-					const expandEnd = expandContext && !rawSelector && limit !== undefined;
-					const leadingContext = expandStart ? Math.min(requestedStart, RANGE_LEADING_CONTEXT_LINES) : 0;
-					const trailingContext = expandEnd ? RANGE_TRAILING_CONTEXT_LINES : 0;
-					const startLine = requestedStart - leadingContext;
+					const startLine = offset ? Math.max(0, offset - 1) : 0;
 					const startLineDisplay = startLine + 1;
+					const includeContext = shouldExpandRangeContext(absolutePath);
 
-					const DEFAULT_LIMIT = this.#defaultLimit;
-					const effectiveLimit = limit ?? DEFAULT_LIMIT;
-					const maxLinesToCollect = Math.min(effectiveLimit + leadingContext + trailingContext, DEFAULT_MAX_LINES);
-					const selectedLineLimit = effectiveLimit + leadingContext + trailingContext;
+					const selectedLineLimit = limit ?? this.#defaultLimit;
+					const maxLinesToCollect = Math.min(selectedLineLimit, DEFAULT_MAX_LINES);
 
 					const maxBytesForRead = Math.max(DEFAULT_MAX_BYTES, maxLinesToCollect * 512);
 
@@ -1697,7 +1683,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						hasTrailingNewline,
 					} = lineWindow;
 
-					if (requestedStart >= totalFileLines) {
+					if (startLine >= totalFileLines) {
 						const suggestion =
 							totalFileLines === 0
 								? "The file is empty."
@@ -1708,7 +1694,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							totalLines: totalFileLines,
 						})
 							.text(
-								`Line ${requestedStart + 1} is beyond end of file (${totalFileLines} lines total). ${suggestion}`,
+								`Line ${startLineDisplay} is beyond end of file (${totalFileLines} lines total). ${suggestion}`,
 							)
 							.done();
 					}
@@ -1778,7 +1764,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						const entries = buildLineEntriesWithBlockContext(
 							bracketContextFullLines,
 							[{ startLine: startLineDisplay, endLine: displayedEndLine }],
-							{ path: absolutePath, text: buffered?.normalizedText, includeContext: expandContext },
+							{ path: absolutePath, text: buffered?.normalizedText, includeContext },
 							{
 								lineText: (lineNumber, sourceText) => {
 									const visibleText = displayLineByNumber.get(lineNumber);
@@ -1890,6 +1876,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							outputText += formatConflictWarning(entries, {
 								totalInFile,
 								displayPath: displayPathForWarning,
+								bashActive: this.session.isToolActive?.("bash") === true,
 								scanTruncated,
 							});
 							details.conflictCount = entries.length;
@@ -1968,7 +1955,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const summary =
 			entries.length === 0
 				? `No unresolved git merge conflicts in ${displayPath}.`
-				: formatConflictSummary(entries, { displayPath, scanTruncated: scan.scanTruncated });
+				: formatConflictSummary(entries, {
+						displayPath,
+						bashActive: this.session.isToolActive?.("bash") === true,
+						scanTruncated: scan.scanTruncated,
+					});
 
 		const details: ReadToolDetails = {
 			resolvedPath: absolutePath,
@@ -2053,18 +2044,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		const { offset, limit } = selToOffsetLimit(parsedSel);
-		const requestedStart = offset ? Math.max(0, offset - 1) : 0;
-
-		const expandContext = shouldExpandRangeContext(artifact.path);
-		const expandStart = expandContext && !rawSelector && offset !== undefined && offset > 1;
-		const expandEnd = expandContext && !rawSelector && limit !== undefined;
-		const leadingContext = expandStart ? Math.min(requestedStart, RANGE_LEADING_CONTEXT_LINES) : 0;
-		const trailingContext = expandEnd ? RANGE_TRAILING_CONTEXT_LINES : 0;
-		const startLine = requestedStart - leadingContext;
+		const startLine = offset ? Math.max(0, offset - 1) : 0;
 		const startLineDisplay = startLine + 1;
-		const effectiveLimit = limit ?? this.#defaultLimit;
-		const maxLinesToCollect = Math.min(effectiveLimit + leadingContext + trailingContext, DEFAULT_MAX_LINES);
-		const selectedLineLimit = effectiveLimit + leadingContext + trailingContext;
+		const selectedLineLimit = limit ?? this.#defaultLimit;
+		const maxLinesToCollect = Math.min(selectedLineLimit, DEFAULT_MAX_LINES);
 		const maxBytesForRead = Math.max(DEFAULT_MAX_BYTES, maxLinesToCollect * 512);
 		const streamResult = await streamLinesFromFile(
 			artifact.path,
@@ -2086,13 +2069,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			hasTrailingNewline,
 		} = streamResult;
 
-		if (requestedStart >= totalFileLines) {
+		if (startLine >= totalFileLines) {
 			const suggestion =
 				totalFileLines === 0
 					? "The artifact is empty."
 					: `Use ${artifactUrl}:1 to read from the start, or ${artifactUrl}:${totalFileLines} to read the last line.`;
 			return toolResult<ReadToolDetails>(details)
-				.text(`Line ${requestedStart + 1} is beyond end of artifact (${totalFileLines} lines total). ${suggestion}`)
+				.text(`Line ${startLineDisplay} is beyond end of artifact (${totalFileLines} lines total). ${suggestion}`)
 				.sourcePath(artifact.path)
 				.sourceInternal(url.href)
 				.done();

@@ -1,3 +1,5 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import conflictNoticeTemplate from "../prompts/tools/read-conflict-notice.md" with { type: "text" };
 import type { ToolSession } from "./index";
 import { ToolError } from "./tool-errors";
 
@@ -171,10 +173,8 @@ export type ConflictScope = "ours" | "theirs" | "base";
 const CONFLICT_SCOPES = new Set<ConflictScope>(["ours", "theirs", "base"]);
 
 export interface ParsedConflictUri {
-	id: number | "*";
+	id: number;
 	scope?: ConflictScope;
-
-	recoveredPrefix?: string;
 }
 
 const CONFLICT_URI_RE = /^(?:(.+):)?conflict:\/\/(.+)$/;
@@ -182,24 +182,14 @@ const CONFLICT_URI_RE = /^(?:(.+):)?conflict:\/\/(.+)$/;
 export function parseConflictUri(raw: string): ParsedConflictUri | null {
 	const match = raw.match(CONFLICT_URI_RE);
 	if (!match) return null;
-	const recoveredPrefix = match[1];
 	const tail = match[2];
 	const slashIdx = tail.indexOf("/");
 	const idPart = slashIdx === -1 ? tail : tail.slice(0, slashIdx);
 	const scopePart = slashIdx === -1 ? undefined : tail.slice(slashIdx + 1);
 
-	if (idPart === "*") {
-		if (scopePart !== undefined) {
-			throw new ToolError(
-				`Invalid conflict URI '${raw}': wildcard 'conflict://*' does not accept a scope segment. Drop '/${scopePart}' or use a numeric id.`,
-			);
-		}
-		return recoveredPrefix !== undefined ? { id: "*", recoveredPrefix } : { id: "*" };
-	}
-
 	if (!/^\d+$/.test(idPart)) {
 		throw new ToolError(
-			`Invalid conflict URI '${raw}': must be 'conflict://<N>', 'conflict://<N>/<scope>', or 'conflict://*' where N is a positive integer surfaced by a prior \`read\`.`,
+			`Invalid conflict URI '${raw}': must be 'conflict://<N>' or 'conflict://<N>/<scope>' where N is a positive integer surfaced by a prior \`read\`. Use the \`<path>:conflicts\` read selector to list every conflict in a file.`,
 		);
 	}
 	const id = Number.parseInt(idPart, 10);
@@ -217,7 +207,7 @@ export function parseConflictUri(raw: string): ParsedConflictUri | null {
 		scope = scopePart as ConflictScope;
 	}
 
-	return recoveredPrefix !== undefined ? { id, scope, recoveredPrefix } : { id, scope };
+	return { id, scope };
 }
 
 function stripTrailingCr(line: string): string {
@@ -261,17 +251,25 @@ export function renderConflictRegion(
 
 const PREVIEW_SIDE_LINES = 6;
 
-interface FormatConflictWarningOptions {
-	totalInFile?: number;
+interface ConflictNoticeOptions {
+	displayPath: string;
 
-	displayPath?: string;
+	bashActive: boolean;
+}
+
+interface FormatConflictWarningOptions extends ConflictNoticeOptions {
+	totalInFile?: number;
 
 	scanTruncated?: boolean;
 }
 
+function formatConflictNotice(options: ConflictNoticeOptions): string {
+	return prompt.render(conflictNoticeTemplate, { path: options.displayPath, bash: options.bashActive });
+}
+
 export function formatConflictWarning(
 	entries: readonly ConflictEntry[],
-	options: FormatConflictWarningOptions = {},
+	options: FormatConflictWarningOptions,
 ): string {
 	if (entries.length === 0) return "";
 	const total = options.totalInFile ?? entries.length;
@@ -280,9 +278,8 @@ export function formatConflictWarning(
 	out.push("");
 	const word = total === 1 ? "conflict" : "conflicts";
 	if (partial) {
-		const hintPath = options.displayPath ?? "<file>";
 		out.push(
-			`${entries.length} of ${total} unresolved ${word} visible in this window (read \`${hintPath}:conflicts\` for the full list).`,
+			`${entries.length} of ${total} unresolved ${word} visible in this window (read \`${options.displayPath}:conflicts\` for the full list).`,
 		);
 	} else {
 		out.push(`${total} unresolved ${word} detected`);
@@ -298,18 +295,7 @@ export function formatConflictWarning(
 	if (oursLabel) out.push(`- ours = ${oursLabel}`);
 	if (theirsLabel) out.push(`- theirs = ${theirsLabel}`);
 	if (anyBase) out.push(`- base = ${baseLabel ?? "(no label)"}`);
-	out.push(
-		'NOTICE: Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` to render a single side). Resolve with `write({ path: "conflict://<N>", content })`, or bulk-resolve every registered conflict with `write({ path: "conflict://*", content })`. Writes replace ONLY the marker block (markers + all sides) — never repeat the lines before/after it; they stay in place.',
-	);
-	out.push(
-		'`content` shorthand: a line that is exactly `@ours` / `@theirs` / `@base` / `@both` expands to that recorded section. `@both` is ours-then-theirs with no separator — only for additive conflicts where each side adds something different; NEVER for competing edits of the same lines (pick a side or write the combined text). Lines that are not a token pass through verbatim, so `"// keep both\\n@ours\\n@theirs"` literally writes the comment, then ours, then theirs.',
-	);
-	out.push(
-		'Per-id bulk: `write({ path: "conflict://*", content: "1: @ours\\n2: @theirs\\n…" })` resolves each listed id with that side in ONE call — the cheapest way through many pick-one conflicts; unlisted ids stay registered.',
-	);
-	out.push(
-		"Resolve each block faithfully: keep one side (`@ours`/`@theirs`), or combine them when both intents apply — never invent content beyond the recorded sides, and never stack both sides of competing edits. Resolve several conflicts in a single turn by issuing multiple `write` calls at once; ids stay valid as earlier blocks are resolved.",
-	);
+	out.push(formatConflictNotice(options));
 
 	for (const entry of entries) {
 		const range = entry.startLine === entry.endLine ? `L${entry.startLine}` : `L${entry.startLine}-${entry.endLine}`;
@@ -346,12 +332,12 @@ export function formatConflictWarning(
 
 export function formatConflictSummary(
 	entries: readonly ConflictEntry[],
-	options: { displayPath: string; scanTruncated?: boolean } = { displayPath: "" },
+	options: ConflictNoticeOptions & { scanTruncated?: boolean },
 ): string {
 	const lines: string[] = [];
 	const total = entries.length;
 	const word = total === 1 ? "conflict" : "conflicts";
-	lines.push(`${total} unresolved ${word} in ${options.displayPath || "<file>"}`);
+	lines.push(`${total} unresolved ${word} in ${options.displayPath}`);
 	if (options.scanTruncated) {
 		lines.push("- note: file scan hit the byte cap; additional conflicts may exist beyond the scanned prefix.");
 	}
@@ -362,12 +348,7 @@ export function formatConflictSummary(
 	if (oursLabel) lines.push(`- ours = ${oursLabel}`);
 	if (theirsLabel) lines.push(`- theirs = ${theirsLabel}`);
 	if (anyBase) lines.push(`- base = ${baseLabel ?? "(no label)"}`);
-	lines.push(
-		'NOTICE: Bulk-resolve with `write({ path: "conflict://*", content })`, or address a single block with `write({ path: "conflict://<N>", content })`. Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` for a single side).',
-	);
-	lines.push(
-		'`content` shorthand: `@ours` / `@theirs` / `@base` / `@both` lines expand to the recorded sections; `@both` = ours-then-theirs (additive conflicts only — never for competing edits of the same lines). Per-id bulk: content of `<id>: @side` lines (e.g. "1: @ours\\n2: @theirs") resolves each listed id in one call. Non-token lines pass through verbatim. Writes replace ONLY the marker block — never repeat the surrounding lines. Keep one side or combine faithfully; never invent content beyond the recorded sides.',
-	);
+	lines.push(formatConflictNotice(options));
 	lines.push("");
 	const idWidth = String(entries[entries.length - 1]?.id ?? 1).length;
 	for (const entry of entries) {

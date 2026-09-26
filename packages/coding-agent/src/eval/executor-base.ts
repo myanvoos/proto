@@ -23,12 +23,13 @@ interface KernelExecutorBaseOptions {
 	cwd?: string;
 	runCwd?: string;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: ReadableStream<Uint8Array>;
 	timeoutMs?: number;
 	deadlineMs?: number;
 	idleTimeoutMs?: number;
 	onChunk?: (chunk: string) => Promise<void> | void;
 	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	signal?: AbortSignal;
 	onStatus?: (event: JsStatusEvent) => void;
@@ -68,8 +69,9 @@ export interface GenericKernel<TEnv> {
 			cwd?: string;
 			env?: TEnv;
 			shellEnv?: Record<string, string>;
-			stdin?: number[];
+			stdin?: ReadableStream<Uint8Array>;
 			onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+			onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 			fsObservations?: FsObservation[];
 			id: string;
 			signal?: AbortSignal;
@@ -512,6 +514,7 @@ export async function executeWithKernelBase<
 			shellEnv: options?.shellEnv,
 			stdin: options?.stdin,
 			onStream: options?.onStream,
+			onBytes: options?.onBytes,
 			id: runId,
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,

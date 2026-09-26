@@ -68,12 +68,16 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 		return Ok(None);
 	}
 
+	// Widen to the outermost construct that starts on the line, but never into a
+	// body/sequence node: indentation-based grammars (Python `block`, Ruby
+	// `body_statement`, YAML mappings) start those at their first child, so the
+	// body of `class C:` begins on the line of its first `def`.
 	let mut node = leaf;
 	while let Some(parent) = node.parent() {
 		if parent.id() == root.id() {
 			break;
 		}
-		if parent.start_position().row != row {
+		if parent.start_position().row != row || is_sibling_sequence_kind(parent.kind()) {
 			break;
 		}
 		node = parent;
@@ -183,6 +187,10 @@ fn is_block_declaration_kind(kind: &str) -> bool {
 			| "lock_statement"
 			| "using_statement"
 			| "unsafe_block"
+			| "method"
+			| "singleton_method"
+			| "class"
+			| "module"
 	)
 }
 
@@ -210,7 +218,16 @@ fn is_block_container_kind(kind: &str) -> bool {
 			| "match_body"
 			| "do_block"
 			| "seq_block"
+			| "body_statement"
 	)
+}
+
+/// Nodes that hold a sequence of sibling constructs (statement bodies,
+/// top-level declaration lists, YAML collections). A line never resolves to one
+/// of these merely because its first child starts on that line.
+fn is_sibling_sequence_kind(kind: &str) -> bool {
+	is_block_container_kind(kind)
+		|| matches!(kind, "declarations" | "block_mapping" | "block_sequence")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,5 +418,45 @@ mod tests {
 	fn class_header_resolves_the_whole_class() {
 		let code = "class Foo {\n  bar() {\n    return 1;\n  }\n}\nfunction top() {}\n";
 		assert_eq!(range(code, "ts", 1), Some(BlockRange { start_line: 1, end_line: 5 }));
+	}
+
+	const PY_CLASSES: &str = "\
+class Shape:
+    def area(self):
+        raise NotImplementedError
+
+
+class Circle(Shape):
+    def __init__(self, r):
+        self.r = r
+
+    def area(self):
+        return 1
+";
+
+	#[test]
+	fn python_first_method_line_resolves_the_method_not_the_class_body() {
+		// The class `block` starts on the first `def` line; that line must still
+		// resolve to the `def`, not to the rest of the class body.
+		assert_eq!(range(PY_CLASSES, "python", 7), Some(BlockRange { start_line: 7, end_line: 8 }));
+		assert_eq!(range(PY_CLASSES, "python", 6), Some(BlockRange { start_line: 6, end_line: 11 }));
+	}
+
+	#[test]
+	fn python_first_body_statement_resolves_the_enclosing_function() {
+		let code = "def f():\n    x = 1\n    return x\n";
+		assert_eq!(range(code, "python", 2), Some(BlockRange { start_line: 1, end_line: 3 }));
+	}
+
+	#[test]
+	fn ruby_first_method_in_class_resolves_the_method() {
+		let code = "class Foo\n  def a\n    1\n  end\n\n  def b\n    2\n  end\nend\n";
+		assert_eq!(range(code, "ruby", 2), Some(BlockRange { start_line: 2, end_line: 4 }));
+	}
+
+	#[test]
+	fn yaml_first_nested_key_resolves_its_own_pair() {
+		let code = "a:\n  b:\n    c: 1\n  d: 2\n";
+		assert_eq!(range(code, "yaml", 2), Some(BlockRange { start_line: 2, end_line: 3 }));
 	}
 }

@@ -60,3 +60,51 @@ test("a large on-disk history is streamed into an explicitly reported bounded tr
 	expect(resource.content).toContain("LATEST-MARKER");
 	expect(resource.content).not.toContain("EARLIEST-MARKER");
 });
+
+// Regression: after orchestrate_kill, history:// listed the worker as `aborted` while fleet and orchestrate_list
+// reported `lifecycle=terminal`; history must speak the same lifecycle vocabulary.
+test("history:// reports agents in the shared lifecycle vocabulary", async () => {
+	root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-history-lifecycle-"));
+	const file = path.join(root, "killed-worker.jsonl");
+	await Bun.write(
+		file,
+		`${JSON.stringify({ type: "session", version: 3, id: "killed-worker", timestamp: new Date().toISOString(), cwd: root })}\n`,
+	);
+	const registry = AgentRegistry.global();
+	registry.register({
+		id: "killed-worker",
+		label: "killed",
+		kind: "sub",
+		session: null,
+		sessionFile: file,
+		status: "aborted",
+	});
+	registry.register({
+		id: "idle-worker",
+		label: "idle",
+		kind: "sub",
+		session: null,
+		sessionFile: file,
+		status: "parked",
+	});
+	const handler = new HistoryProtocolHandler();
+	const read = (host: string) => handler.resolve(Object.assign(new URL(`history://${host}`), { rawHost: host }));
+
+	const index = (await read("")).content;
+	const rows = new Map(
+		index
+			.split("\n")
+			.filter(line => line.startsWith("| ") && !line.startsWith("| id "))
+			.map(line => {
+				const cells = line.split("|").map(cell => cell.trim());
+				return [cells[1], { lifecycle: cells[3], turn: cells[4] }] as const;
+			}),
+	);
+	expect(rows.get("killed-worker")).toEqual({ lifecycle: "terminal", turn: "—" });
+	expect(rows.get("idle-worker")).toEqual({ lifecycle: "parked", turn: "idle" });
+
+	const transcript = await read("killed-worker");
+	expect(transcript.content).toContain("killed-worker (lifecycle=terminal)");
+	expect(transcript.content).not.toContain("aborted");
+	expect(transcript.notes).toContain("Source: session file (read-only, lifecycle=terminal)");
+});

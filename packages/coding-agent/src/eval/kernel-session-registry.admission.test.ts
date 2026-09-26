@@ -157,6 +157,7 @@ test("JS and per-call Python share owner admission and return capacity after con
 	);
 	const js = () =>
 		executeInVmContext({
+			runtime: "bun",
 			sessionKey: owner,
 			sessionId: owner,
 			ownerId: owner,

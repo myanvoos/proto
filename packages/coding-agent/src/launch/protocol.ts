@@ -36,6 +36,8 @@ export interface DaemonSpec {
 	application: string;
 	args: string[];
 	env: Record<string, string>;
+	/** False means the supplied environment is complete, not a host overlay. */
+	inheritEnv?: boolean;
 	cwd: string;
 	pty: boolean;
 	ready?: DaemonReadySpec;
@@ -93,7 +95,7 @@ export type DaemonOperation =
 			keys?: string[];
 			signal?: DaemonSignal;
 	  }
-	| { op: "stop"; name: string; timeoutMs: number }
+	| { op: "stop"; name: string; timeoutMs: number; expectedId?: string }
 	| { op: "restart"; name: string }
 	| { op: "describe"; name: string }
 	| { op: "shutdown" };
@@ -266,6 +268,7 @@ export function parseDaemonSpec(value: unknown): DaemonSpec {
 		application: stringValue(source.application, "spec.application"),
 		args: stringArray(source.args, "spec.args"),
 		env: stringRecord(source.env, "spec.env"),
+		...(source.inheritEnv === undefined ? {} : { inheritEnv: booleanValue(source.inheritEnv, "spec.inheritEnv") }),
 		cwd: stringValue(source.cwd, "spec.cwd"),
 		pty: booleanValue(source.pty, "spec.pty"),
 		ready: source.ready === undefined ? undefined : readySpec(source.ready),
@@ -412,6 +415,9 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
+				...(source.expectedId === undefined
+					? {}
+					: { expectedId: stringValue(source.expectedId, "operation.expectedId") }),
 			};
 		case "restart":
 		case "describe":

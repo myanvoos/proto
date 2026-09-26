@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { deflateSync } from "node:zlib";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { processFileArguments } from "../cli/file-processor";
 import type { FileMentionMessage } from "../session/messages";
@@ -82,6 +83,47 @@ test("a decodable image file still loads with its bytes intact", async () => {
 		const loaded = await loadImageInput({ path: valid, cwd: directory, autoResize: false });
 		expect(loaded?.mimeType).toBe("image/png");
 		expect(loaded?.data).toBe(VALID_PNG_BASE64);
+		expect(loaded?.textNote).toBe("Read image file [image/png]");
+	});
+});
+
+function noisePng(size: number): Buffer {
+	const chunk = (type: string, data: Buffer): Buffer => {
+		const typed = Buffer.concat([Buffer.from(type, "ascii"), data]);
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(data.length);
+		const crc = Buffer.alloc(4);
+		crc.writeUInt32BE(Bun.hash.crc32(typed));
+		return Buffer.concat([length, typed, crc]);
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(size, 0);
+	header.writeUInt32BE(size, 4);
+	header.set([8, 2, 0, 0, 0], 8);
+	const rows = Buffer.alloc(size * (size * 3 + 1));
+	let state = 0x9e3779b9;
+	for (let i = 0; i < rows.length; i++) {
+		state ^= state << 13;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		rows[i] = i % (size * 3 + 1) === 0 ? 0 : state & 0xff;
+	}
+	return Buffer.concat([
+		PNG_SIGNATURE,
+		chunk("IHDR", header),
+		chunk("IDAT", deflateSync(rows)),
+		chunk("IEND", Buffer.alloc(0)),
+	]);
+}
+
+test("a transcoded image file reports its own format and the format sent to the model", async () => {
+	await withTempDir(async directory => {
+		const file = path.join(directory, "noise.png");
+		await Bun.write(file, noisePng(600));
+
+		const loaded = await loadImageInput({ path: file, cwd: directory, autoResize: true });
+		expect(loaded?.mimeType).not.toBe("image/png");
+		expect(loaded?.textNote.split("\n")[0]).toBe(`Read image file [image/png, sent as ${loaded?.mimeType}]`);
 	});
 });
 

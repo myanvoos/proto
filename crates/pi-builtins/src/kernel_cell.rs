@@ -7,6 +7,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
+use ::base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use brush_core::openfiles::OpenFile;
 use clap::{Arg, Command as ClapCommand, builder::ValueParser};
 use serde_json::{Value, json};
@@ -50,21 +51,19 @@ pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
 pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> i32 {
 	if let Some(observation) = &host.command_observation { observation.route(spec.lang); }
 	match plan(spec, argv, host) {
-		Plan::Cell { code, stdin_body, program_input } => match run_kernel_cell(spec, host, &code, program_input.as_deref()) {
+		Plan::Cell { code, stdin_body, program_input } => match run_kernel_cell(spec, host, &code, program_input) {
 			CellOutcome::Exit(code) => code,
 			CellOutcome::FallThrough => spawn_external(spec, host, argv, stdin_body),
 		},
 		Plan::External { stdin_body } => spawn_external(spec, host, argv, stdin_body),
-		Plan::Failure(message) => { host.error(&message, 1); 1 },
 	}
 }
 
 enum Plan {
-	Failure(String),
 	Cell {
 		code:       String,
 		stdin_body: Option<Vec<u8>>,
-		program_input: Option<Vec<u8>>,
+		program_input: bool,
 	},
 	External {
 		stdin_body: Option<Vec<u8>>,
@@ -75,19 +74,9 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 	let args: Vec<Option<&str>> = argv.iter().map(|arg| arg.to_str()).collect();
 	match route_argv(spec.argv, &args) {
 		ArgvRoute::Code(index) => {
-			let program_input = if host.stdin.carries_program_input() {
-				// Finite program input is separate from source and the kernel's control pipe.
-				let mut input = Vec::new();
-				if let Err(error) = host.stdin.by_ref().take(1024 * 1024 + 1).read_to_end(&mut input) {
-					return Plan::Failure(format!("cannot read cell stdin: {error}"));
-				}
-				if input.len() > 1024 * 1024 {
-					return Plan::Failure("cell stdin exceeds 1 MiB; use an explicit external interpreter for streaming input".into());
-				}
-				Some(input)
-			} else { None };
+			let program_input = host.stdin.carries_program_input();
 			let code = args[index].unwrap_or_default();
-			Plan::Cell { code: code.to_string(), stdin_body: program_input.clone(), program_input }
+			Plan::Cell { code: code.to_string(), stdin_body: None, program_input }
 		},
 		ArgvRoute::Script(index) => plan_positional(spec, argv, index, host),
 		ArgvRoute::External => Plan::External { stdin_body: None },
@@ -100,7 +89,7 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 				return Plan::External { stdin_body: Some(body) };
 			}
 			match str::from_utf8(&body) {
-				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body), program_input: None },
+				Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body), program_input: false },
 				Err(_) => Plan::External { stdin_body: Some(body) },
 			}
 		},
@@ -125,7 +114,7 @@ fn plan_positional(spec: &KernelLang, argv: &[OsString], index: usize, host: &mu
 	if index + 1 < argv.len() {
 		host.error("extra argv after a fleet script is ignored (kernel cells have no argv)", 0);
 	}
-	Plan::Cell { code, stdin_body: None, program_input: None }
+	Plan::Cell { code, stdin_body: None, program_input: false }
 }
 
 fn is_fleet_script(spec: &KernelLang, host: &Host, candidate: &Path) -> bool {
@@ -159,7 +148,7 @@ enum CellOutcome {
 	FallThrough,
 }
 
-fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option<&[u8]>) -> CellOutcome {
+fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: bool) -> CellOutcome {
 	let (Some(addr), Some(token)) = (host.var(ADDR_VAR), host.var(TOKEN_VAR)) else {
 		return CellOutcome::FallThrough;
 	};
@@ -185,6 +174,7 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option
 	let mut buffer = Vec::new();
 	let mut chunk = [0u8; 8192];
 	let mut streamed = false;
+	let mut input_requested = false;
 	let mut cancel_deadline: Option<Instant> = None;
 	loop {
 		// Our stdout consumer exited (`python -c '…big loop…' | head -1`). A real interpreter
@@ -203,6 +193,31 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option
 			&& Instant::now() >= deadline
 		{
 			return CellOutcome::Exit(130);
+		}
+		// Wait for either direction. Never block in stdin.read while the kernel may
+		// finish, cancel, or write output before consuming the requested input.
+		#[cfg(unix)]
+		{
+			use std::os::fd::AsRawFd;
+			let input_fd = host.stdin.file().try_borrow_as_fd().ok().map(|fd| fd.as_raw_fd());
+			let mut fds = [
+				libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+				libc::pollfd { fd: if input_requested { input_fd.unwrap_or(-1) } else { -1 }, events: libc::POLLIN, revents: 0 },
+			];
+			// SAFETY: both descriptors remain owned and open for this call.
+			if unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) } <= 0 { continue; }
+			if fds[1].revents != 0 {
+				let mut bytes = [0u8; 65536];
+				match host.stdin.read(&mut bytes) {
+					Ok(n) => {
+						let frame = json!({"t": "i", "d": BASE64.encode(&bytes[..n]), "eof": n == 0});
+						if writeln!(stream, "{frame}").is_err() { return CellOutcome::Exit(1); }
+						input_requested = false;
+					},
+					Err(error) => { host.error(format!("cannot read cell stdin: {error}"), 1); return CellOutcome::Exit(1); },
+				}
+			}
+			if fds[0].revents == 0 { continue; }
 		}
 		match stream.read(&mut chunk) {
 			Ok(0) => {
@@ -224,6 +239,7 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option
 					let newline = scan_start + offset;
 					match handle_frame(host, &buffer[..=newline], &mut streamed) {
 						FrameOutcome::Continue => {},
+						FrameOutcome::Input => { streamed = true; input_requested = stdin; },
 						FrameOutcome::Exit(code) => return CellOutcome::Exit(code),
 						FrameOutcome::FallThrough => {
 							return if streamed {
@@ -255,6 +271,7 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str, stdin: Option
 
 enum FrameOutcome {
 	Continue,
+	Input,
 	Exit(i32),
 	FallThrough,
 }
@@ -264,22 +281,26 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 		return FrameOutcome::Continue;
 	};
 	match frame.get("t").and_then(Value::as_str) {
-		Some("o") => {
+		Some(kind @ ("o" | "e")) => {
 			if let Some(data) = frame.get("d").and_then(Value::as_str) {
+				let bytes = if frame.get("encoding").and_then(Value::as_str) == Some("base64") {
+					match BASE64.decode(data) {
+						Ok(bytes) => bytes,
+						Err(_) => { host.error("invalid binary kernel frame", 1); return FrameOutcome::Exit(1); },
+					}
+				} else { data.as_bytes().to_vec() };
 				*streamed = true;
-				let _ = host.stdout.write_all(data.as_bytes());
-				let _ = host.stdout.flush();
+				if kind == "e" {
+					let _ = host.stderr.write_all(&bytes);
+					let _ = host.stderr.flush();
+				} else {
+					let _ = host.stdout.write_all(&bytes);
+					let _ = host.stdout.flush();
+				}
 			}
 			FrameOutcome::Continue
 		},
-		Some("e") => {
-			if let Some(data) = frame.get("d").and_then(Value::as_str) {
-				*streamed = true;
-				let _ = host.stderr.write_all(data.as_bytes());
-				let _ = host.stderr.flush();
-			}
-			FrameOutcome::Continue
-		},
+		Some("i") => FrameOutcome::Input,
 		Some("x") => {
 			let code = frame.get("c").and_then(Value::as_i64).unwrap_or(0);
 			FrameOutcome::Exit(code as i32)
@@ -294,7 +315,7 @@ fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_b
 	let program = host.name().to_string();
 	let Some(resolved) = interpreter_candidates(spec, &program).find_map(|name| resolve_on_path(host, name)) else {
 		let tried = interpreter_candidates(spec, &program).collect::<Vec<_>>().join(" or ");
-		host.error(format!("{program}: command not found (no {tried} on PATH)"), 127);
+		host.error(format!("command not found (no {tried} on PATH)"), 127);
 		return 127;
 	};
 	let mut command = ProcessCommand::new(resolved);
@@ -313,7 +334,7 @@ fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_b
 	let mut child = match command.spawn() {
 		Ok(child) => child,
 		Err(err) => {
-			host.error(format!("{program}: {err}"), 126);
+			host.error(err, 126);
 			return 126;
 		},
 	};
@@ -333,7 +354,7 @@ fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_b
 			Ok(Some(status)) => break exit_code(status),
 			Ok(None) => std::thread::sleep(Duration::from_millis(20)),
 			Err(err) => {
-				host.error(format!("{program}: {err}"), 1);
+				host.error(err, 1);
 				break 1;
 			},
 		}

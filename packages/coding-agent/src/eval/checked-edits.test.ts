@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -7,7 +7,6 @@ import { Settings } from "../config/settings";
 import type { ToolSession } from "../tools";
 import { checkedEdits } from "./checked-edits";
 import { fsObservationLedgerFor } from "./fs-observations";
-import type { EvalStatusEvent } from "./types";
 
 let root: string;
 let session: ToolSession;
@@ -25,6 +24,7 @@ beforeEach(async () => {
 	await fs.writeFile(path.join(root, "b"), "old b");
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	fsObservationLedgerFor(session).drain();
 	await fs.rm(root, { recursive: true, force: true });
 });
@@ -35,16 +35,40 @@ const changes = () => [
 async function contents() {
 	return Promise.all(["a", "b"].map(file => fs.readFile(path.join(root, file), "utf8")));
 }
-test("stale batch validates all files before writing or emitting mutations", async () => {
-	const events: EvalStatusEvent[] = [];
-	const edits = changes();
-	edits[1].before = "stale";
-	await expect(checkedEdits(edits, { session, apply: true, emitStatus: event => events.push(event) })).rejects.toThrow(
-		/Stale/,
-	);
-	expect(await contents()).toEqual(["old a", "old b"]);
-	expect(events).toEqual([]);
-	expect(fsObservationLedgerFor(session).drain()).toEqual([]);
+/** Runs `hook` once, right after the batch's first host write lands on disk. */
+function afterFirstWrite(hook: (file: string) => void): void {
+	const ledger = fsObservationLedgerFor(session);
+	const recordWrite = ledger.recordWrite.bind(ledger);
+	let fired = false;
+	vi.spyOn(ledger, "recordWrite").mockImplementation(async file => {
+		if (!fired) {
+			fired = true;
+			hook(file);
+		}
+		return recordWrite(file);
+	});
+}
+test("stale snapshots return a conflict result naming every stale path and write nothing", async () => {
+	const edits = [
+		{ path: "a", before: "stale", after: "new a" },
+		{ path: "b", before: null, after: "new b" },
+		{ path: "c", before: "old c", after: "new c" },
+		{ path: "d", before: null, after: "new d" },
+	];
+	for (const apply of [false, true]) {
+		const result = await checkedEdits(edits, { session, apply });
+		expect(result.state).toBe("conflict");
+		expect(result.applied).toEqual([]);
+		expect(result.conflicts).toEqual([
+			{ path: path.join(root, "a"), reason: "stale" },
+			{ path: path.join(root, "b"), reason: "exists" },
+			{ path: path.join(root, "c"), reason: "missing" },
+		]);
+		expect(result.error).toContain(path.join(root, "c"));
+		expect(await contents()).toEqual(["old a", "old b"]);
+		expect(await Bun.file(path.join(root, "d")).exists()).toBe(false);
+		expect(fsObservationLedgerFor(session).drain()).toEqual([]);
+	}
 });
 test("preview includes diffs but performs no writes, locks or ledger mutations", async () => {
 	const names = await fs.readdir(root);
@@ -71,16 +95,20 @@ test("duplicate path, directory aliases, hardlinks and symlink files are rejecte
 });
 test("multi-file commit preserves modes, skips unchanged content and observes creates", async () => {
 	await fs.chmod(path.join(root, "a"), 0o751);
-	const events: EvalStatusEvent[] = [];
 	const result = await checkedEdits(
 		[...changes(), { path: "new", before: null, after: "created" }, { path: "same", before: null, after: "" }],
-		{ session, apply: true, emitStatus: event => events.push(event) },
+		{ session, apply: true },
 	);
 	expect(result.state).toBe("applied");
 	expect(await contents()).toEqual(["new a", "new b"]);
 	expect((await fs.stat(path.join(root, "a"))).mode & 0o777).toBe(0o751);
 	expect(await fs.readFile(path.join(root, "same"), "utf8")).toBe("");
-	expect(events.map(event => event.op)).toEqual(["write", "write", "write", "write"]);
+	expect(result.stamps?.map(stamp => [stamp.path, stamp.size])).toEqual([
+		[path.join(root, "a"), 5],
+		[path.join(root, "b"), 5],
+		[path.join(root, "new"), 7],
+		[path.join(root, "same"), 0],
+	]);
 	expect(
 		fsObservationLedgerFor(session)
 			.drain()
@@ -92,63 +120,50 @@ test("multi-file commit preserves modes, skips unchanged content and observes cr
 });
 test("mid-commit cancellation rolls back writes including new files and records reverts", async () => {
 	const controller = new AbortController();
-	const events: EvalStatusEvent[] = [];
+	afterFirstWrite(() => controller.abort());
 	const result = await checkedEdits([{ path: "0new", before: null, after: "created" }, ...changes()], {
 		session,
 		apply: true,
 		signal: controller.signal,
-		emitStatus(event) {
-			events.push(event);
-			if (event.op === "write") controller.abort();
-		},
 	});
 	expect(result.state).toBe("rolled-back");
+	expect(result.applied).toEqual([path.join(root, "0new")]);
+	expect(result.stamps).toEqual([]);
 	expect(await contents()).toEqual(["old a", "old b"]);
 	expect(await Bun.file(path.join(root, "0new")).exists()).toBe(false);
-	expect(events.map(event => event.op)).toEqual(["write", "revert"]);
 	expect(fsObservationLedgerFor(session).drain()).toEqual([
 		{ path: path.join(root, "0new"), kind: "write", mtimeNs: null, size: null, sha: null },
 	]);
 });
 test("cancellation during the final write still rolls back", async () => {
 	const controller = new AbortController();
-	const result = await checkedEdits([changes()[0]], {
-		session,
-		apply: true,
-		signal: controller.signal,
-		emitStatus(event) {
-			if (event.op === "write") controller.abort();
-		},
-	});
+	afterFirstWrite(() => controller.abort());
+	const result = await checkedEdits([changes()[0]], { session, apply: true, signal: controller.signal });
 	expect(result.state).toBe("rolled-back");
 	expect(await contents()).toEqual(["old a", "old b"]);
+	// The restored file keeps a stamp: the caller's knowledge (`before`) is current again.
+	expect(result.stamps?.map(stamp => stamp.sha)).toEqual([
+		new Bun.CryptoHasher("sha256").update("old a").digest("hex").slice(0, 16),
+	]);
 });
 test("rollback preserves a concurrent user edit and refreshes its mutation observation", async () => {
-	const result = await checkedEdits(changes(), {
-		session,
-		apply: true,
-		emitStatus(event) {
-			if (event.op === "write" && event.path === path.join(root, "a")) {
-				writeFileSync(path.join(root, "a"), "user a");
-				writeFileSync(path.join(root, "b"), "user b");
-			}
-		},
+	afterFirstWrite(() => {
+		writeFileSync(path.join(root, "a"), "user a");
+		writeFileSync(path.join(root, "b"), "user b");
 	});
+	const result = await checkedEdits(changes(), { session, apply: true });
 	expect(result.state).toBe("partial");
-	expect(result.conflicts).toEqual([path.join(root, "a")]);
+	expect(result.conflicts).toEqual([{ path: path.join(root, "a"), reason: "changed" }]);
+	// Never stamp content the batch did not write; the kernel guard must still catch it.
+	expect(result.stamps).toEqual([]);
 	expect(await contents()).toEqual(["user a", "user b"]);
 	expect(fsObservationLedgerFor(session).drain()[0].sha).toBe(
 		new Bun.CryptoHasher("sha256").update("user a").digest("hex").slice(0, 16),
 	);
 });
 test("mid-commit stale failure restores earlier files without touching the stale file", async () => {
-	const result = await checkedEdits(changes(), {
-		session,
-		apply: true,
-		emitStatus(event) {
-			if (event.op === "write") writeFileSync(path.join(root, "b"), "user b");
-		},
-	});
+	afterFirstWrite(() => writeFileSync(path.join(root, "b"), "user b"));
+	const result = await checkedEdits(changes(), { session, apply: true });
 	expect(result.state).toBe("rolled-back");
 	expect(await contents()).toEqual(["old a", "user b"]);
 	expect(fsObservationLedgerFor(session).drain()[0].sha).toBe(
@@ -160,21 +175,6 @@ test("pre-cancelled batches and invalid apply flags do not write", async () => {
 	expect(await contents()).toEqual(["old a", "old b"]);
 });
 
-test("status listener failure cannot misreport a successful rollback as a conflict", async () => {
-	const controller = new AbortController();
-	const result = await checkedEdits([changes()[0]], {
-		session,
-		apply: true,
-		signal: controller.signal,
-		emitStatus(event) {
-			if (event.op === "write") controller.abort();
-			if (event.op === "revert") throw new Error("status listener disconnected");
-		},
-	});
-	expect(result.state).toBe("rolled-back");
-	expect(result.conflicts).toEqual([]);
-	expect(await contents()).toEqual(["old a", "old b"]);
-});
 test("unrollbackable oversized replacement is rejected before mutation", async () => {
 	await expect(
 		checkedEdits([{ path: "a", before: "old a", after: "x".repeat(8 * 1024 * 1024 + 1) }], { session, apply: true }),
@@ -182,11 +182,10 @@ test("unrollbackable oversized replacement is rejected before mutation", async (
 	expect(await contents()).toEqual(["old a", "old b"]);
 });
 test("overlapping checked batches serialize and only one stale snapshot commits", async () => {
-	const results = await Promise.allSettled([
+	const results = await Promise.all([
 		checkedEdits(changes(), { session, apply: true }),
 		checkedEdits(changes().reverse(), { session, apply: true }),
 	]);
-	expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
-	expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+	expect(results.map(result => result.state).sort()).toEqual(["applied", "conflict"]);
 	expect(await contents()).toEqual(["new a", "new b"]);
 });

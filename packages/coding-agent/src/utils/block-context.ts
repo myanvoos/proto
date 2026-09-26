@@ -1,4 +1,4 @@
-import { enclosingBlockBoundaries } from "@oh-my-pi/pi-natives";
+import { enclosingBlockBoundaries, type NodeSpan, nodeChainAt } from "@oh-my-pi/pi-natives";
 
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
@@ -270,6 +270,35 @@ export function findBlockContextLines(
 	return nativeBlockContext(fullLines, visible, source) ?? lexicalBracketContext(fullLines, visible);
 }
 
+function enclosingBlockAnchors(
+	fullLines: readonly string[],
+	spans: readonly LineSpan[],
+	visible: ReadonlySet<number>,
+	source: BlockContextSource,
+): Map<number, string> {
+	const anchors = new Map<number, string>();
+	if (source.includeContext === false || (!source.path && !source.lang)) return anchors;
+	if (spans.length === 0 || hasEveryLineVisible(visible, fullLines.length)) return anchors;
+	if (exceedsScanCeiling(fullLines, source)) return anchors;
+	const code = source.text ?? fullLines.join("\n");
+	for (const span of spans) {
+		let chain: NodeSpan[] | null;
+		try {
+			chain = nodeChainAt({ code, path: source.path, lang: source.lang, line: span.startLine });
+		} catch (error) {
+			logger.debug("nodeChainAt failed; skipping enclosing block anchors", { error });
+			return anchors;
+		}
+		for (const node of chain ?? []) {
+			if (node.startLine >= span.startLine || node.endLine <= span.endLine) continue;
+			for (const lineNumber of [node.startLine, node.endLine]) {
+				if (!visible.has(lineNumber)) anchors.set(lineNumber, fullLines[lineNumber - 1] ?? "");
+			}
+		}
+	}
+	return anchors;
+}
+
 export function buildLineEntriesWithBlockContext(
 	fullLines: readonly string[],
 	visibleSpans: readonly LineSpan[],
@@ -281,6 +310,9 @@ export function buildLineEntriesWithBlockContext(
 	const spans = normalizeLineSpans(visibleSpans, fullLines.length);
 	const visible = visibleLineNumbers(spans);
 	const context = findBlockContextLines(fullLines, visible, source);
+	for (const [lineNumber, text] of enclosingBlockAnchors(fullLines, spans, visible, source)) {
+		context.set(lineNumber, text);
+	}
 	const allLines = new Set<number>(visible);
 	for (const lineNumber of context.keys()) allLines.add(lineNumber);
 

@@ -39,6 +39,7 @@ import type { WorkspaceTree } from "../workspace-tree";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import type { ChecklistPhase } from "./checklist";
 import type { CheckpointState, CompletedRewindState } from "./checkpoint";
+import { KernelTool } from "./kernel";
 import type { XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
@@ -58,6 +59,7 @@ export type * from "./eval-backends";
 export type * from "./fleet";
 export type * from "./image-gen";
 export type * from "./inspect-media";
+export type * from "./kernel";
 export type * from "./manage-skill";
 export type * from "./monitor";
 export type * from "./orchestrate";
@@ -368,6 +370,7 @@ export { isSearchProviderId, setExcludedSearchProviders, setSearchProviderOrder 
 
 // Runtime-registry exception: static imports here would put every optional tool implementation on the boot path.
 export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
+	kernel: s => new KernelTool(s),
 	bash: async s => new (await import("./bash")).BashTool(s),
 	ask: async s => (await import("./ask")).AskTool.createIf(s),
 	inspect_media: async s => new (await import("./inspect-media")).InspectMediaTool(s),

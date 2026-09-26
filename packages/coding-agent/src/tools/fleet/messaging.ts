@@ -5,7 +5,7 @@ import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
-import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { type AgentRegistry, agentLifecycle, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import {
 	createCachedComponent,
@@ -80,14 +80,7 @@ export async function executeList(
 			id: ref.id,
 			label: ref.label,
 			kind: ref.kind,
-			lifecycle:
-				ref.status === "aborted"
-					? ("terminal" as const)
-					: ref.status === "parked"
-						? ("parked" as const)
-						: ("live" as const),
-			turnState:
-				ref.status === "aborted" ? undefined : ref.status === "running" ? ("running" as const) : ("idle" as const),
+			...agentLifecycle(ref.status),
 			parentId: ref.parentId,
 			unread: bus.unreadCount(ref.id, fleetRoot),
 			lastActivity: ref.lastActivity,

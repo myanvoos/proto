@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import { glob } from "@oh-my-pi/pi-natives";
-import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils/fs-error";
 import { detectLanguageId } from "../utils/lang-from-path";
 import { ToolAbortError, ToolError } from "./tool-errors";
 

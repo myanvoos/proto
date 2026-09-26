@@ -60,7 +60,7 @@ impl Default for CommandTrace {
 }
 
 impl CommandTrace {
-	pub fn omit_source_spans(&mut self) {
+	pub const fn omit_source_spans(&mut self) {
 		self.1 = false;
 	}
 

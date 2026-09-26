@@ -1,6 +1,8 @@
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { FsObservation } from "./fs-observations";
+import { KernelInputReader } from "./kernel-streams";
+import type { KernelTarget } from "./kernel-target";
 import { type KernelDisplayOutput, renderKernelDisplay } from "./py/display";
 
 export type KernelRuntimeEnv = Record<string, string | null>;
@@ -10,13 +12,16 @@ export interface KernelExecuteOptions {
 
 	cwd?: string;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	/** Live program input, separate from code/control; cell teardown cancels upstream. */
+	stdin?: ReadableStream<Uint8Array>;
 
 	env?: Record<string, string | undefined> | Record<string, string | null>;
 	fsObservations?: FsObservation[];
 	signal?: AbortSignal;
 	onChunk?: (text: string) => Promise<void> | void;
 	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+	/** Lossless output; onStream/onChunk remain independent human-readable previews. */
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 	retainedOutputBytes?: () => number;
 	releaseOutput?: () => void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
@@ -50,6 +55,8 @@ export interface KernelShutdownOptions {
 
 export interface KernelStartOptions {
 	cwd: string;
+	discoveryCwd?: string;
+	target?: KernelTarget;
 	env?: Record<string, string | undefined>;
 
 	interpreter?: string;
@@ -73,14 +80,28 @@ interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = Kerne
 	buildPayload: (code: string, msgId: string, options?: TExecuteOptions) => string;
 
 	buildCancelPayload?: (msgId: string) => string;
+	onFrame?: (frame: Frame) => boolean;
 }
 
-export type FrameType = "started" | "stdout" | "stderr" | "display" | "result" | "error" | "done";
+export type FrameType =
+	| "tool_request"
+	| "stdin_request"
+	| "started"
+	| "stdout"
+	| "stderr"
+	| "display"
+	| "result"
+	| "error"
+	| "done";
 
 export interface Frame {
 	type: FrameType;
+	requestId?: string;
+	payload?: { name: string; args: unknown; completionInvocationId?: string };
 	id?: string;
 	data?: string;
+	encoding?: "base64";
+	text?: string;
 	bundle?: Record<string, unknown>;
 	ename?: string;
 	evalue?: string;
@@ -89,12 +110,14 @@ export interface Frame {
 	executionCount?: number;
 	cancelled?: boolean;
 	busy?: number;
+	interpreter?: string;
 }
 
 export interface KernelStatusReport {
 	/** Number of in-flight kernel request tasks (0 = quiescent). */
 	busy: number;
 	executionCount?: number;
+	interpreter?: string;
 }
 
 type TextFrameKind = "stdout" | "stderr";
@@ -106,11 +129,13 @@ interface CompletedOutputSink {
 	timer: NodeJS.Timeout;
 	onChunk?: (text: string) => Promise<void> | void;
 	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	unicodeTails: UnicodeTails;
 }
 
 interface PendingExecution {
+	input: KernelInputReader;
 	resolve: (result: KernelExecuteResult) => void;
 	options?: KernelExecuteOptions;
 	status: "ok" | "error";
@@ -249,6 +274,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#disposed = false;
 	#shutdownConfirmed = false;
 	#exitedPromise: Promise<number> | null = null;
+	#targetTerminate?: () => Promise<boolean>;
+	#targetInterrupt?: () => Promise<void>;
 	#pending = new Map<string, PendingExecution>();
 	#completedOutputSinks = new Map<string, CompletedOutputSink>();
 	#controlPending = new Map<string, (report: KernelStatusReport | undefined) => void>();
@@ -262,7 +289,13 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		this.#options = options;
 	}
 
-	setProcess(proc: Subprocess<"pipe", "pipe", "pipe">) {
+	setProcess(
+		proc: Subprocess<"pipe", "pipe", "pipe">,
+		targetTerminate?: () => Promise<boolean>,
+		targetInterrupt?: () => Promise<void>,
+	) {
+		this.#targetTerminate = targetTerminate;
+		this.#targetInterrupt = targetInterrupt;
 		this.#proc = proc;
 		this.#stdin = proc.stdin;
 		this.#exitedPromise = proc.exited;
@@ -289,6 +322,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		const msgId = options?.id ?? Snowflake.next();
 		const { promise, resolve } = Promise.withResolvers<KernelExecuteResult>();
 		const pending: PendingExecution = {
+			input: new KernelInputReader(options?.stdin),
 			resolve,
 			options,
 			status: "ok",
@@ -308,11 +342,15 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			if (pending.settled) return;
 			pending.settled = true;
 			this.#pending.delete(msgId);
-			if (!pending.cancelled && (pending.options?.onChunk || pending.options?.onDisplay)) {
+			if (
+				!pending.cancelled &&
+				(pending.options?.onChunk || pending.options?.onDisplay || pending.options?.onBytes)
+			) {
 				this.#evictCompletedOutputSink(msgId);
 				this.#completedOutputSinks.set(msgId, {
 					onChunk: pending.options.onChunk,
 					onStream: pending.options.onStream,
+					onBytes: pending.options.onBytes,
 					retainedOutputBytes: pending.options.retainedOutputBytes,
 					releaseOutput: pending.options.releaseOutput,
 					timer: unrefTimeout(() => this.#evictCompletedOutputSink(msgId), COMPLETED_OUTPUT_TTL_MS),
@@ -337,6 +375,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		const requestCancel = () => {
 			if (pending.settled || pending.escalationTimer) return;
 			pending.cancelRequested = true;
+			pending.input.cancel();
 			if (!requestWritten) {
 				finalize();
 				return;
@@ -386,6 +425,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				: undefined;
 
 		const cleanup = () => {
+			pending.input.cancel();
 			clearTimeout(timeoutId);
 			clearTimeout(pending.escalationTimer);
 			pending.escalationTimer = undefined;
@@ -466,7 +506,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	async interrupt(): Promise<void> {
 		if (!this.#proc || this.#disposed) return;
 		try {
-			this.#proc.kill("SIGINT");
+			if (this.#targetInterrupt) await this.#targetInterrupt();
+			else this.#proc.kill("SIGINT");
 		} catch (err) {
 			logger.warn(`Failed to interrupt ${this.#options.languageName.toLowerCase()} runner`, {
 				error: err instanceof Error ? err.message : String(err),
@@ -499,7 +540,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		let result: number | null;
 		let treeExited = true;
-		if (this.#options.detachedProcessTree && process.platform === "win32") {
+		if (this.#targetTerminate) {
+			await this.#waitForExitWithTimeout(timeoutMs);
+			treeExited = await this.#targetTerminate();
+			result = await this.#waitForExitWithTimeout(timeoutMs);
+		} else if (this.#options.detachedProcessTree && process.platform === "win32") {
 			// taskkill must see the live root PID to discover descendants, so start
 			// tree shutdown immediately after requesting the runner's clean exit.
 			treeExited = await terminateDetachedProcessTree(proc, timeoutMs);
@@ -542,6 +587,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		for (const entry of pending) {
 			if (entry.settled) continue;
 			entry.status = "error";
+			entry.error ??= { name: "KernelProcessError", value: reason, traceback: [] };
 			entry.cancelled = true;
 			entry.kernelKilled = entry.kernelKilled || kernelKilledDefault;
 			try {
@@ -557,6 +603,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 	}
 
+	async writeControl(frame: unknown): Promise<void> {
+		const line = JSON.stringify(frame);
+		if (line.length > MAX_KERNEL_FRAME_CHARS) throw new Error("Kernel control frame exceeds the transport limit");
+		await this.#writeLine(line);
+	}
+
 	async #writeLine(line: string): Promise<void> {
 		if (!this.#stdin) {
 			throw new Error(`${this.#options.languageName} kernel stdin is not open`);
@@ -565,7 +617,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			logger.debug(`${this.#options.languageName}Kernel send`, { preview: line.slice(0, 120) });
 		}
 		this.#stdin.write(`${line}\n`);
-		this.#stdin.flush();
+		await this.#stdin.flush();
 	}
 
 	#startReader(stream: ReadableStream<Uint8Array>): void {
@@ -736,7 +788,14 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				value: error instanceof Error ? error.message : String(error),
 				traceback: [],
 			};
-			pending.options = { ...pending.options, onChunk: undefined, onStream: undefined, onDisplay: undefined };
+			pending.options = {
+				...pending.options,
+				onChunk: undefined,
+				onStream: undefined,
+				onBytes: undefined,
+				onDisplay: undefined,
+			};
+			pending.requestCancel?.();
 		} else {
 			if (rid) this.#evictCompletedOutputSink(rid);
 			logger.warn("Kernel background output consumer failed", { error: String(error) });
@@ -747,10 +806,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		sink: {
 			onChunk?: (text: string) => Promise<void> | void;
 			onStream?: (text: string, stream: TextFrameKind) => Promise<void> | void;
+			onBytes?: (bytes: Uint8Array, stream: TextFrameKind) => Promise<void> | void;
 			unicodeTails: UnicodeTails;
 		},
 		kind: TextFrameKind,
 		text: string,
+		bytes?: Uint8Array,
 	): Promise<void> {
 		let combined = `${sink.unicodeTails[kind] ?? ""}${text}`;
 		sink.unicodeTails[kind] = undefined;
@@ -760,6 +821,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			combined = combined.slice(0, -1);
 		}
 		const repaired = combined.toWellFormed();
+		if (bytes || repaired) await sink.onBytes?.(bytes ?? Buffer.from(repaired), kind);
 		if (repaired) {
 			await sink.onChunk?.(repaired);
 			await sink.onStream?.(repaired, kind);
@@ -771,14 +833,36 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 	}
 
+	async #supplyInput(id: string, pending: PendingExecution): Promise<void> {
+		try {
+			const bytes = await pending.input.read();
+			if (pending.settled) return;
+			await this.#writeLine(
+				JSON.stringify({
+					type: "stdin",
+					id,
+					data: bytes ? Buffer.from(bytes).toString("base64") : "",
+					eof: !bytes,
+				}),
+			);
+		} catch (error) {
+			this.#failOutputConsumer(id, error);
+		}
+	}
+
 	async #handleFrame(frame: Frame): Promise<void> {
+		if (this.#options.onFrame?.(frame)) return;
 		const rid = frame.id;
 		if (!rid) return;
 		const control = this.#controlPending.get(rid);
 		if (control) {
 			this.#controlPending.delete(rid);
 			if (frame.type === "done") {
-				control({ busy: typeof frame.busy === "number" ? frame.busy : 0, executionCount: frame.executionCount });
+				control({
+					busy: typeof frame.busy === "number" ? frame.busy : 0,
+					executionCount: frame.executionCount,
+					interpreter: frame.interpreter,
+				});
 			} else if (frame.type === "error") {
 				control(undefined);
 			}
@@ -792,7 +876,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				return;
 			}
 			if (frame.type === "stdout" || frame.type === "stderr") {
-				await this.#forwardTextFrame(completed, frame.type, frame.data ?? "");
+				await this.#forwardTextFrame(
+					completed,
+					frame.type,
+					frame.encoding === "base64" ? (frame.text ?? "") : (frame.data ?? ""),
+					frame.encoding === "base64" ? Buffer.from(frame.data ?? "", "base64") : undefined,
+				);
 				this.#trimCompletedOutputSinks();
 				return;
 			}
@@ -801,6 +890,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				if (text) {
 					await completed.onChunk?.(text);
 					await completed.onStream?.(text, "stdout");
+					await completed.onBytes?.(Buffer.from(text), "stdout");
 				}
 				for (const output of outputs) await completed.onDisplay?.(output);
 				this.#trimCompletedOutputSinks();
@@ -809,6 +899,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 
 		switch (frame.type) {
+			case "stdin_request":
+				// Do not await input here: the reader must keep draining stdout and done
+				// even while an upstream producer is waiting for our output.
+				void this.#supplyInput(rid, pending);
+				return;
 			case "started":
 				pending.started = true;
 				if (pending.cancelRequested) pending.requestCancel?.();
@@ -819,10 +914,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 					{
 						onChunk: pending.options?.onChunk,
 						onStream: pending.options?.onStream,
+						onBytes: pending.options?.onBytes,
 						unicodeTails: pending.unicodeTails,
 					},
 					frame.type,
-					frame.data ?? "",
+					frame.encoding === "base64" ? (frame.text ?? "") : (frame.data ?? ""),
+					frame.encoding === "base64" ? Buffer.from(frame.data ?? "", "base64") : undefined,
 				);
 				return;
 			}
@@ -833,7 +930,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				if (text && pending.options?.onChunk) {
 					await pending.options.onChunk(text);
 				}
-				if (text) await pending.options?.onStream?.(text, "stdout");
+				if (text) {
+					await pending.options?.onStream?.(text, "stdout");
+					await pending.options?.onBytes?.(Buffer.from(text), "stdout");
+				}
 				if (outputs.length > 0 && pending.options?.onDisplay) {
 					for (const output of outputs) {
 						await pending.options.onDisplay(output);
@@ -855,6 +955,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 					await pending.options.onChunk(message);
 				}
 				await pending.options?.onStream?.(message, "stderr");
+				await pending.options?.onBytes?.(Buffer.from(message), "stderr");
 				return;
 			}
 			case "done": {
@@ -911,6 +1012,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				silent: true,
 				storeHistory: false,
 			} as TExecuteOptions);
+			if (result.kernelKilled && !controller.signal.aborted) {
+				throw new Error(`${label} failed: ${result.error?.value ?? "kernel process exited"}`);
+			}
 			if (result.cancelled) {
 				throw createAbortError(result.timedOut ? "TimeoutError" : "AbortError", `${label} cancelled`);
 			}

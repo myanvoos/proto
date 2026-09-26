@@ -23,17 +23,13 @@ export class RunOutput {
 	}
 
 	pushDisplay(output: JsDisplayOutput): void {
+		// Status events (kernel-state, log/phase, file tracking) steer the host; they are never run output.
+		if (output.type === "status") return;
 		if (output.type === "image") {
 			this.push(output);
 			return;
 		}
-		this.push({
-			type: "text",
-			text:
-				output.type === "notice"
-					? output.text
-					: safeJsonStringify(output.type === "json" ? output.data : output.event),
-		});
+		this.push({ type: "text", text: output.type === "notice" ? output.text : safeJsonStringify(output.data) });
 	}
 
 	push(entry: TextContent | ImageContent): void {

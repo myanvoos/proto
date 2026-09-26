@@ -119,8 +119,8 @@ test("a piped or redirected `-c` reads the caller's stdin instead of the kernel'
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-stdin-"));
 	try {
 		const bash = new BashTool(stubSession(dir));
-		// This used to route to the kernel, whose stdin is its own long-lived idle pipe:
-		// the piped bytes were discarded and the read blocked until the command deadline.
+		// Program bytes must be isolated from the kernel's long-lived control pipe:
+		// reading stdin must neither consume protocol frames nor wait for kernel exit.
 		const piped = await bash.execute("consume", {
 			command: `printf '{"a":1}' | python3 -c 'import json,sys; print("parsed", json.load(sys.stdin)["a"])'`,
 		});
@@ -132,8 +132,7 @@ test("a piped or redirected `-c` reads the caller's stdin instead of the kernel'
 		});
 		expect(textOf(redirected)).toContain("parsed 7");
 
-		// Precedence the fix must not break: with nothing on stdin, `-c` is still a kernel
-		// cell, so its state is visible to the next bash call.
+		// `-c` always shares its lane's kernel state, with or without program input.
 		await bash.execute("set", { command: "python3 -c 'STDIN_GUARD_MARKER = 4242'" });
 		expect(textOf(await bash.execute("get", { command: "python3 -c 'print(STDIN_GUARD_MARKER)'" }))).toContain(
 			"4242",
@@ -245,6 +244,34 @@ test("bun heredoc routes to the JS kernel and state persists across calls", asyn
 	}
 }, 60000);
 
+test("a js cell shows its own error with the user's stack but a kernel failure as just the harness message", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-errors-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const thrown = textOf(
+			await bash.execute("user-error", {
+				command: `bun -e 'function userFrame() { throw new TypeError("user boom") } userFrame()'; echo rc=$?`,
+			}),
+		);
+		expect(thrown).toContain("TypeError: user boom");
+		expect(thrown).toContain("at userFrame");
+		expect(thrown).toContain("rc=1");
+		const plain = textOf(await bash.execute("plain-throw", { command: `bun -e 'throw "plain value"'; echo rc=$?` }));
+		expect(plain).toContain("plain value");
+		expect(plain).not.toContain("    at ");
+		expect(plain).toContain("rc=1");
+		// The kernel process dies under the cell: a harness failure, not an error the cell raised.
+		const died = textOf(
+			await bash.execute("kernel-died", { command: `bun -e 'process.kill(process.pid, "SIGKILL")'; echo rc=$?` }),
+		);
+		expect(died).toContain("JS eval worker died during execution");
+		expect(died).not.toContain("    at ");
+		expect(died).toContain("rc=1");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("heredoc and -e js cells share one kernel session", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-shared-"));
 	try {
@@ -319,7 +346,9 @@ test("fleet js scripts execute in the JS kernel", async () => {
 		const bash = new BashTool(stubSession(dir));
 		const writeScript = [
 			"cat > fleet://plan.mjs <<'EOF'",
-			"await Bun.write('js-out.txt', 'from-node-fleet\\n');",
+			// `node` scripts run in real Node, so they use Node's APIs, not Bun's.
+			"const { writeFile } = await import('node:fs/promises');",
+			"await writeFile('js-out.txt', 'from-node-fleet\\n');",
 			"console.log('js-fleet-done');",
 			"EOF",
 		].join("\n");

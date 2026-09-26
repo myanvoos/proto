@@ -32,6 +32,7 @@ test("reports uncertain completion without replaying a cell after the JS worker 
 	try {
 		await expect(
 			executeInVmContext({
+				runtime: "bun",
 				sessionKey: sessionId,
 				sessionId,
 				ownerId,
@@ -45,6 +46,7 @@ test("reports uncertain completion without replaying a cell after the JS worker 
 		expect(await Bun.file(effectsPath).text()).toBe("once\n");
 
 		await executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -80,6 +82,7 @@ test("JS stale-write guard rejects clobbering a file changed after the cell read
 
 	const run = (code: string, runState: { onText?: (chunk: string) => void } = {}) =>
 		executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -128,6 +131,7 @@ test("same-metadata external edits still trigger the JS stale-write guard", asyn
 	fs.utimesSync(target, fixedTime, fixedTime);
 	const run = (code: string) =>
 		executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -170,6 +174,7 @@ test("background JavaScript file writes stay attributed to their originating cel
 	const secondPaths: string[] = [];
 	const run = (code: string, paths: string[]) =>
 		executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -220,6 +225,7 @@ test("Bun.file writer mutations are guarded and reported", async () => {
 	const events: string[] = [];
 	const run = (code: string) =>
 		executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -272,6 +278,7 @@ test("background JavaScript output remains visible after its run result settles"
 
 	try {
 		await executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -323,6 +330,7 @@ test("fails closed when neither isolated JS worker can be created", async () => 
 	try {
 		await expect(
 			executeInVmContext({
+				runtime: "bun",
 				sessionKey: sessionId,
 				sessionId,
 				ownerId,
@@ -359,6 +367,7 @@ test("interrupts an active JS cell and starts a clean worker for the next cell",
 
 	try {
 		const active = executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -379,6 +388,7 @@ test("interrupts an active JS cell and starts a clean worker for the next cell",
 
 		await expect(
 			executeInVmContext({
+				runtime: "bun",
 				sessionKey: sessionId,
 				sessionId,
 				ownerId,
@@ -415,6 +425,7 @@ test("reset rejects the active and queued JS cells before starting a fresh worke
 
 	try {
 		const active = executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -430,6 +441,7 @@ test("reset rejects the active and queued JS cells before starting a fresh worke
 		});
 		await ready.promise;
 		const queued = executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -444,6 +456,7 @@ test("reset rejects the active and queued JS cells before starting a fresh worke
 		await turn.promise;
 
 		const reset = executeInVmContext({
+			runtime: "bun",
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -480,7 +493,15 @@ test("an already-cancelled JS cell cannot reset or mutate the live kernel", asyn
 	};
 	const sessionId = `test-session:${crypto.randomUUID()}`;
 	const ownerId = `test-owner:${crypto.randomUUID()}`;
-	const options = { sessionKey: sessionId, sessionId, ownerId, cwd, session, filename: "preabort.js" };
+	const options = {
+		runtime: "bun" as const,
+		sessionKey: sessionId,
+		sessionId,
+		ownerId,
+		cwd,
+		session,
+		filename: "preabort.js",
+	};
 	try {
 		await executeInVmContext({ ...options, code: "var preserved = 42;", runState: {} });
 		await expect(
@@ -520,7 +541,15 @@ test("a failed JS output consumer rejects its cell without breaking later cells"
 	};
 	const sessionId = `test-session:${crypto.randomUUID()}`;
 	const ownerId = `test-owner:${crypto.randomUUID()}`;
-	const options = { sessionKey: sessionId, sessionId, ownerId, cwd, session, filename: "output-error.js" };
+	const options = {
+		runtime: "bun" as const,
+		sessionKey: sessionId,
+		sessionId,
+		ownerId,
+		cwd,
+		session,
+		filename: "output-error.js",
+	};
 	try {
 		await expect(
 			executeInVmContext({
@@ -566,6 +595,7 @@ test("local dependency invalidation reloads parents after edits, deletion, and r
 	const run = async () => {
 		let output = "";
 		await executeInVmContext({
+			runtime: "bun",
 			sessionKey: ownerId,
 			sessionId: ownerId,
 			ownerId,

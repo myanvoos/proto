@@ -287,3 +287,61 @@ test("capped child directories show only their inline marker, not an unactionabl
 		expect(expanded).not.toContain("more");
 	});
 });
+
+for (const source of ["buffered", "bridge"] as const) {
+	test(`${source} code range reads return exactly the selected lines, mark structural anchors, and footer the requested range`, async () => {
+		await withReadSession(async (diskRead, root) => {
+			const session = readSession(root);
+			session.getClientBridge = () => ({
+				capabilities: { readTextFile: true },
+				readTextFile: async ({ path: file }) => fs.readFile(file, "utf8"),
+			});
+			const read = source === "bridge" ? new ReadTool(session) : diskRead;
+			await Bun.write(
+				path.join(root, "sample.ts"),
+				[
+					"export interface Point { x: number; y: number }",
+					"export function dist(a: Point, b: Point): number {",
+					"  return Math.hypot(a.x - b.x, a.y - b.y);",
+					"}",
+					"export class Grid {",
+					"  constructor(public w: number, public h: number) {}",
+					"  cells(): number {",
+					"    return this.w * this.h;",
+					"  }",
+					"}",
+				].join("\n"),
+			);
+
+			const wrapped = wrapToolWithMetaNotice(read);
+			const ranged = await wrapped.execute(`code-range-${source}`, { path: "sample.ts:1-3" });
+			expect(textOf(ranged)).toStartWith(
+				[
+					"export interface Point { x: number; y: number }",
+					"export function dist(a: Point, b: Point): number {",
+					"  return Math.hypot(a.x - b.x, a.y - b.y);",
+					"⋮ }",
+					"",
+				].join("\n"),
+			);
+			expect(textOf(ranged)).not.toContain("class Grid");
+			expect(ranged.details?.displayContent?.lineNumbers).toEqual([1, 2, 3, 4]);
+			expect(textOf(ranged)).toMatch(/\n\n\[(Showing lines 1-3 of 10|7 more lines in file)\. Use :4 to continue\]$/);
+
+			const tail = await wrapped.execute(`code-range-tail-${source}`, { path: "sample.ts:6-6" });
+			expect(textOf(tail)).toStartWith(
+				["⋮ export class Grid {", "  constructor(public w: number, public h: number) {}", "…", "⋮ }", ""].join(
+					"\n",
+				),
+			);
+			expect(tail.details?.displayContent?.lineNumbers).toEqual([5, 6, null, 10]);
+			expect(textOf(tail)).toMatch(/\n\n\[(Showing lines 6-6 of 10|4 more lines in file)\. Use :7 to continue\]$/);
+
+			const raw = await read.execute(`code-range-raw-${source}`, { path: "sample.ts:2-3:raw" });
+			expect(textOf(raw)).toStartWith(
+				"export function dist(a: Point, b: Point): number {\n  return Math.hypot(a.x - b.x, a.y - b.y);\n\n[",
+			);
+			expect(textOf(raw)).toMatch(/\n\n\[(Showing lines 2-3 of 10|7 more lines in file)\. Use :4 to continue\]$/);
+		});
+	});
+}

@@ -36,7 +36,9 @@ The kernel bridge handles supported `python`/`python3`, `node`, and `bun` stdin 
 
 A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
 
-Kernel stdout, stderr, display text, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
+Inline-code invocations stream program stdin while the cell is running: the producer need not close before the consumer starts, and total input is not capped at 1 MiB. Transport chunks and in-flight buffers are bounded and backpressured. Python `sys.stdin.buffer` / `sys.stdout.buffer` and JavaScript `process.stdin` / `process.stdout` preserve arbitrary bytes through pipes and file redirection, including invalid UTF-8 and NUL. Text APIs still perform their normal encoding/decoding. Final-expression display also remains active: byte-only producers should assign a Python write result (`written = sys.stdout.buffer.write(data)`) or use `void process.stdout.write(data)` in JavaScript, rather than displaying the returned count/boolean into the pipeline. Model-visible Bash capture is text; use pipes, redirection, or artifact values to retain arbitrary bytes. Stdin-only interpreter invocations consume stdin as source code; `-c` / `-e` keeps source separate from program data.
+
+Kernel stdout, stderr, display text, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. Binary output uses byte-preserving frames; rich display metadata remains a separate channel, never binary pipeline payload. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
 
 ## Kernel-cell reference
 
@@ -83,7 +85,7 @@ Text output follows the Bash output stream. JSON values, images, and kernel stat
 
 - Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
 - Variables, imports, definitions, and running tasks survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
-- Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM.
+- Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM. The discoverable `kernel` tool provides explicit lane start, inspect, reset, close, and keepalive operations outside the executing cell.
 - Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution; death during execution leaves completion uncertain and does not replay the cell. Check partial side effects before retrying. The next cell reports the changed generation and lost state.
 
 Interactive terminal input is not supported by routed cells. For inline-code invocations, pipe or redirect program data and read `sys.stdin` / `process.stdin`; stdin-only invocations still interpret their stdin as code. Shell exports, inline assignments and tool `env` overrides reach the cell, and stderr remains redirectable separately.
@@ -91,6 +93,114 @@ Interactive terminal input is not supported by routed cells. For inline-code inv
 ### Timeouts and cancellation
 
 The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd-validation-and-timeout-resolution)) is the only model-facing deadline for a kernel cell; a cell has no separate structured timeout field. If the command deadline or caller abort interrupts a Python cell, the runner receives `SIGINT` and normally remains reusable; if it cannot settle, the kernel is shut down and recreated. Interrupting JavaScript force-kills its VM, so variables from earlier cells are lost. The Bash shell session is likewise quarantined after a cancelled or timed-out run.
+
+## Explicit kernel lifecycle and targets
+
+Use `xd kernel` from the Brush shell (or call the discoverable `kernel` tool directly) to manage a named language/lane without entering that kernel's execution queue:
+
+```bash
+xd kernel '{"op":"list"}'
+xd kernel '{"op":"start","language":"python","lane":"analysis","interpreter":"/work/.venv/bin/python","cwd":"/work"}'
+xd kernel '{"op":"inspect","language":"python","lane":"analysis"}'
+xd kernel '{"op":"keepalive","language":"python","lane":"analysis","ttlMs":600000}'
+xd kernel '{"op":"reset","language":"python","lane":"analysis"}'
+xd kernel '{"op":"close","language":"python","lane":"analysis","force":true}'
+```
+
+The paths above must already exist. Execute subsequent interpreter cells with the matching Bash `lane`. Configuration belongs to the owner session and language/lane; changing an existing configuration requires `reset`, not silent replacement. Reset discards variables but retains the selected environment unless explicitly overridden. Close releases the runtime and forgets its lane configuration; subsequent implicit cells use local defaults, so explicitly start/configure a remote lane again before reuse. Closing busy work requires explicit `force:true`, which cancels it. Inspect/list and forced close remain available during an executing cell. Keepalive is a bounded lease (at most one hour), not an immortal kernel; owner disposal still closes owned runtimes.
+
+Python and Bun kernels support local, existing-container, and SSH targets; Node kernels run on the local host only (use `bun` or `python` for SSH/container targets):
+
+```bash
+xd kernel '{"op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
+xd kernel '{"op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
+```
+
+Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.
+
+**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)`, `block_range`, and `edit_batch` also address the parent; pass target source as `symbols(code=...)` for structural analysis. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
+
+## Live tool and background-job events
+
+Python `start_tool(name, args)` / JavaScript `await startTool(name, args)` returns an owned execution handle without waiting for its final result. Consume `tool_events(handle, cursor=0, limit=128, wait_ms=30000)` or `for await (const event of toolEvents(handle, {cursor, limit, waitMs}))` while work runs:
+
+```python
+job = start_tool("bash", {"command": "printf 'ready\\n'; exit 7", "async": True})
+for event in tool_events(job):
+    print(event)
+dispose_tool(job)
+```
+
+Events contain `executionId`, monotonic `sequence`, `kind`, `data`, and `terminal`. Updates and tool `result` are distinct; terminal `complete` follows settlement of owned managed background jobs, so an async Bash launch acknowledgement is not mistaken for completion. The final job result, including nonzero exit status, is available in job settlement data. Bounded retention makes overflow visible through `gap` events; resume using the last consumed sequence as `cursor` rather than assuming a complete transcript. Oversized payloads carry explicit omission metadata; retain bulk data as artifact values instead of treating the event feed as an unbounded result store.
+
+Breaking an iterator does not cancel work. Use `cancel_tool(handle, wait_ms=...)` / `await cancelTool(handle, {waitMs})`; then `dispose_tool(handle)` / `await disposeTool(handle)` after settlement to release retained events. Cancelling the event execution also cancels its owned descendant jobs, not unrelated sibling work. Session disposal cancels owned subscriptions and work. A noncooperative callback is not falsely reported stopped merely because cancellation was requested.
+
+## Immutable artifact values and rich completions
+
+Use `publish_artifact(value, kind="json")` / `await publishArtifact(value, {kind:"json"})` to retain data without copying it into every model-visible result. `kind="text"` stores text; `kind="binary"` accepts native Python bytes or JavaScript `Uint8Array`, or base64 with `encoding="base64"`. `path` snapshots a parent-host file rather than creating a live reference.
+
+The returned reference contains `type`, `version`, `uri`, `owner`, `mimeType`, byte count, and SHA-256. Files use the existing `artifact://` store. Handles are immutable, verified, and session-owned: changing the source file does not change the snapshot; tampered or foreign handles fail. Kernel reset preserves them, but session disposal revokes them. Restoring handle metadata in another session does not grant access.
+
+`read_artifact(ref, offset=0, length=..., encoding="utf8")` / `await readArtifact(ref, {offset,length,encoding})` returns `{ref,offset,bytes,eof,encoding,data}`. Reads are bounded to 1 MiB per page; offsets and lengths are bytes, not text characters. UTF-8 pages end on a character boundary, so `bytes` can be less than `length`; continue at `offset + bytes`. Bytes that are not valid UTF-8 fail with an error; read binary data with `encoding="base64"`. `ref` may also be the bare `artifact://<id>` URI of an artifact this session published. `resolve_artifact(ref)` / `await resolveArtifact(ref)` validates the handle without returning its payload. Use explicit pages for large transfers.
+
+`completion()` still accepts a string, and now also accepts a reference or an array of text/media parts and references:
+
+```python
+image = publish_artifact(Path("plot.png").read_bytes(), kind="binary", mime_type="image/png")
+answer = completion([
+    {"type": "text", "text": "Describe the trend and flag uncertainty."},
+    image,
+])
+print(answer)
+```
+
+The active/selected model must support every input modality. Explicit media parts are `{type:"image"|"audio"|"video", data:<base64>, mimeType}` or `{type:..., artifact:ref}`; ordinary text is `{type:"text", text}`. MIME/byte consistency, content bounds, provider wire support, and image-detail options are validated before sending. Unsupported modalities fail rather than silently degrading to a text-only request. `system`, model selection, and schema-return behavior remain unchanged.
+
+## Scoped access from ordinary scripts
+
+External interpreters do not automatically receive prelude objects or `xd`. Use explicit delegation rather than relying on private kernel transport credentials: it supplies thin Python/JavaScript clients with a revocable, expiring capability.
+
+```python
+lease = delegate([
+    {"tool": "__completion__"},
+    {"tool": "__runtime__", "operations": ["artifact_publish", "artifact_read", "artifact_resolve"]},
+], ttl_ms=60000, max_concurrent=2, max_requests=20)
+launch_delegated(lease, name="report", application="python3", args=["report.py"])
+```
+
+In the ordinary `report.py` script:
+
+```python
+from proto_session import SessionClient
+session = SessionClient.from_env()
+result = session.completion("Give a short heading for a test report.")
+reference = session.publish_artifact({"heading": result})
+print(reference)
+```
+
+`delegate` returns a lease snapshot and the packaged client paths. Python uses keyword options; JavaScript uses `{ttlMs,maxConcurrent,maxRequests,expose}`. JavaScript scripts import `SessionClient` from the returned client module and call `await SessionClient.fromEnv()`. Grants name exact tools, optionally exact `args.op` operations; special runtime grants permit artifact operations only, not recursive delegation. Execution, control, and agent tools are not delegable; artifact path publication is also denied. Use explicit data values and the managed launcher instead. Calls use the normal session tool/model policies.
+
+`launch_delegated` / `launchDelegated` runs through the existing managed-process supervisor on the parent host and explicitly supplies that lease. For a manually launched script, request `expose=True` / `expose:true` and pass the returned launch environment; never print the capability file or token. Credentials are not automatically exported to arbitrary commands. `delegations()` lists leases; `revoke_delegation(lease)` / `await revokeDelegation(lease)` revokes future calls, cancels in-flight calls, and stops owned launched processes. Expiry and session disposal do the same. Request/concurrency limits are enforced and calls are never implicitly retried. This scopes bridge authority; it is not an OS/filesystem sandbox for code running as the same user.
+
+## Selected data persistence
+
+Save only explicit bindings, then restore them into a later kernel of the same language:
+
+```python
+summary = {"passed": 12, "failed": 0}
+payload = b"\x00\x80\xff"
+save_state("local://report-state.json", ["summary", "payload"])
+```
+
+After an explicit kernel reset, in a later cell:
+
+```python
+load_state("local://report-state.json")
+```
+
+JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `load_state(path, collision="reject")`; explicit `"overwrite"` permits replacing colliding user bindings. Prelude/reserved bindings cannot be replaced.
+
+Snapshots are versioned, language/interpreter-described, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata. Interpreter implementation and major version must match; minor/patch versions and executable paths may differ. Selection addresses published kernel globals, not variables local to a function or JavaScript async-cell closure. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, cycles, nonfinite values, resources, and incompatible metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
 
 ## Kernel recovery helpers
 
@@ -109,7 +219,7 @@ display(edit_batch(changes))
 display(edit_batch(changes, apply=True))
 ```
 
-Results expose `state` (`preview`, `applied`, `rolled-back`, `partial`), `files`, `applied`, `conflicts`, and optional `error`. `applied` records writes attempted, including subsequently reverted ones. Mid-commit failure or cancellation attempts rollback, but never overwrites a newer edit it observes. Atomicity is per file, not across the batch; noncooperating external writers can race validation/replacement. Symlink targets, canonical duplicate paths and hardlink aliases are rejected. Limits: 8 MiB per file/replacement, 16 MiB total batch content.
+Results expose `state` (`preview`, `conflict`, `applied`, `rolled-back`, `partial`), `files`, `applied`, `conflicts` (`{path, reason}`; `stale`/`exists`/`missing` when validation fails, in which case nothing is written; `changed`/`rollback-failed` after a partial rollback), and optional `error`. Applied files are reported like any kernel write (status event and `<kernel> note:`), and the stale-write guard is re-armed at the content the batch left. `applied` records writes attempted, including subsequently reverted ones. Mid-commit failure or cancellation attempts rollback, but never overwrites a newer edit it observes. Atomicity is per file, not across the batch; noncooperating external writers can race validation/replacement. Symlink targets, canonical duplicate paths and hardlink aliases are rejected. Limits: 8 MiB per file/replacement, 16 MiB total batch content.
 
 ### Settled and streaming orchestration
 

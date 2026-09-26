@@ -3,7 +3,10 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { atomicWriteFile, isEnoent } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
+import { type EvalArtifactResult, runEvalArtifact } from "./artifact-values";
 import { type CheckedEditResult, checkedEdits } from "./checked-edits";
+import { type EvalDelegationResult, runEvalDelegation } from "./delegation";
+import { type ExecutionEventsResult, runExecutionEvents } from "./execution-events";
 import type { EvalStatusEvent } from "./types";
 
 export const EVAL_RUNTIME_BRIDGE_NAME = "__runtime__";
@@ -11,7 +14,10 @@ export interface ExecutionRecord {
 	id: string;
 	command: string;
 	lane: string;
-	startedAt: number;
+	/** When the call was issued and joined its lane queue. */
+	queuedAt?: number;
+	/** When the call left the lane queue and began executing; absent while still queued. */
+	startedAt?: number;
 	finishedAt?: number;
 	result?: AgentToolResult;
 	error?: string;
@@ -39,7 +45,9 @@ export function recordExecution(session: ToolSession, record: ExecutionRecord): 
 		typeof record.command !== "string" ||
 		typeof record.lane !== "string" ||
 		!record.lane ||
-		!Number.isFinite(record.startedAt) ||
+		(record.queuedAt !== undefined && !Number.isFinite(record.queuedAt)) ||
+		(record.startedAt !== undefined && !Number.isFinite(record.startedAt)) ||
+		(record.queuedAt === undefined && record.startedAt === undefined) ||
 		(record.finishedAt !== undefined && !Number.isFinite(record.finishedAt)) ||
 		(record.error !== undefined && typeof record.error !== "string") ||
 		(record.resultOmitted !== undefined && typeof record.resultOmitted !== "string")
@@ -50,6 +58,7 @@ export function recordExecution(session: ToolSession, record: ExecutionRecord): 
 		id: record.id,
 		command: record.command,
 		lane: record.lane,
+		queuedAt: record.queuedAt,
 		startedAt: record.startedAt,
 		finishedAt: record.finishedAt,
 		error: record.error,
@@ -89,6 +98,9 @@ export function recordExecution(session: ToolSession, record: ExecutionRecord): 
 
 export type RuntimeBridgeResult =
 	| CheckedEditResult
+	| ExecutionEventsResult
+	| EvalArtifactResult
+	| EvalDelegationResult
 	| { records: ExecutionRecord[]; evicted: number }
 	| { found: boolean; value?: unknown }
 	| { saved: true };
@@ -115,6 +127,23 @@ export async function runEvalRuntime(
 	if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("runtime bridge expects an object");
 	const request = args as Record<string, unknown>;
 	options.signal?.throwIfAborted();
+	if (
+		request.op === "events_start" ||
+		request.op === "events_read" ||
+		request.op === "events_cancel" ||
+		request.op === "events_dispose"
+	)
+		return runExecutionEvents(request, options);
+	if (request.op === "artifact_publish" || request.op === "artifact_read" || request.op === "artifact_resolve") {
+		return runEvalArtifact(request, options);
+	}
+	if (
+		request.op === "delegation_create" ||
+		request.op === "delegation_list" ||
+		request.op === "delegation_revoke" ||
+		request.op === "delegation_launch"
+	)
+		return runEvalDelegation(request, options);
 	if (request.op === "executions") {
 		const limit = request.limit ?? 20;
 		if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 0 || limit > 128)

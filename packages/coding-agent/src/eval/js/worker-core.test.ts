@@ -14,6 +14,9 @@ class TestTransport implements Transport {
 
 	send(msg: WorkerOutbound): void {
 		this.sent.push(msg);
+		if ((msg.type === "text" || msg.type === "bytes") && msg.id) {
+			this.#handler?.({ type: "output-ack", id: msg.id });
+		}
 		for (const listener of this.#listeners) listener(msg);
 	}
 

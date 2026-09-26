@@ -33,6 +33,16 @@ impl TryFrom<i32> for Signal {
 	}
 }
 
+pub(crate) enum DefaultDisposition {
+	Terminate { signal_number: i32 },
+	Stop,
+	Ignore,
+}
+
+pub(crate) const fn default_disposition(signal: Signal) -> DefaultDisposition {
+	match signal {}
+}
+
 pub(crate) fn continue_process(_pid: sys::process::ProcessId) -> Result<(), error::Error> {
 	Err(error::ErrorKind::NotSupportedOnThisPlatform("continuing process").into())
 }

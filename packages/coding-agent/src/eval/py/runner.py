@@ -6,11 +6,15 @@ wrapper writes typed frames back.
 Host -> wrapper:
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?}
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?, "cwd": str?, "env": dict?}
+  {"type": "stdin", "id": str, "data": base64, "eof": bool}  # one <=64 KiB credit
+  {"type": "tool_response", "requestId": str, "reply": dict}  # remote bridge only
   {"type": "cancel", "id": str}                  # cancel active/queued cell
   {"type": "status", "id": str}                  # concurrent liveness probe
   {"type": "exit"}                                # graceful shutdown
 
 Wrapper -> host:
+  {"type": "stdin_request", "id": ...}           # pull one program-input chunk
+  {"type": "tool_request", "id": ..., "requestId": str, "payload": dict}
   {"type": "started",     "id": ...}
   {"type": "stdout",      "id": ..., "data": str}
   {"type": "stderr",      "id": ..., "data": str}
@@ -19,6 +23,10 @@ Wrapper -> host:
   {"type": "error",       "id": ..., "ename": str, "evalue": str, "traceback": [str]}
   {"type": "done",        "id": ..., "status": "ok"|"error",
                               "executionCount": int, "cancelled": bool}
+
+Binary stdout/stderr frames use encoding:"base64", data:<base64>, text:<preview>.
+Code requests set stdin:true to enable program input, independent of this control pipe.
+Input replies bypass the asyncio execution queue so synchronous reads can progress.
 
 The runner is intentionally self-contained: no third-party imports, no IPython.
 Magics are translated by a small line-scanner before AST parsing; rich display
@@ -56,6 +64,14 @@ import types
 import weakref
 from pathlib import Path
 from typing import Any, Callable
+
+
+# The host embeds this asset when staging a standalone runner (including remote targets).
+_PERSISTENCE_SOURCE = None
+_persistence = types.ModuleType("_proto_kernel_state")
+exec(compile(_PERSISTENCE_SOURCE if _PERSISTENCE_SOURCE is not None
+             else Path(__file__).with_name("state.py").read_text(encoding="utf-8"),
+             "<kernel-state>", "exec"), _persistence.__dict__)
 
 
 try:
@@ -201,19 +217,23 @@ class _StreamProxy(io.TextIOBase):
         if not text:
             return
         _drain_capture_before_frame(rid)
-        _emit({"type": self._kind, "id": rid, "data": text})
+        for offset in range(0, len(text), 16384):
+            _emit({"type": self._kind, "id": rid, "data": text[offset:offset + 16384]})
 
     def _deliver_bytes(self, rid: str, data: bytes) -> None:
         """Emit raw bytes, ordered behind buffered text and captured output.
 
-        Undecodable bytes keep the ``backslashreplace`` spelling the fd-capture
-        path already uses, so a byte written through ``.buffer`` reads the same
-        as the identical byte written by a child process.
+        Bytes remain separate from the human preview throughout the protocol.
         """
         if not data:
             return
         self.flush_rid(rid)
-        self._deliver(rid, data.decode("utf-8", "backslashreplace"))
+        _drain_capture_before_frame(rid)
+        for offset in range(0, len(data), 65536):
+            chunk = data[offset:offset + 65536]
+            _emit({"type": self._kind, "id": rid, "encoding": "base64",
+                   "data": base64.b64encode(chunk).decode("ascii"),
+                   "text": chunk.decode("utf-8", "backslashreplace")})
 
     def write(self, data: Any) -> int:
         if not isinstance(data, str):
@@ -268,9 +288,7 @@ class _StreamProxy(io.TextIOBase):
 class _BinaryStreamProxy(io.RawIOBase):
     """The ``.buffer`` of a captured text stream.
 
-    Bytes reach the host exactly as written when the request owns its capture
-    fd; otherwise they are decoded (``backslashreplace``, so invalid bytes stay
-    visible) and travel as a typed frame like any other cell output.
+    Bytes travel losslessly as bounded base64 frames, with a separate text preview.
     """
 
     def __init__(self, text: "_StreamProxy") -> None:
@@ -330,6 +348,94 @@ def _flush_stream_proxies(rid: str) -> None:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, _StreamProxy):
             stream.flush_rid(rid)
+
+
+
+class _ProgramInput(io.RawIOBase):
+    """Blocking Python I/O backed by one 64 KiB protocol credit at a time."""
+
+    def __init__(self, rid: str, enabled: bool) -> None:
+        super().__init__()
+        self.rid = rid
+        self._condition = threading.Condition()
+        self._data = b""
+        self._eof = not enabled
+        self._requested = False
+        self._error: str | None = None
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        with self._condition:
+            while not self._data and not self._eof:
+                if not self._requested:
+                    self._requested = True
+                    _emit({"type": "stdin_request", "id": self.rid})
+                self._condition.wait()
+            if self._error:
+                raise OSError(self._error)
+            size = min(len(buffer), len(self._data))
+            buffer[:size] = self._data[:size]
+            self._data = self._data[size:]
+            return size
+
+    def feed(self, frame: dict) -> None:
+        with self._condition:
+            try:
+                encoded = frame.get("data", "")
+                if not self._requested or not isinstance(encoded, str) or len(encoded) > 87384:
+                    raise ValueError("Invalid stdin credit")
+                data = base64.b64decode(encoded, validate=True)
+                if len(data) > 65536 or self._data or (not data and not frame.get("eof")):
+                    raise ValueError("Invalid stdin chunk")
+                self._data = data
+                self._eof = bool(frame.get("eof"))
+                self._requested = False
+            except (ValueError, TypeError) as error:
+                self._error = str(error)
+                self._eof = True
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        with self._condition:
+            self._eof = True
+            self._data = b""
+            self._condition.notify_all()
+        super().close()
+
+
+_PROGRAM_INPUTS: dict[str, _ProgramInput] = {}
+_BRIDGE_REPLIES: dict[str, tuple[threading.Event, list[dict]]] = {}
+_BRIDGE_LOCK = threading.Lock()
+
+
+def __proto_bridge_call__(name: str, args: dict, completion_invocation_id=None):
+    rid = _CURRENT_RID.get()
+    if rid is None:
+        raise RuntimeError("Tool bridge called outside an active cell")
+    request_id = os.urandom(16).hex()
+    event = threading.Event()
+    replies: list[dict] = []
+    with _BRIDGE_LOCK:
+        if len(_BRIDGE_REPLIES) >= 256:
+            raise RuntimeError("Too many outstanding tool bridge requests")
+        _BRIDGE_REPLIES[request_id] = (event, replies)
+    try:
+        _emit({"type": "tool_request", "id": rid, "requestId": request_id,
+               "payload": {"name": name, "args": args, "completionInvocationId": completion_invocation_id}})
+        while not event.wait(0.1):
+            check = _prelude_fn("task_signal")
+            if check is not None:
+                check().check()
+        reply = replies[0]
+        if not reply.get("ok"):
+            error = reply.get("error") or {}
+            raise RuntimeError(error.get("message", "Tool bridge request failed"))
+        return reply.get("value")
+    finally:
+        with _BRIDGE_LOCK:
+            _BRIDGE_REPLIES.pop(request_id, None)
 
 
 class _RunnerState:
@@ -440,6 +546,16 @@ _SAVED_MATPLOTLIB_FIGURES: contextvars.ContextVar[list["weakref.Reference"] | No
     )
 )
 
+# Strong refs: pyplot drops a figure on close, and ``plt.close(plt.gcf())``
+# leaves no user reference, so a weakref would lose it before cell end.
+_CLOSED_MATPLOTLIB_FIGURES: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar(
+    "proto_closed_matplotlib_figures",
+    default=None,
+)
+# One past the host's 8-image display cap, so a cell closing more figures still
+# surfaces the host's truncation notice without retaining every figure.
+_MAX_CLOSED_MATPLOTLIB_FIGURES = 9
+
 
 _STATE = _RunnerState()
 
@@ -476,8 +592,9 @@ def _emit_captured_bytes(
     rid: str, kind: str, decoder: codecs.IncrementalDecoder, data: bytes, *, final: bool = False
 ) -> None:
     text = decoder.decode(data, final=final)
-    if text:
-        _emit({"type": kind, "id": rid, "data": text})
+    if data or text:
+        _emit({"type": kind, "id": rid, "encoding": "base64",
+               "data": base64.b64encode(data).decode("ascii"), "text": text})
 
 
 def _drain_capture_fd(
@@ -1859,10 +1976,11 @@ def _reset_fs_status() -> None:
 
 
 def _ensure_matplotlib_saved_hook() -> None:
-    """Patch Figure.savefig to remember figures for end-of-cell display.
+    """Patch Figure.savefig and pyplot.close to remember figures for end-of-cell display.
 
-    pyplot drops closed figures, so without this hook the dominant agent
-    pattern -- ``fig.savefig(path); plt.close(fig)`` -- never displays.
+    pyplot drops closed figures, so without these hooks the dominant agent
+    patterns -- ``fig.savefig(path); plt.close(fig)`` or ``plt.close("all")``
+    -- never display.
     Installs lazily via an import hook so sessions that never import
     matplotlib pay nothing.
     """
@@ -1925,10 +2043,64 @@ def _patch_pyplot(plt: Any) -> None:
 
     figure_cls.savefig = savefig
 
+    orig_close = plt.close
+
+    def close(fig: Any = None) -> Any:
+        closed = _CLOSED_MATPLOTLIB_FIGURES.get()
+        before = _open_matplotlib_figures() if closed is not None else []
+        result = orig_close(fig)
+        if closed is None or not before:
+            return result
+        displayed = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get() or set()
+        still_open = {id(figure) for figure in _open_matplotlib_figures()}
+        for figure in before:
+            if len(closed) >= _MAX_CLOSED_MATPLOTLIB_FIGURES:
+                break
+            if id(figure) in still_open or id(figure) in displayed:
+                continue
+            if all(figure is not kept for kept in closed):
+                closed.append(figure)
+        return result
+
+    close.__doc__ = orig_close.__doc__
+    close.__wrapped__ = orig_close
+    plt.close = close
+
+
+def _open_matplotlib_figures() -> list[Any]:
+    helpers = sys.modules.get("matplotlib._pylab_helpers")
+    gcf = getattr(helpers, "Gcf", None)
+    if gcf is None:
+        return []
+    try:
+        return [manager.canvas.figure for manager in gcf.get_all_fig_managers()]
+    except Exception:
+        return []
+
+
+def _emit_figure_png(fig: Any, label: str) -> None:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    data = base64.b64encode(buf.getvalue()).decode("ascii")
+    _emit_display({"image/png": data, "text/plain": label})
+
 
 def _flush_matplotlib_figures() -> None:
     displayed = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get() or set()
     emitted: set[int] = set()
+    closed = _CLOSED_MATPLOTLIB_FIGURES.get()
+    if closed:
+        # Closed before cell end, so they precede figures still open.
+        pending = list(closed)
+        closed.clear()
+        for fig in pending:
+            if id(fig) in displayed or id(fig) in emitted:
+                continue
+            try:
+                _emit_figure_png(fig, "<Figure>")
+                emitted.add(id(fig))
+            except Exception:
+                continue
     plt = sys.modules.get("matplotlib.pyplot")
     if plt is not None:
         try:
@@ -1941,10 +2113,7 @@ def _flush_matplotlib_figures() -> None:
                 if id(fig) in displayed or id(fig) in emitted:
                     plt.close(fig)
                     continue
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", bbox_inches="tight")
-                data = base64.b64encode(buf.getvalue()).decode("ascii")
-                _emit_display({"image/png": data, "text/plain": f"<Figure {num}>"})
+                _emit_figure_png(fig, f"<Figure {num}>")
                 emitted.add(id(fig))
                 plt.close(fig)
             except Exception:
@@ -1957,10 +2126,7 @@ def _flush_matplotlib_figures() -> None:
             if fig is None or id(fig) in displayed or id(fig) in emitted:
                 continue
             try:
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", bbox_inches="tight")
-                data = base64.b64encode(buf.getvalue()).decode("ascii")
-                _emit_display({"image/png": data, "text/plain": "<Figure>"})
+                _emit_figure_png(fig, "<Figure>")
                 emitted.add(id(fig))
             except Exception:
                 remaining.append(ref)
@@ -1970,7 +2136,10 @@ def _flush_matplotlib_figures() -> None:
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 
-_KERNEL_GENERATION = os.urandom(16).hex()
+_KERNEL_GENERATION = os.environ.get("PI_KERNEL_GENERATION") or os.urandom(16).hex()
+# Capture launch configuration once, not mutable cell environment or user namespace getters.
+_KERNEL_TARGET = json.loads(os.environ.get("PI_KERNEL_TARGET", '{"kind":"local"}'))
+_REMOTE_TARGET = os.environ.get("PI_KERNEL_REMOTE") == "1"
 
 
 def __proto_kernel_state(*, limit: int = 200) -> dict:
@@ -2007,7 +2176,7 @@ def __proto_kernel_state(*, limit: int = 200) -> dict:
         request = task in _STATE.request_tasks
         tasks.append({"id": str(id(task)), "kind": "cell" if request else "asyncio",
                       "state": "running", "cell": _STATE.execution_count if request else None})
-    return {"generation": _KERNEL_GENERATION, "language": "python", "interpreter": sys.executable,
+    return {"generation": _KERNEL_GENERATION, "target": json.loads(json.dumps(_KERNEL_TARGET)), "language": "python", "interpreter": sys.executable,
             "cwd": os.getcwd(), "executionCount": _STATE.execution_count,
             "active": _STATE.active_executions,
             "queued": max(0, len(_STATE.pending_request_ids) - len(_STATE.request_tasks)),
@@ -2017,6 +2186,24 @@ def __proto_kernel_state(*, limit: int = 200) -> dict:
 
 def __proto_defs_view() -> dict[str, int]:
     return dict(_STATE.defs)
+
+
+def _state_path(path):
+    resolver = _prelude_fn("proto_path")
+    return str(resolver(path) if resolver else Path(path).expanduser())
+
+
+def __proto_save_state(path, names) -> dict:
+    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
+    return _persistence.save_state(_state_path(path), names, _STATE.user_ns, reserved)
+
+
+def __proto_load_state(path, *, collision="reject") -> dict:
+    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
+    result = _persistence.load_state(_state_path(path), _STATE.user_ns, reserved, collision=collision)
+    for name in result["names"]:
+        _STATE.defs[name] = _STATE.execution_count
+    return result
 
 
 def _current_run_id() -> str | None:
@@ -2038,6 +2225,8 @@ def _runner_exports() -> dict[str, Any]:
         "display": __proto_display,
         "defs": __proto_defs_view,
         "kernel_state": __proto_kernel_state,
+        "save_state": __proto_save_state,
+        "load_state": __proto_load_state,
     }
 
 
@@ -2074,6 +2263,8 @@ def _load_prelude(source: str) -> None:
         "__proto_current_run_id__": _current_run_id,
         "__proto_next_completion_invocation__": _next_completion_invocation_id,
     }
+    if os.environ.get("PI_KERNEL_STDIO_BRIDGE") == "1":
+        ns["__proto_bridge_call__"] = __proto_bridge_call__
     exec(compile(source, "<prelude>", "exec"), ns)
     declared = ns.get("__all__")
     if isinstance(declared, (list, tuple)):
@@ -2402,6 +2593,7 @@ async def _handle_request_async(req: dict) -> None:
     completion_token = _CURRENT_COMPLETION_COUNT.set([0])
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
     saved_matplotlib_token = _SAVED_MATPLOTLIB_FIGURES.set([])
+    closed_matplotlib_token = _CLOSED_MATPLOTLIB_FIGURES.set([])
     try:
         _ensure_matplotlib_saved_hook()
     except Exception:
@@ -2412,7 +2604,10 @@ async def _handle_request_async(req: dict) -> None:
     saved_env = {key: os.environ.get(key) for key in scoped_env}
     os.environ.update(scoped_env)
     saved_stdin = sys.stdin
-    sys.stdin = io.TextIOWrapper(io.BytesIO(bytes(req.get("stdin") or [])), encoding="utf-8")
+    program_input = _ProgramInput(rid, req.get("stdin") is True)
+    _PROGRAM_INPUTS[rid] = program_input
+    cell_stdin = io.TextIOWrapper(io.BufferedReader(program_input), encoding="utf-8")
+    sys.stdin = cell_stdin
     capture = _begin_fd_capture(rid)
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
@@ -2552,7 +2747,10 @@ async def _handle_request_async(req: dict) -> None:
         _CURRENT_COMPLETION_COUNT.reset(completion_token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
         _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
+        _CLOSED_MATPLOTLIB_FIGURES.reset(closed_matplotlib_token)
         sys.stdin = saved_stdin
+        _PROGRAM_INPUTS.pop(rid, None)
+        cell_stdin.close()
         for key, value in saved_env.items():
             if os.environ.get(key) != scoped_env[key]:
                 continue  # Intentional user changes remain kernel-local.
@@ -2606,6 +2804,20 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: _BoundedRequestQueue, st
                 }
             )
             continue
+        # Control input must bypass the asyncio execution queue: synchronous
+        # user code can be blocked inside readline() or a bridged tool call.
+        if req.get("type") == "stdin":
+            target = _PROGRAM_INPUTS.get(str(req.get("id")))
+            if target is not None:
+                target.feed(req)
+            continue
+        if req.get("type") == "tool_response":
+            with _BRIDGE_LOCK:
+                pending = _BRIDGE_REPLIES.get(str(req.get("requestId")))
+                if pending is not None:
+                    pending[1].append(req.get("reply") or {})
+                    pending[0].set()
+            continue
         try:
             size = _request_size(req)
         except (TypeError, ValueError):
@@ -2614,6 +2826,15 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: _BoundedRequestQueue, st
             loop.call_soon_threadsafe(_emit_queue_limit_error, req)
             continue
         loop.call_soon_threadsafe(queue.put_reserved, req, size)
+    for target in list(_PROGRAM_INPUTS.values()):
+        target.close()
+    with _BRIDGE_LOCK:
+        for event, replies in _BRIDGE_REPLIES.values():
+            replies.append({"ok": False, "error": {"message": "Host transport closed"}})
+            event.set()
+    if _REMOTE_TARGET and os.getpgrp() == os.getpid():
+        # The pipe is the capability lifetime. A vanished parent cannot reap a remote tree.
+        os.killpg(os.getpid(), signal.SIGKILL)
     loop.call_soon_threadsafe(_enqueue_exit, queue)
 
 
@@ -2725,6 +2946,7 @@ async def _main_async() -> None:
                         "status": "ok",
                         "executionCount": _STATE.execution_count,
                         "busy": len(_STATE.request_tasks) + execution_queue.qsize(),
+                        "interpreter": sys.executable,
                     }
                 )
                 continue

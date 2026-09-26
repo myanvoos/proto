@@ -1,7 +1,13 @@
-import { expect, test } from "bun:test";
-import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { afterEach, expect, test, vi } from "bun:test";
+import * as path from "node:path";
+import * as agentCore from "@oh-my-pi/pi-agent-core";
+import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { ArtifactManager } from "../session/artifacts";
 import type { ToolSession } from "../tools";
+import { MAX_EVAL_ARTIFACT_BYTES, publishEvalArtifact } from "./artifact-values";
 import { runEvalCompletion } from "./completion-bridge";
+import { MAX_EVAL_COMPLETION_PARTS, MAX_EVAL_COMPLETION_TEXT_BYTES } from "./completion-content";
 
 function model(provider: string, id: string): Model<Api> {
 	return { provider, id, name: id, api: "openai-completions", reasoning: false } as unknown as Model<Api>;
@@ -60,4 +66,196 @@ test("tier names still route through modelRoles instead of the model pool", asyn
 		smol: "vendor-a/tiny-model",
 	});
 	expect(await completionError(session, "smol")).toStartWith("completion() has no API key for vendor-a/tiny-model.");
+});
+
+const PNG_DATA = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XcAAAAASUVORK5CYII=";
+const WAV_BYTES = Buffer.from("RIFF\x04\x00\x00\x00WAVE", "binary");
+const VIDEO_BYTES = Buffer.from([0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0]);
+
+afterEach(() => vi.restoreAllMocks());
+
+function contentSession(
+	cwd: string,
+	api: Api = "openai-completions",
+	input: Model["input"] = ["text", "image", "audio", "video"],
+): ToolSession {
+	const selected = {
+		provider: "content-test",
+		id: "model",
+		name: "model",
+		api,
+		reasoning: false,
+		input,
+		baseUrl: "https://provider.invalid",
+		compat: {},
+	} as Model;
+	const manager = new ArtifactManager(path.join(cwd, "artifacts"));
+	return {
+		cwd,
+		getArtifactManager: () => manager,
+		allocateOutputArtifact: (type: string) => manager.allocatePath(type),
+		settings: { get: () => undefined },
+		modelRegistry: {
+			getAvailable: () => [selected],
+			getApiKey: async () => "test-only-key",
+			resolver: () => async () => "test-only-key",
+		},
+	} as unknown as ToolSession;
+}
+
+function providerSpy() {
+	const response: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "provider result" }],
+		api: "openai-completions",
+		provider: "content-test",
+		model: "model",
+		timestamp: 1,
+		stopReason: "stop",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+	return vi.spyOn(agentCore, "instrumentedCompleteSimple").mockResolvedValue(response);
+}
+
+test("text completion keeps its exact user content and text result at the provider boundary", async () => {
+	using tmp = TempDir.createSync("@completion-text-");
+	const session = contentSession(tmp.path());
+	const call = providerSpy();
+	const result = await runEvalCompletion({ prompt: " unchanged text\n", model: "content-test/model" }, { session });
+	expect(call.mock.calls[0][1].messages).toEqual([
+		{ role: "user", content: [{ type: "text", text: " unchanged text\n" }], timestamp: expect.any(Number) },
+	]);
+	expect(result.text).toBe("provider result");
+});
+
+test("mixed JSON and binary image artifacts reach the provider as typed content despite log storage suffix", async () => {
+	using tmp = TempDir.createSync("@completion-artifacts-");
+	const session = contentSession(tmp.path());
+	const call = providerSpy();
+	const json = await publishEvalArtifact({ kind: "json", value: { rows: 2 } }, { session });
+	await Bun.write(tmp.join("input.png"), Buffer.from(PNG_DATA, "base64"));
+	const image = await publishEvalArtifact({ kind: "binary", path: "input.png", mimeType: "image/png" }, { session });
+	await runEvalCompletion(
+		{
+			prompt: [{ type: "text", text: "compare" }, json, { type: "image", artifact: image, detail: "high" }],
+			model: "content-test/model",
+		},
+		{ session },
+	);
+	expect(await session.getArtifactManager!()!.getPath(image.uri.slice("artifact://".length))).toEndWith(".log");
+	expect(call.mock.calls[0][1].messages[0].content).toEqual([
+		{ type: "text", text: "compare" },
+		{ type: "text", text: '{"rows":2}' },
+		{ type: "image", mimeType: "image/png", data: PNG_DATA, detail: "high" },
+	]);
+	call.mockClear();
+	await runEvalCompletion({ prompt: image, model: "content-test/model" }, { session });
+	expect(call.mock.calls[0][1].messages[0].content).toEqual([
+		{ type: "image", mimeType: "image/png", data: PNG_DATA },
+	]);
+});
+
+test("Google audio and video artifacts preserve exact typed bytes alongside inline images", async () => {
+	using tmp = TempDir.createSync("@completion-google-media-");
+	const session = contentSession(tmp.path(), "google-generative-ai");
+	const call = providerSpy();
+	const audio = await publishEvalArtifact({ kind: "binary", value: WAV_BYTES, mimeType: "audio/wav" }, { session });
+	const video = await publishEvalArtifact({ kind: "binary", value: VIDEO_BYTES, mimeType: "video/mp4" }, { session });
+	await runEvalCompletion(
+		{
+			prompt: [
+				{ type: "artifact", ref: audio },
+				{ type: "video", artifact: video },
+				{ type: "image", mimeType: "image/png", data: PNG_DATA },
+			],
+			model: "content-test/model",
+		},
+		{ session },
+	);
+	expect(call.mock.calls[0][1].messages[0].content).toEqual([
+		{ type: "audio", mimeType: "audio/wav", data: WAV_BYTES.toString("base64") },
+		{ type: "video", mimeType: "video/mp4", data: VIDEO_BYTES.toString("base64") },
+		{ type: "image", mimeType: "image/png", data: PNG_DATA },
+	]);
+});
+
+test("unsupported model modalities and adapters reject before the provider can silently omit media", async () => {
+	using tmp = TempDir.createSync("@completion-modality-");
+	const call = providerSpy();
+	await expect(
+		runEvalCompletion(
+			{ prompt: [{ type: "image", mimeType: "image/png", data: PNG_DATA }], model: "content-test/model" },
+			{
+				session: contentSession(tmp.join("text"), "openai-completions", ["text"]),
+			},
+		),
+	).rejects.toThrow("does not support image");
+	await expect(
+		runEvalCompletion(
+			{
+				prompt: [{ type: "audio", mimeType: "audio/wav", data: WAV_BYTES.toString("base64") }],
+				model: "content-test/model",
+			},
+			{
+				session: contentSession(tmp.join("responses"), "openai-responses"),
+			},
+		),
+	).rejects.toThrow("provider API openai-responses does not support audio");
+	const session = contentSession(tmp.join("guarded"));
+	Object.assign(session.modelRegistry!.getAvailable()[0], { compat: { stripImageInput: true } });
+	await expect(
+		runEvalCompletion(
+			{ prompt: [{ type: "image", mimeType: "image/png", data: PNG_DATA }], model: "content-test/model" },
+			{ session },
+		),
+	).rejects.toThrow("does not send image");
+	expect(call).not.toHaveBeenCalled();
+});
+
+test("unsupported formats, mismatched bytes, and ambient URL fields fail instead of coercing attachments", async () => {
+	using tmp = TempDir.createSync("@completion-formats-");
+	const session = contentSession(tmp.path());
+	const call = providerSpy();
+	const request = (part: unknown) => runEvalCompletion({ prompt: [part], model: "content-test/model" }, { session });
+	await expect(request({ type: "image", mimeType: "image/svg+xml", data: "PHN2Zy8+" })).rejects.toThrow(
+		"Unsupported completion image MIME",
+	);
+	await expect(request({ type: "image", mimeType: "image/jpeg", data: PNG_DATA })).rejects.toThrow(
+		"do not match MIME",
+	);
+	await expect(
+		request({ type: "image", mimeType: "image/png", data: PNG_DATA, url: "https://provider.invalid/private" }),
+	).rejects.toThrow("Unsupported completion content field: url");
+	await expect(request({ type: "image", mimeType: "image/png", data: "!!!" })).rejects.toThrow("canonical base64");
+	await expect(
+		request({ type: "audio", mimeType: "audio/flac", data: Buffer.from("fLaC").toString("base64") }),
+	).rejects.toThrow("only audio/wav or audio/mpeg");
+	expect(call).not.toHaveBeenCalled();
+});
+
+test("completion enforces text, part count, media bytes, and aggregate bounds before provider calls", async () => {
+	using tmp = TempDir.createSync("@completion-limits-");
+	const session = contentSession(tmp.path());
+	const call = providerSpy();
+	const request = (prompt: unknown) => runEvalCompletion({ prompt, model: "content-test/model" }, { session });
+	await expect(request("x".repeat(MAX_EVAL_COMPLETION_TEXT_BYTES + 1))).rejects.toThrow("text exceeds");
+	await expect(
+		request(Array.from({ length: MAX_EVAL_COMPLETION_PARTS + 1 }, () => ({ type: "text", text: "x" }))),
+	).rejects.toThrow("content parts");
+	await expect(
+		request([
+			{ type: "image", mimeType: "image/png", data: Buffer.alloc(MAX_EVAL_ARTIFACT_BYTES + 1).toString("base64") },
+		]),
+	).rejects.toThrow("byte limit");
+	await expect(
+		request(Array.from({ length: 21 }, () => ({ type: "text", text: "x".repeat(MAX_EVAL_COMPLETION_TEXT_BYTES) }))),
+	).rejects.toThrow("total byte limit");
+	expect(call).not.toHaveBeenCalled();
 });

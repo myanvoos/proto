@@ -123,22 +123,6 @@ export function formatSummaryElisionFooter(
 }
 export const READ_CHUNK_SIZE = 8 * 1024;
 
-export const RANGE_LEADING_CONTEXT_LINES = 1;
-export const RANGE_TRAILING_CONTEXT_LINES = 3;
-
-function expandRangeWithContext(
-	requestedStart: number,
-	requestedEnd: number,
-	totalLines: number,
-	expandStart: boolean,
-	expandEnd: boolean,
-): { startLine: number; endLine: number } {
-	return {
-		startLine: expandStart ? Math.max(0, requestedStart - RANGE_LEADING_CONTEXT_LINES) : requestedStart,
-		endLine: expandEnd ? Math.min(totalLines, requestedEnd + RANGE_TRAILING_CONTEXT_LINES) : requestedEnd,
-	};
-}
-
 export function buildInMemoryTextResult(
 	session: ToolSession,
 	text: string,
@@ -163,22 +147,13 @@ export function buildInMemoryTextResult(
 	const totalLines = addressableLines.length;
 	details.totalLines = totalLines;
 
-	const requestedStart = offset ? Math.max(0, offset - 1) : 0;
+	const startLine = offset ? Math.max(0, offset - 1) : 0;
 	const ignoreResultLimits = options.ignoreResultLimits ?? false;
-	const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
+	const endLine = limit !== undefined ? Math.min(startLine + limit, allLines.length) : allLines.length;
 
 	const rawDisplay = options.raw === true;
 	const contextPath = options.rangeContextPath ?? options.sourcePath;
 	const expandContext = shouldExpandRangeContext(contextPath);
-	const expanded = expandRangeWithContext(
-		requestedStart,
-		requestedEnd,
-		allLines.length,
-		expandContext && !rawDisplay && offset !== undefined && offset > 1,
-		expandContext && !rawDisplay && limit !== undefined,
-	);
-	const startLine = expanded.startLine;
-	const endLineExpanded = expanded.endLine;
 	const startLineDisplay = startLine + 1;
 
 	const resultBuilder = toolResult(details);
@@ -192,19 +167,18 @@ export function buildInMemoryTextResult(
 		resultBuilder.sourceInternal(options.sourceInternal);
 	}
 
-	if (requestedStart >= totalLines) {
+	if (startLine >= totalLines) {
 		const suggestion =
 			totalLines === 0
 				? `The ${options.entityLabel} is empty.`
 				: `Use :1 to read from the start, or :${totalLines} to read the last line.`;
 		return resultBuilder
 			.text(
-				`Line ${requestedStart + 1} is beyond end of ${options.entityLabel} (${totalLines} lines total). ${suggestion}`,
+				`Line ${startLineDisplay} is beyond end of ${options.entityLabel} (${totalLines} lines total). ${suggestion}`,
 			)
 			.done();
 	}
 
-	const endLine = endLineExpanded;
 	const selectedContent = allLines.slice(startLine, endLine).join("\n");
 	const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
 	// A raw whole-file read keeps its trailing newline out of the line budget:
@@ -308,7 +282,7 @@ export function buildInMemoryTextResult(
 	if (
 		rawDisplay &&
 		limit === undefined &&
-		requestedEnd >= addressableLines.length &&
+		endLine >= addressableLines.length &&
 		!truncation.truncated &&
 		text.endsWith("\n") &&
 		!outputText.endsWith("\n")

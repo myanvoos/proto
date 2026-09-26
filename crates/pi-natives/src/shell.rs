@@ -225,6 +225,9 @@ pub struct ShellRunResult {
 
 	pub xd_dispatches: Vec<String>,
 	pub stage_records: Vec<String>,
+	/// The command ended the persistent session (`exit`, `exec`, top-level
+	/// `return`/`break`); the next run starts a fresh shell.
+	pub session_ended: bool,
 }
 
 impl From<CoreShellRunResult> for ShellRunResult {
@@ -238,6 +241,7 @@ impl From<CoreShellRunResult> for ShellRunResult {
 			fs_observations: value.fs_observations.into_iter().map(Into::into).collect(),
 			xd_dispatches:   value.xd_dispatches,
 			stage_records:   value.stage_records,
+			session_ended:   value.session_ended,
 		}
 	}
 }
@@ -426,6 +430,7 @@ mod tests {
 			fs_observations: Vec::new(),
 			xd_dispatches: Vec::new(),
 			stage_records: Vec::new(),
+			session_ended: false,
 		}
 	}
 

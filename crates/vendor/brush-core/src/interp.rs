@@ -451,6 +451,7 @@ async fn spawn_async_ao_list_as_job<'a, SE: extensions::ShellExtensions>(
 		spawn_async_ao_list_in_task(ao_list, shell, &async_params)
 	};
 
+	shell.set_last_background_pid(job.representative_pid());
 	Ok(shell.jobs_mut().add_as_current(job))
 }
 

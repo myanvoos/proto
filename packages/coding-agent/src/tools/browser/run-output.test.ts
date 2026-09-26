@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
 import { PYTHON_DISPLAY_MAX_PERSISTED_BYTES } from "../../eval/py/display";
 import { DEFAULT_MAX_BYTES } from "../../session/streaming-output";
 import { RunOutput } from "./run-output";
@@ -79,4 +80,22 @@ test("non-JSON returns retain their rendered text without retaining unbounded ra
 	const hidden = await new RunOutput().finish(new Map([[{ id: 1 }, "x".repeat(8 * 1024 * 1024)]]));
 	expect(hidden.returnValue).toEqual({});
 	expect(Buffer.byteLength(JSON.stringify(hidden))).toBeLessThan(256);
+});
+
+test("browser runs show user displays and return values but never the runtime's internal status events", async () => {
+	const runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: `browser-status-${crypto.randomUUID()}` });
+	const output = new RunOutput();
+	const hooks: RuntimeHooks = {
+		onText: chunk => output.pushText(chunk),
+		onDisplay: displayed => output.pushDisplay(displayed),
+		callTool: async () => undefined,
+	};
+	try {
+		const value = await runtime.run('log("progress"); display({ shown: true }); 42', "status-cell.js", hooks);
+		const result = await output.finish(value);
+		expect(result.displays).toEqual([{ type: "text", text: '{\n  "shown": true\n}' }]);
+		expect(result.returnValue).toBe(42);
+	} finally {
+		runtime.dispose();
+	}
 });

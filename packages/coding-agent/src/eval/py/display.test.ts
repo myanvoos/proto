@@ -106,3 +106,19 @@ test("metadata admission reserves room to report truncation even at the exact by
 	expect(budget.blocks.some(block => block.type === "notice" && block.text.includes("metadata truncated"))).toBe(true);
 	expect(budget.retainedBytes()).toBeLessThan(256);
 });
+
+test("metadata snapshots replace byte charges but rejected replacements preserve the prior budget", () => {
+	const budget = new PythonDisplayBudget();
+	const snapshot = { value: "s".repeat(2 * 1024 * 1024) };
+	const larger = { value: "l".repeat(3 * 1024 * 1024) };
+	expect(budget.admitMetadata(snapshot, "agent:one")).toBeDefined();
+	expect(budget.admitMetadata(larger, "agent:one")).toBeDefined();
+	expect(budget.retainedBytes()).toBeLessThan(PYTHON_DISPLAY_MAX_PERSISTED_BYTES);
+	expect(budget.admitMetadata(snapshot, "agent:two")).toBeUndefined();
+	expect(budget.admitMetadata({ value: "x".repeat(5 * 1024 * 1024) }, "agent:one")).toBeUndefined();
+	// A failed replacement cannot refund the accepted snapshot and admit an overflowing sibling.
+	expect(budget.admitMetadata(snapshot, "agent:two")).toBeUndefined();
+	expect(budget.admitMetadata({ value: "small" }, "agent:one")).toEqual({ value: "small" });
+	expect(budget.admitMetadata(snapshot, "agent:two")).toBeDefined();
+	expect(budget.retainedBytes()).toBeLessThan(PYTHON_DISPLAY_MAX_PERSISTED_BYTES);
+});

@@ -362,6 +362,11 @@ pub struct ShellRunResult {
 	pub fs_observations: Vec<FsObservation>,
 	pub xd_dispatches:   Vec<String>,
 	pub stage_records:   Vec<String>,
+	/// The command ended the persistent session (`exit`, `exec`, top-level
+	/// `return`/`break`), so its variables, functions and aliases are gone and
+	/// the next run starts a fresh shell.
+	#[serde(default)]
+	pub session_ended:   bool,
 }
 
 struct CommandOutcome {
@@ -395,16 +400,17 @@ impl CommandOutcome {
 		}
 	}
 
-	fn into_result(self) -> ShellRunResult {
+	fn into_result(self, session_ended: bool) -> ShellRunResult {
 		ShellRunResult {
-			exit_code:       Some(exit_code(&self.exec)),
-			cancelled:       false,
-			timed_out:       false,
-			minimized:       self.minimized,
-			working_dir:     self.working_dir,
+			exit_code: Some(exit_code(&self.exec)),
+			cancelled: false,
+			timed_out: false,
+			minimized: self.minimized,
+			working_dir: self.working_dir,
 			fs_observations: self.fs_observations,
-			xd_dispatches:   self.xd_dispatches,
-			stage_records:   self.stage_records,
+			xd_dispatches: self.xd_dispatches,
+			stage_records: self.stage_records,
+			session_ended,
 		}
 	}
 }
@@ -420,6 +426,7 @@ impl ShellRunResult {
 			fs_observations: Vec::new(),
 			xd_dispatches:   Vec::new(),
 			stage_records:   Vec::new(),
+			session_ended:   false,
 		}
 	}
 }
@@ -713,7 +720,7 @@ async fn run_shell_session(
 	if !keepalive {
 		*session.lock().await = None;
 	}
-	Ok(res?.into_result())
+	Ok(res?.into_result(!keepalive))
 }
 
 async fn run_shell_oneshot(
@@ -768,7 +775,7 @@ async fn run_shell_oneshot(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	Ok(res?.into_result())
+	Ok(res?.into_result(false))
 }
 
 async fn run_shell_oneshot_streams(
@@ -824,7 +831,7 @@ async fn run_shell_oneshot_streams(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	Ok(res?.into_result())
+	Ok(res?.into_result(false))
 }
 
 fn null_file() -> Result<OpenFile> {

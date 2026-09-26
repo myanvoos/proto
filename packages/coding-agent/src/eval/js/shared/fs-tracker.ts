@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+// node:crypto rather than Bun.CryptoHasher: the Node kernel runtime (eval/js/node-entry.ts) shares this module.
+import { createHash } from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -190,7 +192,7 @@ function fileShaSync(absPath: string): string | undefined {
 	let fd: number | undefined;
 	try {
 		fd = fsSync.openSync(absPath, "r");
-		const hasher = new Bun.CryptoHasher("sha256");
+		const hasher = createHash("sha256");
 		const buffer = Buffer.allocUnsafe(1024 * 1024);
 		while (true) {
 			const read = fsSync.readSync(fd, buffer, 0, buffer.length, null);
@@ -217,12 +219,37 @@ function noteRead(rawPath: unknown): void {
 	const sha = fileShaSync(absPath);
 	const after = metadataStamp(absPath);
 	if (!sha || !after || before.mtimeNs !== after.mtimeNs || before.size !== after.size) return;
+	rememberRead(absPath, { ...after, sha });
+}
+
+function rememberRead(absPath: string, stamp: ReadStamp): void {
 	if (readSeen.size >= READ_SEEN_MAX && !readSeen.has(absPath)) {
 		const oldest = readSeen.keys().next().value;
 		if (oldest !== undefined) readSeen.delete(oldest);
 	}
 	readSeen.delete(absPath);
-	readSeen.set(absPath, { ...after, sha });
+	readSeen.set(absPath, stamp);
+}
+
+/**
+ * Re-arm the stale-write guard at the host-verified stamps of files a checked
+ * edit batch (`editBatch`) left holding content this kernel supplied — the
+ * batch's `after`, or its `before` once rolled back. The kernel knows that
+ * content, so it counts as read. Files the batch did not leave that way carry
+ * no stamp and keep their old record, so external edits still trip the guard.
+ * Mirrors _fs_rearm_stamps in eval/py/prelude.py.
+ */
+export function rearmReadStamps(stamps: unknown): void {
+	if (!Array.isArray(stamps)) return;
+	for (const entry of stamps) {
+		if (!entry || typeof entry !== "object") continue;
+		const { path: rawPath, mtimeNs, size, sha } = entry as Record<string, unknown>;
+		const absPath = resolveTrackedPath(rawPath);
+		if (!absPath || looksPruned(absPath)) continue;
+		if (typeof mtimeNs !== "string" || !/^\d+$/.test(mtimeNs)) continue;
+		if (typeof size !== "number" || !Number.isSafeInteger(size) || typeof sha !== "string") continue;
+		rememberRead(absPath, { mtimeNs: BigInt(mtimeNs), size: BigInt(size), sha });
+	}
 }
 
 function forgetRead(rawPath: unknown): void {
@@ -252,7 +279,7 @@ function checkStaleWrite(rawPath: unknown): void {
 function readContent(absPath: string): { text: string | null; sha: string | null } {
 	try {
 		const bytes = fsSync.readFileSync(absPath);
-		const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, SHA_LENGTH);
+		const sha = createHash("sha256").update(bytes).digest("hex").slice(0, SHA_LENGTH);
 		if (bytes.subarray(0, 8192).includes(0)) return { text: null, sha };
 		return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), sha };
 	} catch {
@@ -264,8 +291,8 @@ function readContent(absPath: string): { text: string | null; sha: string | null
 // any sync wrapper and must not block the event loop on per-file reads.
 async function readContentAsync(absPath: string): Promise<{ text: string | null; sha: string | null }> {
 	try {
-		const bytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
-		const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, SHA_LENGTH);
+		const bytes = await fs.readFile(absPath);
+		const sha = createHash("sha256").update(bytes).digest("hex").slice(0, SHA_LENGTH);
 		if (bytes.subarray(0, 8192).includes(0)) return { text: null, sha };
 		return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), sha };
 	} catch {
@@ -277,8 +304,8 @@ async function readContentAsync(absPath: string): Promise<{ text: string | null;
 // never lands in memory just to compute the walker-dedupe sha.
 async function shaOfFileAsync(absPath: string): Promise<string | null> {
 	try {
-		const hasher = new Bun.CryptoHasher("sha256");
-		for await (const chunk of Bun.file(absPath).stream()) hasher.update(chunk);
+		const hasher = createHash("sha256");
+		for await (const chunk of fsSync.createReadStream(absPath)) hasher.update(chunk);
 		return hasher.digest("hex").slice(0, SHA_LENGTH);
 	} catch {
 		return null;
@@ -866,7 +893,7 @@ function wrapBunWriter(writer: object, target: unknown): object {
 }
 
 export function installBunWriteTracking(): void {
-	if (bunWritePatched) return;
+	if (bunWritePatched || typeof Bun === "undefined") return;
 	bunWritePatched = true;
 	const originalFile = Bun.file;
 	Bun.file = ((...args: Parameters<typeof Bun.file>) => {

@@ -24,6 +24,7 @@ test("completed JavaScript output sinks stay within the byte budget across 300 c
 			const buffer = { bytes: 3 * 1024 };
 			retained.add(buffer);
 			await executeInVmContext({
+				runtime: "bun",
 				sessionKey: sessionId,
 				sessionId,
 				ownerId,

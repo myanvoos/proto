@@ -256,7 +256,6 @@ impl Redirect {
 struct Command {
 	words:     Vec<WordTok>,
 	redirects: Vec<Redirect>,
-	piped_in:  bool,
 	/// Parsed as something other than a simple command (a function
 	/// definition, `for`/`case` header, `[[ … ]]`, or a syntax error).
 	invalid:   bool,
@@ -471,19 +470,15 @@ impl Scan<'_> {
 			let start = self.source.snap(raw_start, end);
 			match token {
 				Token::Operator(op, _) if is_control_operator(op) => {
-					let piped = matches!(op.as_str(), "|" | "|&");
 					if op == "(" {
 						// `name (` is a function definition or a syntax error, never a call.
 						if !current.is_empty() {
 							current.invalid = true;
 						}
-						let piped_in = current.piped_in;
 						commands.push(std::mem::take(&mut current));
-						current.piped_in = piped_in;
 						continue;
 					}
 					commands.push(std::mem::take(&mut current));
-					current.piped_in = piped;
 				},
 				Token::Operator(op, _) => {
 					let fd = self.take_io_number(&mut current, start);
@@ -640,10 +635,10 @@ impl Scan<'_> {
 		}
 		let route = self.kernel_route(context, index);
 		// The kernel must execute the very program shown: its `-c`/`-e` word, or
-		// the inline stdin. `-c` with program input on stdin falls through.
+		// the inline stdin. Program input is independent of a `-c`/`-e` source word.
 		let kernel = match (route, source) {
 			(Some(ArgvRoute::Code(code_index)), ProgramSource::Arg { index: arg, skip: 0 }) => {
-				code_index == arg && stdin.is_none() && !context.command.piped_in
+				code_index == arg
 			},
 			(Some(ArgvRoute::Stdin), ProgramSource::Stdin) => true,
 			_ => false,

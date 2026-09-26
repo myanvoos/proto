@@ -1,5 +1,5 @@
 //! Argv routing for the kernel-cell builtins (`python`, `python3`, `node`,
-//! `bun`). The builtins decide at run time from this table whether an
+//! `nodejs`, `bun`). The builtins decide at run time from this table whether an
 //! invocation executes as a kernel cell or falls through to a real
 //! interpreter; the static code scanner asks the same question of a command
 //! it has only parsed, so both answers come from one rule.
@@ -71,7 +71,7 @@ pub(crate) fn route_argv(spec: &KernelArgv, argv: &[Option<&str>]) -> ArgvRoute 
 pub(crate) fn kernel_builtin_argv(name: &str) -> Option<&'static KernelArgv> {
 	match name {
 		"python" | "python3" if cfg!(all(feature = "util.python", unix)) => Some(&PYTHON_ARGV),
-		"node" | "bun" if cfg!(all(feature = "util.node", unix)) => Some(&JS_ARGV),
+		"node" | "nodejs" | "bun" if cfg!(all(feature = "util.node", unix)) => Some(&JS_ARGV),
 		_ => None,
 	}
 }

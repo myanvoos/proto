@@ -251,6 +251,97 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		return settled ? outcomes : outcomes.map(row => row.value);
 	};
 
+	const toolExecutionId = execution => {
+		const id = execution && typeof execution === "object" ? execution.id : execution;
+		if (typeof id !== "string" || !id) throw new TypeError("execution must be a non-empty id or a startTool handle");
+		return id;
+	};
+	const startTool = (name, args = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "events_start", tool: name, args });
+	async function* toolEvents(execution, { cursor = 0, limit = 128, waitMs = 30000 } = {}) {
+		const id = toolExecutionId(execution);
+		while (true) {
+			const batch = await globalThis.__proto_call_tool__("__runtime__", { op: "events_read", id, cursor, limit, waitMs });
+			if (batch.gap) yield { executionId: id, sequence: batch.gap.to, kind: "gap", data: batch.gap, terminal: false };
+			for (const event of batch.events) yield event;
+			cursor = batch.cursor;
+			if (batch.done) return;
+		}
+	}
+	const cancelTool = (execution, { waitMs = 30000 } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "events_cancel", id: toolExecutionId(execution), waitMs });
+	const disposeTool = execution => globalThis.__proto_call_tool__("__runtime__", { op: "events_dispose", id: toolExecutionId(execution) });
+
+	const delegationId = delegation => {
+		const value = delegation && typeof delegation === "object" ? delegation.lease ?? delegation : delegation;
+		const id = value && typeof value === "object" ? value.id : value;
+		if (typeof id !== "string" || !id) throw new TypeError("delegation must be a non-empty id or a delegate handle");
+		return id;
+	};
+	const delegate = (grants, options = {}) => globalThis.__proto_call_tool__("__runtime__", { ...options, op: "delegation_create", grants });
+	const delegations = () => globalThis.__proto_call_tool__("__runtime__", { op: "delegation_list" });
+	const revokeDelegation = delegation => globalThis.__proto_call_tool__("__runtime__", { op: "delegation_revoke", id: delegationId(delegation) });
+	const launchDelegated = (delegation, options) => globalThis.__proto_call_tool__("__runtime__", { ...options, op: "delegation_launch", id: delegationId(delegation) });
+
+	const publishArtifact = (value, { kind = "json", path, mimeType, encoding } = {}) => {
+		if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+			if (kind !== "binary" || (encoding !== undefined && encoding !== "base64")) throw new TypeError("native bytes require kind:'binary' and base64 encoding");
+			value = Buffer.from(value).toString("base64");
+			encoding = "base64";
+		}
+		return globalThis.__proto_call_tool__("__runtime__", {
+			op: "artifact_publish", kind,
+			...(value !== undefined ? { value } : {}),
+			...(path !== undefined ? { path } : {}),
+			...(mimeType !== undefined ? { mimeType } : {}),
+			...(encoding !== undefined ? { encoding } : {}),
+		});
+	};
+	const readArtifact = (ref, options = {}) => globalThis.__proto_call_tool__("__runtime__", { ...options, op: "artifact_read", ref });
+	const resolveArtifact = ref => globalThis.__proto_call_tool__("__runtime__", { op: "artifact_resolve", ref });
+
+	// Structural outline / block extent via the host tree-sitter bridge; mirrors the Python
+	// prelude's symbols()/block_range(). Files are read here, on the kernel's own filesystem.
+	const symbols = async (path, options) => {
+		if (isPlainObject(path) && options === undefined) {
+			options = path;
+			path = undefined;
+		}
+		if (!isNil(options) && !isPlainObject(options)) throw new TypeError("symbols() options must be a plain object like { code, lang }");
+		const { code, lang } = options ?? {};
+		if (isNil(path) === isNil(code)) throw new TypeError("symbols() takes exactly one of a path or { code }");
+		const args = { op: "symbols" };
+		let label;
+		if (!isNil(path)) {
+			args.path = protoPath(path);
+			args.code = await globalThis.__proto_read_text__(args.path);
+			label = args.path;
+		} else {
+			if (typeof code !== "string") throw new TypeError(`symbols() code must be a string, got ${typeof code}`);
+			args.code = code;
+			label = isNil(lang) ? "<code>" : `<code lang=${lang}>`;
+		}
+		if (!isNil(lang)) args.lang = lang;
+		const result = await globalThis.__proto_call_tool__("__ast__", args);
+		// An unparsed result (no lang, unknown lang, unsupported file type) carries the source
+		// verbatim as one segment; that is not an outline.
+		const segments = result && typeof result === "object" && result.parsed === true ? result.segments : undefined;
+		if (!Array.isArray(segments) || segments.length === 0) {
+			const hint = isNil(path) && isNil(lang) ? ' (pass { lang }, e.g. { lang: "ts" })' : "";
+			return `<no symbols parsed for ${label}${hint}>`;
+		}
+		return segments
+			.map(segment => `${segment.startLine}-${segment.endLine}: ${String(segment.text ?? "").trimEnd() || `<${segment.kind ?? "segment"}>`}`)
+			.join("\n");
+	};
+	const blockRange = async (path, line) => {
+		if (!Number.isInteger(line) || line < 1) throw new RangeError(`blockRange() line must be an integer >= 1, got ${String(line)}`);
+		const resolved = protoPath(path);
+		const code = await globalThis.__proto_read_text__(resolved);
+		const result = await globalThis.__proto_call_tool__("__ast__", { op: "block_range", path: resolved, code, line });
+		if (isNil(result)) return null;
+		if (typeof result === "object" && Number.isInteger(result.start) && Number.isInteger(result.end)) return [result.start, result.end];
+		throw new Error(`unexpected blockRange result: ${JSON.stringify(result)}`);
+	};
+
 	const log = message => globalThis.__proto_emit_status__("log", { message: String(message) });
 
 	const phase = title => {
@@ -353,7 +444,29 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.output = output;
 	globalThis.agent = agent;
 	globalThis.executions = (id, { limit = 20 } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "executions", id, limit });
-	globalThis.editBatch = (changes, { apply = false } = {}) => globalThis.__proto_call_tool__("__runtime__", { op: "edit_batch", changes: changes.map(entry => ({ ...entry, path: protoPath(entry.path) })), apply });
+	globalThis.editBatch = async (changes, { apply = false } = {}) => {
+		const resolved = changes.map(entry => ({ ...entry, path: protoPath(entry.path) }));
+		// Applied files join this cell's mutation tracking, so the flush reports them like any
+		// kernel write: one status event and `<kernel> note:` per path.
+		if (apply) for (const entry of resolved) globalThis.__proto_fs_note_touched__(entry.path);
+		const result = await globalThis.__proto_call_tool__("__runtime__", { op: "edit_batch", changes: resolved, apply });
+		if (result && typeof result === "object") {
+			globalThis.__proto_fs_rearm_reads__(result.stamps);
+			delete result.stamps;
+		}
+		return result;
+	};
+	globalThis.startTool = startTool;
+	globalThis.toolEvents = toolEvents;
+	globalThis.cancelTool = cancelTool;
+	globalThis.disposeTool = disposeTool;
+	globalThis.delegate = delegate;
+	globalThis.delegations = delegations;
+	globalThis.revokeDelegation = revokeDelegation;
+	globalThis.launchDelegated = launchDelegated;
+	globalThis.publishArtifact = publishArtifact;
+	globalThis.readArtifact = readArtifact;
+	globalThis.resolveArtifact = resolveArtifact;
 	globalThis.BatchError = BatchError;
 	globalThis.parallel = parallel;
 	globalThis.pipeline = pipeline;
@@ -363,4 +476,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.__pool = __pool;
 	globalThis.protoPath = protoPath;
 	globalThis.env = env;
+	globalThis.symbols = symbols;
+	globalThis.blockRange = blockRange;
 }

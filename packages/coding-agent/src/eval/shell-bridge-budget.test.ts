@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as net from "node:net";
 import type { ToolSession } from "../tools";
 import type { ExecutorBackendResult } from "./backend";
-import jsBackend from "./js";
+import { bunBackend } from "./js";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "./shell-bridge";
 import type { EvalDisplayOutput, EvalStatusEvent } from "./types";
 
@@ -37,7 +37,7 @@ async function request(bridge: KernelShellBridgeHandle): Promise<string> {
 	socket.on("error", response.reject);
 	socket.on("close", () => response.resolve(text));
 	socket.on("connect", () =>
-		socket.write(`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "js", code: "bounded" })}\n`),
+		socket.write(`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "bun", code: "bounded" })}\n`),
 	);
 	try {
 		return await response.promise;
@@ -49,7 +49,7 @@ async function request(bridge: KernelShellBridgeHandle): Promise<string> {
 afterEach(() => vi.restoreAllMocks());
 
 test("one shell run shares rich-output admission across every bridge cell", async () => {
-	spyOn(jsBackend, "execute").mockImplementation(async () =>
+	spyOn(bunBackend, "execute").mockImplementation(async () =>
 		result([
 			{ type: "json", data: { payload: "j".repeat(60 * 1024) } },
 			{ type: "image", data: "A".repeat(1024 * 1024), mimeType: "image/png" },
@@ -75,7 +75,7 @@ test("one shell run shares rich-output admission across every bridge cell", asyn
 });
 
 test("shell status frames cannot retain unbounded rich metadata in callbacks or drains", async () => {
-	spyOn(jsBackend, "execute").mockImplementation(async (_code, options) => {
+	spyOn(bunBackend, "execute").mockImplementation(async (_code, options) => {
 		for (let index = 0; index < 80; index++)
 			options.onStatus?.({ op: "progress", index, payload: "s".repeat(128 * 1024) });
 		return result([]);

@@ -4,23 +4,64 @@
 
 ### Added
 
+- JavaScript cells expose `symbols()` and `blockRange()` like Python
+- Execution records report `queuedAt` separately from the real `startedAt`
+- Streaming, binary-safe Python and JavaScript kernel pipes with live program input and output backpressure
+- Live tool and background-job event iterators with replay cursors, visible gaps, cancellation, and final results
+- A discoverable `kernel` tool for named runtime startup, inspection, reset, close, interpreter selection, and bounded keepalive
+- Immutable artifact values and validated image, audio, and video inputs for kernel completions
+- Explicit, expiring session-tool delegation for ordinary Python and JavaScript scripts, with revocation and managed launches
+- Selected data and binary binding save/restore across kernel resets without heap snapshots or code replay
+- Persistent Python and JavaScript kernels in existing Docker/Podman containers and SSH targets, with tool callbacks and explicit artifact transfer
 - Bash execution lanes, queryable command-stage and device results, and safe Python/JavaScript kernel-state inspection with restart notices
 - Checked multi-file edit previews and guarded commits with rollback/conflict reporting
 - Settled batch results, bounded cooperative deadlines/cancellation, streaming pipelines, and explicit checkpoint resumption in kernel orchestration helpers
 
 ### Breaking Changes
 
+- `xd kernel` languages are `python`, `node`, and `bun` (replacing `javascript`): `node`/`nodejs` cells run on the Node.js found on PATH and `bun` cells on Bun, each with its own state; node kernels are local-only
 - Monitor listing and stopping now use `fleet jobs` and `fleet cancel`; `monitor` only starts watches
 - Monitors require background execution (`async.enabled`) to be enabled
 
 ### Changed
 
+- `read_artifact`/`readArtifact` default to UTF-8 (pages end on character boundaries; binary data needs `encoding="base64"`) and accept a bare `artifact://N` the session published
+- `edit_batch`/`editBatch` return `state: "conflict"` with per-path reasons (`stale`, `exists`, `missing`) instead of raising, and write nothing
+- Subagents without an output schema may yield plain text, and their results are the plain final answer instead of a JSON encoding
+- Code range reads return exactly the requested lines; enclosing-block context is marked with `⋮` and the footer reports the requested range
+- Failed background Bash jobs report the failure reason as the error and keep their output separately
 - Interactive redraws keep a bounded recent transcript; older saved messages remain available through paged history and full exports
 - Fleets, interpreter requests, background results, rich displays, and editor attachments now enforce byte-aware admission limits with explicit overflow feedback
 - Monitors appear as background jobs, and `fleet wait` returns their next event without stopping the watch
 
 ### Fixed
 
+- `xd monitor start …` and other single-literal flags parse in flag and positional form
+- `xd` boolean flags followed by `true`/`false` take it as their value instead of shifting positionals (`--pty false` was silently ignored)
+- MCP device docs show only the JSON argument forms the devices accept
+- `xd fleet list`, `xd fleet jobs`, and other leading op words select the fleet operation
+- Fleet `send` `keys` accept control chords such as `C-d`, `ctrl+c`, and `^D`
+- Matplotlib figures closed before the end of a Python cell still display
+- Kernel `display()` output appears in order with stdout, and `display("text")` shows plain text without quotes
+- `proto_path`/`protoPath` errors name the missing skill or the accessor for non-file URLs
+- Kernel `symbols()` reports no outline for unparsed code instead of echoing the source, and keeps indentation of folded body lines
+- Background jobs of shell builtins, subshells, and functions report `$!`, list in `jobs -l`, and respond to `kill %N`
+- `<shell> state lost` notices report when an earlier call's `exit`, timeout, or crash reset a lane's shell
+- Same-lane Bash and kernel calls run in the order they were issued
+- A force-closed or reset kernel cell reports why it was cancelled
+- Kernel `edit_batch` writes emit `<kernel> note:` lines and no longer trigger spurious stale-write errors afterwards
+- Delegated launches keep running after the cell that started them ends
+- Kernel `local://` and `fleet://` files can be written in a fresh session without creating the directory first
+- `read <file>:conflicts` and conflict warnings no longer point to a nonexistent `write` tool
+- `read <url>` returns the page's own content instead of an empty RSS/Atom alternate; feed URLs render item titles, dates, summaries, and links
+- Image reads report the file's own format, plus the format sent when it was transcoded
+- Subagent turns that yield without data use the final answer instead of failing, and turn results no longer glue earlier replies and narration together
+- `history://` agent status uses the same lifecycle terms as the fleet list
+- Browser `run` output no longer starts with an internal `kernel-state` event
+- Unknown-tool errors from kernel cells no longer claim to come from the JavaScript runtime
+- Output footers no longer report a byte limit when only long lines were clipped, or negative line ranges when diagnostics are appended
+- `xd <device> ?` help cards keep the device description when a notice precedes the docs
+- Split CLI bundles execute commands and remote JavaScript worker entrypoints instead of silently exiting
 - Long sessions avoid repeatedly loading and rewriting all older history during compaction, context rebuilding, and fleet discovery
 - Deeply nested fleets can wait for descendants at the concurrency limit without deadlocking, and disposed scopes stop retaining parent sessions
 - Accepted subagents retain their identities and initial requests across a restart before child-session initialization

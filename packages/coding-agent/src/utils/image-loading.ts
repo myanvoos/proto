@@ -360,6 +360,10 @@ async function resizeImageOrKeepOriginal(
 	}
 }
 
+function formatImageFormat(sourceMimeType: string, sentMimeType: string): string {
+	return sourceMimeType === sentMimeType ? sourceMimeType : `${sourceMimeType}, sent as ${sentMimeType}`;
+}
+
 export async function loadImageInput(options: LoadImageInputOptions): Promise<LoadedImageInput | null> {
 	const maxBytes = options.maxBytes ?? MAX_IMAGE_INPUT_BYTES;
 	const resolvedPath = options.resolvedPath ?? resolveReadPath(options.path, options.cwd);
@@ -409,7 +413,7 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 			}
 		}
 
-		let textNote = `Read image file [${outputMimeType}]`;
+		let textNote = `Read image file [${formatImageFormat(mimeType, outputMimeType)}]`;
 		if (dimensionNote) {
 			textNote += `\n${dimensionNote}`;
 		}
@@ -462,7 +466,7 @@ export async function loadImageAttachmentInput(
 		}
 	}
 
-	let textNote = `Read image attachment ${options.label} [${outputMimeType}]`;
+	let textNote = `Read image attachment ${options.label} [${formatImageFormat(options.image.mimeType, outputMimeType)}]`;
 	if (dimensionNote) {
 		textNote += `\n${dimensionNote}`;
 	}

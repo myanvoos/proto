@@ -27,7 +27,7 @@ test("disposing a JS kernel confirms exit of ordinary cell descendants without t
 	try {
 		const result = await executeJs(
 			`var child = Bun.spawn([process.execPath, "-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }); console.log(child.pid); child.unref();`,
-			{ session, sessionId: owner, kernelOwnerId: owner },
+			{ runtime: "bun", session, sessionId: owner, kernelOwnerId: owner },
 		);
 		expect(result.exitCode).toBe(0);
 		const pid = Number(result.output.trim());
@@ -59,7 +59,7 @@ test("owner disposal waits for descendants from a previous cell even after the J
 	try {
 		const result = await executeJs(
 			`var childPids = [false, true].map(detached => { var child = Bun.spawn([process.execPath, "-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { detached, stdin: "ignore", stdout: "ignore", stderr: "ignore" }); child.unref(); return child.pid; }); console.log(JSON.stringify(childPids));`,
-			{ session, sessionId: owner, kernelOwnerId: owner },
+			{ runtime: "bun", session, sessionId: owner, kernelOwnerId: owner },
 		);
 		expect(result.exitCode).toBe(0);
 		for (const pid of JSON.parse(result.output.trim()) as number[]) {
@@ -69,6 +69,7 @@ test("owner disposal waits for descendants from a previous cell even after the J
 		}
 		await expect(
 			executeInVmContext({
+				runtime: "bun",
 				sessionKey: owner,
 				sessionId: owner,
 				ownerId: owner,

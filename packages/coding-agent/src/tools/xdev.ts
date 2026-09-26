@@ -86,6 +86,11 @@ interface RenderedDocs {
 	footer: string;
 }
 
+/** MCP devices take only a JSON args object; their schemas are not CLI-mappable. */
+function isJsonOnlyDevice(name: string): boolean {
+	return parseMCPToolName(name) !== null;
+}
+
 function renderDocsParts(
 	inst: Tool,
 	heading = "#",
@@ -98,19 +103,27 @@ function renderDocsParts(
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
 		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`xd ${inst.name} ?\`)`;
 	}
+	const usageOptions = { jsonOnly: isJsonOnlyDevice(inst.name) };
 	const usage =
 		cliDetail === "reference"
-			? formatCliFlagReference(inst.name, inst as AiTool)
-			: `usage: ${formatCliUsageSynopsis(inst.name, wireSchema)}`;
+			? formatCliFlagReference(inst.name, inst as AiTool, usageOptions)
+			: `usage: ${formatCliUsageSynopsis(inst.name, wireSchema, usageOptions)}`;
 	return {
 		prose: [`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`, "", description].join("\n"),
 		schema: [`${heading}# Schema`, "```ts", `type Args = ${schema};`, "```"].join("\n"),
-		footer: [
-			usage,
-			"",
-			`Execute from bash with the flags/positionals above (or \`xd ${inst.name} ?\` for these docs).`,
-			`JSON escape hatch: \`xd ${inst.name} --json '<json>'\`, or pipe a JSON args object on stdin; a \`-\` flag value reads stdin. MCP devices accept JSON only.`,
-		].join("\n"),
+		footer: (usageOptions.jsonOnly
+			? [
+					usage,
+					"",
+					`Execute from bash with one JSON args object: \`xd ${inst.name} --json '<json>'\`, \`xd ${inst.name} '<json>'\`, or JSON piped on stdin (\`xd ${inst.name} ?\` for these docs). Flags and positional values are rejected.`,
+				]
+			: [
+					usage,
+					"",
+					`Execute from bash with the flags/positionals above (or \`xd ${inst.name} ?\` for these docs).`,
+					`JSON escape hatch: \`xd ${inst.name} --json '<json>'\`, or pipe a JSON args object on stdin; a \`-\` flag value reads stdin. MCP devices accept JSON only.`,
+				]
+		).join("\n"),
 	};
 }
 
@@ -551,7 +564,7 @@ export async function dispatchXdArgv(
 		deviceName: name,
 		stdin,
 		stdinTruncated,
-		jsonOnly: parseMCPToolName(name) !== null,
+		jsonOnly: isJsonOnlyDevice(name),
 	};
 	const parsed = parseXdevCliArgs(toolWireSchema(canonical as AiTool), argv, parseOptions);
 	if (name === "read" && options.cwd) scopeXdevReadArgs(parsed.args, options.cwd);
@@ -634,7 +647,8 @@ function deviceBadge(name: string, theme: Theme): string | undefined {
 function schemaCardRows(mounted: Tool | undefined, name: string): string[] {
 	const rows: string[] = [];
 	const specs = mounted ? xdevFlagSpecs(toolWireSchema(mounted as AiTool)) : [];
-	rows.push(`usage: ${formatCliUsageSynopsis(name, mounted ? toolWireSchema(mounted as AiTool) : {})}`);
+	const jsonOnly = isJsonOnlyDevice(name);
+	rows.push(`usage: ${formatCliUsageSynopsis(name, mounted ? toolWireSchema(mounted as AiTool) : {}, { jsonOnly })}`);
 	for (const spec of specs) {
 		const typeLabel =
 			spec.type === "enum"
@@ -644,7 +658,12 @@ function schemaCardRows(mounted: Tool | undefined, name: string): string[] {
 					: spec.type === "json"
 						? "json"
 						: spec.type;
-		const flag = spec.type === "boolean" ? `--${spec.name}` : `--${spec.name} <${typeLabel}>`;
+		// JSON-only devices list their JSON keys, not flags they would reject.
+		const flag = jsonOnly
+			? `${spec.name}: ${typeLabel}`
+			: spec.type === "boolean"
+				? `--${spec.name}`
+				: `--${spec.name} <${typeLabel}>`;
 		const required = spec.required ? " (required)" : "";
 		const description = spec.description ? ` — ${spec.description.split(/\. /)[0]}` : "";
 		rows.push(`${flag}${required}${description}`);
@@ -652,10 +671,15 @@ function schemaCardRows(mounted: Tool | undefined, name: string): string[] {
 	return rows;
 }
 
-/** Description body of rendered docs: everything between the heading and the next markdown heading. */
-function docsDescriptionBody(text: string): string {
+/**
+ * Description body of rendered docs: everything between the device's `# <name>` heading and the next
+ * markdown heading. Anchored on the heading, not the first line, because the bash transport may
+ * prepend notices (e.g. shell-state-lost) to the docs text.
+ */
+function docsDescriptionBody(text: string, name: string): string {
 	const lines = text.split("\n");
-	const start = lines.findIndex(line => line.trim().length > 0);
+	const heading = `# ${name}`;
+	const start = lines.findIndex(line => line === heading || line.startsWith(`${heading} — `));
 	if (start < 0) return "";
 	const body: string[] = [];
 	for (let i = start + 1; i < lines.length; i++) {
@@ -730,7 +754,7 @@ function formatXdevHelpCard(
 	}
 	const bodyWidth = Math.max(20, contentWidth - 4);
 	const hook = theme.fg("dim", theme.tree.last);
-	const description = flatFirstParagraph(docsDescriptionBody(text));
+	const description = flatFirstParagraph(docsDescriptionBody(text, dispatch.tool));
 	const rows = schemaCardRows(mounted, dispatch.tool);
 	const reserved = 1; // expand hint
 	const maxRows = Math.max(0, PREVIEW_LIMITS.COLLAPSED_LINES - reserved);
@@ -865,7 +889,7 @@ function argsFromXdevArgv(mounted: Tool | undefined, name: string, argv: readonl
 	try {
 		return parseXdevCliArgs(toolWireSchema(mounted as AiTool), argv, {
 			deviceName: name,
-			jsonOnly: parseMCPToolName(name) !== null,
+			jsonOnly: isJsonOnlyDevice(name),
 		}).args;
 	} catch {
 		return {};

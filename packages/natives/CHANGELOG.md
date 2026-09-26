@@ -4,11 +4,15 @@
 
 ### Added
 
+- `ShellRunResult.sessionEnded` reports when a command ended the persistent shell session
+- Interpreter kernel pipes stream program input before EOF and preserve binary stdout/stderr under backpressure
 - Shell results expose bounded per-command records with exit/signal status, separate output captures, and correlated structured device results
 - `isHeldSqliteStore()` reports whether a path is a SQLite store the current process holds open
 
 ### Fixed
 
+- `blockRangeAt()` resolves a line that starts a definition to that definition in indentation-based languages instead of the enclosing body
+- In-process background jobs get `$!` ids (≥ 4194304, never real PIDs) usable with `wait`, `kill`, and `jobs -l`; `$!` survives `wait`
 - Persistent interpreter cells preserve shell environment, program stdin, and stdout/stderr routing
 - In-process shell builtins, redirections, and `grep()` refuse SQLite databases and `-shm` indexes the host process holds open instead of silently releasing its SQLite locks
 

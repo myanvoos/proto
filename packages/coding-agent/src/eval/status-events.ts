@@ -10,13 +10,17 @@ function isFileOp(event: EvalStatusEvent): boolean {
 // again by the cell-end flush if it changed further) replaces the earlier
 // report of that path — a cell that writes a file twice exposes one
 // mutation. Every other status event retains its full history.
+export function statusEventKey(event: EvalStatusEvent): string | undefined {
+	if (typeof event.id !== "string") return undefined;
+	if (event.op === "agent") return `agent:${event.id}`;
+	if (isFileOp(event)) return `file:${event.id}`;
+	return undefined;
+}
+
 export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEvent): void {
-	if (typeof event.id === "string" && (event.op === "agent" || isFileOp(event))) {
-		const id = event.id;
-		const idx =
-			event.op === "agent"
-				? events.findIndex(e => e.op === "agent" && e.id === id)
-				: events.findIndex(e => isFileOp(e) && e.id === id);
+	const key = statusEventKey(event);
+	if (key !== undefined) {
+		const idx = events.findIndex(previous => statusEventKey(previous) === key);
 		if (idx >= 0) {
 			events[idx] = event;
 			return;

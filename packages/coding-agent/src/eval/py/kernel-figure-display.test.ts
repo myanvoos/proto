@@ -5,7 +5,7 @@ import { disposeKernelSessionsByOwner, executePython } from "./executor";
 import { checkPythonKernelAvailability } from "./kernel";
 
 describe("Python kernel figure display", () => {
-	test("closed figures saved with savefig still display at cell end", async () => {
+	test("closed figures display at cell end whether or not they were saved", async () => {
 		// Contract: an agent cell that does `fig.savefig(...); plt.close(fig)` —
 		// the dominant plotting pattern — must still surface an image/png
 		// display output, or plotted analysis results never reach the TUI.
@@ -49,6 +49,24 @@ describe("Python kernel figure display", () => {
 			expect(image).toBeDefined();
 			if (!image) throw new Error("expected image display output");
 			expect(image.data.startsWith("iVBOR")).toBe(true);
+			// Contract: figures closed before cell end without savefig (no user
+			// reference left for `plt.close("all")`) still display, each once;
+			// a figure already shown via display() is not repeated.
+			const closed = await executePython(
+				[
+					"import matplotlib.pyplot as plt",
+					"fig, ax = plt.subplots()",
+					"ax.plot([1, 2], [3, 4])",
+					"plt.close(fig)",
+					"plt.subplots()[1].plot([4, 3])",
+					'plt.close("all")',
+					"shown, _ = plt.subplots()",
+					"display(shown)",
+					"plt.close(shown)",
+				].join("\n"),
+				options,
+			);
+			expect(closed.displayOutputs.filter(output => output.type === "image")).toHaveLength(3);
 		} finally {
 			await disposeKernelSessionsByOwner(ownerId);
 		}

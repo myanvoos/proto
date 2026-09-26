@@ -12,14 +12,45 @@ import {
 } from "./executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
 import { type KernelAdmission, KernelStartupCleanupError, kernelAdmission } from "./kernel-admission";
+import { validateKernelKeepalive } from "./kernel-environment";
+import { type KernelTarget, parseKernelTarget } from "./kernel-target";
 
 const MAX_REAP_NOTES = 32;
 const MAX_REAP_SHUTDOWN_RETRIES = 3;
+
+/**
+ * Why a lifecycle operation cancelled a running cell (e.g. "was force-closed"),
+ * keyed by registry session id. Callers that stream a cell's output take it once
+ * the cell returns cancelled, so the report names the cause instead of a bare
+ * cancellation.
+ */
+const cellTerminations = new LRUCache<string, string>({ max: 64 });
+
+export function takeKernelCellTermination(sessionId: string): string | undefined {
+	const reason = cellTerminations.get(sessionId);
+	cellTerminations.delete(sessionId);
+	return reason;
+}
+
+/** Records the lifecycle cause for kernels managed outside this registry (JavaScript contexts). */
+export function recordKernelCellTermination(sessionId: string, reason: string): void {
+	cellTerminations.set(sessionId, reason);
+}
+
+/** What a kernel close is for: ending the lane, or replacing its kernel as the first step of a reset. */
+export type KernelCloseCause = "close" | "reset";
+
+/** How a close reports the running cell it cancels. */
+export function kernelCloseTermination(cause: KernelCloseCause, force: boolean): string {
+	if (cause === "reset") return "was reset";
+	return force ? "was force-closed" : "was closed";
+}
 
 export interface KernelSessionRegistryOptions {
 	sessionId?: string;
 	kernelOwnerId?: string;
 	interpreter?: string;
+	target?: KernelTarget;
 	reset?: boolean;
 	signal?: AbortSignal;
 	deadlineMs?: number;
@@ -32,6 +63,8 @@ interface RegistryKernelShutdownResult {
 }
 
 interface RegistryKernel {
+	readonly id?: string;
+	readonly interpreter?: string;
 	isAlive(): boolean;
 	shutdown(options?: { timeoutMs: number }): Promise<RegistryKernelShutdownResult>;
 	isBusy?(): Promise<boolean | undefined>;
@@ -44,8 +77,23 @@ export interface KernelSession<TKernel extends RegistryKernel> extends SessionOw
 	kernel: TKernel;
 }
 
+export interface KernelSessionInfo {
+	sessionKey: string;
+	sessionId: string;
+	generation: string | null;
+	cwd: string;
+	interpreter?: string;
+	target: KernelTarget;
+	state: "starting" | "idle" | "busy" | "closing" | "dead";
+	startedAt: number;
+	lastActivityAt: number;
+	keepAliveUntil?: number;
+}
+
 interface StartingKernelSession<TSession> extends SessionOwners {
 	promise: Promise<TSession>;
+	info: KernelSessionInfo;
+	abort: AbortController;
 }
 
 export interface KernelSessionRegistryContext<
@@ -73,7 +121,7 @@ interface KernelSessionRegistryDescriptor<
 	notifySessionReaped?: (options: TOptions, note: KernelReapNote) => void;
 	languageLabel: string;
 	cancelledErrorClass: CancelledErrorClass;
-	buildSessionKey: (sessionId: string, cwd: string, interpreter: string | undefined) => string;
+	buildSessionKey: (sessionId: string, cwd: string, interpreter: string | undefined, options: TOptions) => string;
 	createSession: (session: KernelSession<TKernel>) => TSession;
 	startKernel: (cwd: string, options: TOptions) => Promise<TKernel>;
 	executeWithKernel: (kernel: TKernel, code: string, options: TOptions) => Promise<TResult>;
@@ -103,6 +151,13 @@ export interface KernelSessionRegistry<TOptions extends KernelSessionRegistryOpt
 	disposeAll(): Promise<void>;
 	disposeByOwner(ownerId: string): Promise<void>;
 	executeOnSession(code: string, cwd: string, options: TOptions): Promise<TResult>;
+	startSession(cwd: string, options: TOptions): Promise<KernelSessionInfo>;
+	listSessions(ownerId?: string): KernelSessionInfo[];
+	closeSession(
+		sessionKey: string,
+		options?: { force?: boolean; ownerId?: string; cause?: KernelCloseCause },
+	): Promise<void>;
+	keepaliveSession(sessionKey: string, ttlMs: number): KernelSessionInfo;
 }
 
 export function normalizeKernelSessionCwd(cwd: string): string {
@@ -157,13 +212,63 @@ export function createKernelSessionRegistry<
 	const reapShutdownRetries = new Map<string, number>();
 	const executingDepth = new Map<string, number>();
 	const reapedNotes = new LRUCache<string, KernelReapNote>({ max: MAX_REAP_NOTES });
+	const metadata = new WeakMap<TSession, KernelSessionInfo>();
+	const generations = new WeakMap<TKernel, string>();
+
+	function sessionInfo(session: TSession): KernelSessionInfo {
+		const info = metadata.get(session)!;
+		let generation = session.kernel.id ?? generations.get(session.kernel);
+		if (!generation) {
+			generation = crypto.randomUUID();
+			generations.set(session.kernel, generation);
+		}
+		return {
+			...info,
+			generation,
+			interpreter: session.kernel.interpreter ?? info.interpreter,
+			state: resettingSessions.has(session.sessionKey)
+				? "closing"
+				: !session.kernel.isAlive()
+					? "dead"
+					: (executingDepth.get(session.sessionKey) ?? 0) > 0
+						? "busy"
+						: "idle",
+		};
+	}
+
+	function listSessions(ownerId?: string): KernelSessionInfo[] {
+		const result: KernelSessionInfo[] = [];
+		for (const session of sessions.values()) {
+			if (ownerId === undefined || session.ownerIds.has(ownerId)) result.push(sessionInfo(session));
+		}
+		for (const [key, starting] of startingSessions) {
+			if (!sessions.has(key) && (ownerId === undefined || starting.ownerIds.has(ownerId))) {
+				result.push({ ...starting.info });
+			}
+		}
+		return result;
+	}
+
+	function keepaliveSession(sessionKey: string, ttlMs: number): KernelSessionInfo {
+		validateKernelKeepalive(ttlMs);
+		const session = sessions.get(sessionKey);
+		if (!session) throw new Error(`Unknown ${descriptor.languageLabel} kernel lane`);
+		if (resettingSessions.has(sessionKey)) throw new Error("Kernel lifecycle operation already in progress");
+		if (!session.kernel.isAlive()) throw new Error("Kernel is not running");
+		const info = metadata.get(session)!;
+		info.keepAliveUntil = Math.max(info.keepAliveUntil ?? 0, Date.now() + ttlMs);
+		armReap(sessionKey, Math.max(0, info.lastActivityAt + idleReapMs - Date.now()));
+		return sessionInfo(session);
+	}
 
 	function armReap(sessionKey: string, delayMs = idleReapMs): void {
 		const existing = reapTimers.get(sessionKey);
 		if (existing) clearTimeout(existing);
 		if (idleReapMs <= 0) return;
 		if (!sessions.has(sessionKey)) return;
-		const timer = setTimeout(() => void reapFire(sessionKey), delayMs);
+		const session = sessions.get(sessionKey)!;
+		const leaseRemaining = (metadata.get(session)?.keepAliveUntil ?? 0) - Date.now();
+		const timer = setTimeout(() => void reapFire(sessionKey), Math.max(delayMs, leaseRemaining));
 		timer.unref?.();
 		reapTimers.set(sessionKey, timer);
 	}
@@ -197,6 +302,10 @@ export function createKernelSessionRegistry<
 		reapTimers.delete(sessionKey);
 		const session = sessions.get(sessionKey);
 		if (!session) return;
+		if ((metadata.get(session)?.keepAliveUntil ?? 0) > Date.now()) {
+			armReap(sessionKey, 0);
+			return;
+		}
 		// Never reap around lifecycle transitions or while a cell is executing.
 		if (startingSessions.has(sessionKey) || resettingSessions.has(sessionKey)) {
 			armReap(sessionKey);
@@ -284,11 +393,28 @@ export function createKernelSessionRegistry<
 			return await waitForStartup(starting.promise, options);
 		}
 		const release = admission.reserve(options.kernelOwnerId ?? sessionId);
+		const abort = new AbortController();
+		const startupOptions = {
+			...options,
+			signal: options.signal ? AbortSignal.any([options.signal, abort.signal]) : abort.signal,
+		};
+		const now = Date.now();
+		const info: KernelSessionInfo = {
+			sessionKey,
+			sessionId,
+			cwd,
+			interpreter: options.interpreter,
+			target: parseKernelTarget(options.target),
+			generation: null,
+			state: "starting",
+			startedAt: now,
+			lastActivityAt: now,
+		};
 		let startingSession!: StartingKernelSession<TSession>;
 		const startup = (async () => {
 			let kernel: TKernel;
 			try {
-				kernel = await descriptor.startKernel(cwd, options);
+				kernel = await descriptor.startKernel(cwd, startupOptions);
 			} catch (error) {
 				if (error instanceof KernelStartupCleanupError) {
 					failedStartups.add({ owners: startingSession, error, release });
@@ -303,6 +429,7 @@ export function createKernelSessionRegistry<
 				ownerIds: new Set(startingSession.ownerIds),
 				hasFallbackOwner: startingSession.hasFallbackOwner,
 			});
+			metadata.set(session, info);
 			reservations.set(session, release);
 			if (startingSessions.get(sessionKey) === startingSession) {
 				sessions.set(sessionKey, session);
@@ -313,6 +440,8 @@ export function createKernelSessionRegistry<
 			ownerIds: new Set(),
 			hasFallbackOwner: false,
 			promise: startup,
+			info,
+			abort,
 		};
 		attachSessionOwner(startingSession, sessionId, options.kernelOwnerId);
 		startingSessions.set(sessionKey, startingSession);
@@ -380,6 +509,46 @@ export function createKernelSessionRegistry<
 		if (sessions.get(sessionKey) === existing) sessions.delete(sessionKey);
 		clearReapState(sessionKey);
 		reapedNotes.delete(sessionKey);
+	}
+
+	async function closeSession(
+		sessionKey: string,
+		options: { force?: boolean; ownerId?: string; cause?: KernelCloseCause } = {},
+	): Promise<void> {
+		if (resettingSessions.has(sessionKey)) throw new Error("Kernel lifecycle operation already in progress");
+		const starting = startingSessions.get(sessionKey);
+		const session = sessions.get(sessionKey);
+		if (!session && !starting) throw new Error(`Unknown ${descriptor.languageLabel} kernel lane`);
+		if (!options.force && (starting || (executingDepth.get(sessionKey) ?? 0) > 0)) {
+			throw new Error("Kernel is busy; close requires force:true");
+		}
+		const operation = (async () => {
+			if (session && !options.force && session.kernel.isAlive()) {
+				const busy = await (descriptor.kernelBusy?.(session.kernel) ?? session.kernel.isBusy?.());
+				if (busy !== false) throw new Error("Kernel is busy or its state is unknown; close requires force:true");
+			}
+			const owned = session ?? starting!;
+			if (options.ownerId !== undefined && !owned.ownerIds.has(options.ownerId))
+				throw new Error("Kernel is not owned by this session");
+			if (options.ownerId !== undefined && owned.ownerIds.size > 1) {
+				owned.ownerIds.delete(options.ownerId);
+				starting?.ownerIds.delete(options.ownerId);
+				return;
+			}
+			if (starting) starting.abort.abort(new Error("Kernel closed during startup"));
+			if (session && (executingDepth.get(sessionKey) ?? 0) > 0)
+				cellTerminations.set(
+					session.sessionId,
+					kernelCloseTermination(options.cause ?? "close", options.force === true),
+				);
+			await resetSession(sessionKey);
+		})();
+		resettingSessions.set(sessionKey, operation);
+		try {
+			await operation;
+		} finally {
+			if (resettingSessions.get(sessionKey) === operation) resettingSessions.delete(sessionKey);
+		}
 	}
 
 	async function disposeFailedStartups(ownerId?: string): Promise<void> {
@@ -487,11 +656,11 @@ export function createKernelSessionRegistry<
 		await disposeFailedStartups(ownerId);
 	}
 
-	async function executeOnSession(code: string, cwd: string, options: TOptions): Promise<TResult> {
+	async function prepareSession(cwd: string, options: TOptions): Promise<TSession> {
 		const sessionId = options.sessionId ?? `session:${cwd}`;
 		if (failedStartups.size > 0) await disposeFailedStartups(options.kernelOwnerId ?? sessionId);
 		const sessionKey = resolveOwnerScopedSessionKey({
-			baseKey: descriptor.buildSessionKey(sessionId, cwd, options.interpreter),
+			baseKey: descriptor.buildSessionKey(sessionId, cwd, options.interpreter, options),
 			ownerId: options.kernelOwnerId,
 			reset: options.reset === true,
 			hasSession: key => sessions.has(key) || startingSessions.has(key),
@@ -504,6 +673,9 @@ export function createKernelSessionRegistry<
 			const inFlight = resettingSessions.get(sessionKey);
 			if (inFlight) await inFlight.catch(() => undefined);
 			else {
+				const running = sessions.get(sessionKey);
+				if (running && (executingDepth.get(sessionKey) ?? 0) > 0)
+					cellTerminations.set(running.sessionId, "was reset");
 				const resetPromise = resetSession(sessionKey);
 				resettingSessions.set(
 					sessionKey,
@@ -534,6 +706,18 @@ export function createKernelSessionRegistry<
 		}
 		const kernel = await acquireLiveSessionKernel(session, cwd, options);
 		if (!isCurrent(session, kernel)) throw new descriptor.cancelledErrorClass(false);
+		metadata.get(session)!.lastActivityAt = Date.now();
+		return session;
+	}
+
+	async function startSession(cwd: string, options: TOptions): Promise<KernelSessionInfo> {
+		return sessionInfo(await prepareSession(cwd, options));
+	}
+
+	async function executeOnSession(code: string, cwd: string, options: TOptions): Promise<TResult> {
+		const session = await prepareSession(cwd, options);
+		const { sessionKey, kernel } = session;
+		if (!isCurrent(session, kernel)) throw new descriptor.cancelledErrorClass(false);
 		const runOptions = { ...options, cwd };
 		executingDepth.set(sessionKey, (executingDepth.get(sessionKey) ?? 0) + 1);
 		try {
@@ -551,12 +735,15 @@ export function createKernelSessionRegistry<
 				{ cause: err },
 			);
 		} finally {
-			const depth = (executingDepth.get(sessionKey) ?? 1) - 1;
-			if (depth <= 0) executingDepth.delete(sessionKey);
-			else executingDepth.set(sessionKey, depth);
-			armReap(sessionKey);
+			if (sessions.get(sessionKey) === session) {
+				const depth = (executingDepth.get(sessionKey) ?? 1) - 1;
+				if (depth <= 0) executingDepth.delete(sessionKey);
+				else executingDepth.set(sessionKey, depth);
+				metadata.get(session)!.lastActivityAt = Date.now();
+				armReap(sessionKey);
+			}
 		}
 	}
 
-	return { disposeAll, disposeByOwner, executeOnSession };
+	return { disposeAll, disposeByOwner, executeOnSession, startSession, listSessions, closeSession, keepaliveSession };
 }

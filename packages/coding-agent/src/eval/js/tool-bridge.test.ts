@@ -64,6 +64,29 @@ test("tools that declare an intent parameter still receive one", async () => {
 	expect(seen?.[INTENT_FIELD]).toBe("js prelude");
 });
 
+test("unknown bridged tools name close matches, or the available tools, without blaming one runtime", async () => {
+	const session = {
+		getToolForEvalBridge: () => undefined,
+		getEvalBridgeToolNames: () => ["write", "read", "bash"],
+	} as unknown as ToolSession;
+	const failure = async (name: string): Promise<string> => {
+		try {
+			await callSessionTool(name, {}, { session });
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+		throw new Error(`${name} unexpectedly resolved`);
+	};
+
+	const typo = await failure("raed");
+	expect(typo).toContain("Unknown tool: raed");
+	expect(typo).toContain("Did you mean read?");
+	const unrelated = await failure("zzz");
+	expect(unrelated).toContain("Unknown tool: zzz");
+	expect(unrelated).toContain("Available tools: bash, read, write");
+	for (const message of [typo, unrelated]) expect(message).not.toMatch(/\bjs\b|javascript|python/i);
+});
+
 test("kernel checkpoint and rewind calls are rejected instead of silently succeeding", async () => {
 	const session = { getCheckpointState: () => ({ goal: "g" }) } as unknown as ToolSession;
 	const checkpoint = new CheckpointTool({ getCheckpointState: () => undefined } as unknown as ToolSession);

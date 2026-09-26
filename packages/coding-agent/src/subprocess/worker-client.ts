@@ -109,6 +109,9 @@ export function createWorkerSubprocess<Outbound>(options: {
 	env: Record<string, string>;
 	exitLabel: string;
 
+	/** IPC encoding; non-Bun children (the Node JS kernel) only understand "json". */
+	serialization?: "advanced" | "json";
+
 	detached?: boolean;
 
 	reportCleanExit?: boolean;
@@ -137,7 +140,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stdin: "ignore",
 		stdout: "ignore",
 		stderr: stderrCapture.target,
-		serialization: "advanced",
+		serialization: options.serialization ?? "advanced",
 		ipc(message) {
 			for (const handler of inbound) handler(message as Outbound);
 		},

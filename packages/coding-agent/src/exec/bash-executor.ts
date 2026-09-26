@@ -1,6 +1,7 @@
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type FsObservation, type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
 import { logger, postmortem, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import type { ExecutionMetadata } from "../session/execution-metadata";
@@ -21,6 +22,10 @@ interface BashExecutorOptions {
 
 	sessionKey?: string;
 	lane?: string;
+	/** Lane slot reserved at call issue; omitted → reserved when executeBash is called. */
+	laneReservation?: BashLaneReservation;
+	/** Called once the lane admits the command, just before it starts executing. */
+	onStart?: () => void;
 	sessionOwner?: BashSessionOwner;
 
 	env?: Record<string, string>;
@@ -63,6 +68,8 @@ export interface BashResult {
 	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
 	summarized?: boolean;
 	actionableDiagnostics?: string[];
+	/** Set when an earlier call discarded this lane's persistent shell, so this call ran in a fresh one. */
+	shellStateLost?: string;
 }
 
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -122,6 +129,12 @@ interface QuarantinedShellSession {
 
 const shellSessionQuarantines = new Map<string, QuarantinedShellSession>();
 const shellLanes = new Map<string, Promise<void>>();
+/**
+ * Why a lane's persistent shell was discarded (`exit`, timeout, cancellation,
+ * crash), keyed by shell session key. The next call on the lane reports it once,
+ * like the kernel's generation-change notice.
+ */
+const lostShellStates = new LRUCache<string, string>({ max: 256 });
 
 interface RetainedShell {
 	shell: Shell;
@@ -349,6 +362,9 @@ function collectShellsForSession(sessionId: string): Set<Shell> {
 	for (const sessionKey of brokenShellSessions) {
 		if (belongsToSession(sessionKey, sessionId)) brokenShellSessions.delete(sessionKey);
 	}
+	for (const sessionKey of [...lostShellStates.keys()]) {
+		if (belongsToSession(sessionKey, sessionId)) lostShellStates.delete(sessionKey);
+	}
 	return shells;
 }
 
@@ -401,6 +417,7 @@ export async function disposeAllBashSessions(): Promise<void> {
 	for (const shell of retainedShells.keys()) shells.add(shell);
 	for (const shell of shellClosePromises.keys()) shells.add(shell);
 	shellSessions.clear();
+	lostShellStates.clear();
 	for (const active of activeShells.values()) active.abortController.abort();
 	activeShells.clear();
 	brokenShellSessions.clear();
@@ -569,19 +586,57 @@ function resolveUserShellConfig(settings: Settings, baseConfig: ShellConfig): Sh
 	};
 }
 
-export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
-	if (options?.lane !== undefined && (options.lane.length === 0 || options.lane.length > 128)) {
+export interface BashLaneReservation {
+	readonly sessionKey: string | undefined;
+	readonly lane: string;
+	/** Resolves once every earlier reservation on the same lane has been released. */
+	readonly ready: Promise<void>;
+	/** Idempotent; admits the next reservation on the lane. */
+	release(): void;
+}
+
+/**
+ * Join a lane's FIFO synchronously. Callers that do async preparation before
+ * {@link executeBash} reserve at issue time so same-lane calls run in the order
+ * they were issued, not the order their preparation finished.
+ */
+export function reserveBashLane(options: { sessionKey?: string; lane?: string }): BashLaneReservation {
+	if (options.lane !== undefined && (options.lane.length === 0 || options.lane.length > 128)) {
 		throw new Error("lane must contain 1–128 characters");
 	}
-	const key = JSON.stringify([options?.sessionKey ?? "", options?.lane ?? "main"]);
-	const previous = shellLanes.get(key) ?? Promise.resolve();
+	const lane = options.lane ?? "main";
+	const key = JSON.stringify([options.sessionKey ?? "", lane]);
+	const ready = shellLanes.get(key) ?? Promise.resolve();
 	const gate = Promise.withResolvers<void>();
-	const queued = previous.then(() => gate.promise);
+	const queued = ready.then(() => gate.promise);
 	shellLanes.set(key, queued);
+	let released = false;
+	return {
+		sessionKey: options.sessionKey,
+		lane,
+		ready,
+		release: () => {
+			if (released) return;
+			released = true;
+			gate.resolve();
+			void queued.then(() => {
+				if (shellLanes.get(key) === queued) shellLanes.delete(key);
+			});
+		},
+	};
+}
+
+export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
+	const reservation =
+		options?.laneReservation ?? reserveBashLane({ sessionKey: options?.sessionKey, lane: options?.lane });
 	try {
-		if (options?.signal) await untilAborted(options.signal, () => previous);
-		else await previous;
+		if (reservation.sessionKey !== options?.sessionKey || reservation.lane !== (options?.lane ?? "main")) {
+			throw new Error("Lane reservation does not match the command's session and lane");
+		}
+		if (options?.signal) await untilAborted(options.signal, () => reservation.ready);
+		else await reservation.ready;
 		options?.signal?.throwIfAborted();
+		options?.onStart?.();
 		return await executeBashInLane(command, options);
 	} catch (error) {
 		if (!options?.signal?.aborted) throw error;
@@ -592,10 +647,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		};
 		return { ...result, execution: executionMetadataForResult(result, { summary: result }) };
 	} finally {
-		gate.resolve();
-		void queued.then(() => {
-			if (shellLanes.get(key) === queued) shellLanes.delete(key);
-		});
+		reservation.release();
 	}
 }
 
@@ -732,7 +784,14 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 	}
 
 	let resetSession = false;
+	// Why this call discarded the lane's persistent shell; reported by the next call.
+	let lostShell: string | undefined;
 	const xdDispatcher = options?.xd?.createDispatcher(runAbortController.signal);
+	const lostState = lostShellStates.get(sessionKey);
+	lostShellStates.delete(sessionKey);
+	const shellStateLost = lostState
+		? `<shell> state lost: lane ${options?.lane ?? "main"} ${lostState}; this call ran in a fresh shell. Earlier exports, shell variables, functions and aliases are gone.`
+		: undefined;
 
 	try {
 		const runPromise = executionShell.run(
@@ -766,6 +825,8 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			const cleanupPromise = abortShell();
 			if (shellSession) {
 				resetSession = true;
+				lostShell =
+					winner.kind === "timeout" ? "shell was killed by a timeout" : "shell was killed by a cancellation";
 				quarantineShellSession(sessionKey, executionShell, runPromise, cleanupPromise, sessionOwner);
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
@@ -776,6 +837,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
+				shellStateLost,
 				stageRecords: interrupted?.stageRecords,
 				xdDispatches: interrupted?.xdDispatches,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
@@ -797,12 +859,14 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				: "Command timed out";
 			resetSession = true;
 			if (shellSession) {
+				lostShell = "shell was killed by a timeout";
 				quarantineShellSession(sessionKey, executionShell, runPromise, abortCleanupPromise, sessionOwner);
 			}
 			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
 				timedOut: true,
+				shellStateLost,
 				stageRecords: winner.result.stageRecords,
 				xdDispatches: winner.result.xdDispatches,
 				...(await sink.dump(annotation)),
@@ -812,11 +876,13 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		if (winner.result.cancelled) {
 			resetSession = true;
 			if (shellSession) {
+				lostShell = "shell was killed by a cancellation";
 				quarantineShellSession(sessionKey, executionShell, runPromise, abortCleanupPromise, sessionOwner);
 			}
 			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
+				shellStateLost,
 				stageRecords: winner.result.stageRecords,
 				xdDispatches: winner.result.xdDispatches,
 				...(await sink.dump("Command cancelled")),
@@ -839,9 +905,12 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			}
 		}
 
+		// `exit` ends the native session; the Shell handle starts a fresh one on its next run.
+		if (winner.result.sessionEnded) lostShell = `shell exited with code ${winner.result.exitCode ?? "unknown"}`;
 		return withExecutionMetadata({
 			exitCode: winner.result.exitCode,
 			cancelled: false,
+			shellStateLost,
 			workingDir: winner.result.workingDir,
 			fsObservations: winner.result.fsObservations,
 			xdDispatches: winner.result.xdDispatches,
@@ -850,6 +919,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		});
 	} catch (err) {
 		resetSession = true;
+		lostShell = "shell was discarded after an error";
 		throw err;
 	} finally {
 		activeShells.delete(executionShell);
@@ -866,6 +936,8 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		if (ownsPersistentSession) {
 			const disposed = isDisposedSessionKey(sessionKey, sessionOwner);
 			const asynchronous = options?.sessionKey?.includes(":async:") === true;
+			// Without a session id every caller shares one shell, so the loss has no owner to report it to.
+			if (lostShell && options?.sessionKey && !asynchronous && !disposed) lostShellStates.set(sessionKey, lostShell);
 			if (resetSession || asynchronous || disposed) {
 				if (shellSessions.get(sessionKey) === executionShell) shellSessions.delete(sessionKey);
 

@@ -88,6 +88,7 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 			fsObservations: [],
 			xdDispatches: [],
 			stageRecords: [],
+			sessionEnded: false,
 			minimized: {
 				filter: "lint",
 				text: "src/event-cache.ts:281-405 multiple ... errors\n",
@@ -106,4 +107,22 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 	expect(result.exitCode).toBe(1);
 	expect(result.output).toContain("TS2304 Cannot find name 'foo'");
 	expect(result.output).not.toContain("multiple ... errors");
+});
+
+test("only a session-owned lane reports a shell lost by an earlier call", async () => {
+	const lane = `lost-${crypto.randomUUID()}`;
+	const sessionKey = `bash-shell-lost-${crypto.randomUUID()}`;
+	try {
+		// Without a session id the lane's shell is shared by every caller; nobody owns the loss.
+		await executeBash("exit 3", { lane });
+		expect((await executeBash("true", { lane })).shellStateLost).toBeUndefined();
+
+		expect((await executeBash("exit 3", { lane, sessionKey })).exitCode).toBe(3);
+		expect((await executeBash("true", { lane, sessionKey })).shellStateLost).toContain(
+			`lane ${lane} shell exited with code 3`,
+		);
+		expect((await executeBash("true", { lane, sessionKey })).shellStateLost).toBeUndefined();
+	} finally {
+		await disposeBashSessions(sessionKey);
+	}
 });

@@ -8,6 +8,7 @@ import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities"
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { getProjectDir, isEnoent, isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import {
+	AsyncJobFailure,
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
 	raceJobSettlement,
@@ -35,7 +36,13 @@ export type { StreamedKernelFailure } from "../eval/speculation";
 import { preflightStreamedInput } from "../eval/assertion-preflight";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent } from "../eval/types";
-import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
+import {
+	applyDirenvPreflight,
+	type BashLaneReservation,
+	type BashResult,
+	executeBash,
+	reserveBashLane,
+} from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { formatHiddenLinesNotice } from "../modes/components/execution-shared";
@@ -1082,6 +1089,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 
 		const outputLines = [this.#formatResultOutput(result)];
+		// Like the kernel's generation notice: lead with the loss so it is read before the output.
+		if ("shellStateLost" in result && result.shellStateLost) outputLines.unshift(result.shellStateLost);
 		const notices: string[] = [];
 		if (options.wallTimeMs !== undefined) {
 			notices.push(formatWallTimeNotice(options.wallTimeMs));
@@ -1242,6 +1251,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	#startManagedBashJob(options: {
 		command: string;
 		lane?: string;
+		/** Slot reserved at issue on `lane ?? "main"`; the job owns and releases it. */
+		laneReservation: BashLaneReservation;
+		/** Called when the job's command leaves the lane queue. */
+		onStart?: () => void;
 		commandCwd: string;
 		timeoutMs: number | undefined;
 		timeoutSec: number | undefined;
@@ -1258,9 +1271,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
+			options.laneReservation.release();
 			throw new ToolError("Background job manager unavailable for this session.");
 		}
 
+		// Without an explicit lane the job runs in its own `async:<id>` lane, so the
+		// issue-time slot on the default lane is not needed.
+		const laneReservation = options.lane === undefined ? undefined : options.laneReservation;
+		if (!laneReservation) options.laneReservation.release();
 		const label = options.command.length > 120 ? `${options.command.slice(0, 117)}...` : options.command;
 		let latestText = "";
 		let latestTextDirty = false;
@@ -1268,116 +1286,139 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 
-		const jobId = manager.register(
-			"bash",
-			label,
-			async ({ jobId, signal: runSignal, reportProgress }) => {
-				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
-				const wallTimeStart = performance.now();
-				const lane = options.lane ?? `async:${jobId}`;
-				const record: ExecutionRecord = { id: jobId, command: options.command, lane, startedAt: Date.now() };
-				recordExecution(this.session, record);
-				const progressScheduler = new LatestValueScheduler<void>(
-					async () => {
-						latestText = tailBuffer.text();
-						latestTextDirty = false;
-						await reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
-					},
-					{ delayMs: BASH_LIVE_UPDATE_INTERVAL_MS },
-				);
-				const pyBridge = this.#kernelShellBridge(jobId, {
-					command: options.command,
-					lane,
-					cwd: options.commandCwd,
-					env: options.resolvedEnv,
-					pty: false,
-					async: true,
-				});
-				let resultRecorded = false;
-				try {
-					const result = await executeBash(options.command, {
-						cwd: options.commandCwd,
-						sessionKey: this.session.getSessionId?.() ?? undefined,
+		let jobId: string;
+		try {
+			jobId = manager.register(
+				"bash",
+				label,
+				async ({ jobId, signal: runSignal, reportProgress, setResult }) => {
+					const lane = options.lane ?? `async:${jobId}`;
+					const record: ExecutionRecord = { id: jobId, command: options.command, lane, queuedAt: Date.now() };
+					recordExecution(this.session, record);
+					let wallTimeStart = performance.now();
+					const progressScheduler = new LatestValueScheduler<void>(
+						async () => {
+							latestText = tailBuffer.text();
+							latestTextDirty = false;
+							await reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
+						},
+						{ delayMs: BASH_LIVE_UPDATE_INTERVAL_MS },
+					);
+					const pyBridge = this.#kernelShellBridge(jobId, {
+						command: options.command,
 						lane,
-						timeout: options.timeoutMs ?? 0,
-						signal: runSignal,
-						env: pyBridge ? { ...options.resolvedEnv, ...pyBridge.env } : options.resolvedEnv,
-						xd: options.xd,
-						artifactPath,
-						artifactId,
-						onChunk: chunk => {
-							tailBuffer.append(chunk);
-							latestTextDirty = true;
-							progressScheduler.enqueue(undefined);
-						},
-						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+						cwd: options.commandCwd,
+						env: options.resolvedEnv,
+						pty: false,
+						async: true,
 					});
-					await this.#recordFsObservations(result);
-					const wallTimeMs = performance.now() - wallTimeStart;
-					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
-						requestedTimeoutSec: options.requestedTimeoutSec,
-						notices: options.notices ?? [],
-						wallTimeMs,
-						kernelRouted: detectBashKernelCell(options.command) !== undefined,
-						images: await this.#drainBridgeImages(pyBridge),
-						statusEvents: pyBridge?.drainStatusEvents(),
-						jsonOutputs: pyBridge?.drainJsonOutputs(),
-						queriedExecutions: pyBridge?.queriedExecutions(),
-					});
-					recordExecution(this.session, {
-						...record,
-						finishedAt: Date.now(),
-						...(finalResult.details?.executionRecordOmitted
-							? { resultOmitted: finalResult.details.executionRecordOmitted }
-							: { result: finalResult }),
-					});
-					resultRecorded = true;
-					const finalText = this.#extractTextResult(finalResult);
-					await progressScheduler.flush();
-					latestText = finalText;
-					latestTextDirty = false;
-
-					completion.resolve({ kind: "completed", result: finalResult });
-					if (finalResult.isError === true) {
-						throw new ToolError(finalText);
-					}
-					await reportProgress(finalText, { async: { state: "completed", jobId, type: "bash" } });
-					return finalText;
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					await progressScheduler.flush();
-					latestText = message;
-					latestTextDirty = false;
-					if (!resultRecorded)
-						recordExecution(this.session, { ...record, finishedAt: Date.now(), error: message });
-					completion.resolve({ kind: "failed", error });
-					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
-					throw error;
-				} finally {
-					progressScheduler.cancel();
-					pyBridge?.dispose();
-				}
-			},
-			{
-				ownerId: this.session.getAsyncJobOwnerId?.() ?? this.session.getAgentId?.() ?? undefined,
-				onProgress: async text => {
-					latestText = text;
-					if (!forwardUpdates) return;
-					await options.onUpdate?.({
-						content: [{ type: "text", text }],
-						details: {
-							execution: {
-								state: "running",
-								collector: { state: "running" },
-								renderer: { state: "not-run" },
-								output: { disposition: "complete" },
+					let resultRecorded = false;
+					try {
+						const { path: artifactPath, id: artifactId } =
+							(await this.session.allocateOutputArtifact?.("bash")) ?? {};
+						const result = await executeBash(options.command, {
+							cwd: options.commandCwd,
+							sessionKey: this.session.getSessionId?.() ?? undefined,
+							lane,
+							laneReservation,
+							onStart: () => {
+								wallTimeStart = performance.now();
+								record.startedAt = Date.now();
+								recordExecution(this.session, record);
+								options.onStart?.();
 							},
-							async: { state: "running", jobId, type: "bash" },
-						},
-					});
+							timeout: options.timeoutMs ?? 0,
+							signal: runSignal,
+							env: pyBridge ? { ...options.resolvedEnv, ...pyBridge.env } : options.resolvedEnv,
+							xd: options.xd,
+							artifactPath,
+							artifactId,
+							onChunk: chunk => {
+								tailBuffer.append(chunk);
+								latestTextDirty = true;
+								progressScheduler.enqueue(undefined);
+							},
+							onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+						});
+						await this.#recordFsObservations(result);
+						const wallTimeMs = performance.now() - wallTimeStart;
+						const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
+							requestedTimeoutSec: options.requestedTimeoutSec,
+							notices: options.notices ?? [],
+							wallTimeMs,
+							kernelRouted: detectBashKernelCell(options.command) !== undefined,
+							images: await this.#drainBridgeImages(pyBridge),
+							statusEvents: pyBridge?.drainStatusEvents(),
+							jsonOutputs: pyBridge?.drainJsonOutputs(),
+							queriedExecutions: pyBridge?.queriedExecutions(),
+						});
+						recordExecution(this.session, {
+							...record,
+							finishedAt: Date.now(),
+							...(finalResult.details?.executionRecordOmitted
+								? { resultOmitted: finalResult.details.executionRecordOmitted }
+								: { result: finalResult }),
+						});
+						resultRecorded = true;
+						setResult(finalResult);
+						const finalText = this.#extractTextResult(finalResult);
+						await progressScheduler.flush();
+						latestText = finalText;
+						latestTextDirty = false;
+
+						completion.resolve({ kind: "completed", result: finalResult });
+						if (finalResult.isError === true) {
+							// The job's error is the failure reason; its output stays its result.
+							const collector = finalResult.details?.execution?.collector;
+							throw new AsyncJobFailure(
+								pyBridge?.cellFailure() ??
+									(collector?.state === "failed" ? collector.error : undefined) ??
+									(result.exitCode === undefined ? "Command failed" : formatExitCodeNotice(result.exitCode)),
+								finalText,
+							);
+						}
+						await reportProgress(finalText, { async: { state: "completed", jobId, type: "bash" } });
+						return finalText;
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						await progressScheduler.flush();
+						latestText = error instanceof AsyncJobFailure ? error.output : message;
+						latestTextDirty = false;
+						if (!resultRecorded)
+							recordExecution(this.session, { ...record, finishedAt: Date.now(), error: message });
+						completion.resolve({ kind: "failed", error });
+						await reportProgress(latestText, { async: { state: "failed", jobId, type: "bash" } });
+						throw error;
+					} finally {
+						laneReservation?.release();
+						progressScheduler.cancel();
+						pyBridge?.dispose();
+					}
 				},
-			},
-		);
+				{
+					ownerId: this.session.getAsyncJobOwnerId?.() ?? this.session.getAgentId?.() ?? undefined,
+					onProgress: async text => {
+						latestText = text;
+						if (!forwardUpdates) return;
+						await options.onUpdate?.({
+							content: [{ type: "text", text }],
+							details: {
+								execution: {
+									state: "running",
+									collector: { state: "running" },
+									renderer: { state: "not-run" },
+									output: { disposition: "complete" },
+								},
+								async: { state: "running", jobId, type: "bash" },
+							},
+						});
+					},
+				},
+			);
+		} catch (error) {
+			options.laneReservation.release();
+			throw error;
+		}
 
 		return {
 			jobId,
@@ -1406,14 +1447,34 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			id: toolCallId,
 			command: input.command,
 			lane: input.lane ?? "main",
-			startedAt: Date.now(),
+			queuedAt: Date.now(),
 		};
 		recordExecution(this.session, record);
+		const markStarted = (): void => {
+			if (record.startedAt !== undefined) return;
+			record.startedAt = Date.now();
+			recordExecution(this.session, record);
+		};
+		let laneReservation: BashLaneReservation | undefined;
+		// A consumer that takes the slot (executeBash, a background job) releases it when done.
+		let laneTaken = false;
+		const takeLane = (): BashLaneReservation => {
+			laneTaken = true;
+			return laneReservation!;
+		};
 		try {
-			const result = await this.#execute(toolCallId, input, signal, onUpdate, ctx);
+			// Join the lane before the first await: same-lane calls issued together
+			// must run in issue order, whatever their preparation costs.
+			laneReservation = reserveBashLane({
+				sessionKey: this.session.getSessionId?.() ?? undefined,
+				lane: input.lane,
+			});
+			const result = await this.#execute(toolCallId, input, takeLane, markStarted, signal, onUpdate, ctx);
+			const finishedAt = Date.now();
 			recordExecution(this.session, {
 				...record,
-				finishedAt: Date.now(),
+				startedAt: record.startedAt ?? finishedAt,
+				finishedAt,
 				...(result.details?.executionRecordOmitted
 					? { resultOmitted: result.details.executionRecordOmitted }
 					: { result }),
@@ -1426,6 +1487,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				error: error instanceof Error ? error.message : String(error),
 			});
 			throw error;
+		} finally {
+			if (!laneTaken) laneReservation?.release();
 		}
 	}
 
@@ -1441,6 +1504,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			async: asyncRequested = false,
 			pty = false,
 		}: BashToolInput,
+		takeLane: () => BashLaneReservation,
+		markStarted: () => void,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
@@ -1542,6 +1607,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const job = this.#startManagedBashJob({
 				command,
 				lane,
+				laneReservation: takeLane(),
 				commandCwd,
 				timeoutMs,
 				timeoutSec,
@@ -1578,6 +1644,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const job = this.#startManagedBashJob({
 				command,
 				lane,
+				laneReservation: takeLane(),
+				onStart: markStarted,
 				commandCwd,
 				timeoutMs,
 				timeoutSec,
@@ -1927,6 +1995,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						cwd: commandCwd,
 						sessionKey: this.session.getSessionId?.() ?? undefined,
 						lane,
+						laneReservation: takeLane(),
+						onStart: markStarted,
 						timeout: timeoutMs ?? 0,
 						signal,
 						env: pyBridge ? { ...resolvedEnv, ...pyBridge.env } : resolvedEnv,

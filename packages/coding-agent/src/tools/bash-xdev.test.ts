@@ -686,6 +686,25 @@ test("xd help keeps full docs for the model but renders a compact card in TUI", 
 	});
 });
 
+test("xd help card keeps the device description when a transport notice precedes the docs", async () => {
+	await withBash(async (bash, _state, session) => {
+		const result = await bash.execute("xd-help-notice", { command: `xd probe ?` });
+		expect(result.isError).not.toBe(true);
+		const noticed = {
+			...result,
+			content: result.content.map(part =>
+				part.type === "text"
+					? { ...part, text: `<shell> state lost: lane main shell was killed by a timeout.\n${part.text}` }
+					: part,
+			),
+		};
+		const xdev = (session as { xdev?: { tools: Map<string, unknown> } }).xdev;
+		const rendered = renderBashResult(noticed, `xd probe ?`, false, name => xdev?.tools.get(name));
+		expect(rendered).toContain("xd://probe · docs");
+		expect(rendered).toContain("Returns the supplied value.");
+	});
+});
+
 test("xd help card expands to the full docs", async () => {
 	await withBash(async bash => {
 		const result = await bash.execute("xd-help-expanded", { command: `xd probe ?` });

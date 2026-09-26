@@ -7,11 +7,13 @@
  * wire schema, and renders the inverse (canonical CLI usage lines for docs and TUI previews).
  *
  * Conventions:
- * - `--flag value`, `--flag=value`, bare `--flag` for booleans (`--no-flag` negates).
+ * - `--flag value`, `--flag=value`, bare `--flag` for booleans (`--no-flag` negates; a bare boolean
+ *   flag followed by a literal `true`/`false` takes it as its value).
  * - Array flags: repeat the flag for literal entries; a single value splits on unescaped
  *   commas (`\,` escapes one) and a single JSON array value is taken verbatim.
  * - Positional values fill remaining scalar properties in usage order (device profiles in
- *   XDEV_POSITIONAL_ORDER pin the friendly order; default is schema declaration order).
+ *   XDEV_POSITIONAL_ORDER pin the friendly order; default is schema declaration order). When `op`
+ *   is not a positional slot, a first positional equal to one of its values selects the op.
  * - A single `{...}` positional stays the legacy full-args JSON form; `--json '<json>'` is the
  *   explicit escape hatch (required for MCP devices, whose schemas are not CLI-mappable).
  * - A flag value of `-` reads that value from stdin; bare `xd <tool>` with piped stdin takes a
@@ -81,8 +83,32 @@ export interface XdevFlagSpec {
 
 type PropKind = "string" | "number" | "boolean" | "enum" | "array" | "json";
 
+/**
+ * String literal values when the property is a closed set of strings: `enum`, a single-value
+ * `const` (one-literal schemas like `type("'start'")`), or an `anyOf` whose branches are all
+ * such literals. Anything else (mixed or non-string literals) returns undefined.
+ */
+function stringLiterals(prop: Record<string, unknown>): string[] | undefined {
+	if (Array.isArray(prop.enum)) {
+		return prop.enum.every(value => typeof value === "string") ? (prop.enum as string[]) : undefined;
+	}
+	if ("const" in prop) return typeof prop.const === "string" ? [prop.const] : undefined;
+	if (Array.isArray(prop.anyOf) && prop.anyOf.length > 0) {
+		const values: string[] = [];
+		for (const branch of prop.anyOf) {
+			if (!branch || typeof branch !== "object" || Array.isArray(branch)) return undefined;
+			const literals = stringLiterals(branch as Record<string, unknown>);
+			if (!literals) return undefined;
+			values.push(...literals);
+		}
+		return [...new Set(values)];
+	}
+	return undefined;
+}
+
 function propKind(prop: Record<string, unknown>): PropKind {
-	if (Array.isArray(prop.enum)) return "enum";
+	if (stringLiterals(prop)) return "enum";
+	if (Array.isArray(prop.enum)) return "json";
 	if (prop.type === "array") return "array";
 	if (prop.type === "boolean") return "boolean";
 	if (prop.type === "number" || prop.type === "integer") return "number";
@@ -104,8 +130,7 @@ export function xdevFlagSpecs(schema: Record<string, unknown>): XdevFlagSpec[] {
 		let enumValues: readonly string[] | undefined;
 		let items: XdevFlagSpec["items"] | undefined;
 		if (kind === "enum") {
-			enumValues = (prop.enum as unknown[]).filter(v => typeof v === "string") as string[];
-			if (enumValues.length !== (prop.enum as unknown[]).length) type = "json";
+			enumValues = stringLiterals(prop);
 		} else if (kind === "array") {
 			const itemsSchema = prop.items;
 			const itemProp =
@@ -168,6 +193,15 @@ function positionalOrder(deviceName: string, schema: Record<string, unknown>): s
 	return xdevFlagSpecs(schema)
 		.filter(spec => spec.type !== "json" && spec.type !== "array")
 		.map(spec => spec.name);
+}
+
+/**
+ * The `op` selector when it is a closed string set that is not already a positional slot, so a
+ * leading positional matching one of its values selects the op (`xd fleet list`).
+ */
+function leadingOpSpec(specs: readonly XdevFlagSpec[], order: readonly string[]): XdevFlagSpec | undefined {
+	if (order.includes("op")) return undefined;
+	return specs.find(spec => spec.name === "op" && spec.type === "enum");
 }
 
 function parseScalarToken(spec: XdevFlagSpec, token: string, flag: string): unknown {
@@ -383,6 +417,11 @@ export function parseXdevCliArgs(
 					args[spec.name] = false;
 					continue;
 				}
+				// `--flag true|false` takes the literal as its value instead of leaving it positional.
+				if (value === undefined && (argv[i + 1] === "true" || argv[i + 1] === "false")) {
+					value = argv[i + 1];
+					i++;
+				}
 				if (value === undefined) {
 					args[spec.name] = true;
 					continue;
@@ -445,7 +484,7 @@ export function parseXdevCliArgs(
 		);
 	}
 
-	const order = positionalOrder(options.deviceName, schema).filter(prop => !(prop in args));
+	let order = positionalOrder(options.deviceName, schema).filter(prop => !(prop in args));
 
 	// Bare stdin with no argv keeps the existing JSON-payload behavior.
 	if (
@@ -479,6 +518,13 @@ export function parseXdevCliArgs(
 		throw new XdevUsageError(
 			`xd ${options.deviceName}: MCP devices take a single JSON args object: xd ${options.deviceName} '{"...":"..."}'`,
 		);
+	}
+
+	// An op literal leading the positionals selects the op even when op is not a positional slot.
+	const opSpec = leadingOpSpec(specs, positionalOrder(options.deviceName, schema));
+	if (opSpec && !("op" in args) && positionals.length > 0 && opSpec.enumValues?.includes(positionals[0])) {
+		args.op = positionals.shift();
+		order = order.filter(prop => prop !== "op");
 	}
 
 	for (const token of positionals) {
@@ -573,13 +619,30 @@ export function formatXdevCliCommand(name: string, args: Record<string, unknown>
 	return parts.join(" ");
 }
 
+export interface CliUsageOptions {
+	/** The device accepts only JSON args (MCP devices): render the JSON forms, never flags/positionals. */
+	jsonOnly?: boolean;
+}
+
+const JSON_ONLY_SYNOPSIS_SUFFIX = "--json '<json>'";
+
 /** One-line usage synopsis generated from the schema, e.g. `xd browser --action <action> [--url <url>] …`. */
-export function formatCliUsageSynopsis(name: string, schema: Record<string, unknown>): string {
+export function formatCliUsageSynopsis(
+	name: string,
+	schema: Record<string, unknown>,
+	options: CliUsageOptions = {},
+): string {
+	if (options.jsonOnly) return `xd ${name} ${JSON_ONLY_SYNOPSIS_SUFFIX}`;
 	const specs = xdevFlagSpecs(schema);
 	if (specs.length === 0) return `xd ${name}`;
 	const order = positionalOrder(name, schema);
 	const parts = [`xd ${name}`];
 	const seen = new Set<string>();
+	const opSpec = leadingOpSpec(specs, order);
+	if (opSpec) {
+		seen.add(opSpec.name);
+		parts.push(formatCliToken({ ...opSpec, required: false }, true));
+	}
 	for (const prop of order) {
 		const spec = specs.find(s => s.name === prop);
 		if (!spec || seen.has(prop)) continue;
@@ -608,8 +671,17 @@ function formatCliToken(spec: XdevFlagSpec, positional: boolean): string {
 }
 
 /** Flag reference block for `xd <tool> ?` docs. */
-export function formatCliFlagReference(name: string, tool: AiTool): string {
+export function formatCliFlagReference(name: string, tool: AiTool, options: CliUsageOptions = {}): string {
 	const schema = toolWireSchema(tool);
+	if (options.jsonOnly) {
+		return [
+			`Usage: ${formatCliUsageSynopsis(name, schema, options)}`,
+			`       xd ${name} '<json>'`,
+			`       <json producer> | xd ${name}`,
+			"",
+			"This device takes one JSON args object matching the schema; flags and positional values are not accepted.",
+		].join("\n");
+	}
 	const specs = xdevFlagSpecs(schema);
 	const lines = [`Usage: ${formatCliUsageSynopsis(name, schema)}`];
 	if (specs.length > 0) {

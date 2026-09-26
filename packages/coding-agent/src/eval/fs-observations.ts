@@ -65,8 +65,10 @@ export class FsObservationLedger {
 		this.record(await observe(absPath, "read"));
 	}
 
-	async recordWrite(absPath: string): Promise<void> {
-		this.record(await observe(absPath, "write"));
+	async recordWrite(absPath: string): Promise<FsObservation> {
+		const observation = await observe(absPath, "write");
+		this.record(observation);
+		return observation;
 	}
 
 	drain(): FsObservation[] {

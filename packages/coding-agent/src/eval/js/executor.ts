@@ -6,22 +6,30 @@ import {
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary } from "../../session/streaming-output";
 import type { ToolSession } from "../../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
+import { renderError } from "../../tools/tool-errors";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
+import type { JsKernelRuntime } from "../kernel-environment";
+import type { KernelTarget } from "../kernel-target";
 import { type KernelDisplayOutput, PythonDisplayBudget } from "../py/display";
-import { executeInVmContext } from "./context-manager";
+import { executeInVmContext, isJsCellError, JsKernelTerminatedError } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
 interface JsExecutorOptions {
+	runtime: JsKernelRuntime;
 	cwd?: string;
+	interpreter?: string;
+	target?: KernelTarget;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: ReadableStream<Uint8Array>;
 	timeoutMs?: number;
 	deadlineMs?: number;
 
 	idleTimeoutMs?: number;
 	onChunk?: (chunk: string) => Promise<void> | void;
 	onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 	onStatus?: (event: JsStatusEvent) => void;
+	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	signal?: AbortSignal;
 	sessionId: string;
 
@@ -141,10 +149,14 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 
 	try {
 		await executeInVmContext({
+			runtime: options.runtime,
 			sessionKey: options.sessionId,
 			sessionId: options.sessionId,
 			ownerId: options.kernelOwnerId,
 			cwd: options.cwd ?? options.session.cwd,
+			discoveryCwd: options.session.cwd,
+			interpreter: options.interpreter,
+			target: options.target,
 			session: options.session,
 			localRoots: options.localRoots,
 			shellEnv: options.shellEnv,
@@ -157,10 +169,11 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			timeoutMs: acquireBudgetMs,
 			runState: {
 				signal,
-				onText: (chunk, stream = "stdout") => {
+				onText: async (chunk, stream = "stdout") => {
 					outputSink.push(chunk);
-					void options.onStream?.(chunk, stream);
+					await options.onStream?.(chunk, stream);
 				},
+				onBytes: options.onBytes,
 				retainedBytes: () => outputSink.retainedBytes() + displayBudget.retainedBytes(),
 				release: releaseOutput,
 				onDisplay: output => {
@@ -168,14 +181,15 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 						options.onStatus?.(output.event);
 						return;
 					}
-					displayBudget.addKernelOutput(output);
+					for (const accepted of displayBudget.addKernelOutput(output)) void options.onDisplay?.(accepted);
 				},
 			},
 		});
 		const summary = await outputSink.dump();
 		return resultWithSummary(summary, { exitCode: 0, cancelled: false });
 	} catch (error) {
-		if (signal?.aborted || isAbortError(error)) {
+		// A kernel close/reset under the cell cancels it; the shell bridge reports the lifecycle cause.
+		if (signal?.aborted || isAbortError(error) || error instanceof JsKernelTerminatedError) {
 			const timedOut = Boolean(timeoutSignal?.aborted) || isTimeoutReason(options.signal?.reason);
 			if (timedOut) {
 				outputSink.push(formatJsTimeoutAnnotation(legacyTimeoutMs ?? options.idleTimeoutMs));
@@ -183,9 +197,12 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			const summary = await outputSink.dump();
 			return resultWithSummary(summary, { exitCode: undefined, cancelled: true, timedOut });
 		}
-		const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+		// The cell's own error keeps its stack, which locates the user's code. A harness failure (startup,
+		// worker death, lifecycle) is a message for the user, as Python's are; its host stack is noise.
+		const message = isJsCellError(error) ? (error.stack ?? error.message) : renderError(error);
 		outputSink.push(message);
 		await options.onStream?.(`${message}\n`, "stderr");
+		await options.onBytes?.(Buffer.from(`${message}\n`), "stderr");
 		const summary = await outputSink.dump();
 		return resultWithSummary(summary, { exitCode: 1, cancelled: false });
 	} finally {

@@ -85,6 +85,19 @@ test("partial body is inspectable without executing it", () => {
 	expect(input.calls[0]?.args.prompt).toBe("x");
 });
 
+test("every kernel-routed interpreter name selects its cell language", () => {
+	const body = `completion("x")`;
+	for (const [executable, language] of [
+		["python3", "python"],
+		["node", "js"],
+		["nodejs", "js"],
+		["bun", "js"],
+	] as const) {
+		expect(parseStandaloneQuotedHeredoc(`${executable} <<'EOF'\n${body}\nEOF`)?.language).toBe(language);
+	}
+	expect(parseStandaloneQuotedHeredoc(`deno <<'EOF'\n${body}\nEOF`)).toBeUndefined();
+});
+
 test("decodes incomplete outer JSON without losing completed fields", () => {
 	const prompt = 'quote "and" ✓';
 	const command = `python <<'PY'\na = completion(${JSON.stringify(prompt)})\nPY`;

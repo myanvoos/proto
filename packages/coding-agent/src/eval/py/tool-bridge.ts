@@ -3,7 +3,7 @@ import type { ToolSession } from "../../tools";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
-interface PyToolBridgeEntry {
+export interface PyToolBridgeEntry {
 	toolSession: ToolSession;
 
 	signal?: AbortSignal;
@@ -12,6 +12,8 @@ interface PyToolBridgeEntry {
 	emitStatus?: (event: JsStatusEvent) => void;
 	abortRequested?: () => boolean;
 	completionContext?: EvalCompletionInvocationContext;
+	/** Keep admission occupied until the underlying tool acknowledges cancellation. */
+	drainOnAbort?: boolean;
 }
 
 export interface PyToolBridgeInfo {
@@ -27,7 +29,7 @@ interface BridgeServer {
 const registrations = new Map<string, PyToolBridgeEntry>();
 let serverPromise: Promise<BridgeServer> | null = null;
 
-async function callSessionToolPromptOnAbort(
+export async function callSessionToolPromptOnAbort(
 	name: string,
 	args: unknown,
 	entry: PyToolBridgeEntry,
@@ -43,6 +45,7 @@ async function callSessionToolPromptOnAbort(
 		completionContext: entry.completionContext,
 		completionInvocationId,
 	});
+	if (entry.drainOnAbort) return await call;
 	const signal = entry.shieldedSignal ?? entry.signal;
 	if (!signal) return await call;
 	if (signal.aborted) {
@@ -59,6 +62,20 @@ async function callSessionToolPromptOnAbort(
 
 		void call.catch(() => {});
 	}
+}
+
+/** Stdio targets supply only run/name/args; the parent binds the session, never the remote peer. */
+export async function dispatchPyToolBridge(
+	sessionId: string,
+	runId: string,
+	name: string,
+	args: unknown,
+	completionInvocationId?: string,
+): Promise<unknown> {
+	const key = bridgeRegistrationKey(sessionId, runId);
+	const entry = registrations.get(key) ?? registrations.get(sessionId);
+	if (!entry) throw new Error(`No active Python tool bridge session: ${key}`);
+	return await callSessionToolPromptOnAbort(name, args, entry, completionInvocationId);
 }
 
 async function startServer(): Promise<BridgeServer> {
@@ -93,20 +110,12 @@ async function startServer(): Promise<BridgeServer> {
 			if (!sessionId || !runId || !name) {
 				return Response.json({ ok: false, error: "Missing session/run/name" }, { status: 400 });
 			}
-			const registrationKey = bridgeRegistrationKey(sessionId, runId);
-			const entry = registrations.get(registrationKey) ?? registrations.get(sessionId);
-			if (!entry) {
-				return Response.json(
-					{ ok: false, error: `No active Python tool bridge session: ${registrationKey}` },
-					{ status: 200 },
-				);
-			}
-
 			try {
-				const value = await callSessionToolPromptOnAbort(
+				const value = await dispatchPyToolBridge(
+					sessionId,
+					runId,
 					name,
 					body.args,
-					entry,
 					typeof body.completionInvocationId === "string" ? body.completionInvocationId : undefined,
 				);
 				return Response.json({ ok: true, value });

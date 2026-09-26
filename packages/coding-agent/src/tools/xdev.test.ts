@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import type { ToolSession } from ".";
-import { dispatchXdevTool, dispatchXdTarget, resolveMountedXdevExecutable, type XdevState } from "./xdev";
+import {
+	dispatchXdArgv,
+	dispatchXdevTool,
+	dispatchXdTarget,
+	resolveMountedXdevExecutable,
+	type XdevState,
+	xdevDocs,
+} from "./xdev";
 
 test("xd resolution forwards cancellation before a pending action applies", async () => {
 	const started = Promise.withResolvers<void>();
@@ -92,4 +99,33 @@ test("a direct device call resolves whether the name is bare or carries the adve
 	expect(resolveMountedXdevExecutable(state, "probe")).toBe(probe);
 	expect(resolveMountedXdevExecutable(state, "xd://probe")).toBe(probe);
 	expect(resolveMountedXdevExecutable(state, "xd://missing")).toBeUndefined();
+});
+
+test("MCP device docs advertise only the JSON forms the parser accepts", async () => {
+	const name = "mcp__srv_run_command";
+	const mcpTool = {
+		name,
+		label: "Run command",
+		description: "run a command",
+		parameters: type({ command: "string", machine: "string", "timeout?": "number" }),
+		execute: async () => ({ content: [] }),
+	} as unknown as AiTool;
+	const xdev: XdevState = {
+		tools: new Map([[name, mcpTool as never]]),
+		mountedNames: new Set([name]),
+		builtInNames: new Set(),
+		isActive: () => true,
+	};
+	const session = { cwd: process.cwd(), xdev } as unknown as ToolSession;
+	const help = await dispatchXdArgv(session, name, ["?"], undefined, undefined, { toolCallId: "mcp-help" });
+	const helpText = help.content.map(part => (part.type === "text" ? part.text : "")).join("");
+
+	for (const docs of [helpText, xdevDocs(xdev, name)]) {
+		expect(docs).toContain(`xd ${name} --json '<json>'`);
+		expect(docs).not.toContain("<command>");
+		expect(docs).not.toContain("--machine");
+	}
+	await expect(
+		dispatchXdArgv(session, name, ["ls", "box"], undefined, undefined, { toolCallId: "mcp-positional" }),
+	).rejects.toThrow(/MCP devices take a single JSON args object/);
 });

@@ -1,4 +1,4 @@
-import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake, untilAborted, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
 	createWorkerSubprocess,
@@ -13,6 +13,24 @@ import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
 import { kernelAdmission } from "../kernel-admission";
+import { clearKernelLaneConfigurations, type JsKernelRuntime, validateKernelKeepalive } from "../kernel-environment";
+import {
+	type KernelCloseCause,
+	type KernelSessionInfo,
+	kernelCloseTermination,
+	recordKernelCellTermination,
+} from "../kernel-session-registry";
+import { KernelInputReader } from "../kernel-streams";
+import type { KernelTarget } from "../kernel-target";
+import { kernelTargetCwd, parseKernelTarget } from "../kernel-target";
+import { decodeNodeKernelMessage, encodeNodeKernelMessage } from "./node-protocol";
+import {
+	NODE_INTERPRETER_NOT_FOUND,
+	NODE_REMOTE_TARGET_UNSUPPORTED,
+	resolveNodeInterpreter,
+	stageNodeJsKernel,
+} from "./node-runtime";
+import { spawnTargetJsWorker } from "./target-worker";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 import type {
 	JsDisplayOutput,
@@ -27,14 +45,15 @@ export type { JsDisplayOutput } from "./worker-protocol";
 
 interface VmRunState {
 	signal?: AbortSignal;
-	onText?: (chunk: string, stream?: "stdout" | "stderr") => void;
+	onText?: (chunk: string, stream?: "stdout" | "stderr") => Promise<void> | void;
+	onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 	retainedBytes?: () => number;
 	release?: () => void;
 	onDisplay?: (output: JsDisplayOutput) => void;
 }
 
 interface WorkerHandle {
-	mode: "process" | "worker";
+	mode: "process" | "worker" | "target" | "node";
 	send(msg: WorkerInbound): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
@@ -43,6 +62,8 @@ interface WorkerHandle {
 }
 
 interface PendingRun {
+	input: KernelInputReader;
+	decoders: Record<"stdout" | "stderr", TextDecoder>;
 	runId: string;
 	runState: VmRunState;
 	toolSession: ToolSession;
@@ -63,6 +84,7 @@ interface PendingRun {
 }
 
 interface CompletedRunSink {
+	decoders: Record<"stdout" | "stderr", TextDecoder>;
 	runState: VmRunState;
 	timer: NodeJS.Timeout;
 }
@@ -71,6 +93,7 @@ interface JsSession {
 	sessionKey: string;
 	sessionId: string;
 	cwd: string;
+	info: KernelSessionInfo;
 	worker: WorkerHandle;
 	state: "alive" | "stopping" | "dead";
 	pending: Map<string, PendingRun>;
@@ -85,6 +108,8 @@ interface JsSession {
 
 interface StartingJsSession extends SessionOwners {
 	promise: Promise<JsSession>;
+	info: KernelSessionInfo;
+	abort: AbortController;
 }
 
 const sessions = new Map<string, JsSession>();
@@ -95,6 +120,17 @@ const WORKER_INIT_TIMEOUT_MS = 15_000;
 const WORKER_CLOSE_TIMEOUT_MS = 1_000;
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
+/** A lifecycle operation (close/reset) ended the kernel under a running cell: the cell is cancelled, not failed. */
+export class JsKernelTerminatedError extends ToolAbortError {}
+
+/** Errors cells raised themselves, as their kernels reported them — not failures of the harness running them. */
+const cellErrors = new WeakSet<Error>();
+
+/** Whether `error` is a cell's own uncaught error, whose stack locates the user's code. */
+export function isJsCellError(error: unknown): error is Error {
+	return error instanceof Error && cellErrors.has(error);
+}
+
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
 const MAX_REAP_NOTES = 32;
 const MAX_REAP_SHUTDOWN_RETRIES = 3;
@@ -103,9 +139,10 @@ const MAX_COMPLETED_RUN_BYTES = 512 * 1024;
 const COMPLETED_RUN_TTL_MS = 30_000;
 const reapNotes = new Map<string, KernelReapNote>();
 
-function armSessionReap(session: JsSession): void {
+function armSessionReap(session: JsSession, delayMs = DEFAULT_KERNEL_IDLE_REAP_MS): void {
 	if (session.reapTimer) clearTimeout(session.reapTimer);
-	const timer = setTimeout(() => void reapSessionFire(session), DEFAULT_KERNEL_IDLE_REAP_MS);
+	const delay = Math.max(delayMs, (session.info.keepAliveUntil ?? 0) - Date.now());
+	const timer = setTimeout(() => void reapSessionFire(session), delay);
 	timer.unref?.();
 	session.reapTimer = timer;
 }
@@ -118,6 +155,10 @@ function clearSessionReap(session: JsSession): void {
 async function reapSessionFire(session: JsSession): Promise<void> {
 	session.reapTimer = undefined;
 	if (sessions.get(session.sessionKey) !== session || session.state === "dead") return;
+	if ((session.info.keepAliveUntil ?? 0) > Date.now()) {
+		armSessionReap(session, 0);
+		return;
+	}
 	// Busy covers anything the worker is still coordinating: backgrounded cells,
 	// awaited tool/agent bridges, completion calls. Reset cycles also block reaping.
 	if (
@@ -161,16 +202,37 @@ async function reapSessionFire(session: JsSession): Promise<void> {
 }
 const useWorkerThreadForTests = false;
 
+export interface VmSessionOptions {
+	signal?: AbortSignal;
+	runtime: JsKernelRuntime;
+	sessionKey: string;
+	sessionId: string;
+	ownerId?: string;
+	cwd: string;
+	discoveryCwd?: string;
+	interpreter?: string;
+	target?: KernelTarget;
+	localRoots?: Record<string, string>;
+	shellEnv?: Record<string, string>;
+	reset?: boolean;
+	onStatus?: (event: JsStatusEvent) => void;
+	timeoutMs?: number;
+}
+
 export async function executeInVmContext(options: {
+	runtime: JsKernelRuntime;
 	sessionKey: string;
 	sessionId: string;
 
 	ownerId?: string;
 	cwd: string;
+	discoveryCwd?: string;
+	interpreter?: string;
+	target?: KernelTarget;
 	session: ToolSession;
 	localRoots?: Record<string, string>;
 	shellEnv?: Record<string, string>;
-	stdin?: number[];
+	stdin?: ReadableStream<Uint8Array>;
 	reset?: boolean;
 	onStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
@@ -182,6 +244,22 @@ export async function executeInVmContext(options: {
 	if (options.runState.signal?.aborted) {
 		throw reasonToError(options.runState.signal.reason, "Execution aborted");
 	}
+	const session = await prepareVmSession({ ...options, signal: options.runState.signal });
+	const sessionKey = session.sessionKey;
+	session.info.lastActivityAt = Date.now();
+	armSessionReap(session);
+	try {
+		return await runOnce(session, options);
+	} finally {
+		if (sessions.get(sessionKey) === session && session.state === "alive") {
+			session.info.lastActivityAt = Date.now();
+			armSessionReap(session);
+		}
+	}
+}
+
+async function prepareVmSession(options: VmSessionOptions): Promise<JsSession> {
+	options.signal?.throwIfAborted();
 	const sessionKey = resolveOwnerScopedSessionKey({
 		baseKey: options.sessionKey,
 		ownerId: options.ownerId,
@@ -215,35 +293,122 @@ export async function executeInVmContext(options: {
 	}
 	const session = await acquireSession(
 		sessionKey,
+		options.runtime,
 		{
 			cwd: options.cwd,
+			discoveryCwd: options.discoveryCwd,
+			interpreter: options.interpreter,
+			target: options.target,
 			sessionId: options.sessionId,
 			localRoots: options.localRoots,
 			shellEnv: options.shellEnv,
-			stdin: options.stdin,
 		},
 		options.timeoutMs,
 		options.ownerId,
+		options.signal,
 	);
 	armSessionReap(session);
-	try {
-		return await runOnce(session, options);
-	} finally {
-		if (sessions.get(sessionKey) === session && session.state === "alive") armSessionReap(session);
+	return session;
+}
+
+function vmSessionInfo(session: JsSession): KernelSessionInfo {
+	return {
+		...session.info,
+		cwd: session.cwd,
+		state:
+			session.state === "stopping" || resettingSessions.has(session.sessionKey)
+				? "closing"
+				: session.state === "dead"
+					? "dead"
+					: session.pending.size > 0
+						? "busy"
+						: "idle",
+	};
+}
+
+export function listVmKernelSessions(ownerId?: string): KernelSessionInfo[] {
+	const result: KernelSessionInfo[] = [];
+	for (const session of sessions.values()) {
+		if (ownerId === undefined || session.ownerIds.has(ownerId)) result.push(vmSessionInfo(session));
 	}
+	for (const [key, starting] of startingSessions) {
+		if (!sessions.has(key) && (ownerId === undefined || starting.ownerIds.has(ownerId)))
+			result.push({ ...starting.info });
+	}
+	return result;
+}
+
+export async function startVmKernelSession(options: VmSessionOptions): Promise<KernelSessionInfo> {
+	return vmSessionInfo(await prepareVmSession(options));
+}
+
+export async function closeVmKernelSession(
+	sessionKey: string,
+	force = false,
+	ownerId?: string,
+	cause: KernelCloseCause = "close",
+): Promise<void> {
+	if (resettingSessions.has(sessionKey)) throw new ToolError("Kernel lifecycle operation already in progress");
+	const existing = sessions.get(sessionKey);
+	const starting = startingSessions.get(sessionKey);
+	if (!existing && !starting) throw new ToolError("Unknown JavaScript kernel lane");
+	if (!force && (starting || existing?.state === "stopping" || (existing?.pending.size ?? 0) > 0)) {
+		throw new ToolError("Kernel is busy; close requires force:true");
+	}
+	const owned = existing ?? starting!;
+	if (ownerId !== undefined && !owned.ownerIds.has(ownerId))
+		throw new ToolError("Kernel is not owned by this session");
+	if (ownerId !== undefined && owned.ownerIds.size > 1) {
+		owned.ownerIds.delete(ownerId);
+		starting?.ownerIds.delete(ownerId);
+		return;
+	}
+	if (force) starting?.abort.abort(new ToolAbortError("JS context closed during startup"));
+	// Only a forced close reaches a running cell; the shell bridge names it as the cell's end.
+	if (existing && existing.pending.size > 0)
+		recordKernelCellTermination(existing.sessionId, kernelCloseTermination(cause, force));
+	const operation = (async () => {
+		const session = existing ?? (await starting!.promise.catch(() => undefined));
+		if (!session) return;
+		if (!(await killSessionFor(session, new JsKernelTerminatedError("JS context explicitly closed"), { force }))) {
+			throw new ToolError("JS context close shutdown not confirmed");
+		}
+	})();
+	resettingSessions.set(sessionKey, operation);
+	try {
+		await operation;
+	} finally {
+		if (resettingSessions.get(sessionKey) === operation) resettingSessions.delete(sessionKey);
+	}
+}
+
+export function keepaliveVmKernelSession(sessionKey: string, ttlMs: number): KernelSessionInfo {
+	validateKernelKeepalive(ttlMs);
+	const session = sessions.get(sessionKey);
+	if (!session) throw new ToolError("Unknown JavaScript kernel lane");
+	if (session.state !== "alive" || resettingSessions.has(sessionKey)) throw new ToolError("Kernel is closing");
+	session.info.keepAliveUntil = Math.max(session.info.keepAliveUntil ?? 0, Date.now() + ttlMs);
+	armSessionReap(session, Math.max(0, session.info.lastActivityAt + DEFAULT_KERNEL_IDLE_REAP_MS - Date.now()));
+	return vmSessionInfo(session);
 }
 
 async function resetVmContext(sessionKey: string): Promise<void> {
 	const session = sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.promise.catch(() => undefined));
 	if (!session) return;
-	if (!(await killSession(session, new ToolError("JS context reset"), { force: false }))) {
+	if (session.pending.size > 0) recordKernelCellTermination(session.sessionId, "was reset");
+	if (!(await killSession(session, new JsKernelTerminatedError("JS context reset"), { force: false }))) {
 		throw new ToolError("JS context reset shutdown not confirmed");
 	}
 	if (sessions.get(sessionKey) === session) sessions.delete(sessionKey);
 }
 
 export async function disposeAllVmContexts(): Promise<void> {
-	const pending = [...startingSessions.values()].map(starting => starting.promise);
+	clearKernelLaneConfigurations("node");
+	clearKernelLaneConfigurations("bun");
+	const pending = [...startingSessions.values()].map(starting => {
+		starting.abort.abort(new ToolAbortError("JS context disposed during startup"));
+		return starting.promise;
+	});
 	startingSessions.clear();
 	const started = await Promise.allSettled(pending);
 	const all = [...sessions.values()];
@@ -258,6 +423,8 @@ export async function disposeAllVmContexts(): Promise<void> {
 }
 
 export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
+	clearKernelLaneConfigurations("node", ownerId);
+	clearKernelLaneConfigurations("bun", ownerId);
 	const toKill: JsSession[] = [];
 	for (const session of [...sessions.values()]) {
 		if (!session.ownerIds.has(ownerId)) continue;
@@ -272,6 +439,7 @@ export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
 		if (sessions.has(sessionKey) || !starting.ownerIds.has(ownerId)) continue;
 		if (starting.ownerIds.size === 1) {
 			startingSessions.delete(sessionKey);
+			starting.abort.abort(new ToolAbortError("JS context disposed during startup"));
 			startingToKill.push(starting);
 			continue;
 		}
@@ -297,7 +465,7 @@ async function runOnce(
 		session: ToolSession;
 		localRoots?: Record<string, string>;
 		shellEnv?: Record<string, string>;
-		stdin?: number[];
+		stdin?: ReadableStream<Uint8Array>;
 		completionContext?: EvalCompletionInvocationContext;
 		code: string;
 		filename: string;
@@ -312,6 +480,8 @@ async function runOnce(
 	const runId = `r-${Snowflake.next()}`;
 	const { promise, resolve, reject } = Promise.withResolvers<{ value: unknown }>();
 	const pending: PendingRun = {
+		input: new KernelInputReader(options.stdin),
+		decoders: { stdout: new TextDecoder(), stderr: new TextDecoder() },
 		runId,
 		runState: options.runState,
 		toolSession: options.session,
@@ -330,6 +500,7 @@ async function runOnce(
 		const abortError = reasonToError(reason, "Execution aborted");
 
 		pending.aborted = true;
+		pending.input.cancel();
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(abortError);
 
 		const drained = pending.deferDepth > 0 ? pending.deferDrained?.promise : undefined;
@@ -349,23 +520,25 @@ async function runOnce(
 			code: options.code,
 			filename: options.filename,
 			snapshot: {
-				cwd: options.cwd,
+				cwd: kernelTargetCwd(session.info.target, options.cwd),
+				target: session.info.target,
 				sessionId: options.sessionId,
-				localRoots: options.localRoots,
-				shellEnv: options.shellEnv,
-				stdin: options.stdin,
+				localRoots: session.info.target.kind === "local" ? options.localRoots : undefined,
+				shellEnv: session.info.target.kind === "local" ? options.shellEnv : undefined,
+				stdin: Boolean(options.stdin),
 			},
 			completionContext: options.completionContext,
 		});
 		return await promise;
 	} finally {
 		options.runState.signal?.removeEventListener("abort", onAbort);
+		pending.input.cancel();
 		session.pending.delete(runId);
 		if (!pending.aborted && !pending.outputError && session.state === "alive") {
 			evictCompletedRun(session, runId);
 			const timer = setTimeout(() => evictCompletedRun(session, runId), COMPLETED_RUN_TTL_MS);
 			timer.unref?.();
-			session.completedRuns.set(runId, { runState: options.runState, timer });
+			session.completedRuns.set(runId, { runState: options.runState, decoders: pending.decoders, timer });
 			trimCompletedRuns(session);
 		}
 	}
@@ -373,10 +546,13 @@ async function runOnce(
 
 async function acquireSession(
 	sessionKey: string,
+	runtime: JsKernelRuntime,
 	snapshot: SessionSnapshot,
 	timeoutMs?: number,
 	ownerId?: string,
+	signal?: AbortSignal,
 ): Promise<JsSession> {
+	snapshot.target = parseKernelTarget(snapshot.target);
 	const existing = sessions.get(sessionKey);
 	if (existing?.state === "stopping") {
 		if (!(await killSession(existing, new ToolError("JS context shutdown in progress"), { force: true }))) {
@@ -385,6 +561,11 @@ async function acquireSession(
 		if (sessions.get(sessionKey) === existing) sessions.delete(sessionKey);
 	}
 	if (existing && existing.state === "alive") {
+		if (JSON.stringify(existing.info.target) !== JSON.stringify(snapshot.target)) {
+			throw new ToolError(
+				"Kernel target changed on a live JavaScript lane; reset the lane explicitly before changing targets",
+			);
+		}
 		existing.sessionId = snapshot.sessionId;
 		existing.cwd = snapshot.cwd;
 		attachSessionOwner(existing, snapshot.sessionId, ownerId);
@@ -393,20 +574,45 @@ async function acquireSession(
 	const starting = startingSessions.get(sessionKey);
 	if (starting) {
 		attachSessionOwner(starting, snapshot.sessionId, ownerId);
-		return await starting.promise;
+		return signal ? await untilAborted(signal, () => starting.promise) : await starting.promise;
+	}
+	if (runtime === "node") {
+		if (snapshot.target.kind !== "local") throw new ToolError(NODE_REMOTE_TARGET_UNSUPPORTED);
+		snapshot.interpreter ??= resolveNodeInterpreter(snapshot.shellEnv, snapshot.cwd);
+		if (!snapshot.interpreter) throw new ToolError(NODE_INTERPRETER_NOT_FOUND);
 	}
 	const releaseAdmission = kernelAdmission.reserve(ownerId ?? snapshot.sessionId);
+	const abort = new AbortController();
+	const startupSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+	const now = Date.now();
+	const info: KernelSessionInfo = {
+		sessionKey,
+		sessionId: snapshot.sessionId,
+		cwd: snapshot.cwd,
+		interpreter:
+			snapshot.interpreter ??
+			(snapshot.target && snapshot.target.kind !== "local"
+				? (snapshot.target.interpreter ?? "bun")
+				: process.execPath),
+		target: snapshot.target ?? { kind: "local" },
+		generation: crypto.randomUUID(),
+		state: "starting",
+		startedAt: now,
+		lastActivityAt: now,
+	};
 	let startingSession!: StartingJsSession;
 	let startupSession: JsSession | undefined;
 	let startupWorkerStopped = true;
 
 	const startup = (async (): Promise<JsSession> => {
-		const worker = spawnJsWorker();
+		snapshot.generation = info.generation ?? undefined;
+		const worker = await spawnJsWorker(runtime, snapshot);
 		startupWorkerStopped = false;
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
 			cwd: snapshot.cwd,
+			info,
 			worker,
 			state: "alive",
 			reapShutdownRetries: 0,
@@ -421,12 +627,14 @@ async function acquireSession(
 		const readyTimeoutMs = Math.max(WORKER_INIT_TIMEOUT_MS, timeoutMs ?? 0);
 		while (true) {
 			try {
-				await initWorker(session, snapshot, readyTimeoutMs);
+				await initWorker(session, snapshot, readyTimeoutMs, startupSignal);
 				break;
 			} catch (error) {
 				const failed = session.worker;
 				await failed.terminate();
 				startupWorkerStopped = true;
+				if (startupSignal.aborted || failed.mode === "target" || failed.mode === "node" || snapshot.interpreter)
+					throw error;
 				if (failed.mode === "worker") {
 					throw new ToolError("Isolated JS eval worker failed to initialize; refusing host-process execution", {
 						error: error instanceof Error ? error.message : String(error),
@@ -452,6 +660,8 @@ async function acquireSession(
 		ownerIds: new Set(),
 		hasFallbackOwner: false,
 		promise: startup,
+		info,
+		abort,
 	};
 	attachSessionOwner(startingSession, snapshot.sessionId, ownerId);
 	startingSessions.set(sessionKey, startingSession);
@@ -472,12 +682,18 @@ async function acquireSession(
 	}
 }
 
-async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeoutMs: number): Promise<void> {
+async function initWorker(
+	session: JsSession,
+	snapshot: SessionSnapshot,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<void> {
 	const worker = session.worker;
 	const { promise: readyPromise, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
 	let resolved = false;
 	const unsubscribeMessage = worker.onMessage(msg => {
 		if (!resolved && msg.type === "ready") {
+			if (msg.interpreter) session.info.interpreter = msg.interpreter;
 			resolved = true;
 			resolveReady();
 			return;
@@ -506,8 +722,9 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 		void killSessionFor(session, executionError, { force: true });
 	});
 	try {
+		signal?.throwIfAborted();
 		worker.send({ type: "init", snapshot });
-		await raceWithTimeout(readyPromise, timeoutMs, "Timed out initializing JS eval worker");
+		await raceWithTimeout(readyPromise, timeoutMs, "Timed out initializing JS eval worker", signal);
 	} catch (error) {
 		unsubscribeMessage();
 		unsubscribeError();
@@ -540,7 +757,15 @@ function evictCompletedRun(session: JsSession, runId: string): void {
 
 function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 	switch (msg.type) {
+		case "stdin-request": {
+			const pending = session.pending.get(msg.runId);
+			if (pending) void supplyInput(session, pending);
+			return;
+		}
 		case "text":
+		case "bytes":
+			void forwardOutput(session, msg);
+			return;
 		case "display": {
 			const pending = session.pending.get(msg.runId);
 			if (pending?.outputError) return;
@@ -551,8 +776,7 @@ function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 				return;
 			}
 			try {
-				if (msg.type === "text") runState.onText?.(msg.chunk, msg.stream);
-				else runState.onDisplay?.(msg.output);
+				runState.onDisplay?.(msg.output);
 				if (completed) trimCompletedRuns(session);
 			} catch (error) {
 				// Finish draining this cell before rejecting it; output failures must
@@ -579,6 +803,47 @@ function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 		case "init-failed":
 		case "closed":
 			return;
+	}
+}
+
+async function supplyInput(session: JsSession, pending: PendingRun): Promise<void> {
+	try {
+		const bytes = await pending.input.read();
+		if (pending.settled || pending.aborted) return;
+		safeSend(session, {
+			type: "stdin",
+			runId: pending.runId,
+			data: bytes ? Buffer.from(bytes).toString("base64") : "",
+			eof: !bytes,
+		});
+	} catch (error) {
+		pending.outputError = error instanceof Error ? error : new Error(String(error));
+		void killSessionFor(session, pending.outputError, { force: true });
+	}
+}
+
+async function forwardOutput(
+	session: JsSession,
+	msg: Extract<WorkerOutbound, { type: "text" | "bytes" }>,
+): Promise<void> {
+	const pending = session.pending.get(msg.runId);
+	const sink = pending ?? session.completedRuns.get(msg.runId);
+	try {
+		if (!sink || pending?.outputError) return;
+		const stream = msg.stream ?? "stdout";
+		const bytes = msg.type === "bytes" ? Buffer.from(msg.data, "base64") : Buffer.from(msg.chunk);
+		const text =
+			msg.type === "bytes"
+				? sink.decoders[stream].decode(bytes, { stream: true })
+				: sink.decoders[stream].decode() + msg.chunk;
+		await sink.runState.onBytes?.(bytes, stream);
+		if (text) await sink.runState.onText?.(text, stream);
+		if (!pending) trimCompletedRuns(session);
+	} catch (error) {
+		if (pending) pending.outputError = error instanceof Error ? error : new Error(String(error));
+		else evictCompletedRun(session, msg.runId);
+	} finally {
+		if (msg.id) safeSend(session, { type: "output-ack", id: msg.id });
 	}
 }
 
@@ -635,14 +900,22 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 
 		const held = pending.heldResult;
 		if (held && !pending.settled && !pending.aborted && pending.toolCalls.size === 0) {
-			finishPending(pending, held);
+			void finishPending(pending, held);
 		}
 	}
 }
 
-function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type: "result" }>): void {
+async function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type: "result" }>): Promise<void> {
 	pending.settled = true;
 	pending.heldResult = undefined;
+	try {
+		for (const stream of ["stdout", "stderr"] as const) {
+			const text = pending.decoders[stream].decode();
+			if (text) await pending.runState.onText?.(text, stream);
+		}
+	} catch (error) {
+		pending.outputError = error instanceof Error ? error : new Error(String(error));
+	}
 	if (pending.outputError) {
 		pending.reject(pending.outputError);
 		return;
@@ -651,7 +924,9 @@ function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type:
 		pending.resolve({ value: undefined });
 		return;
 	}
-	pending.reject(errorFromPayload(msg.error));
+	const error = errorFromPayload(msg.error);
+	cellErrors.add(error);
+	pending.reject(error);
 }
 
 function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: "result" }>): void {
@@ -664,7 +939,7 @@ function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: 
 		pending.heldResult = msg;
 		return;
 	}
-	finishPending(pending, msg);
+	void finishPending(pending, msg);
 }
 
 async function killSessionFor(session: JsSession, error: Error, options: { force: boolean }): Promise<boolean> {
@@ -750,7 +1025,8 @@ function errorFromPayload(payload: RunErrorPayload): Error {
 	const ctor = payload.isToolError ? ToolError : Error;
 	const error = new ctor(payload.message);
 	if (payload.name) error.name = payload.name;
-	if (payload.stack) error.stack = payload.stack;
+	// A thrown non-Error carries no stack; one captured here would name host frames, not the cell's.
+	error.stack = payload.stack ?? `${error.name}: ${error.message}`;
 	return error;
 }
 
@@ -773,23 +1049,41 @@ function logWorkerMessage(msg: Extract<WorkerOutbound, { type: "log" }>): void {
 	else logger.error(msg.msg, msg.meta);
 }
 
-async function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, reason: string): Promise<T> {
+async function raceWithTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	reason: string,
+	signal?: AbortSignal,
+): Promise<T> {
+	signal?.throwIfAborted();
 	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const { promise: timeoutPromise, reject } = Promise.withResolvers<never>();
-	const onAbort = (): void => reject(new ToolError(reason));
-	timeoutSignal.addEventListener("abort", onAbort, { once: true });
+	const onAbort = (): void =>
+		reject(signal?.aborted ? reasonToError(signal.reason, "Execution aborted") : new ToolError(reason));
+	combined.addEventListener("abort", onAbort, { once: true });
 	try {
 		return await Promise.race([promise, timeoutPromise]);
 	} finally {
-		timeoutSignal.removeEventListener("abort", onAbort);
+		combined.removeEventListener("abort", onAbort);
 	}
 }
 
-function spawnJsWorker(): WorkerHandle {
+async function spawnJsWorker(runtime: JsKernelRuntime, snapshot: SessionSnapshot): Promise<WorkerHandle> {
+	if (runtime === "node") return spawnNodeJsProcess(snapshot.interpreter!, await stageNodeJsKernel());
+	const target = parseKernelTarget(snapshot.target);
+	if (target.kind !== "local") {
+		snapshot.discoveryCwd ??= snapshot.cwd;
+		snapshot.cwd = kernelTargetCwd(target, snapshot.cwd);
+		snapshot.localRoots = undefined;
+		snapshot.shellEnv = undefined;
+		return await spawnTargetJsWorker(target, snapshot);
+	}
 	if (!useWorkerThreadForTests) {
 		try {
-			return spawnJsProcess();
+			return spawnJsProcess(snapshot.interpreter);
 		} catch (err) {
+			if (snapshot.interpreter) throw err;
 			logger.warn("JS eval subprocess spawn failed; falling back to a Bun Worker", {
 				error: err instanceof Error ? err.message : String(err),
 			});
@@ -812,9 +1106,11 @@ function spawnBunWorker(): WorkerHandle {
 	}
 }
 
-function spawnJsProcess(): WorkerHandle {
+function spawnJsProcess(interpreter?: string): WorkerHandle {
+	const spawnCommand = resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG);
+	if (interpreter) spawnCommand.cmd[0] = interpreter;
 	const spawned = createWorkerSubprocess<WorkerOutbound>({
-		spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
+		spawnCommand,
 		env: workerEnvFromParent(),
 		exitLabel: "JS eval worker",
 		detached: true,
@@ -824,13 +1120,55 @@ function spawnJsProcess(): WorkerHandle {
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSendIpc(spawned.proc, message, "js-eval"),
 	);
+	return processWorkerHandle("process", base, spawned.snapshotDescendants);
+}
+
+/**
+ * `node` cells: the staged Node kernel bundle (node-entry.ts) under the resolved Node. Node cannot
+ * re-enter the Bun CLI worker host, and the runtimes share only JSON IPC (node-protocol.ts).
+ * `--experimental-vm-modules` enables the local-module loader's vm.SourceTextModule.
+ */
+function spawnNodeJsProcess(interpreter: string, entry: string): WorkerHandle {
+	const spawned = createWorkerSubprocess<unknown>({
+		spawnCommand: { cmd: [interpreter, "--experimental-vm-modules", entry] },
+		env: workerEnvFromParent(),
+		exitLabel: "Node JS kernel",
+		serialization: "json",
+		detached: true,
+		reportCleanExit: true,
+		unref: false,
+	});
+	const base = createWorkerHandle<WorkerInbound, unknown>(spawned, message =>
+		safeSendIpc(spawned.proc, encodeNodeKernelMessage(message), "node-js-kernel"),
+	);
+	const decoded: WorkerProcessHandle = {
+		send: message => base.send(message),
+		onMessage: handler => base.onMessage(raw => handler(decodeNodeKernelMessage(raw) as WorkerOutbound)),
+		onError: handler => base.onError(handler),
+		terminate: () => base.terminate(),
+	};
+	return processWorkerHandle("node", decoded, spawned.snapshotDescendants);
+}
+
+interface WorkerProcessHandle {
+	send(message: WorkerInbound): void;
+	onMessage(handler: (message: WorkerOutbound) => void): () => void;
+	onError(handler: (error: Error) => void): () => void;
+	terminate(): Promise<void>;
+}
+
+function processWorkerHandle(
+	mode: "process" | "node",
+	base: WorkerProcessHandle,
+	snapshotDescendants: () => void,
+): WorkerHandle {
 	return {
-		mode: "process",
+		mode,
 		send: message => base.send(message),
 		onMessage: handler =>
 			base.onMessage(message => {
 				// Remember owned live children before a later cell crashes the worker.
-				if (message.type === "result") spawned.snapshotDescendants();
+				if (message.type === "result") snapshotDescendants();
 				handler(message);
 			}),
 		onError: handler => base.onError(handler),

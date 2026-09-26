@@ -1,12 +1,12 @@
 import { scheduler } from "node:timers/promises";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
-import { ptree } from "@oh-my-pi/pi-utils";
+import * as ptree from "@oh-my-pi/pi-utils/ptree";
 import type TurndownService from "@oh-my-pi/pi-utils/turndown";
 
 import type { AgentStorage } from "../../session/agent-storage";
 import { ToolAbortError } from "../../tools/tool-errors";
 
-export { formatNumber } from "@oh-my-pi/pi-utils";
+export { formatNumber } from "@oh-my-pi/pi-utils/format";
 
 export interface RenderResult {
 	url: string;

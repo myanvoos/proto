@@ -91,9 +91,7 @@ test("plain text selectors stay exact while code ranges retain context", async (
 
 		const code = await read.execute("code-bounded", { path: "code.ts:2-2" });
 		const codeText = textOf(code);
-		expect(codeText).toContain("function f() {");
-		expect(codeText).toContain("return 1;");
-		expect(codeText).toContain("}");
+		expect(codeText).toBe("⋮ function f() {\n\treturn 1;\n⋮ }");
 		expect(code.details?.totalLines).toBe(3);
 	});
 });
@@ -135,9 +133,7 @@ test("plain text range policy stays consistent for in-memory and artifact reads"
 			entityLabel: "file",
 		});
 		const inMemoryCodeText = textOf(inMemoryCode);
-		expect(inMemoryCodeText).toContain("function f() {");
-		expect(inMemoryCodeText).toContain("return 1;");
-		expect(inMemoryCodeText).toContain("}");
+		expect(inMemoryCodeText).toBe("⋮ function f() {\n\treturn 1;\n⋮ }\n\n[1 more lines in file. Use :3 to continue]");
 
 		const artifactDir = path.join(root, "artifacts");
 		await fs.mkdir(artifactDir);
@@ -306,8 +302,7 @@ test("file code ranges mark opening and closing bracket anchors", async () => {
 
 		const result = await read.execute("anchor-read", { path: "code.ts:2-2" });
 		const output = textOf(result);
-		expect(output).toContain("function f() {");
-		expect(output).toContain("⋮ }");
+		expect(output).toBe("⋮ function f() {\n  const a = 1;\n…\n⋮ }");
 		expect(result.details?.displayContent?.text).toContain("⋮ }");
 	});
 });

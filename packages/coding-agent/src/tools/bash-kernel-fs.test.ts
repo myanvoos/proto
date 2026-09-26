@@ -23,13 +23,13 @@ function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 }
 
 type CellInput = {
-	language: "py" | "js";
+	language: "py" | "node" | "bun";
 	code: string;
 	timeout?: number;
 };
 
 function cellCommand(language: CellInput["language"], code: string): string {
-	const interpreter = language === "py" ? "python" : "node";
+	const interpreter = language === "py" ? "python" : language;
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
 }
 
@@ -244,7 +244,7 @@ test("js kernel fs tracker reports raw fs writes outside the walker root", async
 			'print("done")',
 		].join("\n");
 		const result = await executeCell(tool, "eval-js-hook-outside-test", {
-			language: "js",
+			language: "node",
 			code,
 			timeout: 60,
 		});
@@ -268,7 +268,7 @@ test("a js kernel Bun.write emits one deduped event with diff", async () => {
 		const tool = new BashTool(stubSession(dir));
 		const code = [`await Bun.write(${JSON.stringify(outside)}, "Bun wrote this\\n");`, 'print("done")'].join("\n");
 		const result = await executeCell(tool, "eval-js-helper-test", {
-			language: "js",
+			language: "bun",
 			code,
 			timeout: 60,
 		});
@@ -300,7 +300,7 @@ test("a js kernel file written twice reports one event with the cumulative diff"
 			'print("done")',
 		].join("\n");
 		const result = await executeCell(tool, "eval-js-flush-base-test", {
-			language: "js",
+			language: "bun",
 			code,
 			timeout: 60,
 		});
@@ -324,77 +324,81 @@ test("a js kernel file written twice reports one event with the cumulative diff"
 	}
 });
 
-test("js protoPath resolves a leading ~ for the raw file APIs", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-tilde-"));
-	try {
-		const home = path.join(dir, "home");
-		await fs.mkdir(home);
-		const tool = new BashTool(stubSession(dir));
-		const code = [
-			'const prevHome = await env("HOME");',
-			`await env("HOME", ${JSON.stringify(home)});`,
-			"try {",
-			'  print(await Bun.write(protoPath("~/tilde.txt"), "from js\\n"));',
-			"} finally {",
-			'  if (prevHome !== undefined) await env("HOME", prevHome);',
-			"}",
-		].join("\n");
-		const result = await executeCell(tool, "eval-js-tilde-test", {
-			language: "js",
-			code,
-			timeout: 60,
-		});
-		expectCellComplete(result);
-		expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("from js\n");
-		const literalTilde = await fs.access(path.join(dir, "~")).then(
-			() => true,
-			() => false,
-		);
-		expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
-	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
-	}
-});
+for (const language of ["node", "bun"] as const) {
+	test(`${language} protoPath resolves a leading ~ for the raw file APIs`, async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-tilde-"));
+		try {
+			const home = path.join(dir, "home");
+			await fs.mkdir(home);
+			const tool = new BashTool(stubSession(dir));
+			const code = [
+				'import * as fs from "node:fs";',
+				'const prevHome = await env("HOME");',
+				`await env("HOME", ${JSON.stringify(home)});`,
+				"try {",
+				'  fs.writeFileSync(protoPath("~/tilde.txt"), "from js\\n");',
+				"} finally {",
+				'  if (prevHome !== undefined) await env("HOME", prevHome);',
+				"}",
+			].join("\n");
+			const result = await executeCell(tool, `eval-${language}-tilde-test`, {
+				language,
+				code,
+				timeout: 60,
+			});
+			expectCellComplete(result);
+			expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("from js\n");
+			const literalTilde = await fs.access(path.join(dir, "~")).then(
+				() => true,
+				() => false,
+			);
+			expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
 
-test("js protoPath resolves skills activated after the kernel starts", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-skill-"));
-	try {
-		const skillDir = path.join(dir, "example-skill");
-		await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
-		await Bun.write(path.join(skillDir, "notes.txt"), "skill notes\n");
-		const session = stubSession(dir);
-		const tool = new BashTool(session);
-		const started = await executeCell(tool, "eval-js-skill-start-test", {
-			language: "js",
-			code: 'print("started");',
-			timeout: 60,
-		});
-		expectCellComplete(started);
-		session.skills = [
-			{
-				name: "example",
-				description: "test skill",
-				filePath: path.join(skillDir, "SKILL.md"),
-				baseDir: skillDir,
-				source: "test",
-			},
-		];
-		const result = await executeCell(tool, "eval-js-skill-test", {
-			language: "js",
-			code: [
-				'print(protoPath("skill://example"));',
-				'print(await Bun.file(protoPath("skill://example/notes.txt")).text());',
-			].join("\n"),
-			timeout: 60,
-		});
-		expectCellComplete(result);
-		const output = textOf(result);
-		expect(output).toContain(skillDir);
-		expect(output).toContain("skill notes");
-	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
-	}
-});
+	test(`${language} protoPath resolves skills activated after the kernel starts`, async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-skill-"));
+		try {
+			const skillDir = path.join(dir, "example-skill");
+			await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
+			await Bun.write(path.join(skillDir, "notes.txt"), "skill notes\n");
+			const session = stubSession(dir);
+			const tool = new BashTool(session);
+			const started = await executeCell(tool, `eval-${language}-skill-start-test`, {
+				language,
+				code: 'print("started");',
+				timeout: 60,
+			});
+			expectCellComplete(started);
+			session.skills = [
+				{
+					name: "example",
+					description: "test skill",
+					filePath: path.join(skillDir, "SKILL.md"),
+					baseDir: skillDir,
+					source: "test",
+				},
+			];
+			const result = await executeCell(tool, `eval-${language}-skill-test`, {
+				language,
+				code: [
+					'import * as fs from "node:fs";',
+					'print(protoPath("skill://example"));',
+					'print(fs.readFileSync(protoPath("skill://example/notes.txt"), "utf8"));',
+				].join("\n"),
+				timeout: 60,
+			});
+			expectCellComplete(result);
+			const output = textOf(result);
+			expect(output).toContain(skillDir);
+			expect(output).toContain("skill notes");
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+}
 
 test("js kernel fs tracker reports deletes once with diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-delete-"));
@@ -406,7 +410,7 @@ test("js kernel fs tracker reports deletes once with diff", async () => {
 			"\n",
 		);
 		const result = await executeCell(tool, "eval-js-delete-test", {
-			language: "js",
+			language: "node",
 			code,
 			timeout: 60,
 		});
@@ -440,7 +444,7 @@ test("js kernel fs tracker covers Bun.write and prunes cache dirs", async () => 
 			'print("done")',
 		].join("\n");
 		const result = await executeCell(tool, "eval-js-bunwrite-test", {
-			language: "js",
+			language: "bun",
 			code,
 			timeout: 60,
 		});
@@ -608,7 +612,7 @@ test("js capture budget stops retaining text past the aggregate budget but keeps
 			'fs.writeFileSync(OUT, "same\\n");',
 			'print("cell-done")',
 		].join("\n");
-		const result = await executeCell(tool, "eval-js-capture-budget", { language: "js", code: cell, timeout: 120 });
+		const result = await executeCell(tool, "eval-js-capture-budget", { language: "node", code: cell, timeout: 120 });
 
 		expectCellComplete(result);
 		const cellEvents = result.details?.statusEvents ?? [];
@@ -653,12 +657,24 @@ for (const [language, code] of [
 		].join("\n"),
 	],
 	[
-		"js",
+		"node",
 		[
 			'import * as fs from "node:fs";',
+			'import { setTimeout as sleep } from "node:timers/promises";',
 			'fs.writeFileSync("live.txt", "first\\n");',
 			'print("wrote");',
-			"await Bun.sleep(400);",
+			"await sleep(400);",
+			'print("end");',
+		].join("\n"),
+	],
+	[
+		"bun",
+		[
+			'import * as fs from "node:fs";',
+			'import { setTimeout as sleep } from "node:timers/promises";',
+			'fs.writeFileSync("live.txt", "first\\n");',
+			'print("wrote");',
+			"await sleep(400);",
 			'print("end");',
 		].join("\n"),
 	],
@@ -678,6 +694,7 @@ for (const [language, code] of [
 					});
 				},
 			);
+			expectCellComplete(result);
 			const firstWrite = updates.find(update => update.writes > 0);
 			expect(firstWrite, "a write event reaches the live update stream").toBeDefined();
 			expect(firstWrite?.output ?? "", "the hunk arrives before the cell's final line prints").not.toContain("end");
