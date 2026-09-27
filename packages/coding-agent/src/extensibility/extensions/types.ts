@@ -25,6 +25,7 @@ import type {
 	TextContent,
 	TSchema,
 	UsageProvider,
+	UserContent,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import type {
@@ -627,7 +628,7 @@ interface ToolResultEventBase {
 	type: "tool_result";
 	toolCallId: string;
 	input: Record<string, unknown>;
-	content: (TextContent | ImageContent)[];
+	content: UserContent[];
 	isError: boolean;
 }
 

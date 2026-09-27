@@ -75,7 +75,6 @@ Mounted tools run as `protolens <tool> [flags]` inside `{{toolRefs.bash}}` (synt
 - Prefer relative `path`-like fields.
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
-{{#has tools "inspect_media"}}- Media tasks: prefer `{{toolRefs.inspect_media}}` — audio/video always; images when a targeted text answer suffices.{{/has}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}
 {{#has tools "bash"}}

@@ -210,15 +210,12 @@ From runner frames:
 
 Display MIME precedence:
 
-1. `text/markdown`
-2. `text/plain`
-3. `text/html` (converted to basic markdown)
+- `application/x-proto-status` → status events; this is control-plane output.
+- `application/json` → JSON tree data; when present, it suppresses the text fallback.
+- `image/png` is preferred over `image/jpeg` when both image alternatives are present.
+- Otherwise, `text/markdown` is preferred over `text/plain`, followed by `text/html` converted to basic markdown.
 
-Additionally captured as structured outputs:
-
-- `application/json` → JSON tree data
-- `image/png` / `image/jpeg` → image payloads
-- `application/x-proto-status` → status events
+Structured image outputs are `image/png` / `image/jpeg`; status events are not persisted as display text.
 
 ### Matplotlib
 

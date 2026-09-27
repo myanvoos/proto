@@ -5,7 +5,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { UserContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { getDefault, type Settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
@@ -478,10 +478,7 @@ export function stripOutputNotice(text: string, meta: OutputMeta | undefined): s
 	return text;
 }
 
-function appendOutputNotice(
-	content: (TextContent | ImageContent)[],
-	meta: OutputMeta | undefined,
-): (TextContent | ImageContent)[] {
+function appendOutputNotice(content: UserContent[], meta: OutputMeta | undefined): UserContent[] {
 	const notice = formatOutputNotice(meta);
 	if (!notice) return content;
 
@@ -585,7 +582,7 @@ async function spillLargeResultToArtifact(
 			});
 
 	let replacementInserted = false;
-	const newContent: (TextContent | ImageContent)[] = result.content.map(block => {
+	const newContent: UserContent[] = result.content.map(block => {
 		if (block.type !== "text") return block;
 		if (block.text.length > 0 && !replacementInserted) {
 			replacementInserted = true;

@@ -1,6 +1,6 @@
 # Prewalk
 
-Prewalk is a one-shot handoff from the active model to a faster or cheaper model after planning reaches implementation. It lets the starting model inspect the repository, create a checklist list, and begin the change before the target model continues the session.
+Prewalk is a one-shot handoff from the active model to a faster or cheaper model after planning reaches implementation. It lets the starting model inspect the repository, create a checklist, and begin the change before the target model continues the session.
 
 Prewalk is off by default. Its default target is the model assigned to the `@smol` role.
 

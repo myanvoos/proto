@@ -4,6 +4,9 @@
 
 ### Breaking Changes
 
+- Media files use plain `read({ path })`; removed `inspect_media`, `/vision`, the built-in vision role, and automatic vision-model delegation
+- Removed the inert `personality` setting, its presets, and `PERSONALITY.md` loading; the system prompt had stopped rendering them
+
 - Removed the Python kernel's `NAME = <<DELIM` assignment heredoc; cells use ordinary Python string literals, so a cell is valid Python outside the kernel too
 - Removed kernel `proto_path` / `protoPath`; use `read` for internal resources or pass bash-resolved paths through `env` to filesystem APIs
 

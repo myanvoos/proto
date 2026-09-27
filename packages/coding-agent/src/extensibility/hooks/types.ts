@@ -1,6 +1,6 @@
 import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as zod from "@oh-my-pi/omptype/zod";
-import type { ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Message, Model, UserContent } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -168,7 +168,7 @@ interface ToolResultEventBase {
 
 	input: Record<string, unknown>;
 
-	content: (TextContent | ImageContent)[];
+	content: UserContent[];
 
 	isError?: boolean;
 }

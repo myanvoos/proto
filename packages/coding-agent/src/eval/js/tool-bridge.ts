@@ -58,6 +58,8 @@ export interface ToolBridgeOptions {
 	onResult?: (result: AgentToolResult) => void;
 }
 
+type BridgedMedia = { type: "image" | "audio" | "video"; mimeType: string; data: string };
+
 export type ToolValue =
 	| RuntimeBridgeResult
 	| string
@@ -70,6 +72,7 @@ export type ToolValue =
 			text: string;
 			details?: unknown;
 			images?: Array<{ mimeType: string; data: string }>;
+			media?: BridgedMedia[];
 			artifacts?: EvalArtifactRef[];
 			hasError?: boolean;
 	  };
@@ -229,23 +232,25 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 			(content): content is { type: "text"; text: string } =>
 				content.type === "text" && typeof content.text === "string",
 		);
-		const imageBlocks = result.content.filter(
-			(content): content is { type: "image"; mimeType: string; data: string } =>
-				content.type === "image" && typeof content.mimeType === "string" && typeof content.data === "string",
+		const mediaBlocks = result.content.filter(
+			(content): content is BridgedMedia =>
+				(content.type === "image" || content.type === "audio" || content.type === "video") &&
+				typeof content.mimeType === "string" &&
+				typeof content.data === "string",
 		);
 		const text = textBlocks.map(block => block.text).join("");
 		const hasError = toolResultHasError(result);
 		options.emitStatus?.(summarizeToolResult(name, normalizedArgs, result, text, hasError));
-		if (result.details === undefined && imageBlocks.length === 0 && !hasError) {
+		if (result.details === undefined && mediaBlocks.length === 0 && !hasError) {
 			return text;
 		}
 		const value: Exclude<ToolValue, string> = {
 			text,
 			details: result.details,
 		};
-		if (imageBlocks.length > 0) {
+		if (mediaBlocks.length > 0) {
 			value.artifacts = [];
-			for (const block of imageBlocks) {
+			for (const block of mediaBlocks) {
 				value.artifacts.push(
 					await publishEvalArtifact(
 						{
@@ -258,10 +263,11 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 					),
 				);
 			}
-			value.images = imageBlocks.map(block => ({
-				mimeType: block.mimeType,
-				data: block.data,
-			}));
+			value.media = mediaBlocks;
+			const imageBlocks = mediaBlocks.filter(block => block.type === "image");
+			if (imageBlocks.length > 0) {
+				value.images = imageBlocks.map(block => ({ mimeType: block.mimeType, data: block.data }));
+			}
 		}
 		if (hasError) {
 			value.hasError = true;

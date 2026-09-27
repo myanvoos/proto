@@ -296,7 +296,6 @@ modelRoles:
   default: anthropic/claude-sonnet-4-5
   smol: openai/gpt-4.1-mini
   slow: anthropic/claude-opus-4-5:high
-  vision: google/gemini-3.1-pro-preview
   plan: anthropic/claude-opus-4-5
   advisor: anthropic/claude-sonnet-4-5:medium
 
@@ -466,7 +465,7 @@ tools:
 | `tools.artifactTailBytes`      | number  | `20`    | KB of tail kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `tools.artifactTailLines`      | number  | `500`   | Max tail lines kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Built-in tools are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, and `web_search.enabled`; the persistent Python and JavaScript kernel backends are controlled separately by `eval.py` and `eval.js`. The `inspect_media` tool is controlled by the tri-state `inspect_media.mode` (`auto`|`on`|`off`, default `auto`): `auto` exposes it only when the active model lacks native image input, and the `/vision` slash command overrides the mode per session.
+Built-in capabilities are toggled by their own keys, e.g. `bash.enabled`, `browser.enabled`, `computer.enabled`, and `web_search.enabled`; `fetch.enabled` controls remote fetching through `read`, while process supervision is exposed by `jobs` and gated by `launch.enabled`. The persistent Python and JavaScript kernel backends are controlled separately by `eval.py` and `eval.js`. `read` is always available and handles images, audio, and video natively; it can send images inline to vision-capable models, while audio/video are sent when the active model accepts them.
 
 ### Window-scoped computer use
 
@@ -487,7 +486,7 @@ computer:
 | `computer.maxWidth`  | number  | `3840`  | Maximum composite screenshot width in pixels. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, cap the effective width at `1280`; Claude-family models use the same cap as a compatibility fallback. |
 | `computer.maxHeight` | number  | `2400`  | Maximum composite screenshot height in pixels. Those coordinate-safe transports cap the effective height at `896`; other models retain the configured limit.                                                                                                 |
 
-Computer settings are captured when the desktop controller is created. A model switch that crosses the coordinate-safe sizing boundary recreates the controller and resnapshots those settings; changing config alone does not, so start a new session after a settings change. Every call must name `desktop` or a numeric id from the preceding window list. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Grant platform permissions before enabling input. See [Window-scoped computer use](computer-use.md).
+Computer settings are included in each call's snapshot, but the worker's native desktop session retains the display selected on its first run. Changing `computer.display` therefore requires a new session (or disposing and recreating the tool); active-model changes update the coordinate-safe screenshot bounds on the next call. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Grant platform permissions before enabling input. See [Window-scoped computer use](computer-use.md).
 
 ### Shell and kernel runtimes
 
@@ -516,7 +515,7 @@ python:
 | Key                               | Type    | Default   | Notes                                                                                                                                                       |
 | --------------------------------- | ------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bash.enabled`                    | boolean | `true`    | Enable the bash tool.                                                                                                                                       |
-| `launch.enabled`                  | boolean | `true`    | Enable the launch tool for shared long-running project processes.                                                                                           |
+| `launch.enabled`                  | boolean | `true`    | Enable process supervision through the `jobs` tool for shared long-running project processes.                                                                                           |
 | `bash.autoBackground.enabled`     | boolean | `false`   | Auto-background long-running commands.                                                                                                                      |
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
 | `eval.py`                         | boolean | `true`    | Python kernel backend used by Bash cells. `PI_PY=0` disables it for the process.                                                                            |
@@ -709,10 +708,10 @@ Provider credentials and custom model definitions are configured separately — 
 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `proto config list`. Additional groups include:
 
-- Agent behavior and safety: `ask.*`, `eval.*`, `features.*`, `goal.*`, `loop.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, `tools.*`, and `vault.*`.
-  - `model.toolCallLoopGuard.*` detects consecutive identical tool calls: the corrective steer is injected on every repeat from `threshold` (default 5) onwards, and at `hardLimit` (default 20) the run is stopped outright instead of steered, bounding provider spend. Set `hardLimit` to `0` to keep steering without a ceiling. `exemptTools` (default `fleet`) skips tools whose repetition is normal.
-- Execution and content: `commit.*`, `completion.*`, `edit.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `terminal.*`, and `title.*`.
-- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `magicKeywords.*`, `mcp.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `checklist.*`, and `workspace.*`.
+- Agent behavior and safety: `ask.*`, `eval.*`, `features.*`, `goal.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, and `tools.*`.
+  - `model.toolCallLoopGuard.*` detects consecutive identical tool calls: the corrective steer is injected on every repeat from `threshold` (default 5) onwards, and at `hardLimit` (default 20) the run is stopped outright instead of steered, bounding provider spend. Set `hardLimit` to `0` to keep steering without a ceiling. `exemptTools` (default `jobs`) skips tools whose repetition is normal.
+- Execution and content: `commit.*`, `completion.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `terminal.*`, and `title.*`.
+- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `launch.*`, `magicKeywords.*`, `mcp.*`, `monitor.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `checklist.*`, and `workspace.*`.
 - Ungrouped keys: `setupVersion`, `proseOnlyThinking`, `omitThinking`, `externalThinking`, `includeWorkspaceTree`, `autocompleteMaxVisible`, `emojiAutocomplete`, `disabledExtensions`, `inlineToolDescriptors`, and `treeFilterMode`.
 
 These settings follow the same schema-defined type and default rules shown above.
@@ -734,7 +733,6 @@ Applied whenever raw settings are loaded (global, project, overlays, and runtime
 
 | Old                                                                      | New                                                                                                          |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `inspect_image.enabled` boolean                                          | `inspect_media.mode` (`true` → `on`, `false` → `off`)                                                        |
 | `queueMode`                                                              | `steeringMode`                                                                                               |
 | `ask.timeout` in milliseconds (value `> 1000`)                           | seconds (divided by 1000)                                                                                    |
 | flat `theme: "<name>"` string                                            | `theme.dark` / `theme.light` (slot chosen by luminance; built-in `light`/`dark` are dropped to use defaults) |

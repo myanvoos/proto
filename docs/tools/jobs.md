@@ -38,7 +38,7 @@ rejects the rest before any side effect.
 | --- | --- | --- |
 | `list` | `kind?`, `scope?` | Jobs, watches and processes. Never acknowledges: a settled job listed here is still auto-delivered. |
 | `inspect` | `target`, `afterEvent?` | Job/watch snapshot, or broker `describe` pinned to the process id. Watches page retained events by event sequence and report expired sequences as a gap. |
-| `start` | `name`, `application`, `args?`, `env?`, `cwd?`, `pty?`, `ready?`, `restart?`, `persist?`, `detached?` | Supervised process; waits for readiness. Returns a process ref. |
+| `start` | `name`, `application`, `args?`, `env?`, `cwd?`, `pty?`, `ready?`, `restart?`, `persist?`, `detached?` | Supervised process; with `ready`, waits up to its timeout for all supplied readiness conditions. Returns a process ref. |
 | `logs` | `target`, `lines?`, `head?`, `grep?`, `follow?`, `cursor?`, `timeoutMs?` | Output with a log byte cursor. |
 | `input` | `target`, `text?`, `enter?`, `keys?` | Stdin/PTY input. |
 | `signal` | `target`, `signal` | Process-tree signal. |

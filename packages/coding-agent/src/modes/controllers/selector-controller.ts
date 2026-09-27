@@ -565,11 +565,6 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply protolens:// prompt docs setting: ${err}`);
 				});
 				break;
-			case "inspect_media.mode":
-				void this.ctx.session.applyInspectMediaModeChange().catch(err => {
-					this.ctx.showError(`Failed to apply vision mode: ${err}`);
-				});
-				break;
 			case "externalThinking":
 				void this.ctx.session.setThinkToolEnabled(value as boolean).catch(err => {
 					this.ctx.showError(`Failed to apply external thinking: ${err}`);

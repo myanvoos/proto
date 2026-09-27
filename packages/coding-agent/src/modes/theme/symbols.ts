@@ -190,7 +190,6 @@ export type SymbolKey =
 	| "tool.ask"
 	| "tool.resolve"
 	| "tool.review"
-	| "tool.inspectMedia"
 	| "tool.goal"
 	| "tool.irc"
 	| "tool.delete"
@@ -407,7 +406,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.ask": "?",
 	"tool.resolve": "✓",
 	"tool.review": "◉",
-	"tool.inspectMedia": "",
 	"tool.goal": "◎",
 	"tool.irc": "",
 	"tool.delete": "",

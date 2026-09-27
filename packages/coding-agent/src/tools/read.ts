@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Model, TextContent, UserContent } from "@oh-my-pi/pi-ai";
 import { isHeldSqliteStore } from "@oh-my-pi/pi-natives";
 import {
 	BINARY_SNIFF_BYTES,
@@ -12,6 +12,7 @@ import {
 	logger,
 	prompt,
 	readImageMetadata,
+	readMediaMetadata,
 	sanitizeText,
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
@@ -30,7 +31,19 @@ import {
 } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import { isInspectMediaToolActive, modelSupportsImageInput } from "../utils/inspect-media-mode";
+import {
+	ImageDecodeError,
+	ImageInputTooLargeError,
+	loadImageInput,
+	MAX_IMAGE_INPUT_BYTES,
+	webpExclusionForModel,
+} from "../utils/image-loading";
+import {
+	type LoadedMediaFileInput,
+	loadMediaFileInput,
+	MAX_MEDIA_INPUT_BYTES,
+	MediaInputTooLargeError,
+} from "../utils/media-loading";
 import { normalizeToLF, stripBom } from "../utils/text";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
 import {
@@ -96,6 +109,30 @@ const MAX_BUFFERED_READ_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 
 const LF_BYTE = 0x0a;
+
+interface ImageAttachmentReference {
+	index: number;
+}
+
+const IMAGE_ATTACHMENT_REFERENCE_REGEX =
+	/^\s*(?:\[?Image #([1-9]\d*)(?:,[^\]\n]*)?\]?|(?:attachment|image):\/\/([1-9]\d*))\s*$/i;
+
+function parseImageAttachmentReference(value: string): ImageAttachmentReference | null {
+	const match = IMAGE_ATTACHMENT_REFERENCE_REGEX.exec(value);
+	if (!match) return null;
+	const rawIndex = match[1] ?? match[2];
+	if (!rawIndex) return null;
+	return { index: Number(rawIndex) };
+}
+
+function formatAvailableImageAttachments(attachments: readonly { label: string; uri: string }[]): string {
+	if (attachments.length === 0) return "none";
+	return attachments.map(attachment => `${attachment.label} -> ${attachment.uri}`).join(", ");
+}
+
+function modelSupportsImageInput(model: Model | undefined): boolean {
+	return model?.input?.includes("image") ?? false;
+}
 
 const INTERNAL_URL_SCHEMES: Record<string, true> = {
 	agent: true,
@@ -676,8 +713,6 @@ async function streamLinesForRanges(
 	};
 }
 
-const IMAGE_ATTACHMENT_URI_REGEX = /^attachment:\/\/[1-9]\d*$/;
-
 const readSchema = type({
 	path: type("string").describe("Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."),
 });
@@ -756,7 +791,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 	readonly #autoResizeImages: boolean;
 	readonly #defaultLimit: number;
-	#inspectMediaActive: boolean;
 
 	constructor(private readonly session: ToolSession) {
 		this.#autoResizeImages = session.settings.get("images.autoResize");
@@ -764,7 +798,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			1,
 			Math.min(session.settings.get("read.defaultLimit") ?? DEFAULT_MAX_LINES, DEFAULT_MAX_LINES),
 		);
-		this.#inspectMediaActive = this.#resolveInspectMediaAvailability();
 		this.description = this.#renderDescription();
 	}
 
@@ -772,30 +805,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return prompt.render(readDescription, {
 			DEFAULT_LIMIT: String(this.#defaultLimit),
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
-			INSPECT_MEDIA_ENABLED: this.#inspectMediaActive,
 			IMAGES_INLINE: modelSupportsImageInput(this.session.getActiveModel?.()),
 			SUMMARIZE: this.session.settings.get("read.summarize.enabled"),
 			SUMMARY_MIN_LINES: this.session.settings.get("read.summarize.minTotalLines"),
 			SUMMARY_BODY_LINES: this.session.settings.get("read.summarize.minBodyLines"),
 			SUMMARY_COMMENT_LINES: this.session.settings.get("read.summarize.minCommentLines"),
 		});
-	}
-
-	#resolveInspectMediaAvailability(): boolean {
-		const topLevel = this.session.isToolActive?.("inspect_media");
-		const xdev = this.session.xdev;
-		if (topLevel === undefined && xdev === undefined) return isInspectMediaToolActive(this.session);
-		if (topLevel === true) return true;
-		return xdev?.mountedNames.has("inspect_media") === true && isInspectMediaToolActive(this.session);
-	}
-
-	syncInspectMediaState(availableOverride?: boolean): boolean {
-		const active = availableOverride ?? this.#resolveInspectMediaAvailability();
-		if (active !== this.#inspectMediaActive) {
-			this.#inspectMediaActive = active;
-			this.description = this.#renderDescription();
-		}
-		return active;
 	}
 
 	async #tryReadDelimitedPaths(
@@ -812,7 +827,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			TRUNCATE_LENGTHS.LINE,
 		);
 		const notes = [notice];
-		const content: Array<TextContent | ImageContent> = [];
+		const content: UserContent[] = [];
 		const displayReadTargets: string[] = [];
 		let pendingText = notice;
 		const flushText = () => {
@@ -897,8 +912,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number;
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
 		const { readPath, absolutePath, mimeType, imageMetadata, fileSize } = options;
+		if (this.session.settings.get("images.blockImages")) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "Image content not sent: image submission is disabled by settings (images.blockImages=true).",
+					},
+				],
+				details: {},
+				sourcePath: absolutePath,
+			};
+		}
 		const modelSeesImages = modelSupportsImageInput(this.session.getActiveModel?.());
-		if (this.syncInspectMediaState() && !modelSeesImages) {
+		if (!modelSeesImages) {
 			const outputMime = imageMetadata?.mimeType ?? mimeType;
 			const metadataLines = [
 				"Image metadata:",
@@ -914,23 +941,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						? "- Alpha: no"
 						: "- Alpha: unknown",
 				"",
-				this.#inspectMediaActive
-					? `If you want to analyze the image, call inspect_media with path="${formatPathRelativeToCwd(
-							absolutePath,
-							this.session.cwd,
-						)}" and a question describing what to inspect and the desired output format.`
-					: "The active model does not support image input, so the image contents cannot be analyzed in this session.",
+				"The active model does not support image input, so the image contents cannot be analyzed in this session.",
 			];
 			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
 		}
 
-		const {
-			ImageDecodeError,
-			ImageInputTooLargeError,
-			loadImageInput,
-			MAX_IMAGE_INPUT_BYTES,
-			webpExclusionForModel,
-		} = await import("../utils/image-loading");
 		if (fileSize > MAX_IMAGE_INPUT_BYTES) {
 			const sizeStr = formatBytes(fileSize);
 			const maxStr = formatBytes(MAX_IMAGE_INPUT_BYTES);
@@ -961,6 +976,55 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			if (error instanceof ImageInputTooLargeError || error instanceof ImageDecodeError) {
 				throw new ToolError(error.message);
 			}
+			throw error;
+		}
+	}
+
+	async #readNativeMedia(options: {
+		readPath: string;
+		absolutePath: string;
+		fileSize: number;
+		kind: "audio" | "video";
+		mimeType: string;
+		sourceInternal?: string;
+		signal?: AbortSignal;
+	}): Promise<AgentToolResult<ReadToolDetails>> {
+		const { readPath, absolutePath, fileSize, kind, mimeType, sourceInternal, signal } = options;
+		const model = this.session.getActiveModel?.();
+		const details: ReadToolDetails = {
+			resolvedPath: absolutePath,
+			contentType: mimeType,
+			fileSize,
+		};
+		if (!model?.input.includes(kind)) {
+			const modelName = model ? `${model.provider}/${model.id}` : "the active model";
+			const label = kind === "audio" ? "Audio" : "Video";
+			const builder = toolResult(details)
+				.text(`${label} not sent: active model ${modelName} does not support ${kind} input.`)
+				.error()
+				.sourcePath(absolutePath);
+			if (sourceInternal) builder.sourceInternal(sourceInternal);
+			return builder.done();
+		}
+
+		try {
+			const mediaInput: LoadedMediaFileInput | null = await loadMediaFileInput({
+				path: readPath,
+				cwd: this.session.cwd,
+				maxBytes: MAX_MEDIA_INPUT_BYTES,
+			});
+			if (!mediaInput) {
+				throw new ToolError(`Read ${kind} file [${mimeType}] failed: unsupported media format.`);
+			}
+			const builder = toolResult({ ...details, resolvedPath: mediaInput.resolvedPath })
+				.content([{ type: mediaInput.kind, data: mediaInput.data, mimeType: mediaInput.mimeType }])
+				.sourcePath(mediaInput.resolvedPath);
+			if (sourceInternal) builder.sourceInternal(sourceInternal);
+			return builder.done();
+		} catch (error) {
+			if (error instanceof MediaInputTooLargeError) throw new ToolError(error.message);
+			if (error instanceof ToolError) throw error;
+			if (signal?.aborted) throw error;
 			throw error;
 		}
 	}
@@ -1205,13 +1269,21 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			readPath = expandPath(readPath);
 		}
 
-		if (IMAGE_ATTACHMENT_URI_REGEX.test(readPath)) {
+		const attachmentReference = parseImageAttachmentReference(readPath);
+		if (attachmentReference) {
 			const attachments = this.session.getImageAttachments?.() ?? [];
-			const attachment = attachments.find(entry => entry.uri === readPath);
+			const attachment = readPath.toLowerCase().startsWith("attachment://")
+				? attachments.find(entry => entry.uri === readPath)
+				: attachments[attachmentReference.index - 1];
 			if (!attachment) {
-				const availableUris = attachments.map(entry => entry.uri).join(", ") || "none";
+				if (readPath.toLowerCase().startsWith("attachment://")) {
+					const availableUris = attachments.map(entry => entry.uri).join(", ") || "none";
+					throw new ToolError(
+						`Could not resolve image attachment '${readPath}'. Available attachment URIs: ${availableUris}. Use one of the listed attachment URIs, or attach an image first when none are available.`,
+					);
+				}
 				throw new ToolError(
-					`Could not resolve image attachment '${readPath}'. Available attachment URIs: ${availableUris}. Use one of the listed attachment URIs, or attach an image first when none are available.`,
+					`Could not resolve image attachment '${readPath}'. Available image attachments: ${formatAvailableImageAttachments(attachments)}. Pass an attachment URI or a readable filesystem path.`,
 				);
 			}
 			readPath = attachment.sourcePath;
@@ -1446,6 +1518,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		const imageMetadata = await readImageMetadata(absolutePath);
 		const mimeType = imageMetadata?.mimeType;
+		const mediaMetadata = mimeType ? undefined : await readMediaMetadata(absolutePath);
+		if (mediaMetadata?.kind === "audio" || mediaMetadata?.kind === "video") {
+			return this.#readNativeMedia({
+				readPath,
+				absolutePath,
+				fileSize,
+				kind: mediaMetadata.kind,
+				mimeType: mediaMetadata.mimeType,
+				signal,
+			});
+		}
 		const ext = path.extname(absolutePath).toLowerCase();
 		const resolvedDisplayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 		const shouldConvertWithMarkit = isPotentialMarkitExtension(ext)
@@ -1478,7 +1561,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		}
 
-		let content: Array<TextContent | ImageContent> | undefined;
+		let content: UserContent[] | undefined;
 		let details: ReadToolDetails = {};
 		let sourcePath: string | undefined;
 		let columnTruncated = 0;
@@ -2004,6 +2087,36 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			contentType: "text/plain",
 		};
 
+		if (parsedSel.kind === "none") {
+			const imageMetadata = await readImageMetadata(artifact.path);
+			if (imageMetadata) {
+				const loaded = await this.#loadImageContent({
+					readPath: artifact.path,
+					absolutePath: artifact.path,
+					mimeType: imageMetadata.mimeType,
+					imageMetadata,
+					fileSize: artifact.size,
+				});
+				return toolResult({ ...details, ...loaded.details, contentType: imageMetadata.mimeType })
+					.content(loaded.content)
+					.sourcePath(loaded.sourcePath)
+					.sourceInternal(url.href)
+					.done();
+			}
+			const mediaMetadata = await readMediaMetadata(artifact.path);
+			if (mediaMetadata?.kind === "audio" || mediaMetadata?.kind === "video") {
+				return this.#readNativeMedia({
+					readPath: artifact.path,
+					absolutePath: artifact.path,
+					fileSize: artifact.size,
+					kind: mediaMetadata.kind,
+					mimeType: mediaMetadata.mimeType,
+					sourceInternal: url.href,
+					signal,
+				});
+			}
+		}
+
 		if (parsedSel.kind === "raw" && artifact.size > MAX_ARTIFACT_RAW_INLINE_BYTES) {
 			return toolResult<ReadToolDetails>(details)
 				.text(this.#formatRawArtifactBlockedNotice(artifact, artifactUrl))
@@ -2214,7 +2327,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		if (scheme === "local") {
-			const imageResult = await this.#tryReadLocalImage(urlMeta, signal);
+			const imageResult = await this.#tryReadLocalImage(urlMeta, parsedSel, signal);
 			if (imageResult) return imageResult;
 		}
 
@@ -2266,7 +2379,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		});
 	}
 
-	async #tryReadLocalImage(url: InternalUrl, signal?: AbortSignal): Promise<AgentToolResult<ReadToolDetails> | null> {
+	async #tryReadLocalImage(
+		url: InternalUrl,
+		parsedSel: ParsedSelector,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<ReadToolDetails> | null> {
 		let file: { path: string; size: number } | null;
 		try {
 			const { resolveLocalUrlToFile } = await import("../internal-urls");
@@ -2279,11 +2396,23 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		} catch {
 			return null;
 		}
-		if (!file) return null;
+		if (!file || parsedSel.kind !== "none") return null;
 
 		const imageMetadata = await readImageMetadata(file.path);
 		const mimeType = imageMetadata?.mimeType;
-		if (!mimeType) return null;
+		if (!mimeType) {
+			const mediaMetadata = await readMediaMetadata(file.path);
+			if (mediaMetadata?.kind !== "audio" && mediaMetadata?.kind !== "video") return null;
+			return this.#readNativeMedia({
+				readPath: file.path,
+				absolutePath: file.path,
+				fileSize: file.size,
+				kind: mediaMetadata.kind,
+				mimeType: mediaMetadata.mimeType,
+				sourceInternal: url.href,
+				signal,
+			});
+		}
 
 		const { content, details, sourcePath } = await this.#loadImageContent({
 			readPath: url.href,

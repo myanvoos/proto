@@ -22,8 +22,11 @@ Does not cover `/tree` UI rendering behavior beyond semantics that affect sessio
 - [`src/session/session-migrations.ts`](../packages/coding-agent/src/session/session-migrations.ts) — version migrations
 - [`src/session/session-loader.ts`](../packages/coding-agent/src/session/session-loader.ts) — file load + blob-ref resolution
 - [`src/session/session-context.ts`](../packages/coding-agent/src/session/session-context.ts) — `buildSessionContext`
+- [`src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts) — runtime lifecycle and resume reconstruction
+- [`src/session/exit-diagnostics.ts`](../packages/coding-agent/src/session/exit-diagnostics.ts) — lifecycle records and interrupted-turn diagnostics
 - [`src/session/session-persistence.ts`](../packages/coding-agent/src/session/session-persistence.ts) — truncation + image blob externalization
 - [`src/session/session-paths.ts`](../packages/coding-agent/src/session/session-paths.ts) — on-disk layout, dir encoding, terminal breadcrumbs
+- [`src/session/session-liveness.ts`](../packages/coding-agent/src/session/session-liveness.ts) — ownership locks and live heartbeat markers
 - [`src/session/session-listing.ts`](../packages/coding-agent/src/session/session-listing.ts) — discovery (list/recent/resolve)
 - [`src/session/session-storage.ts`](../packages/coding-agent/src/session/session-storage.ts) — storage abstractions
 - [`src/session/session-title-slot.ts`](../packages/coding-agent/src/session/session-title-slot.ts) — fixed-width current-title slot
@@ -68,7 +71,7 @@ An explicitly requested location still fails fast with the same sentence pair: `
 
 Session managers keep bounded human-readable previews plus structural metadata resident. Raw entries are backed by per-process temporary files (`proto-session-history-*`), keyed by entry id, and hydrated through a cache capped at 64 entries and 8 MiB. A record with no usable id — possible only in a hand-edited file — cannot share this keyed storage and remains inline. Ordinary strings larger than `MAX_PERSIST_CHARS` still have a truncated durable representation; their complete current-process version exists only in temporary storage. Signed/encrypted provider replay content and images retain their separate durable blob handling.
 
-Temporary entry files are not durable history. When a temporary file cannot be read back — a cleaner removed it, it is corrupt, or it holds another entry — the manager warns once and permits display from the bounded preview. The failed mapping is marked lost to avoid repeated reads. A rewrite cannot use that preview to overwrite durable history: it fails closed until the session is reopened, leaving the original saved bytes unchanged. The warning identifies the entry/session/temp path and recommends excluding `proto-session-history-*` from temporary-directory cleanup.
+Temporary entry files are not durable history. When a temporary file cannot be read back — a cleaner removed it, it is corrupt, or it holds another entry — the manager logs the failure and permits display from the bounded preview. The failed mapping is marked lost to avoid repeated reads, and the user-facing degradation callback is notified only once. A rewrite cannot use that preview to overwrite durable history: it fails closed until the session is reopened, leaving the original saved bytes unchanged. The warning identifies the entry/session/temp path and recommends excluding `proto-session-history-*` from temporary-directory cleanup.
 
 ### Ownership
 
@@ -490,7 +493,7 @@ Before persisting entries:
 - Strings over 500,000 characters are truncated with `"[Session persistence truncated large content]"`, except signed/encrypted provider blocks, signature fields, and complete Anthropic native web-search history blocks, which must remain byte-exact for replay.
 - Transient `jsonlEvents` is removed.
 - If an object has both string `content` and numeric `lineCount`, line count is recomputed after truncation.
-- Image data URLs in `image_url` fields are always content-addressed in the blob store and replaced with `blob:sha256:<hash>`, regardless of length. Other base64 image payloads are externalized at 1,024 characters: image content/data payloads and image-generation results.
+- Image data URLs in `image_url` fields are always content-addressed in the blob store and replaced with `blob:sha256:<hash>`, regardless of length. Other base64 image payloads at or above 1,024 characters are externalized for image blocks in message `content`, `images` arrays, and image-generation results.
 - Redundant OpenAI Responses `thinkingSignature` copies are omitted when the authoritative reasoning item already exists in `providerPayload`.
 
 On load, persisted blob references are resolved back to the inline payload shapes expected by downstream transports.

@@ -3,7 +3,6 @@ export const BUILTIN_TOOL_NAMES = [
 	"bash",
 	"context",
 	"ask",
-	"inspect_media",
 	"browser",
 	"computer",
 	"checkpoint",

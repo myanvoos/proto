@@ -1,11 +1,9 @@
 # Natives media + system utilities
 
-This document covers the media/system/conversion exports currently present in `@oh-my-pi/pi-natives`: audio capture/playback and live WebRTC media, terminal SIXEL encoding, HTML conversion, clipboard access, token counting, DeviceCheck, macOS appearance/power helpers, and work profiling.
+This document covers the media/system/conversion exports currently present in `@oh-my-pi/pi-natives`: terminal SIXEL encoding, HTML conversion, clipboard access, token counting, DeviceCheck, macOS appearance/power helpers, and work profiling. File image/audio/video input is handled at the coding-agent layer by `packages/coding-agent/src/tools/read.ts` and its image/media loaders, not by this native addon.
 
 ## Implementation files
 
-- `crates/pi-natives/src/audio.rs`
-- `crates/pi-natives/src/live.rs`
 - `crates/pi-natives/src/sixel.rs`
 - `crates/pi-natives/src/html.rs`
 - `crates/pi-natives/src/clipboard.rs`
@@ -17,15 +15,12 @@ This document covers the media/system/conversion exports currently present in `@
 - `crates/pi-natives/src/task.rs`
 - `packages/natives/native/index.d.ts`
 
-There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper module in the current `pi-natives` addon. General-purpose image decode/resize/encode is expected to live outside this surface; the image-specific export here is terminal SIXEL encoding.
+There is no native `PhotonImage` class, `image.rs`, audio capture/playback module, or live WebRTC module in the current `pi-natives` addon. General-purpose image decode/resize/encode is expected to live outside this surface; the image-specific export here is terminal SIXEL encoding. The coding-agent `read` tool now handles file images, audio, and video through `packages/coding-agent/src/utils/image-loading.ts` and `packages/coding-agent/src/utils/media-loading.ts`.
 
 ## JS API ↔ Rust export/module mapping
 
 | JS export                                | Rust N-API export              | Rust module      |
 | ---------------------------------------- | ------------------------------ | ---------------- |
-| `new AudioCapture(sampleRate, cb)`       | `AudioCapture`                 | `audio.rs`       |
-| `new AudioPlayback(sampleRate)`          | `AudioPlayback`                | `audio.rs`       |
-| `new LiveWebRtcPeer(...)`                | `LiveWebRtcPeer`               | `live.rs`        |
 | `encodeSixel(bytes, width, height)`      | `encode_sixel`                 | `sixel.rs`       |
 | `htmlToMarkdown(html, options?)`         | `html_to_markdown`             | `html.rs`        |
 | `copyToClipboard(text)`                  | `copy_to_clipboard`            | `clipboard.rs`   |
@@ -39,11 +34,12 @@ There is no native `PhotonImage` class, `image.rs`, or ProjFS overlay helper mod
 
 ## Data format boundaries and conversions
 
-### Audio and live WebRTC
+### File media in coding-agent
 
-- `AudioCapture(sampleRate, callback)` opens the default microphone and delivers low-latency mono `Float32Array` PCM chunks at the requested logical rate. `stop()` immediately releases capture.
-- `AudioPlayback(sampleRate)` opens the default speaker. `write(samples)` queues mono `Float32Array` PCM in order; `setGain(gain)` changes render-time gain even for queued samples; `end()` drains and closes, while `stop()` discards queued audio immediately.
-- `LiveWebRtcPeer(onEvent, onLevel, onFailure)` owns a WebRTC peer for Codex live media. `createOffer()` returns SDP, `acceptAnswer(sdp)` applies the remote answer, `waitForOpen(timeoutMs?)` waits for the `oai-events` data channel, `pushAudio()` queues 16 kHz mono PCM, `setMuted()` controls transmission, and `close()` tears down media, data channel, peer, and playback.
+- `packages/coding-agent/src/tools/read.ts` detects image files separately from audio/video using `readImageMetadata` and `readMediaMetadata`.
+- Image reads use `loadImageInput` in `packages/coding-agent/src/utils/image-loading.ts`; behavior is model-aware and can return inline image content or a metadata/unsupported-input notice.
+- Audio/video reads use `loadMediaFileInput` in `packages/coding-agent/src/utils/media-loading.ts`. It copies supported file bytes as base64, enforces `MAX_MEDIA_INPUT_BYTES = 20 * 1024 * 1024`, and returns an `audio` or `video` content block only when the active model advertises that input kind.
+- This is file-media input, not native microphone/speaker capture or live WebRTC; those native classes are no longer exported.
 
 ### SIXEL image encoding (`sixel`)
 

@@ -128,8 +128,6 @@ export interface AgentSessionConfig {
 
 	createThinkTool?: () => Promise<AgentTool | null>;
 
-	createInspectMediaTool?: () => Promise<AgentTool | null>;
-
 	/** Creates the hidden `goal` tool when goal mode is enabled after session creation. */
 	createGoalTool?: () => Promise<AgentTool | null>;
 

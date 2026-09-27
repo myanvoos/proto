@@ -63,15 +63,12 @@ const MAGIC_KEYWORD_NOTICE_TYPES: Record<string, true> = {
 	"workflow-notice": true,
 };
 
-export const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
-
 export function isHiddenUserCompanion(message: AgentMessage): boolean {
 	return (
 		message.role === "custom" &&
 		message.attribution === "user" &&
 		message.display === false &&
-		(MAGIC_KEYWORD_NOTICE_TYPES[message.customType] === true ||
-			message.customType === IMAGE_ATTACHMENT_DESCRIPTION_TYPE)
+		MAGIC_KEYWORD_NOTICE_TYPES[message.customType] === true
 	);
 }
 

@@ -165,7 +165,6 @@ import { supportsExternalThinking } from "../tools/think";
 import { parseCommandArgs } from "../utils/command-args";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
-import type { InspectMediaMode } from "../utils/inspect-media-mode";
 import { resumeCommand } from "../utils/resume-command";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
@@ -532,7 +531,6 @@ export class AgentSession {
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
 
-	#inspectMediaModeOverride: InspectMediaMode | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
@@ -1210,16 +1208,11 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
-			getInspectMediaModeOverride: () => this.#inspectMediaModeOverride,
-			setInspectMediaModeOverride: mode => {
-				this.#inspectMediaModeOverride = mode;
-			},
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			toolRegistry: config.toolRegistry,
 			createComputerTool: config.createComputerTool,
 			createThinkTool: config.createThinkTool,
-			createInspectMediaTool: config.createInspectMediaTool,
 			createGoalTool: config.createGoalTool,
 			builtInToolNames: config.builtInToolNames,
 			restrictToolNames: config.restrictToolNames,
@@ -1258,10 +1251,7 @@ export class AgentSession {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
-			modelRegistry: this.#modelRegistry,
 			model: () => this.model,
-			sessionId: () => this.sessionId,
-			localProtocolOptions: () => this.#localProtocolOptions(),
 			transformContext: (messages, signal) => this.#transformContext(messages, signal),
 			convertToLlm: messages => this.#convertToLlm(messages),
 			onPayload: this.#onPayload,
@@ -3906,22 +3896,6 @@ export class AgentSession {
 		return this.#tools.setThinkToolEnabled(enabled);
 	}
 
-	setInspectMediaMode(mode: InspectMediaMode): Promise<boolean> {
-		return this.#tools.setInspectMediaMode(mode);
-	}
-
-	inspectMediaState(): { mode: InspectMediaMode; active: boolean; model: string | undefined } {
-		return this.#tools.inspectMediaState();
-	}
-
-	getInspectMediaModeOverride(): InspectMediaMode | undefined {
-		return this.#inspectMediaModeOverride;
-	}
-
-	applyInspectMediaModeChange(): Promise<boolean> {
-		return this.#tools.reconcileInspectMediaTool();
-	}
-
 	refreshBaseSystemPrompt(): Promise<void> {
 		return this.#tools.refreshBaseSystemPrompt();
 	}
@@ -4116,7 +4090,9 @@ export class AgentSession {
 		let messageCount = 0;
 		for (const indexed of this.sessionManager.getBranchForStats()) {
 			if (indexed.type === "message") messageCount++;
-			if (indexed.type !== "message" || indexed.message.role !== "toolResult") continue;
+			const isToolResult = indexed.type === "message" && indexed.message.role === "toolResult";
+			const isRewindReport = indexed.type === "custom_message" && indexed.customType === "rewind-report";
+			if (!isToolResult && !isRewindReport) continue;
 			const entry = this.sessionManager.getEntry(indexed.id);
 			if (!entry) continue;
 			if (isSuccessfulCheckpointEntry(entry)) {
@@ -4279,13 +4255,6 @@ export class AgentSession {
 		return normalizeModelContextImages(images, { model: this.model });
 	}
 
-	#buildImageDescriptionNotice(
-		normalizedImages: ImageContent[],
-		signal?: AbortSignal,
-	): Promise<CustomMessage | undefined> {
-		return this.#providerBoundary.buildImageDescriptionNotice(normalizedImages, signal);
-	}
-
 	#normalizeAgentMessageImages<T extends AgentMessage>(message: T): Promise<T> {
 		return this.#providerBoundary.normalizeAgentMessageImages(message);
 	}
@@ -4420,12 +4389,8 @@ export class AgentSession {
 			userContent.push(...normalizedImages);
 		}
 
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
-
-		// Another prompt can claim the turn while normalization or image description
-		// suspends. Re-check immediately before dispatch and queue the loser using
+		// Another prompt can claim the turn while image normalization suspends.
+		// Re-check immediately before dispatch and queue the loser using
 		// the same behavior as a prompt submitted during an active turn.
 		if (this.isStreaming) {
 			const streamingBehavior = options?.streamingBehavior;
@@ -4438,7 +4403,7 @@ export class AgentSession {
 			}
 			await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, {
 				attribution: promptAttribution,
-				preprocessed: { images: normalizedImages, descriptionNotice: imageDescriptionNotice },
+				preprocessedImages: normalizedImages,
 			});
 			outcome.sessionClaimed = true;
 			return true;
@@ -4470,8 +4435,8 @@ export class AgentSession {
 				...options,
 				images: normalizedImages,
 				prependMessages:
-					preludeMessages.length > 0 || keywordNotices.length > 0 || imageDescriptionNotice
-						? [...preludeMessages, ...keywordNotices, ...(imageDescriptionNotice ? [imageDescriptionNotice] : [])]
+					preludeMessages.length > 0 || keywordNotices.length > 0
+						? [...preludeMessages, ...keywordNotices]
 						: undefined,
 			});
 		} finally {
@@ -4942,11 +4907,7 @@ export class AgentSession {
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
 		this.#allowQueuedMessageDrainRetry();
-		if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
 		this.agent.followUp({
 			role: "developer",
 			content,
@@ -4975,26 +4936,20 @@ export class AgentSession {
 		mode: "steer" | "followUp",
 		options?: {
 			attribution?: MessageAttribution;
-			preprocessed?: { images: ImageContent[] | undefined; descriptionNotice: CustomMessage | undefined };
+			preprocessedImages?: ImageContent[];
 		},
 	): Promise<void> {
 		const attribution = options?.attribution ?? "user";
-		const preprocessed = options?.preprocessed;
+		const preprocessedImages = options?.preprocessedImages;
 		this.#advisors.autoResumeSuppressed = false;
-		const normalizedImages = preprocessed ? preprocessed.images : await this.#normalizeImagesForModel(images);
+		const normalizedImages = preprocessedImages ?? (await this.#normalizeImagesForModel(images));
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
 
-		const imageDescriptionNotice = preprocessed
-			? preprocessed.descriptionNotice
-			: normalizedImages?.length
-				? await this.#buildImageDescriptionNotice(normalizedImages)
-				: undefined;
 		this.#allowQueuedMessageDrainRetry();
 		if (mode === "followUp") {
-			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
 			this.agent.followUp({
 				role: "user",
 				content,
@@ -5002,7 +4957,6 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 		} else {
-			if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
 			this.agent.steer({
 				role: "user",
 				content,
@@ -6136,15 +6090,10 @@ export class AgentSession {
 		await this.#reconcileModelDependentState(model);
 	}
 
-	/** Re-derives append-only context and capability-keyed tools (inspect_media, think) for the active model. */
+	/** Re-derives append-only context and capability-keyed tools (think) for the active model. */
 	async #reconcileModelDependentState(model: Model): Promise<void> {
 		this.#syncAppendOnlyContext(model);
 
-		try {
-			await this.#tools.reconcileInspectMediaAfterModelChange();
-		} catch (error) {
-			logger.warn("inspect_media reconcile after model change failed", { error: String(error) });
-		}
 		try {
 			await this.#tools.reconcileThinkTool();
 		} catch (error) {

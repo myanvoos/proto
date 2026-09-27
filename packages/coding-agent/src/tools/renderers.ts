@@ -9,7 +9,6 @@ import { browserToolRenderer } from "./browser/render";
 import { checklistToolRenderer } from "./checklist";
 import { computerToolRenderer } from "./computer-renderer";
 import { fleetToolRenderer } from "./fleet";
-import { inspectMediaToolRenderer } from "./inspect-media-renderer";
 import { jobsToolRenderer } from "./jobs";
 import { type LaunchRenderArgs, type LaunchToolDetails, launchRenderCall, launchRenderResult } from "./jobs/launch";
 import type { JobSnapshot, JobsDetails } from "./jobs/types";
@@ -187,7 +186,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	},
 	browser: browserToolRenderer as ToolRenderer,
 	computer: computerToolRenderer as ToolRenderer,
-	inspect_media: inspectMediaToolRenderer as ToolRenderer,
 
 	get fleet(): ToolRenderer {
 		return getFleetRenderer();

@@ -30,7 +30,6 @@ import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import type { AgentOutputManager } from "../task/output-manager";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
-import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { setExcludedSearchProviders, setSearchProviderOrder } from "../web/search/provider";
 import { isSearchProviderId } from "../web/search/types";
 import type { WorkspaceTree } from "../workspace-tree";
@@ -57,7 +56,6 @@ export * from "./essential-tools";
 export type * from "./eval-backends";
 export type * from "./fleet";
 export type * from "./image-gen";
-export type * from "./inspect-media";
 export type * from "./jobs";
 export type * from "./manage-skill";
 export type * from "./read";
@@ -204,8 +202,6 @@ export interface ToolSession {
 
 	getActiveModel?: () => Model | undefined;
 
-	getInspectMediaModeOverride?: () => InspectMediaMode | undefined;
-
 	getServiceTierByFamily?: () => ServiceTierByFamily | undefined;
 
 	authStorage?: import("../session/auth-storage").AuthStorage;
@@ -351,7 +347,6 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory
 	context: s => new ContextTool(s),
 	bash: async s => new (await import("./bash")).BashTool(s),
 	ask: async s => (await import("./ask")).AskTool.createIf(s),
-	inspect_media: async s => new (await import("./inspect-media")).InspectMediaTool(s),
 	browser: async s => new (await import("./browser")).BrowserTool(s),
 	computer: async s => new (await import("./computer")).ComputerTool(s),
 	checkpoint: async s => (await import("./checkpoint")).CheckpointTool.createIf(s),
@@ -441,7 +436,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "checklist")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("checklist.enabled");
-		if (name === "inspect_media") return isInspectMediaToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");

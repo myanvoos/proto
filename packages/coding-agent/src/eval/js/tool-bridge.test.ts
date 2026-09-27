@@ -68,6 +68,25 @@ test("tools that declare an intent parameter still receive one", async () => {
 	expect(seen?.[INTENT_FIELD]).toBe("js prelude");
 });
 
+test("kernel tool bridge preserves native audio/video blocks instead of dropping them", async () => {
+	const mediaTool = {
+		name: "native-media",
+		label: "native media",
+		description: "",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({
+			content: [{ type: "audio" as const, data: "YQ==", mimeType: "audio/wav" }],
+		}),
+	};
+	const session = {
+		getToolByName: () => mediaTool,
+		getArtifactsDir: () => "/tmp",
+		allocateOutputArtifact: async () => ({ path: `/tmp/proto-media-test-artifact-${crypto.randomUUID()}`, id: "1" }),
+	} as unknown as ToolSession;
+	const value = await callSessionTool("native-media", {}, { session });
+	expect(value).toMatchObject({ media: [{ type: "audio", mimeType: "audio/wav", data: "YQ==" }] });
+});
+
 test("unknown bridged tools name close matches, or the available tools, without blaming one runtime", async () => {
 	const session = {
 		getToolForEvalBridge: () => undefined,

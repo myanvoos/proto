@@ -30,7 +30,6 @@ import { isLightTheme, setAutoThemeMapping, setColorBlindMode } from "../modes/t
 import { AgentStorage } from "../session/agent-storage";
 import type { CompactionMethod } from "../session/compaction-method-config";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
-import { INSPECT_MEDIA_MODES } from "../utils/inspect-media-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { type ConfigIssue, normalizeSettingsLayer } from "./settings-normalize";
 import {
@@ -1314,41 +1313,6 @@ export class Settings {
 				const slot = isLightTheme(oldTheme) ? "light" : "dark";
 				raw.theme = { [slot]: oldTheme };
 			}
-		}
-
-		const legacyInspectImageObj = isRecord(raw.inspect_image)
-			? (raw.inspect_image as Record<string, unknown>)
-			: undefined;
-		const legacyInspectImageEnabled =
-			typeof legacyInspectImageObj?.enabled === "boolean"
-				? legacyInspectImageObj.enabled
-				: typeof raw["inspect_image.enabled"] === "boolean"
-					? (raw["inspect_image.enabled"] as boolean)
-					: undefined;
-		const legacyInspectImageFlatMode =
-			typeof raw["inspect_image.mode"] === "string" &&
-			(INSPECT_MEDIA_MODES as readonly string[]).includes(raw["inspect_image.mode"] as string)
-				? (raw["inspect_image.mode"] as string)
-				: undefined;
-		const legacyInspectImageNestedMode =
-			typeof legacyInspectImageObj?.mode === "string" &&
-			(INSPECT_MEDIA_MODES as readonly string[]).includes(legacyInspectImageObj.mode)
-				? legacyInspectImageObj.mode
-				: undefined;
-		const legacyInspectImageMode = legacyInspectImageFlatMode ?? legacyInspectImageNestedMode;
-		if (legacyInspectImageObj || legacyInspectImageEnabled !== undefined || legacyInspectImageMode !== undefined) {
-			if (!isRecord(raw.inspect_media)) {
-				raw.inspect_media = {};
-			}
-			const target = raw.inspect_media as Record<string, unknown>;
-			if (target.mode === undefined) {
-				target.mode =
-					legacyInspectImageMode ??
-					(legacyInspectImageEnabled !== undefined ? (legacyInspectImageEnabled ? "on" : "off") : "auto");
-			}
-			delete raw.inspect_image;
-			delete raw["inspect_image.enabled"];
-			delete raw["inspect_image.mode"];
 		}
 
 		// features.unexpectedStopDetection: boolean -> none|mechanical|smart. `true` was the classified behavior

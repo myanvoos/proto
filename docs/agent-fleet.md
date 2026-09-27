@@ -19,7 +19,7 @@ app.agents.fleet: Alt+A
 app.session.observe: Ctrl+S
 ```
 
-The double-`←` gesture is not a keybinding action. While focused on a subagent, double-`←` returns to the main session instead of opening the Fleet.
+The double-`←` gesture is not a keybinding action. While focused on a subagent, double-`←` hops to its parent session; a direct child therefore returns to main rather than opening an overlay.
 
 ## Roster and inspector
 
@@ -54,7 +54,7 @@ The transcript viewer bounds its headers, footer hints, notices, and reply edito
 | `PageUp` / `PageDown`       | Scroll an open inspector.                                                    |
 | `r`                         | Revive the selected parked agent.                                            |
 | `x`                         | Abort a running turn if necessary, then kill and release the selected agent. |
-| `Esc`                       | Close the inspector first on narrow terminals, then close the Fleet.           |
+| `Esc`                       | Clear a range selection; otherwise close the inspector first on narrow terminals, then close the Fleet. |
 
 Only `parked` agents can be revived. `x` is immediate; use it only when you intend to discard that agent instance.
 

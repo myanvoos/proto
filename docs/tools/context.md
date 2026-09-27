@@ -34,7 +34,7 @@ The wire schema is flat so proto can derive CLI flags; each resource/op validate
 
 A lane is a bash `lane` value: its FIFO command queue, its persistent shell, and the kernels its cells run in. Shell lanes are keyed by the session id (`getSessionId`), kernels by the eval kernel owner; a caller only sees and controls its own.
 
-- `list` / `inspect` return `LaneSnapshot`s: `state` (`idle`, `busy`, `controlling`), `activeSince`, `queued`, `shell` (`live`, `quarantined`, `retained`, `none`), `stateLossPending`, `kernels` (kernel lifecycle summaries) and `configured` (languages with a retained environment, including after idle reaping). No heap values, environment values or command text. An unknown lane is an error.
+- `list` / `inspect` return `LaneSnapshot`s: `state` (`idle`, `busy`, `controlling`), `activeSince`, `queued`, `shell` (`live`, `quarantined`, `retained`, `none`), `stateLossPending`, `kernels` (kernel lifecycle summaries) and `configured` (languages with a retained environment, including after idle reaping). No heap values, process environment variables or command text; kernel summaries include configured cwd/target metadata. Inspecting, resetting or closing an unknown lane is an error.
 - `reset`:
   1. puts up an admission barrier — commands issued from now wait until teardown finishes;
   2. cancels every reservation accepted before the barrier: the admitted command is aborted, queued ones are removed and never run (their result is `cancelled` with `Command cancelled: lane <lane> was reset by context control`);
@@ -57,7 +57,7 @@ Unchanged lifecycle of named kernels, formerly the `kernel` tool:
 - `start` creates or confirms a kernel with the requested environment; an existing kernel with a different environment requires `reset`.
 - `reset` cancels the kernel's running cell and starts a new generation, retaining the environment unless overridden. It does not touch the lane's shell or queue.
 - `close` refuses busy kernels unless `force: true` and forgets the kernel's lane configuration.
-- `keepalive` defers idle reaping for a bounded lease. Idle kernels are released after the idle-reap period; their environment is kept and the next cell reports the state loss.
+- `keepalive` defers idle reaping for a bounded lease. Idle kernels are released after the idle-reap period; their environment is kept and the next cell starts a fresh generation, reporting state loss when a previous generation was observed.
 - `list`/`inspect` report lifecycle metadata (`generation`, `interpreter`, `environment`, `state`, timestamps, `keepAliveUntil`), never heap contents.
 - A kernel `reset`/`close` issued from a cell running in that same lane and language is rejected; a shell command on the same lane may control it.
 - Language/interpreter disambiguation, remote/container restrictions and backend enablement checks apply as before. There is no heap fork/save/restore.

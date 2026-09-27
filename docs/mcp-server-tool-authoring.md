@@ -41,7 +41,7 @@ Config sources (.proto/.claude/.cursor/.vscode/mcp.json, mcp.json, etc.)
 
 - `type` omitted means stdio. If you intended HTTP/SSE but omitted `type`, `command` becomes mandatory.
 - `sse` selects the legacy protocol-revision 2024-11-05 HTTP+SSE transport: a persistent GET stream supplies an `endpoint` event whose URL receives JSON-RPC POSTs. It is distinct from the `"http"` Streamable HTTP transport.
-- Outbound JSON-RPC request IDs default to incrementing numbers for ecosystem compatibility. Set `requestIdFormat: "string"` only for a server that requires the older snowflake-string behavior; invalid values are warned about and ignored during discovery.
+- Outbound JSON-RPC request IDs default to incrementing numbers for ecosystem compatibility. Set `requestIdFormat: "string"` for a server that requires string IDs; invalid values are warned about and ignored during discovery.
 - Validation is structural, not reachability: a syntactically valid URL can still fail at connect time.
 
 ## 2) Discovery, normalization, and precedence

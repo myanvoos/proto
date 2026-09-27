@@ -5,7 +5,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
+import type { Static, TSchema, UserContent } from "@oh-my-pi/pi-ai";
 import type { Theme } from "../../modes/theme/theme";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { applyToolProxy } from "../tool-proxy";
@@ -171,7 +171,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			});
 
 			if (resultResult) {
-				const modifiedContent: (TextContent | ImageContent)[] = resultResult.content ?? result.content;
+				const modifiedContent: UserContent[] = resultResult.content ?? result.content;
 				const modifiedDetails = (resultResult.details ?? result.details) as TDetails;
 
 				const effectiveError = resultResult.isError ?? !!executionError;

@@ -22,7 +22,6 @@ import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { supportsExternalThinking } from "../tools/think";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
-import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -41,9 +40,6 @@ export interface SessionToolsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
-
-	getInspectMediaModeOverride(): InspectMediaMode | undefined;
-	setInspectMediaModeOverride(mode: InspectMediaMode | undefined): void;
 }
 
 interface SessionToolsOptions {
@@ -52,7 +48,6 @@ interface SessionToolsOptions {
 
 	createThinkTool?: () => Promise<AgentTool | null>;
 
-	createInspectMediaTool?: () => Promise<AgentTool | null>;
 	/** Creates the hidden `goal` tool when goal mode is enabled after session creation. */
 	createGoalTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
@@ -156,13 +151,7 @@ export class SessionTools {
 	#toolRegistry: Map<string, AgentTool>;
 	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
-	#createInspectMediaTool: SessionToolsOptions["createInspectMediaTool"];
 	#createGoalTool: SessionToolsOptions["createGoalTool"];
-	/**
-	 * Model (`formatModelString`) last named by an inspect_media notice; a switch that keeps the
-	 * tool hidden but changes the model refreshes the hint instead of leaving the old name.
-	 */
-	#lastInspectMediaNoticeModel: string | undefined;
 	#builtInToolNames: Set<string>;
 	#restrictToolNames: boolean;
 	#rpcHostToolNames = new Set<string>();
@@ -203,7 +192,6 @@ export class SessionTools {
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#createComputerTool = options.createComputerTool;
 		this.#createThinkTool = options.createThinkTool;
-		this.#createInspectMediaTool = options.createInspectMediaTool;
 		this.#createGoalTool = options.createGoalTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
 		this.#restrictToolNames = options.restrictToolNames === true;
@@ -436,8 +424,6 @@ export class SessionTools {
 		} else if (computerExpected) {
 			this.#logComputerState("Computer tool retained after model change", true);
 		}
-
-		await this.reconcileInspectMediaAfterModelChange();
 	}
 
 	getSelectedMCPToolNames(): string[] {
@@ -854,92 +840,6 @@ export class SessionTools {
 			const active = this.getEnabledToolNames();
 			if (!active.includes("goal")) await this.#applyActiveToolsByName([...active, "goal"]);
 			return true;
-		});
-	}
-
-	inspectMediaState(): { mode: InspectMediaMode; active: boolean; model: string | undefined } {
-		const model = this.#host.model();
-		return {
-			mode: this.#host.getInspectMediaModeOverride() ?? this.#host.settings.get("inspect_media.mode"),
-			active: this.getEnabledToolNames().includes("inspect_media"),
-			model: model ? formatModelString(model) : undefined,
-		};
-	}
-
-	reconcileInspectMediaTool(): Promise<boolean> {
-		return this.runToolRegistryMutation(async () => {
-			const expected = isInspectMediaToolActive({
-				settings: this.#host.settings,
-				getActiveModel: () => this.#host.model(),
-				getInspectMediaModeOverride: () => this.#host.getInspectMediaModeOverride(),
-			});
-
-			const syncReadDescription = (available: boolean): void => {
-				const readTool = this.#toolRegistry.get("read") as
-					| { syncInspectMediaState?: (available?: boolean) => boolean }
-					| undefined;
-				readTool?.syncInspectMediaState?.(available);
-			};
-			const active = this.getEnabledToolNames();
-			const isActive = active.includes("inspect_media");
-			if (expected === isActive) {
-				syncReadDescription(isActive);
-				return true;
-			}
-			if (!expected) {
-				syncReadDescription(false);
-				await this.#applyActiveToolsByName(active.filter(name => name !== "inspect_media"));
-				return true;
-			}
-			if (!this.#toolRegistry.has("inspect_media")) {
-				const tool = await this.#createInspectMediaTool?.();
-				if (tool?.name !== "inspect_media") {
-					logger.warn("inspect_media tool could not be created", {
-						model: this.#host.model()?.id,
-					});
-					syncReadDescription(false);
-					return false;
-				}
-				const wrapped = this.#wrapRuntimeTool(tool);
-				this.#toolRegistry.set(wrapped.name, wrapped);
-				this.#builtInToolNames.add(wrapped.name);
-			}
-			syncReadDescription(true);
-			await this.#applyActiveToolsByName([...active, "inspect_media"]);
-			return true;
-		});
-	}
-
-	reconcileInspectMediaAfterModelChange(): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			const before = this.getEnabledToolNames().includes("inspect_media");
-			const reconciled = await this.reconcileInspectMediaTool();
-			if (!reconciled) return;
-			const after = this.getEnabledToolNames().includes("inspect_media");
-			const model = this.#host.model();
-			const modelName = model ? formatModelString(model) : "the current model";
-			const flipped = before !== after;
-			// The hidden-state hint names the model; refresh it when the model changed while the tool stays hidden.
-			const staleHiddenModel = !after && !flipped && modelName !== this.#lastInspectMediaNoticeModel;
-			if (!flipped && !staleHiddenModel) return;
-			this.#lastInspectMediaNoticeModel = modelName;
-			this.#host.emitNotice(
-				"info",
-				after
-					? `inspect_media is now available: ${modelName} has no native image input.`
-					: `inspect_media ${flipped ? "is now hidden" : "stays hidden"}: ${modelName} supports image input natively. Override with /vision on.`,
-				"vision",
-			);
-		});
-	}
-
-	setInspectMediaMode(mode: InspectMediaMode): Promise<boolean> {
-		return this.runToolRegistryMutation(async () => {
-			this.#host.setInspectMediaModeOverride(mode === "auto" ? undefined : mode);
-			const applied = await this.reconcileInspectMediaTool();
-			const { active, model } = this.inspectMediaState();
-			logger.debug("inspect_media mode changed", { mode, active, model });
-			return applied;
 		});
 	}
 

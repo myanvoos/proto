@@ -13,7 +13,6 @@ function enabledToolSession(): ToolSession {
 		"checkpoint.enabled": true,
 		"computer.enabled": true,
 		"goal.enabled": false,
-		"inspect_media.mode": "on",
 		"monitor.enabled": true,
 		"checklist.enabled": true,
 		"tools.xdev": false,

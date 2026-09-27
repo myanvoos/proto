@@ -740,18 +740,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"images.describeForTextModels": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "model",
-			group: "Vision",
-			label: "Describe Images for Text Models",
-			description:
-				"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
-		},
-	},
-
 	"images.urls.enabled": {
 		type: "boolean",
 		default: false,
@@ -2778,29 +2766,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"inspect_media.enabled": {
-		type: "boolean",
-		default: false,
-	},
-
-	"inspect_media.mode": {
-		type: "enum",
-		values: ["auto", "on", "off"] as const,
-		default: "auto",
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Inspect Media",
-			description:
-				"Controls the inspect_media tool. Images the active model reads natively are attached directly; other media is analyzed by a capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
-			options: [
-				{ value: "auto", label: "Auto (only for models without native image input)" },
-				{ value: "on", label: "On" },
-				{ value: "off", label: "Off" },
-			],
-		},
-	},
-
 	"computer.enabled": {
 		type: "boolean",
 		default: false,
@@ -2842,25 +2807,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Computer",
 			label: "Computer Screenshot Height",
 			description: "Maximum composite screenshot height in pixels",
-		},
-	},
-
-	"inspect_media.timeoutMs": {
-		type: "number",
-		default: 300_000,
-		ui: {
-			tab: "tools",
-			group: "Execution",
-			label: "Inspect Media Timeout",
-			description:
-				"Per-request timeout for the inspect_media model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
-			options: [
-				{ value: "0", label: "Disabled" },
-				{ value: "60000", label: "1 minute" },
-				{ value: "120000", label: "2 minutes" },
-				{ value: "180000", label: "3 minutes" },
-				{ value: "300000", label: "5 minutes" },
-			],
 		},
 	},
 

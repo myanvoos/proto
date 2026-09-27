@@ -46,8 +46,10 @@ proto --continue "What did we discuss?"
 Argument handling:
 
 - `@<path>` attaches a file or image to the initial message.
-- Non-TTY stdin is read automatically as the initial prompt; do not add a `-`
-  marker.
+- In non-protocol modes, non-TTY stdin is read automatically as the initial
+  prompt; with no explicit mode, a non-empty piped prompt also selects headless
+  / print execution. RPC/ACP modes reserve stdin for protocol frames; do not add
+  a `-` marker.
 - `--` ends flag parsing; everything after it is literal message text, even if it
   looks like a flag.
 
@@ -252,6 +254,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `grievances` | View, clean, or push reported tool issues (auto-QA grievances). | |
 | `images`, `img` | Inspect, diagnose, probe, and purge image publication backends. | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |
+| `login` | Log in to a model provider (terminal counterpart of `/login`). | |
 | `models` | List, search, and refresh available models. | [models](./models.md) |
 | `plugin` | Manage plugins (install, uninstall, list, etc.). | [extensions](./extensions.md), [marketplace](./marketplace.md) |
 | `ps` | List and control daemon-supervised background processes (logs, stop, kill, restart). | |

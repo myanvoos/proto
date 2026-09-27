@@ -79,7 +79,7 @@ Advisor messages already injected into the primary transcript are filtered out b
 
 When the primary transcript is rewritten, the advisor runtime is reset:
 
-- compaction
+- compaction and other context-rewrite maintenance (tool-output pruning, stale-result pruning, image dropping, or context shaking)
 - session switch/resume
 - branch/fork style history replacement
 - context-maintenance re-prime when the advisor's own context cannot fit
@@ -279,7 +279,7 @@ advisors:
     model: anthropic/claude-sonnet-4-5:high
     tools: [read, grep, glob, edit, bash]
     instructions: |
-      You may edit and run tests to prove a fix locally, then advise.
+      You may inspect and run tests locally with `bash`, then advise.
 ```
 
 Fields:

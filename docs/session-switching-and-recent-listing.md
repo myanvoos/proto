@@ -70,9 +70,9 @@ For `SessionInfo` list entries:
 2. Validate the breadcrumb. A materialized target is usable; a missing target is usable only when its optional third line is `fresh`, denoting a lazily-unmaterialized `/new` boundary.
 3. A missing fresh target starts a new session instead of falling back and resurrecting the prior transcript.
 4. Resolve stale pre-fix subagent breadcrumbs to their interactive parent session.
-5. If the breadcrumb's cwd differs from current cwd, no longer exists, and the current location has no session of its own, re-root the breadcrumb session into current cwd (`open` + `moveTo`).
-6. Otherwise use a breadcrumb whose cwd matches current cwd; for a cwd mismatch use the newest current-bucket session.
-7. Without a usable breadcrumb, choose newest file by mtime; if none exists, create a new session.
+5. If the breadcrumb's cwd matches the current cwd and its target is in scope, use that breadcrumb.
+6. For a cwd mismatch, inspect the newest non-empty session in the current bucket. Re-root the breadcrumb (`open` + `moveTo`) only when its recorded cwd is missing, it is the candidate that would otherwise be selected, and the current directory has the same device/inode identity recorded in the breadcrumb; a missing path without that positive move evidence is not re-rooted.
+7. Without a usable breadcrumb, choose the newest non-empty session by mtime (skipping untitled 0-turn stubs). Claiming a session owned by another live process fails closed by starting a new session; if no candidate exists, create a new session.
 
 Terminal ID derivation prefers TTY path and falls back to env-based identifiers (`ZELLIJ_PANE_ID`, `TMUX_PANE`, `CMUX_SURFACE_ID`, `KITTY_WINDOW_ID`, `WEZTERM_PANE`, `TERM_SESSION_ID`).
 

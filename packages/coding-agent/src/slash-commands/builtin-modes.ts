@@ -10,7 +10,6 @@ import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
-import type { InspectMediaMode } from "../utils/inspect-media-mode";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
@@ -123,31 +122,6 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 	return enable
 		? `Computer use enabled for this session. ${await formatComputerUseStatus(session)}`
 		: "Computer use disabled for this session.";
-}
-
-function formatVisionStatus(session: AgentSession): string {
-	const { mode, active, model } = session.inspectMediaState();
-	const override = session.getInspectMediaModeOverride();
-	const modelObj = session.model;
-	const capability = modelObj
-		? modelObj.input.includes("image")
-			? "native image input"
-			: "no native image input"
-		: "no active model";
-	return [
-		`inspect_media: ${active ? "active" : "inactive"}`,
-		`mode: ${mode}${override ? " (session override)" : ""}`,
-		...(override ? [`configured: ${session.settings.get("inspect_media.mode")}`] : []),
-		`model: ${model ?? "none"} (${capability})`,
-	].join(" · ");
-}
-
-async function applyVisionMode(session: AgentSession, mode: InspectMediaMode): Promise<string> {
-	const applied = await session.setInspectMediaMode(mode);
-	if (!applied) {
-		return "inspect_media is unavailable in this session.";
-	}
-	return `Vision mode: ${mode}. ${formatVisionStatus(session)}`;
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -409,47 +383,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			runtime.ctx.editor.setText("");
 		},
 	},
-	{
-		name: "vision",
-		description: "Control the inspect_media media-delegation tool for this session",
-		acpDescription: "Toggle vision delegation",
-		acpInputHint: "[on|off|auto|status]",
-		subcommands: [
-			{ name: "on", description: "Always expose inspect_media this session" },
-			{ name: "off", description: "Never expose inspect_media this session" },
-			{ name: "auto", description: "Follow inspect_media.mode (auto hides it for vision-capable models)" },
-			{ name: "status", description: "Show inspect_media status" },
-		],
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Vision: ${runtime.ctx.session.inspectMediaState().mode}`,
-		handle: async (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (arg === "status") {
-				await runtime.output(formatVisionStatus(runtime.session));
-				return commandConsumed();
-			}
-			if (arg === "on" || arg === "off" || arg === "auto") {
-				await runtime.output(await applyVisionMode(runtime.session, arg));
-				return commandConsumed();
-			}
-			return usage("Usage: /vision [on|off|auto|status]", runtime);
-		},
-		handleTui: async (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (arg === "status") {
-				runtime.ctx.showStatus(formatVisionStatus(runtime.ctx.session));
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "on" || arg === "off" || arg === "auto") {
-				runtime.ctx.showStatus(await applyVisionMode(runtime.ctx.session, arg));
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /vision [on|off|auto|status]");
-			runtime.ctx.editor.setText("");
-		},
-	},
+
 	{
 		name: "prewalk",
 		description: "Switch to a fast/cheap model at the next action (works even without --prewalk)",

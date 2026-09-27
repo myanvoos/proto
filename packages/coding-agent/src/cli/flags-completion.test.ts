@@ -144,7 +144,7 @@ test("--tools validates against every built-in tool, not the already filtered se
 	]);
 	expect(unknown.exitCode).toBe(1);
 	expect(unknown.stderr).toContain("Unknown tool in --tools: nosuchtool");
-	for (const name of ["bash", "browser", "checkpoint", "manage_skill", "web_search", "fleet", "inspect_media"]) {
+	for (const name of ["bash", "browser", "checkpoint", "manage_skill", "web_search", "fleet"]) {
 		expect(unknown.stderr).toContain(name);
 	}
 

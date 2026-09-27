@@ -37,11 +37,12 @@ A `TerminalFrameProvider`, installed with `TUI.setFrameProvider()`, returns a
 The application keeps an offered transaction immutable until acknowledgement.
 If its width or image-admission policy changes before the write, it withdraws
 that offer and renders the same semantic content under a fresh ID; stale
-acknowledgements cannot retire it. The writer accepts a fresh batch once, writes history and the viewport, and
-only then acknowledges it. A failed write must not retire application content.
-Ordinary viewport updates never inspect historical text or infer new history
-from a diff. A component-only TUI is a mutable viewport; applications needing
-scrollback must supply explicit batches.
+acknowledgements cannot retire it. The writer accepts a fresh batch once, writes
+history and the viewport, and only then acknowledges it; terminal-level write
+failures are handled by the terminal disconnect path. Ordinary viewport updates
+never inspect historical text or infer new history from a diff. A component-only
+TUI is a mutable viewport; applications needing scrollback must supply explicit
+batches.
 
 ### Transcript lifecycle
 
@@ -64,13 +65,14 @@ and does not discard its source. Displaceable checklist/jobs snapshots may be
 replaced only while uncommitted. Once retired, changes require an explicit
 replay rather than silently rewriting terminal history.
 
-Committed blocks keep their components for the newest
-`RETAINED_COMMITTED_BLOCKS`, so a replay re-renders them with current
-expansion, thinking visibility, and width. Older blocks compact to row
-snapshots (displacement participants and Kitty image owners never compact).
-A snapshot replays its rows as laid out; at a narrower width it rewraps rows
-whose content no longer fits under their gutter, since the writer would clip
-them after the replay has already erased the scrollback copy.
+Committed blocks keep their components while they fit within the newest
+`RETAINED_COMMITTED_BLOCKS` and `RETAINED_COMMITTED_BYTES` (2 MiB), so a replay
+re-renders them with current expansion, thinking visibility, and width. When
+that block/byte window trims older entries, `TranscriptContainer` removes and
+disposes them rather than compacting them to row snapshots; durable session
+history remains authoritative. Displaceable action cards and Kitty image owners
+share this component lifetime. At replay width, retained components render at
+that width, and the writer clamps each prepared row before writing.
 
 ## 2. Frame pipeline
 
@@ -177,10 +179,10 @@ client name through the same table; a missing `tmux` binary or reply keeps the
 environment fallback.
 
 The old ED3-risk classifier (`eagerEraseScrollbackRisk`, `PI_TUI_ED3_SAFE`,
-`submitPinsViewportToTail`) is gone: behavior no longer depends on which
-terminal is rendering, so there is no risk class to detect. Env sniffing now
-only selects _optimizations_ (sync output, DECCARA, images), where a miss is
-cosmetic, not corrupting.
+`submitPinsViewportToTail`) is gone: history no longer has a terminal risk class.
+Environment and identity probes select capability/optimization paths (sync
+output, DECCARA, images, hyperlinks, styled underlines, notifications); a miss
+changes a capability or appearance, not history ownership.
 
 ---
 
@@ -218,7 +220,9 @@ old committed-prefix reconciliation math in a shadow oracle.
 
 Coverage includes `packages/tui/src/tui-frame-sequence.test.ts`, the renderer
 regression/resize/overlay/image suites, and product-level
-`composer.test.ts` / `assistant-streaming-scrollback.test.ts`. Exercise:
+`packages/coding-agent/src/modes/composer.test.ts` /
+`packages/coding-agent/src/modes/components/assistant-streaming-scrollback.test.ts`.
+Exercise:
 
 - append, duplicate delivery, write failure, acknowledgement, and atomic replay;
 - long thinking/text/tool sequences, including open Markdown and finalization;

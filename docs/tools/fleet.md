@@ -49,9 +49,12 @@ Labels (`[A-Za-z0-9_-]{1,48}`, rejected rather than rewritten) are display text 
 - Cancelling a turn job through `jobs` ends that turn only; a cancelled queued turn is removed
   from the worker's queue and keeps its turn number. The worker stays addressable.
 - `terminate` tombstones the worker, cancels its in-flight turn and every queued turn job, and
-  reports `history://<id>` / `agent://<id>` recovery refs. The id is not addressable afterward.
-- `isolated: true` runs once in an isolated workspace copy, applies successful changes back,
-  blocks until done, and leaves no addressable worker.
+  reports `history://<id>` / `agent://<id>` recovery refs; it cannot route new turns or peer
+  messages afterward.
+- `isolated: true` runs once synchronously in an isolated workspace copy (requires
+  `orchestrator.isolation.mode` other than `none`), applies successful changes back by default
+  (`orchestrator.isolation.apply=false` retains patch/branch artifacts), and leaves no
+  addressable worker.
 - `list` (owned) and `inspect` report lifecycle (`live`/`parked`/`terminal`) and turn state
   (`starting`/`running`/`idle`) separately, plus model, turn count, current, last and queued
   turn job ids, usage, and terminal recovery refs.
@@ -79,8 +82,9 @@ Single text block plus `details: FleetDetails` —
 Runtime refusals are `isError` results; a refused tracked input carries its receipt in `rejected`.
 
 ## Rendering
-`fleetToolRenderer` draws worker composer frames for `spawn`/`send` (with the receipt's turn
-and job), worker TV cards for owned `list`/`inspect`, and message/inbox/peer cards for peer ops.
+`fleetToolRenderer` draws worker composer frames for `spawn`/`send` (tracked calls include
+the receipt's turn and job), worker TV cards for owned `list`/`inspect`, and message/inbox/peer
+cards for peer ops.
 Transcripts written before fleet became agents-only are rendered as history: legacy peer
 `send` calls keep message cards, and process/job results retain their cards through
 render-only adapters. Removed tool names use the historical fallback. None of these
