@@ -41,6 +41,8 @@
 
 ### Changed
 
+- Checkpoint and rewind tools are enabled by default; set `checkpoint.enabled` to `false` to opt out.
+
 - Kernel displays, expression values, and harness notes are presentation sidebands, never program stdout/stderr; binary writes no longer need return-value suppression
 - Supported Python/Node/Bun cells preserve program arguments instead of falling through to fresh processes
 - Python cells support ordinary `asyncio.run()`, real `__main__` pickling, and native stdin descriptors; top-level await remains additive

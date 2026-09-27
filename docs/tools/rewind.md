@@ -7,16 +7,16 @@
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/rewind.md`
 - Key collaborators:
   - `packages/coding-agent/src/session/agent-session.ts` — validates pending rewind state, applies the actual rewind, and injects the retained report.
-  - `packages/coding-agent/src/session/session-manager.ts` — branches the persisted session tree and appends persisted summary/report entries.
+  - `packages/coding-agent/src/session/session-manager.ts` — branches the session tree and appends summary/report entries, persisting them for file-backed sessions.
   - `packages/coding-agent/src/session/session-context.ts` — `buildSessionContext()` converts persisted `branch_summary` entries into LLM-visible `branchSummary` messages on rebuilt context.
   - `packages/coding-agent/src/tools/index.ts` — registers the tool and shares the `checkpoint.enabled` gate.
 
 ## Registration / Visibility
 - Tool metadata: `loadMode = "discoverable"`. Execution is single-shot; rewind side effects are deferred rather than streamed as progress updates.
-- Registration requires `checkpoint.enabled = true` (default `false`).
+- Registration requires `checkpoint.enabled = true` (default `true`).
 - Top-level sessions receive the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: explicitly requesting either while the feature is enabled automatically includes the other.
-- In an ordinary `tools.xdev` session, discoverable built-ins may be presented as `protolens://rewind`; an explicitly requested tool remains top-level.
+- In a session with `tools.xdev` enabled and bash available, this discoverable built-in may be mounted as `protolens://rewind`; an explicitly requested tool remains top-level.
 
 ## Inputs
 
@@ -45,27 +45,27 @@ The returned tool result is not the final rewind. `AgentSession` waits until `tu
 4. It returns a `toolResult()` with `details.report` and `details.rewound = true`.
 5. On the successful rewind tool result, `AgentSession` extracts the report from `details.report` or the first text content block and stores it in `#pendingRewindReport`.
 6. At `turn_end`, `#extractRewindReport()` finds the pending or successful rewind result and calls `#applyRewind()`.
-7. `#applyRewind()` first calls `sessionManager.branchWithSummary(checkpointEntryId, report, { startedAt })`, recording a `branch_summary` at the checkpoint branch point. If that entry no longer resolves, it logs a warning and branches from root instead.
-8. It appends a hidden persisted `rewind-report` custom message. Its content is rendered from `prompts/system/rewind-report.md`, which tells the next turn that the checkpoint completed, not to call `rewind` again, and includes the report; details contain `{ report, startedAt, rewoundAt }`.
+7. `#applyRewind()` first calls `sessionManager.branchWithSummary(checkpointEntryId, report, { startedAt })`, recording a `branch_summary` at the checkpoint branch point. If a non-null checkpoint entry ID no longer resolves, it logs a warning and branches from root instead; a null ID already selects root without the warning.
+8. It appends a hidden persisted `rewind-report` custom message. Its content is rendered from `prompts/system/rewind-report.md`, which says the checkpoint was called and rewound, directs further exploration to a new `checkpoint`, and includes the report; details contain `{ report, startedAt, rewoundAt }`.
 9. It sets `#lastCompletedRewind`, rebuilds the display/LLM session context from the new active branch, and replaces both the turn's active message array and `agent.state.messages`. The exploratory branch and successful rewind tool result are therefore absent from the next provider call.
-10. It resets advisor session state while preserving cost, synchronizes checklist state from the new branch, and closes provider sessions whose history was rewritten.
-11. Finally it clears `#checkpointState` and `#pendingRewindReport`. On later resume or tree navigation, the persisted retained report rehydrates `#lastCompletedRewind`.
+10. It resets advisor session state while preserving cost, synchronizes checklist state from the new branch, and, when the active model uses `openai-codex-responses`, closes the Codex provider session whose history was rewritten.
+11. Finally it clears `#checkpointState` and `#pendingRewindReport`. On later resume or tree navigation, unfinished checkpoint state is reconstructed from successful checkpoint tool-result entries; a persisted `rewind-report` custom message after the last checkpoint restores `#lastCompletedRewind`, so `rewind` keeps rejecting a repeat call with the "Checkpoint already completed" error.
 
 ## Modes / Variants
 - Normal rewind: checkpoint entry exists; session history branches from that exact entry.
-- Fallback rewind: checkpoint entry ID is missing from the current session tree; rewind branches from root and logs a warning.
+- Fallback rewind: a non-null checkpoint entry ID is missing from the current session tree; rewind branches from root and logs a warning. A null checkpoint entry ID branches from root without the warning.
 - Deferred turn-end apply: the tool result only requests rewind; branching and context replacement happen after the surrounding assistant turn finishes.
 - Resumed checkpoint: an unfinished successful checkpoint tool result on the active persisted branch rehydrates the checkpoint state, allowing rewind after process resume.
 
 ## Side Effects
-- Session state (transcript, memory, jobs, checkpoints, registries)
+- Session state (transcript, checkpoint/advisor/checklist state, provider sessions)
   - Rebuilds active conversation history from the checkpoint branch plus the retained summary/report; it does not restore files or process state.
   - Adds a hidden custom message `rewind-report` carrying rendered recovery guidance and the report.
-  - Records `#lastCompletedRewind`, clears the active checkpoint and pending report, resets advisors, resynchronizes checklist state, and closes provider sessions invalidated by the history rewrite.
-  - Repositions the persisted session leaf to the checkpoint branch point and appends new session entries.
+  - Records `#lastCompletedRewind`, clears the active checkpoint and pending report, resets advisors, resynchronizes checklist state, and, for an `openai-codex-responses` model, closes the Codex provider session invalidated by the history rewrite.
+  - Branches the session-manager leaf from the checkpoint branch point and appends new session entries.
 - Filesystem
-  - Persists the new `branch_summary` and `custom_message` entries into the session `.jsonl` file through normal `SessionManager` append persistence.
-  - Session files are named `<ISO-timestamp-with-:-and-.-replaced>_<uuidv7>.jsonl` in the session directory; default directory selection is `~/.proto/agent/sessions/<encoded-cwd>/` when no override is passed.
+  - In persistent sessions, appends the new `branch_summary` and `custom_message` entries into the session `.jsonl` file through normal `SessionManager` persistence; in-memory sessions retain them only in manager state.
+  - Persistent session files are named `<ISO-timestamp-with-:-and-.-replaced>_<uuidv7>.jsonl` in the selected session directory; without an explicit session directory, the default profile normally uses `~/.proto/agent/sessions/<encoded-cwd>/`, while `PI_CONFIG_DIR`, `PI_CODING_AGENT_DIR` (default profile), active profiles, or an existing `XDG_DATA_HOME/proto` root can relocate it.
 - User-visible prompts / interactive UI
   - The tool result is visible before turn-end application.
   - The persisted `branch_summary` becomes an LLM-visible `branchSummary` message when context is rebuilt; compaction rendering presents it as a user-role `<summary>` block.
@@ -74,7 +74,7 @@ The returned tool result is not the final rewind. `AgentSession` waits until `tu
   - Rewind application is deferred to `turn_end`. There is no separate job object or cancel handle.
 
 ## Limits & Caps
-- Availability is gated by `checkpoint.enabled`, default `false`.
+- Availability is gated by `checkpoint.enabled`, default `true`.
 - Subagents require an explicit requested-tools entry; requesting either checkpoint tool auto-includes its sister.
 - A session has at most one active checkpoint; there is no path to name or choose among multiple checkpoints.
 - Report text must be non-empty after `trim()`.
@@ -82,10 +82,10 @@ The returned tool result is not the final rewind. `AgentSession` waits until `tu
 - Persisted report/summary content is subject to the global session persistence cap `MAX_PERSIST_CHARS = 500_000`.
 
 ## Errors
-- `ToolError("Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.")` — thrown when the active branch already contains the retained completion.
-- `ToolError("No active checkpoint. Create a checkpoint before calling rewind.")` — thrown when neither an active checkpoint nor a completed rewind is present.
+- `ToolError("Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.")` — thrown when `getLastCompletedRewind()` reports a retained completion in the current runtime.
+- `ToolError("No active checkpoint. Create a checkpoint before calling rewind.")` — thrown when both `getCheckpointState()` and `getLastCompletedRewind()` are absent.
 - `ToolError("Report cannot be empty.")` — thrown when the trimmed report is empty.
-- Missing checkpoint entry IDs during apply do not fail the completed tool call; `#applyRewind()` logs `Rewind branch checkpoint missing, falling back to root` and branches from root.
+- A non-null missing checkpoint entry ID during apply does not fail the completed tool call; `#applyRewind()` logs `Rewind branch checkpoint missing, falling back to root` and branches from root. A null checkpoint entry ID selects root without logging.
 
 ## Notes
 - Checkpoint selection is implicit. `rewind` always targets the single `#checkpointState` captured or rehydrated from the last unfinished successful `checkpoint`; there is no checkpoint list, label, or ID parameter.

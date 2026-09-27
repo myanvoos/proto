@@ -32,6 +32,23 @@ function enabledToolSession(): ToolSession {
 	} as unknown as ToolSession;
 }
 
+describe("checkpoint tool availability", () => {
+	test("default settings expose both tools when either is requested", async () => {
+		const session = enabledToolSession();
+		session.settings = Settings.isolated();
+		const tools = await createTools(session, ["checkpoint"]);
+		expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["checkpoint", "rewind"]));
+	});
+
+	test("explicit opt-out excludes both tools even when requested", async () => {
+		const session = enabledToolSession();
+		session.settings = Settings.isolated({ "checkpoint.enabled": false });
+		const tools = await createTools(session, ["checkpoint", "rewind"]);
+		expect(tools.map(tool => tool.name)).not.toContain("checkpoint");
+		expect(tools.map(tool => tool.name)).not.toContain("rewind");
+	});
+});
+
 describe("unified control surface authorization", () => {
 	for (const dispatch of ["native", "protolens"] as const) {
 		test(`${dispatch} preserves operation policy before side effects`, async () => {

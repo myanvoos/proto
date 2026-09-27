@@ -94,9 +94,7 @@ The advisor is a full agent with its own `Agent` instance and a distinct `ToolSe
 
 Every advisor has the `advise` tool for surfacing notes into the primary transcript. When `tools` is omitted, its investigative grant is:
 
-- `read`
-- `grep`
-- `glob`
+A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null` is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Accepted names are [`read`, `bash`, `context`, `recall`, `ask`, `browser`, `computer`, `checkpoint`, `rewind`, `jobs`, `fleet`, `checklist`, `web_search`, and `manage_skill`](../packages/coding-agent/src/tools/builtin-names.ts).
 
 A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null` is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `browser`, `debug`, `ast_edit`, `fleet`, and `jobs`.
 

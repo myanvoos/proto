@@ -166,7 +166,7 @@ Empty-list render behavior:
 
 Lifecycle/state transition:
 
-1. capture the previous file and emit cancellable `session_before_switch` (`reason: "resume"`, target file)
+1. capture the previous file and, when handlers are registered, emit cancellable `session_before_switch` (`reason: "resume"`, target file)
 2. disconnect agent listeners, abort active work, run the pre-switch reconciler, and flush pending bash/session writes
 3. snapshot rollback state (manager, queues, messages, model/thinking/tier, tools/prompts, provider-cache identity, and checkpoint/rewind state), then clear message queues
 4. for a different session, drain/detach advisor recorders
