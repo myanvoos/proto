@@ -10,6 +10,7 @@ Both are persisted as session entries and converted back into user-context messa
 ## Key implementation files
 
 - `packages/coding-agent/src/vendor/pi-blackhole/index.js` (pi-blackhole 0.4.10 runtime)
+- `packages/coding-agent/src/tools/recall.ts` (native recall tool)
 - `packages/coding-agent/src/sdk.ts` (built-in extension registration)
 - `packages/agent/src/compaction/compaction.ts` (preparation and remote compaction)
 - `packages/agent/src/compaction/branch-summarization.ts`
@@ -20,6 +21,7 @@ Both are persisted as session entries and converted back into user-context messa
 - `packages/coding-agent/src/session/session-manager.ts`
 - `packages/coding-agent/src/session/agent-session.ts`
 - `packages/coding-agent/src/session/session-maintenance.ts` (automatic maintenance orchestration)
+- `packages/coding-agent/src/session/reviewer-transport.ts` (advisor context maintenance)
 - `packages/coding-agent/src/session/messages.ts`
 - `packages/coding-agent/src/extensibility/hooks/types.ts`
 - `packages/coding-agent/src/config/settings-schema.ts`
@@ -32,30 +34,30 @@ Compaction and branch summaries are first-class session entries, not plain assis
   - `type: "compaction"`
   - `summary`, optional `shortSummary`
   - `firstKeptEntryId` (compaction boundary)
-  - `tokensBefore`
-  - optional `details`, `preserveData`, `fromExtension`
+  - `tokensBefore`, optional `tokensAfter`
+  - optional `method`, `warning`, `details`, `preserveData`, `fromExtension`
   - optional `providerReplayThroughEntryId` (last entry covered by a native replay snapshot)
 - `BranchSummaryEntry`
   - `type: "branch_summary"`
   - `fromId`, `summary`
   - optional `details`, `fromExtension`
 
-When context is rebuilt (`buildSessionContext`):
+When active model context is rebuilt (`buildSessionContext` without `transcript: true`):
 
 1. Latest compaction on the active path is converted to one `compactionSummary` message.
-2. Kept entries from `firstKeptEntryId` to the compaction point are re-included.
+2. For local and Anthropic-native summaries, kept entries from `firstKeptEntryId` to the compaction point are re-included; an OpenAI Responses-family replay uses its provider payload for the covered region.
 3. Later entries on the path are appended.
-4. `branch_summary` entries are converted to `branchSummary` messages.
-5. `custom_message` entries are converted to `custom` messages.
+4. Non-empty `branch_summary` entries are converted to `branchSummary` messages.
+5. `custom_message` entries are converted to `custom` messages, except the hidden prewalk-plan marker in active context.
 
 Those custom roles are then transformed into LLM-facing messages in `convertToLlm()`: `compactionSummary` and `branchSummary` become user messages rendered through the static templates
 
 - `packages/agent/src/compaction/prompts/compaction-summary-context.md`
 - `packages/agent/src/compaction/prompts/branch-summary-context.md`
 
-while `custom` messages pass through as developer messages with their raw content (no template).
+while ordinary `custom`/`hookMessage` messages pass through as developer messages with their raw content (no template); steering messages, user-invoked skill prompts, and image-bearing custom/hook messages have specialized conversion.
 
-Native replay also requires a matching provider and a Responses-family API on the active model. A separate native compaction endpoint does not give a Chat Completions or Anthropic encoder the ability to consume its output.
+OpenAI/Codex native replay requires a matching provider and a Responses-family API on the active model. A separate native compaction endpoint does not give a Chat Completions encoder the ability to consume its output; Anthropic-native payloads are replayed through the matching Anthropic Messages encoder.
 
 Disabling future native compaction does not disable normal replay of an existing payload. Compaction preparation has a separate, stricter reuse policy: local summarization must re-expand the original messages rather than treat an opaque placeholder as a readable summary.
 
@@ -63,14 +65,16 @@ Disabling future native compaction does not disable normal replay of an existing
 
 ### Triggers
 
-Compaction/context maintenance can run in six ways:
+Primary-session compaction/context maintenance can run in six ways:
 
 1. **Manual context compaction**: `/compact [instructions]` calls `AgentSession.compact(...)`.
 2. **Automatic overflow recovery**: after a same-model assistant error that matches context overflow.
-3. **Automatic incomplete-output recovery**: after a same-model assistant message ends with `stopReason === "length"` (OpenAI/Codex `response.incomplete`).
-4. **Automatic threshold maintenance**: after a successful turn when context exceeds the resolved threshold.
+3. **Automatic incomplete-output recovery**: after a same-model assistant message ends with `stopReason === "length"`; OpenAI/Codex Responses providers surface this as `response.incomplete`.
+4. **Automatic threshold maintenance**: after a successful turn or before a pending provider request when context exceeds the resolved threshold.
 5. **Mid-turn threshold maintenance**: before the next provider request when a tool-loop turn crosses the threshold and `compaction.midTurnEnabled !== false`.
 6. **Idle maintenance**: `runIdleCompaction()` can invoke the same auto-maintenance path with reason `"idle"`.
+
+Advisor runtimes use a separate threshold path in `ReviewerTransport.maintainContext(...)`.
 
 ### Compaction shape (visual)
 
@@ -130,16 +134,16 @@ The automatic paths are intentionally different:
   - Tool-output pruning can reduce the measured token count before threshold comparison.
   - Context promotion is tried before post-turn compaction.
   - If promotion is unavailable, auto maintenance walks `compaction.methodOrder` with `reason: "threshold"` and `willRetry: false`.
-  - On success, if `compaction.autoContinue !== false`, post-turn maintenance schedules an agent-authored developer auto-continue prompt from `prompts/system/auto-continue.md`; mid-turn maintenance never schedules a separate continuation because the core loop already owns the next provider request.
+  - On success, if `compaction.autoContinue !== false`, post-turn maintenance schedules an agent-authored developer auto-continue prompt from `packages/coding-agent/src/prompts/system/auto-continue.md`; mid-turn maintenance never schedules a separate continuation because the core loop already owns the next provider request.
 
 - **Idle maintenance**
-  - Trigger: `runIdleCompaction()` when not streaming or already compacting.
+  - Trigger: `runIdleCompaction()` when neither streaming nor already compacting.
   - Uses `reason: "idle"` and does not auto-continue afterward.
 
 
 ### Display transcript
 
-Compaction no longer visually restarts the conversation. The TUI renders the **display transcript** (`buildSessionContext({ transcript: true })` / `AgentSession.buildTranscriptSessionContext()`): every path entry in chronological order, with each compaction shown inline as a slim divider — `── compacted · ctrl+o ──` — at the point it fired. Expanding (ctrl+o) reveals the summary. Only the LLM context resets at the compaction boundary; the scrollback above the divider stays intact, including rendered tool output.
+Compaction no longer visually restarts the conversation. The TUI renders the **display transcript** (`buildSessionContext({ transcript: true })` / `AgentSession.buildTranscriptSessionContext()`): every path entry in chronological order, with each compaction shown inline as a slim divider labeled `compacted` (or its method/token amount) with a `ctrl+o` hint at the point it fired. Expanding (ctrl+o) reveals the summary. Only the LLM context resets at the compaction boundary; the scrollback above the divider stays intact, including rendered tool output.
 
 ### Pre-compaction pruning
 
@@ -150,19 +154,19 @@ Default prune policy:
 - Protect newest `40_000` tool-output tokens.
 - Require at least `20_000` total estimated savings.
 - Never blank a result below `50` tokens (`MIN_PRUNE_TOKENS`): the `[Output truncated - N tokens]` placeholder costs ~8 tokens, so pruning a sub-floor result would grow the context and churn the prompt cache for nothing. (Superseded and useless results keep their own rules — the useless collector already drops no-savings candidates; superseded reads prune for correctness regardless of size.)
-- Never prune `skill` tool results, `read` results of `skill://` paths, or reads of the active plan reference file (added via `AgentSession`'s plan protection).
+- Never prune `skill` tool results or `read` results of `skill://` paths.
 
 Pruned tool results are replaced with:
 
 - `[Output truncated - N tokens]`
 
-If pruning changes entries, session storage is rewritten and agent message state is refreshed before compaction decisions.
+If pruning changes entries, live agent message state is refreshed before compaction decisions; replacements are held in the maintenance context rather than rewritten to session storage.
 
 ### Useless-result elision
 
 Tools can flag a finished result as contextually useless — a search with zero matches, a `jobs` wait that timed out with everything still running, an empty `fleet` inbox drain. The flag originates on the tool result (`AgentToolResult.useless`, set via `ToolResultBuilder.useless()` or directly on the returned object), is copied by the agent loop onto the persisted `ToolResultMessage` (never together with `isError` — errors always win), and is consumed in three places:
 
-- **Per-turn stale-result pass** (`pruneSupersededToolResults`, gated by `compaction.dropUseless`, default on): flagged results are blanked to the exact placeholder `[Uneventful result elided]` (`USELESS_NOTICE`) with the same cache-aware timing as superseded reads — only when the suffix after the candidate is small (≤ ~8k tokens) or the session has idled past the provider prompt-cache lifetime. Results smaller than the notice itself are never blanked (no savings), and protected tools are exempt.
+- **Per-turn stale-result pass** (`pruneSupersededToolResults`, gated by `compaction.dropUseless`, default on): flagged results are blanked to the exact placeholder `[Uneventful result elided]` (`USELESS_NOTICE`) with the same cache-aware timing as superseded reads — only when the suffix after the candidate is small (≤ ~8k tokens) or the session has idled past the stale-result flush interval (90 minutes in `SessionMaintenance`). Results smaller than the notice itself are never blanked (no savings), and protected tools are exempt.
 - **Threshold prune** (`pruneToolOutputs`): flagged results bypass the protect-recent window, same as superseded reads, and receive `USELESS_NOTICE` instead of the token-count placeholder.
 - **Summary serialization**: `serializeConversation` (agent) drops the whole tool call/result pair from summarizer input — the source region is discarded after summarization anyway, so the exclusion costs no cache.
 
@@ -195,7 +199,7 @@ Preparation filters out pure metadata (`model_change`, `thinking_level_change`, 
 
 ### Split-turn handling
 
-If cut point is not at a user-turn start, compaction treats it as a split turn.
+If the cut point is not at a user-turn start and an earlier turn start exists, preparation treats it as a split turn.
 
 Turn start detection treats these as user-turn boundaries:
 
@@ -204,22 +208,13 @@ Turn start detection treats these as user-turn boundaries:
 - `custom_message` entry
 - `branch_summary` entry
 
-Split-turn compaction generates two summaries:
+`prepareCompaction()` partitions the sequence into three regions:
 
-1. History summary (`messagesToSummarize`)
-2. Turn-prefix summary (`turnPrefixMessages`)
+1. History before the split turn (`messagesToSummarize`)
+2. The split turn's prefix (`turnPrefixMessages`)
+3. The retained tail (`recentMessages`)
 
-Final stored summary is merged as:
-
-```markdown
-<history summary>
-
----
-
-**Turn Context (split turn):**
-
-<turn prefix summary>
-```
+A configured remote endpoint serializes the first two regions for summarization; provider-native compaction sends its provider-specific representation of all three and owns retained-tail handling. The result is one stored summary (provider-generated for remote paths or extension-generated otherwise); no separate local turn-prefix summary or merged markdown wrapper is generated.
 
 ### Summary generation
 
@@ -237,9 +232,10 @@ pi-blackhole also adds:
 
 - `/memory` for explicit structural compaction and an optional post-compaction follow-up.
 - `/memory settings`, `/observations`, and `/recall`.
-- the agent-facing `recall` tool for transcript search, entry expansion, file drill-down, and observation/reflection evidence lookup.
 
-Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Blackhole is the only summary engine; remote compaction remains the fallback method when Blackhole declines. The scheduler and recovery settings described below remain authoritative. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
+The native [`recall` tool](tools/recall.md) provides transcript search, entry expansion, file drill-down, and observation/reflection evidence lookup independently of the memory extension.
+
+By default, configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`; `PI_CODING_AGENT_DIR` can change the agent root. An optional project override lives at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Blackhole is the only summary engine; remote compaction remains the fallback method when Blackhole declines. The scheduler and recovery settings described below remain authoritative. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
 
 The `[User Messages]` section records every genuine user turn still live at compaction time — the folded ones *and* the retained tail. With the default minimal tail the newest request is kept in context rather than folded, so collecting only the folded window dropped exactly the request the next model was supposed to act on. The self-summary is written from the same range for the same reason, including previous self-memory so the model can add only new learning and explicit corrections.
 
@@ -261,17 +257,34 @@ One Blackhole knob is a Proto-local addition, in the same config file:
 
 - `recallResponseMaxChars` (default `48000`, `0` disables, env `PI_BLACKHOLE_RECALL_RESPONSE_MAX_CHARS`) bounds one `recall` response: snippet lines clip at 1,000 characters around the match, expanded entries share the budget, and entries are dropped whole with a footer naming the continuation (`page:N`, `#N:text`) rather than sliced mid-entry.
 
-Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Configure explicit inexpensive worker models and set `sessionFallback: false` to prevent workers from falling back to the active session model.
+Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Workers resolve the shared `@smol` and `@tiny` roles first, then the active session model as a fallback; configure `modelRoles.smol`/`modelRoles.tiny` when worker calls should use inexpensive models.
 
 When native compaction starts from an ordinary local summary, that summary is included as a context message alongside the prepared conversation. Later native passes reuse the provider payload instead of re-injecting its placeholder summary.
 
-For speculative native compaction, `providerReplayThroughEntryId` records the snapshot's last entry, not the later commit position. Context rebuilding and the next compaction preparation both include messages appended between those positions, followed by post-commit messages.
+For speculative OpenAI native compaction, `providerReplayThroughEntryId` records the snapshot's last entry, not the later commit position. Context rebuilding and the next compaction preparation both include messages appended between those positions, followed by post-commit messages.
 
-Advisor runtimes retain native `preserveData` for subsequent maintenance and attach its provider payload to the in-memory compaction summary for the next model request. Native replay already contains the retained tail, so advisors do not also append that tail as raw messages; local summaries still keep recent messages separately. Advisor requests use the shared message converter, so both textual compaction summaries and native payloads reach the provider.
+Advisor runtimes retain OpenAI Responses native `preserveData` for subsequent maintenance and attach its provider payload to the in-memory compaction summary for the next model request. OpenAI native replay already contains the retained tail, so advisors do not also append that tail as raw messages; local summaries and other native paths still keep recent messages separately. Advisor requests use the shared message converter, so both textual compaction summaries and native payloads reach the provider.
 
 The previous local structured summarizer was removed; the fallback serializes the prepared conversation, treats it as untrusted data, and uses provider-native compaction or a configured remote endpoint (`compaction.remoteEndpoint`) only.
 
 Provider-native compaction also covers Anthropic's server-side compaction beta (`compact-2026-01-12`) for model lines the catalog marks `compat.supportsServerCompaction` (Opus/Sonnet 4.6+, Fable/Mythos 5) whose requests reach the official endpoint; other Anthropic-compatible routes opt in with `remoteCompaction.enabled`. When no OpenAI lane applies and the context is at least 55k tokens, compaction re-issues the live turn's own request (system prompt, tools, history — so it reads the warm prompt cache) plus a `compact_20260112` edit with `pause_after_compaction`, using the summary prompt as `instructions` scoped to exclude the retained tail. The returned summary becomes the entry `summary` (plus the file-operation list) and `preserveData.anthropicCompaction`; later Anthropic requests replay it as a native `compaction` block while every other provider reads the summary text. A response without a summary is a native failure.
+
+### Model-assisted transcript queries
+
+`recall` accepts an optional `code` JavaScript function expression alongside `query`:
+
+```json
+{
+  "query": "What did the user require about retries?",
+  "code": "async ({query, entries}) => completion(JSON.stringify({query, evidence: entries.filter(e => e.role === 'user')}), {model: 'smol'})"
+}
+```
+
+The function runs once in a fresh Bun kernel and receives `{query, scope, entries}`. Each entry includes its stable session-global `index` (`#N`), `id`, `role`, rendered `summary`, and full `message`, including tool arguments and results. The question does not lexically prefilter history. The default scope is the active lineage; `scope: "all"` includes other session branches. Snapshot loading is streamed, and the full transcript stays out of the main agent's context unless the function returns or prints it.
+
+Use ordinary JavaScript selection/chunking plus the kernel's `completion`, `agent`, `parallel`, and `pipeline` helpers to extract evidence in small batches, recursively ask follow-up questions, or combine findings. `completion(..., {model: "tiny"})` and `"smol"` use the configured online model roles; `tiny` is not the local title-only model. Return a string or JSON-serializable result, preferably with `#N` citations. Transcript text is evidence, not trusted instructions; model answers are not a substitute for exact-source recovery.
+
+`code` requires a nonblank query and cannot be combined with `expand`, `page`, or `mode`. `timeout` is a code-only deadline in seconds (default 120, maximum 3600), including model calls. Failed, cancelled, or timed-out code is not retried; its kernel is disposed after the call. This is full kernel execution, not a sandbox: bash must be enabled, and restricted agents must have bash permission. Ordinary recall remains available without execution permission.
 
 ### File-operation context in summaries
 
@@ -433,9 +446,10 @@ From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
 - `compaction.methodOrder` = `["remote"]`. `remote` uses provider-native server compaction (OpenAI Responses compact, Anthropic compaction beta) or the configured remote endpoint when available. Legacy configured orders containing the removed `handoff`/`shake`/`soft` methods are filtered down to their surviving `remote` entries.
-- `compaction.asyncEnabled` = `true`. Async (speculative) compaction: when context enters the pre-threshold band `[threshold − lead, threshold)` (lead = `clamp(threshold × 0.125, 8192, 32000)`), maintenance starts a background remote compaction off a branch snapshot, isolated from the live turn by a side session id. The armed result is committed instantly when the threshold is actually crossed, hiding summarization latency; post-snapshot turns are appended after the summary unchanged. Armed results are discarded when the branch prefix changes (new compaction, reset boundary, `/tree` navigation), when a provider-native replay payload is no longer readable by the active model, or when context drifts too far.
+- `compaction.asyncEnabled` = `true`. When no `session_before_compact` extension handler is installed and context enters the pre-threshold band `[threshold − lead, threshold)` (lead = `clamp(threshold × 0.125, 8192, 32000)`), maintenance starts a background remote compaction off a branch snapshot, isolated from the live turn by a side session id. The built-in Blackhole handler currently disables this speculative path. When armed, the result is committed instantly when the threshold is actually crossed, hiding summarization latency; post-snapshot turns are appended after the summary unchanged. Armed results are discarded when the snapshot is no longer on the active path (including branch-changing `/tree` navigation), when a new compaction or reset boundary follows it, when a provider-native replay payload is no longer readable by the active model, or when context drifts too far.
 - `compaction.reserveTokens` is unset by default. The compaction layer normally applies a `16384`-token floor and at least 15% of the context window; on small windows where that default would be impractical, budget checks use the 15% proportional reserve. An explicit configured reserve is honored.
 - `compaction.keepRecentTokens` = `20000`
+- `compaction.selfSummary` = `true`
 - `compaction.autoContinue` = `true`
 - `compaction.midTurnEnabled` = `true`
 - `compaction.remoteEndpoint` = `undefined`

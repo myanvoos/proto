@@ -37,6 +37,7 @@ import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from ".
 import type { ChecklistPhase } from "./checklist";
 import type { CheckpointState, CompletedRewindState } from "./checkpoint";
 import { ContextTool } from "./context";
+import { RecallTool } from "./recall";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
@@ -59,6 +60,7 @@ export type * from "./image-gen";
 export type * from "./jobs";
 export type * from "./manage-skill";
 export type * from "./read";
+export type * from "./recall";
 export type * from "./report-tool-issue";
 export type * from "./resolve";
 export type * from "./think";
@@ -345,6 +347,7 @@ export { isSearchProviderId, setExcludedSearchProviders, setSearchProviderOrder 
 // Runtime-registry exception: static imports here would put every optional tool implementation on the boot path.
 export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
 	context: s => new ContextTool(s),
+	recall: s => new RecallTool(s),
 	bash: async s => new (await import("./bash")).BashTool(s),
 	ask: async s => (await import("./ask")).AskTool.createIf(s),
 	browser: async s => new (await import("./browser")).BrowserTool(s),

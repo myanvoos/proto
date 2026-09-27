@@ -527,12 +527,12 @@ Recent/most-recent scans read only a 4 KiB prefix. Full lists read that prefix p
 
 `HistoryStorage` (`history-storage.ts`) is a separate SQLite subsystem for prompt recall/search, not session replay.
 
-- DB: `~/.proto/agent/history.db`
+- DB (default agent data root): `~/.proto/agent/history.db`
 - Table: `history(id, prompt, created_at, cwd, session_id)`
 - FTS5 index: `history_fts` with trigger-maintained sync
-- Deduplicates consecutive identical prompts using in-memory last-prompt cache
-- Inserts are batched through an async drain queue (~100 ms delay) so prompt capture does not block turn execution
-- Durable prompt capture accepts up to 16 MiB; editor recall hydrates at most 4 MiB per prompt and 8 MiB per result set, selecting by numeric SQL metadata before reading payloads
+- Deduplicates normalized prompts with the SQLite `UNIQUE` constraint and upsert; repeats update the existing row rather than only consecutive duplicates
+- Inserts are synchronous SQLite upserts; `add()` returns after the write (and logs failures), with no async drain queue
+- Durable capture accepts input up to 16 MiB and rejects cwd/session metadata strings over 4 MiB; editor recall admits prompts up to 4 MiB and an aggregate 8 MiB row budget, selecting by numeric SQL metadata before hydration and capping retrieval at 1,000 rows. Larger prompts remain durable but are excluded from recall.
 - Legacy normalization streams through file-backed temporary storage; oversized legacy rows remain unchanged on disk and are excluded from editor recall
 
 Use session files for conversation graph/state replay; use `HistoryStorage` for prompt history UX.

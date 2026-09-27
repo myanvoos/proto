@@ -12,6 +12,11 @@ only the compatibility adaptations required to run against Proto:
 - `StringEnum` uses the package's bundled TypeBox-compatible schema shape;
 - the widened `session_compact_failed` listener preserves its `pi` receiver.
 
-Runtime behavior otherwise matches the published 0.4.10 bundle. The bundle stays
-under `vendor/` so repository formatters and linters do not rewrite third-party
-code.
+Proto also carries local compaction and recall fixes. The agent-facing `recall`
+tool is registered natively in `tools/recall.ts`; this bundle exports its existing
+search, expansion, file drill-down, and observation-source behavior for that tool
+and retains the `/recall` command. Model-assisted recall runs through the native
+kernel bridge rather than registering a second extension tool.
+
+The bundle stays under `vendor/` so repository formatters and linters do not
+rewrite third-party code.

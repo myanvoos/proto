@@ -9469,7 +9469,7 @@ var CACHE_TTL_MS = 2e3;
 var cache = /* @__PURE__ */ new Map();
 function cacheKey(sessionFile, full, allowedEntryIds) {
   let hash = `${sessionFile}::${full}`;
-  if (allowedEntryIds && allowedEntryIds.size > 0) {
+  if (allowedEntryIds) {
     hash += `::${JSON.stringify([...allowedEntryIds].sort())}`;
   }
   return hash;
@@ -10115,8 +10115,8 @@ function clipExpandedEntry(entry, allocation) {
 // src/core/lineage.ts
 var getActiveLineageEntryIds = (sessionManager) => {
   try {
-    const branch = sessionManager.getBranch() ?? [];
-    if (branch.length > 0) {
+    const branch = sessionManager.getBranch();
+    if (Array.isArray(branch)) {
       return new Set(branch.map((e) => e.id).filter((id) => Boolean(id)));
     }
   } catch {
@@ -14164,96 +14164,57 @@ async function omRecall(memoryId, ctx) {
   const text = lines.join("\n") || `Memory ${memoryId} found, but no evidence rendered.`;
   return { content: [{ type: "text", text }], details: void 0 };
 }
-function registerRecallTool(pi) {
-  pi.registerTool({
-    name: "recall",
-    label: "Recall",
-    description: "Search session history and earlier lines omitted, file write/edit content by text/regex. Expand entries (#N), drill-down file content (#N:path) with paging, or aggregate touched files (mode:touched).",
-    promptSnippet: "Search session history + file write/edit content by text/regex. #N expand, #N:path drill-down with optional :offset:limit or :full, #N:text pages one entry's own text, mode:file/touched.",
-    promptGuidelines: [
-      "Use recall \u2014 literal text/regex search across session history and file write/edit content. #N expands an entry; #N:path with optional :offset:limit or :full drills down into file content; #N:text pages the entry's own message text when a response was clipped; 12-char hex ids recover observation/reflection sources. mode:file for file-content-only, mode:touched for aggregated files-by-path. scope:'all' to search the full session. If no results, try fewer terms or a regex pattern.",
-      "Use recall \u2014 when a drill-down path matches multiple files, options are listed. Narrow with a more specific path substring. Only full-file writes are indexed for text search (edit diffs are not)."
-    ],
-    parameters: Type.Object({
-      query: Type.Optional(
-        Type.String({
-          description: "Text/regex search; #N expands entry; #N:path drills file (#N:file auto-selects); #N:text pages the entry's own text; #N:path:full all lines; #N:path:offset:limit range; 12-char hex for observations. Only full-file writes indexed."
-        })
-      ),
-      expand: Type.Optional(
-        Type.Array(Type.Number(), {
-          description: "Entry indices to return full untruncated content for. Standalone or with query."
-        })
-      ),
-      page: Type.Optional(
-        Type.Number({
-          description: "Page number (1-based) for paginated results. Default: 1."
-        })
-      ),
-      scope: Type.Optional(
-        StringEnum(["lineage", "all"], {
-          description: "Search scope. lineage = active lineage (default), all = entire session."
-        })
-      ),
-      mode: Type.Optional(
-        StringEnum(["hybrid", "file", "touched"], {
-          description: "What content to search. hybrid (default) = all session content. file = file content only. touched = files-by-path summary with entry indices."
-        })
-      )
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      if (!sessionFile) {
+async function executeRecall(params, ctx) {
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  if (!sessionFile) {
+    return {
+      content: [{ type: "text", text: "No session file available." }],
+      details: void 0
+    };
+  }
+  const scope = normalizeRecallScope(params.scope);
+  const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : void 0;
+  const q = params.query?.trim();
+  if (q && parseDrillDown(q)) {
+    const parsed = parseDrillDown(q);
+    if (lineageEntryIds) {
+      const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
+      if (!rendered.some((m) => m.index === parsed.index)) {
         return {
-          content: [{ type: "text", text: "No session file available." }],
+          content: [
+            {
+              type: "text",
+              text: `Cannot expand indices outside active lineage: ${parsed.index}. Use scope:'all' to reach other branches.`
+            }
+          ],
           details: void 0
         };
       }
-      const scope = normalizeRecallScope(params.scope);
-      const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : void 0;
-      const q = params.query?.trim();
-      if (q && parseDrillDown(q)) {
-        const parsed = parseDrillDown(q);
-        if (lineageEntryIds) {
-          const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
-          if (!rendered.some((m) => m.index === parsed.index)) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Cannot expand indices outside active lineage: ${parsed.index}. Use scope:'all' to reach other branches.`
-                }
-              ],
-              details: void 0
-            };
-          }
-        }
-        const text = expandEntryFile(
-          sessionFile,
-          parsed.index,
-          parsed.pathPattern,
-          parsed.full,
-          parsed.offset,
-          parsed.limit
-        );
-        return {
-          content: [{ type: "text", text }],
-          details: void 0
-        };
-      }
-      if (q && VCC_ENTRY_PATTERN.test(q)) {
-        const match = q.match(VCC_ENTRY_PATTERN);
-        const index = match ? parseInt(match[1], 10) : NaN;
-        if (!Number.isNaN(index)) {
-          return vccRecall({ query: "", expand: [index] }, ctx);
-        }
-      }
-      if (q && MEMORY_ID_PATTERN2.test(q)) {
-        return omRecall(q, ctx);
-      }
-      return vccRecall(params, ctx);
     }
-  });
+    const text = expandEntryFile(
+      sessionFile,
+      parsed.index,
+      parsed.pathPattern,
+      parsed.full,
+      parsed.offset,
+      parsed.limit
+    );
+    return {
+      content: [{ type: "text", text }],
+      details: void 0
+    };
+  }
+  if (q && VCC_ENTRY_PATTERN.test(q)) {
+    const match = q.match(VCC_ENTRY_PATTERN);
+    const index = match ? parseInt(match[1], 10) : NaN;
+    if (!Number.isNaN(index)) {
+      return vccRecall({ ...params, query: "", expand: [index] }, ctx);
+    }
+  }
+  if (q && MEMORY_ID_PATTERN2.test(q)) {
+    return omRecall(q, ctx);
+  }
+  return vccRecall(params, ctx);
 }
 
 // src/om/config.ts
@@ -14661,9 +14622,8 @@ var index_default = async (pi) => {
   registerPiVccCommand(pi, omRuntime);
   registerMemoryCommand(pi, omRuntime);
   registerVccRecallCommand(pi);
-  registerRecallTool(pi);
 };
 
-export { MEMORY_THINKING_LEVEL, capRecallBlocks, compile as compileSummary, index_default as default, expandEntryFile, loadAllMessages, resolveMemoryModelCandidates, searchEntries };
+export { MEMORY_THINKING_LEVEL, capRecallBlocks, compile as compileSummary, index_default as default, executeRecall, expandEntryFile, getActiveLineageEntryIds, loadAllMessages, resolveMemoryModelCandidates, searchEntries };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

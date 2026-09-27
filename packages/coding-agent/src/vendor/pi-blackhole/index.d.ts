@@ -1,4 +1,6 @@
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { ExtensionFactory } from "../../extensibility/extensions/types";
 
 export const MEMORY_THINKING_LEVEL: "low";
@@ -73,6 +75,23 @@ export declare function capRecallBlocks(input: {
 	budget: number;
 	continuation?: string;
 }): { text: string; omittedEntries: number; totalEntries: number; capped: boolean };
+
+export interface RecallParams {
+	query?: string;
+	expand?: number[];
+	page?: number;
+	scope?: "lineage" | "all";
+	mode?: "hybrid" | "file" | "touched";
+}
+
+export interface RecallContext {
+	cwd: string;
+	sessionManager: Pick<ReadonlySessionManager, "getSessionFile" | "getBranch" | "getEntries">;
+}
+
+export declare function executeRecall(params: RecallParams, context: RecallContext): Promise<AgentToolResult>;
+
+export declare function getActiveLineageEntryIds(sessionManager: RecallContext["sessionManager"]): Set<string>;
 
 declare const piBlackhole: ExtensionFactory;
 

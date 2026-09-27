@@ -2,6 +2,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"read",
 	"bash",
 	"context",
+	"recall",
 	"ask",
 	"browser",
 	"computer",

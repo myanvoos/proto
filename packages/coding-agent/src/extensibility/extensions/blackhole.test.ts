@@ -92,6 +92,12 @@ const created = await createAgentSession({
     pi.on("session_compact_failed", event => { failureEvent = event; });
   }],
 });
+created.session.sessionManager.appendMessage({ role: "user", content: "Use bounded exponential backoff.", timestamp: 1 });
+await created.session.sessionManager.ensureOnDisk();
+const recalled = await created.session.getToolForEvalBridge("bash").execute("recall-smoke", {
+  command: "protolens recall --query retries --code '({entries}) => entries[0].summary'",
+  timeout: 15,
+});
 const extension = created.extensionsResult.extensions.find(item => item.path === "<builtin-memory>");
 if (!extension) throw new Error("built-in memory extension was not loaded");
 const handler = extension.handlers.get("session_before_compact")?.[0];
@@ -139,7 +145,7 @@ await created.session.compact().catch(() => {});
 console.log(JSON.stringify({
   extensions: created.extensionsResult.extensions.map(item => item.path),
   command: Boolean(created.session.extensionRunner?.getCommand("memory")),
-  tool: Boolean(created.session.extensionRunner?.getRegisteredTool("recall")),
+  recall: recalled,
   failureEvent,
   notices,
   result,
@@ -162,7 +168,7 @@ authStorage.close();
 	const output = JSON.parse(stdout) as {
 		extensions: string[];
 		command: boolean;
-		tool: boolean;
+		recall: { content: { type: string; text?: string }[]; isError?: boolean };
 		failureEvent: { type: string; reason: string; aborted: boolean; willRetry: boolean };
 		notices: string[];
 		result: {
@@ -171,7 +177,8 @@ authStorage.close();
 	};
 	expect(output.extensions).toContain("<builtin-memory>");
 	expect(output.command).toBe(true);
-	expect(output.tool).toBe(true);
+	expect(output.recall.isError).not.toBe(true);
+	expect(output.recall.content.map(part => part.text ?? "").join("\n")).toContain("bounded exponential backoff");
 	expect(output.notices.some(notice => notice.includes("undefined is not an object"))).toBe(false);
 	expect(output.failureEvent).toMatchObject({
 		type: "session_compact_failed",
