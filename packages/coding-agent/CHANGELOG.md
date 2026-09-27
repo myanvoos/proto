@@ -15,6 +15,7 @@
 - Filesystem observation ledgers for sessions without a live kernel are released after they drain, without dropping observations recorded concurrently with a drain
 - Terminated workers no longer keep their parent session alive through terminal-only fleet history, and their completed turn jobs are evicted from the parent's job manager
 - Removed or aborted agents' IRC mailboxes are cleared and their pending waits reject instead of waiting indefinitely
+- Bash commands pass URLs whose scheme belongs to the invoked program (s3://, postgres://, ssh://) through as typed, instead of failing as unsupported internal URLs or rewriting ssh:// clone targets
 
 ## [19.0.0] - 2026-09-27
 

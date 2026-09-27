@@ -270,6 +270,14 @@ function shellEscape(p: string): string {
 	return `'${p.replace(/'/g, "'\\''")}'`;
 }
 
+// Transport URLs belong to the programs that take them (curl, git, ssh, rsync),
+// even when the router can also read them (`ssh://`).
+const TRANSPORT_URL = /^(?:https?|ftp|sftp|file|git|ssh):\/\//i;
+
+/**
+ * Filesystem path for a harness-owned URL. `undefined` means the scheme is
+ * not the harness's (`s3://`, `postgres://`, …) and the token stays as typed.
+ */
 async function resolveInternalUrlToPath(
 	rawUrl: string,
 	skills: readonly Skill[],
@@ -278,12 +286,10 @@ async function resolveInternalUrlToPath(
 	localOptions?: LocalProtocolOptions,
 	ensureLocalParentDirs?: boolean,
 	cwd?: string,
-): Promise<string> {
+): Promise<string | undefined> {
 	const url = normalizeLocalScheme(rawUrl);
 	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(url)?.[1]?.toLowerCase();
-	if (!scheme) {
-		throw new ToolError(`Unsupported internal URL in bash command: ${url}`);
-	}
+	if (!scheme || TRANSPORT_URL.test(url)) return undefined;
 
 	if (scheme === "skill") {
 		return resolveSkillUrlToPath(url, skills);
@@ -314,12 +320,7 @@ async function resolveInternalUrlToPath(
 	if (["agent", "history", "mcp", "protolens"].includes(scheme)) {
 		throw new ToolError(`${url} is a generated view, not a filesystem path.`);
 	}
-	if (!internalRouter?.canHandle(url)) {
-		throw new ToolError(
-			`Cannot resolve ${scheme}:// URL in bash command: ${url}\n` +
-				"Internal URL router is unavailable for this protocol in the current session.",
-		);
-	}
+	if (!internalRouter?.canHandle(url)) return undefined;
 
 	let resource: InternalResource;
 	try {
@@ -485,13 +486,11 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		if (isInHeredocBody(bodies, index)) continue;
 		if (isEmbeddedInQuotedText(command, token, index, bodies)) continue;
 
-		const rawUrl = unquoteToken(token);
-		const url = normalizeLocalScheme(rawUrl);
-		if (/^(?:https?|ftp|sftp|file|git):\/\//i.test(url)) continue;
+		const url = normalizeLocalScheme(unquoteToken(token));
 		// A trailing read selector (`:1-40`, `:raw`) is not part of the resource:
 		// resolve the resource and keep the selector on the path, as read does.
 		const target = splitInternalUrlSel(url);
-		let resolvedPath: string;
+		let resolvedPath: string | undefined;
 		try {
 			resolvedPath = await resolveInternalUrlToPath(
 				target.path,
@@ -507,6 +506,7 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 			throw new ToolError(`${error instanceof Error ? error.message : String(error)}
 Use read({path: ${JSON.stringify(url)}}) for internal resources without a filesystem path.`);
 		}
+		if (resolvedPath === undefined) continue;
 		if (target.sel !== undefined) resolvedPath = `${resolvedPath}:${target.sel}`;
 		const replacement = options.noEscape ? resolvedPath : shellEscape(resolvedPath);
 		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + token.length)}`;

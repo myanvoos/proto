@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Skill } from "../extensibility/skills";
+import { InternalUrlRouter } from "../internal-urls/router";
 import { expandInternalUrls, expandSkillUrls } from "./bash-skill-urls";
 
 // Scheme URLs are assembled at runtime: this source must not contain
@@ -192,4 +193,16 @@ test("custom internal schemes rewrite real paths and preserve external URLs", as
 		},
 	});
 	expect(result).toBe("cat '/tmp/a file'; curl https://example.com");
+});
+
+test("URLs of schemes the harness does not own reach the command as typed", async () => {
+	// Cloud CLIs, database clients, and git take their own scheme URLs; ssh:// is
+	// also a router scheme (read-only remote text) but must not hijack git/rsync.
+	const command = [
+		'aws s3 sync s3://bucket/ramd/ /tmp/out --exclude "*" --include "*outcome.json"',
+		"psql postgres://user@db.invalid:5432/app",
+		"git clone ssh://git@example.invalid/org/repo.git",
+	].join("\n");
+	const result = await expandInternalUrls(command, { skills: [], internalRouter: new InternalUrlRouter() });
+	expect(result).toBe(command);
 });
