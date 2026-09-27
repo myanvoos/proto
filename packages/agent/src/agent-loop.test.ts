@@ -174,6 +174,34 @@ function assistantText(message: AgentMessage): string | undefined {
 	return message.content.find(block => block.type === "text")?.text;
 }
 
+test("native tool audio and video survive result validation into the next model turn", async () => {
+	const media: AgentToolResult["content"] = [
+		{ type: "audio", mimeType: "audio/wav", data: "QVVESU8=" },
+		{ type: "video", mimeType: "video/mp4", data: "VklERU8=" },
+	];
+	const context: AgentContext = {
+		systemPrompt: [],
+		messages: [],
+		tools: [basicTool("read_media", async () => ({ content: media }))],
+	};
+	let seen: Message | undefined;
+	const streamFn: StreamFn = (targetModel, nextContext) => {
+		const stream = createAssistantMessageEventStream();
+		seen = nextContext.messages.find(message => message.role === "toolResult");
+		stream.end(
+			seen
+				? assistantMessage(targetModel, "received media")
+				: toolMessage(targetModel, [{ id: "media_call", name: "read_media" }]),
+		);
+		return stream;
+	};
+	await agentLoop([userMessage("read the media")], context, loopConfig(context), undefined, streamFn).result();
+	expect(seen?.role).toBe("toolResult");
+	if (seen?.role !== "toolResult") throw new Error("tool result did not reach the provider");
+	expect(seen.isError).toBe(false);
+	expect(seen.content).toEqual(media);
+});
+
 test("eventless final response is transformed, added to turn context, and emits one boundary pair", async () => {
 	const streamFn: StreamFn = targetModel => {
 		const stream = createAssistantMessageEventStream();

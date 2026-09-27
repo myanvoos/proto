@@ -153,7 +153,7 @@ describe("content silently dropped from the compaction summary input", () => {
 				message: {
 					role: "toolResult",
 					toolCallId: "image-call",
-					toolName: "inspect_media",
+					toolName: "read",
 					content: [{ type: "image", data: imageData, mimeType: "image/jpeg" }],
 					isError: false,
 					timestamp: 0,

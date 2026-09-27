@@ -48,6 +48,32 @@ function messageItems(history: Array<Record<string, unknown>>): Array<Record<str
 }
 
 describe("OpenAI native compaction history", () => {
+	test("native compaction reports unsupported tool audio and video instead of silently losing them", () => {
+		const history = buildOpenAiNativeHistory(
+			[
+				assistantWithCall("media-call"),
+				{
+					role: "toolResult",
+					toolName: "read",
+					toolCallId: "media-call",
+					isError: false,
+					timestamp: 1,
+					content: [
+						{ type: "audio", data: "QVVESU8=", mimeType: "audio/wav" },
+						{ type: "video", data: "VklERU8=", mimeType: "video/mp4" },
+					],
+				},
+			],
+			model(),
+		);
+		const wire = JSON.stringify(history);
+		expect(wire).toContain("audio omitted");
+		expect(wire).toContain("video omitted");
+		expect(wire).not.toContain("QVVESU8=");
+		expect(wire).not.toContain("VklERU8=");
+		expect(history.filter(item => item.type === "function_call_output")).toHaveLength(1);
+	});
+
 	test("repairs an orphaned native call carried over from an interrupted turn", () => {
 		const history = buildOpenAiNativeHistory([], model(), [
 			{ type: "function_call", call_id: "call-1", name: "read", arguments: "{}" },

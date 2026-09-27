@@ -269,8 +269,7 @@ export function collectShakeRegions(entries: SessionEntry[], tokenizer: Tokenize
 			if (isProtectedToolResult(toolResult, toolCallsById.get(toolResult.toolCallId), config.protectedTools))
 				continue;
 
-			// ToolResultMessage.content is TextContent | ImageContent. Regions deliberately own one text
-			// block each, so the text artifact is sufficient for recovery while image blocks stay untouched.
+			// Regions own one text block each; text artifacts recover them while native media stays untouched.
 			for (let blockIndex = 0; blockIndex < toolResult.content.length; blockIndex++) {
 				const block = toolResult.content[blockIndex];
 				if (block.type !== "text" || block.text.length === 0) continue;

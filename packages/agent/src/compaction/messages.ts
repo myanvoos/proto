@@ -5,6 +5,7 @@ import type {
 	ProviderPayload,
 	TextContent,
 	ToolResultMessage,
+	UserContent,
 } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
@@ -79,14 +80,14 @@ declare module "../types" {
 }
 export type ConvertToLlm = (messages: AgentMessage[]) => Message[];
 
-function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | ImageContent)[] {
+function getPrunedToolResultContent(message: ToolResultMessage): UserContent[] {
 	if (message.prunedAt === undefined) {
 		return message.content;
 	}
 	const textBlocks = message.content.filter((content): content is TextContent => content.type === "text");
 	const text = textBlocks.map(block => block.text).join("") || "[Output truncated]";
-	const images = message.content.filter((content): content is ImageContent => content.type === "image");
-	return [{ type: "text", text }, ...images];
+	const media = message.content.filter(content => content.type !== "text");
+	return [{ type: "text", text }, ...media];
 }
 
 export function renderBranchSummaryContext(summary: string): string {

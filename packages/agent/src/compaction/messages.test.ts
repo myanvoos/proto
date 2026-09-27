@@ -8,13 +8,15 @@ import {
 } from "./messages";
 
 describe("pruned tool-result conversion", () => {
-	test("retains images that shake deliberately preserved", () => {
+	test("retains native media that shake deliberately preserved", () => {
 		const image = { type: "image" as const, data: "IMAGE_DATA", mimeType: "image/png" };
+		const audio = { type: "audio" as const, data: "AUDIO_DATA", mimeType: "audio/wav" };
+		const video = { type: "video" as const, data: "VIDEO_DATA", mimeType: "video/mp4" };
 		const message: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: "call-1",
 			toolName: "capture",
-			content: [{ type: "text", text: "caption" }, image],
+			content: [{ type: "text", text: "caption" }, image, audio, video],
 			isError: false,
 			timestamp: 0,
 			prunedAt: 1,
@@ -22,7 +24,7 @@ describe("pruned tool-result conversion", () => {
 
 		const converted = convertMessageToLlm(message);
 		if (!converted || !Array.isArray(converted.content)) throw new Error("expected converted content blocks");
-		expect(converted.content).toEqual([{ type: "text", text: "caption" }, image]);
+		expect(converted.content).toEqual([{ type: "text", text: "caption" }, image, audio, video]);
 	});
 });
 

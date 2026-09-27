@@ -14,6 +14,7 @@ import {
 	repairOrphanResponsesToolCalls,
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
+import { mediaOmissionNote } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import type {
 	Api,
 	AssistantMessage,
@@ -541,6 +542,8 @@ export function buildOpenAiNativeHistory(
 					}
 					if (block.type === "image") {
 						contentBlocks.push(convertNativeInputImage(block));
+					} else if (block.type === "audio" || block.type === "video") {
+						contentBlocks.push({ type: "input_text", text: mediaOmissionNote(block.type) });
 					}
 				}
 			}

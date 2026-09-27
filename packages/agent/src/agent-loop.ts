@@ -1,10 +1,12 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type AudioContent,
 	type ComputerAction,
 	type ComputerSafetyCheck,
 	type Context,
 	EventStream,
+	type ImageContent,
 	isApiKeyResolver,
 	type Model,
 	resolveApiKeyOnce,
@@ -17,6 +19,7 @@ import {
 	type ToolResultProviderMetadata,
 	type TSchema,
 	toolWireSchema,
+	type VideoContent,
 	validateToolArguments,
 } from "@oh-my-pi/pi-ai";
 import {
@@ -412,7 +415,7 @@ const EMPTY_ERROR_TOOL_RESULT_TEXT = "Tool failed with no output.";
 
 function hasSubstantiveToolResultContent(content: AgentToolResult["content"]): boolean {
 	for (const block of content) {
-		if (block.type === "image") return true;
+		if (block.type !== "text") return true;
 		if (block.type === "text" && block.text.trim().length > 0) return true;
 	}
 	return false;
@@ -452,11 +455,11 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 		if (block.type === "text" && typeof (block as { text?: unknown }).text === "string") {
 			content.push({ type: "text", text: sanitizeText((block as { text: string }).text) });
 		} else if (
-			block.type === "image" &&
+			(block.type === "image" || block.type === "audio" || block.type === "video") &&
 			typeof (block as { data?: unknown }).data === "string" &&
 			typeof (block as { mimeType?: unknown }).mimeType === "string"
 		) {
-			content.push(block as { type: "image"; data: string; mimeType: string });
+			content.push(block as ImageContent | AudioContent | VideoContent);
 		} else {
 			invalidBlocks++;
 		}

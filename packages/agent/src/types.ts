@@ -5,20 +5,19 @@ import type {
 	AssistantMessageEventStream,
 	Context,
 	Effort,
-	ImageContent,
 	Message,
 	Model,
 	ServiceTier,
 	SimpleStreamOptions,
 	Static,
 	streamSimple,
-	TextContent,
 	Tool,
 	ToolCallProviderMetadata,
 	ToolChoice,
 	ToolResultMessage,
 	ToolResultProviderMetadata,
 	TSchema,
+	UserContent,
 } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import type { HarmonyAuditEvent } from "@oh-my-pi/pi-ai/utils/harmony-leak";
@@ -207,7 +206,7 @@ export interface BeforeToolCallResult {
 }
 
 export interface AfterToolCallResult {
-	content?: (TextContent | ImageContent)[];
+	content?: UserContent[];
 
 	details?: unknown;
 
@@ -262,7 +261,7 @@ export interface AgentState {
 }
 
 export interface AgentToolResult<T = any, _TInput = unknown> {
-	content: (TextContent | ImageContent)[];
+	content: UserContent[];
 
 	details?: T;
 
