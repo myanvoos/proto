@@ -2,14 +2,14 @@
 
 ## [Unreleased]
 
+## [19.0.0] - 2026-09-27
+
 ### Breaking Changes
 
 - Media files use plain `read({ path })`; removed `inspect_media`, `/vision`, the built-in vision role, and automatic vision-model delegation
 - Removed the inert `personality` setting, its presets, and `PERSONALITY.md` loading; the system prompt had stopped rendering them
-
 - Removed the Python kernel's `NAME = <<DELIM` assignment heredoc; cells use ordinary Python string literals, so a cell is valid Python outside the kernel too
 - Removed kernel `proto_path` / `protoPath`; use `read` for internal resources or pass bash-resolved paths through `env` to filesystem APIs
-
 - Mounted devices now use the `protolens` shell builtin and `protolens://` URLs; the `xd` command and `xd://` scheme have no aliases. The standalone `proto` executable retains its name
 - Harness documentation URLs move from `proto://` to `harness://` without a compatibility alias
 - Bash resolves literal internal-URL path arguments once before execution or fails with a `read` hint; generated-only `agent://`, `history://`, `mcp://`, and `protolens://` content must be read through `read` or `protolens read`. JSON payloads and interpreter heredocs remain unchanged
@@ -25,10 +25,8 @@
 - `read` sends supported audio and video directly to the active model, with notices for unsupported media instead of side-model analysis
 - `recall` accepts JavaScript query functions for scoped transcript search and kernel map/reduce with `tiny`/`smol` model calls
 - Kernel `completion` accepts `model: "tiny"` for the configured online tiny role
-
 - Native-interpreter differential coverage for kernel language semantics, invocation identity, byte streams, side effects, and exit status
 - `retain_task(asyncio.Task)` / `retainTask(resource)` for explicit background lifetime beyond cell completion
-
 - Shell writes that own their target (`cat > file`, `>>`, `tee`) now report a `<shell> note:` receipt with diff stats, show their hunks on the tool card, and refuse to clobber a file changed since the shell last read it
 - Bundled harness documentation and built-in rules unpack once into immutable, versioned content-cache directories under `~/.proto/cache/docs`; `harness://` directories and document/rule URLs expose stable searchable filesystem paths reused across processes, while custom rules retain their original source paths
 - JavaScript cells expose `symbols()` and `blockRange()` like Python
@@ -46,14 +44,11 @@
 ### Changed
 
 - Checkpoint and rewind tools are enabled by default; set `checkpoint.enabled` to `false` to opt out.
-
 - Kernel displays, expression values, and harness notes are presentation sidebands, never program stdout/stderr; binary writes no longer need return-value suppression
 - Supported Python/Node/Bun cells preserve program arguments instead of falling through to fresh processes
 - Python cells support ordinary `asyncio.run()`, real `__main__` pickling, and native stdin descriptors; top-level await remains additive
 - JavaScript kernels preserve native bindings and settle referenced callbacks, capture actual Node/Bun console and descriptor bytes with bounded native pipes, and require subprocess isolation rather than falling back to an in-thread worker
-
 - Source checkouts resolve `harness://` documentation to existing files and directories without creating a cache
-
 - `read_artifact`/`readArtifact` default to UTF-8 (pages end on character boundaries; binary data needs `encoding="base64"`) and accept a bare `artifact://N` the session published
 - Subagents without an output schema may yield plain text, and their results are the plain final answer instead of a JSON encoding
 - Code range reads return exactly the requested lines; enclosing-block context is marked with `⋮` and the footer reports the requested range
@@ -73,15 +68,12 @@
 - Protolens cards show the typed invocation on every call (`protolens://read: package.json:1-4`), mark failed, rejected-flag, and invalid-argument calls with the error icon and the device's own message, and align with other tool cards
 - Bare `protolens` renders the device listing as a name/summary table instead of raw text, and `protolens <tool> ?` cards list flags for active top-level tools like `read`
 - Protolens calls piped, redirected, or mixed with other commands render as a plain shell card showing the full command, instead of device headers over output they didn't produce
-
 - Advisors can use the `read` tool they are granted by default; the advisor settings screen no longer lists `grep`/`glob` as defaults
 - Resuming a session or navigating the tree after a completed rewind keeps the "Checkpoint already completed" guard
 - Filesystem custom tools loaded by `createAgentSession` receive the host UI (`pi.ui`, `pi.hasUI`) instead of a permanent no-op context
-
 - `protolens --help` and `protolens -h` now print the device listing instead of failing with "No such tool"
 - JavaScript kernel orchestration accepts nested arrow-function thunks without failing during scope analysis
 - Recall keeps an empty active lineage isolated from other branches and honors `scope: "all"` when expanding an entry
-
 - Local self-memory appends learned content until it reaches 30% of the model context, then consolidates toward 20%; failed consolidation preserves existing history, and provider-native compaction is exempt.
 - Compaction keeps working context longer by default and uses the session's own model for detailed learned-content memory, rather than delegating its self-summary to Observer models.
 - Node and Bun kernel pipes reach native stdin descriptor 0, including synchronous `fs` reads and inherited child stdin; input stays streamed and isolated between cells
@@ -129,7 +121,6 @@
 - Output artifacts preserve unwritten tails when consumers release results during finalization
 - Kernel cells receive shell environment overrides, preserve stderr redirection, and keep state when inline code consumes piped input
 - Overlapping Bash calls in the same lane queue without silently losing shell state
-
 - Subagents can run monitors between turns; events wake only the owning agent, and disposing it stops its watches
 - Cancelling a monitor also stops detached descendants holding output pipes after its shell exits
 - Retrying a failed session-storage write no longer uses an incorrect cached file size

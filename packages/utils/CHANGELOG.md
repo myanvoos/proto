@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.0.0] - 2026-09-27
+
 ### Added
 
 - Added `ptree.terminateProcess` for bounded cleanup of owned subprocesses and detached process groups

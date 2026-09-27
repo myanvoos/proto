@@ -2,13 +2,15 @@
 
 ## [Unreleased]
 
-### Added
-
-- Tools can return native audio and video without result validation rejecting or dropping the media
+## [19.0.0] - 2026-09-27
 
 ### Breaking Changes
 
 - Self-summary composition is append-only; SDK callers use `appendSelfSummary` instead of `upsertSelfSummary`.
+
+### Added
+
+- Tools can return native audio and video without result validation rejecting or dropping the media
 
 ### Changed
 

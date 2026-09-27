@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.0.0] - 2026-09-27
+
 ### Breaking Changes
 
 - The mounted-tool shell builtin is `protolens`, with `protolensCallId`/`protolensDispatches` bridge fields; no `xd` or `proto` builtin aliases shadow executable commands

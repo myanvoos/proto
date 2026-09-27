@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.0.0] - 2026-09-27
+
 ### Breaking Changes
 
 - `TabBar.getActiveTab()` returns `Tab | undefined`; callers must handle an empty tab list

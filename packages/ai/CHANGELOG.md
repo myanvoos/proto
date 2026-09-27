@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.0.0] - 2026-09-27
+
 ### Added
 
 - Tool results can carry native audio and video; supported provider APIs receive the media after the tool-result batch, while unsupported APIs receive omission notices
