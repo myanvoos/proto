@@ -9,7 +9,7 @@
 - Skill discovery: `packages/coding-agent/src/extensibility/skills.ts`
 
 ## Registration / Visibility
-- Tool metadata: `loadMode = "discoverable"`. Like other discoverable tools it mounts under `protolens://` for on-demand discovery instead of staying in the always-on essential set.
+- Tool metadata: `loadMode = "discoverable"`. In an unrestricted session with bash, `tools.xdev = true`, and no explicit tool list, it mounts as `protolens://manage_skill`; explicit requests keep it top-level.
 - Registration requires `autolearn.enabled = true` (default `false`).
 - Subagents do not auto-receive it, but may use it when their requested-tools/frontmatter list explicitly includes it.
 - Execution is single-shot and emits no progress updates.

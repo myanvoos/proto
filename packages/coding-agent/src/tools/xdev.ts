@@ -3,19 +3,18 @@ import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateTo
 import { schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { Container } from "@oh-my-pi/pi-tui/tui";
-import { INTENT_FIELD, parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, parseStreamingJson, sanitizeText, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { extractUriScheme } from "../internal-urls/parse";
 import { PROTOLENS_URL_PREFIX } from "../internal-urls/protolens-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine } from "../tui/status-line";
+import { getTreeBranch } from "../tui/utils";
 import { WidthAwareText } from "../tui/width-aware-text";
-import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
 import { isReadableUrlPath, resolveToCwd, splitPathAndSel } from "./path-utils";
 import {
-	formatBadge,
 	formatExpandHint,
 	PREVIEW_LIMITS,
 	pluralize,
@@ -27,13 +26,14 @@ import {
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
-import { tokenizeShellSegments } from "./shell-tokenize";
+import { extractFlatShellCommandSegments, tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import {
 	formatCliFlagReference,
 	formatCliUsageSynopsis,
-	formatXdevCliCommand,
+	formatXdevCliFlags,
 	parseXdevCliArgs,
+	quoteShellValue,
 	type XdevCliParseOptions,
 	xdevFlagSpecs,
 } from "./xdev-cli";
@@ -47,7 +47,6 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	ask: true,
 	checklist: true,
 	web_search: true,
-	inspect_media: true,
 };
 
 const XDEV_TRANSPORT_TOOLS: Record<string, true> = { bash: true };
@@ -60,8 +59,9 @@ export function isMountableUnderXdev(tool: { name: string; loadMode?: ToolLoadMo
 }
 
 export interface XdevDispatch {
+	/** Device name; empty for the device listing (`protolens` with no device). */
 	tool: string;
-	mode: "help" | "execute";
+	mode: "help" | "execute" | "listing";
 
 	args?: Record<string, unknown>;
 
@@ -72,6 +72,15 @@ export interface XdevDispatch {
 
 	/** Set by the bash transport when this dispatch failed; drives the error icon in composite cards. */
 	isError?: boolean;
+
+	/**
+	 * This device's own text output, set by the bash transport when shell output can't stand in for it:
+	 * several dispatches in one command, or a failed dispatch (whose shell output carries exit notices).
+	 */
+	output?: string;
+
+	/** Mounted devices shown by the listing. */
+	devices?: ReadonlyArray<{ name: string; summary: string }>;
 }
 
 let rendererLookup: ((name: string) => ToolRenderer | undefined) | undefined;
@@ -273,7 +282,8 @@ export const XDEV_DOCS_PER_DEVICE_CAP = 10_000;
 
 export const XDEV_EXTERNAL_DESCRIPTION_CAP = 200;
 
-function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
+/** Resolve a dispatchable device: a mounted device or an active top-level tool. */
+export function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
 	if (name in XDEV_TRANSPORT_TOOLS) return undefined;
 	if (!state.mountedNames.has(name) && !state.isActive(name)) return undefined;
 	return state.tools.get(name);
@@ -503,7 +513,7 @@ export type ProtolensBashDispatch =
 export function parseProtolensBashCommand(argv: readonly string[]): ProtolensBashDispatch | undefined {
 	if (argv.length === 0 || argv[0] !== "protolens") return undefined;
 	const rest = argv.slice(1);
-	if (rest.length === 0 || (rest.length === 1 && HELP_CONTENT_RE.test(rest[0]))) return { kind: "listing" };
+	if (rest.length === 0 || (rest.length === 1 && isHelpArgv(rest))) return { kind: "listing" };
 	const [name, ...args] = rest;
 	return { kind: "device", name, argv: args };
 }
@@ -598,13 +608,6 @@ function resolveDeviceRenderer(
 	return rendererLookup?.(name);
 }
 
-function displayDeviceLabel(name: string, mounted?: { label?: string }): string {
-	if (mounted?.label) return mounted.label;
-	const parsed = parseMCPToolName(name);
-	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
-	return name;
-}
-
 function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknown> {
 	const { __partialJson: _partial, ...rest } = args;
 	return rest;
@@ -622,6 +625,7 @@ const XDEV_DEVICE_PROFILES: Record<string, { family: string; color: ToolUIColor 
 	read: { family: "files", color: "accent" },
 	browser: { family: "web", color: "accent" },
 	context: { family: "context", color: "accent" },
+	recall: { family: "context", color: "accent" },
 	jobs: { family: "execution", color: "accent" },
 	fleet: { family: "agents", color: "accent" },
 	computer: { family: "desktop", color: "accent" },
@@ -631,12 +635,15 @@ const XDEV_DEVICE_PROFILES: Record<string, { family: string; color: ToolUIColor 
 	ask: { family: "user", color: "accent" },
 	checklist: { family: "tasks", color: "success" },
 	web_search: { family: "search", color: "accent" },
-	inspect_media: { family: "media", color: "accent" },
 };
 
-function deviceBadge(name: string, theme: Theme): string | undefined {
+function deviceBadge(name: string): { badge: { label: string; color: ToolUIColor } } | undefined {
 	const profile = XDEV_DEVICE_PROFILES[name];
-	return profile ? formatBadge(profile.family, profile.color, theme) : undefined;
+	return profile ? { badge: { label: profile.family, color: profile.color } } : undefined;
+}
+
+function dispatchTitle(dispatch: XdevDispatch): string {
+	return `${PROTOLENS_URL_PREFIX}${dispatch.tool}`;
 }
 
 /** Flag rows for the collapsed schema card, Submit-Result tree style. */
@@ -661,7 +668,8 @@ function schemaCardRows(mounted: Tool | undefined, name: string): string[] {
 				? `--${spec.name}`
 				: `--${spec.name} <${typeLabel}>`;
 		const required = spec.required ? " (required)" : "";
-		const description = spec.description ? ` — ${spec.description.split(/\. /)[0]}` : "";
+		// First sentence: a period before a capital, so abbreviations like "e.g. `x`" stay whole.
+		const description = spec.description ? ` — ${spec.description.split(/\.\s+(?=[A-Z])/)[0]}` : "";
 		rows.push(`${flag}${required}${description}`);
 	}
 	return rows;
@@ -722,40 +730,30 @@ function formatXdevHelpCard(
 	contentWidth: number,
 	theme: Theme,
 ): string {
-	const badge = deviceBadge(dispatch.tool, theme);
 	const lines = [
 		renderStatusLine(
 			{
 				icon: options.isPartial ? "running" : "done",
 				spinnerFrame: options.spinnerFrame,
-				title: `${PROTOLENS_URL_PREFIX}${dispatch.tool}`,
+				title: dispatchTitle(dispatch),
 				meta: ["docs", ...helpArgsMeta(mounted)],
-				...(badge
-					? {
-							badge: {
-								label: XDEV_DEVICE_PROFILES[dispatch.tool].family,
-								color: XDEV_DEVICE_PROFILES[dispatch.tool].color,
-							},
-						}
-					: {}),
+				...deviceBadge(dispatch.tool),
 			},
 			theme,
 		),
 	];
 	if (options.expanded) {
-		for (const line of text.split("\n")) {
-			lines.push(theme.fg("toolOutput", replaceTabs(line)));
-		}
+		lines.push(...formatOutputLines(text, Number.POSITIVE_INFINITY, contentWidth, theme).lines);
 		return lines.join("\n");
 	}
 	const bodyWidth = Math.max(20, contentWidth - 4);
-	const hook = theme.fg("dim", theme.tree.last);
 	const description = flatFirstParagraph(docsDescriptionBody(text, dispatch.tool));
 	const rows = schemaCardRows(mounted, dispatch.tool);
 	const reserved = 1; // expand hint
 	const maxRows = Math.max(0, PREVIEW_LIMITS.COLLAPSED_LINES - reserved);
 	const visibleRows = rows.slice(0, maxRows);
-	for (const row of visibleRows) {
+	for (const [index, row] of visibleRows.entries()) {
+		const hook = theme.fg("dim", getTreeBranch(index === visibleRows.length - 1, theme));
 		lines.push(` ${hook} ${theme.fg("toolOutput", truncateToWidth(replaceTabs(row), bodyWidth))}`);
 	}
 	const hiddenRows = rows.length - visibleRows.length;
@@ -771,7 +769,7 @@ function formatXdevHelpCard(
 }
 
 function widthAwareText(format: (contentWidth: number) => string): Component {
-	const component = new WidthAwareText(format, 1, 1);
+	const component = new WidthAwareText(format, 0, 0);
 	component.setIgnoreTight(true);
 	return component;
 }
@@ -781,54 +779,135 @@ function helpStatusMeta(dispatch: XdevDispatch, resolveMounted?: (name: string) 
 	return ["docs", ...helpArgsMeta(resolveMounted?.(dispatch.tool))];
 }
 
-function formatXdevCompositeCard(
-	dispatches: readonly XdevDispatch[],
+/**
+ * The invocation (`package.json:1-4`, `--op list`) that tells repeated devices apart: the typed argv,
+ * except JSON payloads, which read better as the flags they decoded to.
+ */
+function formatDispatchInvocation(dispatch: XdevDispatch): string {
+	if (dispatch.mode !== "execute") return "";
+	const argv = dispatch.argv ?? [];
+	const typedJson = argv[0] === "--json" || argv[0]?.trimStart().startsWith("{");
+	if (argv.length > 0 && !(typedJson && dispatch.args)) return argv.map(quoteShellValue).join(" ");
+	return formatXdevCliFlags(displayDeviceArgs(dispatch.args ?? {}));
+}
+
+function formatDispatchStatusLine(
+	dispatch: XdevDispatch,
+	options: RenderResultOptions,
+	contentWidth: number,
+	theme: Theme,
+	resolveMounted?: (name: string) => Tool | undefined,
+): string {
+	const meta =
+		dispatch.mode === "listing"
+			? [`${dispatch.devices?.length ?? 0} ${pluralize("device", dispatch.devices?.length ?? 0)}`]
+			: helpStatusMeta(dispatch, resolveMounted);
+	const statusLine = (description?: string) =>
+		renderStatusLine(
+			{
+				icon: dispatch.isError
+					? "error"
+					: !options.isPartial
+						? "done"
+						: options.executionStarted === false
+							? "pending"
+							: "running",
+				spinnerFrame: options.spinnerFrame,
+				title: dispatchTitle(dispatch),
+				...(description ? { description } : {}),
+				...(meta.length > 0 ? { meta } : {}),
+				...deviceBadge(dispatch.tool),
+			},
+			theme,
+		);
+	const invocation = formatDispatchInvocation(dispatch);
+	if (!invocation) return statusLine();
+	// Budget the invocation so the badge and meta stay visible on narrow terminals.
+	const budget = contentWidth - Bun.stringWidth(statusLine()) - 2;
+	return budget < 8 ? statusLine() : statusLine(truncateToWidth(replaceTabs(invocation), budget));
+}
+
+/** Indented output preview; `hidden` reports whether expanding would reveal more. */
+function formatOutputLines(
 	text: string,
+	maxLines: number,
+	contentWidth: number,
+	theme: Theme,
+): { lines: string[]; hidden: boolean } {
+	const trimmed = text.trimEnd();
+	if (!trimmed) return { lines: [], hidden: false };
+	const bodyWidth = Math.max(20, contentWidth - 2);
+	const outputLines = trimmed.split("\n");
+	const shown = outputLines.slice(0, maxLines);
+	// Device output is externally controlled (extensions, MCP): sanitize before styling.
+	const lines = shown.map(
+		line => `  ${theme.fg("toolOutput", truncateToWidth(replaceTabs(sanitizeText(line)), bodyWidth))}`,
+	);
+	const remaining = outputLines.length - shown.length;
+	if (remaining > 0) lines.push(`  ${theme.fg("dim", `… ${remaining} more ${pluralize("line", remaining)}`)}`);
+	return { lines, hidden: remaining > 0 };
+}
+
+/** Device rows of the listing: name column, then the one-line summary. */
+function formatListingRows(
+	devices: ReadonlyArray<{ name: string; summary: string }>,
+	options: RenderResultOptions,
+	contentWidth: number,
+	theme: Theme,
+): { lines: string[]; hidden: boolean } {
+	const shown = options.expanded ? devices : devices.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS);
+	const nameWidth = Math.min(24, Math.max(0, ...shown.map(device => Bun.stringWidth(device.name))));
+	const summaryWidth = Math.max(20, contentWidth - nameWidth - 4);
+	let hidden = devices.length > shown.length;
+	const lines: string[] = [];
+	for (const device of shown) {
+		const name = theme.fg("accent", truncateToWidth(device.name, nameWidth).padEnd(nameWidth));
+		const summary = sanitizeText(device.summary).replace(/\s+/g, " ").trim();
+		if (options.expanded) {
+			const wrapped = Bun.wrapAnsi(summary, summaryWidth, { hard: true, trim: true }).split("\n");
+			lines.push(`  ${name}  ${theme.fg("muted", wrapped[0] ?? "")}`);
+			for (const rest of wrapped.slice(1)) lines.push(`  ${" ".repeat(nameWidth)}  ${theme.fg("muted", rest)}`);
+			continue;
+		}
+		if (Bun.stringWidth(summary) > summaryWidth) hidden = true;
+		lines.push(`  ${name}  ${theme.fg("muted", truncateToWidth(summary, summaryWidth))}`);
+	}
+	const more = devices.length - shown.length;
+	if (more > 0) lines.push(`  ${theme.fg("dim", `… ${more} more ${pluralize("device", more)}`)}`);
+	return { lines, hidden };
+}
+
+/**
+ * One section per dispatch: a status line naming the device and its invocation, then that device's
+ * own output. Used for a single protolens call without a device renderer, and for commands that are
+ * nothing but chained protolens calls, where the shell output is exactly the devices' outputs.
+ */
+function formatXdevDispatchCard(
+	sections: ReadonlyArray<{ dispatch: XdevDispatch; output: string }>,
 	options: RenderResultOptions,
 	contentWidth: number,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
 ): string {
 	const lines: string[] = [];
-	for (const dispatch of dispatches) {
-		const meta = helpStatusMeta(dispatch, resolveMounted);
-		const badge = deviceBadge(dispatch.tool, theme);
-		lines.push(
-			renderStatusLine(
-				{
-					icon: dispatch.isError ? "error" : "done",
-					title: `${PROTOLENS_URL_PREFIX}${dispatch.tool}`,
-					...(meta.length > 0 ? { meta } : {}),
-					...(badge
-						? {
-								badge: {
-									label: XDEV_DEVICE_PROFILES[dispatch.tool].family,
-									color: XDEV_DEVICE_PROFILES[dispatch.tool].color,
-								},
-							}
-						: {}),
-				},
-				theme,
-			),
-		);
-	}
-
-	const outputLines = text.trimEnd() ? text.trimEnd().split("\n") : [];
-	const bodyWidth = Math.max(20, contentWidth - 2);
 	const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
-	const shown = outputLines.slice(0, maxLines);
-	for (const line of shown) {
-		lines.push(`  ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), bodyWidth))}`);
+	let hidden = false;
+	for (const { dispatch, output } of sections) {
+		lines.push(formatDispatchStatusLine(dispatch, options, contentWidth, theme, resolveMounted));
+		// Collapsed docs stay a single status line; the docs body is only worth reading expanded.
+		if (dispatch.mode === "help" && !options.expanded) {
+			hidden ||= output.trim().length > 0;
+			continue;
+		}
+		const body =
+			dispatch.mode === "listing" && dispatch.devices
+				? formatListingRows(dispatch.devices, options, contentWidth, theme)
+				: formatOutputLines(output, maxLines, contentWidth, theme);
+		lines.push(...body.lines);
+		hidden ||= body.hidden;
 	}
-	const remaining = outputLines.length - shown.length;
-	if (remaining > 0) {
-		const more = theme.fg("dim", `… ${remaining} more lines`);
-		const hint = formatExpandHint(theme, options.expanded, true);
-		lines.push(`  ${[more, hint].filter(Boolean).join(" ")}`);
-	} else if (!options.expanded) {
-		const hint = formatExpandHint(theme, options.expanded, true);
-		if (hint) lines.push(`  ${hint}`);
-	}
+	const hint = formatExpandHint(theme, options.expanded, hidden);
+	if (hint) lines.push(`  ${hint}`);
 	return lines.join("\n");
 }
 
@@ -863,20 +942,41 @@ export function protolensDeviceCallFromBashArgs(
 	return { name: parsed.name, argv: parsed.argv };
 }
 
-function renderQueuedXdevCall(
-	label: string,
-	args: Record<string, unknown>,
-	options: RenderResultOptions,
-	theme: Theme,
-): Component {
-	return renderDefaultToolExecution(
-		{
-			label: `queued ${label}`,
-			args: displayDeviceArgs(args),
-			options: { ...options, isPartial: true, spinnerFrame: undefined },
-		},
-		theme,
-	);
+/**
+ * How a bash command composes protolens calls, which decides the result card that stays faithful:
+ * `"single"` is one call; `"chain"` is only protolens calls joined by `;`, `&&`, `||`, `&`, or
+ * newlines — no pipes, redirects, subshells, or other commands — so the shell output is exactly the
+ * devices' outputs. Anything else is `undefined`: the merged shell output is what the model saw.
+ */
+export type ProtolensCommandShape = "single" | "chain";
+
+export function protolensCommandShape(args: unknown): ProtolensCommandShape | undefined {
+	const command = (args as { command?: unknown } | undefined)?.command;
+	if (typeof command !== "string") return undefined;
+	const segments = extractFlatShellCommandSegments(command);
+	if (segments.length === 0) return undefined;
+	for (const segment of segments) {
+		if (segment.pipedStdin || hasUnquotedRedirect(segment.text)) return undefined;
+		const argv = tokenizeShellSegments(segment.text);
+		if (argv.length !== 1 || !parseProtolensBashCommand(argv[0])) return undefined;
+	}
+	return segments.length === 1 ? "single" : "chain";
+}
+
+function hasUnquotedRedirect(text: string): boolean {
+	let quote: string | undefined;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (quote) {
+			if (quote === '"' && ch === "\\") i++;
+			else if (ch === quote) quote = undefined;
+			continue;
+		}
+		if (ch === "\\") i++;
+		else if (ch === "'" || ch === '"') quote = ch;
+		else if (ch === "<" || ch === ">") return true;
+	}
+	return false;
 }
 
 /** Best-effort CLI argv → args for call previews; parse failures render an empty preview. */
@@ -902,32 +1002,17 @@ export function renderXdevCall(
 ): Component | undefined {
 	const mounted = resolveMounted?.(name);
 	const isHelpCall = (typeof content === "string" && HELP_CONTENT_RE.test(content)) || argv?.[0] === "?";
-	if (isHelpCall) {
-		return renderDefaultToolExecution(
-			{ label: `protolens ${displayDeviceLabel(name, mounted)}`, args: {}, options },
-			theme,
-		);
+	let dispatch: XdevDispatch = { tool: name, mode: "help" };
+	if (!isHelpCall) {
+		let args: Record<string, unknown> = {};
+		if (typeof content === "string" && content.length > 0) args = decodeInnerArgs(content);
+		else if (argv && argv.length > 0) args = argsFromXdevArgv(mounted, name, argv);
+		const renderer = resolveDeviceRenderer(name, mounted);
+		if (options.executionStarted && renderer?.renderCall) return renderer.renderCall(args, options, theme);
+		dispatch = { tool: name, mode: "execute", args, ...(argv && argv.length > 0 ? { argv: [...argv] } : {}) };
 	}
-	let args: Record<string, unknown>;
-	if (typeof content === "string" && content.length > 0) {
-		args = decodeInnerArgs(content);
-	} else if (argv && argv.length > 0) {
-		args = argsFromXdevArgv(mounted, name, argv);
-	} else {
-		args = {};
-	}
-	if (!options.executionStarted) {
-		return renderQueuedXdevCall(displayDeviceLabel(name, mounted), args, options, theme);
-	}
-	const renderer = resolveDeviceRenderer(name, mounted);
-	if (renderer?.renderCall) {
-		return renderer.renderCall(args, options, theme);
-	}
-	if (argv && argv.length > 0) {
-		// No device-specific renderer: preview the typed CLI command instead of JSON args.
-		return renderDefaultToolExecution({ label: formatXdevCliCommand(name, args), args: {}, options }, theme);
-	}
-	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
+	const pending = { ...options, isPartial: true };
+	return widthAwareText(width => formatDispatchStatusLine(dispatch, pending, width, theme, resolveMounted));
 }
 
 export function renderXdevResult(
@@ -936,57 +1021,56 @@ export function renderXdevResult(
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
-	singleCall?: { name: string; content?: string; argv?: string[] },
+	shape?: ProtolensCommandShape,
 ): Component | undefined {
 	const dispatches = Array.isArray(dispatch) ? dispatch : [dispatch];
-	const text = result.content
-		.map(block => (block.type === "text" ? block.text : ""))
-		.filter(Boolean)
-		.join("\n");
-	if (dispatches.length === 1 && singleCall) {
+	if (shape === "single" && dispatches.length === 1) {
 		const only = dispatches[0];
+		const text = result.content
+			.map(block => (block.type === "text" ? block.text : ""))
+			.filter(Boolean)
+			.join("\n");
 		if (only.mode === "help") {
 			return renderXdevHelpCard(only, text, resolveMounted?.(only.tool), options, theme);
 		}
-		return renderSingleXdevExecute(only, text, result, options, theme, resolveMounted);
+		const rendered =
+			only.mode === "execute" ? renderDeviceResult(only, result, options, theme, resolveMounted) : undefined;
+		if (rendered) return rendered;
+		const sections = [{ dispatch: only, output: only.output ?? text }];
+		return widthAwareText(width => formatXdevDispatchCard(sections, options, width, theme, resolveMounted));
 	}
-	return widthAwareText(width => formatXdevCompositeCard(dispatches, text, options, width, theme, resolveMounted));
+	if (shape === "chain" && dispatches.every(dispatch => dispatch.output !== undefined)) {
+		const sections = dispatches.map(dispatch => ({ dispatch, output: dispatch.output ?? "" }));
+		return widthAwareText(width => formatXdevDispatchCard(sections, options, width, theme, resolveMounted));
+	}
+	// Protolens mixed with pipes, redirects, or other commands: the shell card shows what actually ran.
+	return undefined;
 }
 
-function renderSingleXdevExecute(
+/**
+ * The device's own result card. `undefined` when the device has no renderer or failed before
+ * producing details (usage/validation errors), which the dispatch card shows instead.
+ */
+function renderDeviceResult(
 	dispatch: XdevDispatch,
-	text: string,
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
 ): Component | undefined {
-	const mounted = resolveMounted?.(dispatch.tool);
-	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
+	if (dispatch.isError && dispatch.inner === undefined) return undefined;
+	const renderer = resolveDeviceRenderer(dispatch.tool, resolveMounted?.(dispatch.tool));
+	if (!renderer?.renderResult) return undefined;
 	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };
-	if (renderer?.renderResult) {
-		const parts: Component[] = [];
-
-		if (!renderer.mergeCallAndResult && renderer.renderCall) {
-			const call = renderer.renderCall(dispatch.args ?? {}, { ...options, isPartial: false }, theme);
-			if (call) parts.push(call);
-		}
-		const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
-		if (rendered) parts.push(rendered);
-		if (parts.length === 1) return parts[0];
-		if (parts.length > 1) {
-			const box = new Container();
-			for (const part of parts) box.addChild(part);
-			return box;
-		}
+	const parts: Component[] = [];
+	if (!renderer.mergeCallAndResult && renderer.renderCall) {
+		const call = renderer.renderCall(dispatch.args ?? {}, { ...options, isPartial: false }, theme);
+		if (call) parts.push(call);
 	}
-	return renderDefaultToolExecution(
-		{
-			label: mounted?.label ?? dispatch.tool,
-			args: dispatch.args ?? {},
-			result: { output: text, isError: result.isError },
-			options,
-		},
-		theme,
-	);
+	const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
+	if (rendered) parts.push(rendered);
+	if (parts.length <= 1) return parts[0];
+	const box = new Container();
+	for (const part of parts) box.addChild(part);
+	return box;
 }

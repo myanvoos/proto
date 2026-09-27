@@ -22,7 +22,7 @@ import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { isWaitingPollDetails } from "../../tools/jobs";
 import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type ToolRenderer, toolRenderers } from "../../tools/renderers";
-import type { XdevState } from "../../tools/xdev";
+import { resolveXdevTool, type XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, WidthAwareText } from "../../tui";
 import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
@@ -851,8 +851,7 @@ export class ToolExecutionComponent extends Container {
 			const bashTool = this.#tool as { session?: { xdev?: XdevState } } | undefined;
 			const xdev = bashTool?.session?.xdev;
 			if (xdev) {
-				context.resolveXdevMounted = (name: string) =>
-					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+				context.resolveXdevTool = (name: string) => resolveXdevTool(xdev, name);
 			}
 		}
 

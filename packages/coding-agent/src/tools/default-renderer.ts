@@ -1,8 +1,7 @@
-import type { Component } from "@oh-my-pi/pi-tui";
 import { isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import { renderStatusLine, WidthAwareText } from "../tui";
+import { renderStatusLine } from "../tui";
 import {
 	formatArgsInline,
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
@@ -137,10 +136,4 @@ export function formatDefaultToolExecution(
 	}
 
 	return lines.join("\n");
-}
-
-export function renderDefaultToolExecution(input: DefaultToolRenderInput, uiTheme: Theme): Component {
-	const component = new WidthAwareText(contentWidth => formatDefaultToolExecution(input, contentWidth, uiTheme), 1, 1);
-	component.setIgnoreTight(true);
-	return component;
 }

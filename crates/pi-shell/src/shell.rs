@@ -123,6 +123,11 @@ fn protolens_content(name: &str, content_type: ContentType) -> String {
 	content.to_string()
 }
 
+/// Bare `protolens ?` / `help` / `--help` / `-h` prints the device listing.
+fn is_protolens_help_arg(arg: &str) -> bool {
+	matches!(arg, "?" | "-h" | "--help") || arg.eq_ignore_ascii_case("help")
+}
+
 fn protolens_exit_code(code: i32) -> ExecutionExitCode {
 	if !(0..=255).contains(&code) {
 		return ExecutionExitCode::Custom(PROTOLENS_BRIDGE_FAILURE_EXIT as u8);
@@ -144,7 +149,7 @@ fn protolens_execute(
 		}
 		let (name, args) = match plain_args.as_slice() {
 			[] => (None, Vec::new()),
-			[arg] if arg == "?" || arg.eq_ignore_ascii_case("help") => (None, Vec::new()),
+			[arg] if is_protolens_help_arg(arg) => (None, Vec::new()),
 			[name, rest @ ..] => (Some(name.clone()), rest.to_vec()),
 		};
 		let (dispatcher, call_id) = {

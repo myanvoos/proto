@@ -17,6 +17,7 @@ import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
 import { thinkToolRenderer } from "./think";
 import {
+	protolensCommandShape,
 	protolensDeviceCallFromBashArgs,
 	renderXdevCall,
 	renderXdevResult,
@@ -53,14 +54,14 @@ function getBashProtoRenderer(): ToolRenderer {
 					return renderResolutionDeviceCall(protolens.name, protolens.content ?? "", uiTheme);
 				if (protolens.name === REPORT_ISSUE_DEVICE_NAME)
 					return renderReportIssueDeviceCall(protolens.content ?? "", uiTheme);
-				const context = (options as { renderContext?: { resolveXdevMounted?: (name: string) => unknown } })
+				const context = (options as { renderContext?: { resolveXdevTool?: (name: string) => unknown } })
 					.renderContext;
 				const delegated = renderXdevCall(
 					protolens.name,
 					protolens.content,
 					options,
 					uiTheme,
-					context?.resolveXdevMounted as Parameters<typeof renderXdevCall>[4],
+					context?.resolveXdevTool as Parameters<typeof renderXdevCall>[4],
 					protolens.argv,
 				);
 				if (delegated) return delegated;
@@ -76,15 +77,15 @@ function getBashProtoRenderer(): ToolRenderer {
 		): Component {
 			const xdev = (result.details as { xdev?: XdevDispatch | readonly XdevDispatch[] } | undefined)?.xdev;
 			if (xdev) {
-				const context = (options as { renderContext?: { resolveXdevMounted?: (name: string) => unknown } })
+				const context = (options as { renderContext?: { resolveXdevTool?: (name: string) => unknown } })
 					.renderContext;
 				const delegated = renderXdevResult(
 					xdev,
 					result,
 					options,
 					uiTheme,
-					context?.resolveXdevMounted as Parameters<typeof renderXdevResult>[4],
-					protolensDeviceCallFromBashArgs(args),
+					context?.resolveXdevTool as Parameters<typeof renderXdevResult>[4],
+					protolensCommandShape(args),
 				);
 				if (delegated) return delegated;
 			}

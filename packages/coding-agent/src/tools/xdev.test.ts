@@ -6,6 +6,7 @@ import {
 	dispatchProtolensArgv,
 	dispatchProtolensTarget,
 	dispatchXdevTool,
+	parseProtolensBashCommand,
 	resolveMountedXdevExecutable,
 	type XdevState,
 	xdevDocs,
@@ -130,4 +131,15 @@ test("MCP device docs advertise only the JSON forms the parser accepts", async (
 	await expect(
 		dispatchProtolensArgv(session, name, ["ls", "box"], undefined, undefined, { toolCallId: "mcp-positional" }),
 	).rejects.toThrow(/MCP devices take a single JSON args object/);
+});
+
+test("bare protolens help flags list devices instead of dispatching a tool named --help", () => {
+	for (const flag of ["--help", "-h", "?", "help"]) {
+		expect(parseProtolensBashCommand(["protolens", flag])).toEqual({ kind: "listing" });
+	}
+	expect(parseProtolensBashCommand(["protolens", "jobs", "--help"])).toEqual({
+		kind: "device",
+		name: "jobs",
+		argv: ["--help"],
+	});
 });

@@ -65,6 +65,19 @@
 
 ### Fixed
 
+- Chained `protolens` calls in one bash command render one section per device (its invocation, then its own output) instead of identical headers over a merged preview that only showed the first device
+- Protolens cards show the typed invocation on every call (`protolens://read: package.json:1-4`), mark failed, rejected-flag, and invalid-argument calls with the error icon and the device's own message, and align with other tool cards
+- Bare `protolens` renders the device listing as a name/summary table instead of raw text, and `protolens <tool> ?` cards list flags for active top-level tools like `read`
+- Protolens calls piped, redirected, or mixed with other commands render as a plain shell card showing the full command, instead of device headers over output they didn't produce
+
+- Advisors can use the `read` tool they are granted by default; the advisor settings screen no longer lists `grep`/`glob` as defaults
+- Resuming a session or navigating the tree after a completed rewind keeps the "Checkpoint already completed" guard
+- Filesystem custom tools loaded by `createAgentSession` receive the host UI (`pi.ui`, `pi.hasUI`) instead of a permanent no-op context
+
+- `protolens --help` and `protolens -h` now print the device listing instead of failing with "No such tool"
+- JavaScript kernel orchestration accepts nested arrow-function thunks without failing during scope analysis
+- Recall keeps an empty active lineage isolated from other branches and honors `scope: "all"` when expanding an entry
+
 - Local self-memory appends learned content until it reaches 30% of the model context, then consolidates toward 20%; failed consolidation preserves existing history, and provider-native compaction is exempt.
 - Compaction keeps working context longer by default and uses the session's own model for detailed learned-content memory, rather than delegating its self-summary to Observer models.
 - Node and Bun kernel pipes reach native stdin descriptor 0, including synchronous `fs` reads and inherited child stdin; input stays streamed and isolated between cells

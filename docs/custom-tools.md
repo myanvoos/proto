@@ -127,7 +127,7 @@ From `types.ts` and `loader.ts`:
 - `hasUI`: `false` in non-interactive flows
 - `logger`: shared file logger
 - `arktype`: injected omptype `type(...)` builder
-- `typebox`: compatibility shim for legacy TypeBox-style schemas
+- `zod`: injected Zod-compatible omptype builder
 - `pi`: injected `@oh-my-pi/pi-coding-agent` exports
 - `pushPendingAction(action)`: stage a preview action that is finalized by writing a plain-text reason to `protolens://resolve` or `protolens://reject`
 

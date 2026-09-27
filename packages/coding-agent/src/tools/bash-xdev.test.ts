@@ -14,6 +14,7 @@ import { ContextTool } from "./context";
 import { ReadTool } from "./read";
 import { toolRenderers } from "./renderers";
 import { ToolAbortError } from "./tool-errors";
+import { resolveXdevTool } from "./xdev";
 
 interface ProbeState {
 	calls: string[];
@@ -114,14 +115,17 @@ function renderBashResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
 	command: string,
 	expanded: boolean,
-	resolveXdevMounted?: (name: string) => unknown,
+	session?: ToolSession,
 ): string {
+	const xdev = session?.xdev;
+	// Mirrors tool-execution's render context.
+	const resolveXdev = xdev ? (name: string) => resolveXdevTool(xdev, name) : undefined;
 	const renderer = toolRenderers.bash as never as {
 		renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
 	};
 	const component = renderer.renderResult(
 		result,
-		{ expanded, isPartial: false, renderContext: { expanded, resolveXdevMounted } },
+		{ expanded, isPartial: false, renderContext: { expanded, resolveXdevTool: resolveXdev } },
 		theme,
 		{ command },
 	);
@@ -348,11 +352,7 @@ test("protolens preserves text block boundaries for shell output and rendering",
 		expect(textOf(result)).toContain("first\nsecond\n");
 		expect(textOf(result)).not.toContain("firstsecond");
 
-		const resolveXdevMounted = (name: string) => {
-			const xdev = session.xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		const rendered = renderBashResult(result, command, false, session);
 		const normalizedRendered = rendered
 			.split("\n")
 			.map(line => line.trim())
@@ -751,11 +751,7 @@ test("protolens help keeps full docs for the model but renders a compact card in
 		expect(modelText).toContain("Returns the supplied value.");
 		expect(modelText).toContain("type Args");
 
-		const resolveXdevMounted = (name: string) => {
-			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, `protolens probe ?`, false, resolveXdevMounted);
+		const rendered = renderBashResult(result, `protolens probe ?`, false, session);
 		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("Returns the supplied value.");
 		expect(rendered).toContain("1 arg");
@@ -778,8 +774,7 @@ test("protolens help card keeps the device description when a transport notice p
 					: part,
 			),
 		};
-		const xdev = (session as { xdev?: { tools: Map<string, unknown> } }).xdev;
-		const rendered = renderBashResult(noticed, `protolens probe ?`, false, name => xdev?.tools.get(name));
+		const rendered = renderBashResult(noticed, `protolens probe ?`, false, session);
 		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("Returns the supplied value.");
 	});
@@ -808,11 +803,7 @@ test("chained protolens help calls render one status line per device, not a docs
 		expect(modelText).toContain("Second probe tool for composite dispatch rendering.");
 		expect(modelText).toContain("type Args");
 
-		const resolveXdevMounted = (name: string) => {
-			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		const rendered = renderBashResult(result, command, false, session);
 		expect(rendered).toContain("protolens://probe · docs");
 		expect(rendered).toContain("protolens://probe2 · docs");
 		expect(rendered).not.toContain("type Args");
@@ -820,17 +811,13 @@ test("chained protolens help calls render one status line per device, not a docs
 	});
 });
 
-test("composite output is not swallowed when protolens help is chained with other commands", async () => {
+test("protolens mixed with other commands renders the shell card with the full command", async () => {
 	await withBash(async (bash, _state, session) => {
 		const command = `printf hi; protolens probe ?`;
 		const result = await bash.execute("protolens-composite-mixed", { command });
 		expect(result.isError).not.toBe(true);
-		const resolveXdevMounted = (name: string) => {
-			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("protolens://probe · docs");
+		const rendered = renderBashResult(result, command, true, session);
+		expect(rendered).toContain(`$ ${command}`);
 		expect(rendered).toContain("hi");
 	});
 });
@@ -840,15 +827,26 @@ test("chained protolens execute calls render one line per dispatch with their ou
 		const command = `protolens probe '{"value":"one"}'; protolens probe '{"value":"two"}'`;
 		const result = await bash.execute("protolens-composite-execute", { command });
 		expect(result.isError).not.toBe(true);
-		const resolveXdevMounted = (name: string) => {
-			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("probe:one");
-		expect(rendered).toContain("probe:two");
-		const statusLines = rendered.split("\n").filter(line => line.includes("protolens://probe "));
-		expect(statusLines.length).toBe(2);
+		const rendered = renderBashResult(result, command, false, session);
+		// Each device gets its own section: a header naming the invocation, then that device's output.
+		const lines = rendered.split("\n").map(line => line.trim());
+		const oneHeader = lines.findIndex(line => line.includes("protolens://probe: --value one"));
+		const twoHeader = lines.findIndex(line => line.includes("protolens://probe: --value two"));
+		expect(oneHeader).toBeGreaterThanOrEqual(0);
+		expect(lines[oneHeader + 1]).toBe("probe:one");
+		expect(twoHeader).toBe(oneHeader + 2);
+		expect(lines[twoHeader + 1]).toBe("probe:two");
+	});
+});
+
+test("piped protolens output renders the merged shell output, not per-device sections", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `protolens probe '{"value":"one"}' | tr a-z A-Z; protolens probe '{"value":"two"}'`;
+		const result = await bash.execute("protolens-composite-piped", { command });
+		expect(result.isError).not.toBe(true);
+		const rendered = renderBashResult(result, command, false, session);
+		expect(rendered).toContain("PROBE:ONE");
+		expect(rendered).not.toContain("probe:one");
 	});
 });
 
@@ -880,11 +878,7 @@ test("failed protolens dispatches are flagged in composite cards", async () => {
 	await withBash(async (bash, _state, session) => {
 		const command = `protolens probe '{"value":"fail"}'; protolens probe '{"value":"ok"}'`;
 		const result = await bash.execute("protolens-composite-failure", { command });
-		const resolveXdevMounted = (name: string) => {
-			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		const rendered = renderBashResult(result, command, false, session);
 		const errorGlyph = stripAnsi(theme.styledSymbol("status.error", "error"));
 		const doneGlyph = stripAnsi(theme.styledSymbol("status.done", "success"));
 		expect(rendered).toContain(`${errorGlyph} protolens://probe`);
@@ -940,19 +934,51 @@ test("protolens CLI usage failures exit 2 while tool failures exit 1", async () 
 	});
 });
 
-test("protolens CLI renders flag-style calls through device renderers", async () => {
+test("a device without its own renderer shows the typed invocation and its output", async () => {
 	await withBash(async (bash, _state, session) => {
 		const command = `protolens probe --value cli`;
 		const result = await bash.execute("protolens-cli-render", { command });
-		const resolveXdevMounted = (name: string) => {
-			const xdev = session.xdev;
-			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-		};
-		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		// The device's own renderer engages for CLI-form calls: label + parsed args preview.
-		expect(rendered).toContain("Probe");
-		expect(rendered).toContain('value="cli"');
-		expect(rendered).toContain("probe:cli");
+		const lines = renderBashResult(result, command, false, session)
+			.split("\n")
+			.map(line => line.trim());
+		const header = lines.findIndex(line => line.includes("protolens://probe: --value cli"));
+		expect(header).toBeGreaterThanOrEqual(0);
+		expect(lines[header + 1]).toBe("probe:cli");
+	});
+});
+
+test("a failed single device call renders its error under a failed device header, without exit notices", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `protolens probe --value fail`;
+		const result = await bash.execute("protolens-single-failure", { command });
+		const rendered = renderBashResult(result, command, true, session);
+		const errorGlyph = stripAnsi(theme.styledSymbol("status.error", "error"));
+		expect(rendered).toContain(`${errorGlyph} protolens://probe: --value fail`);
+		expect(rendered).toContain("probe:fail");
+		expect(rendered).not.toContain("exited with code");
+	});
+});
+
+test("a usage error renders under the rejected device's header", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `protolens probe --bogus x`;
+		const result = await bash.execute("protolens-usage-error", { command });
+		const rendered = renderBashResult(result, command, false, session);
+		const errorGlyph = stripAnsi(theme.styledSymbol("status.error", "error"));
+		expect(rendered).toContain(`${errorGlyph} protolens://probe: --bogus x`);
+		expect(rendered).toContain("unknown flag --bogus");
+	});
+});
+
+test("bare protolens renders the device listing as one row per device", async () => {
+	await withBash(async (bash, _state, session) => {
+		const result = await bash.execute("protolens-listing", { command: "protolens" });
+		const lines = renderBashResult(result, "protolens", false, session)
+			.split("\n")
+			.map(line => line.trim());
+		expect(lines.some(line => line.includes("protolens://") && line.includes("2 devices"))).toBe(true);
+		expect(lines.some(line => /^probe\s+Returns the supplied value/.test(line))).toBe(true);
+		expect(lines.some(line => /^probe2\s+Second probe tool/.test(line))).toBe(true);
 	});
 });
 

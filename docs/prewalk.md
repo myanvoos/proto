@@ -41,7 +41,7 @@ At startup, PROTO resolves the target with the normal model-role and model-match
 
 An armed prewalk injects a planning nudge. When the `checklist` tool is active, any successful `checklist` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first completed `edit` or `write` call.
 
-Calls to other tools do not trigger the handoff. A read-only `protolens://` device request routed through `write` also does not count; only device operations classified as workspace writes or execution count.
+Other tools do not trigger the handoff. Direct `edit`/`write` results count; results with `details.xdev` are device-routed and ignored.
 
 The switch is one-shot: after the handoff, prewalk disarms itself. The target model and thinking level are not changed when they already match the active session, because that handoff would be a no-op.
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
-import { formatCliUsageSynopsis, formatXdevCliCommand, parseXdevCliArgs, xdevFlagSpecs } from "./xdev-cli";
+import { formatCliUsageSynopsis, formatXdevCliFlags, parseXdevCliArgs, xdevFlagSpecs } from "./xdev-cli";
 
 function schemaOf(parameters: unknown): Record<string, unknown> {
 	const tool = {
@@ -28,7 +28,7 @@ const richSchema = schemaOf(
 
 function shellSplit(command: string): string[] {
 	const tokens = command.match(/'[^']*'|[^\s]+/g) ?? [];
-	return tokens.slice(2).map(token => (token.startsWith("'") ? token.slice(1, -1).replaceAll("'\\''", "'") : token));
+	return tokens.map(token => (token.startsWith("'") ? token.slice(1, -1).replaceAll("'\\''", "'") : token));
 }
 
 function parse(argv: string[], schema = richSchema, stdin?: string) {
@@ -85,8 +85,8 @@ describe("parseXdevCliArgs", () => {
 
 	test("rendered array commands parse back to the same entries", () => {
 		const args = { value: "hi", ids: ["-c", 'printf "%s" "$@"', String.raw`x,y\z`] };
-		const rendered = formatXdevCliCommand("probe", args);
-		const argv = rendered.split(" ").slice(2);
+		const rendered = formatXdevCliFlags(args);
+		const argv = rendered.split(" ");
 		expect(parse(shellSplit(rendered)).args).toEqual(args);
 		expect(argv.filter(token => token === "--ids")).toHaveLength(3);
 	});
@@ -242,20 +242,20 @@ describe("xdevFlagSpecs", () => {
 	});
 });
 
-describe("formatXdevCliCommand", () => {
+describe("formatXdevCliFlags", () => {
 	test("round-trips simple args into shell-safe CLI form", () => {
-		expect(formatXdevCliCommand("browser", { action: "run", name: "main", count: 2, flag: false })).toBe(
-			"protolens browser --action run --name main --count 2 --no-flag",
+		expect(formatXdevCliFlags({ action: "run", name: "main", count: 2, flag: false })).toBe(
+			"--action run --name main --count 2 --no-flag",
 		);
 	});
 
 	test("quotes values with spaces and special characters", () => {
-		expect(formatXdevCliCommand("read", { path: "my file.txt" })).toBe("protolens read --path 'my file.txt'");
-		expect(formatXdevCliCommand("read", { path: "it's" })).toBe("protolens read --path 'it'\\''s'");
+		expect(formatXdevCliFlags({ path: "my file.txt" })).toBe("--path 'my file.txt'");
+		expect(formatXdevCliFlags({ path: "it's" })).toBe("--path 'it'\\''s'");
 	});
 
 	test("truncates long values for display", () => {
-		const rendered = formatXdevCliCommand("read", { path: "x".repeat(200) });
+		const rendered = formatXdevCliFlags({ path: "x".repeat(200) });
 		expect(rendered.length).toBeLessThan(160);
 		expect(rendered.endsWith("…'")).toBe(true);
 	});

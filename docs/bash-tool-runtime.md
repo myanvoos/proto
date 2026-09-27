@@ -32,11 +32,11 @@ A trailing read selector is not part of the resource: `harness://bash.md:1-40` r
 
 When xdev is enabled, model-facing Bash runs use the Brush shell parser and register `protolens` as a builtin. `protolens <tool> '<json>'` therefore composes with the same shell language as native commands: pipelines, `|&`, redirects, command substitutions, subshells/groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` are parsed and executed by one runtime. The builtin receives the invocation-local working directory from each shell branch, so `(cd sub; protolens read '{"path":"file"}')` does not mutate the shared tool session; concurrent branches remain isolated.
 
-The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `protolensDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
+The bridge maps successful text content to stdout and tool-error text to stderr; tool-execution errors use status `1`, CLI usage errors use `2`, and bridge/serialization failure uses `125`. Non-text content and `xdev` details travel in `protolensDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of stdin bytes; the builtin decodes those bytes as UTF-8 for dispatch.
 
 `protolens` exists only inside the agent's Brush shell. Supervised processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `protolens` binary exists on `PATH`.
 
-Without positional JSON, `protolens` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | protolens read`. Positional JSON wins when both are supplied. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
+Without positional JSON, `protolens` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | protolens read`. A single positional JSON object takes precedence over piped stdin; `--json` cannot be combined with positional arguments. For a single-string device, bare stdin may instead be the plain payload. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
 
 ## Persistent interpreter cells
 
@@ -160,7 +160,7 @@ protolens context '{"resource":"kernel","op":"start","language":"bun","lane":"re
 
 Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.
 
-**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)` and `block_range` also address the parent; pass target source as `symbols(code=...)` for structural analysis. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
+**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)` and `block_range` read source through the target runtime, then send its text to the parent AST parser; target paths are not parent paths. Pass target source as `symbols(code=...)` when it is already in memory. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
 
 ## Live tool and background-job events
 
@@ -268,7 +268,7 @@ Python callbacks are zero-argument thunks or single-value stages; call `task_sig
 ```python
 rows = pipeline([1, 2, 3], lambda n: n * 2, lambda n: {"answer": n + 1},
                 streaming=True, settled=True, concurrency=2,
-                checkpoint="local://example-workflow", key="double-plus-one-v1", resume=True)
+                checkpoint="workflow-checkpoints", key="double-plus-one-v1", resume=True)
 display(rows)
 ```
 
@@ -370,11 +370,10 @@ Interception behavior:
 
 Default rule patterns (defined in code) target common misuses:
 
-- file readers (`cat`, `head`, `tail`, ...)
-- search tools (`grep`, `rg`, ...)
-- file finders (`find`, `fd`, ...)
-- in-place editors (`sed -i`, `perl -i`, `awk -i inplace`)
-- shell redirection writes (`echo ... > file`, heredoc redirection)
+- file readers (`cat`, `head`, `tail`, `less`, `more`) -> `read`
+- background launches (`nohup`, trailing `&`) -> `fleet`
+- long-running services, watchers, and debuggers (`bun`/`npm`/`pnpm`/`yarn` dev or start commands, `vite`, `next dev`, `nuxt dev`, `nodemon`, `lldb`, `gdb`, `tail -f`, and non-detached `docker compose up`) -> `fleet`
+- watch-mode commands with `--watch` or `-w` -> `fleet`
 
 ### Caveat
 
@@ -382,7 +381,7 @@ Default rule patterns (defined in code) target common misuses:
 
 ## 3) CWD validation and timeout resolution
 
-`cwd` is resolved relative to session cwd (`resolveToCwd`), then validated via `stat`:
+`cwd` is expanded (including internal URLs), then resolved with the session cwd (`path.resolve(session.cwd, expandPath(cwd))`) and validated via `stat`:
 
 - missing path -> `ToolError("Working directory does not exist: ...")`
 - non-directory -> `ToolError("Working directory is not a directory: ...")`
@@ -391,10 +390,11 @@ The default timeout is 300 seconds. `timeout: 0` disables the deadline. Other va
 
 ## 4) Artifact allocation
 
-Before execution, the tool allocates an artifact path/id (best-effort) for truncated output storage.
+Before local PTY or non-PTY execution, the tool allocates an artifact path/id (best-effort) for truncated output storage.
 
 - artifact allocation failure is non-fatal (execution continues without artifact spill file),
-- artifact id/path are passed into execution path for full-output persistence on truncation.
+- artifact id/path are passed into the local execution path for full-output persistence on truncation,
+- client-bridge terminal execution bypasses this allocation; if its final inline cap fires, result shaping may allocate a `bash-original` artifact instead.
 
 ## 5) PTY vs non-PTY execution selection
 
@@ -406,9 +406,9 @@ PTY eligibility is decided by `canUseInteractiveBashPty(pty, ctx)` (`src/tools/b
 
 If `pty` is requested but unavailable, the call falls back to non-PTY and appends a `pty requested but unavailable …` notice.
 
-Before the local PTY/non-PTY choice, a foreground (`async: false`) call can route to a managed background job (auto-backgrounding; see below) or — when the session's client advertises a terminal capability (`clientBridge.capabilities.terminal` + `createTerminal`, with `pty` false) — to a **client-bridge editor terminal** that runs the command remotely (streaming `terminalId` updates, killing on timeout, mapping a signal kill to exit code `137`). Otherwise it uses non-interactive `executeBash()`.
+Before the local PTY/non-PTY choice, a foreground (`async: false`) call can route to a managed background job (auto-backgrounding; see below) or — when the session's client advertises a terminal capability (`clientBridge.capabilities.terminal` + `createTerminal`, with `pty` false) — to a **client-bridge editor terminal** that runs the command remotely (when no `protolens` bridge is active; streaming `terminalId` updates, killing on timeout, mapping a signal kill to exit code `137`). Otherwise it uses non-interactive `executeBash()`.
 
-That means print mode and non-UI RPC/tool contexts always use non-PTY.
+That means print mode and non-UI RPC/tool contexts never use the local PTY overlay.
 
 ## Non-interactive execution engine (`executeBash`)
 
@@ -423,7 +423,7 @@ That means print mode and non-UI RPC/tool contexts always use non-PTY.
 - optional agent session key,
 - minimizer configuration.
 
-Session-level bang-command executions pass `sessionKey: this.sessionId`.
+Session-level bang-command executions pass the captured session id as `sessionKey` (`target.sessionId` in `BashRunner`).
 
 Tool-call executions pass `sessionKey: this.session.getSessionId?.()`, when available. In both surfaces, a session key isolates shell reuse per session; without one, reuse falls back to shell config/snapshot/env.
 Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Overlap no longer silently switches to a fresh shell. Named lanes isolate shell and Python/JavaScript state while allowing independent execution. A cancelled queued caller never executes its command. Managed background jobs default to `async:<jobId>`; explicit lanes are respected. Kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid waiting on their own calling cell. Do not request the calling lane from a nested tool call.
@@ -460,7 +460,6 @@ The per-command child environment is then built by `buildNonInteractiveEnv()` (`
 - editor prompts disabled (`GIT_EDITOR=true`, `EDITOR=true`, `VISUAL=true`),
 - terminal/credential prompts reduced (`TERM=dumb`, `GIT_TERMINAL_PROMPT=0`, `SSH_ASKPASS=/usr/bin/false`, `NO_COLOR=1`, `CI=true` unless `PI_BASH_NO_CI`/`CLAUDE_BASH_NO_CI` is set),
 - package-manager/tooling automation flags for non-interactive behavior (npm/pnpm/yarn/pip/cargo/terraform/gh, …),
-- on Windows, UTF-8 locale/codepage defaults are added when absent.
 
 ## Streaming and cancellation
 
@@ -493,7 +492,7 @@ On PTY startup/runtime error, sink receives `PTY error: ...` line and command fi
 
 ## Output handling: streaming, truncation, artifact spill
 
-Both PTY and non-PTY paths use `OutputSink`.
+Local PTY and native non-PTY paths use `OutputSink`; the client-bridge terminal path collects output through its terminal handle and applies final inline-cap shaping instead.
 
 ## OutputSink semantics
 
@@ -503,7 +502,7 @@ The bash executor builds the sink with `headBytes` and `maxColumns` from setting
 - when `headBytes > 0` (`tools.artifactHeadBytes`, default 20KB) it also retains a **head** window and elides the middle, splicing an elision marker between head and tail in `dump()`,
 - per-line column cap: when `maxColumns > 0` (`tools.outputMaxColumns`, default 768 bytes) over-wide lines are ellipsis-truncated at write time and the rest of the line is dropped,
 - tracks total bytes/lines seen,
-- mirrors the **raw, uncapped** stream to the artifact file when output overflows, a column cap dropped bytes, or the file is already active,
+- mirrors the **pre-column-cap** stream to the artifact file when output overflows, a column cap dropped bytes, or the file is already active (the artifact itself is capped at 4 MiB by default),
 - marks `truncated` on tail overflow, middle elision, column-cap drops, or file spill.
 
 `dump()` returns:
@@ -522,11 +521,11 @@ Runtime truncation is byte-threshold based in `OutputSink` (50KB tail window by 
 
 ### Shell output minimizer
 
-Non-PTY execution also passes shell-minimizer settings into the native `Shell` session. When the minimizer rewrites verbose output, the executor replaces the sink's visible text with the minimized text and, when possible, saves the raw original capture as a separate `bash-original` artifact referenced by a `[raw output: artifact://<id>]` footer.
+Native non-PTY execution also passes shell-minimizer settings into the native `Shell` session. When the minimizer rewrites verbose output, the executor replaces the sink's visible text with the minimized text and, when possible, saves the raw original capture as a separate `bash-original` artifact referenced by a `[raw output: artifact://<id>]` footer.
 
 ## Live tool updates and async jobs
 
-For non-PTY foreground execution, `BashTool` uses a separate `TailBuffer` for partial updates and emits `onUpdate` snapshots while command is running.
+For native non-PTY foreground execution, `BashTool` uses a separate `TailBuffer` for partial updates and emits `onUpdate` snapshots while the command is running.
 
 For PTY execution, live rendering is handled by custom UI overlay, not by `onUpdate` text chunks.
 
@@ -545,7 +544,7 @@ After execution:
 3. Empty output becomes `(no output)`.
 4. A final inline byte cap protects routes that bypass `OutputSink`; it reuses the sink artifact when available or saves a `bash-original` artifact.
 5. Truncation metadata is attached from the sink summary.
-6. A nonzero exit returns an error result with `details.exitCode`; zero returns success.
+6. A hard nonzero exit returns an error result with `details.exitCode`. Plain-shell exit code 1 is a soft exit (for example, grep/rg no-match); kernel-routed exit 1 remains a hard failure. Zero returns success.
 
 Result details can also include resolved/requested timeout, `timeoutDisabled`, client `terminalId`, wall time, async job state, and truncation metadata. Truncation includes direction/reason, total and shown line/byte counts, shown range, and `artifactId` when persistence succeeded.
 
@@ -558,6 +557,7 @@ Built-in tool wrapping appends the model-facing recovery notice automatically, f
 
 - `state` is `running`, `exited`, or `unknown`.
 - `exitCode`, `signal`, and `elapsedMs` are included only when observed; timeout/cancellation never fabricates an exit code or signal.
+- `softExit` marks a plain-shell exit code 1 that is not treated as a tool failure; kernel-routed exit code 1 does not set it.
 - `timeout` records `cause`, `scope`, and requested/effective milliseconds when known. Bash deadlines use `cause: "deadline"`, `scope: "command"`.
 - `collector` records output collection separately (`running`, `complete`, `failed`, or `unavailable`), including a collector error without changing process state.
 - `output` distinguishes `complete`, `truncated`, `summarized`, and `unavailable`; truncation carries counts and an artifact id when persistence succeeded.
@@ -572,7 +572,7 @@ A line such as `timeout: 60` or `all checks passed` is data, not lifecycle evide
 - collapsed mode shows visual-line-truncated preview,
 - expanded mode shows all currently available output text,
 - warning line includes truncation reason and `artifact://<id>` when truncated,
-- timeout value (from args) is shown in footer metadata line.
+- timeout values are retained in result details (`timeoutSeconds`, `requestedTimeoutSeconds`, or `timeoutDisabled`); the current renderer does not add a separate timeout footer line.
 
 ### Caveat: full artifact expansion
 
@@ -584,7 +584,7 @@ A line such as `timeout: 60` or `all checks passed` is data, not lifecycle evide
 
 - streams chunks live,
 - collapsed preview keeps last 20 logical lines,
-- line clamp at 4000 chars per line,
+- line clamp at 4000 visible columns per line,
 - shows truncation + artifact warnings when metadata is present,
 - marks cancelled/error/exit state separately.
 
@@ -617,7 +617,7 @@ This component is wired by `CommandController.handleBashCommand()` and fed from 
 - [`src/exec/non-interactive-env.ts`](../packages/coding-agent/src/exec/non-interactive-env.ts) — non-interactive child-process env defaults (`buildNonInteractiveEnv`) used by the non-PTY executor.
 - [`src/exec/direnv.ts`](../packages/coding-agent/src/exec/direnv.ts) — direnv/devenv environment loading used by executor preflight.
 - [`src/tools/bash-interactive.ts`](../packages/coding-agent/src/tools/bash-interactive.ts) — PTY runtime, overlay UI, input normalization, and interactive `TERM` setup.
-- [`src/tools/bash-kernel-cell.ts`](../packages/coding-agent/src/tools/bash-kernel-cell.ts) — recognizes embedded Python/JavaScript cell forms and source spans.
+- [`src/tools/bash-embedded-code.ts`](../packages/coding-agent/src/tools/bash-embedded-code.ts) — recognizes embedded Python/JavaScript cell forms and source spans.
 - [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — routes Bash cells to the retained Python/JavaScript runtimes and drains structured output.
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts) — `OutputSink`, `TailBuffer`, truncation/artifact spill, and summary metadata.
 - [`src/tools/output-meta.ts`](../packages/coding-agent/src/tools/output-meta.ts) — truncation metadata shape + notice injection wrapper.

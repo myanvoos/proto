@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, UserContent } from "@oh-my-pi/pi-ai";
 import { supportsLanguage } from "@oh-my-pi/pi-natives";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
@@ -107,7 +107,7 @@ import { extractLeadingCdTarget } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
-import { dispatchProtolensArgv, type ProtolensBashDispatch, xdevListing } from "./xdev";
+import { dispatchProtolensArgv, type ProtolensBashDispatch, type XdevDispatch, xdevEntries, xdevListing } from "./xdev";
 import { XdevUsageError } from "./xdev-cli";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
@@ -283,6 +283,8 @@ export interface ProtolensDispatchRecord {
 	recordError?: string;
 	content?: unknown[];
 	isError?: boolean;
+	/** The device's own text output, before shell composition merges it with other stages. */
+	output?: string;
 }
 
 function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
@@ -306,6 +308,7 @@ function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
 				recordError: typeof parsed.recordError === "string" ? parsed.recordError : undefined,
 				content: Array.isArray(parsed.content) ? parsed.content : undefined,
 				isError: parsed.isError === true,
+				output: typeof parsed.output === "string" ? parsed.output : undefined,
 			});
 		} catch (error) {
 			return {
@@ -789,10 +792,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	): Promise<AgentToolResult<BashToolDetails> | undefined> {
 		if (parsed.kind === "listing") {
 			const xdev = this.session.xdev;
-			const text = xdev
-				? xdevListing(xdev)
-				: "protolens:// is not mounted in this session. Enable tools.xdev to mount discoverable tools as protolens:// devices.";
-			return { content: [{ type: "text", text }], details: {} };
+			if (!xdev) {
+				const text =
+					"protolens:// is not mounted in this session. Enable tools.xdev to mount discoverable tools as protolens:// devices.";
+				return { content: [{ type: "text", text }], details: {} };
+			}
+			const listing: XdevDispatch = {
+				tool: "",
+				mode: "listing",
+				devices: xdevEntries(xdev).map(({ name, summary }) => ({ name, summary })),
+			};
+			return { content: [{ type: "text", text: xdevListing(xdev) }], details: { xdev: listing } };
 		}
 		return (await dispatchProtolensArgv(this.session, parsed.name, parsed.argv, parsed.stdin, parsed.stdinTruncated, {
 			toolCallId,
@@ -877,10 +887,22 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				)
 					throw error;
 				if (error instanceof XdevUsageError) {
+					const stderr = `${renderError(error)}\n`;
+					// Recorded like a failed dispatch so the card names the device and invocation it rejected.
+					const usage: XdevDispatch | undefined = request.name
+						? { tool: request.name, mode: "execute", argv: request.args ?? [] }
+						: undefined;
 					return JSON.stringify({
 						stdout: "",
-						stderr: `${renderError(error)}\n`,
+						stderr,
 						exitCode: 2,
+						record: JSON.stringify({
+							stageIndex: request.stageIndex,
+							xdev: usage,
+							content: [],
+							isError: true,
+							output: stderr,
+						}),
 					});
 				}
 				const message = error instanceof Error ? error.message : String(error);
@@ -905,12 +927,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					details: result.details,
 					content: nonText,
 					isError,
+					output: text,
 				});
 			} catch {
 				record = JSON.stringify({
 					stageIndex: request.stageIndex,
 					content: [],
 					isError,
+					output: text,
 					recordError: "non-text result was not serializable",
 				});
 			}
@@ -1079,14 +1103,24 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 		}
 		const protolensResult = parseProtolensDispatches(options.protolensDispatches ?? readProtolensDispatches(result));
-		const protolensImages: ImageContent[] = [];
+		const protolensMedia: UserContent[] = [];
 		const protolensJsonOutputs: unknown[] = [];
 		const protolensValues: unknown[] = [];
 		let protolensTransportFailure = false;
+		// Several dispatches share one shell output, and a failure's shell output carries exit notices;
+		// keep the device's own text so the card can show it.
+		const severalDispatches = protolensResult.records.length > 1;
 		for (const record of protolensResult.records) {
+			const keepDispatchOutput = severalDispatches || record.isError === true;
 			if (record.xdev !== undefined) {
 				protolensValues.push(
-					record.isError === true ? { ...(record.xdev as Record<string, unknown>), isError: true } : record.xdev,
+					record.isError === true || keepDispatchOutput
+						? {
+								...(record.xdev as Record<string, unknown>),
+								...(record.isError === true ? { isError: true } : {}),
+								...(keepDispatchOutput ? { output: record.output ?? "" } : {}),
+							}
+						: record.xdev,
 				);
 			}
 			// A failed intermediate protolens tool is data; final shell status remains authoritative.
@@ -1094,11 +1128,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			for (const block of record.content ?? []) {
 				if (
 					isRecord(block) &&
-					block.type === "image" &&
+					(block.type === "image" || block.type === "audio" || block.type === "video") &&
 					typeof block.data === "string" &&
 					typeof block.mimeType === "string"
 				) {
-					protolensImages.push({ type: "image", data: block.data, mimeType: block.mimeType });
+					protolensMedia.push({ type: block.type, data: block.data, mimeType: block.mimeType });
 				}
 			}
 		}
@@ -1135,7 +1169,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const details: BashToolDetails = {
 			execution,
-			deviceResults: protolensResult.records.length ? protolensResult.records : undefined,
+			deviceResults: protolensResult.records.length
+				? protolensResult.records.map(({ output: _output, ...record }) => record)
+				: undefined,
 		};
 		if (options.queriedExecutions) details.executionRecordOmitted = "executions query";
 		const fsObservations = "fsObservations" in result ? result.fsObservations : undefined;
@@ -1219,7 +1255,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), inlineCap);
 			updateExecutionOutput();
 			return toolResult(details)
-				.content([{ type: "text", text: timeoutOutputText }, ...(options.images ?? []), ...protolensImages])
+				.content([{ type: "text", text: timeoutOutputText }, ...(options.images ?? []), ...protolensMedia])
 				.truncationFromSummary(result, { direction: "tail" })
 				.error()
 				.done();
@@ -1231,7 +1267,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		updateExecutionOutput();
 
 		const resultBuilder = toolResult(details).truncationFromSummary(result, { direction: "tail" });
-		const contentImages = [...(options.images ?? []), ...protolensImages];
+		const contentImages: UserContent[] = [...(options.images ?? []), ...protolensMedia];
 		resultBuilder.content([{ type: "text", text: cappedOutputText }, ...contentImages]);
 		if (isHardFailureExit(exitCode, softExit) || protolensTransportFailure) resultBuilder.error();
 		return resultBuilder.done();

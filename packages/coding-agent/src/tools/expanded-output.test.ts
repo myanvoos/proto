@@ -8,7 +8,6 @@ import { computerToolRenderer } from "./computer-renderer";
 import { formatDefaultToolExecution } from "./default-renderer";
 import { renderReadUrlResult } from "./fetch";
 import { fleetToolRenderer } from "./fleet";
-import { inspectMediaToolRenderer } from "./inspect-media-renderer";
 import {
 	JSON_TREE_MAX_DEPTH_EXPANDED,
 	JSON_TREE_MAX_LINES_EXPANDED,
@@ -68,25 +67,18 @@ const RENDERERS: Array<{ name: string; render: (expanded: boolean) => string }> 
 			),
 	},
 	{
-		name: "protolens composite card",
+		name: "protolens chained dispatch card",
 		render: expanded => {
 			const dispatches: XdevDispatch[] = [
-				{ tool: "browser", mode: "execute" },
-				{ tool: "fleet", mode: "execute" },
+				{ tool: "browser", mode: "execute", output: "first" },
+				{ tool: "fleet", mode: "execute", output: BODY },
 			];
-			return renderText(renderXdevResult(dispatches, TEXT_RESULT, { expanded, isPartial: false }, theme));
+			return renderText(
+				renderXdevResult(dispatches, TEXT_RESULT, { expanded, isPartial: false }, theme, undefined, "chain"),
+			);
 		},
 	},
-	{
-		name: "inspect_media result",
-		render: expanded =>
-			renderText(
-				inspectMediaToolRenderer.renderResult(TEXT_RESULT, { expanded, isPartial: false }, theme, {
-					path: "shot.png",
-					question: "what is here?",
-				}),
-			),
-	},
+
 	{
 		name: "read url content preview",
 		render: expanded =>

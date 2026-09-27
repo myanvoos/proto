@@ -167,7 +167,6 @@ const XDEV_POSITIONAL_ORDER: Record<string, readonly string[]> = {
 	read: ["path"],
 	ask: ["i"],
 	web_search: ["query"],
-	inspect_media: ["path", "question"],
 	context: ["op", "resource"],
 	jobs: ["op"],
 	browser: ["action", "name", "url", "code"],
@@ -577,7 +576,7 @@ function consumeJsonTokens(argv: readonly string[], startIndex: number): { text:
 	return { text: argv[startIndex], nextIndex: startIndex + 1 };
 }
 
-function quoteShellValue(value: string): string {
+export function quoteShellValue(value: string): string {
 	if (value.length === 0) return "''";
 	if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
 	return `'${value.replaceAll("'", "'\\''")}'`;
@@ -590,9 +589,9 @@ function displayValue(value: string): string {
 	return `${value.slice(0, CLI_DISPLAY_VALUE_MAX - 1).trimEnd()}…`;
 }
 
-/** Render device args back into the canonical CLI command line (for TUI previews and hints). */
-export function formatXdevCliCommand(name: string, args: Record<string, unknown>): string {
-	const parts = [`protolens ${name}`];
+/** Render device args back into canonical CLI flags (for TUI previews), e.g. `--op list`. */
+export function formatXdevCliFlags(args: Record<string, unknown>): string {
+	const parts: string[] = [];
 	for (const [key, raw] of Object.entries(args)) {
 		if (raw === undefined) continue;
 		if (typeof raw === "boolean") {
