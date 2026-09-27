@@ -3,59 +3,23 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
-import {
-	$env,
-	$which,
-	getAgentDir,
-	getGpuCachePath,
-	getProjectDir,
-	hasFsCode,
-	isEnoent,
-	logger,
-	prompt,
-} from "@oh-my-pi/pi-utils";
+import { $env, $which, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
 import { findConfigFile } from "./config";
-import type { Personality, SkillsSettings } from "./config/settings";
+import type { SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
-import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
-import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
-import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
-
-const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, string> = {
-	default: defaultPersonality,
-	friendly: friendlyPersonality,
-	pragmatic: pragmaticPersonality,
-};
-
-async function loadPersonalityOverride(): Promise<string | null> {
-	const filePath = path.join(getAgentDir(), "PERSONALITY.md");
-	try {
-		const content = (await Bun.file(filePath).text()).trim();
-		if (content) return content;
-		logger.warn("PERSONALITY.md is empty; using the configured personality preset", { path: filePath });
-	} catch (error) {
-		if (!isEnoent(error)) {
-			logger.warn("Failed to read PERSONALITY.md; using the configured personality preset", {
-				path: filePath,
-				error: String(error),
-			});
-		}
-	}
-	return null;
-}
 
 interface AlwaysApplyRule {
 	name: string;
@@ -552,8 +516,6 @@ export interface BuildSystemPromptOptions {
 
 	includeModelInPrompt?: boolean;
 
-	personality?: Personality;
-
 	includeWorkspaceTree?: boolean;
 
 	renderMermaid?: boolean;
@@ -602,7 +564,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		scoutAvailable = true,
 		model,
 		includeModelInPrompt = true,
-		personality = "default",
 		includeWorkspaceTree = false,
 		renderMermaid = true,
 		xdevTools = [],
@@ -719,14 +680,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const gpuPromise = logger.time("getCachedGpu", getCachedGpu);
 	const auxToolsPromise = logger.time("getAuxTools", getAuxTools);
 
-	const bundledPersonality = personality === "none" ? "" : PERSONALITY_SPECS[personality].trim();
-	const personalityPromise: Promise<string> =
-		personality === "none"
-			? Promise.resolve("")
-			: logger
-					.time("loadPersonalityOverride", loadPersonalityOverride)
-					.then(override => override ?? bundledPersonality);
-
 	const [
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
@@ -738,7 +691,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cpuModel,
 		gpu,
 		auxTools,
-		personalityBlock,
 	] = await Promise.all([
 		withDeadline(
 			"customPrompt",
@@ -764,7 +716,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("getCpuModel", cpuModelPromise, prepDefaults.cpuModel),
 		withDeadline("getCachedGpu", gpuPromise, prepDefaults.gpu),
 		withDeadline("getAuxTools", auxToolsPromise, prepDefaults.auxTools),
-		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
 	]);
 	clearTimeout(deadlineTimer);
 	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
@@ -860,7 +811,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd: promptCwd,
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
-		personality: personalityBlock,
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		MAX_CONCURRENCY: normalizeConcurrencyLimit(orchestratorMaxConcurrency),

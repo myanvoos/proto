@@ -1,6 +1,6 @@
 # System Prompt Customization
 
-How the coding agent assembles its system prompt and what users can control with `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYSTEM.md`, and the matching CLI flags.
+How the coding agent assembles its system prompt and what users can control with `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYSTEM.md`, and the matching launch options where available.
 
 Primary implementation:
 
@@ -8,8 +8,9 @@ Primary implementation:
 - `packages/coding-agent/src/sdk.ts` (`CreateAgentSessionOptions`, prompt construction)
 - `packages/coding-agent/src/system-prompt.ts` (`buildSystemPrompt`, `resolvePromptInput`)
 - `packages/coding-agent/src/prompts/system/system-prompt.md` (default instruction template)
-- `packages/coding-agent/src/prompts/system/custom-system-prompt.md` (template used when `SYSTEM.md` is active)
+- `packages/coding-agent/src/prompts/system/custom-system-prompt.md` (template used when a custom system prompt is active)
 - `packages/coding-agent/src/prompts/system/project-prompt.md` (project/environment footer)
+- `packages/coding-agent/src/session/date-cwd-reminder.ts` and `packages/coding-agent/src/prompts/system/date-cwd-reminder.md` (per-request date/cwd reminder)
 
 ## Inputs and precedence
 
@@ -20,14 +21,14 @@ Primary implementation:
 | `--append-system-prompt <text-or-file>` | CLI                    | Adds text to the rendered prompt. Highest append precedence.                                             |
 | `APPEND_SYSTEM.md`                      | Discovered config file | Same effect as the append flag; used when the flag is absent.                                            |
 
-`SYSTEM.md` and `APPEND_SYSTEM.md` are searched project-first, then user-level. At each scope the config bases are ordered `.proto`, `.claude`, `.codex`, `.gemini`:
+`SYSTEM.md` and `APPEND_SYSTEM.md` are searched project-first, then user-level. At each scope the config bases are ordered `.proto`, `.pi`, `.claude`, `.codex`, `.gemini`:
 
-1. `<cwd>/.proto/<file>`, `<cwd>/.claude/<file>`, `<cwd>/.codex/<file>`, `<cwd>/.gemini/<file>`
-2. `~/.proto/agent/<file>`, `~/.claude/<file>`, `~/.codex/<file>`, `~/.gemini/<file>`
+1. `<cwd>/.proto/<file>`, `<cwd>/.pi/<file>`, `<cwd>/.claude/<file>`, `<cwd>/.codex/<file>`, `<cwd>/.gemini/<file>`
+2. `~/.proto/agent/<file>`, `~/.pi/agent/<file>`, `~/.claude/<file>`, `~/.codex/<file>`, `~/.gemini/<file>`
 
-The native user path follows the active profile: with `proto --profile work`, `~/.proto/agent` becomes `~/.proto/profiles/work/agent`. `PI_CONFIG_DIR` changes the native config-directory name. This shared config lookup does not use `PI_CODING_AGENT_DIR` as an arbitrary replacement base.
+The native user path follows the active profile: with `proto --profile work`, `~/.proto/agent` becomes `~/.proto/profiles/work/agent`. `PI_CONFIG_DIR` changes the native user config-directory name. `CLAUDE_CONFIG_DIR` overrides the user `.claude` base. This shared config lookup does not use `PI_CODING_AGENT_DIR` as an arbitrary replacement base.
 
-Discovery does **not** walk ancestors. Starting PROTO in `<repo>/packages/api` does not discover `<repo>/.proto/SYSTEM.md`; launch from `<repo>`, put the file under the current directory's config base, or use a user-level file. See [Configuration usage](./config-usage.md) for the shared config-directory contract.
+The CLI's direct file lookup does **not** walk ancestors. Starting PROTO in `<repo>/packages/api` does not make that lookup discover `<repo>/.proto/APPEND_SYSTEM.md`; launch from `<repo>`, put the file under the current directory's config base, or use a user-level file. When no explicit custom prompt is supplied, SDK capability discovery can still load a nearest ancestor `SYSTEM.md` from native or agent config. See [Configuration usage](./config-usage.md) for the shared config-directory contract.
 
 A flag wins over every discovered file. For each filename, project scope wins over user scope and the first config base in the order above wins within that scope.
 
@@ -49,9 +50,9 @@ The custom template keeps these generated surfaces:
 
 The separate project/environment footer remains and carries workstation data, deeper-directory context pointers, optional workspace information, and the final completion requirements. Optional extra system blocks, such as computer-tool safety and active nested-repository context, also remain when applicable.
 
-The current date and working directory no longer live in the footer: they are emitted as a `<system-reminder>` block on the first user turn of each provider request (`date-cwd-reminder.md`). Keeping per-request bytes out of the system prompt lets open-weight providers (DeepSeek, Qwen, GLM, …) that render tool schemas after the system content keep their prefix cache, and lets a session crossing midnight refresh the date without rebuilding the prompt (#7404).
+The current date and working directory no longer live in the footer: `DateCwdReminderInjector` applies `date-cwd-reminder.md` during each provider-context transform. It initially prepends the `<system-reminder>` block to the first user turn, then injects a refreshed reminder into the latest unseen user turn (or a developer control message) when the date or cwd changes. Keeping per-request bytes out of the system prompt lets open-weight providers (DeepSeek, Qwen, GLM, …) that render tool schemas after the system content keep their prefix cache, and lets a session crossing midnight refresh the date without rebuilding the prompt (#7404).
 
-What disappears is the content unique to the default instruction template: its built-in role/personality text, tool inventory and general tool policy, internal-URL catalog, exploration/delegation/workflow rules, and `protolens://` protocol guidance. Generated skills and rules are **not** lost; the custom template renders them explicitly.
+What disappears is the content unique to the default instruction template: its built-in role text, tool inventory and general tool policy, internal-URL catalog, exploration/delegation/workflow rules, and `protolens://` protocol guidance. Generated skills and rules are **not** lost; the custom template renders them explicitly.
 
 Consequences:
 
@@ -81,7 +82,7 @@ on
 {{#if thinkingLevel}}thinking level: {{thinkingLevel}}{{/if}}
 ```
 
-those characters reach the model literally. Internal values such as `cwd`, `skills`, `rules`, and `toolRefs` are private template implementation details, not a user templating API. The calendar date is deliberately not exposed as a template value anymore — it rides the per-request first-turn reminder instead (see above).
+those characters reach the model literally. Internal values such as `cwd`, `skills`, `rules`, and `toolRefs` are private template implementation details, not a user templating API. The calendar date is deliberately not exposed as a template value anymore — it rides the per-request date/cwd reminder instead (see above).
 
 ## Recipes
 
@@ -105,17 +106,6 @@ Cite paths with backticks.
 
 PROTO still adds the generated context, skills, rules, and project/environment footer, but not the default instruction template's tool and workflow guidance.
 
-### Replace the personality block
-
-The default template renders a personality block chosen by the `personality` setting (`default`, `friendly`, `pragmatic`, `none`). A user-level `PERSONALITY.md` replaces the selected preset's text:
-
-```text
-# ~/.proto/agent/PERSONALITY.md
-Follow ASD-STE100 Simplified Technical English for all responses.
-```
-
-Only the agent directory is checked (`~/.proto/agent` by default; profile- and XDG-aware) — there is no project-level or other-config-base lookup. `personality: none` still omits the block entirely (subagents always run with `none`), and an empty or unreadable file falls back to the configured preset with a logged warning.
-
 ### Customize automatic session titles
 
 `SYSTEM.md` and `APPEND_SYSTEM.md` do not affect title-generation calls. Use `TITLE_SYSTEM.md`:
@@ -126,7 +116,7 @@ Generate a session name using lowercase `<type>:<primary-objective>`.
 If the message has no concrete task, output exactly `none`.
 ```
 
-`TITLE_SYSTEM.md` uses the same project-first, config-base discovery and no-ancestor-walk behavior. When absent, PROTO uses its bundled title prompt. The override is used for both initial automatic titles and replan-driven title refreshes.
+`TITLE_SYSTEM.md` uses the same project-first, config-base discovery and no-ancestor-walk behavior; there is no `--title-system-prompt` flag. When absent, PROTO uses its bundled title prompt. The override is used for both initial automatic titles and replan-driven title refreshes when `title.refreshOnReplan` is enabled.
 
 Generated title output has an enforced normalization contract even with a
 custom prompt. PROTO considers only the first trimmed line, strips surrounding
@@ -149,8 +139,7 @@ The CLI flags and files do **not** set this property: they set `customSystemProm
 | Replace the default instruction template but keep generated context, skills, and rules | `SYSTEM.md` or `--system-prompt`                                         |
 | Replace every provider-facing system block                                             | SDK `CreateAgentSessionOptions.systemPrompt`                             |
 | Customize automatic session titles                                                     | `TITLE_SYSTEM.md`                                                        |
-| Replace the personality block while keeping the rest of the default prompt            | `PERSONALITY.md`                                                         |
 | Use `{{cwd}}` or other internal variables in a user file                               | Not supported; user content is inserted verbatim                         |
 | Inherit selected default-template sections                                             | Not supported; append to the default or copy the required text           |
 | Per-directory override                                                                 | A supported config base directly under the cwd used to launch PROTO        |
-| Global override                                                                        | The active native agent directory, or another supported user config base |
+| Global override                                                                        | Active native config path (profile/`PI_CONFIG_DIR`-aware), or another supported user config base; `PI_CODING_AGENT_DIR` does not alter this lookup |
