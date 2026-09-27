@@ -16,7 +16,7 @@ Both persistent orchestration and structured subagent calls enforce the same par
 
 Worker identity and lifecycle use immutable ids in `AgentRegistry` and `AgentLifecycleManager`; labels never route messages. Send receipts are `accepted`, `queued`, `delivered`, `rejected`, or `terminal`; terminal receipts include the last turn, reason, and `history://` / `agent://` recovery paths. The parent journal stores `orchestrator-worker-lifecycle` spawn, turn, and tombstone events; child conversations live in the parent artifact directory and can be parked and revived from JSONL. Parent session ID, session file, and owner agent ID jointly scope every worker, so session switches suspend process-local turns without leaking their results into another session.
 
-Turn numbers are reserved when a turn is accepted, including while it waits for concurrency capacity. Cancelling a queued turn does not recycle its number. Wait receipts retain the watched turn and job identity even if a queued follow-up starts before delivery; terminal receipts identify the latest accepted turn, not a previous completion.
+Turn numbers are reserved when a turn is accepted, including while it waits for concurrency capacity. Cancelling a queued turn does not recycle its number. Wait receipts retain the watched turn and job identity even if a queued follow-up starts before delivery; terminal receipts identify the latest started turn, and accepted-but-not-started queued inputs are discarded.
 
 A worker running a peer-initiated turn remains addressable by its parent. `fleet` `send` accepts the parent's next turn and waits for the existing streaming turn to settle before starting it; peer activity alone never makes the worker terminal.
 

@@ -585,7 +585,7 @@ Request shaping:
 - `supportsStore` — emit `store: false` on requests. Default: auto (off for non-standard endpoints).
 - `supportsDeveloperRole` — use the `developer` system role for reasoning models instead of `system`. Default: auto.
 - `supportsMultipleSystemMessages` — preserve separate leading system/developer messages instead of coalescing them. Default: auto (known OpenAI-compatible hosted APIs preserve; strict-template/local hosts coalesce).
-- `supportsUsageInStreaming` — send `stream_options: { include_usage: true }` to receive token usage on streaming responses. Default: `true`.
+- `supportsUsageInStreaming` — send `stream_options: { include_usage: true }` to receive token usage on streaming responses. Default: auto (true except Cerebras).
 - `maxTokensField` — `"max_completion_tokens"` or `"max_tokens"`. Default: auto.
 - `supportsToolChoice` — emit the `tool_choice` parameter when the caller forces a specific tool. Default: `true`. Set `false` for endpoints that 400 on `tool_choice` (e.g. DeepSeek when reasoning is on).
 - `supportsForcedToolChoice` — accept a forced `tool_choice` that requires a specific tool. Default: `true`. When `false`, a forced selector is downgraded to `auto` so the tool stays available for endpoints that reject forced tool calls (e.g. some thinking-required OpenAI-compatible models).
@@ -612,7 +612,7 @@ Image handling:
 
 Reasoning / thinking:
 
-- `supportsReasoningEffort` — accept `reasoning_effort`. Default: auto (off for Grok, Z.ai/Zhipu, and Xiaomi MiMo).
+- `supportsReasoningEffort` — accept `reasoning_effort`. Default: auto (off for Grok, Xiaomi MiMo, and Z.ai/Zhipu models without the supported GLM-5.2/5.3 effort contract).
 - `supportsReasoningParams` — whether request shaping may send reasoning params at all. Default: auto (off for GitHub Copilot chat-completions).
 - `supportsReasoningSummary` — whether Responses requests may include `reasoning.summary`. Default: auto (off for xAI hosts). Set `false` for Responses-compatible endpoints that reject the summary field.
 - `reasoningEffortMap` — partial map from internal effort levels (`minimal|low|medium|high|xhigh|max`) to provider-specific strings (e.g. Fireworks GLM maps `minimal -> "none"`).

@@ -401,8 +401,8 @@ function usesCommonJsBindings(root: unknown): boolean {
 			const names: string[] = [];
 			collectBindingNames(node.id, names);
 			for (const parameter of (node.params as unknown[]) ?? []) collectBindingNames(parameter, names);
-			const body = node.body as { body?: BabelProgramNode[] } | undefined;
-			const bindings = collectCellBindings(body?.body ?? []);
+			const body = node.body as BabelNode | undefined;
+			const bindings = collectCellBindings(body?.type === "BlockStatement" ? (body.body as BabelProgramNode[]) : []);
 			visit(
 				node.body,
 				[...scopes, new Set([...names, ...bindings.lexical, ...bindings.global])],

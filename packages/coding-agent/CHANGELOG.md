@@ -22,6 +22,10 @@
 
 ### Added
 
+- `read` sends supported audio and video directly to the active model, with notices for unsupported media instead of side-model analysis
+- `recall` accepts JavaScript query functions for scoped transcript search and kernel map/reduce with `tiny`/`smol` model calls
+- Kernel `completion` accepts `model: "tiny"` for the configured online tiny role
+
 - Native-interpreter differential coverage for kernel language semantics, invocation identity, byte streams, side effects, and exit status
 - `retain_task(asyncio.Task)` / `retainTask(resource)` for explicit background lifetime beyond cell completion
 

@@ -71,7 +71,7 @@ running and nothing falls back to name-only control.
   job's own completion delivery is untouched. Settlement ends the watch.
 - **Command probe**: stream mode follows one long-running helper; poll mode (`everyMs` ≥ 1000)
   re-runs it and reports only changed output. The helper belongs to the watch and is reaped on
-  stop. A line or poll output over 1 MiB stops the watch with an error.
+  stop. A stream line or either poll stream over 1 MiB stops the watch with an error.
 - `match` is a JS `RegExp` (`u` flag). `maxEvents` (default `monitor.maxEvents`) counts matching
   output only. `timeoutMs` ≥ 1000 bounds the lifetime.
 - Events carry watch id, sequence, kind (`output`, `gap`, `exit`, `replaced`, `limit`,
@@ -87,11 +87,12 @@ running and nothing falls back to name-only control.
   sources. Unknown, foreign or stale targets fail before waiting.
 - The wait holds a lease on its job ids (`withJobWait`), so automatic delivery skips them; the
   winning result is consumed and acknowledged inside the lease. Leases are counted, so
-  overlapping waits keep suppression until the last ends. A job that settled during the lease
-  but was not consumed (a message won, or the wait was interrupted) is re-queued for automatic
-  delivery when the lease ends.
-- Process targets wait for exit of that incarnation. The completion is claimed once per
-  session: either this wait or the automatic launch-completion message reports it.
+  overlapping waits keep suppression until the last ends. A completed or failed finite job that
+  settled during the lease but was not consumed (a message won, or the wait was interrupted) is
+  re-queued for automatic delivery when the lease ends.
+- Process targets wait for exit of that incarnation, or report it as replaced when a restart retires
+  it. The completion is claimed once per session: either this wait or the automatic launch-completion
+  message reports it.
 - Worker callers lend their runnable permit through
   `OrchestratorRuntime.withWaitPermit`, so a parent waiting on its own children cannot starve
   them at `orchestrator.maxConcurrency`.

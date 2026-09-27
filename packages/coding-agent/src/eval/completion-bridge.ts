@@ -26,9 +26,10 @@ import type { LiteralCompletionArgs, StreamedCompletionLanguage } from "./specul
 export const EVAL_COMPLETION_BRIDGE_NAME = "__completion__";
 
 const STRUCTURED_TOOL_NAME = "respond";
-export type CompletionTier = "smol" | "default" | "slow";
+export type CompletionTier = "tiny" | "smol" | "default" | "slow";
 
 const TIER_TO_PATTERN: Record<CompletionTier, string> = {
+	tiny: "@tiny",
 	smol: "@smol",
 	default: "@default",
 	slow: "@slow",

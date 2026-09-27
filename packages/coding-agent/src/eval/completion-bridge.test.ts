@@ -57,7 +57,7 @@ test("a provider-qualified reference picks that provider out of an ambiguous poo
 test("an id missing from the pool reports the pool's near matches", async () => {
 	const session = stubSession([model("vendor-a", "claude-opus-5"), model("vendor-b", "gpt-6")]);
 	expect(await completionError(session, "opus")).toBe(
-		'completion() model "opus" is not in the model pool. Pass a tier ("smol", "default", "slow") or an available model id. Closest available: vendor-a/claude-opus-5.',
+		'completion() model "opus" is not in the model pool. Pass a tier ("tiny", "smol", "default", "slow") or an available model id. Closest available: vendor-a/claude-opus-5.',
 	);
 });
 
