@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { theme } from "../modes/theme/theme";
 import { expandPath, normalizeLocalScheme } from "../tools/path-utils";
+import type { ExtensionUIContext } from "./extensions/types";
 import type { HookUIContext } from "./hooks/types";
 
 export function resolvePath(filePath: string, cwd: string): string {
@@ -31,6 +32,24 @@ export function createNoOpUIContext(): HookUIContext {
 		editor: async () => undefined,
 		get theme() {
 			return theme;
+		},
+	};
+}
+
+/** Presents a host extension UI through the narrower hook/custom-tool UI contract. */
+export function hookUIContextFromExtension(ui: ExtensionUIContext): HookUIContext {
+	return {
+		select: (title, options) => ui.select(title, options),
+		confirm: (title, message) => ui.confirm(title, message),
+		input: (title, placeholder) => ui.input(title, placeholder),
+		notify: (message, type) => ui.notify(message, type),
+		setStatus: (key, text) => ui.setStatus(key, text),
+		custom: factory => ui.custom((tui, theme, _keybindings, done) => factory(tui, theme, done)),
+		setEditorText: text => ui.setEditorText(text),
+		getEditorText: () => ui.getEditorText(),
+		editor: (title, prefill, options, editorOptions) => ui.editor(title, prefill, options, editorOptions),
+		get theme() {
+			return ui.theme;
 		},
 	};
 }

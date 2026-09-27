@@ -113,6 +113,7 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
+import { hookUIContextFromExtension } from "./extensibility/utils";
 import { LocalProtocolHandler, type LocalProtocolOptions, resolveFleetRoot } from "./internal-urls";
 import {
 	deduplicateMCPToolsByName,
@@ -1581,6 +1582,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const builtInToolNames = [...toolRegistry.keys()];
 		let customToolPaths: ToolPathWithSource[] = [];
+		let setCustomToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined;
 		const inlineExtensions: ExtensionFactory[] = [];
 		if (!restrictToolNames) {
 			const imageGenRequested = !options.toolNames || options.toolNames.includes("generate_image");
@@ -1601,6 +1603,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const customToolsLoadResult = await logger.time("loadCustomTools", () =>
 				loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),
 			);
+			setCustomToolUIContext = (uiContext, hasUI) =>
+				customToolsLoadResult.setUIContext(hookUIContextFromExtension(uiContext), hasUI);
 			for (const { path, error } of customToolsLoadResult.errors) {
 				logger.error("Custom tool load failed", { path, error });
 			}
@@ -2580,6 +2584,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
+			setCustomToolUIContext?.(uiContext, hasUI);
 		};
 
 		const initialTools = initialToolNames
@@ -2735,7 +2740,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			xdev: undefined,
 			isToolActive: name => toolSession.isToolActive?.(name) === true,
 		};
-		const advisorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
+		// `read` lives outside BUILTIN_TOOLS but is the advisor's default grant.
+		const advisorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [new ReadTool(advisorToolSession)];
 		for (const name in BUILTIN_TOOLS) {
 			advisorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession));
 		}

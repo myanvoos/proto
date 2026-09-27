@@ -23,7 +23,7 @@ This document describes how MCP servers are discovered, connected, exposed as to
 `createAgentSession()` in `src/sdk.ts` performs MCP startup when `enableMCP` is true (default). There are two paths:
 
 - **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set.
-- **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disposing the manager if the session was torn down mid-connect).
+- **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disconnecting the manager if the session was torn down mid-connect).
 
 Both paths:
 
@@ -138,7 +138,7 @@ Each pending `toolsPromise` also has a background continuation that eventually:
 
 `createAgentSession()` then pushes these tools into `customTools`, which are wrapped and added to the runtime tool registry with names like `mcp__<server>_<tool>`.
 
-Server and tool name components are lowercased and sanitized to letters/underscores. If two distinct origins mint the same runtime name, PROTO logs the collision and keeps a deterministic winner based on the original server/tool identity, so reconnect ordering cannot change ownership.
+Server and tool name components are lowercased and sanitized to letters, digits, and underscores; generated names are capped at 64 characters. If two distinct origins mint the same runtime name, PROTO logs the collision, keeps the plain name for the lexicographically smaller original `server\0tool` origin, and appends a stable suffix to the other, so reconnect ordering cannot change ownership.
 
 ### Tool calls
 

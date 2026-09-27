@@ -18,7 +18,7 @@ If you need the model to call code directly, use a custom tool.
 There are two active integration styles:
 
 1. **SDK-provided custom tools** (`options.customTools`)
-   - In unrestricted SDK bootstrap, converted to extension tool definitions, registered through a generated extension, and always included in the initial active tool set.
+   - In unrestricted SDK bootstrap, converted to extension tool definitions, registered through a generated extension, and included in the initial active tool set unless marked `hidden: true`.
    - In a restricted session (`restrictToolNames: true`), SDK-provided custom tools are excluded unless `allowRestrictedCustomTools: true`; opted-in tools are active only when their names also appear in `toolNames`.
 
 2. **Filesystem-discovered modules via loader API** (`discoverAndLoadCustomTools` / `loadCustomTools`)
@@ -61,7 +61,7 @@ CustomTool.execute(toolCallId, params, onUpdate, ctx, signal)
 
 ## Module contract
 
-A custom tool module must export a function (default export preferred):
+A custom tool module must export a function as its default export (CommonJS modules may export the function directly):
 
 ```ts
 import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
@@ -131,7 +131,7 @@ From `types.ts` and `loader.ts`:
 - `pi`: injected `@oh-my-pi/pi-coding-agent` exports
 - `pushPendingAction(action)`: stage a preview action that is finalized by writing a plain-text reason to `protolens://resolve` or `protolens://reject`
 
-The loader starts with a no-op UI context and requires host code to call `setUIContext(...)` when real UI is ready. If the runtime did not provide a pending-action store, calling `pushPendingAction` throws `Pending action store unavailable for custom tools in this runtime.`
+The loader starts with a no-op UI context and requires host code to call `setUIContext(...)` when real UI is ready. `createAgentSession` does this for tools it loads: the returned `setToolUIContext(...)` also updates `pi.ui`/`pi.hasUI` for filesystem-loaded custom tools. If the runtime did not provide a pending-action store, calling `pushPendingAction` throws `Pending action store unavailable for custom tools in this runtime.`
 
 ## Execution contract and typing
 
@@ -155,8 +155,8 @@ Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, 
 
 - Session bootstrap wraps included SDK-provided and discovered custom tools as extension tool definitions; library consumers may instead use `CustomToolAdapter` directly.
 - They are inserted into the session tool registry by name.
-- In unrestricted SDK bootstrap, custom and extension-registered tools are force-included in the initial active set. Restricted sessions exclude SDK-provided custom tools unless `allowRestrictedCustomTools: true`, and expose an opted-in custom tool only when its name appears in `toolNames`.
-- CLI `--tools` currently validates only built-in tool names; custom tool inclusion is handled through discovery/registration paths and SDK options.
+- In unrestricted SDK bootstrap, custom and extension-registered tools are force-included in the initial active set unless marked hidden/default-inactive. Restricted sessions exclude SDK-provided custom tools unless `allowRestrictedCustomTools: true`, and expose an opted-in custom tool only when its name appears in `toolNames`.
+- CLI `--tools` accepts built-in names plus names present in the session registry, including MCP, extension, and custom tools.
 
 ## Rendering hooks
 

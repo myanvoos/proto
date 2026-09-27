@@ -180,7 +180,7 @@ Lifecycle/state transition:
 12. reset memory/tool session state as required, reconnect listeners, run mode reconciliation, and refresh the workspace-aware base system prompt
 13. restore advisor cost for a different session, finish the bash transition, notify session-change callbacks, and return `true`
 
-Any failure after the snapshot restores the previous manager and runtime state, reconnects/reconciles it, marks the bash transition failed, then rethrows. An applied project change is first undone through `onCwdChange(previousCwd, targetCwd)`; when that fails the session is disposed.
+Any escaping failure after the snapshot restores the previous manager and runtime state, reconnects/reconciles it, marks the bash transition failed, then rethrows. Mode reconciliation and base-prompt refresh failures are logged and left non-fatal. An applied project change is first undone through `onCwdChange(previousCwd, targetCwd)`; when that fails the session is disposed.
 
 ## UI state rebuild after interactive switch
 

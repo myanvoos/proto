@@ -2,7 +2,7 @@
 
 The advisor subsystem attaches one or more optional reviewer models to a session. Each advisor reviews primary-agent transcript updates, can inspect the workspace with its own tools, and injects concise advice back into the primary session.
 
-An advisor does not mutate primary session state directly. Its default investigative toolset is `read`, `grep`, and `glob`, but a `WATCHDOG.yml` roster entry may grant any built-in — including mutating tools such as `edit`, `write`, `bash`, and `browser`. Those tools run in an isolated advisor `ToolSession`; grant them only when the advisor model and workspace are trusted (see [Tools and isolation](#tools-and-isolation)).
+An advisor does not mutate primary session state directly. Its default grant is `read`; the SDK builds the advisor pool from `read` plus every `BUILTIN_TOOLS` factory, and a grant is limited to tools that factory actually constructed. A `WATCHDOG.yml` roster entry may grant any constructed built-in, including `bash`, `browser`, `fleet`, and `jobs`. Those tools run through an advisor `ToolSession` whose identity is suffixed `-advisor`; grant tools only when the advisor model and workspace are trusted (see [Tools and isolation](#tools-and-isolation)).
 
 ## Implementation files
 
@@ -64,7 +64,6 @@ Slash commands:
 | `/advisor on`        | Enable the configured/default advisor runtimes for this session. Session-scoped; not persisted to config.                            |
 | `/advisor off`       | Disable the advisor subsystem for this session and stop its runtimes. Session-scoped; not persisted to config.                       |
 | `/advisor status`    | Show each advisor's runtime state, model, context usage, token usage, and cost.                                                      |
-| `/advisor dump raw`  | Copy the full dump, including system prompt, tools, thinking, and calls.                                                             |
 | `/advisor configure` | Open the interactive TUI editor for project- or user-level `WATCHDOG.yml`. Non-TUI command hosts report that the editor is TUI-only. |
 
 If the subsystem is enabled but no legacy/default or roster model resolves, status reports the configured advisors as inactive/`no_model`.
@@ -90,15 +89,13 @@ When the advisor is enabled mid-session, the cursor seeds to the current primary
 
 ## Tools and isolation
 
-The advisor is a full agent with its own `Agent` instance and a distinct `ToolSession` whose id is suffixed `-advisor`. It does not share the primary agent's file snapshots, seen-lines tracking, conflict state, or summary cache.
+The advisor is a full agent with its own `Agent` instance and provider session. Its tools receive a `ToolSession` identity suffixed `-advisor`; the advisor transcript and in-memory context remain separate from the primary.
 
-Every advisor has the `advise` tool for surfacing notes into the primary transcript. When `tools` is omitted, its investigative grant is:
+Every advisor has the `advise` tool for surfacing notes into the primary transcript. When `tools` is omitted, its default investigative grant is `read`.
 
 A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null` is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Accepted names are [`read`, `bash`, `context`, `recall`, `ask`, `browser`, `computer`, `checkpoint`, `rewind`, `jobs`, `fleet`, `checklist`, `web_search`, and `manage_skill`](../packages/coding-agent/src/tools/builtin-names.ts).
 
-A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null` is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `browser`, `debug`, `ast_edit`, `fleet`, and `jobs`.
-
-Advisor tools are built against the isolated advisor `ToolSession` and wrapped with `ExtensionToolWrapper`, just like registry tools. Cursor's server-side exec bridge gates on the same advisor grants and only exposes delete/edit/search capabilities when the corresponding advisor grant exists.
+Advisor tools are built against the advisor `ToolSession` and wrapped with `ExtensionToolWrapper`, just like registry tools. The Cursor exec bridge uses the same advisor tool map; direct file-mutation operations are disabled, while a granted `bash` tool can still mutate through shell commands.
 
 The `advise` tool accepts one note and an optional severity:
 
@@ -132,7 +129,7 @@ Two session/client constraints can still preserve a note whose normal delivery p
 
 So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer and deferred-ACP cases above) or downgraded to a non-interrupting aside (the `advisor.immuneTurns` cooldown below); either way it waits for the next step boundary or resume rather than waking the agent.
 
-`advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
+`advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns are routed as non-interrupting asides until the configured number of primary turns has completed; `blocker` notes still interrupt. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
 
 While an advisor update is reviewing work still in progress, `AdviseTool` withholds `nit` and `concern` calls; only a `blocker` may interrupt partial work. The primary's terminal turn boundary flushes the withheld notes, even when the advisor is quota-paused or halted before its next update; continuing tool turns keep them withheld. The tool also suppresses the same whitespace-normalized note at an equal or lower severity while allowing a real escalation (`nit` → `concern` → `blocker`).
 
@@ -145,9 +142,9 @@ Each advisor has its own `AdvisorEmissionGuard` (`src/advisor/emission-guard.ts`
 3. **Exact-text dedupe.** Any normalized note already accepted by this advisor in this session is dropped. The FIFO history holds at most 4096 entries.
 4. **Per-update rate limit.** At most one note per advisor model `prompt()` cycle is accepted. Suppressed noise never consumes the budget.
 
-Guard-level suppression is invisible to the model because `AdviseTool` has already returned `Recorded.`. The tool's earlier equal-or-lower-severity duplicate check is intentionally visible as `Duplicate advice ignored.`; in-progress non-blockers return `Recorded.` without routing.
+Guard-level suppression is invisible to the model because `AdviseTool` has already returned `Recorded.`. The tool's earlier equal-or-lower-severity duplicate check is intentionally visible as `Duplicate advice ignored.`; in-progress non-blockers return a `Deferred — primary is mid-turn...` result without routing.
 
-The guard's full state — dedupe history and per-update gate — clears on every advisor reset (compaction, session switch, `/new`), so a re-primed reviewer can re-raise issues it already raised against the rewritten transcript.
+The per-update gate clears at each advisor update. Dedupe history clears when advisor session state resets (session switch/resume, branch/fork, or `/new`) or the runtime is rebuilt; a context-maintenance runtime reset alone preserves it.
 
 ## Bounded catch-up with `advisor.syncBacklog`
 
@@ -282,11 +279,11 @@ advisors:
 
 Fields:
 
-- `instructions` (top level): shared prompt prepended to every advisor's system prompt alongside `WATCHDOG.md`. Concatenated across all discovered `WATCHDOG.yml` files.
+- `instructions` (top level): shared prompt appended to every advisor's system prompt after `WATCHDOG.md` and before per-advisor instructions. Concatenated across all discovered `WATCHDOG.yml` files.
 - `advisors[].name`: human label; slugified for the session id and its `__advisor.<slug>.jsonl` filename. Duplicate slugs across files are resolved by the same specificity rule as `WATCHDOG.md` discovery (project leaf > project ancestor > user).
 - `advisors[].enabled`: optional per-advisor switch, default `true`. `false` leaves the advisor visible as paused in status/configuration.
 - `advisors[].model`: optional model selector with optional `:level` thinking suffix (e.g. `x-ai/grok-code-fast:high`). Omitted → the advisor uses `modelRoles.advisor`.
-- `advisors[].tools`: optional list of built-in tool names to grant. Omitted → the default `read`/`grep`/`glob` subset; explicit `[]` → no investigative tools. Any name in [`BUILTIN_TOOL_NAMES`](../packages/coding-agent/src/tools/builtin-names.ts) is accepted, including mutating tools. Legacy aliases (`search`→`grep`, `find`→`glob`) are normalized. Unknown names are dropped with a warning; if that leaves a nonempty input with no valid names, the implementation currently treats the result as omitted and uses the default subset.
+- `advisors[].tools`: optional list of built-in tool names to grant. Omitted → requests the default `read` grant; explicit `[]` → no investigative tools. Any name in [`BUILTIN_TOOL_NAMES`](../packages/coding-agent/src/tools/builtin-names.ts) is accepted, including mutating tools. Names are lowercased only when they are recognized built-ins; `search` and `find` are not aliases. Unknown names are dropped with a warning; if that leaves a nonempty input with no valid names, the implementation currently treats the result as omitted and uses the default subset.
 - `advisors[].instructions`: this advisor's specialization, appended after the shared baseline. Both instruction fields expand `@path` imports like `WATCHDOG.md`.
 
 ### Discovery locations
@@ -299,8 +296,6 @@ Subagents run unadvised by default; advisors are opted in **per agent** instead 
 
 - Agent definition frontmatter `advisor`: `true` advises spawned sessions of that agent with the model resolved for the `advisor` role; a string (e.g. `advisor: "deepseek/deepseek-v4-flash"` or `advisor: "@smol:high"`) sets an explicit advisor model pattern with an optional `:level` thinking suffix.
 - The `orchestrator.agentAdvisor` settings record (agent name → `"on"` / `"off"` / model pattern) overrides the frontmatter, and is configured per agent from the `/agents` browser: Enter on an agent opens its property strip; the advisor strip offers on/off, a model-browser pick, or a raw pattern.
-
-The legacy `advisor.subagents: true` setting migrates to `orchestrator.agentAdvisor: { worker: "on" }` — the bundled generic `worker` agent keeps its advisor, other agents start unadvised.
 
 An advised subagent session builds its own advisor subsystem with the same settings/model-role resolution (an explicit pattern lands on the spawned session's `modelRoles.advisor`), then reruns both `WATCHDOG.md` and `WATCHDOG.yml` discovery for that subagent session's `cwd` and agent directory. Subagent advisors remain isolated from the subagent's primary tool session in the same way the main advisor is isolated from the main agent.
 

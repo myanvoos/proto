@@ -475,7 +475,7 @@ and fuzzy patterns are resolved against the available concrete models.
 
 Supported model roles:
 
-- `default`, `smol`, `slow`, `vision`, `designer`, `commit`, `tiny`, `worker`, `advisor`
+- `default`, `smol`, `slow`, `designer`, `commit`, `tiny`, `worker`, `advisor`
 
 The `tiny` role overrides the online model used for lightweight background tasks (session titles, memory, unexpected-stop classification); when unset, these fall back to `@smol`. Pick one in `/models`.
 

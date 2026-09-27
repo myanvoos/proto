@@ -91,7 +91,7 @@ function commitTools(selected: ReadonlySet<string>, all: readonly string[]): str
 }
 
 function formatAdvisorTools(tools: readonly string[] | undefined, emptyLabel: string): string {
-	if (tools === undefined) return "read, grep, glob (default)";
+	if (tools === undefined) return `${[...ADVISOR_DEFAULT_TOOL_NAMES].join(", ")} (default)`;
 	return tools.length > 0 ? tools.join(", ") : emptyLabel;
 }
 
@@ -596,7 +596,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#setScreen(
 			"tools",
 			list,
-			"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)",
+			`Enter / click toggle · select Done or Esc to apply (empty = no tools; ${[...ADVISOR_DEFAULT_TOOL_NAMES].join("/")} = default)`,
 		);
 	}
 

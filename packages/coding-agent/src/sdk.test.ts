@@ -216,3 +216,95 @@ test("a deferred model pattern never resolves onto a disabled provider", async (
 		await fs.rm(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("advisors can be granted the read tool they request by default", async () => {
+	const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-sdk-advisor-read-"));
+	const authStorage = await AuthStorage.create(path.join(agentDir, "auth.db"));
+	const settings = Settings.isolated();
+	try {
+		const { session } = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			authStorage,
+			modelRegistry: new ModelRegistry(authStorage, path.join(agentDir, "models.yml"), { settings }),
+			settings,
+			sessionManager: SessionManager.inMemory(agentDir),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			enableMCP: false,
+			skills: [],
+			rules: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			workspaceTree: { rootPath: agentDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+		});
+		try {
+			expect(session.getAdvisorAvailableToolNames()).toContain("read");
+		} finally {
+			await session.dispose();
+		}
+	} finally {
+		authStorage.close();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("filesystem custom tools see the host UI once the mode installs it", async () => {
+	const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-sdk-custom-tool-ui-"));
+	const authStorage = await AuthStorage.create(path.join(agentDir, "auth.db"));
+	const settings = Settings.isolated();
+	const toolPath = path.join(agentDir, "probe-tool.ts");
+	const captureKey = `__protoCustomToolApi_${path.basename(agentDir)}`;
+	await Bun.write(
+		toolPath,
+		`export default pi => {
+	globalThis[${JSON.stringify(captureKey)}] = pi;
+	return {
+		name: "probe_ui",
+		label: "Probe UI",
+		description: "probe",
+		parameters: pi.zod.object({}),
+		execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+	};
+};
+`,
+	);
+	const globals = globalThis as Record<string, unknown>;
+	try {
+		const { session, setToolUIContext } = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			authStorage,
+			modelRegistry: new ModelRegistry(authStorage, path.join(agentDir, "models.yml"), { settings }),
+			settings,
+			sessionManager: SessionManager.inMemory(agentDir),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			enableMCP: false,
+			preloadedCustomToolPaths: [{ path: toolPath }],
+			skills: [],
+			rules: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			workspaceTree: { rootPath: agentDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+		});
+		try {
+			const api = globals[captureKey] as
+				| { ui: { select(title: string, options: string[]): Promise<string | undefined> }; hasUI: boolean }
+				| undefined;
+			expect(api?.hasUI).toBe(false);
+			const hostUI = { select: async () => "picked" } as unknown as Parameters<typeof setToolUIContext>[0];
+			setToolUIContext(hostUI, true);
+			expect(await api?.ui.select("Pick", ["picked"])).toBe("picked");
+			expect(api?.hasUI).toBe(true);
+		} finally {
+			await session.dispose();
+		}
+	} finally {
+		delete globals[captureKey];
+		authStorage.close();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
