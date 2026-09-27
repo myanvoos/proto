@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.0] - 2026-09-27
+
 ### Fixed
 
 - Bash commands containing URLs of schemes the harness does not own (`s3://`, `gs://`, `postgres://`, `ssh://` for git/rsync) run as typed instead of failing with "Internal URL router is unavailable"

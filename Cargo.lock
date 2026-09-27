@@ -2390,9 +2390,9 @@ checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
 
 [[package]]
 name = "html-to-markdown-rs"
-version = "3.15.0"
+version = "3.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16c7356a39129a282aa7aa92bd8de8aba28cdeb74d6e7321bcc1c232ff123104"
+checksum = "1287459abcb674d1fb9a54b2860630346183c38aae85fc57b69e5fbeff4e0d46"
 dependencies = [
  "ahash",
  "astral-tl",
@@ -4382,7 +4382,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4449,7 +4449,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4530,7 +4530,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -4541,7 +4541,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4602,7 +4602,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4624,7 +4624,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "19.0.0"
+version = "19.1.0"
 dependencies = [
  "dashmap",
  "globset",
