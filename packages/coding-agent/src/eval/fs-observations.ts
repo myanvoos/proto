@@ -16,12 +16,43 @@ export interface FsObservation {
 
 const MAX_PENDING = 8192;
 
+interface FsObservationLedgerCallbacks {
+	ensureCurrent?: () => FsObservationLedger | null;
+	onDrain?: () => void;
+}
+
 export class FsObservationLedger {
 	readonly #pending = new Map<string, FsObservation>();
 	readonly #pendingReads = new Set<string>();
 	readonly #mutationPaths = new Set<string>();
+	readonly #ensureCurrent?: () => FsObservationLedger | null;
+	readonly #onDrain?: () => void;
+	#inFlight = 0;
+	#drained = false;
+
+	constructor(callbacks: FsObservationLedgerCallbacks = {}) {
+		this.#ensureCurrent = callbacks.ensureCurrent;
+		this.#onDrain = callbacks.onDrain;
+	}
+
+	#beginAsyncRecord(): void {
+		this.#inFlight++;
+		this.#drained = false;
+	}
+
+	#endAsyncRecord(): void {
+		this.#inFlight--;
+		if (this.#drained && this.#inFlight === 0) this.#onDrain?.();
+	}
 
 	record(observation: FsObservation): void {
+		const current = this.#ensureCurrent?.();
+		if (current === null) return;
+		if (current !== undefined && current !== this) {
+			current.record(observation);
+			return;
+		}
+		this.#drained = false;
 		this.#pending.delete(observation.path);
 		this.#pendingReads.delete(observation.path);
 		this.#pending.set(observation.path, observation);
@@ -45,30 +76,45 @@ export class FsObservationLedger {
 	}
 
 	async recordAllWithContent(observations: Iterable<FsObservation>): Promise<void> {
-		for (const observation of observations) {
-			if (observation.mtimeNs === null || observation.size === null) {
-				this.record(observation);
-				continue;
+		this.#beginAsyncRecord();
+		try {
+			for (const observation of observations) {
+				if (observation.mtimeNs === null || observation.size === null) {
+					this.record(observation);
+					continue;
+				}
+				const stamped = await observe(observation.path, observation.kind);
+				if (stamped.mtimeNs === observation.mtimeNs && stamped.size === observation.size) {
+					this.record({ ...observation, sha: stamped.sha });
+				} else {
+					// Preserve the command-time metadata. A mismatch is itself enough
+					// to stop a later stale write; adopting the newer stamp would hide it.
+					this.record(observation);
+				}
 			}
-			const stamped = await observe(observation.path, observation.kind);
-			if (stamped.mtimeNs === observation.mtimeNs && stamped.size === observation.size) {
-				this.record({ ...observation, sha: stamped.sha });
-			} else {
-				// Preserve the command-time metadata. A mismatch is itself enough
-				// to stop a later stale write; adopting the newer stamp would hide it.
-				this.record(observation);
-			}
+		} finally {
+			this.#endAsyncRecord();
 		}
 	}
 
 	async recordRead(absPath: string): Promise<void> {
-		this.record(await observe(absPath, "read"));
+		this.#beginAsyncRecord();
+		try {
+			this.record(await observe(absPath, "read"));
+		} finally {
+			this.#endAsyncRecord();
+		}
 	}
 
 	async recordWrite(absPath: string): Promise<FsObservation> {
-		const observation = await observe(absPath, "write");
-		this.record(observation);
-		return observation;
+		this.#beginAsyncRecord();
+		try {
+			const observation = await observe(absPath, "write");
+			this.record(observation);
+			return observation;
+		} finally {
+			this.#endAsyncRecord();
+		}
 	}
 
 	drain(): FsObservation[] {
@@ -76,6 +122,8 @@ export class FsObservationLedger {
 		this.#pending.clear();
 		this.#pendingReads.clear();
 		this.#mutationPaths.clear();
+		this.#drained = true;
+		if (this.#inFlight === 0) this.#onDrain?.();
 		return drained;
 	}
 }
@@ -125,6 +173,7 @@ export type FsObservationSession = Pick<ToolSession, "cwd" | "getSessionFile" | 
 interface OwnedFsObservationLedger {
 	ledger: FsObservationLedger;
 	owners: Set<string>;
+	close(): void;
 }
 
 const ledgers = new Map<string, OwnedFsObservationLedger>();
@@ -132,7 +181,21 @@ const ledgers = new Map<string, OwnedFsObservationLedger>();
 export function fsObservationLedger(sessionId: string): FsObservationLedger {
 	let entry = ledgers.get(sessionId);
 	if (!entry) {
-		entry = { ledger: new FsObservationLedger(), owners: new Set() };
+		let closed = false;
+		const ledger = new FsObservationLedger({
+			ensureCurrent: () => {
+				if (closed) return null;
+				const current = ledgers.get(sessionId);
+				if (current) return current.ledger;
+				ledgers.set(sessionId, { ledger, owners: new Set(), close: () => (closed = true) });
+				return ledger;
+			},
+			onDrain: () => {
+				const current = ledgers.get(sessionId);
+				if (current?.ledger === ledger && current.owners.size === 0) ledgers.delete(sessionId);
+			},
+		});
+		entry = { ledger, owners: new Set(), close: () => (closed = true) };
 		ledgers.set(sessionId, entry);
 	}
 	return entry.ledger;
@@ -146,6 +209,7 @@ export function retainFsObservationLedger(sessionId: string, ownerId: string): v
 export function releaseFsObservationLedger(sessionId: string, ownerId: string): void {
 	const entry = ledgers.get(sessionId);
 	if (!entry?.owners.delete(ownerId) || entry.owners.size > 0) return;
+	entry.close();
 	ledgers.delete(sessionId);
 }
 

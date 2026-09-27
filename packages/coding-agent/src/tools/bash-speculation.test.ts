@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { Server } from "bun";
+import { AsyncJobManager } from "../async";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { ToolSession } from ".";
@@ -144,6 +145,66 @@ test("Python BashTool claims two distinct literal completion occurrences from pa
 		bash.cancelStreamedInput();
 	} finally {
 		completion.release();
+		await completion.server.stop(true);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test("settled BashTool execution aborts speculative work for its completed call", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-spec-cleanup-"));
+	const completion = startCompletionServer(true);
+	try {
+		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
+		let fetchAborted = 0;
+		session.fetch = async (input, init) => {
+			init?.signal?.addEventListener(
+				"abort",
+				() => {
+					fetchAborted++;
+				},
+				{ once: true },
+			);
+			return await fetch(input, init);
+		};
+		const bash = new BashTool(session);
+		const speculative = `python <<'PY'\na = completion("cleanup")\nprint(a)\nPY`;
+		await bash.observeStreamedInput("cleanup-outer", JSON.stringify({ command: speculative }).slice(0, -1));
+		await waitForRequests(completion.requests, 1);
+		await bash.execute("cleanup-outer", { command: "true" });
+		expect(fetchAborted).toBeGreaterThan(0);
+	} finally {
+		completion.release();
+		await completion.server.stop(true);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test("auto-backgrounded BashTool execution claims its streamed completion after execute returns", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-spec-auto-bg-"));
+	const completion = startCompletionServer(true);
+	const manager = new AsyncJobManager({});
+	try {
+		const sessionSettings = settings();
+		// Threshold 0 backgrounds immediately: execute() settles before the kernel cell claims.
+		sessionSettings.set("bash.autoBackground.enabled", true);
+		sessionSettings.set("bash.autoBackground.thresholdMs", 0);
+		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, sessionSettings);
+		session.asyncJobManager = manager;
+		const bash = new BashTool(session);
+		const command = `python <<'PY'\na = completion("background")\nprint(a)\nPY`;
+		await bash.observeStreamedInput("auto-bg-outer", JSON.stringify({ command }).slice(0, -1));
+		await waitForRequests(completion.requests, 1);
+		const started = await bash.execute("auto-bg-outer", { command });
+		const jobId = started.details?.async?.jobId;
+		if (!jobId) throw new Error("command was not auto-backgrounded");
+		completion.release();
+		const job = manager.getJob(jobId);
+		await job?.promise;
+		expect(job?.resultText).toContain("sample-1");
+		expect(completion.requests).toHaveLength(1);
+	} finally {
+		completion.release();
+		await manager.dispose();
 		await completion.server.stop(true);
 		await fs.rm(dir, { recursive: true, force: true });
 	}

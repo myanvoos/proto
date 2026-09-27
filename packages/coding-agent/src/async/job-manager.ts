@@ -182,6 +182,7 @@ export interface AsyncJobRegisterOptions {
 
 interface AsyncJobFilter {
 	ownerId?: string;
+	agentId?: string;
 	excludeMonitors?: boolean;
 }
 
@@ -273,6 +274,7 @@ export class AsyncJobManager {
 		return Array.from(jobs).filter(
 			job =>
 				(!filter?.ownerId || job.ownerId === filter.ownerId) &&
+				(!filter?.agentId || job.agentId === filter.agentId) &&
 				(!filter?.excludeMonitors || job.type !== "monitor" || job.status !== "running"),
 		);
 	}
@@ -735,7 +737,7 @@ export class AsyncJobManager {
 
 	async waitForOwnerJobs(
 		ownerId: string,
-		options?: { timeoutMs?: number; excludeSuppressed?: boolean; excludeMonitors?: boolean },
+		options?: { timeoutMs?: number; agentId?: string; excludeSuppressed?: boolean; excludeMonitors?: boolean },
 	): Promise<boolean> {
 		const deadline =
 			options?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + Math.max(0, options.timeoutMs);
@@ -743,6 +745,7 @@ export class AsyncJobManager {
 		for (;;) {
 			const pending = this.#filterJobs(this.#jobs.values(), {
 				ownerId,
+				agentId: options?.agentId,
 				excludeMonitors: options?.excludeMonitors,
 			}).filter(
 				job =>
@@ -762,15 +765,20 @@ export class AsyncJobManager {
 	async cancelAndReapOwnerJobs(
 		ownerId: string,
 		deadlineAt: number,
-		options?: { excludeMonitors?: boolean },
+		options?: { agentId?: string; excludeMonitors?: boolean },
 	): Promise<AsyncJobReapResult> {
-		this.cancelAll({ ownerId, excludeMonitors: options?.excludeMonitors });
+		const filter = { ownerId, agentId: options?.agentId, excludeMonitors: options?.excludeMonitors };
+		this.cancelAll(filter);
 		const timeoutMs = Math.max(0, deadlineAt - Date.now());
-		const settled = await this.waitForOwnerJobs(ownerId, { timeoutMs, excludeMonitors: options?.excludeMonitors });
+		const settled = await this.waitForOwnerJobs(ownerId, {
+			timeoutMs,
+			agentId: options?.agentId,
+			excludeMonitors: options?.excludeMonitors,
+		});
 		if (settled) {
 			return { settled: true, pendingJobIds: [], completion: Promise.resolve() };
 		}
-		const pendingJobIds = this.getAllJobs({ ownerId, excludeMonitors: options?.excludeMonitors })
+		const pendingJobIds = this.getAllJobs(filter)
 			.filter(job => this.#unsettledJobs.has(job.id))
 			.map(job => job.id);
 		const completion = this.waitForOwnerJobs(ownerId, options).then(() => {});
@@ -969,9 +977,11 @@ export class AsyncJobManager {
 	}
 
 	#deliveryMatches(delivery: AsyncJobDelivery, filter?: AsyncJobFilter): boolean {
+		const job = filter?.agentId === undefined ? undefined : this.#jobs.get(delivery.jobId);
 		return (
 			!delivery.expired &&
 			(!filter?.ownerId || delivery.ownerId === filter.ownerId) &&
+			(!filter?.agentId || job?.agentId === filter.agentId) &&
 			(!filter?.excludeMonitors || !delivery.event) &&
 			!this.#isDeliverySuppressed(delivery) &&
 			!this.#isEventWatched(delivery)

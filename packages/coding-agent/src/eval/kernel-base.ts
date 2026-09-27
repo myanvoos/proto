@@ -311,6 +311,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			this.#abortPendingExecutions(`${this.#options.languageName} kernel exited with code ${code}`, {
 				kernelKilled: true,
 			});
+			this.#clearControlPending();
+			this.#clearCompletedOutputSinks();
+			this.#clearReadState();
 		});
 
 		this.#startReader(proc.stdout as ReadableStream<Uint8Array>);
@@ -360,7 +363,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 					onBytes: pending.options.onBytes,
 					retainedOutputBytes: pending.options.retainedOutputBytes,
 					releaseOutput: pending.options.releaseOutput,
-					timer: unrefTimeout(() => this.#evictCompletedOutputSink(msgId), COMPLETED_OUTPUT_TTL_MS),
+					timer: unrefTimeout(this.#evictCompletedOutputSink.bind(this, msgId), COMPLETED_OUTPUT_TTL_MS),
 					onDisplay: pending.options.onDisplay,
 					unicodeTails: pending.unicodeTails,
 				});
@@ -528,7 +531,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		this.#alive = false;
 		this.#abortPendingExecutions(`${this.#options.languageName} kernel shutdown`, { kernelKilled: true });
-		for (const id of this.#completedOutputSinks.keys()) this.#evictCompletedOutputSink(id);
+		this.#clearControlPending();
+		this.#clearCompletedOutputSinks();
+		this.#clearReadState();
 
 		const timeoutMs = options?.timeoutMs ?? this.#options.shutdownGraceMs;
 		const proc = this.#proc;
@@ -678,6 +683,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	async #consumeFrameText(text: string): Promise<void> {
 		let remaining = text;
 		while (remaining.length > 0) {
+			if (!this.#alive || this.#disposed) {
+				this.#clearReadState();
+				return;
+			}
 			if (this.#discardingOversizedFrame) {
 				const newline = remaining.indexOf("\n");
 				if (newline < 0) return;
@@ -759,6 +768,22 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			this.#failOutputConsumer(frame.id, error);
 			if (frame.type === "done" && frame.id) this.#pending.get(frame.id)?.finalize?.();
 		}
+	}
+
+	#clearControlPending(): void {
+		const pending = [...this.#controlPending.values()];
+		this.#controlPending.clear();
+		for (const resolve of pending) resolve(undefined);
+	}
+
+	#clearCompletedOutputSinks(): void {
+		for (const id of [...this.#completedOutputSinks.keys()]) this.#evictCompletedOutputSink(id);
+	}
+
+	#clearReadState(): void {
+		this.#readChunks = [];
+		this.#readChars = 0;
+		this.#discardingOversizedFrame = false;
 	}
 
 	#trimCompletedOutputSinks(): void {

@@ -6,7 +6,7 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import { BashRunner, type BashRunnerHost } from "./bash-runner";
 import { SessionManager } from "./session-manager";
 
-test("idle BashRunner disposal does not close shell sessions", async () => {
+test("idle BashRunner disposal retires its shell owner so late commands cannot start orphan shells", async () => {
 	const sessionManager = SessionManager.inMemory();
 	const host: BashRunnerHost = {
 		agent: {} as Agent,
@@ -15,13 +15,20 @@ test("idle BashRunner disposal does not close shell sessions", async () => {
 		extensionRunner: () => undefined,
 		isStreaming: () => false,
 	};
-	const runner = new BashRunner(host);
-	const disposeSpy = spyOn(bashExecutor, "disposeBashSessions");
+	const registerSpy = spyOn(bashExecutor, "registerBashSessionOwner");
 	try {
+		const runner = new BashRunner(host);
+		const owner = registerSpy.mock.results[0]?.value as bashExecutor.BashSessionOwner;
 		await runner.dispose();
-		expect(disposeSpy).not.toHaveBeenCalled();
+		await expect(
+			bashExecutor.executeBash("true", {
+				cwd: process.cwd(),
+				sessionKey: owner.sessionId,
+				sessionOwner: owner,
+			}),
+		).rejects.toThrow("Bash session is disposed");
 	} finally {
-		disposeSpy.mockRestore();
+		registerSpy.mockRestore();
 		await sessionManager.close();
 	}
 });

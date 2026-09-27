@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Process, Shell } from "@oh-my-pi/pi-natives";
+import { Process, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
 import {
 	beginBashLaneControl,
 	disposeAllBashSessions,
@@ -41,6 +41,28 @@ test("disposes a persistent shell and force-kills a stubborn background child", 
 		await fs.rm(cwd, { recursive: true, force: true });
 	}
 });
+
+test("an interrupted persistent shell is closed after its quarantine drains", async () => {
+	const sessionKey = `bash-shell-quarantine-${crypto.randomUUID()}`;
+	const started = Promise.withResolvers<void>();
+	const originalRun = Shell.prototype.run;
+	const close = spyOn(Shell.prototype, "close");
+	spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk, dispatcher) {
+		started.resolve();
+		return originalRun.call(this, options, onChunk, dispatcher);
+	});
+	const abort = new AbortController();
+	try {
+		const result = executeBash("sleep 30", { sessionKey, signal: abort.signal });
+		await started.promise;
+		abort.abort();
+		expect((await result).cancelled).toBe(true);
+		await close.mock.results.at(-1)?.value;
+		expect(close).toHaveBeenCalled();
+	} finally {
+		await disposeBashSessions(sessionKey);
+	}
+}, 10_000);
 
 test("stalled retained-shell probes do not block owner disposal", async () => {
 	const sessionKey = `bash-shell-probe-timeout-${crypto.randomUUID()}`;
@@ -82,6 +104,64 @@ test("rejects commands for a disposed session owner", async () => {
 	registerBashSessionOwner(sessionKey);
 	await disposeBashSessions(sessionKey);
 });
+
+test("retains background jobs from a replacement shell after cancellation", async () => {
+	const sessionKey = `bash-shell-replacement-${crypto.randomUUID()}`;
+	const firstRun = Promise.withResolvers<ShellRunResult>();
+	const started = Promise.withResolvers<void>();
+	const oldShellClosed = Promise.withResolvers<void>();
+	let first = true;
+	const originalRun = Shell.prototype.run;
+	const originalClose = Shell.prototype.close;
+	spyOn(Shell.prototype, "close").mockImplementation(async function (this: Shell) {
+		const result = await originalClose.call(this);
+		oldShellClosed.resolve();
+		return result;
+	});
+	spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk, dispatcher) {
+		if (first) {
+			first = false;
+			started.resolve();
+			return firstRun.promise;
+		}
+		return originalRun.call(this, options, onChunk, dispatcher);
+	});
+	const abort = new AbortController();
+	try {
+		const interrupted = executeBash("sleep 30", { sessionKey, signal: abort.signal });
+		await started.promise;
+		abort.abort();
+		expect((await interrupted).cancelled).toBe(true);
+
+		await executeBash("sleep 30 &", { sessionKey });
+		firstRun.resolve({
+			exitCode: undefined,
+			cancelled: true,
+			timedOut: false,
+			workingDir: process.cwd(),
+			fsObservations: [],
+			protolensDispatches: [],
+			stageRecords: [],
+			sessionEnded: false,
+		});
+		await firstRun.promise;
+		await oldShellClosed.promise;
+		expect(listBashLanes(sessionKey)).toMatchObject([{ shell: "retained" }]);
+	} finally {
+		firstRun.resolve({
+			exitCode: undefined,
+			cancelled: true,
+			timedOut: false,
+			workingDir: process.cwd(),
+			fsObservations: [],
+			protolensDispatches: [],
+			stageRecords: [],
+			sessionEnded: false,
+		});
+		await firstRun.promise;
+		await disposeBashSessions(sessionKey);
+	}
+}, 15_000);
 
 test("keeps raw failure diagnostics when minimized output cannot be persisted", async () => {
 	const rawOutput =

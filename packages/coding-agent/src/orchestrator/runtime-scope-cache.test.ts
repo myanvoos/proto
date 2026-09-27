@@ -45,6 +45,45 @@ describe("orchestrator scope session cache", () => {
 		resetWakeTurnOwnersForTests();
 	});
 
+	test("terminal history does not retain its disposed parent in the scope cache", async () => {
+		const runtime = new OrchestratorRuntime();
+		const parent = session("terminal-scope");
+		runtime.registerRecordForTests({
+			id: "terminal-worker",
+			ownerId: "Main",
+			parentSessionId: parent.getSessionId!() ?? undefined,
+		});
+		runtime.screens(parent);
+
+		await runtime.kill(parent, "terminal-worker");
+
+		expect(runtime.scopeCacheSizeForTesting()).toBe(0);
+		expect(runtime.screens(parent, ["terminal-worker"])[0]?.lifecycle).toBe("terminal");
+	});
+
+	test("terminating a worker evicts its completed turn metadata", async () => {
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		const runtime = new OrchestratorRuntime();
+		const parent = session("worker-job-scope", manager);
+		const jobId = manager.register("worker", "worker turn", async () => "worker result", {
+			ownerId: "worker-job-scope",
+			agentId: "worker-job",
+		});
+		runtime.registerRecordForTests({
+			id: "worker-job",
+			ownerId: "Main",
+			parentSessionId: parent.getSessionId!() ?? undefined,
+			jobId,
+		});
+
+		try {
+			await runtime.kill(parent, "worker-job");
+			expect(manager.getJob(jobId)).toBeUndefined();
+		} finally {
+			await manager.dispose({ timeoutMs: 1_000 });
+		}
+	});
+
 	test("pending wake settles without retaining its disposed parent in the scope cache", async () => {
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
 		const runtime = new OrchestratorRuntime();

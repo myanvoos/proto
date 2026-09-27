@@ -7,7 +7,6 @@ import {
 	type BashSessionOwner,
 	disposeBashSessions,
 	executeBash as executeBashCommand,
-	hasBashSessions,
 	registerBashSessionOwner,
 } from "../exec/bash-executor";
 import type { ExtensionRunner } from "../extensibility/extensions";
@@ -58,7 +57,7 @@ export class BashRunner {
 	#abortControllers = new Set<AbortController>();
 	#pendingMessages: PendingBashMessage[] = [];
 	#sessionTarget: BashSessionTarget;
-	#sessionIds = new Set<string>();
+	/** Every session id this runner has executed under, with the bash-executor owner token it registered. */
 	#sessionOwners = new Map<string, BashSessionOwner>();
 
 	constructor(host: BashRunnerHost) {
@@ -70,7 +69,6 @@ export class BashRunner {
 			refs: 0,
 			destination: { kind: "current", manager: host.sessionManager },
 		};
-		this.#sessionIds.add(this.#sessionTarget.sessionId);
 		this.#sessionOwners.set(this.#sessionTarget.sessionId, this.#sessionTarget.owner);
 	}
 
@@ -149,25 +147,12 @@ export class BashRunner {
 	}
 
 	async dispose(): Promise<void> {
-		let hasSessionShells = false;
-		for (const sessionId of this.#sessionIds) {
-			if (hasBashSessions(sessionId)) {
-				hasSessionShells = true;
-				break;
-			}
-		}
-		if (this.#abortControllers.size === 0 && this.#pendingMessages.length === 0 && !hasSessionShells) {
-			this.#sessionIds.clear();
-			this.#sessionOwners.clear();
-			return;
-		}
-
 		this.abort();
-		const sessionIds = [...this.#sessionIds];
-		const sessionOwners = new Map(this.#sessionOwners);
-		this.#sessionIds.clear();
+		const sessionOwners = [...this.#sessionOwners];
 		this.#sessionOwners.clear();
-		await Promise.all(sessionIds.map(sessionId => disposeBashSessions(sessionId, sessionOwners.get(sessionId))));
+		// Release every owner even when no shell ever started: each registration is a
+		// process-wide bash-executor entry that only disposal removes.
+		await Promise.all(sessionOwners.map(([sessionId, owner]) => disposeBashSessions(sessionId, owner)));
 	}
 
 	get isRunning(): boolean {
@@ -212,7 +197,6 @@ export class BashRunner {
 		const pendingNew = Promise.withResolvers<BashAppendDestination>();
 		const newSessionId = this.#host.sessionManager.getSessionId();
 		const newOwner = this.#sessionOwners.get(newSessionId) ?? registerBashSessionOwner(newSessionId);
-		this.#sessionIds.add(newSessionId);
 		this.#sessionOwners.set(newSessionId, newOwner);
 		return {
 			oldTarget,
@@ -233,7 +217,6 @@ export class BashRunner {
 
 	markSessionTransition(transition: BashSessionTransition): void {
 		const sessionId = this.#host.sessionManager.getSessionId();
-		this.#sessionIds.add(sessionId);
 		if (transition.newTarget.sessionId !== sessionId) {
 			transition.newTarget.sessionId = sessionId;
 			transition.newTarget.owner = registerBashSessionOwner(sessionId);

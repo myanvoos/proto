@@ -62,6 +62,16 @@ describe("IrcBus wait liveness", () => {
 			}),
 		).rejects.toThrow(/no longer active/);
 	});
+
+	test("aborting a recipient releases its pending mailbox waiter", async () => {
+		const registry = makeRegistryWithPeer("running");
+		const peer = registry.get("peer")!;
+		const bus = new IrcBus(registry);
+		const waiting = bus.wait("peer", {}, 0);
+
+		expect(registry.setStatus("peer", "aborted", peer)).toBe(true);
+		await expect(waiting).rejects.toThrow(/no longer available/);
+	});
 });
 
 describe("IrcBus fleet isolation", () => {
@@ -325,6 +335,37 @@ describe("IrcBus mailbox overflow", () => {
 		expect(inbox).toHaveLength(100);
 		expect(inbox[0]?.body).toBe("message-0");
 		expect(inbox.at(-1)?.body).toBe("message-99");
+	});
+
+	test("terminal recipients do not receive mail queued for their prior session", async () => {
+		const registry = new AgentRegistry();
+		const fleetRoot = "/mailbox/termination";
+		registry.register({ id: "sender", label: "sender", kind: "main", session: null, fleetRoot });
+		const recipient = registry.register({
+			id: "recipient",
+			label: "recipient",
+			kind: "sub",
+			fleetRoot,
+			session: {
+				deliverIrcMessage: async () => {
+					throw new Error("temporarily unavailable");
+				},
+			} as unknown as AgentSession,
+		});
+		const bus = new IrcBus(registry);
+
+		expect((await bus.send({ from: "sender", to: "recipient", body: "stale" })).outcome).toBe("queued");
+		expect(registry.setStatus("recipient", "aborted", recipient)).toBe(true);
+
+		registry.unregister("recipient", recipient);
+		registry.register({
+			id: "recipient",
+			label: "recipient",
+			kind: "sub",
+			fleetRoot,
+			session: null,
+		});
+		expect(bus.inbox("recipient", { fleetRoot })).toEqual([]);
 	});
 });
 

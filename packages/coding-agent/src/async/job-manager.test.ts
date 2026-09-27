@@ -66,6 +66,27 @@ describe("AsyncJobManager registration and shutdown", () => {
 		}
 	});
 
+	test("evicts completed jobs for one worker without evicting a sibling", async () => {
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		try {
+			manager.register("worker", "worker turn", async () => "worker result", {
+				ownerId: "parent",
+				agentId: "worker-a",
+			});
+			manager.register("worker", "sibling turn", async () => "sibling result", {
+				ownerId: "parent",
+				agentId: "worker-b",
+			});
+			await manager.waitForAll();
+
+			expect(manager.evictCompletedJobs({ ownerId: "parent", agentId: "worker-a" })).toBe(1);
+			expect(manager.getAllJobs({ ownerId: "parent", agentId: "worker-a" })).toEqual([]);
+			expect(manager.getAllJobs({ ownerId: "parent", agentId: "worker-b" })).toHaveLength(1);
+		} finally {
+			await manager.dispose();
+		}
+	});
+
 	test("late delivery failures cannot resurrect a disposed manager", async () => {
 		const failure = Promise.withResolvers<void>();
 		const started = Promise.withResolvers<void>();

@@ -48,3 +48,44 @@ test("completed JavaScript output sinks stay within the byte budget across 300 c
 		await disposeVmContextsByOwner(ownerId);
 	}
 }, 60_000);
+
+test("finished JavaScript cell errors are not retained by late-output expiry timers", async () => {
+	const cwd = process.cwd();
+	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
+	const toolSession: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+	};
+	const sessionId = `test-error-retention:${crypto.randomUUID()}`;
+	const ownerId = `test-owner:${crypto.randomUUID()}`;
+	const errors: WeakRef<Error>[] = [];
+	try {
+		for (let index = 0; index < 20; index++) {
+			try {
+				await executeInVmContext({
+					runtime: "bun",
+					sessionKey: sessionId,
+					sessionId,
+					ownerId,
+					cwd,
+					session: toolSession,
+					code: `throw new Error("retained-${index}")`,
+					filename: `error-retention-${index}.js`,
+					runState: {},
+				});
+			} catch (error) {
+				if (error instanceof Error) errors.push(new WeakRef(error));
+			}
+		}
+		for (let attempt = 0; attempt < 6; attempt++) {
+			Bun.gc(true);
+			await new Promise<void>(resolve => setImmediate(resolve));
+		}
+		expect(errors.filter(error => error.deref() !== undefined)).toHaveLength(0);
+	} finally {
+		await disposeVmContextsByOwner(ownerId);
+	}
+}, 30_000);

@@ -7,6 +7,9 @@ Interactive mode keeps durable history separate from replay components, output b
 - Keep session history on disk and hydrate the selected context or page, rather than reconstructing the entire conversation for every redraw, compaction, or worker lookup.
 - Bound retained payloads by bytes as well as counts. A short slice or a small typed-array view must own its retained storage instead of pinning a much larger backing allocation.
 - Dispose resources at the end of their actual ownership: transcript components, image registrations, provider sessions, extension timers, subprocesses, pending callbacks, and worker-scope references.
+- Release per-call state when the call settles, on every path (success, error, abort, background handoff), not when its session ends.
+- Remove abort listeners when the operation settles. A listener left on an `AbortSignal.any` composite or a long-lived signal keeps the listener and its closure alive for as long as the source signal lives, including a `{ once: true }` listener that never fires. `AbortSignal.timeout` cannot be cancelled; use a cleared timer when the race usually ends early.
+- Deferred callbacks capture their whole enclosing scope. Schedule long-lived timers with `setTimeout(fn, ms, ...args)` or a bound method instead of an inline closure created beside large per-run state.
 - Reject excess queued work before accepting it. Do not silently evict live interpreters, pending results, or already-issued blob handles to admit unrelated work.
 - Make output elision visible. Output artifacts and history access preserve their documented content limits; they are not promises of unlimited output retention.
 

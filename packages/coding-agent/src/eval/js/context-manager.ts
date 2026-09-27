@@ -548,7 +548,7 @@ async function runOnce(
 		session.pending.delete(runId);
 		if (!pending.aborted && !pending.outputError && session.state === "alive") {
 			evictCompletedRun(session, runId);
-			const timer = setTimeout(() => evictCompletedRun(session, runId), COMPLETED_RUN_TTL_MS);
+			const timer = setTimeout(evictCompletedRun, COMPLETED_RUN_TTL_MS, session, runId);
 			timer.unref?.();
 			session.completedRuns.set(runId, { runState: options.runState, decoders: pending.decoders, timer });
 			trimCompletedRuns(session);
@@ -1054,16 +1054,17 @@ async function raceWithTimeout<T>(
 	signal?: AbortSignal,
 ): Promise<T> {
 	signal?.throwIfAborted();
-	const timeoutSignal = AbortSignal.timeout(timeoutMs);
-	const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const { promise: timeoutPromise, reject } = Promise.withResolvers<never>();
 	const onAbort = (): void =>
 		reject(signal?.aborted ? reasonToError(signal.reason, "Execution aborted") : new ToolError(reason));
-	combined.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(onAbort, timeoutMs);
+	timer.unref?.();
+	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
 		return await Promise.race([promise, timeoutPromise]);
 	} finally {
-		combined.removeEventListener("abort", onAbort);
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", onAbort);
 	}
 }
 

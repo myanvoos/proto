@@ -21,8 +21,8 @@ export function withNativeOutput(
 		failure = error instanceof Error ? error : new Error(String(error));
 		for (const handler of errors) handler(failure);
 	};
-	worker.onError(report);
-	worker.onMessage(message => {
+	const unsubscribeError = worker.onError(report);
+	const unsubscribeMessage = worker.onMessage(message => {
 		if (message.type === "result" && message.nativeSequence !== undefined) {
 			if (!Number.isSafeInteger(message.nativeSequence) || message.nativeSequence < 0) {
 				report(new Error("Invalid native JS output fence"));
@@ -35,11 +35,12 @@ export function withNativeOutput(
 		}
 		for (const handler of listeners) handler(message);
 	});
+	const decoder = new TextDecoder();
 	const drained = (async () => {
 		try {
 			for await (const line of readLines(stdout, undefined, 1024 * 1024)) {
 				if (stopping) break;
-				const frame = JSON.parse(new TextDecoder().decode(line)) as Record<string, unknown>;
+				const frame = JSON.parse(decoder.decode(line)) as Record<string, unknown>;
 				if (
 					frame.type !== "native-stdio" ||
 					typeof frame.runId !== "string" ||
@@ -74,6 +75,10 @@ export function withNativeOutput(
 			if (!stopping && waiting.length) throw new Error("Native JS output ended before its completion fence");
 		} catch (error) {
 			report(error);
+		} finally {
+			for (const resolve of acknowledgements.values()) resolve();
+			acknowledgements.clear();
+			waiting.length = 0;
 		}
 	})();
 	return {
@@ -96,8 +101,15 @@ export function withNativeOutput(
 		async terminate() {
 			stopping = true;
 			for (const resolve of acknowledgements.values()) resolve();
-			await worker.terminate();
-			await drained;
+			try {
+				await worker.terminate();
+			} finally {
+				await drained;
+				unsubscribeMessage();
+				unsubscribeError();
+				listeners.clear();
+				errors.clear();
+			}
 		},
 	};
 }

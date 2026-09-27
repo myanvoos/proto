@@ -270,6 +270,12 @@ interface StreamedBashState {
 	observationPromise?: Promise<void>;
 }
 
+interface StreamedCompletionContext {
+	generation: number;
+	/** Final input matched the streamed prefix and may claim its completion. */
+	claimable: boolean;
+}
+
 interface PendingStreamedObservation {
 	raw: string;
 	promise: Promise<StreamedKernelFailure | undefined>;
@@ -518,6 +524,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly #autoBackgroundEnabled: boolean;
 	readonly #autoBackgroundThresholdMs: number;
 	readonly #streamedInputs = new Map<string, StreamedBashState>();
+	readonly #streamedBridgeCalls = new Set<string>();
 	#nextStreamGeneration = 0;
 	#disposed = false;
 	constructor(private readonly session: ToolSession) {
@@ -766,20 +773,33 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			.catch(() => undefined);
 	}
 
+	#cancelStreamedCompletion(toolCallId: string): void {
+		const generation = this.#streamedInputs.get(toolCallId)?.generation;
+		if (generation !== undefined) cancelEvalCompletionSpeculation(toolCallId, generation, this.session);
+	}
+
+	#releaseStreamedInputState(toolCallId: string): number | undefined {
+		const state = this.#streamedInputs.get(toolCallId);
+		if (!state) return undefined;
+		state.observationScheduler.cancel();
+		state.pendingObservation?.resolve(undefined);
+		state.pendingObservation = undefined;
+		state.activeObservation?.resolve(undefined);
+		state.abort.abort();
+		this.#streamedInputs.delete(toolCallId);
+		return state.generation;
+	}
+
 	cancelStreamedInput(toolCallId?: string): void {
 		const ids = toolCallId === undefined ? [...this.#streamedInputs.keys()] : [toolCallId];
 		for (const id of ids) {
-			const state = this.#streamedInputs.get(id);
-			if (!state) continue;
-			state.observationScheduler.cancel();
-			state.pendingObservation?.resolve(undefined);
-			state.pendingObservation = undefined;
-			state.activeObservation?.resolve(undefined);
-			state.abort.abort();
-			cancelEvalCompletionSpeculation(id, state.generation, this.session);
-			this.#streamedInputs.delete(id);
+			const generation = this.#releaseStreamedInputState(id);
+			if (generation !== undefined) cancelEvalCompletionSpeculation(id, generation, this.session);
 		}
-		if (toolCallId === undefined) cancelAllEvalCompletionSpeculation(this.session);
+		if (toolCallId === undefined) {
+			this.#streamedBridgeCalls.clear();
+			cancelAllEvalCompletionSpeculation(this.session);
+		}
 	}
 
 	async #dispatchParsedProto(
@@ -973,6 +993,37 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
+	#streamedCompletionContext(
+		toolCallId: string,
+		finalInput: {
+			command: string;
+			cwd?: string;
+			env?: Record<string, string>;
+			pty: boolean;
+			async: boolean;
+			lane?: string;
+		},
+	): StreamedCompletionContext | undefined {
+		if (this.session.settings.get("kernel.speculation.enabled") !== true) return undefined;
+		const state = this.#streamedInputs.get(toolCallId);
+		if (!state) return undefined;
+		const streamed = parseStreamedInputForCompletion(state.latestRaw);
+		const streamedEnv = streamed.input.env ?? {};
+		const finalEnv = finalInput.env ?? {};
+		const sameEnv =
+			Object.keys(streamedEnv).length === Object.keys(finalEnv).length &&
+			Object.entries(finalEnv).every(([key, value]) => streamedEnv[key] === value);
+		return {
+			generation: state.generation,
+			claimable:
+				streamed.input.command === finalInput.command &&
+				streamed.input.cwd === finalInput.cwd &&
+				(streamed.input.pty ?? false) === finalInput.pty &&
+				(streamed.input.async ?? false) === finalInput.async &&
+				sameEnv,
+		};
+	}
+
 	#kernelShellBridge(
 		toolCallId: string,
 		finalInput: {
@@ -985,37 +1036,36 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		},
 		onStatusEvent?: (event: EvalStatusEvent) => void,
 		onDisplayText?: (text: string) => void,
+		streamedCompletionContext?: StreamedCompletionContext,
 	): KernelShellBridgeHandle | undefined {
 		if (!kernelBridgeAvailable(this.session)) return undefined;
-		const state =
-			this.session.settings.get("kernel.speculation.enabled") === true
-				? this.#streamedInputs.get(toolCallId)
-				: undefined;
-		let claimable = false;
-		if (state) {
-			const streamed = parseStreamedInputForCompletion(state.latestRaw);
-			const streamedEnv = streamed.input.env ?? {};
-			const finalEnv = finalInput.env ?? {};
-			const sameEnv =
-				Object.keys(streamedEnv).length === Object.keys(finalEnv).length &&
-				Object.entries(finalEnv).every(([key, value]) => streamedEnv[key] === value);
-			claimable =
-				streamed.input.command === finalInput.command &&
-				streamed.input.cwd === finalInput.cwd &&
-				(streamed.input.pty ?? false) === finalInput.pty &&
-				(streamed.input.async ?? false) === finalInput.async &&
-				sameEnv;
-		}
-		return registerKernelShellRun(
+		const streamed = streamedCompletionContext ?? this.#streamedCompletionContext(toolCallId, finalInput);
+		// Only a final input that matches its streamed prefix may claim that prefix's completion.
+		// Anything else has no claimant, so its speculation is cancelled now rather than held.
+		const context = streamed?.claimable ? streamed : undefined;
+		if (streamed && !context) cancelEvalCompletionSpeculation(toolCallId, streamed.generation, this.session);
+		const bridge = registerKernelShellRun(
 			this.session,
 			onStatusEvent,
 			{
 				lane: finalInput.lane,
-				toolCallId: claimable ? toolCallId : undefined,
-				generation: claimable ? state?.generation : undefined,
+				toolCallId: context ? toolCallId : undefined,
+				generation: context?.generation,
 			},
 			onDisplayText,
 		);
+		if (!bridge || !context) return bridge;
+		this.#streamedBridgeCalls.add(toolCallId);
+		return {
+			...bridge,
+			dispose: () => {
+				try {
+					bridge.dispose();
+				} finally {
+					this.#streamedBridgeCalls.delete(toolCallId);
+				}
+			},
+		};
 	}
 
 	async #drainBridgeImages(bridge: KernelShellBridgeHandle | undefined): Promise<ImageContent[]> {
@@ -1316,6 +1366,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 	#startManagedBashJob(options: {
 		command: string;
+		toolCallId: string;
+		streamedCompletionContext?: StreamedCompletionContext;
 		lane?: string;
 		/** Slot reserved at issue on `lane ?? "main"`; the job owns and releases it. */
 		laneReservation: BashLaneReservation;
@@ -1338,6 +1390,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
 			options.laneReservation.release();
+			cancelEvalCompletionSpeculation(
+				options.toolCallId,
+				options.streamedCompletionContext?.generation,
+				this.session,
+			);
 			throw new ToolError("Background job manager unavailable for this session.");
 		}
 
@@ -1372,7 +1429,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							{ delayMs: BASH_LIVE_UPDATE_INTERVAL_MS },
 						);
 						const pyBridge = this.#kernelShellBridge(
-							jobId,
+							options.toolCallId,
 							{
 								command: options.command,
 								lane,
@@ -1387,6 +1444,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 								latestTextDirty = true;
 								progressScheduler.enqueue(undefined);
 							},
+							options.streamedCompletionContext,
 						);
 						let resultRecorded = false;
 						try {
@@ -1477,6 +1535,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							laneReservation?.release();
 							progressScheduler.cancel();
 							pyBridge?.dispose();
+							if (!pyBridge) {
+								cancelEvalCompletionSpeculation(
+									options.toolCallId,
+									options.streamedCompletionContext?.generation,
+									this.session,
+								);
+							}
 						}
 					}),
 				{
@@ -1501,6 +1566,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			);
 		} catch (error) {
 			options.laneReservation.release();
+			cancelEvalCompletionSpeculation(
+				options.toolCallId,
+				options.streamedCompletionContext?.generation,
+				this.session,
+			);
 			throw error;
 		}
 
@@ -1540,6 +1610,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			recordExecution(this.session, record);
 		};
 		let laneReservation: BashLaneReservation | undefined;
+		const streamedAbortHandler = signal ? () => this.cancelStreamedInput(toolCallId) : undefined;
+		if (streamedAbortHandler) signal?.addEventListener("abort", streamedAbortHandler, { once: true });
 		// A consumer that takes the slot (executeBash, a background job) releases it when done.
 		let laneTaken = false;
 		const takeLane = (transfer = true): BashLaneReservation => {
@@ -1574,6 +1646,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			});
 			throw error;
 		} finally {
+			if (streamedAbortHandler) signal?.removeEventListener("abort", streamedAbortHandler);
+			// Streamed observation state belongs to this tool call. Completion
+			// speculation belongs to a registered kernel bridge when one exists;
+			// otherwise there is no later claimant, so cancel it here.
+			if (!this.#streamedBridgeCalls.has(toolCallId)) this.#cancelStreamedCompletion(toolCallId);
+			this.#releaseStreamedInputState(toolCallId);
 			if (!laneTaken) laneReservation?.release();
 		}
 	}
@@ -1596,9 +1674,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
-		if (signal) {
-			signal.addEventListener("abort", () => this.cancelStreamedInput(_toolCallId), { once: true });
-		}
 		if (this.session.settings.get("kernel.speculation.enabled") !== true) {
 			this.cancelStreamedInput(_toolCallId);
 		} else if (!signal?.aborted) {
@@ -1692,6 +1767,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 			const job = this.#startManagedBashJob({
 				command,
+				toolCallId: _toolCallId,
+				// Compare the model's raw input, exactly as the foreground bridge does: the streamed
+				// prefix never saw the rewritten command or the resolved cwd/env.
+				streamedCompletionContext: this.#streamedCompletionContext(_toolCallId, {
+					command: rawCommand,
+					cwd,
+					env: rawEnv,
+					pty,
+					async: asyncRequested,
+					lane,
+				}),
 				lane,
 				laneReservation: takeLane(),
 				commandCwd,
@@ -1729,6 +1815,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const startBackgrounded = autoBackgroundWaitMs === 0;
 			const job = this.#startManagedBashJob({
 				command,
+				toolCallId: _toolCallId,
+				// Compare the model's raw input, exactly as the foreground bridge does: the streamed
+				// prefix never saw the rewritten command or the resolved cwd/env.
+				streamedCompletionContext: this.#streamedCompletionContext(_toolCallId, {
+					command: rawCommand,
+					cwd,
+					env: rawEnv,
+					pty,
+					async: asyncRequested,
+					lane,
+				}),
 				lane,
 				laneReservation: takeLane(),
 				onStart: markStarted,
@@ -2038,6 +2135,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						Bun.sleep(killGraceMs),
 					]);
 				}
+				this.#cancelStreamedCompletion(_toolCallId);
 			}
 		}
 
@@ -2148,6 +2246,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			await liveUpdateScheduler.flush();
 			liveUpdateScheduler.cancel();
 			pyBridge?.dispose();
+			if (!pyBridge) this.#cancelStreamedCompletion(_toolCallId);
 		}
 	}
 }

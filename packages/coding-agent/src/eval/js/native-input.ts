@@ -75,8 +75,8 @@ export async function withNativeInput(
 		throw error;
 	}
 	server.on("error", report);
-	worker.onError(report);
-	worker.onMessage(message => {
+	const unsubscribeError = worker.onError(report);
+	const unsubscribeMessage = worker.onMessage(message => {
 		if (message.type === "result") {
 			runs.get(message.runId)?.socket?.destroy();
 			runs.delete(message.runId);
@@ -122,6 +122,11 @@ export async function withNativeInput(
 			try {
 				await worker.terminate();
 			} finally {
+				unsubscribeMessage();
+				unsubscribeError();
+				listeners.clear();
+				errors.clear();
+				sockets.clear();
 				await new Promise<void>(resolve => server.close(() => resolve()));
 				await fs.rm(directory, { recursive: true, force: true });
 			}

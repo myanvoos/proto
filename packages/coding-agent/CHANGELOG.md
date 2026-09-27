@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Bash commands containing URLs of schemes the harness does not own (`s3://`, `gs://`, `postgres://`, `ssh://` for git/rsync) run as typed instead of failing with "Internal URL router is unavailable"
+- Bash calls no longer keep their streamed-argument preview state (scheduler, abort controller, pending observations) for the rest of the session when kernel speculation is enabled
+- Auto-backgrounded kernel commands now use their streamed `completion()` speculation instead of repeating the model request, and speculation whose final command no longer matches the streamed one is cancelled immediately
+- Closed sessions and subagents release their bash shell-owner registration even when they never ran a command, and a disposed session can no longer start an orphan persistent shell
+- Anonymous background bash calls no longer register a permanent shell owner, and lane close, cancellation, and global teardown release their shell handles, queued lane slots, and output buffers
+- Interrupted and one-shot shells are closed deterministically; one-shot shells with live background jobs are kept under the bounded background-job reaper instead of being killed
+- Kernel crash and shutdown clear pending control requests, completed output sinks, and partial frame buffers; JavaScript worker and native stdio teardown release queued runs, acknowledgements, and listeners
+- Finished JavaScript cells no longer pin their run state and errors for the 30-second completed-run window, and JavaScript kernel startup no longer keeps an uncancellable timeout signal alive after the worker is ready
+- Filesystem observation ledgers for sessions without a live kernel are released after they drain, without dropping observations recorded concurrently with a drain
+- Terminated workers no longer keep their parent session alive through terminal-only fleet history, and their completed turn jobs are evicted from the parent's job manager
+- Removed or aborted agents' IRC mailboxes are cleared and their pending waits reject instead of waiting indefinitely
+
 ## [19.0.0] - 2026-09-27
 
 ### Breaking Changes

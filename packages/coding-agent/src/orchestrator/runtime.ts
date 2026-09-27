@@ -730,9 +730,16 @@ export class OrchestratorRuntime {
 		record.wakeTurnCleanup = undefined;
 	}
 
-	#retireScopeIfUnused(key: string): void {
+	#retireScopeIfUnused(key: string, allowEmpty = false): void {
+		// Terminal records remain addressable for the bounded fleet history, but can no longer
+		// receive wake turns. Do not let that history keep the parent ToolSession alive forever.
+		const records = this.#recordsByScope.get(key);
+		if (!records && !allowEmpty) return;
+		const hasLiveRecord = records
+			? [...records.values()].some(record => record.state !== "dead" && record.terminal === undefined)
+			: false;
 		if (
-			this.#recordsByScope.has(key) ||
+			hasLiveRecord ||
 			this.#pendingWakeScopes.has(key) ||
 			this.#retiredRecords?.query("SELECT 1 FROM records WHERE scope = ? LIMIT 1").get(key)
 		)
@@ -754,7 +761,7 @@ export class OrchestratorRuntime {
 		records.delete(id);
 		if (records.size === 0) {
 			this.#recordsByScope.delete(key);
-			this.#retireScopeIfUnused(key);
+			this.#retireScopeIfUnused(key, true);
 		}
 	}
 
@@ -1015,7 +1022,9 @@ export class OrchestratorRuntime {
 		record.lastActivity = activity ?? `terminal: ${reason}`;
 		this.#compactTerminalRecord(record);
 		if (cleanupArtifacts) void this.#startTemporaryArtifactsCleanup(record);
-		this.#trimTerminalRecords(this.#scopeForRecord(record));
+		const scope = this.#scopeForRecord(record);
+		this.#trimTerminalRecords(scope);
+		this.#retireScopeIfUnused(scopeKey(scope, ""));
 	}
 
 	#receipt(
@@ -1127,7 +1136,9 @@ export class OrchestratorRuntime {
 	listIds(session: ToolSession): string[] {
 		const scope = this.#activeScope(session);
 		this.#resumePending(session, scope);
-		return this.#listIds(scope);
+		const ids = this.#listIds(scope);
+		this.#retireScopeIfUnused(scopeKey(scope, ""));
+		return ids;
 	}
 
 	screens(session: ToolSession, ids?: string[]): WorkerScreen[] {
@@ -1149,7 +1160,7 @@ export class OrchestratorRuntime {
 			}
 		}
 		const retainedRecords = records.filter(record => this.#lookupRecord(scope, record.id) === record);
-		return retainedRecords.map(record => {
+		const screens = retainedRecords.map(record => {
 			const registered = this.#registeredAgent(record);
 			const lifecycle: WorkerLifecycle =
 				record.state === "dead" || record.terminal
@@ -1197,6 +1208,8 @@ export class OrchestratorRuntime {
 				lastActivityAt: record.lastActivityAt,
 			};
 		});
+		this.#retireScopeIfUnused(scopeKey(scope, ""));
+		return screens;
 	}
 
 	#persistedIds(session: OrchestratorParent, scope: OwnerScope): Set<string> {
@@ -1266,6 +1279,10 @@ export class OrchestratorRuntime {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		});
+	}
+
+	#evictWorkerJobs(manager: AsyncJobManager | undefined, record: WorkerRecord): void {
+		manager?.evictCompletedJobs({ ownerId: record.jobOwnerId, agentId: record.id });
 	}
 
 	async #markTerminalRef(
@@ -1720,8 +1737,15 @@ export class OrchestratorRuntime {
 	async send(session: ToolSession, args: { session: string; message: string; model?: string }): Promise<SendOutcome> {
 		const scope = this.#activeScope(session);
 		this.#resumePending(session, scope);
-		const record = this.#record(scope, args.session);
+		let record: WorkerRecord;
+		try {
+			record = this.#record(scope, args.session);
+		} catch (error) {
+			this.#retireScopeIfUnused(scopeKey(scope, ""), true);
+			throw error;
+		}
 		if (record.state === "dead" || record.terminal) {
+			this.#retireScopeIfUnused(scopeKey(scope, ""));
 			throw this.#terminalError(record);
 		}
 		const message = args.message.trim();
@@ -1921,8 +1945,9 @@ export class OrchestratorRuntime {
 						jobId: job.id,
 					},
 				);
-				this.#continueSuspendedCleanup(scope, record, jobTask);
+				this.#continueSuspendedCleanup(scope, record, jobTask, manager);
 			} else {
+				this.#evictWorkerJobs(manager, record);
 				artifactCleanups.push(this.#startTemporaryArtifactsCleanup(record));
 			}
 			if (this.#scopeRecords(scope).has(record.id)) continue;
@@ -1935,10 +1960,16 @@ export class OrchestratorRuntime {
 		return records.length;
 	}
 
-	#continueSuspendedCleanup(scope: OwnerScope, record: WorkerRecord, jobTask: TrackedTeardown): void {
+	#continueSuspendedCleanup(
+		scope: OwnerScope,
+		record: WorkerRecord,
+		jobTask: TrackedTeardown,
+		manager?: AsyncJobManager,
+	): void {
 		void jobTask.promise
 			.then(async () => {
 				try {
+					this.#evictWorkerJobs(manager, record);
 					if (!this.#scopeRecords(scope).has(record.id)) {
 						const lateRef = this.#registeredAgent(record);
 						if (lateRef) {
@@ -2052,7 +2083,10 @@ export class OrchestratorRuntime {
 				record,
 				pendingJobs.map(entry => entry.task),
 				registered,
+				manager,
 			);
+		} else {
+			this.#evictWorkerJobs(manager, record);
 		}
 		if (persistenceError) {
 			let finalPersistenceError = persistenceError;
@@ -2116,9 +2150,13 @@ export class OrchestratorRuntime {
 		record: WorkerRecord,
 		jobTasks: readonly TrackedTeardown[],
 		expected: AgentRef | undefined,
+		manager?: AsyncJobManager,
 	): void {
 		void Promise.allSettled(jobTasks.map(task => task.promise))
-			.then(() => this.#markTerminalRecord(record, expected, Date.now() + this.#teardownGraceMs))
+			.then(() => {
+				this.#evictWorkerJobs(manager, record);
+				return this.#markTerminalRecord(record, expected, Date.now() + this.#teardownGraceMs);
+			})
 			.catch(error => {
 				logger.warn("orchestrator: failed to finish killed worker cleanup", {
 					id: record.id,

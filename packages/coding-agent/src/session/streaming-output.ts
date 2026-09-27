@@ -937,28 +937,28 @@ export class OutputSink {
 		if (text.length === 0 || (!this.#pendingCarriageReturn && !text.includes(CR))) return text;
 
 		let cursor = 0;
-		let normalized = "";
+		const parts: string[] = [];
 		if (this.#pendingCarriageReturn) {
 			this.#pendingCarriageReturn = false;
-			normalized = NL;
+			parts.push(NL);
 			if (text.startsWith(NL)) cursor = 1;
 		}
 
 		while (cursor < text.length) {
 			const carriageReturn = text.indexOf(CR, cursor);
 			if (carriageReturn === -1) {
-				normalized += text.substring(cursor);
+				parts.push(text.substring(cursor));
 				break;
 			}
-			normalized += text.substring(cursor, carriageReturn);
+			if (carriageReturn > cursor) parts.push(text.substring(cursor, carriageReturn));
 			if (carriageReturn === text.length - 1) {
 				this.#pendingCarriageReturn = true;
 				break;
 			}
-			normalized += NL;
+			parts.push(NL);
 			cursor = text.startsWith(NL, carriageReturn + 1) ? carriageReturn + 2 : carriageReturn + 1;
 		}
-		return normalized;
+		return parts.join("");
 	}
 
 	push(chunk: string): void {

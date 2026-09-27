@@ -417,11 +417,14 @@ function quarantineShellSession(
 	const record: QuarantinedShellSession = { shell, cleanup };
 	shellSessionQuarantines.set(sessionKey, record);
 	void cleanup
-		.finally(() => {
+		.finally(async () => {
 			if (shellSessionQuarantines.get(sessionKey) === record) {
 				shellSessionQuarantines.delete(sessionKey);
 				brokenShellSessions.delete(sessionKey);
 			}
+			// An interrupted shell is never reused. Abort stops the current run,
+			// while close releases the native session and any process-group state.
+			await closeShell(shell);
 		})
 		.catch(() => undefined);
 }
@@ -457,26 +460,6 @@ function collectShellsForSession(sessionId: string): Set<Shell> {
 	return shells;
 }
 
-export function hasBashSessions(sessionId: string): boolean {
-	if (!sessionId) return false;
-	for (const sessionKey of shellSessions.keys()) {
-		if (belongsToSession(sessionKey, sessionId)) return true;
-	}
-	for (const sessionKey of shellSessionQuarantines.keys()) {
-		if (belongsToSession(sessionKey, sessionId)) return true;
-	}
-	for (const active of activeShells.values()) {
-		if (belongsToSession(active.sessionKey, sessionId)) return true;
-	}
-	for (const record of retainedShells.values()) {
-		if (belongsToSession(record.sessionKey, sessionId)) return true;
-	}
-	for (const sessionKey of brokenShellSessions) {
-		if (belongsToSession(sessionKey, sessionId)) return true;
-	}
-	return false;
-}
-
 export async function disposeBashSessions(sessionId: string, owner?: BashSessionOwner): Promise<void> {
 	if (!sessionId) return;
 	const activeOwner = activeBashSessionOwners.get(sessionId);
@@ -507,11 +490,15 @@ export async function disposeAllBashSessions(): Promise<void> {
 	for (const shell of shellClosePromises.keys()) shells.add(shell);
 	shellSessions.clear();
 	lostShellStates.clear();
+	for (const owner of activeBashSessionOwners.values()) owner.disposed = true;
+	activeBashSessionOwners.clear();
 	for (const active of activeShells.values()) active.abortController.abort();
 	activeShells.clear();
 	brokenShellSessions.clear();
 	shellSessionQuarantines.clear();
 	for (const record of retainedShells.values()) removeRetainedShell(record);
+	for (const record of shellLanes.values()) cancelSlots(record, [...record.slots], "dispose");
+	shellLanes.clear();
 	await Promise.all([...shells].map(shell => closeShell(shell)));
 }
 
@@ -522,11 +509,15 @@ function forceDisposeAllBashSessions(): void {
 	for (const shell of retainedShells.keys()) shells.add(shell);
 	for (const shell of shellClosePromises.keys()) shells.add(shell);
 	shellSessions.clear();
+	for (const owner of activeBashSessionOwners.values()) owner.disposed = true;
+	activeBashSessionOwners.clear();
 	for (const active of activeShells.values()) active.abortController.abort();
 	activeShells.clear();
 	brokenShellSessions.clear();
 	shellSessionQuarantines.clear();
 	for (const record of retainedShells.values()) removeRetainedShell(record);
+	for (const record of shellLanes.values()) cancelSlots(record, [...record.slots], "dispose");
+	shellLanes.clear();
 	for (const shell of shells) forceCloseShell(shell);
 }
 
@@ -910,6 +901,9 @@ export function beginBashLaneControl(sessionKey: string, lane: string): BashLane
 			for (const [shell, active] of activeShells) {
 				if (!inLane(active.sessionKey)) continue;
 				active.abortController.abort();
+				// The lane owns teardown now. Do not keep the abort controller and
+				// session key reachable while a stubborn native run drains.
+				activeShells.delete(shell);
 				shells.add(shell);
 			}
 			for (const retained of [...retainedShells.values()]) {
@@ -1013,7 +1007,12 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 	const sessionKey = buildSessionKey(shell, prefix, snapshotPath, shellEnv, laneSessionKey, minimizer);
 	const sessionOwnerId = shellOwnerId(sessionKey);
 	const sessionOwner =
-		options?.sessionOwner ?? (sessionOwnerId ? getOrCreateBashSessionOwner(sessionOwnerId) : undefined);
+		options?.sessionOwner ??
+		(sessionOwnerId
+			? options?.ephemeral === true
+				? activeBashSessionOwners.get(sessionOwnerId)
+				: getOrCreateBashSessionOwner(sessionOwnerId)
+			: undefined);
 	const sessionDisposed = isDisposedSessionKey(sessionKey, sessionOwner);
 	if (sessionDisposed) {
 		await sink.dispose();
@@ -1213,6 +1212,13 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 	} finally {
 		activeShells.delete(executionShell);
 		await sink.dispose();
+		// The result owns the materialized output. Drop the sink's head/tail
+		// windows even if a persistent native shell keeps callback closures alive.
+		sink.release();
+		if (!ownsPersistentSession) {
+			await retainShellWithLiveBackgroundJobs(executionShell, sessionKey, sessionOwner);
+			if (!retainedShells.has(executionShell)) await closeShell(executionShell);
+		}
 		if (!runAbortController.signal.aborted) {
 			runAbortController.abort();
 		}

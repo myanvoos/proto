@@ -110,6 +110,34 @@ describe("PythonKernel status probe", () => {
 		}
 	}, 30_000);
 
+	test("kernel crash releases late-output sinks before the dead session is retained", async () => {
+		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+		if (!availability.ok) return;
+
+		using tempDir = TempDir.createSync("@python-kernel-crash-sinks-");
+		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		let retained = 4096;
+		let releases = 0;
+		try {
+			await kernel.execute("print('kept')", {
+				onChunk: () => {},
+				retainedOutputBytes: () => retained,
+				releaseOutput: () => {
+					retained = 0;
+					releases++;
+				},
+			});
+			expect(releases).toBe(0);
+
+			const crashed = await kernel.execute("import os; os._exit(17)");
+			expect(crashed.cancelled).toBe(true);
+			expect(releases).toBe(1);
+			expect(retained).toBe(0);
+		} finally {
+			if (kernel.isAlive()) await kernel.shutdown().catch(() => {});
+		}
+	}, 30_000);
+
 	test("owner-scoped disposal releases the retained kernel and its state", async () => {
 		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 		if (!availability.ok) {

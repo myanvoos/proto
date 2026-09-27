@@ -147,7 +147,15 @@ export class AgentRegistry {
 
 	static resetGlobalForTests(): void {
 		const current = AgentRegistry.#global;
-		if (current) current.#retired?.close();
+		if (current) {
+			current.#retired?.close();
+			current.#retired = undefined;
+			current.#refs.clear();
+			current.#mainRefs.clear();
+			current.#refsByFleet.clear();
+			current.#listeners.clear();
+			current.#dormant.clear();
+		}
 		AgentRegistry.#global = new AgentRegistry();
 	}
 

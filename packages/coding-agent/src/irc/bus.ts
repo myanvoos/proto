@@ -27,6 +27,7 @@ interface IrcWaiter {
 	from?: string;
 	fleetRoot: string;
 	resolve: (msg: IrcMessage) => void;
+	reject: (error: Error) => void;
 	cancel: () => void;
 }
 
@@ -48,6 +49,8 @@ export class IrcBus {
 	}
 
 	static resetGlobalForTests(): void {
+		const current = IrcBus.#global;
+		if (current) current.#dispose();
 		IrcBus.#global = undefined;
 	}
 
@@ -55,11 +58,33 @@ export class IrcBus {
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMailboxEntry[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
+	readonly #unsubscribeRegistry: () => void;
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
 
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+		this.#unsubscribeRegistry = registry.onChange(event => {
+			if (event.type === "removed" || (event.type === "status_changed" && event.ref.status === "aborted")) {
+				this.#clearAgent(event.ref.id, new Error(`IRC agent "${event.ref.id}" is no longer available`));
+			}
+		});
+	}
+
+	#clearAgent(agentId: string, error: Error): void {
+		this.#mailboxes.delete(agentId);
+		const waiters = this.#waiters.get(agentId);
+		if (!waiters) return;
+		for (const waiter of [...waiters]) waiter.reject(error);
+	}
+
+	#dispose(): void {
+		this.#unsubscribeRegistry();
+		for (const [agentId, waiters] of this.#waiters) {
+			for (const waiter of [...waiters]) waiter.reject(new Error("IRC bus disposed"));
+			this.#waiters.delete(agentId);
+		}
+		this.#mailboxes.clear();
 	}
 
 	async send(
@@ -226,6 +251,7 @@ export class IrcBus {
 			from: filter.from,
 			fleetRoot,
 			resolve: msg => settle({ kind: "message", msg }),
+			reject: error => settle({ kind: "abort", error }),
 			cancel: () => cleanup(),
 		};
 

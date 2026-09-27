@@ -169,7 +169,7 @@ async function runLifecycle(
 		settings,
 		fetch: () => Promise.reject(new Error("network disabled in lifecycle fixture")),
 	});
-	const manager = new AsyncJobManager({ retentionMs: 0 });
+	const manager = new AsyncJobManager({ retentionMs: 0, maxRunningJobs: count, maxTotalJobs: count * 4 });
 	const started = Promise.withResolvers<void>();
 	const transcriptPayload = "p".repeat(payloadKiB * 1024);
 	const provider = scriptedProvider(started.promise, count, transcriptPayload);

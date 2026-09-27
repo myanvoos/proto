@@ -8,7 +8,7 @@ import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { readInterpreterSetting } from "./backend-helpers";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
-import type { EvalCompletionInvocationContext } from "./completion-bridge";
+import { cancelEvalCompletionSpeculation, type EvalCompletionInvocationContext } from "./completion-bridge";
 import { formatDisplayOutputForText } from "./display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations";
 import { bunBackend, namespaceSessionId as jsSessionId, nodeBackend } from "./js";
@@ -106,6 +106,7 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024;
 const OUTPUT_CHUNK_CHARS = 1024 * 1024;
 const OUTPUT_HIGH_WATER_BYTES = 256 * 1024;
+const UTF8_FRAME_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 const runs = new Map<string, RunContext>();
 const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
@@ -176,6 +177,13 @@ export function registerKernelShellRun(
 			if (disposed) return;
 			disposed = true;
 			runs.delete(token);
+			if (context.completionContext?.toolCallId !== undefined) {
+				cancelEvalCompletionSpeculation(
+					context.completionContext.toolCallId,
+					context.completionContext.generation,
+					context.session,
+				);
+			}
 			context.displayBudget.release();
 			context.images.length = 0;
 			context.jsonOutputs.length = 0;
@@ -430,15 +438,21 @@ async function sendBytes(socket: Socket<SocketState>, bytes: Uint8Array, stream:
 	}
 	state.producerBytes += bytes.byteLength;
 	state.producerWrites++;
+	const frameType = stream === "stderr" ? "e" : "o";
 	try {
 		for (let offset = 0; offset < bytes.byteLength; offset += KERNEL_INPUT_CHUNK_BYTES) {
 			const state = socket.data;
 			if (state.closed || state.ending) return;
-			const chunk = Buffer.from(bytes.subarray(offset, offset + KERNEL_INPUT_CHUNK_BYTES));
-			const text = chunk.toString("utf8");
-			const frame = Buffer.from(text).equals(chunk)
-				? { t: stream === "stderr" ? "e" : "o", d: text }
-				: { t: stream === "stderr" ? "e" : "o", d: chunk.toString("base64"), encoding: "base64" };
+			const chunk = bytes.subarray(offset, offset + KERNEL_INPUT_CHUNK_BYTES);
+			let frame: Record<string, string>;
+			try {
+				// Decode once and trust fatal UTF-8 validation. The previous
+				// round-trip through Buffer allocated a copy for every chunk.
+				frame = { t: frameType, d: UTF8_FRAME_DECODER.decode(chunk) };
+			} catch {
+				const binary = Buffer.from(chunk);
+				frame = { t: frameType, d: binary.toString("base64"), encoding: "base64" };
+			}
 			if (!send(socket, frame)) return;
 			if (state.outputBytes >= OUTPUT_HIGH_WATER_BYTES) {
 				state.outputDrain ??= Promise.withResolvers<void>();

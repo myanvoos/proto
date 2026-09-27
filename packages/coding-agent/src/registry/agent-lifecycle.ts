@@ -405,6 +405,8 @@ export class AgentLifecycleManager {
 			[...this.#adopted.values(), ...this.#parks.values(), ...this.#revivals.values()].map(pending => pending.ref),
 		);
 		await this.#releaseWithinDeadline([...refs], deadlineAt);
+		for (const adopted of this.#adopted.values()) clearTimeout(adopted.timer);
+		this.#adopted.clear();
 		this.#revivals.clear();
 		this.#parks.clear();
 		this.#persistedReviverFactory = undefined;

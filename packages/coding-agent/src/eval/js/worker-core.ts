@@ -374,11 +374,17 @@ export class WorkerCore {
 			const ack = Promise.withResolvers<void>();
 			this.#outputAcks.set(id, ack.resolve);
 			this.#refreshChannelReference();
-			this.#transport.send(
-				typeof chunk === "string"
-					? { type: "text", runId, id, chunk, stream }
-					: { type: "bytes", runId, id, data: Buffer.from(chunk).toString("base64"), stream },
-			);
+			try {
+				this.#transport.send(
+					typeof chunk === "string"
+						? { type: "text", runId, id, chunk, stream }
+						: { type: "bytes", runId, id, data: Buffer.from(chunk).toString("base64"), stream },
+				);
+			} catch (error) {
+				this.#outputAcks.delete(id);
+				this.#refreshChannelReference();
+				throw error;
+			}
 			await ack.promise;
 		});
 		const hooks: RuntimeHooks = {
@@ -535,6 +541,10 @@ export class WorkerCore {
 
 	#finishClose(sendAck: boolean): void {
 		this.#runs.clear();
+		this.#runQueue.length = 0;
+		this.#outputAcks.clear();
+		this.#recentCellFiles.clear();
+		this.#draining = undefined;
 		this.#runtime?.dispose?.();
 		this.#runtime = null;
 		if (sendAck) this.#transport.send({ type: "closed" });
