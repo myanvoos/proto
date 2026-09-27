@@ -125,7 +125,12 @@ import type {
 	ResponseStreamEvent,
 } from "./openai-responses-wire";
 import { transformMessages } from "./transform-messages";
-import { joinTextWithImagePlaceholder, joinTextWithOmissions, partitionUserMediaContent } from "./vision-guard";
+import {
+	joinTextWithImagePlaceholder,
+	joinTextWithOmissions,
+	mediaOmissionNote,
+	partitionUserMediaContent,
+} from "./vision-guard";
 
 export interface OpenAIModelIdentity {
 	provider: string;
@@ -2042,8 +2047,8 @@ export function encodeResponsesToolResultOutput<TApi extends Api>(
 ): ResponsesToolResultOutputEncoding {
 	const supportsImages = model.input.includes("image");
 	const textResult = toolResult.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map(block => block.text)
+		.filter(block => block.type !== "image")
+		.map(block => (block.type === "text" ? block.text : mediaOmissionNote(block.type)))
 		.join("\n");
 	const hasImages = toolResult.content.some((block): block is ImageContent => block.type === "image");
 	const omittedImages = hasImages && !supportsImages;
@@ -2062,7 +2067,7 @@ export function encodeResponsesToolResultOutput<TApi extends Api>(
 		hasImages && supportsImages
 			? toolResult.content.map((block): ResponseInputContent => {
 					if (block.type === "image") return convertResponsesInputImage(block, supportsImageDetailOriginal);
-					const text = block.text.toWellFormed();
+					const text = block.type === "text" ? block.text.toWellFormed() : mediaOmissionNote(block.type);
 					return { type: "input_text", text: escapeControlTokens ? escapeHarmonyControlTokens(text) : text };
 				})
 			: outputText;

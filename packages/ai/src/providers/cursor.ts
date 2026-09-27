@@ -2502,7 +2502,15 @@ async function applyToolResultHandler(
 }
 
 function toolResultToText(toolResult: ToolResultMessage): string {
-	return toolResult.content.map(item => (item.type === "text" ? item.text : `[${item.mimeType} image]`)).join("\n");
+	return toolResult.content
+		.map(item =>
+			item.type === "text"
+				? item.text
+				: item.type === "image"
+					? `[${item.mimeType} image]`
+					: mediaOmissionNote(item.type),
+		)
+		.join("\n");
 }
 
 function formatListedMcpResources(
@@ -3460,7 +3468,9 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
 		return create(McpToolResultContentItemSchema, {
 			content: {
 				case: "text",
-				value: create(McpTextContentSchema, { text: item.text }),
+				value: create(McpTextContentSchema, {
+					text: item.type === "text" ? item.text : mediaOmissionNote(item.type),
+				}),
 			},
 		});
 	});

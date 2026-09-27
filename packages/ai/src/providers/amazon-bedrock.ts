@@ -899,7 +899,7 @@ function buildToolResultBlock(
 				content.push(image);
 			}
 		} else {
-			content.push({ text: block.text.toWellFormed() });
+			content.push({ text: block.type === "text" ? block.text.toWellFormed() : mediaOmissionNote(block.type) });
 		}
 	}
 	return {

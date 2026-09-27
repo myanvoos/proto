@@ -728,7 +728,7 @@ export interface ToolResultMessage<TDetails = unknown> {
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;
-	content: (TextContent | ImageContent)[];
+	content: UserContent[];
 	details?: TDetails;
 	isError: boolean;
 

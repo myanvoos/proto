@@ -7,6 +7,7 @@ import type {
 	Model,
 	ToolCall,
 	ToolResultMessage,
+	UserContent,
 	UserMessage,
 } from "../types";
 import { isDemotedThinking, kDemotedThinking, kSyntheticUser, type SyntheticUserCarrier } from "../utils/block-symbols";
@@ -424,6 +425,50 @@ function redactSensitiveCredentialsInMessages(messages: Message[]): Message[] {
 
 		return msg;
 	});
+}
+
+/** Audio/video are user-input parts on provider APIs, not tool-result parts. Keep tool batches contiguous. */
+function hoistToolMedia(messages: Message[]): Message[] {
+	const result: Message[] = [];
+	let media: UserContent[] = [];
+	let timestamp = 0;
+	const flush = (): void => {
+		if (media.length === 0) return;
+		const message: UserMessage & SyntheticUserCarrier = {
+			role: "user",
+			content: media,
+			synthetic: true,
+			timestamp,
+		};
+		message[kSyntheticUser] = true;
+		result.push(message);
+		media = [];
+	};
+	for (const message of messages) {
+		if (message.role !== "toolResult") {
+			flush();
+			result.push(message);
+			continue;
+		}
+		if (!message.content.some(block => block.type === "audio" || block.type === "video")) {
+			result.push(message);
+			continue;
+		}
+		media.push({ type: "text", text: `Media from ${message.toolName} (${message.toolCallId}):` });
+		timestamp = message.timestamp;
+		const content: UserContent[] = [];
+		for (const block of message.content) {
+			if (block.type === "audio" || block.type === "video") {
+				media.push(block);
+				content.push({ type: "text", text: `[${block.type} attached after tool results]` });
+			} else {
+				content.push(block);
+			}
+		}
+		result.push({ ...message, content });
+	}
+	flush();
+	return result;
 }
 
 export function transformMessages<TApi extends Api>(
@@ -869,5 +914,5 @@ export function transformMessages<TApi extends Api>(
 	flushPendingToolCalls(Date.now());
 	flushPendingAbortedToolCalls();
 
-	return result;
+	return hoistToolMedia(result);
 }
