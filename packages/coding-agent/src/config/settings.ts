@@ -1339,19 +1339,6 @@ export class Settings {
 			delete raw["features.unexpectedStopDetection"];
 		}
 
-		const taskObj = raw.task as Record<string, unknown> | undefined;
-		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;
-		if (isolationObj && "enabled" in isolationObj) {
-			if (typeof isolationObj.enabled === "boolean") {
-				isolationObj.mode = isolationObj.enabled ? "auto" : "none";
-			}
-			delete isolationObj.enabled;
-		}
-
-		if (taskObj && "simple" in taskObj) {
-			delete taskObj.simple;
-		}
-
 		// Legacy "todo" settings section renamed to "checklist".
 		const legacyTodoObj = isRecord(raw.todo) ? (raw.todo as Record<string, unknown>) : undefined;
 		const legacyTodoFlatKeys = Object.keys(raw).filter(key => key.startsWith("todo."));
@@ -1380,18 +1367,6 @@ export class Settings {
 		const checklistObj = raw.checklist as Record<string, unknown> | undefined;
 		if (checklistObj && typeof checklistObj.eager === "boolean") {
 			checklistObj.eager = checklistObj.eager ? "always" : "default";
-		}
-
-		if (isolationObj && typeof isolationObj.mode === "string") {
-			const legacy: Record<string, string> = {
-				worktree: "rcopy",
-				"fuse-overlay": "overlayfs",
-				"fuse-projfs": "projfs",
-			};
-			const mapped = legacy[isolationObj.mode as string];
-			if (mapped !== undefined) {
-				isolationObj.mode = mapped;
-			}
 		}
 
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
@@ -1547,36 +1522,6 @@ export class Settings {
 		}
 		if (tierTouched) raw.tier = tierObj;
 		delete raw.fastModeScope;
-
-		{
-			const advisorObj = isRecord(raw.advisor) ? raw.advisor : undefined;
-			const legacySubagents =
-				advisorObj && "subagents" in advisorObj ? advisorObj.subagents : raw["advisor.subagents"];
-			if (typeof legacySubagents === "boolean") {
-				const taskObj = isRecord(raw.task) ? raw.task : {};
-				const agentAdvisor = isRecord(taskObj.agentAdvisor) ? taskObj.agentAdvisor : {};
-				if (!("task" in agentAdvisor)) agentAdvisor.task = legacySubagents ? "on" : "off";
-				taskObj.agentAdvisor = agentAdvisor;
-				raw.task = taskObj;
-			}
-			if (advisorObj) delete advisorObj.subagents;
-			delete raw["advisor.subagents"];
-		}
-
-		{
-			const taskObj = isRecord(raw.task) ? raw.task : undefined;
-			if (taskObj) {
-				for (const key of ["agentPrewalk", "agentAdvisor"]) {
-					const overrides = isRecord(taskObj[key]) ? taskObj[key] : undefined;
-					if (!overrides) continue;
-					for (const agentName in overrides) {
-						const value = overrides[agentName];
-						if (typeof value === "boolean") overrides[agentName] = value ? "on" : "off";
-					}
-				}
-			}
-		}
-
 		migrateNestedLeafRename(
 			raw,
 			"dev",
