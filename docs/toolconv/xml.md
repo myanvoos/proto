@@ -238,4 +238,3 @@ The assistant then answers normally or emits another sequence of invokes.
 - `packages/ai/src/dialect/rendering.ts`, `history.ts`, and `owned-stream.ts` — result rendering, history conversion, projection, and fabricated-result handling.
 - `packages/ai/src/utils/stream-markup-healing.ts` — current DSML scanner integration.
 - `packages/coding-agent/src/sdk.ts` — `tools.format` resolution.
-- `packages/ai/test/inband-tools.test.ts` and `dialect-thinking.test.ts` — round trips, chunked argument deltas, raw blocks, result rendering, and thinking behavior.

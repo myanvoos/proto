@@ -6,7 +6,7 @@
 proto [command] [flags] [messages...]
 ```
 
-When the first non-flag argument is **not** a registered subcommand, `proto`
+When no registered subcommand appears after any leading flags, `proto`
 routes to the default [`launch`](#launch-the-default-command) command and treats
 the arguments as the initial prompt. So `proto "fix the build"` launches a session
 with that message, while `proto models` runs the `models` subcommand.
@@ -83,7 +83,7 @@ Argument handling:
 
 | Flag | Description |
 | --- | --- |
-| `--model <id-or-role>` | Model or configured role to use (role: `slow` or `@slow`; fuzzy model match: `opus`, `gpt-5.2`, or `openai/gpt-5.2`). |
+| `--model <id-or-role>` | Model or configured role to use (for example `slow` or `@slow`; fuzzy model match: `opus`, `gpt-5.2`, or `openai/gpt-5.2`). |
 | `--smol <id>` | Smol/fast model for lightweight tasks (or `PI_SMOL_MODEL`). |
 | `--slow <id>` | Slow/reasoning model for thorough analysis (or `PI_SLOW_MODEL`). |
 | `--models <a,b,c>` | Comma-separated model patterns for `Ctrl+P` cycling. |
@@ -99,7 +99,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 
 | Flag | Description |
 | --- | --- |
-| `--thinking <level>` | Set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `auto`. |
+| `--thinking <level>` | Set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `--hide-thinking` | Hide thinking blocks in TUI output (display only; does not disable model thinking). |
 | `--print-thoughts` | Include thinking blocks in print-mode text output. |
 | `--external-thinking` | Use a private scratchpad while disabling supported GPT/Claude/Gemini reasoning. Use at your own risk: providers have flagged this request shape as abuse. |
@@ -108,9 +108,9 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 
 | Flag | Description |
 | --- | --- |
-| `--prewalk` | Switch to a fast/cheap model at the first edit/write after the plan's checklist list exists (default off; see `prewalk.enabled`). |
+| `--prewalk` | Switch to a fast/cheap model at the first edit/write after the planning/checklist gate opens (default off; see `prewalk.enabled`). |
 | `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set. |
-| `--prewalk-into <id>` | Target model for prewalk (default the `smol` role). |
+| `--prewalk-into <model-or-role>` | Target model or role for prewalk (default the `smol` role). |
 
 #### Tools and runtime
 
@@ -147,6 +147,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | Flag | Description |
 | --- | --- |
 | `--mode <mode>` | Output/transport mode: `text` (default), `json`, `rpc`, `acp`, or `rpc-ui`. See [output modes](#output-modes---mode). |
+| `--print`, `-p` | Non-interactive mode: process the prompt and exit. |
 
 #### Information
 
@@ -219,13 +220,13 @@ The ACP server answers with JSON-RPC errors rather than pretending a request or 
 
 | Situation | Code |
 | --- | --- |
-| Any request before a successful `initialize` | `-32002` Server not initialized |
+| Any recognized non-`initialize` request before a successful `initialize` | `-32002` Server not initialized |
 | Missing/ill-typed params, a `cwd` that is not an existing absolute directory, an unknown `sessionId`, model, config option or auth method | `-32602` Invalid params |
 | Unknown method | `-32601` Method not found |
 | A turn that ended in a provider error (bad credentials → `-32000` Authentication required, anything else → `-32603` Internal error) | `-32000` / `-32603` |
 | A line that is not JSON, or JSON that is not a JSON-RPC message | `-32700` Parse error / `-32600` Invalid request — answered on `id: null` without dropping the connection |
 
-`initialize` negotiates: a client asking for a newer protocol version is answered with the newest version the agent speaks, and the downgrade is reported on stderr. Failed turns are never streamed as `agent_message_chunk` text.
+`initialize` negotiates: a client asking for a newer protocol version is answered with the newest version the agent speaks, and the downgrade is reported on stderr. A failed turn is reported as a JSON-RPC error rather than a successful response; an error event itself is not streamed as `agent_message_chunk` text, although text emitted before a provider failure may already have been sent.
 
 While session recovery retries a failing provider, each attempt is sent as an `agent_thought_chunk` reading `Provider error (retry N/M in Xs): …` — the same line print mode writes to stderr — so a retried turn is never silent.
 

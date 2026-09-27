@@ -5,7 +5,7 @@ description: Use when creating a new proto extension. Covers ExtensionAPI, facto
 
 # Authoring Extensions
 
-Extensions are the primary way to add capabilities to `proto`. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript file. Its default factory may initialize synchronously or return a promise.
+Extensions are the primary way to add capabilities to `proto`. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript/JavaScript module. Its default factory may initialize synchronously or return a promise.
 
 ## Minimum viable extension
 
@@ -81,14 +81,15 @@ proto loads extension modules from these sources:
    - `<cwd>/.proto/extensions/`
    - `~/.proto/agent/extensions/`
    - legacy extension paths listed in `.proto/settings.json#extensions` or `~/.proto/agent/settings.json#extensions`
-2. Enabled installed plugins under `~/.proto/plugins/node_modules` or a project plugin root — including npm, marketplace, and `proto plugin link` installs — via their `proto.extensions`/`pi.extensions` manifests.
-3. Explicit configured paths passed by the CLI (`proto --extension ./my-ext.ts`, also `-e`; `--hook` is treated as an alias) and by the `extensions:` setting in config.
+2. Importable `.ts`/`.js` hook factories discovered through the hook capability, including native `<cwd>/.proto/hooks/pre|post/` and `~/.proto/agent/hooks/pre|post/` paths.
+3. Enabled installed plugins under `~/.proto/plugins/node_modules` or a project plugin root — including npm, marketplace, and `proto plugin link` installs — via their `proto.extensions`/`pi.extensions` manifests.
+4. Explicit configured paths passed by the CLI (`proto --extension ./my-ext.ts`, also `-e`; `--hook` is treated as an alias) and by the `extensions:` setting in config.
 
 The runtime de-duplicates by resolved absolute path — first seen wins.
 
-The user directory is the active profile's agent directory: the default is `~/.proto/agent`, while `proto --profile <name>` uses `~/.proto/profiles/<name>/agent` (and `PI_CODING_AGENT_DIR` overrides it).
+The user directory is the active profile's agent directory: the default is `~/.proto/agent`, while `proto --profile <name>` uses `~/.proto/profiles/<name>/agent`; without a selected profile, `PI_CODING_AGENT_DIR` overrides the default agent directory.
 
-When a path points to a directory, proto resolves the entry point in this order:
+For an explicitly configured directory, proto resolves the entry point in this order:
 
 1. `package.json` with `proto.extensions` (or legacy `pi.extensions`) field
 2. `index.ts`
@@ -96,7 +97,7 @@ When a path points to a directory, proto resolves the entry point in this order:
 
 When scanning an `extensions/` directory, proto also loads direct `*.ts`/`*.js` files and one-level subdirectories that have `index.ts`, `index.js`, or a manifest.
 
-Extension packages can also bundle sibling capability directories. When a package is loaded through `extensions:` or `--extension`/`-e`, the `proto-plugins` provider discovers its `skills/`, `hooks/pre|post/`, `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json`.
+A package directory passed via `--extension`/`-e` or `--hook` (or SDK `additionalExtensionPaths`) can also bundle sibling capability directories: `skills/`, `hooks/pre|post/`, `tools/`, `commands/`, `rules/`, `prompts/`, and `.mcp.json`/`mcp.json`, which the `proto-plugins` provider discovers.
 
 ## package.json manifest
 
@@ -148,7 +149,7 @@ pi.registerCommand("my-cmd", {
 });
 ```
 
-`ExtensionCommandContext` session-control methods (safe to call from commands only):
+`ExtensionCommandContext` exposes these methods to command handlers; `compact()` is inherited from `ExtensionContext` and is also available to other handlers:
 
 | Method | Effect |
 |---|---|
@@ -252,7 +253,7 @@ The derived name is the filename stem (or directory name for `index.ts`-style en
 
 ## Important constraints
 
-- **Do not call runtime actions during load.** Methods like `pi.sendMessage()` throw `ExtensionRuntimeNotInitializedError` if called synchronously during module evaluation (before a session is active). Register handlers/tools/commands during load; perform runtime actions only from event handlers, tools, or commands.
+- **Do not call runtime actions during extension loading.** Methods like `pi.sendMessage()` throw `ExtensionRuntimeNotInitializedError` while the factory is running, before `ExtensionRunner.initialize()` wires runtime actions. Register handlers/tools/commands during load; perform runtime actions only from event handlers, tools, or commands.
 - **`tool_call` errors are fail-closed.** If a `tool_call` handler throws, the tool is blocked.
 - **Self-scheduled callbacks run in-process with no isolation.** A raw `setInterval`/`setTimeout`/detached-promise callback that throws escapes the handler-dispatch try/catch and crashes the whole session (`uncaughtException`). Use `ctx.setInterval` / `ctx.setTimeout` for background work — they contain callback throws and auto-clear on `session_shutdown`. With raw timers you must add your own `try/catch` and cleanup.
 - **Command names must not clash with built-ins.** Conflicts are skipped with a diagnostic log.

@@ -5,13 +5,13 @@ This document explains how MCP server definitions become callable `mcp__*` tools
 ## Architecture at a glance
 
 ```text
-Config sources (.proto/.claude/.cursor/.vscode/mcp.json, mcp.json, etc.)
+Config sources (PROTO-native/extension config, tool-native config dirs, root mcp.json/.mcp.json, etc.)
   -> discovery providers normalize to canonical MCPServer
-  -> capability loader dedupes by server name (higher provider priority wins)
+  -> capability loader dedupes by server name/equivalent connection (higher provider priority wins)
   -> loadAllMCPConfigs applies user enablement overrides and suppresses disabled servers
   -> MCPManager connects/listTools (with auth/header/env resolution)
   -> manager best-effort loads resources/prompts and subscribes to resource updates when enabled
-  -> MCPTool/DeferredMCPTool bridge exposes tools as mcp__<server>_<tool>
+  -> MCPTool/DeferredMCPTool bridge exposes tools as mcp__<sanitized_server>_<sanitized_tool>
   -> AgentSession.refreshMCPTools replaces live MCP tools immediately
 ```
 
@@ -22,7 +22,8 @@ Config sources (.proto/.claude/.cursor/.vscode/mcp.json, mcp.json, etc.)
 - `stdio` (default when `type` missing): requires `command`, optional `args`, `env`, `cwd`
 - `http`: requires `url`, optional `headers`
 - `sse`: requires `url`, optional `headers` (kept for compatibility)
-- shared fields: `enabled`, `timeout`, `requestIdFormat` (`"number"` or `"string"`), `auth`, `oauth`
+- shared fields: `enabled`, `timeout` (milliseconds), `requestIdFormat` (`"number"` or `"string"`), `auth`, `oauth`
+- discovery may attach runtime-only policy flags: `envPolicy: "literal"` for stdio or `headerPolicy: "origin-locked"` for HTTP/SSE; the native and standalone MCP JSON providers do not carry these fields into runtime config
 
 `validateServerConfig()` (`src/mcp/config.ts`) enforces transport basics:
 
@@ -35,7 +36,7 @@ Config sources (.proto/.claude/.cursor/.vscode/mcp.json, mcp.json, etc.)
 
 - non-empty
 - max 100 chars
-- only `[a-zA-Z0-9_.:-]` (colon allows namespaced plugin server names, e.g. `cloudflare:cloudflare-api`)
+- only letters, numbers, dash, underscore, dot, colon, and space (`[a-zA-Z0-9_.: -]`; colon allows namespaced plugin server names, e.g. `cloudflare:cloudflare-api`)
 
 ### Transport pitfalls
 
@@ -52,11 +53,13 @@ Config sources (.proto/.claude/.cursor/.vscode/mcp.json, mcp.json, etc.)
 
 The capability layer (`src/capability/index.ts`) then:
 
-1. loads providers in priority order
-2. dedupes by `server.name` (first win = highest priority)
+1. orders enabled providers by descending priority
+2. dedupes by `server.name` and by the capability's equivalent-connection check (first win = highest priority)
 3. validates deduped items
 
-Result: duplicate server names across sources are not merged. One definition wins; lower-priority duplicates are shadowed.
+Result: duplicate server names across sources are not merged. One definition wins; lower-priority duplicates are shadowed. Differently named definitions with equivalent connection settings can also be shadowed.
+
+`loadAllMCPConfigs()` defaults `enableProjectConfig` to `true`; interactive reload passes the `mcp.enableProjectConfig` setting (also default `true`), which filters project-level sources before deduplication.
 
 ### `.mcp.json` and related files
 
@@ -64,7 +67,7 @@ The dedicated fallback provider in `src/discovery/mcp-json.ts` reads project-roo
 
 In practice MCP servers also come from higher-priority providers (for example native `.proto/...` and tool-specific config dirs). Authoring guidance:
 
-- Prefer `.proto/mcp.json` (project) or `~/.proto/agent/mcp.json` (user) for explicit control.
+- Prefer `.proto/mcp.json` (project) or the active profile's user `mcp.json` (default: `~/.proto/agent/mcp.json`) for explicit control.
 - Use root `mcp.json` / `.mcp.json` when you need fallback compatibility.
 - Reusing the same server name in multiple sources causes precedence shadowing, not merge.
 
@@ -81,11 +84,11 @@ Key behavior:
 
 ### Environment expansion during discovery
 
-PROTO-native MCP config (`.proto/mcp.json`, `~/.proto/agent/mcp.json`, plus their `.mcp.json` variants) expands `${VAR}` and `${VAR:-default}` placeholders recursively before converting to runtime config. It also accepts boolean/string forms for `enabled` (`true`, `false`, `1`, `0`) and numeric strings for `timeout`. `requestIdFormat` accepts only `"number"` or `"string"`; other values warn and fall back to numeric IDs.
+PROTO-native MCP config (`.proto/mcp.json`, the active profile's user `mcp.json` (default `~/.proto/agent/mcp.json`), plus their `.mcp.json` variants) expands `${VAR}` and `${VAR:-default}` placeholders recursively before converting to runtime config. It also accepts boolean/string forms for `enabled` (`true`, `false`, `1`, `0`) and numeric strings for `timeout`. `requestIdFormat` accepts only `"number"` or `"string"`; unsupported non-null values warn and fall back to numeric IDs.
 
-The standalone fallback provider in `src/discovery/mcp-json.ts` reads project-root `mcp.json` and `.mcp.json`, expands the same `${...}` placeholders, and type-checks `enabled`/`timeout` without coercing string values. It applies the same `requestIdFormat` validation.
+The standalone fallback provider in `src/discovery/mcp-json.ts` reads project-root `mcp.json` and `.mcp.json`, expands `${...}` placeholders in command/args/env/cwd/url/headers/auth/oauth, and type-checks `enabled`/`timeout` without coercing string values. It applies the same `requestIdFormat` validation.
 
-Invalid `enabled`/`timeout` values are ignored with warnings rather than failing the whole file.
+Invalid `enabled`/`timeout` values are ignored (and generally warned about) rather than failing the whole file.
 
 ## 3) Auth and runtime value resolution
 
@@ -120,11 +123,13 @@ continues with the existing access token.
 
 ### Header/env value resolution
 
-Before connect, manager resolves stdio `env` values and HTTP/SSE `headers` values via `resolveConfigValue()` (`src/config/resolve-config-value.ts`):
+Before connect, manager resolves stdio `env` values and HTTP/SSE `headers` values via `resolveConfigValue()` (`src/config/resolve-config-value.ts`), unless a discovery provider supplied a runtime policy flag:
 
-- value starting with `!` => execute shell command, use trimmed stdout (cached)
+- `envPolicy: "literal"` skips post-discovery resolution for stdio `env` values
+- `headerPolicy: "origin-locked"` skips post-discovery resolution for HTTP/SSE `headers` values
+- value starting with `!` => execute shell command (10-second timeout), use trimmed stdout (successful results are cached)
 - failed, timed-out, or whitespace-only commands produce `undefined`, so that entry is omitted
-- otherwise, treat value as environment variable name first (`process.env[name]`), fallback to literal value
+- otherwise, a non-empty value from the current environment wins when the whole value names a variable; otherwise the value is sent literally
 
 Operational caveat: a mistyped `!` secret command can silently remove that header/env entry, producing downstream 401/403 or server startup failures. A mistyped environment variable name is sent literally unless that literal happens to be meaningful to the server.
 
@@ -143,16 +148,17 @@ mcp__<sanitized_server_name>_<sanitized_tool_name>
 Rules:
 
 - lowercases
-- non-`[a-z_]` chars become `_`
-- repeated underscores collapse
+- non-`[a-z0-9_]` chars become `_`
+- repeated underscores collapse, and leading/trailing underscores are trimmed
 - redundant `<server>_` prefix in tool name is stripped once
+- resulting names are capped at 64 characters; overlong names receive an up-to-8-character base-36 hash suffix
 
 Different raw names can still sanitize to the same identifier (for example
 `my-server` and `my.server` both sanitize similarly). Before registry
-insertion, `deduplicateMCPToolsByName()` chooses one deterministic winner by
-lexicographically comparing the original `<server-name>\0<tool-name>` origin
-key. The losing origin is logged and omitted, so reconnect or discovery order
-cannot change ownership.
+insertion, `deduplicateMCPToolsByName()` chooses the lexicographically smaller
+`<server-name>\0<tool-name>` origin as the deterministic owner of the plain
+name. Each other origin is logged and renamed with a hash suffix, not omitted,
+so reconnect or discovery order cannot change ownership.
 
 ### Schema mapping
 
@@ -203,7 +209,7 @@ assume that every field present in the model-generated call reaches the server.
 - returns structured details (`serverName`, `mcpToolName`, provider metadata)
 - maps server-reported `isError` to `Error: ...` text result
 - attempts reconnect + one retry for retriable connection errors
-- maps remaining thrown transport/runtime failures to `MCP error: ...`; a client-side request timeout also names the server and how to raise the limit (per-server `timeout` or `PROTO_MCP_TIMEOUT_MS`)
+- maps remaining thrown transport/runtime failures to `MCP error: ...`; a client-side request timeout also names the server and how to raise the limit (per-server `timeout` in milliseconds, `0` to disable, or `PROTO_MCP_TIMEOUT_MS`, which takes precedence; default 30,000 ms)
 - preserves abort semantics by translating AbortError into `ToolAbortError`
 
 ## 5) Operator lifecycle: add/edit/remove and live updates
@@ -213,6 +219,7 @@ Interactive mode exposes `/mcp` in `src/modes/controllers/mcp-command-controller
 Supported operations:
 
 - `add` (wizard or quick-add)
+- `list`
 - `remove` / `rm`
 - `enable` / `disable`
 - `test`
@@ -220,15 +227,17 @@ Supported operations:
 - `reconnect`
 - `reload`
 - `resources`, `prompts`, `notifications`
-- Smithery search/login/logout flows
+- `smithery-search`, `smithery-login`, `smithery-logout`
 
 Config writes are atomic (`writeMCPConfigFile`: temp file + rename).
 
-After changes, controller calls `#reloadMCP()`:
+When a mutation requires rediscovery, controller calls `reloadServers()`:
 
 1. `mcpManager.disconnectAll()`
-2. `mcpManager.discoverAndConnect()`
+2. clears MCP prompt commands and the filesystem discovery cache, then calls `mcpManager.discoverAndConnect()`
 3. `session.refreshMCPTools(mcpManager.getTools())`
+
+`enable`/`disable` instead updates the source or active-profile override, connects or disconnects the affected server, and refreshes the MCP tool set.
 
 `refreshMCPTools()` replaces all `mcp__` registry entries and immediately re-activates the latest MCP tool set, so changes take effect without restarting the session.
 
@@ -243,6 +252,7 @@ Common error strings users/operators see:
 
 - add/update validation failures:
   - `Invalid server config: ...`
+- add duplicate-name failure:
   - `Server "<name>" already exists in <path>`
 - quick-add argument issues:
   - `Use either --url or -- <command...>, not both.`
@@ -258,13 +268,13 @@ Common error strings users/operators see:
 - disabled server usage:
   - `Server "<name>" is disabled. Run /mcp enable <name> first.`
 
-Bad source JSON in discovery is generally handled as warnings/logs; config-writer paths throw explicit errors.
+Bad source JSON in discovery is provider-dependent: malformed files generally produce warnings/logs or contribute no entries; config-writer validation/write paths throw explicit errors.
 
 ## 7) Practical authoring guidance
 
 For robust MCP authoring in this codebase:
 
-1. Keep server names globally unique across all MCP-capable config sources.
+1. Keep server names globally unique across all MCP-capable config sources, and avoid equivalent connection definitions under different names.
 2. Prefer names that remain distinct after MCP tool-name sanitization to avoid generated `mcp__` collisions.
 3. Use explicit `type` to avoid accidental stdio defaults.
 4. Use the active-profile user `enabledServers` list when you need to override a discovered server's `enabled: false`; `disabledServers` always wins if the name appears in both lists.
@@ -274,6 +284,7 @@ For robust MCP authoring in this codebase:
 ## Implementation files
 
 - [`src/mcp/types.ts`](../packages/coding-agent/src/mcp/types.ts)
+- [`src/capability/mcp.ts`](../packages/coding-agent/src/capability/mcp.ts)
 - [`src/mcp/config.ts`](../packages/coding-agent/src/mcp/config.ts)
 - [`src/mcp/config-writer.ts`](../packages/coding-agent/src/mcp/config-writer.ts)
 - [`src/mcp/tool-bridge.ts`](../packages/coding-agent/src/mcp/tool-bridge.ts)

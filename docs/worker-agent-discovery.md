@@ -1,6 +1,6 @@
 # Worker Agent Discovery and Selection
 
-This document describes how the task subsystem discovers agent definitions, merges multiple sources, and resolves a requested agent at execution time.
+This document describes how the worker subsystem discovers agent definitions, merges multiple sources, and resolves a requested agent at execution time.
 
 It covers runtime behavior as implemented today, including precedence, invalid-definition handling, and spawn/depth constraints that can make an agent effectively unavailable.
 
@@ -36,7 +36,6 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - missing `name` or `description` => invalid (`null`), caller treats as parse failure
 - `tools` accepts CSV or array; if provided, `yield` is auto-added
 - `spawns` accepts `*`, CSV, or array
-- backward-compat behavior: if `spawns` missing but `tools` includes `task`, `spawns` becomes `*`
 - `output` is passed through as opaque schema data
 - `read-summarize: false` (normalized to `readSummarize`) forces the subagent's `read` tool to return verbatim file content instead of structural summaries — `runSubprocess` applies it as a `read.summarize.enabled: false` override on the subagent's isolated settings (`src/task/executor.ts`). `scout` and `librarian` ship with it disabled. Defaults to enabled when the field is absent.
 - `model` accepts one selector, CSV, or an array. Entries are tried in order after role aliases are expanded.
@@ -47,9 +46,9 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 
 ## Role-backed custom agents
 
-PROTO discovers user agents from `~/.proto/agent/agents/*.md` and project agents from `.proto/agents/*.md`.
+By default, PROTO discovers user agents from `~/.proto/agent/agents/*.md` (or the active agent directory's `agents/` subdirectory) and project agents from `.proto/agents/*.md`.
 
-Give the agent a role alias in frontmatter, then dispatch it by name. For model routing, task dispatch sets only `agent`; it does not set a worker model:
+Give the agent a role alias in frontmatter, then dispatch it by name. `fleet` `spawn` accepts an optional `model` selector (role alias or concrete model); when omitted, normal agent/settings/parent fallback applies:
 
 `~/.proto/agent/agents/reviewer.md`:
 
@@ -63,23 +62,23 @@ model: "@review"
 Review the assigned change and report concrete findings.
 ```
 
-Set the role mapping in `~/.proto/agent/config.yml`:
+Set the role mapping in the active agent directory's `config.yml` (by default `~/.proto/agent/config.yml`):
 
 ```yaml
 modelRoles:
   review: openai/gpt-5.4:high
 ```
 
-`@review` resolves through `modelRoles.review`. Each `modelRoles.<role>` value stores a concrete model selector and may append a thinking suffix such as `:high` (`src/config/model-resolver.ts`). Changing that mapping affects subsequent task resolutions without editing agent definitions. Task/eval preflight reloads the current global, project, and explicit overlay settings before rediscovering agents, so agent files and their role aliases added during a live session resolve from one refreshed configuration state.
+`@review` resolves through `modelRoles.review`. Each `modelRoles.<role>` value stores a concrete model selector and may append a thinking suffix such as `:high` (`src/config/model-resolver.ts`). Changing that mapping affects subsequent worker resolutions without editing agent definitions. Worker/eval preflight reloads the current global, project, and explicit overlay settings before rediscovering agents, so agent files and their role aliases added during a live session resolve from one refreshed configuration state.
 
-For a dispatch, set the agent name and task:
+For a dispatch, set the agent name and message:
 
 ```json
 {
-  "context": "Review the current change in this repository.",
-  "tasks": [
-    { "agent": "reviewer", "task": "Report concrete correctness findings." }
-  ]
+  "op": "spawn",
+  "agent": "reviewer",
+  "model": "@review",
+  "message": "Report concrete correctness findings."
 }
 ```
 
@@ -89,44 +88,25 @@ For a dispatch, set the agent name and task:
 
 After dispatch, press `Alt+A` to open [Agent Fleet](./agent-fleet.md). Its live roster shows each worker agent's status, current activity, model, age, and usage. Select an agent to read its transcript and steer it directly; parked agents can be revived from the same view.
 
-### `fleet` spawn tier routing
-
-`fleet` `spawn` maps `fast` to bundled `lightbot` and `good` to bundled `task`. Both resolve through `orchestrator.agentModelOverrides` before their bundled agent model defaults (`src/orchestrator/runtime.ts`, `src/task/agents.ts`).
-
-Route these tiers through roles by keeping aliases in `orchestrator.agentModelOverrides` and concrete selectors only in `modelRoles`:
-
-```yaml
-task:
-  agentModelOverrides:
-    lightbot: "@fast_worker"
-    task: "@good_worker"
-modelRoles:
-  fast_worker: openai/gpt-5-mini
-  good_worker: openai/gpt-5.4:high
-```
-
-The `fleet` `spawn` `cli` remains `fast` or `good`; update `modelRoles` to change the worker model.
-
 ## Bundled agents
 
 Bundled agents are embedded at build time (`src/task/agents.ts`) using text imports.
 
 `EMBEDDED_AGENT_DEFS` defines:
 
-- `scout`, `designer`, `reviewer`, `security-reviewer`, and `librarian` from prompt files
+- `scout`, `designer`, `reviewer`, and `librarian` from prompt files
 - `worker` and `lightbot` from the shared `worker.md` body plus injected frontmatter; no bundled agent sets `prewalk` — the generic `worker` agent's hand-off is armed by the `orchestrator.prewalk` setting (default off), or per agent via `/agents` / `orchestrator.agentPrewalk` / user agent frontmatter
 
 Loading path:
 
-1. `loadBundledAgents()` parses embedded markdown with `parseAgent(..., "bundled", "fatal")`
+1. `loadBundledAgents()` parses embedded markdown with `parseAgent(..., "bundled")`; the parser default level is `"fatal"`
 2. results are cached in-memory (`bundledAgentsCache`)
-3. `clearBundledAgentsCache()` is test-only cache reset
 
-Because bundled parsing uses `level: "fatal"`, malformed bundled frontmatter throws and can fail discovery entirely.
+Because bundled parsing uses the default `level: "fatal"`, malformed bundled frontmatter throws and can fail discovery entirely.
 
 ## Filesystem and plugin discovery
 
-`discoverAgents(cwd, home)` (`src/task/discovery.ts`) merges agents from PROTO-native roots, PROTO extension packages, and Claude marketplace plugin roots before appending bundled definitions. Direct cross-harness roots such as `.claude/agents`, `.codex/agents`, and `.gemini/agents` are intentionally skipped — their frontmatter schema is not the PROTO worker-agent contract (`TASK_AGENT_CONFIG_SOURCE = ".proto"` filters the native config-dir lists).
+`discoverAgents(cwd, home)` (`src/task/discovery.ts`) merges agents from PROTO-native roots, PROTO extension packages, and Claude marketplace plugin roots before appending bundled definitions. Direct cross-harness roots such as `.claude/agents`, `.codex/agents`, and `.gemini/agents` are intentionally skipped — their frontmatter schema is not the PROTO worker-agent contract (`AGENT_CONFIG_SOURCE = ".proto"` filters the native config-dir lists).
 
 ### Discovery inputs and precedence
 
@@ -140,7 +120,7 @@ Because bundled parsing uses `level: "fatal"`, malformed bundled frontmatter thr
 4. Claude marketplace plugin roots (`listClaudePluginRoots(home, cwd)`) with `agents/` subdirs — only when `isProviderEnabled("claude-plugins")`; project-scope plugins sort before user-scope
 5. Bundled agents (`loadBundledAgents()`)
 
-The PROTO extension-package surface is disabled when the `proto-plugins` capability provider is disabled. Marketplace roots are excluded from `listOmpExtensionRoots` and enter only through the separately gated Claude-plugin path.
+The PROTO extension-package surface is disabled when the `proto-plugins` capability provider is disabled. Installed Claude marketplace roots are filtered out of the installed-plugin portion of `listOmpExtensionRoots`; marketplace agents enter through the separately gated Claude-plugin path.
 
 ## Merge and collision rules
 
@@ -156,7 +136,7 @@ Implications:
 - Earlier extension roots override later extension roots, Claude marketplace plugins, and bundled agents.
 - Non-bundled agents override bundled agents with the same name.
 - Name matching is case-sensitive (`Task` and `task` are distinct).
-- Within one directory, markdown files are read in lexicographic filename order before dedup.
+- Within one directory, markdown files are read in locale-aware lexicographic filename order (`localeCompare`) before dedup.
 
 ## Invalid/missing agent file behavior
 
@@ -179,10 +159,10 @@ Net effect: one bad custom agent file does not abort discovery of other files.
 Lookup is exact-name linear search:
 
 - `getAgent(agents, name)` => `agents.find(a => a.name === name)`
-- unrestricted sessions default an omitted `agent` field to `task`
+- unrestricted sessions default an omitted `agent` field to `worker`
 - a restricted parent `spawns` list defaults an omitted `agent` field to the first listed agent
 
-`resolveEffectiveSubagentPolicy()` is shared by task and eval-backed subagent launches. Before allocating artifacts it:
+`resolveEffectiveSubagentPolicy()` is shared by worker and eval-backed subagent launches. Before allocating artifacts it:
 
 1. atomically reloads the live session's persisted global, project, and explicit overlay settings while preserving runtime overrides
 2. resolves the omitted or explicit agent name from the parent spawn policy
@@ -195,35 +175,35 @@ A missing name fails preflight with `Unknown agent "...". Available: ...`; no su
 
 ### Description vs execution-time discovery
 
-`TaskTool.create()` memoizes discovery per resolved working directory when building the model-facing tool description. Execution rediscovers agents, so the runtime set can differ from the earlier description if agent or extension files changed mid-session. Blocking behavior is determined after policy resolution rather than from a stale description-time agent object.
+`FleetTool.create()` calls `discoverAgents(session.cwd)` when building the model-facing tool description. Execution rediscovers agents during runtime preflight, so the runtime set can differ from the earlier description if agent or extension files changed mid-session. Spawn availability is determined after policy resolution rather than from a stale description-time agent object.
 
 ## Model and structured-output precedence
 
-For task dispatch, model precedence is:
+For worker dispatch, model precedence is:
 
-1. `orchestrator.agentModelOverrides[agentName]`
-2. the agent frontmatter's prioritized `model` list
-3. the parent's active model, then its configured/default model fallback
+1. the caller's explicit `model` (`fleet` `spawn` or eval `agent()`)
+2. `orchestrator.agentModelOverrides[agentName]`
+3. the agent frontmatter's prioritized `model` list
+4. the parent's active model, then its configured/default model fallback
 
-Role aliases in either of the first two sources are expanded through `modelRoles`. The shared eval bridge can also supply an invocation-local model override ahead of the settings override; the task wire schema does not expose that field.
+Role aliases in these selectors are expanded through `modelRoles`. `fleet` `spawn`/`send` and the eval bridge can supply an invocation-local model override ahead of the settings override.
 
 Runtime output schema precedence is:
 
-1. the task item's explicit `outputSchema`
+1. the caller's explicit output schema
 2. agent frontmatter `output`
 3. parent session `outputSchema`
 
-The task item's optional `schemaMode` overrides the parent session mode; the default is `permissive`.
+The caller's optional `schemaMode` overrides the parent session mode; the default is `permissive`.
 
-The model-facing prompt (`src/prompts/tools/fleet.md`) tags read-only agents and warns against offloading reasoning to `scout`/`lightbot`.
+The model-facing prompt (`src/prompts/tools/fleet.md`) supplies discovered agent names/descriptions and recommends `worker` for design/debugging/multi-file judgment and `lightbot` for mechanical, well-specified work.
 
 ## Command discovery interaction
 
 `src/task/commands.ts` is parallel infrastructure for workflow commands (not agent definitions), but it follows the same overall pattern:
 
-- discover from capability providers first
-- deduplicate by name with first-wins
-- append bundled commands if still unseen
+- load command items from capability providers
+- parse and deduplicate by name with first-wins
 - exact-name lookup via `getCommand`
 
 In `src/task/index.ts`, command helpers are re-exported with agent discovery helpers. Agent discovery itself does not depend on command discovery at runtime.
@@ -240,7 +220,7 @@ An agent can be discoverable but still unavailable to run because of execution g
 
 The resolver checks `session.getSessionSpawns()`:
 
-- `"*"` (also `true`, `null`, or absent) => allow any; omitted `agent` defaults to `task`
+- `"*"` (also `true`, `null`, or absent) => allow any; omitted `agent` defaults to `worker`
 - `""` or `false` => deny all
 - CSV list => allow only listed names; omitted `agent` defaults to its first name
 

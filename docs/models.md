@@ -7,7 +7,7 @@ This document describes how the coding-agent currently loads models, applies ove
 Primary implementation files:
 
 - `packages/coding-agent/src/config/model-registry.ts` — loads built-in + custom models, provider overrides, runtime discovery, auth integration
-- `packages/coding-agent/src/config/model-resolver.ts` — parses model patterns and selects initial/smol/slow models
+- `packages/coding-agent/src/config/model-resolver.ts` — parses model selectors, expands role aliases, and resolves scoped/initial model choices
 - `packages/coding-agent/src/config/settings-schema.ts` — model-related settings (`modelRoles`, provider transport preferences)
 - `packages/coding-agent/src/session/auth-storage.ts` — re-exports `AuthStorage` from `@oh-my-pi/pi-ai`; API key + OAuth resolution order
 - `packages/catalog/src/models.ts` and `packages/catalog/src/types.ts` — built-in providers/models and public model types
@@ -86,6 +86,10 @@ providers:
             controller: mlx
 ```
 
+Bedrock provider overrides are also accepted: `guardrailIdentifier`, optional `guardrailVersion` (defaults to `DRAFT` when an identifier is set), `guardrailTrace` (`enabled`, `disabled`, or `enabled_full`), and `requestMetadata` (up to 16 invocation-log tags subject to Bedrock's key/value character limits).
+
+Each model entry may also set `baseUrl`, `thinking`, `tokenizer`, `supportsTools`, `premiumMultiplier`, `omitMaxOutputTokens`, `preferWebsockets`, `contextPromotionTarget`, `compactionModel`, and `remoteCompaction`.
+
 Custom models default to reasoning-capable with the full standard effort list (`minimal` through `xhigh`, API-dependent); set `reasoning: false` to opt out for non-reasoning backends.
 
 `maxContextWindow` works on both `models` entries and `modelOverrides`: `contextWindow` is the normal prompt window and
@@ -136,6 +140,8 @@ Must define at least one of:
 - `headers`
 - `compat`
 - `disableStrictTools`
+- `guardrailIdentifier`
+- `requestMetadata`
 - `modelOverrides`
 - `discovery`
 - `remoteCompaction`
@@ -153,8 +159,8 @@ It supports `enabled`, `api`, `endpoint`, `model`, `v2StreamingEnabled`,
 
 ### Model value checks
 
-- `id` required
-- `contextWindow` and `maxTokens` must be positive if provided; `maxContextWindow` must be a positive integer no smaller than `contextWindow` when both are set
+- Each custom `models` entry requires an `id`.
+- Custom-model `contextWindow` and `maxTokens` must be positive if provided; `maxContextWindow` (on a custom model or `modelOverrides`) must be a positive integer no smaller than `contextWindow` when both are set.
 
 ### Command-resolved secrets
 
@@ -175,13 +181,12 @@ Successful command outputs are cached for the process lifetime so the command is
 ModelRegistry pipeline (on refresh):
 
 1. Load built-in providers/models from `@oh-my-pi/pi-catalog` (`getBundledProviders` / `getBundledModels`).
-2. Load `models.yml` / `models.yaml` custom config.
-3. Apply provider overrides (`baseUrl`, `headers`, `disableStrictTools`) to built-in models.
-4. Apply `modelOverrides` (per provider + model id).
-5. Merge custom `models`:
-   - same `provider + id` replaces existing
+2. Load `models.yml` / `models.yaml` custom config, retaining provider overrides, `modelOverrides`, and custom model definitions.
+3. Compose built-in rows with provider overrides, then merge cached standard/discoverable rows and runtime discovery (local servers, built-in provider managers, and the shared models.dev catalog for known providers).
+4. Merge custom `models`:
+   - same `provider + id` patches/replaces the existing row
    - otherwise append
-6. Load cached and runtime-discovered models (local servers, built-in provider managers, and the shared models.dev catalog for known providers), then re-apply model overrides. A successful endpoint refresh replaces that provider's previously discovered and cached rows, so models the endpoint no longer lists disappear.
+5. Apply `modelOverrides` (per provider + model id), then provider-level Bedrock fields and runtime provider overrides. A successful endpoint refresh replaces that provider's previously discovered and cached rows, so models the endpoint no longer lists disappear.
 
 ### Provider-model cache and static fingerprint
 
@@ -189,10 +194,7 @@ Cached per-provider model lists are persisted in the model-cache SQLite
 database (current schema version 13) with a `static_fingerprint` column that
 hashes the static catalog slice merged into the row. When `resolveProviderModels`
 skips the network fetch and the fingerprint of the in-memory static
-catalog matches the cached one, the cached rows are returned verbatim —
-the static + dynamic merge is bypassed entirely. The fingerprint is
-memoized per process by tagging the static-models array with a symbol
-property, so repeated cold-start calls do not re-hash.
+catalog matches the cached one, the cache is reused without a remote refresh. Additive shared-catalog providers still merge their static rows with cached dynamic rows; non-additive providers can return the cached snapshot directly. The fingerprint is memoized per process by tagging the static-models array with a symbol property, so repeated cold-start calls do not re-hash.
 
 A failed refresh re-persists the last usable snapshot as non-authoritative so the retry backoff
 applies; a first failed refresh with nothing to preserve writes no row, so the next launch retries
@@ -288,7 +290,7 @@ If `llama.cpp` is not explicitly configured, registry adds an implicit discovera
 - provider: `llama.cpp`
 - api: `openai-responses`
 - base URL: `LLAMA_CPP_BASE_URL` or `http://127.0.0.1:8080`
-- auth mode: keyless (`auth: none` behavior)
+- auth mode: keyless (`auth: none` behavior) unless stored `llama.cpp` credentials are present
 
 Runtime discovery calls llama.cpp model endpoints and synthesizes model entries with local defaults.
 
@@ -400,7 +402,6 @@ When requesting a key for a provider, effective order is:
 4. Login-sourced stored API key
 5. Environment variable mapping (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
 6. Other stored API key, such as a broker-migrated copy
-7. ModelRegistry fallback resolver (`models.yml` custom providers, using env-name-or-literal semantics)
 
 `models.yml` `apiKey` behavior:
 
@@ -463,13 +464,14 @@ and fuzzy patterns are resolved against the available concrete models.
 
 ### Initial model selection priority
 
-`findInitialModel(...)` uses this order:
+Startup selection (split between `buildSessionOptions` and the SDK) uses this order:
 
 1. explicit CLI provider+model
-2. first scoped model (if not resuming)
-3. saved default provider/model
-4. known provider defaults (e.g. OpenAI/Anthropic/etc.) among available models
-5. first available model
+2. restored session model when resuming without an explicit model
+3. first scoped model when not resuming (a remembered default role within the scope wins)
+4. configured `modelRoles.default` model
+5. known provider defaults (e.g. OpenAI/Anthropic/etc.) among available models
+6. first available model
 
 ### Role aliases and settings
 
@@ -477,7 +479,7 @@ Supported model roles:
 
 - `default`, `smol`, `slow`, `designer`, `commit`, `tiny`, `worker`, `advisor`
 
-The `tiny` role overrides the online model used for lightweight background tasks (session titles, memory, unexpected-stop classification); when unset, these fall back to `@smol`. Pick one in `/models`.
+The `tiny` role is the preferred online model for session titles and unexpected-stop classification; observational memory tries `@smol` before `@tiny`. When `tiny` is unset, its role fallback is normally `@smol`. Pick one in `/models`.
 
 Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@default`. Quote `@` aliases in YAML values (`fable: "@slow"`). Each role value can also append a thinking selector such as `:minimal`, `:low`, `:medium`, or `:high`.
 
@@ -488,8 +490,8 @@ Related settings:
 - `modelRoles` (record)
 - `enabledModels` (scoped pattern list)
 - `modelProviderOrder` (provider precedence when equivalent concrete choices share an id)
-- `providers.kimiApiFormat` (`openai` or `anthropic` request format)
-- `providers.openaiWebsockets` (`auto|off|on` websocket preference for OpenAI Codex transport)
+- `providers.kimiApiFormat` (`auto|openai|anthropic`; default `auto`, following live model metadata)
+- `providers.openaiWebsockets` (`auto|off|on`; default `auto`) websocket preference for OpenAI Codex transport
 
 `modelRoles` stores model selectors such as `provider/modelId`; `enabledModels` and CLI `--models`
 accept exact selectors, globs, and fuzzy matches.

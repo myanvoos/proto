@@ -10,7 +10,7 @@ When opened for a disk-backed session (including a resumed session), the Fleet a
 | -------------- | ---------------------------------------------------------------------------------------------- |
 | `Alt+A`        | Open or close Agent Fleet through `app.agents.fleet`. This opens the roster even when it is empty. |
 | `Ctrl+S`       | Open or close the same Fleet through the legacy `app.session.observe` action.                    |
-| Double-tap `←` | Open the Fleet from an empty main-session editor when the current session has an agent to show.  |
+| Double-tap `←` | Open the global Agents View from an empty main-session editor.                       |
 
 Run `/hotkeys` to see the active chords. Remap either action in `~/.proto/agent/keybindings.yml`:
 
@@ -64,7 +64,7 @@ For a normal local subagent, `Enter` or click focuses the main TUI on that agent
 
 1. Read its live transcript and tool activity.
 2. Type a message and press `Enter` to steer a running turn or prompt an idle agent.
-3. Press `Esc` with an empty editor, or double-tap `←`, to return to the main session.
+3. Press `Esc` with an empty editor to return to the main session, or double-tap `←` to hop to the parent session.
 
 Steering uses the normal prompt path and targets the subagent's session (and its persisted history when a session file exists). While a subagent is focused, `Esc` returns to the main session; it does not interrupt the subagent.
 

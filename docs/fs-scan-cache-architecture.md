@@ -14,7 +14,7 @@ Current native consumers:
 
 `crates/pi-natives/src/grep.rs` uses `WalkRequest` for candidate discovery but explicitly sets `.cache(false)`; the current public `GrepOptions` has no cache field.
 
-The public invalidation binding remains `invalidateFsScanCache(path?)` in `packages/natives/native/index.d.ts` / `index.js`. Coding-agent mutation helpers live in `packages/coding-agent/src/tools/fs-cache-invalidation.ts`.
+The public invalidation binding is `invalidateFsScanCache(path?)`, implemented by `crates/pi-natives/src/iofs.rs` and exposed in `packages/natives/native/index.d.ts` / `index.js`. No current coding-agent helper bridges file-mutation reporting to this native binding. Coding-agent's separate capability-file cache is implemented in `packages/coding-agent/src/capability/fs.ts` (`invalidate(filePath)`).
 
 ## Cache key partitioning
 
@@ -92,13 +92,13 @@ The TUI `@`-mention autocomplete opts into cached `fuzzyFind`. Coding-agent's gr
 
 Relative paths resolve against cwd. Invalidation canonicalizes the target; when it no longer exists, it attempts to canonicalize the parent and reattach the filename. This supports create, delete, and rename invalidation.
 
-Coding-agent helpers (in `packages/coding-agent/src/tools/fs-mutation.ts`):
+There is no current coding-agent bridge from file-mutation reporting to this native binding. Coding-agent's separate caches and mutation bookkeeping are split across:
 
-- `noteFileWritten(session, path)`
-- `noteFileDeleted(session, path)`
-- `noteFileRenamed(session, oldPath, newPath)` — invalidates both sides when different
+- `packages/coding-agent/src/capability/fs.ts` — `invalidate(filePath)` removes the capability content entry, the path's directory entry, its parent directory entry, and corresponding in-flight reads; the MCP config writer and discovery helpers call it for their own cached reads.
+- `packages/coding-agent/src/eval/fs-observations.ts` — records eval read/write observations and mutation stamps for the stale-write guard.
+- `packages/coding-agent/src/tools/bash-file-mutations.ts` — renders shell-redirection mutation receipts from native shell observations.
 
-Each helper also records the mutation in the eval FS-observation ledger. Current write and ACP-bridge write paths call these helpers after successful changes. Any new filesystem mutation path must do the same.
+These paths do not automatically invalidate the native `pi-walker` scan cache; callers using the native binding must invoke `invalidateFsScanCache` explicitly after mutations.
 
 ## Adding a cache consumer
 

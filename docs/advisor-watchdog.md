@@ -265,14 +265,14 @@ advisors:
   - name: Architecture
     enabled: true
     model: anthropic/claude-sonnet-4-5:medium
-    tools: [read, grep, glob]
+    tools: [read, context]
     instructions: |
       Watch cross-module coupling and public-API growth.
 
   - name: Fixer
     enabled: false
     model: anthropic/claude-sonnet-4-5:high
-    tools: [read, grep, glob, edit, bash]
+    tools: [read, bash]
     instructions: |
       You may inspect and run tests locally with `bash`, then advise.
 ```

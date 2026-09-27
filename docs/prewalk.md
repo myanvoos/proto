@@ -6,7 +6,7 @@ Prewalk is off by default. Its default target is the model assigned to the `@smo
 
 ## Enable prewalk
 
-Enable prewalk persistently in the global config:
+Enable prewalk persistently for new sessions in the global config:
 
 ```bash
 proto config set prewalk.enabled true
@@ -18,6 +18,8 @@ The equivalent YAML in `~/.proto/agent/config.yml` or a project `.proto/config.y
 prewalk:
   enabled: true
 ```
+
+A restored session does not inherit this setting; use `--prewalk` or `--prewalk-into` to arm prewalk for that launch.
 
 Session flags override the configured value:
 
@@ -39,7 +41,7 @@ At startup, PROTO resolves the target with the normal model-role and model-match
 
 ## Handoff trigger
 
-An armed prewalk injects a planning nudge. When the `checklist` tool is active, any successful `checklist` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first completed `edit` or `write` call.
+An armed prewalk injects a planning nudge. When the `checklist` tool is active, any successful `checklist` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first `edit` or `write` result.
 
 Other tools do not trigger the handoff. Direct `edit`/`write` results count; results with `details.xdev` are device-routed and ignored.
 

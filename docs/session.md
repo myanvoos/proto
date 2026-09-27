@@ -31,6 +31,8 @@ Does not cover `/tree` UI rendering behavior beyond semantics that affect sessio
 - [`src/session/session-storage.ts`](../packages/coding-agent/src/session/session-storage.ts) — storage abstractions
 - [`src/session/session-title-slot.ts`](../packages/coding-agent/src/session/session-title-slot.ts) — fixed-width current-title slot
 - [`src/session/indexed-session-storage.ts`](../packages/coding-agent/src/session/indexed-session-storage.ts) — local index + ordered remote-backed storage adapter
+- [`src/session/redis-session-storage.ts`](../packages/coding-agent/src/session/redis-session-storage.ts) — Redis-backed storage adapter
+- [`src/session/sql-session-storage.ts`](../packages/coding-agent/src/session/sql-session-storage.ts) — SQL-backed storage adapter
 - [`src/session/messages.ts`](../packages/coding-agent/src/session/messages.ts) — custom-message transformers
 - [`src/session/blob-store.ts`](../packages/coding-agent/src/session/blob-store.ts) — content-addressed blob store
 - [`src/session/history-storage.ts`](../packages/coding-agent/src/session/history-storage.ts) — prompt history (separate subsystem)
@@ -53,19 +55,21 @@ Blob store location:
 ~/.proto/agent/blobs/<sha256>
 ```
 
+Compacted history entries may also be stored in a validated gzip sidecar at `<session-file>.archive.jsonl.gz`; loaders merge its anchored entries back into logical insertion order, and invalid sidecars are ignored with a warning.
+
 Terminal breadcrumb files are written under:
 
 ```text
 ~/.proto/agent/terminal-sessions/<terminal-id>
 ```
 
-Breadcrumb content is original cwd and session file path, plus an optional third line `fresh`. A fresh breadcrumb preserves a `/new` boundary whose lazily-created JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Writes are synchronous, ordered, and best-effort.
+Breadcrumb content is the original cwd and session file path, followed by optional `fresh` and `cwdstat <device> <inode>` lines. A fresh breadcrumb preserves a `/new` boundary whose lazily-created JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Writes are synchronous, ordered, and best-effort.
 
 ### Unwritable session directories
 
-The default session directory is the harness's choice, not the user's, so a directory it cannot create degrades instead of aborting: the run continues entirely in memory and both modes state the cause and the fix once at startup (`Cannot create the session directory "…": permission denied on "…". This run is not being saved.` plus a remedy naming `chmod u+w`, `PI_CODING_AGENT_DIR`, and `--no-session`). The same applies to `autoResume`, which is also implicit.
+The default session directory is the harness's choice, not the user's, so a directory it cannot create degrades instead of aborting: the run continues entirely in memory and both modes state the cause and the fix once at startup. Print mode says `Cannot create the session directory "…": permission denied on "…". This run is not being saved.`; interactive mode says `This session is not being saved.`; both include a remedy naming `chmod u+w`, `PI_CODING_AGENT_DIR`, and `--no-session`. The same fallback applies when the `autoResume` setting (default `false`) is enabled; it is an implicit startup choice, not an explicit request.
 
-An explicitly requested location still fails fast with the same sentence pair: `--session-dir` is rejected as a usage error before startup, and any other explicit resume path throws `SessionDirectoryError` (`session-paths.ts`), which the CLI renders as `Error: <message>` plus a dimmed hint and exit 1.
+An explicitly requested location still fails fast: `--session-dir` is validated before startup and invalid values raise a usage error naming the flag. If an explicit resume path cannot use its session directory, `SessionDirectoryError` (`session-paths.ts`) is rendered as `Error: <message>` plus a dimmed hint and exit 1.
 
 ### Resident metadata and temporary entry copies
 
@@ -75,9 +79,9 @@ Temporary entry files are not durable history. When a temporary file cannot be r
 
 ### Ownership
 
-A session file is written by exactly one live process. Ownership is claimed in `session-liveness.ts` (`claimSessionOwnership`) before the file is read, using a process-owned OS lock keyed on `<session>.jsonl.owner` plus the `<session>.jsonl.live` heartbeat marker, which the claim publishes immediately so other processes can name the owner. Every CLI entry point that resolves a session to write — `--resume`, the resume picker, `--continue`, `autoResume`, `--session-dir`, and a freshly created session — takes the claim; `--no-session` and read-only opens (listing, rendering, subagent transcripts) do not.
+A CLI-managed session file is written by exactly one live process. Ownership is claimed in `session-liveness.ts` (`claimSessionOwnership`) before an existing session is read, using a process-owned OS lock keyed on `<session>.jsonl.owner` plus the `<session>.jsonl.live` heartbeat marker, which the claim publishes immediately so other processes can name the owner. `--resume`, the resume picker, `--continue`, and `autoResume` claim existing candidates; `continueRecent()` and an explicit `--session-dir` also claim newly created files. `--no-session` and read-only opens (listing, rendering, subagent transcripts) do not.
 
-A second process that tries to resume an owned session is refused with the owning pid and a `proto --fork <file>` hint instead of silently writing nothing; `--continue`/`autoResume` skip an owned candidate and start a new session. The claim dies with its process (killed owners release it immediately) and the marker goes stale after `SESSION_LIVE_FRESH_WINDOW_MS`.
+A second CLI process that tries to resume an owned session is refused with the owning pid when the heartbeat identifies it, plus a `proto --fork <file>` hint, instead of silently writing nothing; `--continue`/`autoResume` skip an owned candidate and start a new session. The claim dies with its process (killed owners release it immediately) and the marker goes stale after `SESSION_LIVE_FRESH_WINDOW_MS` (15 seconds).
 
 ## File Format
 
@@ -161,6 +165,7 @@ Stores an `AgentMessage` directly.
   "timestamp": "2026-02-16T10:21:00.000Z",
   "message": {
     "role": "assistant",
+    "api": "anthropic-messages",
     "provider": "anthropic",
     "model": "claude-sonnet-4-5",
     "content": [{ "type": "text", "text": "Done." }],
@@ -169,6 +174,7 @@ Stores an `AgentMessage` directly.
       "output": 20,
       "cacheRead": 0,
       "cacheWrite": 0,
+      "totalTokens": 120,
       "cost": {
         "input": 0,
         "output": 0,
@@ -177,6 +183,7 @@ Stores an `AgentMessage` directly.
         "total": 0
       }
     },
+    "stopReason": "stop",
     "timestamp": 1760000000000
   }
 }
@@ -288,7 +295,7 @@ Current core-owned values include:
 | `user_checklist_edit`         | `{ phases: ChecklistPhase[] }`                                                                                                                                                                                                                                | SDK/UI checklist editing persists the complete phase snapshot. Checklist restoration scans backward for the latest snapshot (or a successful `checklist` tool result) and restores its phases.                                                                                                                            |
 | `orchestrator-worker-lifecycle` | Version-1 event with `{ version: 1, id, ownerId, parentSessionId, action, ... }`; spawns add agent/session metadata and optional effort/model/schema controls; turn events add `turn`; tombstones add `reason`. | Replays parent-owned persistent workers and durable terminal state; invalid or out-of-scope events are ignored. |
 
-On resume, a valid latest `session_exit` after a non-terminal conversation tail causes the loader to append a synthetic assistant message with `stopReason: "aborted"` and rebuild the display/agent context. A normal exit only triggers that transition when it recorded pending tool calls; abnormal exit kinds can trigger it without that list. This prevents the restored transcript from presenting an interrupted turn as still live.
+On resume, `AgentSession` uses a valid latest `session_exit` after a non-terminal conversation tail to append a synthetic assistant message with `stopReason: "aborted"` and rebuild the display/agent context. A normal exit only triggers that transition when it recorded pending tool calls; abnormal exit kinds can trigger it without that list. This prevents the restored transcript from presenting an interrupted turn as still live.
 
 The strings in the table are reserved for their core consumers. Extensions MUST NOT use them. Use a namespaced identifier such as a reverse-domain or package-qualified name for extension records; a collision can cause core replay logic to interpret extension data as lifecycle state. Unknown namespaced values remain opaque to core session-context reconstruction.
 
@@ -410,27 +417,28 @@ Applied when header `version < 3`:
 `loadEntriesFromFile(path)` behavior:
 
 - Missing file (`ENOENT`) -> returns `[]`.
-- Current files at least 8 MiB use a streaming JSONL loader; smaller or non-file storage uses a full text read.
-- Non-parseable lines are handled by the lenient JSONL parser.
+- File-backed files at least 32 MiB use a streaming JSONL loader; manager loads that retain raw entries also stream regardless of size. Smaller direct loads and non-file storage use a full text read.
+- Non-parseable lines are handled by the lenient JSONL parser; a malformed complete record causes `SessionManager.setSessionFile()` to fail closed, while a malformed unterminated final record can be discarded on the next write.
 - The optional fixed-width title slot is removed and folded into the header.
-- If the first logical entry is not a valid session header (`type !== "session"` or missing string `id`) -> returns `[]`.
+- If the first logical entry is not a valid session header (`type !== "session"` or missing string `id`) -> returns `[]` (with invalid-header metadata retained by `loadSessionFile()`).
 
 `SessionManager.setSessionFile()` behavior:
 
-- `[]` from the loader is treated as empty/nonexistent session and replaced with a new initialized session at that exact path; its header is materialized immediately.
-- Valid files are loaded, migrated if needed, blob refs resolved, then indexed.
+- A missing or genuinely empty persistent path (`[]` with no invalid-header/malformed-record condition) is replaced with a new initialized session at that exact path; its header is materialized immediately.
+- Invalid headers and malformed complete records throw without rewriting the source file.
+- Valid files are loaded, migrated if needed, indexed with metadata, and blob refs are resolved lazily when retained entries are hydrated.
 
 ## Tree and Leaf Semantics
 
 The underlying model is append-only tree + mutable leaf pointer:
 
-- Every append method creates exactly one new entry whose `parentId` is current `leafId`.
-- The new entry becomes the new `leafId`.
+- Ordinary append methods create exactly one new entry whose `parentId` is current `leafId`.
+- The new entry becomes the new `leafId`; `appendMessageToBranch()` explicitly records under another parent and restores the prior leaf.
 - `branch(entryId)` moves only `leafId`; existing entries remain unchanged.
 - `resetLeaf()` sets `leafId = null`; next append creates a new root entry (`parentId: null`).
 - `branchWithSummary()` sets leaf to branch target and appends a `branch_summary` entry.
 
-`getEntries()` returns all non-header entries in insertion order. Existing entries are not deleted in normal operation; rewrites preserve logical history while updating representation (migrations, move, targeted rewrite helpers). These explicit collection APIs hydrate their requested payloads. For bounded access, `iterateEntries()` / `iterateBranch()` / `iterateCustomEntries()` load one selected entry at a time, `getTreeForDisplay()` / `getBranchForStats()` use metadata, and windowed transcript reconstruction admits semantic groups before hydration. Active model context hydrates only the current compaction/reset window. See [interactive memory and resource limits](./interactive-memory.md) for UI and fleet ownership policies.
+`getEntries()` returns all non-header entries in insertion order. Existing entries are retained by normal appends; explicit discard and branched-session operations can intentionally omit entries from the rewritten/new transcript. Rewrites otherwise preserve logical history while updating representation (migrations, move, targeted rewrite helpers). These explicit collection APIs hydrate their requested payloads. For bounded access, `iterateEntries()` / `iterateBranch()` / `iterateCustomEntries()` load one selected entry at a time, `getTreeForDisplay()` / `getBranchForStats()` use metadata, and windowed transcript reconstruction admits semantic groups before hydration. Active model context hydrates only the current compaction/reset window. See [interactive memory and resource limits](./interactive-memory.md) for UI and fleet ownership policies.
 
 ## Context Reconstruction (`buildSessionContext`)
 
@@ -475,14 +483,14 @@ Completed entries update memory and are handed to file/memory storage synchronou
 
 ### Durability operations
 
-- `flush()` drains async disk/storage queues and the open writer (no `fsync`); `flushSync()` performs synchronous draining/full rewrite where supported.
+- `flush()` drains async disk/storage queues and the open writer (no `fsync`); `flushSync()` flushes a synchronous writer or performs a synchronous full rewrite, while async backend publication still requires `flush()`.
 - Atomic full rewrites use storage `writeTextAtomic` with a commit guard; file storage stages then renames over the target, including an EPERM-safe move-aside fallback.
 - Every full rewrite (sync or atomic) carries a freshness precondition: the byte length the manager last loaded or durably wrote (`null` when the path was absent). Storage rejects the publish with `SessionWriteConflictError` when the target changed since — file storage checks under the same file lock appenders hold, `IndexedSessionStorage` checks its index, and the SQL/Redis backends repeat the check atomically (`length(content)` / `STRLEN`) for peers sharing the store. A rejected rewrite leaves the other writer's turns on disk and latches the disk failure; the stale manager's unsaved entries stay in memory.
 - Rewrites serve renames, entry rewrites, migrations/sanitization, move/fork, and recovery. Session-title changes normally update the fixed-width title slot and append a `title_change` audit entry instead of rewriting the body.
 
 ### Error behavior
 
-- Persistence errors are latched and rethrown by later flush/close/write operations; the first is logged once with session-file context.
+- Non-retryable persistence errors are latched and rethrown by later flush/close/write operations; the first is logged once with session-file context. Lock contention is reported but remains retryable.
 - Failed atomic publication attempts authoritative repair. If storage may have published a write and repair cannot be proven durable, `SessionPersistenceIndeterminateError` fails closed with the original and recovery errors.
 - Writer close propagates the first meaningful error.
 
@@ -490,13 +498,13 @@ Completed entries update memory and are handed to file/memory storage synchronou
 
 Before persisting entries:
 
-- Strings over 500,000 characters are truncated with `"[Session persistence truncated large content]"`, except signed/encrypted provider blocks, signature fields, and complete Anthropic native web-search history blocks, which must remain byte-exact for replay.
+- Strings over 500,000 characters are truncated with `"[Session persistence truncated large content]"`, except signed/encrypted provider replay blocks, signature fields, and complete Anthropic native server-tool history blocks (web search and tool search), which must remain byte-exact for replay or be preserved in a replay blob.
 - Transient `jsonlEvents` is removed.
 - If an object has both string `content` and numeric `lineCount`, line count is recomputed after truncation.
 - Image data URLs in `image_url` fields are always content-addressed in the blob store and replaced with `blob:sha256:<hash>`, regardless of length. Other base64 image payloads at or above 1,024 characters are externalized for image blocks in message `content`, `images` arrays, and image-generation results.
 - Redundant OpenAI Responses `thinkingSignature` copies are omitted when the authoritative reasoning item already exists in `providerPayload`.
 
-On load, persisted blob references are resolved back to the inline payload shapes expected by downstream transports.
+When loaded entries are hydrated for replay, persisted blob references are resolved back to the inline payload shapes expected by downstream transports.
 
 ## Storage Abstractions
 
@@ -512,7 +520,7 @@ Implementations and adapters:
 
 ## Session Discovery Utilities
 
-Discovery helpers live in `session-listing.ts`; `SessionManager` exposes project-scoped wrappers:
+Discovery helpers live in `session-listing.ts`; `SessionManager` exposes `list`, `listAll`, and picker wrappers while the listing module owns the direct scans:
 
 - `getRecentSessions(sessionDir, limit?)` -> lightweight welcome metadata, default limit 4
 - `findMostRecentSession(sessionDir)` -> newest by mtime
@@ -521,7 +529,7 @@ Discovery helpers live in `session-listing.ts`; `SessionManager` exposes project
 - `listAllSessions(storage)` / `SessionManager.listAll()` -> all project scopes
 - `resolveResumableSession(...)` -> local lookup then optional global fallback
 
-Recent/most-recent scans read only a 4 KiB prefix. Full lists read that prefix plus a bounded 32 KiB tail for lifecycle status. Scans are stat-keyed and cached; large sets are processed with bounded parallel workers. Normal per-directory scans also recover the newest orphaned EPERM backup when its primary JSONL is missing. Resume matching is case-insensitive and accepts session id prefixes, full filename prefixes, or the id suffix after the timestamp.
+`getRecentSessions()` orders candidates by mtime and can use the session-title index to answer a bounded newest subset without opening JSONL files; otherwise it scans candidates. List and most-recent scans fold complete JSONL metadata in bounded ranges (64 KiB nominal chunks, with a larger range for a record spanning a chunk), using stat/mtime-keyed resumable cache entries capped at 16 MiB. Large sets use at most 16 parallel workers. Normal per-directory scans also recover the newest orphaned `.bak` backup when its primary JSONL is missing. Resume matching is case-insensitive and accepts session id prefixes, full filename prefixes, or the id suffix after the timestamp.
 
 ## Related but Distinct: Prompt History Storage
 

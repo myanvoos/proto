@@ -29,8 +29,8 @@ Key integration points:
 ```text
          Generic helper order (`config.ts`)
 ┌───────────────────────────────────────┐
-│ 1) ~/.proto/agent, ~/.claude, ...       │
-│ 2) <cwd>/.proto, <cwd>/.claude, ...     │
+│ 1) ~/.proto/agent, ~/.pi/agent, ...    │
+│ 2) <cwd>/.proto, <cwd>/.pi, ...         │
 └───────────────────────────────────────┘
                     │
                     ▼
@@ -61,6 +61,7 @@ Key integration points:
 User-level bases:
 
 - PROTO native: `~/<PI_CONFIG_DIR>/agent` (normally `~/.proto/agent`; a named profile changes this as described below)
+- `~/.pi/agent`
 - `~/.claude`
 - `~/.codex`
 - `~/.gemini`
@@ -68,27 +69,28 @@ User-level bases:
 Project-level bases:
 
 - `<cwd>/.proto`
+- `<cwd>/.pi`
 - `<cwd>/.claude`
 - `<cwd>/.codex`
 - `<cwd>/.gemini`
 
-`CONFIG_DIR_NAME` is `.proto` (`packages/utils/src/dirs.ts`). `PI_CONFIG_DIR` changes the PROTO user root used by the generic helpers. `PI_CODING_AGENT_DIR` is different: for the default profile it changes `getAgentDir()` consumers such as native discovery, settings, and runtime state, but it does **not** change the generic `getConfigDirs()` / `findConfigFile()` PROTO base. Named profiles ignore `PI_CODING_AGENT_DIR`.
+`CONFIG_DIR_NAME` is `.proto` (`packages/utils/src/dirs.ts`). `PI_CONFIG_DIR` changes the PROTO user root used by the generic helpers. `PI_CODING_AGENT_DIR` is different: for the default profile it changes `getAgentDir()` consumers such as native discovery, settings, and runtime state, but it does **not** change the generic `getConfigDirs()` / `findConfigFile()` PROTO base. Named profiles ignore `PI_CODING_AGENT_DIR`. For Claude, `CLAUDE_CONFIG_DIR` overrides the default `~/.claude` user base.
 
 ## Profiles
 
-A named profile (`proto --profile <name>`, `PROTO_PROFILE`, or the legacy fallback `PI_PROFILE`) relocates the PROTO user base. `PROTO_PROFILE` wins when it is defined, including when it is explicitly empty; `default`, empty, or whitespace selects the default profile. When a profile is active, every PROTO-native user-level path written here as `~/.proto/agent/...` normally resolves to `~/.proto/profiles/<name>/agent/...`. `--alias <command>` does not select a profile by itself: paired with `--profile`, it creates a shell shortcut for that profile.
+A named profile (`proto --profile <name>`, `PROTO_PROFILE`, or the legacy fallback `PI_PROFILE`) relocates the PROTO user base. `PROTO_PROFILE` wins when it is defined, including when it is explicitly empty; `default`, empty, or whitespace selects the default profile. When a profile is active, every PROTO-native user-level path written here as `~/.proto/agent/...` normally resolves to `~/.proto/profiles/<name>/agent/...`. `--alias <command>` does not select a profile by itself: it requires `--profile` or an active profile environment variable, then creates a shell shortcut for that profile.
 
 The relocation is uniform across the native provider (`builtin.ts`) and the generic `config.ts` helpers, so it covers slash commands, rules, prompts, instructions, hooks, tools, extensions, settings, skills, and MCP, plus the top-level `SYSTEM.md` / `RULES.md` / `AGENTS.md` files and runtime state (sessions, blobs, `agent.db`). A profile sees only its own PROTO config, never the default profile's agent config.
 
 Keybindings are the one exception: a named profile merges the default profile's `~/.proto/agent/keybindings.*` under its own `~/.proto/profiles/<name>/agent/keybindings.*`, with the profile file overriding per binding (#4867). Keybindings describe the terminal/keyboard in front of the user, which doesn't change with the active profile, so user-level remaps keep working in every profile unless the profile explicitly overrides them. The inherited file is read-only for the profile process — legacy-format migration of the default profile's file only happens when the default profile itself runs.
 
-On macOS and Linux, an existing `$XDG_DATA_HOME/proto`, `$XDG_STATE_HOME/proto`, or `$XDG_CACHE_HOME/proto` can relocate the corresponding data, state, or cache paths. For a named profile, PROTO uses an XDG category only when that category already contains `proto/profiles/<name>`; otherwise that category remains under `~/.proto/profiles/<name>`. Run `proto config init-xdg` before relying on XDG paths.
+When the default agent directory is in use on macOS and Linux, an existing `$XDG_DATA_HOME/proto`, `$XDG_STATE_HOME/proto`, or `$XDG_CACHE_HOME/proto` can relocate the corresponding data, state, or cache paths. For a named profile, PROTO uses an XDG category only when that category already contains `proto/profiles/<name>`; otherwise that category remains under `~/.proto/profiles/<name>`. Run `proto config init-xdg` before relying on XDG paths.
 
-The other source bases are not profile-scoped and load identically under every profile: the external-tool bases (`~/.claude`, `~/.codex`, `~/.gemini`) belong to those tools, and the project-level bases (`<cwd>/.proto`, `<cwd>/.claude`, ...) are keyed to the working directory. Throughout this document, read `~/.proto/agent` as shorthand for the active profile's agent directory unless an environment override or XDG path is being discussed.
+The other source bases are not profile-scoped and load identically under every profile: the non-native user bases (`~/.pi/agent`, `~/.claude`, `~/.codex`, `~/.gemini`) belong to those tools or legacy clients, and the project-level bases (`<cwd>/.proto`, `<cwd>/.pi`, `<cwd>/.claude`, ...) are keyed to the working directory. Throughout this document, read `~/.proto/agent` as shorthand for the active profile's agent directory unless an environment override or XDG path is being discussed.
 
 ## Important constraint
 
-The generic helpers in `src/config.ts` include `.pi` in source discovery order, right after the native `.proto` root and before `.claude`.
+The generic helpers in `src/config.ts` include `.pi` in source discovery order, right after the native `.proto` root and before `.claude`, for both user and project base lists.
 
 ---
 
@@ -112,11 +114,11 @@ This API is used for directory-based config lookups (commands, hooks, tools, age
 
 ## `findConfigFile(subpath, options)` / `findConfigFileWithMeta(...)`
 
-Searches for the first existing file across ordered bases, returns first match (path-only or path+metadata).
+Searches for the first existing path across ordered bases, returns first match (path-only or path+metadata). Callers normally provide a file name.
 
 ## `findAllNearestProjectConfigDirs(subpath, cwd)`
 
-Walks parent directories upward and returns the **nearest existing directory per source base** (`.proto`, `.claude`, `.codex`, `.gemini`), then sorts results by source priority.
+Walks parent directories upward and returns the **nearest existing directory per source base** (`.proto`, `.pi`, `.claude`, `.codex`, `.gemini`), then sorts results by source priority.
 
 Use this when project config should be inherited from ancestor directories (monorepo/nested workspace behavior).
 
@@ -142,7 +144,7 @@ Behavior:
 
 Legacy migration still supported:
 
-- If target path is `.yml`/`.yaml`, a sibling `.json` is auto-migrated once (`migrateJsonToYml`).
+- If target path is `.yml`/`.yaml` and no YAML file is already present, a sibling `.json` is auto-migrated once (`migrateJsonToYml`).
 
 ---
 
@@ -165,13 +167,13 @@ Within either overlay list, later files override earlier files. Overlay paths ar
 Write behavior:
 
 - `settings.set(...)` writes to the **global** layer (the global YAML file selected at startup) and queues a background save.
-- Project settings and config overlays are read-only from the settings API.
+- Discovered project settings are read-only except project model-role mutations (`setProjectModelRole` / `clearProjectModelRole`); config overlays are always read-only from the settings API.
 
 ### Settings load failures
 
 - Missing global/project YAML is treated as empty configuration.
-- Invalid global or native-project YAML is moved to a unique `.broken-<timestamp>-<pid>-<uuid>` sibling under a file lock, then startup fails with the original and backup paths. An unreadable file fails without being moved.
-- Every `PI_CONFIG_FILES` / `--config` overlay is strict: missing files, invalid YAML, and non-mapping document roots are hard errors. Overlay files are not quarantined.
+- Invalid global or native-project YAML is moved to a unique `.broken-<timestamp>-<pid>-<uuid>` sibling under a file lock; startup continues with that layer omitted/defaults and records a config issue. An unreadable file fails without being moved.
+- Every `PI_CONFIG_FILES` / `--config` overlay is strict: missing files, invalid YAML, and non-mapping document roots are hard errors; an empty/null YAML document is treated as empty configuration. Overlay files are not quarantined.
 
 ## Migration behavior still active
 
@@ -179,13 +181,13 @@ On startup, if neither global `config.yml` nor `config.yaml` exists:
 
 1. Migrate from `~/.proto/agent/settings.json` (renamed to `.bak` on success)
 2. Merge with legacy DB settings from `agent.db` (DB values win conflicts)
-3. Write merged result to `config.yml`
+3. Write a non-empty merged result to `config.yml`
 
 Field-level migrations in `#migrateRawSettings`:
 
 - `queueMode` -> `steeringMode`
 - `ask.timeout` milliseconds -> seconds when old value looks like ms (`> 1000`)
-- Legacy flat `theme: "..."` -> `theme.dark/theme.light` structure
+- Legacy flat `theme: "..."` -> `theme.dark/theme.light` structure (built-in `light`/`dark` values are removed so schema defaults apply)
 
 ---
 
@@ -278,7 +280,7 @@ Generate a session name using lowercase `<type>:<primary-objective>`.
 ```
 
 - Missing `TITLE_SYSTEM.md` keeps the bundled title prompts.
-- Discovery checks the current project directory bases first (`<cwd>/.proto`, `.claude`, `.codex`, `.gemini`), then the user bases in the generic helper order. Unlike native `SYSTEM.md`, project title discovery does **not** walk ancestor directories.
+- Discovery checks the current project directory bases first (`<cwd>/.proto`, `.pi`, `.claude`, `.codex`, `.gemini`), then the user bases in the generic helper order. Unlike native `SYSTEM.md`, project title discovery does **not** walk ancestor directories.
 - The override replaces only the automatic session-title generation system prompt; normal `SYSTEM.md` / `APPEND_SYSTEM.md` prompt customization is unaffected.
 - The online path asks the title model to wrap the title in `<title>...</title>` and parses it leniently from text (a plain sentence, a truncated/unclosed tag, or a stray `{"title": "..."}` JSON echo all still work). A `TITLE_SYSTEM.md` override gets the wrap-in-`<title>` instruction appended after it. The local tiny-title path keeps the `<title>...</title>` prefill/stop wrapper and uses this file as its system turn.
 

@@ -208,4 +208,3 @@ The assistant can then answer normally or emit another complete MiniMax call env
 - `packages/ai/src/dialect/catalog.ts` and `prompt-template.md` — tool catalog and system-prompt injection.
 - `packages/ai/src/dialect/history.ts` and `owned-stream.ts` — history conversion, streamed projection, incomplete-call behavior, and fabricated-result boundary.
 - `packages/catalog/src/identity/dialect.ts` and `packages/coding-agent/src/sdk.ts` — MiniMax family affinity and `tools.format` resolution.
-- `packages/ai/test/inband-tools.test.ts` — prompt rendering, call round trips, chunked argument deltas, raw blocks, MiniMax wrapper recovery, and result rendering.

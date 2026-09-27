@@ -9,25 +9,26 @@ These are internal URLs, not filesystem paths. `read protolens://resolve` and `r
 
 ## Preview flows
 
-Preview producers call `queueResolveHandler(...)` with `apply(reason)` and optional `reject(reason)` callbacks. Each preview receives a unique pending-invoker ID in `ToolChoiceQueue`, so stacked previews do not overwrite one another.
+Preview producers call `queueResolveHandler(...)` with `apply(reason, signal?)` and an optional `reject(reason, signal?)` callback. Each preview receives a unique pending-invoker ID in `ToolChoiceQueue`, so stacked previews remain separate.
 
 While a preview is pending, `AgentSession.nextToolChoiceDirective()` returns a soft requirement:
 
-- `toolName: "write"`
+- `soft: true`
+- `toolName: "bash"`
 - `satisfies: isPreviewResolutionToolCall`
-- reminder from `resolve-device-reminder.md`
+- reminder built from `resolve-device-reminder.md`
 
 `isPreviewResolutionToolCall` accepts only a `bash` call whose command is one shell segment invoking `protolens resolve` or `protolens reject`. Other tool calls are skipped while the soft requirement is active, then the agent loop escalates to a forced `bash` call on the next turn.
 
-Dispatch invokes the pending queue head through `runResolveInvocation(...)`.
+Resolution dispatch selects the in-flight queue invoker first, otherwise the newest pending invoker, and invokes it through `runResolveInvocation(...)`.
 
-- A successful apply or discard consumes that pending invoker exactly once.
-- If apply throws, the same preview is re-registered so the model can reject it or retry after fixing the cause.
+- A completed apply or discard consumes that pending invoker exactly once.
+- A non-abort apply failure re-registers the same preview so the model can reject it or retry after fixing the cause.
 - Rejecting with no pending action succeeds with `Nothing to reject; no pending action remains.`
 - Resolving with no pending action throws.
 - An apply callback's ordinary error becomes `ToolError("Apply failed: ...")`; an existing `ToolError` is preserved.
 
-## Why `write` is guaranteed
+## Bash transport
 
 Resolution is not a separately enabled tool. `createTools(...)` includes the native `bash` tool when `bash.enabled` and the requested-tool policy allow it; `tools.xdev` must also be enabled for the bash bridge to dispatch `protolens` devices. `BashTool` routes those invocations through `dispatchProtolensArgv(...)`.
 

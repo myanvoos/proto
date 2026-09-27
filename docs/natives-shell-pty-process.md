@@ -7,7 +7,6 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 - `crates/pi-natives/src/shell.rs`
 - `crates/pi-shell/src/shell.rs`
 - `crates/pi-shell/src/cancel.rs`
-- `crates/pi-shell/src/windows.rs` (Windows-only PATH enrichment)
 - `crates/pi-shell/src/process.rs`
 - `crates/pi-natives/src/pty.rs`
 - `crates/pi-natives/src/ps.rs`
@@ -52,8 +51,7 @@ Session env behavior:
 
 - `ShellOptions.sessionEnv` / one-shot `sessionEnv` is applied at session creation.
 - `ShellRunOptions.env` / one-shot `env` is command-scoped (`EnvironmentScope::Command`) and popped after the command.
-- `PATH` is merged specially on Windows with case-insensitive dedupe.
-- Windows-only path enrichment (`pi-shell/src/windows.rs`) appends discovered Git-for-Windows paths when present and not already included.
+- `PATH` is copied from the host environment; current `pi-shell` performs no Windows-specific Git-for-Windows enrichment.
 - `snapshotPath`, when present, is sourced during session creation with stdout/stderr/stdin wired to null files.
 
 ### Runtime lifecycle and state transitions

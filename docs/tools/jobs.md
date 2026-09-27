@@ -62,8 +62,8 @@ running and nothing falls back to name-only control.
 
 ## Watches
 
-- **Process source**: reads the broker's in-memory output ring (`read` operation, 1 MiB per
-  record) by log byte cursor, starting at the current end or the supplied `cursor`. No helper
+- **Process source**: reads the broker's in-memory 1 MiB output ring per record via the `read`
+  operation, by log byte cursor, starting at the current end or the supplied `cursor`. No helper
   process is spawned. Output the ring no longer holds, or a cursor space that restarted, is
   reported as a `gap` event. Exit ends the watch with an `exit` event; an explicit restart ends
   it with a `replaced` event — watch the new reference to continue.
@@ -97,9 +97,12 @@ running and nothing falls back to name-only control.
   `OrchestratorRuntime.withWaitPermit`, so a parent waiting on its own children cannot starve
   them at `orchestrator.maxConcurrency`.
 - `timeoutMs` omitted: `async.pollWaitDuration` (smart ladder by default) for executions, or
-  `irc.timeoutMs` for mailbox-only waits. `0` waits until woken or interrupted.
+  `irc.timeoutMs` for mailbox-only waits. `0` waits until woken or interrupted; process targets use
+  the broker's 1 h ceiling for a zero window.
 
 ## Settings
 
-- `launch.enabled` gates process ops; `monitor.enabled`, `monitor.maxConcurrent`,
-  `monitor.maxEvents` govern watches; `async.pollWaitDuration` sets the default wait window.
+- `launch.enabled` gates process operations other than waiting on an existing process ref;
+  `monitor.enabled`, `monitor.maxConcurrent`, `monitor.maxEvents` govern watches;
+  `async.pollWaitDuration` sets execution wait windows; `irc.timeoutMs` sets mailbox-only wait
+  windows.

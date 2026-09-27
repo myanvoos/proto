@@ -14,14 +14,16 @@ Settings are stored as plain YAML mappings. Every key, its type, default, and en
 
 | Scope             | Path                                                  | Read behavior                                                                                                                            | Write behavior                                                                                                                                                                   |
 | ----------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Global            | `~/.proto/agent/config.yml` (or existing `config.yaml`) | The main persistent settings file. `config.yml` is the canonical write target; an existing `config.yaml` is loaded and updated in place. | `/settings`, `proto config set`, and `proto config reset` write here.                                                                                                                |
-| Global legacy     | `~/.proto/agent/settings.json`                          | Migrated into `config.yml` once, only when neither main YAML filename exists.                                                            | Not written after migration; the original is renamed to `settings.json.bak`.                                                                                                     |
+| Global            | `~/.proto/agent/config.yml` (active profile agent dir; existing `config.yaml` also accepted) | The main persistent settings file. `config.yml` is the canonical write target; an existing `config.yaml` is loaded and updated in place. | `/settings`, `proto config set`, and `proto config reset` write here.                                                                                                                |
+| Global legacy     | `~/.proto/agent/settings.json` (active profile agent dir)  | Migrated into `config.yml` once, only when neither main YAML filename exists.                                                            | Not written after migration; the original is renamed to `settings.json.bak`.                                                                                                     |
 | Project           | `<cwd>/.proto/config.yml` (plus `.proto/settings.json`)   | Loaded when the process working directory has a non-empty `.proto/`.                                                                       | Settings commands do not write arbitrary project keys. With `modelRoleStorage: project`, model-selector role assignments update only `modelRoles` here; edit other keys by hand. |
 | Project legacy    | `<cwd>/.proto/settings.json`                            | Still read; project `config.yml` is merged on top of it.                                                                                 | Not written by settings commands.                                                                                                                                                |
 | CLI overlay       | Any file passed with `--config <file>`                | Loaded after global and project settings, for that one process. Repeatable.                                                              | Never persisted.                                                                                                                                                                 |
 | Runtime overrides | In-memory only                                        | Set by dedicated CLI flags (`--model`, `--thinking`, …) and feature env vars.                                                            | Never persisted.                                                                                                                                                                 |
 
-`PI_CODING_AGENT_DIR` relocates the `~/.proto/agent` base directory. When it is set, the global `config.yml`, the auth store (`agent.db`), and everything else under the agent directory move with it. Use `proto config path` to print the active agent directory.
+Unless noted otherwise, `~/.proto/agent` below means the active profile's agent directory; the default profile uses that literal path. See [Configuration usage → Profiles](./config-usage.md#profiles).
+
+`PI_CODING_AGENT_DIR` relocates the default-profile `~/.proto/agent` base directory; named profiles ignore it. When it applies, the global `config.yml`, the auth store (`agent.db`), and everything else under the agent directory move with it. Use `proto config path` to print the active agent directory.
 
 Native project settings are intentionally scoped to the process working directory's `.proto/` folder — settings discovery does **not** walk ancestor directories looking for the nearest `.proto/`. Other discovery providers (Claude, Codex, Gemini, Cursor, OpenCode) can also contribute project-level settings from their own files; those are read-only from `proto` settings commands and can be turned off by provider id (see [Provider and source disabling](#provider-and-source-disabling)).
 
@@ -31,7 +33,7 @@ The canonical global file is YAML at `config.yml`; `config.yaml` is accepted as 
 
 - When a `.yml`/`.yaml` path is requested and only a sibling `.json` exists, it is migrated to YAML automatically (idempotent, once per process).
 - `.json` and `.jsonc` configs are read as-is, with no migration.
-- A settings YAML file whose top level is not a mapping is invalid. On writable startup, `proto` moves an invalid persistent settings file to a uniquely named `.broken-*` backup and exits with the original error and backup path. A `--config` overlay with a bare array/scalar is also a hard error, but is not moved.
+- A settings YAML file whose top level is not a mapping is invalid. On writable startup, `proto` moves an invalid persistent settings file to a uniquely named `.broken-*` backup and reports the original error and backup path; settings from that file are not in effect and defaults are used. Read-only startup reports the error without moving the file. A `--config` overlay with a bare array/scalar is also a hard error, but is not moved.
 
 ## Reading and writing settings
 
@@ -59,7 +61,7 @@ proto config path                 # print the active agent directory
 | `proto config path`              | Print the active agent directory (honors `PI_CODING_AGENT_DIR`).                                                                                                                                                                                                                                  |
 | `proto config init-xdg`          | On Linux and macOS, create the `proto` directories under the effective XDG data, state, and cache homes. It does not move existing files or set the XDG environment variables. Other platforms exit non-zero.                                                                                       |
 
-`proto config` with no subcommand, `--help`, or `-h` lists settings. The `--json` flag is accepted by `list`, `get`, `set`, and `reset`.
+`proto config` with no subcommand lists settings; `--help` and `-h` show command help. The `--json` flag is accepted by `list`, `get`, `set`, and `reset`.
 
 ### Value parsing
 
@@ -113,7 +115,7 @@ Environment variables are **not** a single settings layer. Each is read by the f
 | `PI_TINY_DTYPE`         | `providers.tinyModelDtype`  | ONNX precision for local tiny models.                                                             |
 | `PROTO_AUTH_BROKER_URL`   | `auth.broker.url`           | Env value takes precedence over config.                                                           |
 | `PROTO_AUTH_BROKER_TOKEN` | `auth.broker.token`         | Env value takes precedence over config.                                                           |
-| `PI_CODING_AGENT_DIR`   | (relocates agent dir)       | Moves `config.yml`, `agent.db`, and the whole agent base.                                         |
+| `PI_CODING_AGENT_DIR`   | (relocates agent dir)       | Moves `config.yml`, `agent.db`, and the whole agent base for the default profile.                  |
 | `PI_CONFIG_FILES`       | CLI config overlays         | Platform path-list (`:` on Unix, `;` on Windows); files load in order before `--config` overlays. |
 
 Provider API keys are resolved separately (stored auth, OAuth, `models.yml`, environment, and `.env` files); see [Providers](./providers.md) and the full [Environment variables](./environment-variables.md) reference.
@@ -151,7 +153,7 @@ bashInterceptor:
       message: "Use the read tool instead."
 ```
 
-The named replacement tool must be available in the current session or the interceptor does not block the Bash call. For the full routing semantics, including compound-command behavior and ordering, see [the Bash tool documentation](tools/bash.md#optional-interception-blocked-command-path).
+The named replacement tool must be available in the current session or the interceptor does not block the Bash call. For the full routing semantics, including compound-command behavior and ordering, see [the Bash tool documentation](tools/bash.md#dedicated-tool-routing).
 
 ### Worked example: global vs. project
 
@@ -264,7 +266,7 @@ Only string values are kept; malformed scoped entries are ignored. Path scoping 
 | Entry kind        | Example ids                                                                        | Effect                                                                                                                                                         |
 | ----------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Model providers   | `anthropic`, `openai`, `google`, `groq`, `ollama`, `openrouter`                    | Removes those backends from model selection, even when credentials are available. See [Providers](./providers.md).                                             |
-| Discovery sources | `native`, `claude`, `codex`, `gemini`, `github`, `opencode`, `cursor`, `agents-md` | Stops that source from contributing context files, MCP servers, commands, skills, hooks, tools, prompts, or settings. See [Context files](./context-files.md). |
+| Discovery sources | `native`, `claude`, `codex`, `gemini`, `github`, `opencode`, `cursor`, `agents`, `agents-md` | Stops that source from contributing context files, MCP servers, commands, skills, hooks, tools, prompts, or settings. See [Context files](./context-files.md). |
 
 Most provider-control use cases list model provider ids. Disabling the `claude` discovery source is different from disabling the `anthropic` model provider — one stops Claude-format config discovery, the other stops the Anthropic model backend.
 
@@ -289,7 +291,7 @@ The catalog below highlights common settings; it is not the complete schema. `pr
 
 ### Models
 
-`modelRoles`, `modelTags`, and `cycleOrder` work together to define the models you can switch between. Role values may carry a thinking suffix (`:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`).
+`modelRoles`, `modelTags`, and `cycleOrder` work together to define the models you can switch between. Role values may carry a thinking suffix (`:inherit`, `:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`).
 
 ```yaml
 modelRoles:
@@ -361,7 +363,7 @@ thinkingBudgets:
 
 | Key                               | Type    | Default | Values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | --------------------------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultThinkingLevel`            | enum    | `high`  | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `auto`. Override per run with `--thinking`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `defaultThinkingLevel`            | enum    | `high`  | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Override per run with `--thinking`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `hideThinkingBlock`               | boolean | `false` | Hide thinking blocks in output. `--hide-thinking` sets it for the run (display only).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `thinkingBudgets.minimal`         | number  | `1024`  | Token budget for the `minimal` level.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `thinkingBudgets.low`             | number  | `2048`  | Token budget for `low`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -440,7 +442,7 @@ providers:
 | `retry.modelFallback`                    | boolean | `true`            | Fall back to another model when one is unavailable. Online session titles also walk the tiny/commit/smol fallback chains, then the session model's own chain.                                                                                                                                                                                                                                                                                                                               |
 | `retry.fallbackChains`                   | record  | `{}`              | Maps roles, model selectors, or `provider/*` wildcards to ordered fallback selectors. Keys containing `/` are model-oriented and win over roles: `provider/model-id` matches that exact model, `provider/*` matches every model of the provider. A `provider/*` _entry_ keeps the failing model's id and swaps the provider. An entry may carry a thinking suffix (`provider/model:low`, `:max`, `:off`) to pin that fallback's effort; a bare entry inherits the failing turn's effort (edit it with `t` on the fallback row in `/model`). The `default` chain covers every assigned role without its own chain. Unknown models/providers or malformed chains are reported as config warnings at startup. |
 | `retry.fallbackRevertPolicy`             | enum    | `cooldown-expiry` | `cooldown-expiry` returns to the primary model once its suppression window ends; `never` stays on the fallback until switched manually.                                                                                                                                                                                                                                                                                                                                                     |
-| `providers.anthropic.serverSideFallback` | boolean | `false`           | Opt in to Anthropic's `server-side-fallback-2026-06-01` beta. Only direct `anthropic` provider requests using the `anthropic-messages` API for Claude Fable or Mythos models are eligible. On an Anthropic safety-classifier block, the provider may retry server-side with `claude-opus-4-8`; every other provider, API, and model is unaffected.                                                                                                                                          |
+| `providers.anthropic.serverSideFallback` | boolean | `false`           | Opt in to Anthropic's `server-side-fallback-2026-06-01` beta. Only direct `anthropic` provider requests using the `anthropic-messages` API for Claude Fable 5 or Mythos 5 models are eligible. On an Anthropic safety-classifier block, the provider may retry server-side with `claude-opus-5-5`; every other provider, API, and model is unaffected.                                                                                                                                          |
 
 When the active model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching roles when the session is not on those roles. It skips models whose selectors are still cooling down and switches for the rest of the turn. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
 
@@ -538,8 +540,6 @@ read:
     prose: false
 
 readLineNumbers: false
-edit:
-  blockAutoGenerated: true
 ```
 
 | Key                       | Type    | Default    | Notes                                             |
@@ -578,7 +578,7 @@ compaction:
 | `contextPromotion.enabled`    | boolean | `false`                                  | Promote to the active model's explicit `contextPromotionTarget` on context overflow.                                                                                                                                                      |
 | `compaction.enabled`          | boolean | `true`                                   | Automatic conversation compaction.                                                                                                                                                                                                        |
 | `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request.                                                                                                                                                  |
-| `compaction.methodOrder`      | array   | `remote`                                 | Ordered fallbacks used when Blackhole declines to compact. `remote` uses provider-native OpenAI-compatible server compaction or the configured remote endpoint; unavailable or failed methods advance. |
+| `compaction.methodOrder`      | array   | `["remote"]`                            | Ordered fallbacks used when Blackhole declines to compact. `remote` uses provider-native OpenAI-compatible server compaction or the configured remote endpoint; unavailable or failed methods advance. |
 | `compaction.thresholdPercent` | number  | `-1`                                     | Percent-of-context trigger; `-1` uses the effective window minus its reserve (normally 85% utilization).                                                                                                                                         |
 | `compaction.thresholdTokens`  | number  | `-1`                                     | Fixed token trigger when `> 0`; used exactly as written.                                                                                                                                                                                  |
 | `compaction.reserveTokens`    | number  | _(unset)_                                | Absolute reserve floor. When unset, the effective reserve is the larger of `16384` and 15% of the context window; if that default would leave no practical small-window budget, it falls back to the 15% reserve.                         |
@@ -643,7 +643,7 @@ The `cost` segment shows recorded session costs. For an active provider/model wi
 | `interruptMode`        | enum    | `immediate`     | `immediate`, `wait`.                                                                                    |
 | `doubleEscapeAction`   | enum    | `tree`          | `branch`, `tree`, `none`.                                                                               |
 | `autoResume`           | boolean | `false`         | Auto-resume the most recent session in the cwd.                                                         |
-| `ask.timeout`          | number  | `0`             | Seconds before an `ask` prompt times out; `0` = no timeout. (Legacy ms values are migrated to seconds.) |
+| `ask.timeout`          | number  | `0`             | Seconds before an `ask` prompt times out; `0` = no timeout. (Legacy ms values are rounded after dividing by 1000.) |
 | `ask.notify`           | enum    | `on`            | `on`, `off`.                                                                                            |
 
 ### Providers and services
@@ -733,7 +733,7 @@ Applied whenever raw settings are loaded (global, project, overlays, and runtime
 | Old                                                                      | New                                                                                                          |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `queueMode`                                                              | `steeringMode`                                                                                               |
-| `ask.timeout` in milliseconds (value `> 1000`)                           | seconds (divided by 1000)                                                                                    |
+| `ask.timeout` in milliseconds (value `> 1000`)                           | seconds (rounded after dividing by 1000)                                                                    |
 | flat `theme: "<name>"` string                                            | `theme.dark` / `theme.light` (slot chosen by luminance; built-in `light`/`dark` are dropped to use defaults) |
 | `lastChangelogVersion`                                                   | moved to a marker file and stripped from `config.yml`                                                        |
 

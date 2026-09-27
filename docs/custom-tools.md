@@ -49,7 +49,7 @@ CustomTool.execute(toolCallId, params, onUpdate, ctx, signal)
    - Claude config (`~/.claude/tools`, `.claude/tools`)
    - Codex config (`~/.codex/tools`, `.codex/tools`)
    - Claude marketplace plugin cache provider
-2. Installed plugin manifests (`~/.proto/plugins/node_modules/*` via plugin loader)
+2. Enabled installed plugin manifests via the plugin loader (user `~/.proto/plugins/node_modules/*`; project plugin roots use `.proto/plugins/node_modules/*`)
 3. Explicit configured paths passed to the loader
 
 ### Important behavior
@@ -109,7 +109,7 @@ const factory: CustomToolFactory = (pi) => ({
 export default factory;
 ```
 
-Parameter schemas may use the Zod-compatible omptype builder (`pi.zod`), native omptype builder (`pi.arktype`), or legacy-compatible TypeBox shim (`pi.typebox`) and flow through the shared validation/wire pipeline.
+Parameter schemas may use the Zod-compatible omptype builder (`pi.zod`) or native omptype builder (`pi.arktype`) and flow through the shared validation/wire pipeline.
 
 Factory return type:
 
@@ -141,7 +141,7 @@ The loader starts with a no-op UI context and requires host code to call `setUIC
 execute(toolCallId, params, onUpdate, ctx, signal);
 ```
 
-- `params` is statically typed from its omptype or TypeBox schema via `Static<TParams>`.
+- `params` is statically typed from its omptype schema via `Static<TParams>`.
 - Runtime argument validation happens before execution in the agent loop.
 - `onUpdate` emits partial results for UI streaming.
 - `ctx` includes `sessionManager`, `modelRegistry`, current `model`, `isIdle()`, `hasQueuedMessages()`, `abort()`, and optional `settings`, `fetch`, and `localProtocolOptions`.

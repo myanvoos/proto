@@ -91,7 +91,7 @@ For each discovered server in `connectServers()`:
 7. wire HTTP OAuth refresh and transport `onClose` reconnect handling,
 8. call `listTools(connection, { signal })`,
 9. cache tool definitions (`MCPToolCache.set`) best-effort,
-10. best-effort load resources, resource templates, prompts, and subscriptions after tools load.
+10. best-effort load resources, resource templates, and prompts after tools load; SDK sessions enable resource subscriptions only when `mcp.notifications` is true (default `false`).
 
 `connectToServer()` behavior (`src/mcp/client.ts`):
 
@@ -221,7 +221,7 @@ Operationally:
 
 Top-level sessions own managers they create. `AgentSession.dispose()` disconnects that owned manager with a 3-second cleanup timeout and logs cleanup failure; a subagent/session given `options.mcpManager` borrows the parent manager and does not disconnect it. `/mcp reload` deliberately reuses the manager object after `disconnectAll`, so installed callbacks/listeners remain available for the next discovery cycle.
 
-`dispose()` is terminal: it also releases callbacks/listeners and prevents later discovery, connects, or reconnects from restarting work. Parking a worker with an owned manager cancels its pending handshakes through session disposal; messaging that worker reconstructs the session and its owned manager.
+`MCPManager.dispose()` is terminal: it also releases callbacks/listeners and prevents later discovery, connects, or reconnects from restarting work. Parking a worker with an owned manager cancels its pending handshakes through session disposal; messaging that worker reconstructs the session and its owned manager.
 
 ## Failure modes and guarantees
 
@@ -234,7 +234,7 @@ Top-level sessions own managers they create. `AgentSession.dispose()` disconnect
 | `tools/list` still pending at startup without cache  | No tools at startup; background continuation registers them via `#onToolsChanged` when ready                              | Best-effort late registration  |
 | Late background tool-load failure                    | Logged after startup gate                                                                                                 | Best-effort logging            |
 | Runtime dropped transport                            | Manager attempts reconnect; stale tools remain while reconnecting and future calls may retry once or fail with MCP errors | Best-effort automatic recovery |
-| More than 5 reconnect invocations within 30s         | Circuit breaker closes/removes the stale connection but leaves tools registered; manual reconnect resets the history      | Automatic reconnect suspended  |
+| More than 5 reconnect attempts within 30s             | Circuit breaker closes/removes the stale connection but leaves tools registered; manual reconnect resets the history      | Automatic reconnect suspended  |
 | Owning session disposal                              | Owned manager disconnect is awaited for up to 3s; failure is logged                                                       | Bounded best-effort cleanup    |
 
 ## Public API surface

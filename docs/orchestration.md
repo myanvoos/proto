@@ -8,7 +8,7 @@ Every top-level coding agent is an **Orchestrator**. It keeps its ordinary codin
 - `terminate` tombstones a worker, cancels its turn, and discards its queued input.
 - `list` returns the owned worker roster and live activity; `scope:"visible"` lists reachable peers instead.
 
-Every worker receives the `bash` tool at every task depth. Delegated agents therefore use the same shell and persistent Python/JavaScript kernel-cell surface as the main agent; each worker still owns a separate session and kernel namespace. `isolated: true` is a one-turn terminal worker that uses the existing isolation apply/capture policy and an independent kernel namespace. Recursive workers receive orchestration controls only while `orchestrator.maxRecursionDepth` permits another level.
+Worker tool availability follows the agent definition: when `bash` is enabled, delegated agents use the same `bash` interface and persistent Python/JavaScript kernel-cell surface as the main agent; each worker still owns a separate session and kernel namespace. The bundled generic `worker` has full capabilities, while specialized/read-only agents may omit `bash`. `isolated: true` is a one-turn terminal worker that uses the existing isolation apply/capture policy and an independent kernel namespace. Recursion caps gate worker-control operations (`spawn`/`send`), not peer messaging or job control.
 
 The bundled generic agent is `worker` (`@worker` model role); the fast mechanical agent is `lightbot`. Agent discovery and precedence are documented in [worker-agent-discovery.md](./worker-agent-discovery.md).
 
@@ -18,7 +18,7 @@ Worker identity and lifecycle use immutable ids in `AgentRegistry` and `AgentLif
 
 Turn numbers are reserved when a turn is accepted, including while it waits for concurrency capacity. Cancelling a queued turn does not recycle its number. Wait receipts retain the watched turn and job identity even if a queued follow-up starts before delivery; terminal receipts identify the latest started turn, and accepted-but-not-started queued inputs are discarded.
 
-A worker running a peer-initiated turn remains addressable by its parent. `fleet` `send` accepts the parent's next turn and waits for the existing streaming turn to settle before starting it; peer activity alone never makes the worker terminal.
+When a worker is running a peer-initiated turn, it remains addressable by its parent. `fleet` `send` steers that running turn or queues the next parent-owned turn until it settles; peer activity alone never makes the worker terminal.
 
 If a completed turn cannot persist its lifecycle settlement, the worker becomes terminal rather than remaining falsely active or accepting follow-ups that cannot run. Queued messages are discarded, the storage error is returned with the failed job, and the worker transcript remains available through its recovery paths. Restore scans ignore transcript names with empty, `.` or `..` worker ids, preventing self- and parent-directory recursion.
 
@@ -32,8 +32,8 @@ A parked worker keeps only its spawn-time blueprint (parent-owned inputs: model,
 
 If a worker owns its MCP manager rather than sharing the parent's, parking also cancels pending MCP connection attempts. A stalled handshake no longer keeps the disposed session alive until the MCP timeout, even when that timeout is disabled. Shared parent MCP connections remain available to other workers.
 
-`orchestrator.maxConcurrency` remains **32**. Lowering it limits simultaneous running turns, while shortening the idle TTL reduces how long completed workers retain live resources. These address different parts of the memory footprint. Neither setting truncates persisted conversation history, and releasing objects does not guarantee that the allocator immediately returns resident pages to the operating system.
+`orchestrator.maxConcurrency` defaults to **32** (`0` remains unlimited). Lowering it limits simultaneous running turns, while shortening the idle TTL reduces how long completed workers retain live resources. These address different parts of the memory footprint. Neither setting truncates persisted conversation history, and releasing objects does not guarantee that the allocator immediately returns resident pages to the operating system.
 
-See [memory profiling](./memory-profiling.md) for isolated workloads, process-memory accounting, and measurement limitations.
+See [interactive memory and resource limits](./interactive-memory.md) for retention bounds, process-memory accounting, and measurement limitations.
 
 `fleet` `message` is peer communication rather than worker control: delivery is not evidence that a turn started, and it never returns a turn receipt. Executions, supervised processes, and watches belong to [`jobs`](./tools/jobs.md); lanes and interpreters belong to [`context`](./tools/context.md).

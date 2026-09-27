@@ -52,7 +52,7 @@
 ## Limits & Caps
 - Availability requires `autolearn.enabled = true`.
 - Names are trimmed and lowercased, then must match `[a-z0-9][a-z0-9-]{0,63}`.
-- Descriptions are sanitized to one line and stripped of control/format characters, angle brackets, backticks, and repeated tildes.
+- Descriptions are sanitized to one line: control/format characters become spaces; angle brackets and backticks are removed; runs of repeated tildes collapse to a single tilde.
 - Bodies are trimmed and must remain non-empty; generated frontmatter contains only normalized `name` and sanitized `description`.
 - Final managed `SKILL.md` content is capped at `64_000` UTF-8 bytes, including frontmatter and description.
 - The managed-skills root, skill directory, and file are checked to prevent symlink escapes; update also rejects non-regular or multiply hard-linked files.
@@ -65,7 +65,7 @@
 - Oversized final files throw `Managed skill is <bytes> bytes; the limit is 64000.`
 - `create` on an existing managed file and `update`/`delete` on a missing target throw action-specific helper errors.
 - Authored-name shadowing on `create` is a normal tool result with `isError: true` and `details.shadowed = true`; no file is written.
-- Unsafe roots, symlinked directories/files, non-regular files, and multiply hard-linked update files throw safety errors.
+- Unsafe roots and symlinked skill directories/files are rejected; update also rejects non-regular or multiply hard-linked files.
 
 ## Notes
 - Managed skills are generated under `<agent-dir>/managed-skills` and never edit authored skills.

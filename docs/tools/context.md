@@ -40,11 +40,11 @@ A lane is a bash `lane` value: its FIFO command queue, its persistent shell, and
   2. cancels every reservation accepted before the barrier: the admitted command is aborted, queued ones are removed and never run (their result is `cancelled` with `Command cancelled: lane <lane> was reset by context control`);
   3. force-closes the lane's kernels (cause `reset`, so an interrupted cell reports `was reset`) while keeping their environments;
   4. waits, bounded, for the cancelled command to hand back its slot, then discards the lane's live, quarantined and retained shells;
-  5. lifts the barrier. The next command reports `<shell> state lost: lane <lane> was reset by context control`; the next cell starts a new kernel generation and reports `<kernel> state lost`.
+  5. lifts the barrier. If a shell was discarded, its next command reports `<shell> state lost: lane <lane> was reset by context control`; for each released kernel, the next cell starts a new generation and reports `<kernel> state lost` once a previous generation was observed.
 
   Result: `cancelled: {active, queued}`, `shellsDiscarded`, `kernelsReleased`, `retained`.
 - `close` performs the same teardown but also forgets the lane's kernel environments (`forgotten`), and it refuses a lane with running/queued commands or a busy kernel unless `force: true`. The refusal happens before cancellation or teardown.
-- Only one lifecycle operation owns a lane's kernels at a time; a conflicting kernel operation in progress rejects the lane control before side effects (an in-flight kernel `start` is interrupted, as with kernel `close`/`reset`).
+- Lane control reserves each lane kernel's lifecycle slot: an in-flight kernel `reset`/`close` rejects the lane control before side effects, while an in-flight `start` is interrupted.
 
 ### Self-control
 
