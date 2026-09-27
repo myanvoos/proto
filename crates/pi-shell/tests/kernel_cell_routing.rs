@@ -84,8 +84,14 @@ async fn kernel_requests_preserve_interpreter_visible_arguments() {
 		let (addr, host) = bridge("{\"t\":\"x\",\"c\":0}\n");
 		let (result, output) = run(command, &addr, "/usr/bin:/bin").await;
 		let request = host.join().expect("bridge request");
-		let argv = request["invocation"]["argv"].as_array().expect("invocation argv");
-		let arguments = if request["lang"] == "py" { &argv[..] } else { &argv[1..] };
+		let argv = request["invocation"]["argv"]
+			.as_array()
+			.expect("invocation argv");
+		let arguments = if request["lang"] == "py" {
+			&argv[..]
+		} else {
+			&argv[1..]
+		};
 		assert_eq!(arguments, expected, "{command}");
 		assert_eq!(request["invocation"]["filename"].as_str(), filename);
 		assert_eq!(result.exit_code, Some(0), "{output:?}");
