@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.3] - 2026-09-28
+
 ### Breaking Changes
 
 - The `anthropic` provider now uses the official Claude Agent SDK; forced tool choice and low-level Messages transport controls are no longer supported, and background cache warming is removed

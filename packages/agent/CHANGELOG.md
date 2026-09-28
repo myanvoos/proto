@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.3] - 2026-09-28
+
 ### Changed
 
 - SDK-backed Anthropic models use configured host memory/compaction instead of the Messages server-compaction beta
