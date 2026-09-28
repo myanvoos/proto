@@ -811,22 +811,19 @@ test("chained protolens help calls render one status line per device, not a docs
 	});
 });
 
-test("protolens mixed with other commands renders every command in execution order", async () => {
+test("protolens mixed with other commands renders the device card and a shell card for the rest", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `cd /tmp && protolens probe --value one; echo "exit=$?"`;
+		const command = `protolens probe --value one; echo after`;
 		const result = await bash.execute("protolens-composite-mixed", { command });
 		expect(result.isError).not.toBe(true);
-		const lines = renderBashResult(result, command, false, session)
-			.split("\n")
-			.map(line => line.trim())
-			.filter(Boolean);
-		expect(lines).toEqual([
-			"$ cd /tmp",
-			"▪ protolens://probe: --value one",
-			"probe:one",
-			'$ echo "exit=$?"',
-			"exit=0",
-		]);
+		const rendered = renderBashResult(result, command, false, session);
+		const lines = rendered.split("\n").map(line => line.trim());
+		const device = lines.indexOf("▪ protolens://probe: --value one");
+		expect(lines[device + 1]).toBe("probe:one");
+		// The shell card is the ordinary bash card: the whole command, and only what the rest printed.
+		expect(lines.slice(device + 2)).toContain(`▏  $ ${command}`);
+		expect(lines).toContain("▏  after");
+		expect(rendered.split("probe:one").length - 1).toBe(1);
 	});
 });
 
@@ -847,16 +844,27 @@ test("chained protolens execute calls render one line per dispatch with their ou
 	});
 });
 
-test("a piped protolens call shows the device's own output, then what the pipe made of it", async () => {
+test("a piped protolens call shows the device's own output, and the shell card what the pipe made of it", async () => {
 	await withBash(async (bash, _state, session) => {
 		const command = `protolens probe '{"value":"one"}' | tr a-z A-Z`;
 		const result = await bash.execute("protolens-composite-piped", { command });
 		expect(result.isError).not.toBe(true);
-		const lines = renderBashResult(result, command, false, session)
-			.split("\n")
-			.map(line => line.trim())
-			.filter(Boolean);
-		expect(lines).toEqual(["▪ protolens://probe: --value one", "probe:one", "$ tr a-z A-Z", "PROBE:ONE"]);
+		const rendered = renderBashResult(result, command, false, session);
+		expect(rendered).toContain("protolens://probe: --value one");
+		expect(rendered).toContain("probe:one");
+		expect(rendered).toContain(`$ ${command}`);
+		expect(rendered).toContain("PROBE:ONE");
+	});
+});
+
+test("a command whose only output is the device's renders just the device card", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `printf '{"value":"fed"}' | protolens probe --json -`;
+		const result = await bash.execute("protolens-fed", { command });
+		const rendered = renderBashResult(result, command, false, session);
+		expect(rendered).toContain("protolens://probe: --value fed");
+		expect(rendered).toContain("probe:fed");
+		expect(rendered).not.toContain("$ printf");
 	});
 });
 
@@ -866,10 +874,10 @@ test("a long protolens loop collapses to the first commands and expands to all o
 		const result = await bash.execute("protolens-long-loop", { command });
 		const collapsed = renderBashResult(result, command, false, session);
 		expect(collapsed).not.toContain("probe:v10");
-		expect(collapsed).toContain("more commands");
+		expect(collapsed).toContain("more protolens calls");
 		const expanded = renderBashResult(result, command, true, session);
 		expect(expanded).toContain("probe:v10");
-		expect(expanded).not.toContain("more commands");
+		expect(expanded).not.toContain("more protolens calls");
 	});
 });
 

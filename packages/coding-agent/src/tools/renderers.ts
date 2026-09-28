@@ -4,7 +4,7 @@ import { goalToolRenderer } from "../goals/tools/goal-tool";
 import type { Theme } from "../modes/theme/theme";
 import { webSearchToolRenderer } from "../web/search/render";
 import { askToolRenderer } from "./ask";
-import { bashToolRenderer } from "./bash";
+import { type BashToolDetails, bashCardOutput, bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
 import { checklistToolRenderer } from "./checklist";
 import { computerToolRenderer } from "./computer-renderer";
@@ -74,23 +74,44 @@ function getBashProtoRenderer(): ToolRenderer {
 			uiTheme: Theme,
 			args?: unknown,
 		): Component {
-			const context = (options as { renderContext?: { resolveXdevTool?: (name: string) => unknown } }).renderContext;
+			const render = bashToolRenderer.renderResult as (
+				r: typeof result,
+				o: typeof options,
+				t: Theme,
+				a?: unknown,
+			) => Component;
+			const context = options.renderContext as
+				| { resolveXdevTool?: (name: string) => unknown; output?: string }
+				| undefined;
+			const details = result.details as (ProtolensBashDetails & BashToolDetails) | undefined;
+			const shellOutput = context?.output ?? result.content.find(block => block.type === "text")?.text ?? "";
 			const delegated = renderProtolensResult(
-				result.details as ProtolensBashDetails | undefined,
+				details,
 				result,
 				options,
 				uiTheme,
 				context?.resolveXdevTool as Parameters<typeof renderProtolensResult>[4],
 				args,
+				{
+					output: shellOutput,
+					render: output => {
+						// Nothing left to show unless the command failed and no device card says why.
+						const failureShown = details?.deviceResults?.some(record => record.isError) === true;
+						const visible =
+							bashCardOutput(output, details).text.trim().length > 0 ||
+							(result.isError === true && !failureShown);
+						if (!visible) return undefined;
+						const text = [{ type: "text", text: output }];
+						return render(
+							{ ...result, content: text },
+							{ ...options, renderContext: { ...context, output } },
+							uiTheme,
+							args,
+						);
+					},
+				},
 			);
-			if (delegated) return delegated;
-			const render = bashToolRenderer.renderResult as (
-				r: typeof result,
-				o: RenderResultOptions,
-				t: Theme,
-				a?: unknown,
-			) => Component;
-			return render(result, options, uiTheme, args);
+			return delegated ?? render(result, options, uiTheme, args);
 		},
 	};
 	return bashProtoRendererInstance;

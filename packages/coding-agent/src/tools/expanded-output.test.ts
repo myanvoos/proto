@@ -87,7 +87,10 @@ const RENDERERS: Array<{ name: string; render: (expanded: boolean) => string }> 
 				],
 				execution: { stages: [stage(0, "protolens alpha", "first\n"), stage(1, "protolens beta", BODY)] },
 			};
-			return renderText(renderProtolensResult(details, TEXT_RESULT, { expanded, isPartial: false }, theme));
+			const shell = { output: "", render: () => undefined };
+			return renderText(
+				renderProtolensResult(details, TEXT_RESULT, { expanded, isPartial: false }, theme, undefined, {}, shell),
+			);
 		},
 	},
 

@@ -483,6 +483,18 @@ function stripBackgroundNotice(text: string, async: BashToolDetails["async"] | u
 	return stripTrailingNotice(text, formatBackgroundNotice(async.jobId));
 }
 
+/** What a bash card shows as output: the result text without the notices the card renders itself. */
+export function bashCardOutput(
+	rawOutput: string,
+	details: BashToolDetails | undefined,
+): { text: string; artifactId?: string } {
+	const withoutBackground = stripBackgroundNotice(rawOutput, details?.async);
+	const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
+	const withoutExit = stripExitCodeNotice(strippedOutput, details?.exitCode);
+	const withoutWall = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
+	return stripRawOutputArtifactNotice(withoutWall);
+}
+
 export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSchemaWithAsync, BashToolDetails> {
 	readonly name = "bash";
 	readonly label = "Bash";
@@ -2615,11 +2627,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					) {
 						return cachedLines;
 					}
-					const withoutBackground = stripBackgroundNotice(rawOutput, details?.async);
-					const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
-					const withoutExit = stripExitCodeNotice(strippedOutput, details?.exitCode);
-					const withoutWall = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
-					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
+					const rawOutputArtifact = bashCardOutput(rawOutput, details);
 					const output = rawOutputArtifact.text;
 					const displayOutput = output.trimEnd();
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;

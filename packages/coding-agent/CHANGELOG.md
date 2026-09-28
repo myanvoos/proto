@@ -89,7 +89,7 @@
 
 ### Fixed
 
-- Bash commands that run `protolens` render as their commands in execution order: each device call as its own card with its own output, other commands as `$ command` with theirs, so chains, pipes, redirects, heredocs, and loops no longer collapse into identical headers over a merged preview
+- Bash commands that run `protolens` render each device call as its own card with its own output, and the rest of the command as the usual bash card showing only what the other commands printed (omitted when they printed nothing), so chains, pipes, heredocs, and loops no longer collapse into identical headers over a merged preview
 - Protolens cards show the typed invocation on every call (`protolens://read: package.json:1-4`), mark failed, rejected-flag, and invalid-argument calls with the error icon and the device's own message, and align with other tool cards
 - Bare `protolens` renders the device listing as a name/summary table instead of raw text, and `protolens <tool> ?` cards list flags for active top-level tools like `read`
 - Advisors can use the `read` tool they are granted by default; the advisor settings screen no longer lists `grep`/`glob` as defaults

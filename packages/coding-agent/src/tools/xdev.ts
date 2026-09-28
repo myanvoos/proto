@@ -895,29 +895,6 @@ function deviceTextSection(
 	};
 }
 
-/** A non-protolens stage of the command: `$ command`, its exit status when nonzero, then its output. */
-function shellStageSection(stage: ExecutionStageMetadata, options: RenderResultOptions, theme: Theme): TextSection {
-	return contentWidth => {
-		const [first = "", ...rest] = sanitizeText(stage.command ?? "")
-			.trim()
-			.split("\n");
-		const command = replaceTabs(rest.length > 0 || stage.commandTruncated ? `${first} …` : first);
-		const exit =
-			stage.exitCode !== undefined && stage.exitCode !== 0
-				? theme.fg("warning", `${theme.sep.dot}exit ${stage.exitCode}`)
-				: "";
-		const commandWidth = Math.max(10, contentWidth - 2 - Bun.stringWidth(exit));
-		const lines = [`${theme.fg("dim", "$")} ${theme.fg("muted", truncateToWidth(command, commandWidth))}${exit}`];
-		const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
-		const body = formatOutputLines(stageOutput(stage), maxLines, contentWidth, theme);
-		lines.push(...body.lines);
-		if (options.expanded && (stage.stdout?.truncated || stage.stderr?.truncated)) {
-			lines.push(`  ${theme.fg("dim", "… output beyond the stage capture limit is not shown")}`);
-		}
-		return { lines, hidden: body.hidden };
-	};
-}
-
 function stageOutput(stage: ExecutionStageMetadata): string {
 	return `${stage.stdout?.text ?? ""}${stage.stderr?.text ?? ""}`;
 }
@@ -1065,18 +1042,46 @@ export interface ProtolensBashDetails {
 }
 
 /**
- * The card for a bash command that ran protolens devices: each stage in execution order, devices as
- * their own cards with their own output, other commands as `$ command` and their output. `undefined`
- * keeps the shell card: no dispatch ran, or the shell outcome (timeout, background job, file writes)
- * is what matters.
+ * The bash command with its device output taken out, so the shell card shows only what the other
+ * commands printed. A device's output is removed where it appears whole on its own lines, in stage
+ * order; output a pipe or substitution consumed never reached the shell output and stays out of it.
+ */
+function withoutDeviceOutput(shellOutput: string, deviceStages: readonly ExecutionStageMetadata[]): string {
+	let rest = shellOutput;
+	let cursor = 0;
+	for (const stage of deviceStages) {
+		// A truncated capture is only a prefix; removing it would leave the device's tail behind.
+		if (stage.stdout?.truncated || stage.stderr?.truncated) continue;
+		const output = sanitizeText(stageOutput(stage)).replace(/\n$/, "");
+		if (!output) continue;
+		let at = rest.indexOf(output, cursor);
+		while (at >= 0) {
+			const end = at + output.length;
+			if ((at === 0 || rest[at - 1] === "\n") && (end === rest.length || rest[end] === "\n")) break;
+			at = rest.indexOf(output, at + 1);
+		}
+		if (at < 0) continue;
+		rest = rest.slice(0, at) + rest.slice(at + output.length + (rest[at + output.length] === "\n" ? 1 : 0));
+		cursor = at;
+	}
+	return rest;
+}
+
+/**
+ * The card for a bash command that ran protolens devices: each device call as its own card with its
+ * own output, and the rest of the command as the ordinary shell card, which `renderShell` receives
+ * with the device output removed and may omit when nothing is left to show. `undefined` keeps the
+ * plain shell card: no dispatch ran, or the shell outcome (timeout, background job, file writes) is
+ * what matters.
  */
 export function renderProtolensResult(
 	details: ProtolensBashDetails | undefined,
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	options: RenderResultOptions,
 	theme: Theme,
-	resolveMounted?: (name: string) => Tool | undefined,
-	args?: unknown,
+	resolveMounted: ((name: string) => Tool | undefined) | undefined,
+	args: unknown,
+	shell: { output: string; render: (output: string) => Component | undefined },
 ): Component | undefined {
 	if (!details?.xdev || details.async || details.timedOut || details.mutatedPaths?.length) return undefined;
 	const stages = details.execution?.stages ?? [];
@@ -1086,32 +1091,32 @@ export function renderProtolensResult(
 		const dispatch = record.xdev as unknown as XdevDispatch;
 		devices.set(record.stageIndex, record.isError ? { ...dispatch, isError: true } : dispatch);
 	}
-	if (!options.isPartial && devices.size > 0 && stages.some(stage => devices.has(stage.index))) {
-		const parts: Array<Component | TextSection> = [];
-		for (const stage of stages) {
-			const dispatch = devices.get(stage.index);
-			if (!dispatch) {
-				parts.push(shellStageSection(stage, options, theme));
-				continue;
-			}
+	const deviceStages = stages.filter(stage => devices.has(stage.index));
+	if (!options.isPartial && deviceStages.length > 0) {
+		// Loops can run a device per iteration; collapsed cards show the first few calls.
+		const shown = options.expanded ? deviceStages : deviceStages.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS);
+		const cards = shown.map(stage => {
+			const dispatch = devices.get(stage.index) as XdevDispatch;
 			// A command that was only this device: the result is its output, media included, and uncapped.
 			const own =
 				stages.length === 1 && !dispatch.isError
 					? result
 					: { content: [{ type: "text", text: stageOutput(stage) }], isError: dispatch.isError };
-			parts.push(deviceSection(dispatch, own, options, theme, resolveMounted));
+			return deviceSection(dispatch, own, options, theme, resolveMounted);
+		});
+		const more = deviceStages.length - shown.length;
+		if (more > 0) {
+			cards.push(() => ({
+				lines: [theme.fg("dim", `… ${more} more protolens ${pluralize("call", more)}`)],
+				hidden: true,
+			}));
 		}
-		// Loops can run a device per iteration; collapsed cards show the first few commands.
-		const shown = options.expanded ? parts : parts.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS);
-		const more = parts.length - shown.length;
-		const omitted = stages.reduce((sum, stage) => sum + (stage.omittedAfter ?? 0), 0);
-		const notes = [
-			...(more > 0 ? [`… ${more} more ${pluralize("command", more)}`] : []),
-			...(omitted > 0 ? [`… ${omitted} more ${pluralize("command", omitted)} not recorded`] : []),
-		];
-		if (notes.length === 0) return stackSections(shown, options, theme);
-		const footer: TextSection = () => ({ lines: notes.map(note => theme.fg("dim", note)), hidden: more > 0 });
-		return stackSections([...shown, footer], options, theme);
+		const shellCard = stages.length > 1 ? shell.render(withoutDeviceOutput(shell.output, deviceStages)) : undefined;
+		if (!shellCard) return stackSections(cards, options, theme);
+		// The shell card sits where the command's other work starts: after devices that ran before it.
+		const firstShell = stages.find(stage => stage.parent === undefined && !devices.has(stage.index));
+		const before = firstShell ? shown.filter(stage => stage.index < firstShell.index).length : cards.length;
+		return stackSections([...cards.slice(0, before), shellCard, ...cards.slice(before)], options, theme);
 	}
 	// No stage records (PTY or client terminal runs) or still streaming: only a bare call maps cleanly.
 	const command = (args as { command?: unknown } | undefined)?.command;
