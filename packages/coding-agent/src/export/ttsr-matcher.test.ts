@@ -39,6 +39,35 @@ test("an unclassifiable buffer fails a region-constrained condition closed", asy
 	expect(await run({ regex: "\\bas any\\b" }, { text: TS_FILE, source: "tool" })).toBeDefined();
 });
 
+test("shell predicates distinguish language and routing while preserving Unicode evidence offsets", async () => {
+	const input = {
+		text: "printf '🙂'\nnode -e 'console.log(1)'\nuv run python -c 'print(2)'\nbun -e 'console.log(3)'",
+		source: "tool",
+		lang: "sh",
+	} satisfies MatchInput;
+	const spec = { shell: { language: "js", kernel: true }, count: 2 };
+	expect((await run(spec, input))?.snippets).toEqual([
+		{ line: 2, text: "node -e 'console.log(1)'" },
+		{ line: 4, text: "bun -e 'console.log(3)'" },
+	]);
+	expect(await run({ shell: { language: "js", kernel: false } }, input)).toBeUndefined();
+	expect(await run(spec, { ...input, lang: "py" })).toBeUndefined();
+});
+
+test("malformed shell routing conditions are rejected rather than silently matching", () => {
+	for (const shell of [
+		"python",
+		{ language: "ruby", kernel: false },
+		{ language: "python" },
+		{ language: "python", kernel: "false" },
+		{ language: "python", kernel: false, unknown: true },
+	]) {
+		const compiled = compileMatchProgram({ shell }, "bad-shell");
+		expect(compiled.program).toBeUndefined();
+		expect(compiled.errors.join(" ")).toContain("match.shell");
+	}
+});
+
 test("all/not expresses an escape hatch that suppresses the rule", async () => {
 	const spec = {
 		all: [{ regex: "\\bas any\\b", in: "code" }, { not: { regex: "@ts-expect-error|biome-ignore" } }],

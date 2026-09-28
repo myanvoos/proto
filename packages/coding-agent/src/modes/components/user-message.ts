@@ -1,5 +1,6 @@
 import { type Component, Container, getWidthConfigEpoch, Markdown } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
+import { LocalProtocolHandler, type LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { attachmentSgr, collapseImageMarkers, renderPlaceholders } from "../composer-attachments";
 import { imageReferenceHyperlink } from "../image-references";
@@ -23,7 +24,12 @@ export class UserMessageComponent extends Container {
 		this.#zoneLines = undefined;
 	}
 
-	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
+	constructor(
+		text: string,
+		synthetic = false,
+		imageLinks?: readonly (string | undefined)[],
+		localProtocolOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ?? null,
+	) {
 		super();
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
 		const keywordReset = theme.getFgAnsi("userMessageText") || "\x1b[39m";
@@ -44,7 +50,7 @@ export class UserMessageComponent extends Container {
 		// No vertical padding: the transcript separates blocks with one blank row,
 		// and padding rows carrying the OSC 133 zone marks cannot be trimmed as
 		// blank, which doubled the gap around every prompt.
-		const md = new Markdown(text, 0, 0, getMarkdownTheme(), {
+		const md = new Markdown(text, 0, 0, getMarkdownTheme(localProtocolOptions), {
 			color,
 		});
 		md.setIgnoreTight(true);
@@ -85,6 +91,8 @@ export class CollapsedSyntheticMessageComponent implements Component {
 	constructor(
 		private readonly text: string,
 		private readonly imageLinks?: readonly (string | undefined)[],
+		private readonly localProtocolOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ??
+			null,
 	) {
 		this.#summary = summarizeSyntheticInput(text);
 	}
@@ -114,7 +122,8 @@ export class CollapsedSyntheticMessageComponent implements Component {
 	}
 
 	#renderExpanded(width: number): readonly string[] {
-		if (!this.#body) this.#body = new UserMessageComponent(this.text, true, this.imageLinks);
+		if (!this.#body)
+			this.#body = new UserMessageComponent(this.text, true, this.imageLinks, this.localProtocolOptions);
 		return [` ${this.#summaryRow(width)}`, ...this.#body.render(width)];
 	}
 

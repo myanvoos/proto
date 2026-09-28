@@ -11,6 +11,7 @@ import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
+import { LocalProtocolHandler } from "../internal-urls/local-protocol";
 import { Composer } from "../modes/composer";
 import { InteractiveMode } from "../modes/interactive-mode";
 import { initTheme } from "../modes/theme/theme";
@@ -19,7 +20,7 @@ import { AgentSession } from "../session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "../session/auth-storage";
 import { findMostRecentSession, resolveResumableSession } from "../session/session-listing";
 import { sessionArchivePath } from "../session/session-loader";
-import { SessionManager } from "../session/session-manager";
+import { artifactsDirectoryFor, SessionManager } from "../session/session-manager";
 
 interface RenderCommandArgs {
 	session?: string;
@@ -161,6 +162,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 
 	let session: AgentSession | undefined;
 	let mode: InteractiveMode | undefined;
+	let releaseLocalProtocol: (() => void) | undefined;
 	try {
 		await fs.copyFile(sourcePath, workingCopy);
 		try {
@@ -173,6 +175,11 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 			suppressBreadcrumb: true,
 		});
 		const openMs = performance.now() - openStart;
+		// The replay copy is disposable; clickable resources still belong to the source session.
+		releaseLocalProtocol = LocalProtocolHandler.setOverride({
+			getArtifactsDir: () => artifactsDirectoryFor(sourcePath),
+			getSessionId: () => sessionManager.getSessionId(),
+		});
 
 		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
 		const modelRegistry = new ModelRegistry(authStorage);
@@ -272,6 +279,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		} catch (err) {
 			logger.debug("proto render teardown failed", { error: String(err) });
 		}
+		releaseLocalProtocol?.();
 		tempDir.removeSync();
 	}
 }

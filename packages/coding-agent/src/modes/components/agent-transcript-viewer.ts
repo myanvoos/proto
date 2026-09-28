@@ -5,13 +5,14 @@ import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, typ
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import type { TranscriptWindow } from "../../session/session-context";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries, sessionArchivePath } from "../../session/session-loader";
-import { SessionManager } from "../../session/session-manager";
+import { artifactsDirectoryFor, SessionManager } from "../../session/session-manager";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../controllers/tool-args-reveal";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
@@ -144,6 +145,7 @@ export class AgentTranscriptViewer implements Component {
 	constructor(private readonly deps: AgentTranscriptViewerDeps) {
 		this.#builder = new ChatTranscriptBuilder({
 			ui: deps.ui,
+			getLocalProtocolOptions: () => this.#localProtocolOptions(),
 			getTool: deps.getTool,
 			isBuiltInTool: deps.isBuiltInTool,
 			getMessageRenderer: deps.getMessageRenderer,
@@ -233,11 +235,19 @@ export class AgentTranscriptViewer implements Component {
 		this.#schedulePersistenceReconcile();
 	}
 
+	#localProtocolOptions(): LocalProtocolOptions | null {
+		const ref = this.deps.registry.get(this.deps.agentId);
+		if (ref?.session) return ref.session.sessionManager;
+		const artifactsDir = artifactsDirectoryFor(ref?.sessionFile ?? undefined);
+		return artifactsDir ? { getArtifactsDir: () => artifactsDir } : null;
+	}
+
 	#showTransient(message: Extract<AgentMessage, { role: "assistant" }>): void {
 		if (this.#transientBuilder) this.#builder.container.removeChild(this.#transientBuilder.container);
 		else {
 			this.#transientBuilder = new ChatTranscriptBuilder({
 				ui: this.deps.ui,
+				getLocalProtocolOptions: () => this.#localProtocolOptions(),
 				getTool: this.deps.getTool,
 				isBuiltInTool: this.deps.isBuiltInTool,
 				getMessageRenderer: this.deps.getMessageRenderer,

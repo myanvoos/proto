@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `local://` references in transcript Markdown open session artifacts through terminal file links, with Orca-compatible line locations and original artifact paths in `proto render`
+
+- Wrapped inline Python commands such as `uv run python` and `pixi run python` now receive a non-interrupting reminder to use Proto's kernel with the project interpreter
+- TTSR rules can match inline shell programs by language and kernel routing with `shell: { language: python, kernel: false }`
+
 ## [19.1.0] - 2026-09-27
 
 ### Fixed

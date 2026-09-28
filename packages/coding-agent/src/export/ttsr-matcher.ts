@@ -2,7 +2,7 @@
  * TTSR condition engine.
  *
  * A rule condition is an expression tree, not a regex list. Leaves locate spans
- * in the stream buffer (`regex`, `ast`), test the buffer's context (`lang`,
+ * in the stream buffer (`regex`, `ast`, `shell`), test the buffer's context (`lang`,
  * `path`), or test what the session already did (`did`); operators (`all`,
  * `any`, `not`, `if`) combine them; modifiers (`in`,
  * `count`, `inside`, `has`, …) filter the located spans. Evaluation returns the
@@ -16,6 +16,7 @@
 import { AstMatchStrictness, astMatch } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import { compileRuleCondition } from "../capability/rule";
+import { findBashCodeCells } from "../tools/bash-embedded-code";
 import { isUnderRoot, matchesTarget, resolveRootDir, resolveTargetPaths, type TargetPath } from "./ttsr-paths";
 import {
 	classifyRegions,
@@ -126,6 +127,12 @@ interface AstNode extends NodeModifiers {
 	where: MetaConstraint[];
 }
 
+interface ShellNode extends NodeModifiers {
+	kind: "shell";
+	language: "python" | "js";
+	kernel: boolean;
+}
+
 interface LangNode extends NodeModifiers {
 	kind: "lang";
 	langs: string[];
@@ -216,7 +223,17 @@ interface IfNode extends NodeModifiers {
 	else?: CompiledNode;
 }
 
-type CompiledNode = RegexNode | AstNode | LangNode | PathNode | DidNode | LlmNode | GroupNode | NotNode | IfNode;
+type CompiledNode =
+	| RegexNode
+	| AstNode
+	| ShellNode
+	| LangNode
+	| PathNode
+	| DidNode
+	| LlmNode
+	| GroupNode
+	| NotNode
+	| IfNode;
 
 export interface MatchProgram {
 	root: CompiledNode;
@@ -257,7 +274,7 @@ const STRICTNESS_VALUES: Readonly<Record<string, AstMatchStrictness>> = {
 	template: AstMatchStrictness.Template,
 };
 
-const LEAF_KEYS = ["regex", "ast", "lang", "path", "did", "llm", "all", "any", "not", "if"] as const;
+const LEAF_KEYS = ["regex", "ast", "shell", "lang", "path", "did", "llm", "all", "any", "not", "if"] as const;
 const MODIFIER_KEYS = [
 	"in",
 	"count",
@@ -365,6 +382,7 @@ class Compiler {
 		if (kind === "did") return this.didLeaf(spec, path);
 		if (kind === "llm") return this.llmLeaf(spec, path);
 		if (kind === "ast") return this.astLeaf(spec, path);
+		if (kind === "shell") return this.shellLeaf(spec, path);
 		return this.regexLeaf(spec, path);
 	}
 
@@ -559,6 +577,24 @@ class Compiler {
 		return this.withModifiers({ kind: "llm", question, roles, count: 1, cost: 0 }, spec, path);
 	}
 
+	shellLeaf(spec: Record<string, unknown>, path: string): CompiledNode | undefined {
+		const value = spec.shell;
+		if (
+			!isRecordValue(value) ||
+			(value.language !== "python" && value.language !== "js") ||
+			typeof value.kernel !== "boolean" ||
+			Object.keys(value).some(key => key !== "language" && key !== "kernel")
+		) {
+			this.errors.push(`${path}.shell: expected { language: python | js, kernel: boolean }`);
+			return undefined;
+		}
+		return this.withModifiers(
+			{ kind: "shell", language: value.language, kernel: value.kernel, count: 1, cost: 0 },
+			spec,
+			path,
+		);
+	}
+
 	astLeaf(spec: Record<string, unknown>, path: string): CompiledNode | undefined {
 		const patterns = toStringList(spec.ast);
 		if (!patterns || patterns.length === 0) {
@@ -705,7 +741,7 @@ class Compiler {
 				return undefined;
 			}
 			if (!locates(node)) {
-				this.errors.push(`${path}.count: only applies to regex/ast conditions`);
+				this.errors.push(`${path}.count: only applies to regex/ast/shell conditions`);
 				return undefined;
 			}
 			node.count = count;
@@ -713,13 +749,13 @@ class Compiler {
 		for (const key of ["inside", "notInside", "has", "notHas"] as const) {
 			if (spec[key] === undefined) continue;
 			if (!locates(node)) {
-				this.errors.push(`${path}.${key}: only applies to regex/ast conditions`);
+				this.errors.push(`${path}.${key}: only applies to regex/ast/shell conditions`);
 				return undefined;
 			}
 			const child = this.node(spec[key], `${path}.${key}`);
 			if (!child) return undefined;
 			if (!locates(child)) {
-				this.errors.push(`${path}.${key}: needs a regex/ast condition, not a context test`);
+				this.errors.push(`${path}.${key}: needs a regex/ast/shell condition, not a context test`);
 				return undefined;
 			}
 			node[key] = child;
@@ -736,6 +772,7 @@ function costOf(node: CompiledNode): number {
 		case "did":
 			return COST_CONTEXT;
 		case "regex":
+		case "shell":
 			return COST_REGEX;
 		case "ast":
 			return COST_AST;
@@ -755,6 +792,7 @@ function locates(node: CompiledNode): boolean {
 	switch (node.kind) {
 		case "regex":
 		case "ast":
+		case "shell":
 			return true;
 		case "all":
 			return node.children.some(locates);
@@ -1200,6 +1238,13 @@ function evaluateNode(node: CompiledNode, ctx: MatchContext): NodeResult {
 	switch (node.kind) {
 		case "regex":
 			return finish(node, regexSpans(node, ctx), ctx);
+		case "shell": {
+			if (ctx.input.lang !== "bash" && ctx.input.lang !== "sh") return UNMATCHED;
+			const spans = findBashCodeCells(ctx.input.text)
+				.filter(cell => cell.language === node.language && cell.kernel === node.kernel)
+				.map(cell => ({ start: cell.start, end: cell.end }));
+			return finish(node, spans, ctx);
+		}
 		case "ast": {
 			const spans = astSpans(node, ctx);
 			if (spans) return finish(node, spans, ctx);
@@ -1442,6 +1487,8 @@ function describeNode(node: CompiledNode): string {
 				node.where.length > 0 ? ` where ${node.where.map(constraint => `$${constraint.name}`).join(", ")}` : "";
 			return `ast ${node.patterns.map(pattern => `\`${pattern}\``).join(" | ")}${where}${suffix}`;
 		}
+		case "shell":
+			return `shell ${node.language} ${node.kernel ? "kernel" : "process"}${suffix}`;
 		case "lang":
 			return `lang ${node.langs.join("|")}`;
 		case "path":

@@ -128,6 +128,14 @@ describe("TERM_PROGRAM-only terminal identities", () => {
 		}
 	});
 
+	it("enables Orca links without overriding explicit disables or unsafe multiplexers", () => {
+		const env = { TERM_PROGRAM: "Orca", FORCE_HYPERLINK: "1" };
+		const id = detectTerminalId(env);
+		expect(shouldEnableHyperlinksByDefault(env, id)).toBe(true);
+		expect(shouldEnableHyperlinksByDefault({ ...env, PI_NO_HYPERLINKS: "1" }, id)).toBe(false);
+		expect(shouldEnableHyperlinksByDefault({ ...env, TMUX: "1" }, id)).toBe(false);
+	});
+
 	it("measures Hangul Compatibility Jamo at two cells in Orca", () => {
 		const id = detectTerminalId({ TERM_PROGRAM: "Orca", TERM: "xterm-256color", COLORTERM: "truecolor" });
 		expect(id).toBe("orca");

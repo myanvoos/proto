@@ -7,6 +7,8 @@ import {
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { LocalProtocolHandler, type LocalProtocolOptions, resolveLocalRoot } from "../../internal-urls";
+import { resolveLocalHyperlink } from "../../tui/hyperlink";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import { theme } from "./theme";
 import type { Theme } from "./theme-class";
@@ -122,6 +124,7 @@ export function getSymbolTheme(): SymbolTheme {
 
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
+let cachedMarkdownLocalRoot: string | undefined;
 let markdownMermaidRendering = true;
 
 export function setMarkdownMermaidRendering(enabled: boolean): void {
@@ -130,8 +133,17 @@ export function setMarkdownMermaidRendering(enabled: boolean): void {
 	cachedMarkdownTheme = undefined;
 }
 
-export function getMarkdownTheme(): MarkdownTheme {
-	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme) {
+export function getMarkdownTheme(
+	currentLocalOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ?? null,
+): MarkdownTheme {
+	const artifactsDir = currentLocalOptions?.getArtifactsDir?.() ?? null;
+	const sessionId = currentLocalOptions?.getSessionId?.() ?? null;
+	// A transcript's links belong to its session, even after the active session changes.
+	const localOptions: LocalProtocolOptions | undefined = currentLocalOptions
+		? { getArtifactsDir: () => artifactsDir, getSessionId: () => sessionId }
+		: undefined;
+	const localRoot = localOptions ? resolveLocalRoot(localOptions) : undefined;
+	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme && cachedMarkdownLocalRoot === localRoot) {
 		return cachedMarkdownTheme;
 	}
 	const mermaid = markdownMermaidRendering
@@ -153,6 +165,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		heading: (text: string) => theme.fg("mdHeading", text),
 		link: (text: string) => theme.fg("mdLink", text),
 		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
+		resolveLink: target => resolveLocalHyperlink(target, localOptions),
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
@@ -205,6 +218,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 	};
 	cachedMarkdownTheme = markdownTheme;
 	cachedMarkdownThemeRef = theme;
+	cachedMarkdownLocalRoot = localRoot;
 	return markdownTheme;
 }
 

@@ -1152,6 +1152,9 @@ export interface MarkdownTheme {
 
 	createHighlightStream?: (lang?: string) => HighlightStreamSession | null;
 
+	/** Map a link destination; undefined leaves explicit links unchanged, null disables them.
+	 * Bare URIs and inline code become links only when this returns a destination. */
+	resolveLink?: (target: string) => string | null | undefined;
 	resolveMermaidAscii?: (source: string, maxWidth?: number) => string | null;
 	symbols: SymbolTheme;
 }
@@ -1197,12 +1200,8 @@ function formatHyperlink(text: string, target: string): string {
 		return text;
 	}
 
-	const safeTarget = target.replaceAll("\x1b", "").replaceAll("\x07", "");
-	if (!safeTarget) {
-		return text;
-	}
-
-	return `\x1b]8;;${safeTarget}\x07${text}\x1b]8;;\x07`;
+	if (/[\x00-\x1f\x7f-\x9f]/.test(target)) return text;
+	return `\x1b]8;;${target}\x07${text}\x1b]8;;\x07`;
 }
 
 function isAsciiTextSizingPayload(text: string): boolean {
@@ -1976,6 +1975,7 @@ export class Markdown implements Component {
 			this.#theme.underline,
 			this.#theme.highlightCode,
 			this.#theme.createHighlightStream,
+			this.#theme.resolveLink,
 			this.#theme.resolveMermaidAscii,
 		];
 		const callbackIds = themeCallbacks
@@ -2032,6 +2032,7 @@ export class Markdown implements Component {
 		const inlineToken = inlineTokens[0];
 		if (inlineToken?.type !== "text" || typeof inlineToken.text !== "string") return undefined;
 		const text = inlineToken.text;
+		if (this.#theme.resolveLink && text.includes("://")) return undefined;
 		// Entity and swatch parsing can change already-rendered text when an append
 		// completes a marker that crossed the previous render boundary.
 		if (text.includes("&") || text.includes("#") || text.includes("\x1b") || TREE_GUIDE_ANCHOR_RE.test(text)) {
@@ -3365,7 +3366,31 @@ export class Markdown implements Component {
 		return this.#applyQuoteBorder(innerLines, width);
 	}
 
-	#renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext): string {
+	#formatLink(text: string, href: string): string {
+		const resolved = this.#theme.resolveLink?.(href);
+		return formatHyperlink(text, resolved === undefined ? href : (resolved ?? ""));
+	}
+
+	#renderLinkedText(text: string, render: (text: string) => string): string {
+		const resolveLink = this.#theme.resolveLink;
+		if (!TERMINAL.hyperlinks || !resolveLink || !text.includes("://")) return render(text);
+		// Prose punctuation is not part of a bare URI. Explicit links and code
+		// spans handle filenames containing these delimiters without guessing.
+		const candidates = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>`"'()[\]{}]+/gi;
+		let result = "";
+		let offset = 0;
+		for (const match of text.matchAll(candidates)) {
+			const target = match[0].replace(/[.,;!?]+$/, "");
+			const resolved = resolveLink(target);
+			if (!resolved) continue;
+			result += render(text.slice(offset, match.index));
+			result += formatHyperlink(render(target), resolved);
+			offset = match.index + target.length;
+		}
+		return result + render(text.slice(offset));
+	}
+
+	#renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext, allowLinks = true): string {
 		let result = "";
 		const resolvedStyleContext = styleContext ?? this.#getDefaultInlineStyleContext();
 		const { applyText, stylePrefix } = resolvedStyleContext;
@@ -3395,27 +3420,28 @@ export class Markdown implements Component {
 					if (token.tokens) markHtmlItemWhenContent(plainInlineTokens(token.tokens));
 
 					if (token.tokens && token.tokens.length > 0) {
-						result += this.#renderInlineTokens(token.tokens, resolvedStyleContext);
+						result += this.#renderInlineTokens(token.tokens, resolvedStyleContext, allowLinks);
 					} else {
-						result += renderTextWithSwatches(text, applyTextWithNewlines, swatchGlyph);
+						const render = (value: string) => renderTextWithSwatches(value, applyTextWithNewlines, swatchGlyph);
+						result += allowLinks ? this.#renderLinkedText(text, render) : render(text);
 					}
 					break;
 				}
 
 				case "paragraph":
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
-					result += this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
+					result += this.#renderInlineTokens(token.tokens || [], resolvedStyleContext, allowLinks);
 					break;
 
 				case "strong": {
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
-					const boldContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
+					const boldContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext, allowLinks);
 					result += this.#theme.bold(boldContent) + stylePrefix;
 					break;
 				}
 
 				case "em": {
-					const italicContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
+					const italicContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext, allowLinks);
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
 					result += this.#theme.italic(italicContent) + stylePrefix;
 					break;
@@ -3423,23 +3449,28 @@ export class Markdown implements Component {
 
 				case "codespan": {
 					markHtmlItemWhenContent(token.text);
-					result += codespanSwatch(token.text, swatchGlyph) + this.#theme.code(token.text) + stylePrefix;
+					const code = this.#theme.code(token.text);
+					const target = allowLinks ? this.#theme.resolveLink?.(token.text) : undefined;
+					result +=
+						codespanSwatch(token.text, swatchGlyph) +
+						(target ? formatHyperlink(code, target) : code) +
+						stylePrefix;
 					break;
 				}
 
 				case "link": {
 					markHtmlItemWhenContent(token.text);
-					const linkText = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
+					const linkText = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext, false);
 					const styledLinkText = this.#theme.link(this.#theme.underline(linkText));
 					const href = typeof token.href === "string" ? token.href : "";
-					const clickableLinkText = formatHyperlink(styledLinkText, href);
+					const clickableLinkText = allowLinks ? this.#formatLink(styledLinkText, href) : styledLinkText;
 
 					const hrefForComparison = href.startsWith("mailto:") ? href.slice(7) : href;
 					if (!href || token.text === href || token.text === hrefForComparison)
 						result += clickableLinkText + stylePrefix;
 					else {
 						const styledLinkUrl = this.#theme.linkUrl(`(${href})`);
-						result += `${clickableLinkText} ${formatHyperlink(styledLinkUrl, href)}${stylePrefix}`;
+						result += `${clickableLinkText} ${allowLinks ? this.#formatLink(styledLinkUrl, href) : styledLinkUrl}${stylePrefix}`;
 					}
 					break;
 				}
@@ -3451,14 +3482,16 @@ export class Markdown implements Component {
 					const href = typeof token.href === "string" ? token.href : "";
 					const altText =
 						token.tokens && token.tokens.length > 0
-							? this.#renderInlineTokens(token.tokens, resolvedStyleContext)
+							? this.#renderInlineTokens(token.tokens, resolvedStyleContext, false)
 							: applyTextWithNewlines(normalizeHtmlEntitiesForTerminal(token.text ?? ""));
-					const styledUrl = href ? formatHyperlink(this.#theme.linkUrl(`(${href})`), href) : "";
+					const urlText = href ? this.#theme.linkUrl(`(${href})`) : "";
+					const styledUrl = allowLinks ? this.#formatLink(urlText, href) : urlText;
 					if (!altText) {
 						result += styledUrl + stylePrefix;
 						break;
 					}
-					const styledAlt = formatHyperlink(this.#theme.link(this.#theme.underline(altText)), href);
+					const alt = this.#theme.link(this.#theme.underline(altText));
+					const styledAlt = allowLinks ? this.#formatLink(alt, href) : alt;
 					if (!href || token.text === href) result += styledAlt + stylePrefix;
 					else result += `${styledAlt} ${styledUrl}${stylePrefix}`;
 					break;
@@ -3470,7 +3503,7 @@ export class Markdown implements Component {
 					break;
 
 				case "del": {
-					const delContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
+					const delContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext, allowLinks);
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
 					result += this.#theme.strikethrough(delContent) + stylePrefix;
 					break;

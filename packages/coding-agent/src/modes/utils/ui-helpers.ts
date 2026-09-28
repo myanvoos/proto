@@ -350,7 +350,12 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						userComponent = new UserMessageComponent(
+							textContent,
+							isSynthetic,
+							imageLinks,
+							this.ctx.focusedAgentId ? this.ctx.viewSession.sessionManager : undefined,
+						);
 						this.ctx.transcriptMessageComponents.set(message, new WeakRef(userComponent));
 					}
 					this.ctx.chatContainer.addChild(userComponent);

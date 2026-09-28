@@ -49,6 +49,12 @@ export interface Focusable {
 
 Cursor behavior uses `CURSOR_MARKER` (not `getCursorPosition`). Focused components emit the marker in rendered text; `TUI` extracts it and positions the hardware cursor.
 
+### Markdown link destinations
+
+`MarkdownTheme.resolveLink?(target)` lets a host resolve application resource URIs without changing their visible labels. Return a destination string to emit an OSC 8 link, `undefined` to leave explicit Markdown links unchanged, or `null` to suppress the link. Bare URIs and whole inline-code references become clickable only when the callback returns a destination; fenced code is unchanged. Link and image labels do not create nested hyperlinks.
+
+Resolution is synchronous and should avoid I/O. Capture session-specific context in the callback rather than consulting a mutable active session. If a callback changes on an existing theme, invalidate its Markdown components before rendering again. All links honor the terminal's effective hyperlink policy, and destinations containing terminal control characters are rejected.
+
 ## Rendering constraints (terminal safety)
 
 Your `render(width)` output must be terminal-safe:

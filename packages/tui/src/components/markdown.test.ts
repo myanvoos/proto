@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SymbolTheme } from "../symbols";
+import { setTerminalHyperlinks, TERMINAL } from "../terminal-capabilities";
 import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth } from "../utils";
 import { clearRenderCache, Markdown, type MarkdownTheme } from "./markdown";
 
@@ -84,6 +85,29 @@ describe("Markdown nested blockquotes", () => {
 		expect(output.join("\n")).toContain("quoted text");
 		expect(output.filter(line => line.startsWith("> ")).length).toBeGreaterThan(0);
 	});
+});
+
+test("invalidated Markdown uses changed link resolvers without reusing stale targets or injecting controls", () => {
+	const previous = TERMINAL.hyperlinks;
+	setTerminalHyperlinks(true);
+	try {
+		const resolvingTheme: MarkdownTheme = { ...theme, resolveLink: () => "file:///first.md" };
+		const markdown = new Markdown("[report](app://report)", 0, 0, resolvingTheme);
+		expect(markdown.render(80).join("\n")).toContain("\x1b]8;;file:///first.md\x07");
+		resolvingTheme.resolveLink = () => "file:///second.md";
+		markdown.invalidate();
+		const updated = markdown.render(80).join("\n");
+		expect(updated).toContain("\x1b]8;;file:///second.md\x07");
+		expect(updated).not.toContain("file:///first.md");
+		resolvingTheme.resolveLink = () => "file:///bad\x9c\x1b]0;injected\x07";
+		markdown.invalidate();
+		const rejected = markdown.render(80).join("\n");
+		expect(rejected).not.toContain("\x1b]8;");
+		expect(rejected).not.toContain("injected");
+		expect(rejected).toContain("report");
+	} finally {
+		setTerminalHyperlinks(previous);
+	}
 });
 
 describe("Markdown reference links", () => {

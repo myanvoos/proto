@@ -1,7 +1,8 @@
 import * as url from "node:url";
-import { resolveHyperlinkPolicy } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { resolveHyperlinkPolicy, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { isSettingsInitialized, settings } from "../config/settings";
-import { LocalProtocolHandler, resolveLocalUrlToPath } from "../internal-urls";
+import { LocalProtocolHandler, type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
+import { selectorLineRanges, splitPathAndSel } from "../tools/path-utils";
 
 const OSC = "\x1b]";
 const ST = "\x1b\\";
@@ -17,8 +18,12 @@ function buildLinkId(uri: string): string {
 
 function buildFileUri(filePath: string, opts?: { line?: number; col?: number }): string {
 	const uri = url.pathToFileURL(filePath);
-	if (opts?.line !== undefined) uri.searchParams.set("line", String(opts.line));
-	if (opts?.col !== undefined) uri.searchParams.set("col", String(opts.col));
+	if (TERMINAL.id === "orca") {
+		if (opts?.line !== undefined) uri.hash = `L${opts.line}${opts.col !== undefined ? `C${opts.col}` : ""}`;
+	} else {
+		if (opts?.line !== undefined) uri.searchParams.set("line", String(opts.line));
+		if (opts?.col !== undefined) uri.searchParams.set("col", String(opts.col));
+	}
 	return uri.href;
 }
 
@@ -77,6 +82,23 @@ export function urlHyperlinkAlways(url: string, displayText: string): string {
 
 export function fileHyperlink(filePath: string, displayText: string, opts?: { line?: number; col?: number }): string {
 	return wrapHyperlink(buildFileUri(filePath, opts), displayText);
+}
+
+/** Resolve only session-local Markdown destinations; null suppresses an invalid or unavailable local link. */
+export function resolveLocalHyperlink(
+	input: string,
+	options: LocalProtocolOptions | undefined,
+): string | null | undefined {
+	if (!input.startsWith("local://")) return undefined;
+	if (!options || !safeHyperlinkUri(input)) return null;
+	try {
+		const { path, sel } = splitPathAndSel(input);
+		const resolved = resolveLocalUrlToPath(path, options);
+		const line = selectorLineRanges(sel)?.[0].startLine;
+		return buildFileUri(resolved, { line });
+	} catch {
+		return null;
+	}
 }
 
 export function tryResolveInternalUrlSync(input: string): string | undefined {

@@ -541,9 +541,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	/**
-	 * Source-bearing payload for AST-scoped rules: embedded interpreter programs
-	 * use synthetic paths, while heredoc file writes use their written paths so
-	 * file extensions drive grammar and per-file rule selection.
+	 * Shell source and embedded payloads for syntax-aware rules. The command and
+	 * interpreter programs use synthetic paths; heredoc file writes use their
+	 * written paths so extensions drive grammar and per-file rule selection.
 	 */
 	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
 		if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
@@ -552,6 +552,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const cells = findBashCodeCells(command);
 		const writes = findBashFileWrites(command);
 		return [
+			{ start: -1, path: "command.sh", digest: command },
 			...cells.map((cell, index) => ({
 				start: cell.start,
 				path: cell.language === "js" ? `cell.${index}.js` : `cell.${index}.py`,

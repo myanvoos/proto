@@ -14,6 +14,7 @@ import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
+import { LocalProtocolHandler, type LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { convertImageToPng } from "../../utils/image-loading";
@@ -185,6 +186,8 @@ export class AssistantMessageComponent extends Container {
 		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = EMPTY_THINKING_RENDERERS,
 		private readonly imageBudget?: ImageBudget,
 		private proseOnlyThinking = true,
+		private readonly localProtocolOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ??
+			null,
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -403,11 +406,18 @@ export class AssistantMessageComponent extends Container {
 							part.text.trim(),
 							2,
 							0,
-							getMarkdownTheme(),
+							getMarkdownTheme(this.localProtocolOptions),
 							this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
 							2,
 						)
-					: new Markdown(part.text.trim(), 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
+					: new Markdown(
+							part.text.trim(),
+							2,
+							0,
+							getMarkdownTheme(this.localProtocolOptions),
+							THINKING_MARKDOWN_STYLE,
+							2,
+						);
 			// The last part is cut mid-stream and may end inside an open code fence.
 			if (index === parts.length - 1) markdown.setStreamPrefix(true);
 			rows.push(...markdown.render(width));
@@ -578,7 +588,8 @@ export class AssistantMessageComponent extends Container {
 		if (blocks === undefined) return;
 		this.#clearContent();
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2));
+		for (const text of blocks)
+			this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2));
 		super.invalidate();
 	}
 
@@ -863,7 +874,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				const trimmed = this.#withParagraphCuts(i, content.text.trim());
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions, 2);
+				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2);
 				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
@@ -888,7 +899,14 @@ export class AssistantMessageComponent extends Container {
 					this.addChild(this.#thinkingLabel);
 				}
 				const displayedText = this.#withParagraphCuts(i, thinkingText);
-				const md = new Markdown(displayedText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
+				const md = new Markdown(
+					displayedText,
+					2,
+					0,
+					getMarkdownTheme(this.localProtocolOptions),
+					THINKING_MARKDOWN_STYLE,
+					2,
+				);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: displayedText });

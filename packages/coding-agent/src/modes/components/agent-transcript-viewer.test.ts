@@ -1,12 +1,15 @@
 import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
+import { setTerminalHyperlinks, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Settings } from "../../config/settings";
+import { LocalProtocolHandler } from "../../internal-urls/local-protocol";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
-import { SessionManager } from "../../session/session-manager";
+import { artifactsDirectoryFor, SessionManager } from "../../session/session-manager";
 import { initThemeSync } from "../theme/theme";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 
@@ -123,6 +126,10 @@ function liveViewerFor(
 ): { viewer: AgentTranscriptViewer; emit: (event: AgentSessionEvent) => void } {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const session = {
+		sessionManager: {
+			getArtifactsDir: () => artifactsDirectoryFor(sessionFile),
+			getSessionId: () => "viewer-session",
+		},
 		subscribe(listener: (event: AgentSessionEvent) => void): () => void {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -160,6 +167,35 @@ function liveViewerFor(
 		},
 	};
 }
+
+test.each(["parked", "streaming"])(
+	"%s agent links point to the viewed session rather than the active main session",
+	async mode => {
+		const directory = await fs.mkdtemp("/tmp/proto-viewer-links-");
+		temporaryDirectories.push(directory);
+		const sessionFile = `${directory}/worker.jsonl`;
+		await Bun.write(sessionFile, `${messageLine("local://plan.md")}\n`);
+		const previousHyperlinks = TERMINAL.hyperlinks;
+		setTerminalHyperlinks(true);
+		const releaseMain = LocalProtocolHandler.setOverride({ getArtifactsDir: () => `${directory}/main` });
+		const live = mode === "streaming" ? liveViewerFor(sessionFile) : undefined;
+		const viewer = live?.viewer ?? viewerFor(sessionFile);
+		try {
+			live?.emit({ type: "message_update", message: assistantMessage("`local://answer.md`") } as AgentSessionEvent);
+			const output = viewer.render(120).join("\n");
+			const paths = [...output.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)(?:\x07|\x1b\\)/g)].map(match =>
+				fileURLToPath(match[1]!),
+			);
+			expect(paths).toContain(`${directory}/worker/local/plan.md`);
+			if (live) expect(paths).toContain(`${directory}/worker/local/answer.md`);
+			expect(paths.every(target => target.startsWith(`${directory}/worker/local/`))).toBe(true);
+		} finally {
+			viewer.dispose();
+			releaseMain();
+			setTerminalHyperlinks(previousHyperlinks);
+		}
+	},
+);
 
 test("subagent prose is visible while it streams, not only after it completes", async () => {
 	const directory = await fs.mkdtemp("/tmp/proto-viewer-live-");

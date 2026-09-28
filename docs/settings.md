@@ -630,6 +630,16 @@ tui:
 | `images.blockImages`        | boolean | `false`          | Never send images to providers.                                           |
 | `tui.hyperlinks`            | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
 
+#### File links in Orca
+
+With `tui.hyperlinks: auto`, Proto enables terminal hyperlinks in Orca. Ctrl-click (Linux/Windows) or Cmd-click (macOS) opens files in Orca; HTML files open in its browser tab. `tui.hyperlinks: off` disables these links, while `always` explicitly enables them even when terminal detection is unavailable.
+
+Proto resolves `local://` references in Markdown links, image references, inline code, and bare prose to the owning session's artifact directory. Only the hidden OSC 8 destination becomes a `file://` URL: displayed text, saved messages, and model-facing resource URLs stay unchanged. Fenced code remains literal. Invalid local paths and references without a session remain unlinked.
+
+Line selectors such as `local://plan.md:12-20` open at their first selected line. In Orca, file links use `#L12` or `#L12C3` positions; other terminals retain their existing line-query format. `proto render` links to the original session's artifacts, not its temporary replay copy.
+
+Orca can open local artifacts outside the worktree. The file must exist on the execution host that owns the Orca terminal; a link does not transfer files between hosts. For bare references, trailing prose punctuation is excluded. Use an explicit Markdown link or an inline-code reference for filenames containing punctuation, and percent-encode URI characters such as spaces or `#`.
+
 For a custom status line, configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
 
 The `cost` segment shows recorded session costs. For an active provider/model with scheduled pricing, it appends `↑` during peak hours or `↓` off-peak, refreshing at boundaries even while idle. The arrow reflects the current tariff, not past spending; flat-price models and explicit cost overrides have no arrow. See [usage costs and time-based pricing](models.md#usage-costs-and-time-based-pricing) for the UTC schedule and estimation semantics.

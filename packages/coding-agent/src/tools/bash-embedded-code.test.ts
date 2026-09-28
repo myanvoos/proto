@@ -99,6 +99,10 @@ test("runners reach the interpreter named in their argv", () => {
 	expect(codes("python script.py python -c 'x'")).toEqual([]);
 });
 
+test("ordinary command arguments are not executable interpreter programs", () => {
+	expect(codes("echo uv run python -c 'print(1)' ")).toEqual([]);
+});
+
 test("mixed heredocs retain the kernel payload and report surrounding shell", () => {
 	const command = "printf before\npython <<'PY'\nprint(1)\nPY\nprintf after";
 	expect(detectBashKernelCell(command)).toEqual({ language: "python", code: "print(1)" });

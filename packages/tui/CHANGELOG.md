@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Markdown hosts can resolve resource links and make bare URIs and inline-code references clickable without changing their labels
+
+### Fixed
+
+- Orca terminals enable OSC 8 hyperlinks by default while respecting explicit disable settings
+
 ## [19.0.0] - 2026-09-27
 
 ### Breaking Changes

@@ -4,6 +4,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
@@ -45,6 +46,7 @@ import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user
 
 interface ChatTranscriptBuilderDeps {
 	ui: TUI;
+	getLocalProtocolOptions?: () => LocalProtocolOptions | null;
 	getTool?: (name: string) => AgentTool | undefined;
 
 	isBuiltInTool?: (name: string) => boolean;
@@ -220,11 +222,17 @@ export class ChatTranscriptBuilder {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 
 					if (isSynthetic) {
-						const collapsed = new CollapsedSyntheticMessageComponent(textContent);
+						const collapsed = new CollapsedSyntheticMessageComponent(
+							textContent,
+							undefined,
+							this.deps.getLocalProtocolOptions?.(),
+						);
 						this.#trackExpandable(collapsed);
 						this.container.addChild(collapsed);
 					} else {
-						this.container.addChild(new UserMessageComponent(textContent, false));
+						this.container.addChild(
+							new UserMessageComponent(textContent, false, undefined, this.deps.getLocalProtocolOptions?.()),
+						);
 					}
 				}
 				break;
@@ -298,6 +306,7 @@ export class ChatTranscriptBuilder {
 			this.deps.getMessageRenderer ? undefined : [],
 			this.deps.ui.imageBudget,
 			proseOnlyThinking,
+			this.deps.getLocalProtocolOptions?.(),
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
 		this.#trackExpandable(assistantComponent);
@@ -330,6 +339,7 @@ export class ChatTranscriptBuilder {
 				this.deps.getMessageRenderer ? undefined : [],
 				undefined,
 				proseOnlyThinking,
+				this.deps.getLocalProtocolOptions?.(),
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
 			this.#trackExpandable(component);

@@ -590,8 +590,11 @@ impl Scan<'_> {
 		if self.try_write(&context) {
 			return;
 		}
-		// A runner (`sudo`, `uv run`, `timeout 5`, `ssh host`, `xargs`, …)
-		// execs an interpreter named later in its argv.
+		// Only known execution wrappers can hand later argv to an interpreter.
+		// Ordinary commands such as `echo python -c '...'` merely quote it.
+		if !values[0].static_text().is_some_and(is_interpreter_runner) {
+			return;
+		}
 		for (index, value) in values.iter().enumerate().skip(1) {
 			if let Some(interpreter) = value.static_text().and_then(Interpreter::named)
 				&& self.try_cell(&context, index, interpreter)
@@ -751,6 +754,18 @@ fn dispatches_builtin(prefix: &[WordValue]) -> bool {
 		after_option = text.starts_with('-') && !text.contains('=');
 		allowed
 	})
+}
+
+fn is_interpreter_runner(word: &str) -> bool {
+	let name = word.rsplit('/').next().unwrap_or(word);
+	is_builtin_dispatcher(name)
+		|| matches!(
+			name,
+			"uv" | "pixi" | "poetry" | "pipenv" | "pdm" | "hatch" | "rye"
+				| "conda" | "mamba" | "micromamba" | "env" | "sudo" | "doas"
+				| "ssh" | "xargs" | "find" | "nice" | "ionice" | "setsid"
+				| "docker" | "podman"
+		)
 }
 
 fn is_builtin_dispatcher(word: &str) -> bool {

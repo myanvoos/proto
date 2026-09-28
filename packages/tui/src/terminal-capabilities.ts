@@ -436,9 +436,9 @@ const KNOWN_TERMINALS = Object.freeze({
 	alacritty: new TerminalInfo("alacritty", null, true, true, NotifyProtocol.Bell),
 
 	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Osc9, false, false, false, 1),
-	// Orca renders Hangul Compatibility Jamo at two cells (UAX#11); everything
-	// else stays on conservative true-color defaults.
-	orca: new TerminalInfo("orca", null, true, false, NotifyProtocol.Bell, false, false, false, 2),
+	// Orca handles OSC 8 links in its terminal panes and renders Hangul
+	// Compatibility Jamo at two cells (UAX#11).
+	orca: new TerminalInfo("orca", null, true, true, NotifyProtocol.Bell, false, false, false, 2),
 	// Otty (TERM_PROGRAM=otty) documents Kitty direct and virtual (U+10EEEE
 	// placeholder) placement, OSC 8 hyperlinks and OSC 99 notifications. DECCARA
 	// and OSC 66 text sizing are unverified, so those stay conservative;
