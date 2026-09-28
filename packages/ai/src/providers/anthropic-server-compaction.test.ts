@@ -17,7 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AnthropicMessageParam } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { convertAnthropicMessages, streamAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
 import type { Context, Model, ModelSpec, UserMessage } from "@oh-my-pi/pi-ai/types";
 import { type ConversationalUserCarrier, kConversationalUser } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -148,7 +148,7 @@ function createPausedCompactionEvents(
 
 async function captureRequest(
 	model: Model<"anthropic-messages">,
-	options: Parameters<typeof streamAnthropic>[2],
+	options: Parameters<typeof streamAnthropicMessages>[2],
 	messages: Context["messages"] = context.messages,
 ): Promise<{ beta: string; payload: Record<string, unknown> }> {
 	let beta = "";
@@ -160,7 +160,7 @@ async function captureRequest(
 		);
 	}) as typeof fetch;
 	const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
-	await streamAnthropic(
+	await streamAnthropicMessages(
 		model,
 		{ systemPrompt: ["auditor"], messages },
 		{
@@ -228,12 +228,12 @@ describe("anthropic server-side compaction request", () => {
 	async function captureOnClient(
 		model: Model<"anthropic-messages">,
 		baseURL: string | undefined,
-		options: Parameters<typeof streamAnthropic>[2],
+		options: Parameters<typeof streamAnthropicMessages>[2],
 		messages = context.messages,
 	) {
 		let params: Record<string, unknown> | undefined;
 		let headers: Record<string, string> | undefined;
-		await streamAnthropic(
+		await streamAnthropicMessages(
 			model,
 			{ systemPrompt: ["auditor"], messages },
 			{
@@ -259,7 +259,7 @@ describe("anthropic server-side compaction request", () => {
 	it("attaches the compaction beta per request for injected clients, on compaction and on replay", async () => {
 		// Injected SDK clients own their default headers, so the beta rides the
 		// per-request headers exactly like the effort and control betas do.
-		const capture = (options: Parameters<typeof streamAnthropic>[2], messages = context.messages) =>
+		const capture = (options: Parameters<typeof streamAnthropicMessages>[2], messages = context.messages) =>
 			captureOnClient(fableModel, "https://api.anthropic.com", options, messages);
 
 		const live = await capture({ anthropicCompaction: { triggerInputTokens: 50_000, pauseAfterCompaction: true } });
@@ -295,7 +295,7 @@ describe("anthropic server-side compaction response", () => {
 			.spyOn(AnthropicMessages.prototype, "create")
 			.mockImplementation(() => createMockRequest(createPausedCompactionEvents(SUMMARY)) as never);
 
-		const s = streamAnthropic(fableModel, context, {
+		const s = streamAnthropicMessages(fableModel, context, {
 			apiKey: "sk-ant-test",
 			anthropicCompaction: { triggerInputTokens: 50_000, pauseAfterCompaction: true },
 		});
@@ -333,7 +333,7 @@ describe("anthropic server-side compaction response", () => {
 			() => createMockRequest(createPausedCompactionEvents(null)) as never,
 		);
 
-		const s = streamAnthropic(fableModel, context, {
+		const s = streamAnthropicMessages(fableModel, context, {
 			apiKey: "sk-ant-test",
 			anthropicCompaction: { triggerInputTokens: 50_000, pauseAfterCompaction: true },
 		});

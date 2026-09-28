@@ -111,6 +111,7 @@ import {
 	type TextBlockParam,
 	THINKING_BINDING_CONTROLS_BETA,
 } from "./anthropic-wire";
+import { streamClaudeAgentSdk } from "./claude-agent-sdk";
 import {
 	adoptRequiredClaudeCodeVersion,
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
@@ -1127,7 +1128,7 @@ function resolveAnthropicBaseUrl(model: Model<"anthropic-messages">, apiKey?: st
 	return normalizeAnthropicBaseUrl(model.baseUrl);
 }
 
-function resolveEagerToolInputStreamingSupport(
+export function resolveEagerToolInputStreamingSupport(
 	model: Model<"anthropic-messages">,
 	effectiveBaseUrl: string | undefined,
 ): boolean {
@@ -1455,11 +1456,14 @@ function createEmptyUsage(premiumRequests?: number): Usage {
 }
 
 export type AnthropicUsageLike = {
+	output_tokens_details?: { thinking_tokens?: number | null } | null;
 	cache_creation?: { ephemeral_5m_input_tokens?: number | null; ephemeral_1h_input_tokens?: number | null } | null;
 	server_tool_use?: { web_search_requests?: number | null; web_fetch_requests?: number | null } | null;
 };
 
 export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLike): void {
+	if (source.output_tokens_details?.thinking_tokens != null)
+		usage.reasoningTokens = source.output_tokens_details.thinking_tokens;
 	const cacheCreation = source.cache_creation;
 	if (cacheCreation != null) {
 		const fiveMinute = cacheCreation.ephemeral_5m_input_tokens ?? 0;
@@ -2712,7 +2716,7 @@ const streamAnthropicOnce = (
 							);
 							const rawStopReason = delta?.stop_reason;
 							if (rawStopReason) {
-								output.stopReason = mapStopReason(rawStopReason);
+								output.stopReason = mapAnthropicStopReason(rawStopReason);
 								sawTerminalEnvelope = true;
 								if (rawStopReason === "compaction") output.stopDetails = { type: "compaction" };
 							}
@@ -3072,8 +3076,14 @@ const streamAnthropicOnce = (
 	return stream;
 };
 
-export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, context, options) =>
+/** Messages-protocol transport for gateways and non-Anthropic providers. */
+export const streamAnthropicMessages: StreamFunction<"anthropic-messages"> = (model, context, options) =>
 	withReplaySafeStreamRetry(model, context, options, streamAnthropicOnce, { retryEmptyCompletion: true });
+
+export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, context, options) =>
+	model.provider === "anthropic"
+		? streamClaudeAgentSdk(model, context, options)
+		: streamAnthropicMessages(model, context, options);
 
 export type AnthropicSystemBlock = {
 	type: "text";
@@ -4150,6 +4160,7 @@ export function convertAnthropicMessages(
 		replayCompaction?: boolean;
 		dropAllThinking?: boolean;
 		droppedThinkingBlocks?: ReadonlySet<string>;
+		onAssistantMessage?: (source: AssistantMessage, converted: AnthropicMessageParam) => void;
 	},
 ): AnthropicMessageParam[] {
 	const developerParams: Array<{ index: number; payload?: AnthropicMessagePayload }> = [];
@@ -4353,6 +4364,7 @@ export function convertAnthropicMessages(
 				content: blocks,
 			};
 			copyPerCallContextMessage(assistantParam, msg);
+			opts?.onAssistantMessage?.(msg, assistantParam);
 			params.push(assistantParam);
 			if (!blocks.some(block => block.type === "tool_use")) {
 				flushCompactionFiles();
@@ -4935,7 +4947,7 @@ function convertTools(
 	});
 }
 
-function mapStopReason(reason: string): StopReason {
+export function mapAnthropicStopReason(reason: string): StopReason {
 	switch (reason) {
 		case "end_turn":
 			return "stop";

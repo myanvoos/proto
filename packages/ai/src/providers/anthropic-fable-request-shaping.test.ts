@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { streamAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { AssistantMessage, Context, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
@@ -76,11 +76,11 @@ type CapturedPayload = {
 
 function capturePayload(
 	model: Model<"anthropic-messages">,
-	opts: Parameters<typeof streamAnthropic>[2],
+	opts: Parameters<typeof streamAnthropicMessages>[2],
 	context: Context = CONTEXT,
 ): Promise<CapturedPayload> {
 	const { promise, resolve } = Promise.withResolvers<CapturedPayload>();
-	streamAnthropic(model, context, {
+	streamAnthropicMessages(model, context, {
 		apiKey: "sk-ant-oat-test",
 		isOAuth: true,
 		signal: abortedSignal(),

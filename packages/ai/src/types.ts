@@ -317,8 +317,6 @@ export interface StreamOptions {
 	apiKey?: string;
 	cacheRetention?: CacheRetention;
 
-	anthropicCacheRefresh?: boolean;
-
 	anthropicPrefixMismatchBehavior?: "drop_block" | "error";
 
 	anthropicCacheRefreshRequest?: boolean;
@@ -605,7 +603,18 @@ export interface AnthropicCompactionPayload {
 	filesText?: string;
 }
 
-export type ProviderPayload = OpenAIResponsesHistoryPayload | AnthropicMessagePayload | AnthropicCompactionPayload;
+/** Opaque SDK-added transcript entries preceding this assistant response. */
+export interface ClaudeSdkContextPayload {
+	type: "claudeSdkContext";
+	sessionId: string;
+	entries: Array<{ type: string; [key: string]: unknown }>;
+}
+
+export type ProviderPayload =
+	| OpenAIResponsesHistoryPayload
+	| AnthropicMessagePayload
+	| AnthropicCompactionPayload
+	| ClaudeSdkContextPayload;
 
 export interface ProviderInputTransformation {
 	type: string;

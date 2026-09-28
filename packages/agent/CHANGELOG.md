@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- SDK-backed Anthropic models use configured host memory/compaction instead of the Messages server-compaction beta
+
+### Fixed
+
+- Context estimates include replayed Claude SDK reminders and continuation messages
+
 ## [19.0.0] - 2026-09-27
 
 ### Breaking Changes

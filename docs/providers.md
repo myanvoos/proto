@@ -6,6 +6,10 @@ A **provider** is the account or backend namespace, such as `anthropic`, `openai
 
 This page covers how providers become available, how credentials are resolved, the provider/environment-variable map, local engines, disabling providers, and custom providers. For endpoint-specific request, reasoning, tool, stream, usage, and retry constraints, see [Provider endpoint constraints](./provider-endpoint-constraints.md). For model selection and the full `models.yml` schema, see [Model and Provider Configuration](./models.md). For config-file locations and merge precedence, see [Settings](./settings.md). For credential storage and login flows in depth, see [Secrets and credentials](./secrets.md). For the complete environment-variable reference, see [Environment variables](./environment-variables.md). For local engine setup, see [Local models](./local-models.md). For context-file discovery providers, see [Context files](./context-files.md).
 
+## Anthropic backend
+
+The `anthropic` provider runs through the official TypeScript Claude Agent SDK, while Proto continues to execute its own tools. Other Anthropic-compatible provider IDs keep the Messages API transport. See [Claude Agent SDK integration](./claude-agent-sdk.md) for tool parity, authentication, packaging, and API differences.
+
 ## How `proto` decides a provider is available
 
 At startup the model registry assembles its catalog from four sources, in order:
@@ -83,7 +87,7 @@ Each provider has one or more environment variables that supply a key when no st
 
 | Provider ID      | Environment variable(s)                                                                                                                          |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `anthropic`      | `ANTHROPIC_OAUTH_TOKEN`, then `ANTHROPIC_API_KEY` (Foundry mode prefers `ANTHROPIC_FOUNDRY_API_KEY` when `CLAUDE_CODE_USE_FOUNDRY=true`)         |
+| `anthropic`      | `ANTHROPIC_OAUTH_TOKEN`, then `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN` (Foundry mode prefers `ANTHROPIC_FOUNDRY_API_KEY` when `CLAUDE_CODE_USE_FOUNDRY=true`)         |
 | `openai`         | `OPENAI_API_KEY`                                                                                                                                 |
 | `openai-codex`   | `OPENAI_CODEX_OAUTH_TOKEN`                                                                                                                       |
 | `google`         | `GEMINI_API_KEY`                                                                                                                                 |

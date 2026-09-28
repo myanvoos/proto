@@ -1,4 +1,5 @@
 import { buildJsKernel } from "../src/eval/js/node-runtime";
+import { createClaudeAgentPlugin } from "./claude-agent-plugin";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createHostVirtualModulePlugin } from "./host-virtual-module";
 
@@ -51,7 +52,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				syntax: true,
 				keepNames: true,
 			},
-			plugins: [await createHostVirtualModulePlugin()],
+			plugins: [await createHostVirtualModulePlugin(), createClaudeAgentPlugin(options.target)],
 			compile: {
 				...(options.executablePath
 					? { executablePath: options.executablePath }

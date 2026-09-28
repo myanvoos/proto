@@ -10,7 +10,7 @@ export const anthropicProvider = {
 	envKeys: () =>
 		isFoundryEnabled()
 			? $pickenv("ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-			: $pickenv("ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
+			: $pickenv("ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
 	login: async (cb: OAuthLoginCallbacks) => {
 		const { loginAnthropic } = await import("./oauth/anthropic");
 		return loginAnthropic(cb);

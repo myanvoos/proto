@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Anthropic models now use the official TypeScript Claude Agent SDK with Proto-owned tools, and compiled binaries include its native runtime
+
+### Fixed
+
+- Claude Opus 5.5 works in both source and compiled CLIs with the updated bundled Claude runtime
+
 ## [19.1.2] - 2026-09-28
 
 ### Added

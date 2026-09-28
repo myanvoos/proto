@@ -41,13 +41,14 @@ function makeAnthropicModel(overrides: Partial<ModelSpec<"anthropic-messages">> 
 		id: "claude-fable-5",
 		name: "Claude Fable 5",
 		api: "anthropic-messages",
-		provider: "anthropic",
+		provider: "anthropic-compatible",
 		baseUrl: "https://api.anthropic.com",
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
 		contextWindow: 1_000_000,
 		maxTokens: 128_000,
+		remoteCompaction: { enabled: true },
 		...overrides,
 	} as ModelSpec<"anthropic-messages">);
 }
@@ -114,7 +115,13 @@ afterEach(() => {
 });
 
 describe("shouldUseAnthropicNativeCompaction", () => {
-	test("covers beta-supported first-party models on the official endpoint and explicit opt-ins only", () => {
+	test("the SDK provider uses host compaction even when the Messages beta is opted in", () => {
+		const model = makeAnthropicModel({ provider: "anthropic", remoteCompaction: { enabled: true } });
+		expect(shouldUseAnthropicNativeCompaction(model)).toBe(false);
+		expect(shouldUseProviderNativeCompaction(model, { remoteEnabled: true })).toBe(false);
+	});
+
+	test("covers beta-supported Messages gateways with explicit opt-ins only", () => {
 		expect(shouldUseAnthropicNativeCompaction(makeAnthropicModel())).toBe(true);
 		expect(shouldUseAnthropicNativeCompaction(makeAnthropicModel({ remoteCompaction: { enabled: false } }))).toBe(
 			false,
@@ -135,8 +142,16 @@ describe("shouldUseAnthropicNativeCompaction", () => {
 			),
 		).toBe(false);
 		// A first-party model routed through a proxy is not assumed to accept the beta.
-		expect(shouldUseAnthropicNativeCompaction(makeAnthropicModel({ baseUrl: "https://proxy.example" }))).toBe(false);
-		const proxy = makeAnthropicModel({ provider: "custom-anthropic-proxy", baseUrl: "https://proxy.example" });
+		expect(
+			shouldUseAnthropicNativeCompaction(
+				makeAnthropicModel({ baseUrl: "https://proxy.example", remoteCompaction: undefined }),
+			),
+		).toBe(false);
+		const proxy = makeAnthropicModel({
+			provider: "custom-anthropic-proxy",
+			baseUrl: "https://proxy.example",
+			remoteCompaction: undefined,
+		});
 		expect(shouldUseAnthropicNativeCompaction(proxy)).toBe(false);
 		expect(
 			shouldUseAnthropicNativeCompaction(
@@ -164,7 +179,7 @@ describe("compact() Anthropic native lane", () => {
 			assistantMessage(model, {
 				providerPayload: {
 					type: "anthropicCompaction",
-					provider: "anthropic",
+					provider: "anthropic-compatible",
 					content: NATIVE_SUMMARY,
 					encryptedContent: "enc_state_1",
 				},
@@ -224,7 +239,7 @@ describe("compact() Anthropic native lane", () => {
 		// entry and back out as the replay payload.
 		expect(result.preserveData).toEqual({
 			anthropicCompaction: {
-				provider: "anthropic",
+				provider: "anthropic-compatible",
 				content: NATIVE_SUMMARY,
 				encryptedContent: "enc_state_1",
 				filesText: "<files>\n# /repo/src/\nhandlers.ts (Read)\n</files>",
@@ -234,7 +249,7 @@ describe("compact() Anthropic native lane", () => {
 		});
 		expect(getAnthropicCompactionPayload(result.preserveData)).toEqual({
 			type: "anthropicCompaction",
-			provider: "anthropic",
+			provider: "anthropic-compatible",
 			content: NATIVE_SUMMARY,
 			encryptedContent: "enc_state_1",
 			filesText: "<files>\n# /repo/src/\nhandlers.ts (Read)\n</files>",
@@ -245,14 +260,18 @@ describe("compact() Anthropic native lane", () => {
 		const model = makeAnthropicModel();
 		const { calls, completeImpl } = recordingCompleteImpl(() =>
 			assistantMessage(model, {
-				providerPayload: { type: "anthropicCompaction", provider: "anthropic", content: "second summary" },
+				providerPayload: {
+					type: "anthropicCompaction",
+					provider: "anthropic-compatible",
+					content: "second summary",
+				},
 			}),
 		);
 		const preparation = makePreparation({
 			previousSummary: "first summary",
 			previousPreserveData: {
 				anthropicCompaction: {
-					provider: "anthropic",
+					provider: "anthropic-compatible",
 					content: "first summary",
 					encryptedContent: "enc_state_0",
 					filesText: "<files>\n# /repo/src/\nold.ts (Read)\n</files>",
@@ -269,7 +288,7 @@ describe("compact() Anthropic native lane", () => {
 			role: "user",
 			providerPayload: {
 				type: "anthropicCompaction",
-				provider: "anthropic",
+				provider: "anthropic-compatible",
 				content: "first summary",
 				encryptedContent: "enc_state_0",
 				filesText: "<files>\n# /repo/src/\nold.ts (Read)\n</files>",
@@ -280,7 +299,7 @@ describe("compact() Anthropic native lane", () => {
 		expect(result.preserveData).toEqual({
 			appKey: "kept",
 			anthropicCompaction: {
-				provider: "anthropic",
+				provider: "anthropic-compatible",
 				content: result.summary,
 				model: "claude-fable-5",
 				usedTokens: 0,
@@ -292,7 +311,11 @@ describe("compact() Anthropic native lane", () => {
 		const model = makeAnthropicModel();
 		const { calls, completeImpl } = recordingCompleteImpl(() =>
 			assistantMessage(model, {
-				providerPayload: { type: "anthropicCompaction", provider: "anthropic", content: "second summary" },
+				providerPayload: {
+					type: "anthropicCompaction",
+					provider: "anthropic-compatible",
+					content: "second summary",
+				},
 			}),
 		);
 		// The marker must precede every message this request replays, exactly like the live rebuild.
@@ -301,7 +324,7 @@ describe("compact() Anthropic native lane", () => {
 			recentMessages: [{ role: "user", content: "recent", timestamp: 3000 }],
 			previousSummary: "first summary",
 			previousPreserveData: {
-				anthropicCompaction: { provider: "anthropic", content: "first summary" },
+				anthropicCompaction: { provider: "anthropic-compatible", content: "first summary" },
 			},
 		});
 

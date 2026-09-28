@@ -2680,7 +2680,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					supportsExternalThinking(streamModel);
 				return (options.streamFn ?? settingsAwareStreamFn)(streamModel, context, {
 					...streamOptions,
-					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
 				});
 			},

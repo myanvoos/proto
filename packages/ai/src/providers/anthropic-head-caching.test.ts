@@ -13,7 +13,7 @@
  * a 400 so the request short-circuits.
  */
 import { describe, expect, it } from "bun:test";
-import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { streamAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { MessageCreateParams, TextBlockParam } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type {
 	AssistantMessage,
@@ -72,7 +72,7 @@ async function captureWireBody(
 		);
 	}) as typeof fetch;
 
-	await streamAnthropic(model, context, {
+	await streamAnthropicMessages(model, context, {
 		apiKey: "sk-ant-api-test",
 		...(cacheRetention ? { cacheRetention } : {}),
 		fetch: fetchMock,
@@ -267,7 +267,7 @@ describe("anthropic head caching (general API-key path)", () => {
 		const captureFlap = (messages: Message[], tools: Context["tools"]): Promise<MessageCreateParams> => {
 			const controller = new AbortController();
 			const { promise, resolve } = Promise.withResolvers<MessageCreateParams>();
-			const stream = streamAnthropic(
+			const stream = streamAnthropicMessages(
 				oAuthModel,
 				{ systemPrompt: ["You are helpful."], messages, tools },
 				{
@@ -309,7 +309,7 @@ describe("anthropic head caching (general API-key path)", () => {
 		const captureRecall = (recall: string, messages: Message[]): Promise<MessageCreateParams> => {
 			const controller = new AbortController();
 			const { promise, resolve } = Promise.withResolvers<MessageCreateParams>();
-			const stream = streamAnthropic(
+			const stream = streamAnthropicMessages(
 				oAuthModel,
 				{ systemPrompt: ["You are helpful.", "Follow the house style.", recall], messages, tools: CONTEXT.tools },
 				{

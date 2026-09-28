@@ -11,6 +11,7 @@ const shebang = "#!/usr/bin/env bun\n";
 const legacyHtmlExportAssetPattern = /^(?:template-[^.]+\.(?:css|html|js)|tool-views\.generated-[^.]+\.js)$/;
 
 const ALWAYS_EXTERNAL = [
+	"@anthropic-ai/claude-agent-sdk",
 	"@oh-my-pi/pi-natives",
 	"@huggingface/transformers",
 	"fastembed",

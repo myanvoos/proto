@@ -71,7 +71,8 @@ function isAnthropicMessagesModel(model: Model): model is Model<"anthropic-messa
  * `remoteCompaction.enabled`.
  */
 export function shouldUseAnthropicNativeCompaction(model: Model): model is Model<"anthropic-messages"> {
-	return isAnthropicMessagesModel(model) && supportsAnthropicCompaction(model);
+	// The Agent SDK owns Anthropic transport and does not expose the Messages compaction beta.
+	return model.provider !== "anthropic" && isAnthropicMessagesModel(model) && supportsAnthropicCompaction(model);
 }
 
 export function getPreservedAnthropicCompactionData(

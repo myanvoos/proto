@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The `anthropic` provider now uses the official Claude Agent SDK; forced tool choice and low-level Messages transport controls are no longer supported, and background cache warming is removed
+
+### Changed
+
+- Anthropic conversations retain Proto tool execution and streaming through the SDK, while other Anthropic-compatible providers keep their existing transport
+
+### Fixed
+
+- Anthropic conversations preserve cached history prefixes across user and tool turns instead of relocating SDK reminders on every request
+- Anthropic SDK requests no longer inherit the local Claude Code account email or profile
+- Anthropic SDK thinking summaries stream when enabled and honor the omit-thinking setting
+- Claude Opus 5.5 now runs through the SDK without an outdated-runtime rejection
+
 ## [19.0.0] - 2026-09-27
 
 ### Added

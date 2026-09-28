@@ -145,8 +145,15 @@ Azure OpenAI Responses provider (`azure-openai-responses`) handles transport, en
 - **Identity & classification**: `hosts.ts` defines `azureOpenAI` matching `provider: "azure"` or hostnames ending with `.openai.azure.com`, `azure.com/openai`, or `models.inference.ai.azure.com`.
 - **Thinking metadata**: In `packages/catalog/src/model-thinking.ts`, Azure reasoning models (o-series, GPT-5, Codex) resolve discrete OpenAI reasoning effort tiers (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) via `DEFAULT_REASONING_EFFORTS_WITH_XHIGH`.
 
-## Anthropic Messages
-The Anthropic provider (`packages/ai/src/providers/anthropic.ts`) implements the Anthropic Messages API protocol over HTTPS POST to `/v1/messages` (or `/v1/messages?beta=true`) using Server-Sent Events (SSE) for streaming. Custom HTTP client transport is provided by `AnthropicMessagesClient` (`packages/ai/src/providers/anthropic-client.ts`), replacing `@anthropic-ai/sdk` with built-in retry and timeout logic. Wire structures and SSE payloads are typed in `packages/ai/src/providers/anthropic-wire.ts`. Client fingerprinting constants (version, user agent, tool prefix) live in `packages/ai/src/providers/claude-code-fingerprint.ts`, while low-level Node HTTPS socket reuse and header ordering are handled by `coworkFetch` (`packages/ai/src/providers/cowork-fetch.ts`).
+## Anthropic Claude Agent SDK
+
+Provider `anthropic` now uses the official TypeScript Claude Agent SDK and its native runtime. Proto tools remain host-executed through an MCP schema bridge. Authentication, streaming, transcript seeding, SDK limits, and packaging are documented in [Claude Agent SDK integration](./claude-agent-sdk.md).
+
+## Anthropic Messages compatibility transport
+
+The following wire-specific details apply to non-`anthropic` provider IDs and the low-level `streamAnthropicMessages` API, not the SDK-backed provider.
+
+The Messages compatibility transport (`packages/ai/src/providers/anthropic.ts`) implements the Anthropic Messages API protocol over HTTPS POST to `/v1/messages` (or `/v1/messages?beta=true`) using Server-Sent Events (SSE) for streaming. Custom HTTP client transport is provided by `AnthropicMessagesClient` (`packages/ai/src/providers/anthropic-client.ts`), replacing `@anthropic-ai/sdk` with built-in retry and timeout logic. Wire structures and SSE payloads are typed in `packages/ai/src/providers/anthropic-wire.ts`. Client fingerprinting constants (version, user agent, tool prefix) live in `packages/ai/src/providers/claude-code-fingerprint.ts`, while low-level Node HTTPS socket reuse and header ordering are handled by `coworkFetch` (`packages/ai/src/providers/cowork-fetch.ts`).
 
 ### Special casings
 - **OAuth vs API Key Paths**: `buildAnthropicHeaders` (`packages/ai/src/providers/anthropic.ts`) checks `options.isOAuth ?? isAnthropicOAuthToken(apiKey)`. OAuth requests send `Authorization: Bearer <token>` without `X-Api-Key`, default `Accept: application/json` (or `text/event-stream`), and inject Cowork desktop beta flags (`buildCoworkBetas`). API key requests send `X-Api-Key: <key>` without `Authorization` and include only caller extra betas. Non-official endpoints allow header overrides when `allowAnthropicHeaderOverrides` is enabled.

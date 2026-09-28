@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { AssistantMessage, Context, FetchImpl, Model, ModelSpec } from "../types";
-import { isInvalidThinkingSignatureError, streamAnthropic } from "./anthropic";
+import { isInvalidThinkingSignatureError, streamAnthropicMessages } from "./anthropic";
 
 describe("isInvalidThinkingSignatureError", () => {
 	it("recognizes Anthropic's invalid-signature rejection", () => {
@@ -88,7 +88,7 @@ function sseFetchSequence(payloads: readonly string[]): { fetch: FetchImpl; call
 }
 
 async function runAnthropicSse(transport: { fetch: FetchImpl }) {
-	return streamAnthropic(streamModel, streamContext, {
+	return streamAnthropicMessages(streamModel, streamContext, {
 		apiKey: "test-key",
 		fetch: transport.fetch,
 		providerRetryWait: async () => {},
@@ -187,7 +187,7 @@ describe("Anthropic recognized SSE frames", () => {
 			sseFrame("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use" } }),
 			sseFrame("message_stop", { type: "message_stop" }),
 		].join("");
-		const stream = streamAnthropic(streamModel, streamContext, {
+		const stream = streamAnthropicMessages(streamModel, streamContext, {
 			apiKey: "test-key",
 			fetch: sseFetchSequence([payload]).fetch,
 			providerRetryWait: async () => {},
@@ -243,7 +243,7 @@ describe("Anthropic context management compatibility", () => {
 			);
 		};
 		const { promise, resolve } = Promise.withResolvers<CapturedPayload>();
-		await streamAnthropic(
+		await streamAnthropicMessages(
 			model,
 			{ messages: [{ role: "user", content: "continue", timestamp: 0 }] },
 			{ apiKey, thinkingEnabled: true, fetch: fetchMock, onPayload: payload => resolve(payload as CapturedPayload) },

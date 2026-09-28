@@ -32,6 +32,8 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 
 ### Core provider credentials
 
+The `anthropic` inference backend uses the [Claude Agent SDK](./claude-agent-sdk.md). `CLAUDE_CODE_OAUTH_TOKEN` is an additional credential fallback; `PI_CLAUDE_EXECUTABLE` overrides the SDK's bundled executable path.
+
 | Variable                        | Used for                                         | Required when                                                  | Notes / precedence                                                                                  |
 | ------------------------------- | ------------------------------------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `ANTHROPIC_OAUTH_TOKEN`         | Anthropic API auth                               | Using Anthropic with OAuth token auth                          | Takes precedence over `ANTHROPIC_API_KEY` for provider auth resolution                              |

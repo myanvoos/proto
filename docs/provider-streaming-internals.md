@@ -44,7 +44,9 @@ There is no provider backpressure: providers still produce at full speed, while 
 
 ## Anthropic (`anthropic-messages`)
 
-Source: `packages/ai/src/providers/anthropic.ts`
+Sources: `packages/ai/src/providers/claude-agent-sdk.ts` for provider `anthropic`; `packages/ai/src/providers/anthropic.ts` for other Messages-compatible providers.
+
+The official provider consumes SDK `stream_event` messages, closes after one assistant message, and hands tool calls back to Proto. See [Claude Agent SDK integration](./claude-agent-sdk.md). Both paths expose the normalization below; only the Messages transport observes raw HTTP responses.
 
 Normalization points:
 

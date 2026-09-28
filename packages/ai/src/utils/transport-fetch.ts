@@ -40,6 +40,8 @@ export function transportFetch(model: Model<Api>, fetchImpl: FetchImpl | undefin
 
 /** Options-bag form of {@link transportFetch}; returns `options` untouched when its fetch is already built. */
 export function withTransportFetch<T extends { fetch?: FetchImpl }>(model: Model<Api>, options: T): T {
+	// The official Anthropic backend runs in the Claude Agent SDK subprocess, not this HTTP stack.
+	if (model.provider === "anthropic" && model.api === "anthropic-messages") return options;
 	const fetch = transportFetch(model, options.fetch);
 	return fetch === options.fetch ? options : { ...options, fetch };
 }

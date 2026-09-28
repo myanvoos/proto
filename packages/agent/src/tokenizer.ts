@@ -209,6 +209,16 @@ export class Tokenizer {
 					collected.fragments.push(payload.encryptedContent);
 				}
 				break;
+			case "claudeSdkContext":
+				for (const entry of payload.entries) {
+					this.#collectUnknownValue(
+						entry.attachment ?? entry.message,
+						collected,
+						excludeEncryptedReasoning,
+						new Set(),
+					);
+				}
+				break;
 			case "anthropicMessage":
 				// Request controls only; the message content carries the replayed text.
 				break;

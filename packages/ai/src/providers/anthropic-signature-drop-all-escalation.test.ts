@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { streamAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
 import type {
 	AssistantMessage,
@@ -179,7 +179,7 @@ describe("anthropic-messages foreign-signed thinking escalation", () => {
 			return successRequest() as never;
 		});
 
-		const stream = streamAnthropic(model, foreignSignedContext, {
+		const stream = streamAnthropicMessages(model, foreignSignedContext, {
 			apiKey: "sk-test",
 			providerSessionState,
 		});
@@ -223,7 +223,7 @@ describe("anthropic-messages foreign-signed thinking escalation", () => {
 			} as never;
 		});
 
-		const stream = streamAnthropic(model, foreignSignedContext, {
+		const stream = streamAnthropicMessages(model, foreignSignedContext, {
 			apiKey: "sk-test",
 			providerSessionState,
 		});
@@ -256,7 +256,7 @@ describe("anthropic-messages foreign-signed thinking escalation", () => {
 			thinkingReplayDisabled: true,
 		} as ProviderSessionState);
 
-		const stream = streamAnthropic(model, foreignSignedContext, {
+		const stream = streamAnthropicMessages(model, foreignSignedContext, {
 			apiKey: "sk-test",
 			providerSessionState,
 		});
