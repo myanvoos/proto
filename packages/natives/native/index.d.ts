@@ -144,7 +144,7 @@ export declare class TtyWriter {
 
 export declare function __ompInstallTokioRuntime(): void
 
-export declare function __piNativesV19_1_1(): void
+export declare function __piNativesV19_1_2(): void
 
 export declare function astEdit(options: AstReplaceOptions): Promise<AstReplaceResult>
 

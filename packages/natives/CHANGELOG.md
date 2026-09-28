@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.2] - 2026-09-28
+
 ### Fixed
 
 - Ordinary command arguments such as `echo python -c '...'` no longer appear as executable interpreter programs in shell previews

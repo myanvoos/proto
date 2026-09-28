@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.2] - 2026-09-28
+
 ### Added
 
 - Markdown hosts can resolve resource links and make bare URIs and inline-code references clickable without changing their labels
