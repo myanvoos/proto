@@ -14,8 +14,7 @@ import {
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
 } from "./json-tree";
-import type { XdevDispatch } from "./xdev";
-import { renderXdevResult } from "./xdev";
+import { type ProtolensBashDetails, renderProtolensResult } from "./xdev";
 
 await Settings.init();
 initThemeSync();
@@ -69,13 +68,26 @@ const RENDERERS: Array<{ name: string; render: (expanded: boolean) => string }> 
 	{
 		name: "protolens chained dispatch card",
 		render: expanded => {
-			const dispatches: XdevDispatch[] = [
-				{ tool: "browser", mode: "execute", output: "first" },
-				{ tool: "fleet", mode: "execute", output: BODY },
-			];
-			return renderText(
-				renderXdevResult(dispatches, TEXT_RESULT, { expanded, isPartial: false }, theme, undefined, "chain"),
-			);
+			const stage = (index: number, command: string, text: string) => ({
+				index,
+				command,
+				route: "protolens",
+				state: "exited" as const,
+				exitCode: 0,
+				stdout: { text, bytes: text.length, truncated: false, complete: true },
+			});
+			const details: ProtolensBashDetails = {
+				xdev: [
+					{ tool: "alpha", mode: "execute" },
+					{ tool: "beta", mode: "execute" },
+				],
+				deviceResults: [
+					{ stageIndex: 0, xdev: { tool: "alpha", mode: "execute" } },
+					{ stageIndex: 1, xdev: { tool: "beta", mode: "execute" } },
+				],
+				execution: { stages: [stage(0, "protolens alpha", "first\n"), stage(1, "protolens beta", BODY)] },
+			};
+			return renderText(renderProtolensResult(details, TEXT_RESULT, { expanded, isPartial: false }, theme));
 		},
 	},
 

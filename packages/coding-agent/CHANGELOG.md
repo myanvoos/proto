@@ -81,10 +81,9 @@
 
 ### Fixed
 
-- Chained `protolens` calls in one bash command render one section per device (its invocation, then its own output) instead of identical headers over a merged preview that only showed the first device
+- Bash commands that run `protolens` render as their commands in execution order: each device call as its own card with its own output, other commands as `$ command` with theirs, so chains, pipes, redirects, heredocs, and loops no longer collapse into identical headers over a merged preview
 - Protolens cards show the typed invocation on every call (`protolens://read: package.json:1-4`), mark failed, rejected-flag, and invalid-argument calls with the error icon and the device's own message, and align with other tool cards
 - Bare `protolens` renders the device listing as a name/summary table instead of raw text, and `protolens <tool> ?` cards list flags for active top-level tools like `read`
-- Protolens calls piped, redirected, or mixed with other commands render as a plain shell card showing the full command, instead of device headers over output they didn't produce
 - Advisors can use the `read` tool they are granted by default; the advisor settings screen no longer lists `grep`/`glob` as defaults
 - Resuming a session or navigating the tree after a completed rewind keeps the "Checkpoint already completed" guard
 - Filesystem custom tools loaded by `createAgentSession` receive the host UI (`pi.ui`, `pi.hasUI`) instead of a permanent no-op context

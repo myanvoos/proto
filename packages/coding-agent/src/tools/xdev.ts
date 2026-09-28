@@ -3,12 +3,13 @@ import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateTo
 import { schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { Container } from "@oh-my-pi/pi-tui/tui";
-import { INTENT_FIELD, parseStreamingJson, sanitizeText, truncateHeadBytes } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, isRecord, parseStreamingJson, sanitizeText, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { extractUriScheme } from "../internal-urls/parse";
 import { PROTOLENS_URL_PREFIX } from "../internal-urls/protolens-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
+import type { ExecutionStageMetadata } from "../session/execution-metadata";
 import { renderStatusLine } from "../tui/status-line";
 import { getTreeBranch } from "../tui/utils";
 import { WidthAwareText } from "../tui/width-aware-text";
@@ -26,7 +27,7 @@ import {
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
-import { extractFlatShellCommandSegments, tokenizeShellSegments } from "./shell-tokenize";
+import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import {
 	formatCliFlagReference,
@@ -70,14 +71,8 @@ export interface XdevDispatch {
 
 	inner?: unknown;
 
-	/** Set by the bash transport when this dispatch failed; drives the error icon in composite cards. */
+	/** Set by the bash transport when this dispatch failed; drives the error icon on its card. */
 	isError?: boolean;
-
-	/**
-	 * This device's own text output, set by the bash transport when shell output can't stand in for it:
-	 * several dispatches in one command, or a failed dispatch (whose shell output carries exit notices).
-	 */
-	output?: string;
 
 	/** Mounted devices shown by the listing. */
 	devices?: ReadonlyArray<{ name: string; summary: string }>;
@@ -877,38 +872,119 @@ function formatListingRows(
 	return { lines, hidden };
 }
 
-/**
- * One section per dispatch: a status line naming the device and its invocation, then that device's
- * own output. Used for a single protolens call without a device renderer, and for commands that are
- * nothing but chained protolens calls, where the shell output is exactly the devices' outputs.
- */
-function formatXdevDispatchCard(
-	sections: ReadonlyArray<{ dispatch: XdevDispatch; output: string }>,
+type TextSection = (contentWidth: number) => { lines: string[]; hidden: boolean };
+
+/** A device's status line (device, invocation, outcome), then its own output. */
+function deviceTextSection(
+	dispatch: XdevDispatch,
+	output: string,
 	options: RenderResultOptions,
-	contentWidth: number,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
-): string {
-	const lines: string[] = [];
-	const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
-	let hidden = false;
-	for (const { dispatch, output } of sections) {
-		lines.push(formatDispatchStatusLine(dispatch, options, contentWidth, theme, resolveMounted));
+): TextSection {
+	return contentWidth => {
+		const lines = [formatDispatchStatusLine(dispatch, options, contentWidth, theme, resolveMounted)];
 		// Collapsed docs stay a single status line; the docs body is only worth reading expanded.
-		if (dispatch.mode === "help" && !options.expanded) {
-			hidden ||= output.trim().length > 0;
-			continue;
-		}
+		if (dispatch.mode === "help" && !options.expanded) return { lines, hidden: output.trim().length > 0 };
+		const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 		const body =
 			dispatch.mode === "listing" && dispatch.devices
 				? formatListingRows(dispatch.devices, options, contentWidth, theme)
 				: formatOutputLines(output, maxLines, contentWidth, theme);
+		return { lines: [...lines, ...body.lines], hidden: body.hidden };
+	};
+}
+
+/** A non-protolens stage of the command: `$ command`, its exit status when nonzero, then its output. */
+function shellStageSection(stage: ExecutionStageMetadata, options: RenderResultOptions, theme: Theme): TextSection {
+	return contentWidth => {
+		const [first = "", ...rest] = sanitizeText(stage.command ?? "")
+			.trim()
+			.split("\n");
+		const command = replaceTabs(rest.length > 0 || stage.commandTruncated ? `${first} …` : first);
+		const exit =
+			stage.exitCode !== undefined && stage.exitCode !== 0
+				? theme.fg("warning", `${theme.sep.dot}exit ${stage.exitCode}`)
+				: "";
+		const commandWidth = Math.max(10, contentWidth - 2 - Bun.stringWidth(exit));
+		const lines = [`${theme.fg("dim", "$")} ${theme.fg("muted", truncateToWidth(command, commandWidth))}${exit}`];
+		const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+		const body = formatOutputLines(stageOutput(stage), maxLines, contentWidth, theme);
 		lines.push(...body.lines);
-		hidden ||= body.hidden;
+		if (options.expanded && (stage.stdout?.truncated || stage.stderr?.truncated)) {
+			lines.push(`  ${theme.fg("dim", "… output beyond the stage capture limit is not shown")}`);
+		}
+		return { lines, hidden: body.hidden };
+	};
+}
+
+function stageOutput(stage: ExecutionStageMetadata): string {
+	return `${stage.stdout?.text ?? ""}${stage.stderr?.text ?? ""}`;
+}
+
+/**
+ * Stack sections into one card. Consecutive text sections share one text block with a single expand
+ * hint; device renderer cards stand on their own.
+ */
+function stackSections(parts: ReadonlyArray<Component | TextSection>, options: RenderResultOptions, theme: Theme) {
+	const components: Component[] = [];
+	let run: TextSection[] = [];
+	const flush = () => {
+		if (run.length === 0) return;
+		const sections = run;
+		run = [];
+		components.push(
+			widthAwareText(width => {
+				const rendered = sections.map(section => section(width));
+				const lines = rendered.flatMap(section => section.lines);
+				const hint = formatExpandHint(
+					theme,
+					options.expanded,
+					rendered.some(section => section.hidden),
+				);
+				if (hint) lines.push(`  ${hint}`);
+				return lines.join("\n");
+			}),
+		);
+	};
+	for (const part of parts) {
+		if (typeof part === "function") run.push(part);
+		else {
+			flush();
+			components.push(part);
+		}
 	}
-	const hint = formatExpandHint(theme, options.expanded, hidden);
-	if (hint) lines.push(`  ${hint}`);
-	return lines.join("\n");
+	flush();
+	if (components.length === 1) return components[0];
+	const box = new Container();
+	for (const component of components) box.addChild(component);
+	return box;
+}
+
+/**
+ * One device's section: its docs card, its own result renderer, or its status line and output.
+ * `result` holds only this device's output (plus media when it was the whole command).
+ */
+function deviceSection(
+	dispatch: XdevDispatch,
+	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+	options: RenderResultOptions,
+	theme: Theme,
+	resolveMounted?: (name: string) => Tool | undefined,
+): Component | TextSection {
+	const text = result.content
+		.map(block => (block.type === "text" ? block.text : ""))
+		.filter(Boolean)
+		.join("\n");
+	if (dispatch.mode === "help") {
+		const card = renderXdevHelpCard(dispatch, text, resolveMounted?.(dispatch.tool), options, theme);
+		if (card) return card;
+	}
+	if (dispatch.mode === "execute") {
+		const card = renderDeviceResult(dispatch, result, options, theme, resolveMounted);
+		if (card) return card;
+	}
+	return deviceTextSection(dispatch, text, options, theme, resolveMounted);
 }
 
 function renderXdevHelpCard(
@@ -940,43 +1016,6 @@ export function protolensDeviceCallFromBashArgs(
 		return { name: parsed.name, content: parsed.argv[0], argv: parsed.argv };
 	}
 	return { name: parsed.name, argv: parsed.argv };
-}
-
-/**
- * How a bash command composes protolens calls, which decides the result card that stays faithful:
- * `"single"` is one call; `"chain"` is only protolens calls joined by `;`, `&&`, `||`, `&`, or
- * newlines — no pipes, redirects, subshells, or other commands — so the shell output is exactly the
- * devices' outputs. Anything else is `undefined`: the merged shell output is what the model saw.
- */
-export type ProtolensCommandShape = "single" | "chain";
-
-export function protolensCommandShape(args: unknown): ProtolensCommandShape | undefined {
-	const command = (args as { command?: unknown } | undefined)?.command;
-	if (typeof command !== "string") return undefined;
-	const segments = extractFlatShellCommandSegments(command);
-	if (segments.length === 0) return undefined;
-	for (const segment of segments) {
-		if (segment.pipedStdin || hasUnquotedRedirect(segment.text)) return undefined;
-		const argv = tokenizeShellSegments(segment.text);
-		if (argv.length !== 1 || !parseProtolensBashCommand(argv[0])) return undefined;
-	}
-	return segments.length === 1 ? "single" : "chain";
-}
-
-function hasUnquotedRedirect(text: string): boolean {
-	let quote: string | undefined;
-	for (let i = 0; i < text.length; i++) {
-		const ch = text[i];
-		if (quote) {
-			if (quote === '"' && ch === "\\") i++;
-			else if (ch === quote) quote = undefined;
-			continue;
-		}
-		if (ch === "\\") i++;
-		else if (ch === "'" || ch === '"') quote = ch;
-		else if (ch === "<" || ch === ">") return true;
-	}
-	return false;
 }
 
 /** Best-effort CLI argv → args for call previews; parse failures render an empty preview. */
@@ -1015,36 +1054,73 @@ export function renderXdevCall(
 	return widthAwareText(width => formatDispatchStatusLine(dispatch, pending, width, theme, resolveMounted));
 }
 
-export function renderXdevResult(
-	dispatch: XdevDispatch | readonly XdevDispatch[],
+/** The bash result details the protolens card reads. */
+export interface ProtolensBashDetails {
+	xdev?: unknown;
+	deviceResults?: ReadonlyArray<{ stageIndex?: number; xdev?: unknown; isError?: boolean }>;
+	execution?: { stages?: readonly ExecutionStageMetadata[] };
+	timedOut?: boolean;
+	async?: unknown;
+	mutatedPaths?: readonly string[];
+}
+
+/**
+ * The card for a bash command that ran protolens devices: each stage in execution order, devices as
+ * their own cards with their own output, other commands as `$ command` and their output. `undefined`
+ * keeps the shell card: no dispatch ran, or the shell outcome (timeout, background job, file writes)
+ * is what matters.
+ */
+export function renderProtolensResult(
+	details: ProtolensBashDetails | undefined,
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
-	shape?: ProtolensCommandShape,
+	args?: unknown,
 ): Component | undefined {
-	const dispatches = Array.isArray(dispatch) ? dispatch : [dispatch];
-	if (shape === "single" && dispatches.length === 1) {
-		const only = dispatches[0];
-		const text = result.content
-			.map(block => (block.type === "text" ? block.text : ""))
-			.filter(Boolean)
-			.join("\n");
-		if (only.mode === "help") {
-			return renderXdevHelpCard(only, text, resolveMounted?.(only.tool), options, theme);
+	if (!details?.xdev || details.async || details.timedOut || details.mutatedPaths?.length) return undefined;
+	const stages = details.execution?.stages ?? [];
+	const devices = new Map<number, XdevDispatch>();
+	for (const record of details.deviceResults ?? []) {
+		if (record.stageIndex === undefined || !isRecord(record.xdev)) continue;
+		const dispatch = record.xdev as unknown as XdevDispatch;
+		devices.set(record.stageIndex, record.isError ? { ...dispatch, isError: true } : dispatch);
+	}
+	if (!options.isPartial && devices.size > 0 && stages.some(stage => devices.has(stage.index))) {
+		const parts: Array<Component | TextSection> = [];
+		for (const stage of stages) {
+			const dispatch = devices.get(stage.index);
+			if (!dispatch) {
+				parts.push(shellStageSection(stage, options, theme));
+				continue;
+			}
+			// A command that was only this device: the result is its output, media included, and uncapped.
+			const own =
+				stages.length === 1 && !dispatch.isError
+					? result
+					: { content: [{ type: "text", text: stageOutput(stage) }], isError: dispatch.isError };
+			parts.push(deviceSection(dispatch, own, options, theme, resolveMounted));
 		}
-		const rendered =
-			only.mode === "execute" ? renderDeviceResult(only, result, options, theme, resolveMounted) : undefined;
-		if (rendered) return rendered;
-		const sections = [{ dispatch: only, output: only.output ?? text }];
-		return widthAwareText(width => formatXdevDispatchCard(sections, options, width, theme, resolveMounted));
+		// Loops can run a device per iteration; collapsed cards show the first few commands.
+		const shown = options.expanded ? parts : parts.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS);
+		const more = parts.length - shown.length;
+		const omitted = stages.reduce((sum, stage) => sum + (stage.omittedAfter ?? 0), 0);
+		const notes = [
+			...(more > 0 ? [`… ${more} more ${pluralize("command", more)}`] : []),
+			...(omitted > 0 ? [`… ${omitted} more ${pluralize("command", omitted)} not recorded`] : []),
+		];
+		if (notes.length === 0) return stackSections(shown, options, theme);
+		const footer: TextSection = () => ({ lines: notes.map(note => theme.fg("dim", note)), hidden: more > 0 });
+		return stackSections([...shown, footer], options, theme);
 	}
-	if (shape === "chain" && dispatches.every(dispatch => dispatch.output !== undefined)) {
-		const sections = dispatches.map(dispatch => ({ dispatch, output: dispatch.output ?? "" }));
-		return widthAwareText(width => formatXdevDispatchCard(sections, options, width, theme, resolveMounted));
+	// No stage records (PTY or client terminal runs) or still streaming: only a bare call maps cleanly.
+	const command = (args as { command?: unknown } | undefined)?.command;
+	const segments = typeof command === "string" ? tokenizeShellSegments(command) : [];
+	const dispatch = details.xdev as XdevDispatch;
+	if (segments.length !== 1 || !parseProtolensBashCommand(segments[0]) || Array.isArray(details.xdev)) {
+		return undefined;
 	}
-	// Protolens mixed with pipes, redirects, or other commands: the shell card shows what actually ran.
-	return undefined;
+	return stackSections([deviceSection(dispatch, result, options, theme, resolveMounted)], options, theme);
 }
 
 /**

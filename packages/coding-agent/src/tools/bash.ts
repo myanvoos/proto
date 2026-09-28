@@ -289,8 +289,6 @@ export interface ProtolensDispatchRecord {
 	recordError?: string;
 	content?: unknown[];
 	isError?: boolean;
-	/** The device's own text output, before shell composition merges it with other stages. */
-	output?: string;
 }
 
 function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
@@ -314,7 +312,6 @@ function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
 				recordError: typeof parsed.recordError === "string" ? parsed.recordError : undefined,
 				content: Array.isArray(parsed.content) ? parsed.content : undefined,
 				isError: parsed.isError === true,
-				output: typeof parsed.output === "string" ? parsed.output : undefined,
 			});
 		} catch (error) {
 			return {
@@ -921,7 +918,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							xdev: usage,
 							content: [],
 							isError: true,
-							output: stderr,
 						}),
 					});
 				}
@@ -947,14 +943,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					details: result.details,
 					content: nonText,
 					isError,
-					output: text,
 				});
 			} catch {
 				record = JSON.stringify({
 					stageIndex: request.stageIndex,
 					content: [],
 					isError,
-					output: text,
 					recordError: "non-text result was not serializable",
 				});
 			}
@@ -1157,20 +1151,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const protolensJsonOutputs: unknown[] = [];
 		const protolensValues: unknown[] = [];
 		let protolensTransportFailure = false;
-		// Several dispatches share one shell output, and a failure's shell output carries exit notices;
-		// keep the device's own text so the card can show it.
-		const severalDispatches = protolensResult.records.length > 1;
 		for (const record of protolensResult.records) {
-			const keepDispatchOutput = severalDispatches || record.isError === true;
 			if (record.xdev !== undefined) {
 				protolensValues.push(
-					record.isError === true || keepDispatchOutput
-						? {
-								...(record.xdev as Record<string, unknown>),
-								...(record.isError === true ? { isError: true } : {}),
-								...(keepDispatchOutput ? { output: record.output ?? "" } : {}),
-							}
-						: record.xdev,
+					record.isError === true ? { ...(record.xdev as Record<string, unknown>), isError: true } : record.xdev,
 				);
 			}
 			// A failed intermediate protolens tool is data; final shell status remains authoritative.
@@ -1219,9 +1203,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const details: BashToolDetails = {
 			execution,
-			deviceResults: protolensResult.records.length
-				? protolensResult.records.map(({ output: _output, ...record }) => record)
-				: undefined,
+			deviceResults: protolensResult.records.length ? protolensResult.records : undefined,
 		};
 		if (options.queriedExecutions) details.executionRecordOmitted = "executions query";
 		const fsObservations = "fsObservations" in result ? result.fsObservations : undefined;

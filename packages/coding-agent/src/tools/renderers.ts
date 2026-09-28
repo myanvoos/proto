@@ -17,12 +17,11 @@ import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
 import { thinkToolRenderer } from "./think";
 import {
-	protolensCommandShape,
+	type ProtolensBashDetails,
 	protolensDeviceCallFromBashArgs,
+	renderProtolensResult,
 	renderXdevCall,
-	renderXdevResult,
 	setXdevRendererLookup,
-	type XdevDispatch,
 } from "./xdev";
 
 export type ToolRenderer = {
@@ -75,20 +74,16 @@ function getBashProtoRenderer(): ToolRenderer {
 			uiTheme: Theme,
 			args?: unknown,
 		): Component {
-			const xdev = (result.details as { xdev?: XdevDispatch | readonly XdevDispatch[] } | undefined)?.xdev;
-			if (xdev) {
-				const context = (options as { renderContext?: { resolveXdevTool?: (name: string) => unknown } })
-					.renderContext;
-				const delegated = renderXdevResult(
-					xdev,
-					result,
-					options,
-					uiTheme,
-					context?.resolveXdevTool as Parameters<typeof renderXdevResult>[4],
-					protolensCommandShape(args),
-				);
-				if (delegated) return delegated;
-			}
+			const context = (options as { renderContext?: { resolveXdevTool?: (name: string) => unknown } }).renderContext;
+			const delegated = renderProtolensResult(
+				result.details as ProtolensBashDetails | undefined,
+				result,
+				options,
+				uiTheme,
+				context?.resolveXdevTool as Parameters<typeof renderProtolensResult>[4],
+				args,
+			);
+			if (delegated) return delegated;
 			const render = bashToolRenderer.renderResult as (
 				r: typeof result,
 				o: RenderResultOptions,

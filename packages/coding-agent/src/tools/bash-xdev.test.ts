@@ -811,14 +811,22 @@ test("chained protolens help calls render one status line per device, not a docs
 	});
 });
 
-test("protolens mixed with other commands renders the shell card with the full command", async () => {
+test("protolens mixed with other commands renders every command in execution order", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `printf hi; protolens probe ?`;
+		const command = `cd /tmp && protolens probe --value one; echo "exit=$?"`;
 		const result = await bash.execute("protolens-composite-mixed", { command });
 		expect(result.isError).not.toBe(true);
-		const rendered = renderBashResult(result, command, true, session);
-		expect(rendered).toContain(`$ ${command}`);
-		expect(rendered).toContain("hi");
+		const lines = renderBashResult(result, command, false, session)
+			.split("\n")
+			.map(line => line.trim())
+			.filter(Boolean);
+		expect(lines).toEqual([
+			"$ cd /tmp",
+			"▪ protolens://probe: --value one",
+			"probe:one",
+			'$ echo "exit=$?"',
+			"exit=0",
+		]);
 	});
 });
 
@@ -839,14 +847,41 @@ test("chained protolens execute calls render one line per dispatch with their ou
 	});
 });
 
-test("piped protolens output renders the merged shell output, not per-device sections", async () => {
+test("a piped protolens call shows the device's own output, then what the pipe made of it", async () => {
 	await withBash(async (bash, _state, session) => {
-		const command = `protolens probe '{"value":"one"}' | tr a-z A-Z; protolens probe '{"value":"two"}'`;
+		const command = `protolens probe '{"value":"one"}' | tr a-z A-Z`;
 		const result = await bash.execute("protolens-composite-piped", { command });
 		expect(result.isError).not.toBe(true);
+		const lines = renderBashResult(result, command, false, session)
+			.split("\n")
+			.map(line => line.trim())
+			.filter(Boolean);
+		expect(lines).toEqual(["▪ protolens://probe: --value one", "probe:one", "$ tr a-z A-Z", "PROBE:ONE"]);
+	});
+});
+
+test("a long protolens loop collapses to the first commands and expands to all of them", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `for v in 1 2 3 4 5 6 7 8 9 10; do protolens probe v$v; done`;
+		const result = await bash.execute("protolens-long-loop", { command });
+		const collapsed = renderBashResult(result, command, false, session);
+		expect(collapsed).not.toContain("probe:v10");
+		expect(collapsed).toContain("more commands");
+		const expanded = renderBashResult(result, command, true, session);
+		expect(expanded).toContain("probe:v10");
+		expect(expanded).not.toContain("more commands");
+	});
+});
+
+test("protolens calls inside a loop render one device section per iteration", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `for v in a b; do protolens probe $v; done`;
+		const result = await bash.execute("protolens-loop", { command });
 		const rendered = renderBashResult(result, command, false, session);
-		expect(rendered).toContain("PROBE:ONE");
-		expect(rendered).not.toContain("probe:one");
+		expect(rendered).toContain("protolens://probe: a");
+		expect(rendered).toContain("probe:a");
+		expect(rendered).toContain("protolens://probe: b");
+		expect(rendered).toContain("probe:b");
 	});
 });
 
