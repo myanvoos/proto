@@ -445,9 +445,9 @@ export interface ChatCompletionChunk {
 	object: "chat.completion.chunk";
 
 	moderation?: ChatCompletionChunkModeration | null;
-
-	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | null;
-
+	/** Processing type actually used for serving the request. */
+	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast" | null;
+	/** Deprecated by OpenAI: backend configuration fingerprint, pairs with `seed`. */
 	system_fingerprint?: string;
 
 	usage?: CompletionUsage | null;
@@ -670,9 +670,9 @@ export interface ChatCompletionCreateParamsBase {
 	safety_identifier?: string;
 
 	seed?: number | null;
-
-	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | null;
-
+	/** Processing type used for serving the request. */
+	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast" | null;
+	/** Up to 4 sequences where the API will stop generating further tokens. */
 	stop?: string | null | Array<string>;
 
 	store?: boolean | null;

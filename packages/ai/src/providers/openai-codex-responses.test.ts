@@ -401,3 +401,137 @@ describe("Codex WebSocket append state", () => {
 		}
 	});
 });
+
+describe("Codex service tiers", () => {
+	it("bills a requested priority turn at standard rates when the response reports default", async () => {
+		const sse = `${[
+			`data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hello" }] } })}`,
+			`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", service_tier: "default", usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8, input_tokens_details: { cached_tokens: 0 } } } })}`,
+		].join("\n\n")}\n\n`;
+		const model = buildModel({
+			id: "gpt-5.5",
+			name: "Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: 400_000,
+			maxTokens: 128_000,
+		});
+		const result = await streamOpenAICodexResponses(
+			model,
+			{
+				systemPrompt: ["You are a helpful assistant."],
+				messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+			},
+			{
+				fetch: async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+				apiKey: createCodexTestToken(),
+				serviceTier: "priority",
+			},
+		).result();
+		// 5 input tokens at $1/MTok and 3 output at $2/MTok, no 2.5x priority multiplier.
+		expect(result.usage.cost.input).toBeCloseTo(0.000005);
+		expect(result.usage.cost.output).toBeCloseTo(0.000006);
+	});
+
+	it("sends a full websocket create when entering or leaving the advertised Ultrafast tier", async () => {
+		const sentRequests: Array<Record<string, unknown>> = [];
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not be called");
+		});
+
+		class UltrafastWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				this.scheduleOpen();
+			}
+
+			override send(data: string): void {
+				sentRequests.push(JSON.parse(data) as Record<string, unknown>);
+				const responseIndex = sentRequests.length;
+				this.emitCodexResponse({
+					messageId: `msg_${responseIndex}`,
+					responseId: `resp_${responseIndex}`,
+					text: `Answer ${responseIndex}`,
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		installMockWebSocket((url, options) => new UltrafastWebSocket(url, options));
+		const spec = {
+			id: "gpt-6.1-sol",
+			name: "GPT-6.1 Sol",
+			api: "openai-codex-responses" as const,
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			preferWebsockets: true,
+			input: ["text"] as ("text" | "image" | "audio" | "video")[],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 272_000,
+			maxTokens: 128_000,
+		};
+		const model = buildModel({ ...spec, serviceTiers: ["priority", "ultrafast"] });
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const baseOptions = {
+			fetch: fetchMock as FetchImpl,
+			apiKey: createCodexTestToken(),
+			sessionId: "ws-ultrafast-session",
+			providerSessionState,
+		};
+		const startedAt = Date.now();
+		let context: Context = {
+			systemPrompt: ["You are a helpful assistant."],
+			messages: [{ role: "user", content: "Question 1", timestamp: startedAt }],
+		};
+		try {
+			for (const [turn, serviceTier] of [undefined, "ultrafast", "ultrafast", undefined].entries()) {
+				if (turn > 0) {
+					context = {
+						systemPrompt: context.systemPrompt,
+						messages: [
+							...context.messages,
+							{ role: "user", content: `Question ${turn + 1}`, timestamp: startedAt + turn },
+						],
+					};
+				}
+				const response = await streamOpenAICodexResponses(model, context, {
+					...baseOptions,
+					...(serviceTier ? { serviceTier } : {}),
+				}).result();
+				context = { systemPrompt: context.systemPrompt, messages: [...context.messages, response] };
+			}
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(sentRequests.map(request => [request.service_tier, request.previous_response_id])).toEqual([
+				[undefined, undefined],
+				// Standard → Ultrafast: full create, the whole transcript replayed.
+				["ultrafast", undefined],
+				// Ultrafast → Ultrafast: chained delta.
+				["ultrafast", "resp_2"],
+				// Ultrafast → Standard: full create again.
+				[undefined, undefined],
+			]);
+			expect(JSON.stringify(sentRequests[1]?.input)).toContain("Question 1");
+			expect(JSON.stringify(sentRequests[2]?.input)).not.toContain("Question 2");
+			expect(JSON.stringify(sentRequests[3]?.input)).toContain("Question 1");
+
+			// A Codex model that does not advertise the tier never receives it.
+			sentRequests.length = 0;
+			await streamOpenAICodexResponses(buildModel({ ...spec, serviceTiers: ["priority"] }), context, {
+				...baseOptions,
+				sessionId: "ws-ultrafast-unadvertised",
+				serviceTier: "ultrafast",
+			}).result();
+			expect(sentRequests).toHaveLength(1);
+			expect(sentRequests[0]?.service_tier).toBeUndefined();
+		} finally {
+			closeProviderSessionState(providerSessionState);
+		}
+	});
+});

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6.1 Sol (`gpt-6.1-sol` / `gpt-6.1-sol-wm`) pricing at GPT-6 Sol's $2/$10 list with $0.10 cached input, and a curated 922K extended-context maximum (#13782)
+
+### Changed
+
+- Codex requests now report client version 0.159.0 (was 0.155.1), matching the current Codex CLI, so the backend's per-model client-version gates stay current and newly shipped SKUs such as GPT-6.1 Sol appear in discovery (#13782)
+
 ## [18.6.0] - 2026-09-23
 
 ### Added

@@ -49,6 +49,38 @@ describe("model thinking derivation", () => {
 		expect(model.thinking?.mode).toBe("effort");
 	});
 
+	it("offers the full effort ladder including max to unknown-family models", () => {
+		const fullLadder = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
+
+		const completions = createReasoningModel("mystery-reasoner-9", "openai-completions", "acme-gateway");
+		expect(completions.thinking?.mode).toBe("effort");
+		expect(getSupportedEfforts(completions)).toEqual(fullLadder);
+
+		const responses = createReasoningModel("mystery-reasoner-9", "openai-responses", "acme-gateway");
+		expect(responses.thinking?.mode).toBe("effort");
+		expect(getSupportedEfforts(responses)).toEqual(fullLadder);
+
+		const anthropicTransport = createReasoningModel("mystery-reasoner-9", "anthropic-messages", "acme-gateway");
+		expect(anthropicTransport.thinking?.mode).toBe("budget");
+		expect(getSupportedEfforts(anthropicTransport)).toEqual(fullLadder);
+	});
+
+	it("keeps known pre-4.6 Claude rows off the max tier on Anthropic transports", () => {
+		const messages = createReasoningModel("claude-opus-4-5", "anthropic-messages", "acme-gateway");
+		expect(messages.thinking?.mode).toBe("anthropic-budget-effort");
+		expect(getSupportedEfforts(messages)).toEqual([
+			Effort.Minimal,
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.XHigh,
+		]);
+
+		const bedrock = createReasoningModel("claude-opus-4-5", "bedrock-converse-stream", "amazon-bedrock");
+		expect(bedrock.thinking?.mode).toBe("anthropic-budget-effort");
+		expect(getSupportedEfforts(bedrock)).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High]);
+	});
+
 	it("drives Cerebras Qwen 3.8 through OpenAI reasoning_effort instead of DashScope thinking toggles", () => {
 		const model = createReasoningModel("qwen-3.8-27b", "openai-completions", "cerebras");
 

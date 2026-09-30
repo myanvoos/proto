@@ -5869,6 +5869,16 @@ export class AgentSession {
 		return this.#models.toggleFastMode();
 	}
 
+	/** Reports whether `/fast ultra` (the OpenAI `ultrafast` tier) is selected for the active model. */
+	isUltrafastModeEnabled(): boolean {
+		return this.#models.isUltrafastModeEnabled();
+	}
+
+	/** Enables or disables the OpenAI `ultrafast` tier; `false` when the active model does not offer it. */
+	setUltrafastMode(enabled: boolean): boolean {
+		return this.#models.setUltrafastMode(enabled);
+	}
+
 	getAvailableThinkingLevels(): ReadonlyArray<Effort> {
 		return this.#models.getAvailableThinkingLevels();
 	}

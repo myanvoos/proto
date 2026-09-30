@@ -107,13 +107,39 @@ export type ToolChoice =
 
 export type CacheRetention = "none" | "short" | "long";
 
-export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
+/**
+ * Service tier hint for processing priority / cost control. These are the
+ * values providers consume on the wire:
+ *
+ * - OpenAI / OpenAI-Codex: sent verbatim as the `service_tier` field
+ *   (`flex`/`scale`/`priority`/`ultrafast`). `ultrafast` is a separate
+ *   low-latency serving path: sent to the OpenAI API as-is (preview access is
+ *   per project), and to Codex only for models whose discovery advertises it.
+ * - Google (Gemini API + Vertex AI): sent as the top-level `serviceTier`
+ *   field (`flex`/`priority`).
+ * - OpenRouter: passed through as `service_tier`; OpenRouter realizes it for
+ *   the OpenAI- and Google-family upstreams it supports and ignores it
+ *   otherwise.
+ * - Direct Anthropic: `"priority"` is translated into `speed: "fast"` plus the
+ *   fast-mode beta on supported Opus models. Other tiers are ignored.
+ *
+ * Per-family scoping is expressed by {@link ServiceTierByFamily}, not by
+ * scoped sentinel values — see {@link serviceTierFamily}.
+ */
+export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast";
 
 export type ServiceTierFamily = "openai" | "anthropic" | "google";
 
 export type ServiceTierByFamily = Partial<Record<ServiceTierFamily, ServiceTier>>;
 
-type ServiceTierModel = Pick<Model, "provider" | "api" | "id">;
+type ServiceTierModel = Pick<Model, "provider" | "api" | "id"> & Partial<Pick<Model, "serviceTiers">>;
+// The service-tier matrix below intentionally stays in TypeScript rather than
+// a data-driven rule tree: `shouldSendServiceTier` accepts bare provider
+// strings (agent telemetry, google-shared header placement) and the stats
+// parser rebuilds slim `{ provider, api, id }` models from historical session
+// JSONL — neither path holds a resolved compat record. The functions branch on
+// structured `classifyModel` facts, api, and a short provider list, which is
+// the sanctioned mechanism layer.
 
 function isOpenAIServiceTierApi(api: Api | undefined): boolean {
 	return api === "openai-completions" || api === "openai-responses" || api === "openai-codex-responses";
@@ -156,12 +182,44 @@ export function resolveModelServiceTier(
 	return family ? tiers[family] : undefined;
 }
 
+/**
+ * True when the tier should be sent on the wire as the provider's service-tier
+ * request field. `auto` is never forwarded — it is OpenAI's implicit default, so
+ * omitting `service_tier` is identical to requesting `auto`, and the Codex
+ * (ChatGPT OAuth) endpoint rejects an explicit `auto` outright. OpenAI /
+ * OpenAI-Codex accept every other {@link ServiceTier}; Google (Gemini API +
+ * Vertex) and OpenRouter accept `flex`/`priority`; Fireworks Serverless
+ * realizes only its Priority serving path. Anthropic is absent because it
+ * realizes `priority` via `speed: "fast"`.
+ *
+ * Codex-backend models (`openai-codex-responses`): `ultrafast` is sent only
+ * when the model's discovered `service_tiers` lists it. `priority`/`scale`
+ * are dropped only when that list is non-empty and omits them (codex-rs
+ * `service_tier_for_request`); an empty or missing list counts as "not
+ * reported" — accounts whose `/models` lists no tiers keep `/fast` — so the
+ * provider-level answer stands. `flex` and `default` are never gated.
+ * First-party OpenAI takes `ultrafast` as-is. A bare provider string cannot
+ * carry the list, so it answers for the provider alone.
+ */
 export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
 	target: Provider | ServiceTierModel | undefined,
 ): boolean {
 	if (!serviceTier || serviceTier === "auto") return false;
 	const provider = typeof target === "string" ? target : target?.provider;
+	if (
+		typeof target !== "string" &&
+		target?.api === "openai-codex-responses" &&
+		serviceTier !== "flex" &&
+		serviceTier !== "default"
+	) {
+		const advertised = target.serviceTiers;
+		if (serviceTier === "ultrafast") return advertised?.includes(serviceTier) === true;
+		if (advertised !== undefined && advertised.length > 0) return advertised.includes(serviceTier);
+	}
+	if (serviceTier === "ultrafast") {
+		return provider === "openai" || (typeof target === "string" && provider === "openai-codex");
+	}
 	if (provider === "openai" || provider === "openai-codex") return true;
 	if (provider === "openrouter") {
 		return serviceTier === "flex" || serviceTier === "scale" || serviceTier === "priority";
@@ -213,7 +271,14 @@ export function coerceServiceTierByFamily(value: unknown): ServiceTierByFamily |
 		const out: ServiceTierByFamily = {};
 		for (const family of ["openai", "anthropic", "google"] as const) {
 			const tier = src[family];
-			if (tier === "auto" || tier === "default" || tier === "flex" || tier === "scale" || tier === "priority") {
+			if (
+				tier === "auto" ||
+				tier === "default" ||
+				tier === "flex" ||
+				tier === "scale" ||
+				tier === "priority" ||
+				tier === "ultrafast"
+			) {
 				out[family] = tier;
 			}
 		}

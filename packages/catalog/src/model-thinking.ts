@@ -631,6 +631,9 @@ function inferAnthropicSupportedEfforts<TApi extends Api>(
 	if (spec.api === "bedrock-converse-stream" && semverGte(parsedModel.version, "4.6")) {
 		return DEFAULT_REASONING_EFFORTS;
 	}
+	if (spec.api === "anthropic-messages") {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+	}
 	return inferFallbackEfforts(spec, compat);
 }
 
@@ -641,10 +644,10 @@ function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: C
 		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
 	}
 	if (spec.api === "anthropic-messages") {
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+		return THINKING_EFFORTS;
 	}
 	if (spec.name.includes("deepseek-v4")) {
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+		return THINKING_EFFORTS;
 	}
 	if (spec.api === "bedrock-converse-stream") {
 		return DEFAULT_REASONING_EFFORTS;
@@ -659,7 +662,7 @@ function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: C
 			return DEFAULT_REASONING_EFFORTS;
 		}
 		if (resolved.thinkingFormat === "openai" && resolved.supportsReasoningEffort) {
-			return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+			return THINKING_EFFORTS;
 		}
 		return DEFAULT_REASONING_EFFORTS;
 	}
@@ -669,7 +672,7 @@ function inferFallbackEfforts<TApi extends Api>(spec: ModelSpec<TApi>, compat: C
 		spec.api === "openai-codex-responses" ||
 		spec.api === "azure-openai-responses"
 	) {
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+		return THINKING_EFFORTS;
 	}
 	return DEFAULT_REASONING_EFFORTS;
 }

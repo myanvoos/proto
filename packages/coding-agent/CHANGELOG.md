@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/fast ultra` to select the OpenAI `ultrafast` tier; Codex models offer it only when their discovery reports the tier (#13782)
+
 ## [19.1.3] - 2026-09-28
 
 ### Changed

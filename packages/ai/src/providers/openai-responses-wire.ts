@@ -323,9 +323,28 @@ export interface Response {
 	reasoning?: Reasoning | null;
 
 	safety_identifier?: string;
-
-	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | null;
-
+	/**
+	 * Specifies the latency tier to use for processing the request. This parameter is
+	 * relevant for customers subscribed to the scale tier service:
+	 *
+	 * - If set to 'auto', then the request will be processed with the service tier
+	 *   configured in the Project settings. Unless otherwise configured, the Project
+	 *   will use 'default'.
+	 * - If set to 'default', then the request will be processed with the standard
+	 *   pricing and performance for the selected model.
+	 * - If set to '[flex](https://platform.openai.com/docs/guides/flex-processing)' or
+	 *   '[priority](https://openai.com/api-priority-processing/)', then the request
+	 *   will be processed with the corresponding service tier.
+	 * - When not set, the default behavior is 'auto'.
+	 *
+	 * When this parameter is set, the response body will include the `service_tier`
+	 * utilized.
+	 */
+	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast" | null;
+	/**
+	 * The status of the response generation. One of `completed`, `failed`,
+	 * `in_progress`, `cancelled`, `queued`, or `incomplete`.
+	 */
 	status?: ResponseStatus;
 
 	text?: ResponseTextConfig;
@@ -2749,9 +2768,27 @@ export interface ResponseCreateParamsBase {
 	reasoning?: Reasoning | null;
 
 	safety_identifier?: string;
-
-	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | null;
-
+	/**
+	 * Specifies the latency tier to use for processing the request. This parameter is
+	 * relevant for customers subscribed to the scale tier service:
+	 *
+	 * - If set to 'auto', then the request will be processed with the service tier
+	 *   configured in the Project settings. Unless otherwise configured, the Project
+	 *   will use 'default'.
+	 * - If set to 'default', then the request will be processed with the standard
+	 *   pricing and performance for the selected model.
+	 * - If set to '[flex](https://platform.openai.com/docs/guides/flex-processing)' or
+	 *   '[priority](https://openai.com/api-priority-processing/)', then the request
+	 *   will be processed with the corresponding service tier.
+	 * - When not set, the default behavior is 'auto'.
+	 *
+	 * When this parameter is set, the response body will include the `service_tier`
+	 * utilized.
+	 */
+	service_tier?: "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast" | null;
+	/**
+	 * Whether to store the generated model response for later retrieval via API.
+	 */
 	store?: boolean | null;
 
 	stream?: boolean | null;

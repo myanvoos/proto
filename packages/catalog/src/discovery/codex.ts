@@ -168,6 +168,8 @@ interface ParsedCodexModelEntry {
 	useResponsesLite: boolean;
 	toolMode: boolean;
 	priority: number;
+	/** Advertised tier ids; `undefined` when the entry has no `service_tiers` array. */
+	serviceTiers: string[] | undefined;
 }
 
 function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
@@ -190,6 +192,17 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		return null;
 	}
 
+	// codex-rs `ModelServiceTier { id, name, description }`; only the id reaches the wire.
+	// An explicit empty array is kept: it means the model offers no optional tier.
+	let serviceTiers: string[] | undefined;
+	if (Array.isArray(entry.service_tiers)) {
+		serviceTiers = [];
+		for (const tier of entry.service_tiers) {
+			const id = tier !== null && typeof tier === "object" && "id" in tier ? toNonEmptyString(tier.id) : null;
+			if (id && !serviceTiers.includes(id)) serviceTiers.push(id);
+		}
+	}
+
 	return {
 		slug,
 		name: toNonEmptyString(entry.name) ?? slug,
@@ -204,6 +217,7 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		useResponsesLite: entry.useResponsesLite === true,
 		toolMode: entry.toolMode === "code_mode_only" || entry.tool_mode === "code_mode_only",
 		priority: toFiniteNumber(entry.priority) ?? Number.MAX_SAFE_INTEGER,
+		serviceTiers,
 	};
 }
 
@@ -260,6 +274,7 @@ function buildNormalizedCodexModel(
 					: {}),
 			...(bundledModel?.applyPatchToolType ? { applyPatchToolType: bundledModel.applyPatchToolType } : {}),
 			...(bundledModel?.compatConfig ? { compat: bundledModel.compatConfig } : {}),
+			...(parsed.serviceTiers !== undefined ? { serviceTiers: parsed.serviceTiers } : {}),
 		},
 	};
 }

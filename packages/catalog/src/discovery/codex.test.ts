@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { shouldSendServiceTier } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "../build";
 import { fetchCodexModels, PI_CODEX_CATALOG_URL } from "./codex";
 
 function response(body: unknown, init?: ResponseInit): Response {
@@ -90,6 +92,8 @@ describe("fetchCodexModels", () => {
 					"gpt-6-astra": { ...apiPriced, id: "gpt-6-astra" },
 					"gpt-6-astra-wm": { ...apiPriced, id: "gpt-6-astra-wm" },
 					"gpt-6-luna": { ...apiPriced, id: "gpt-6-luna" },
+					"gpt-6.1-sol": { ...apiPriced, id: "gpt-6.1-sol" },
+					"gpt-6.1-sol-wm": { ...apiPriced, id: "gpt-6.1-sol-wm" },
 				}),
 		});
 		const costs = Object.fromEntries((result?.models ?? []).map(model => [model.id, model.cost]));
@@ -97,6 +101,31 @@ describe("fetchCodexModels", () => {
 		expect(costs["gpt-6-astra"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
 		expect(costs["gpt-6-astra-wm"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
 		expect(costs["gpt-6-luna"]).toEqual({ input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0 });
+		// GPT-6.1 Sol is not bundled yet, so the `-wm` worker route is priced directly.
+		expect(costs["gpt-6.1-sol"]).toEqual({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 });
+		expect(costs["gpt-6.1-sol-wm"]).toEqual({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 });
+	});
+
+	test("gates Ultrafast on the discovered service_tiers list", async () => {
+		const fetchFn = async () =>
+			response({
+				models: [
+					{
+						slug: "gpt-6.1-sol",
+						service_tiers: [
+							{ id: "priority", name: "Fast", description: "1.5x speed, increased usage" },
+							{ id: "ultrafast", name: "Ultrafast", description: "The fastest available responses." },
+						],
+					},
+					{ slug: "gpt-6-sol", service_tiers: [{ id: "priority", name: "Fast", description: "" }] },
+					{ slug: "gpt-5.5" },
+				],
+			});
+		const result = await fetchCodexModels({ fetchFn });
+		const ultrafastBySlug = Object.fromEntries(
+			(result?.models ?? []).map(spec => [spec.id, shouldSendServiceTier("ultrafast", buildModel(spec))]),
+		);
+		expect(ultrafastBySlug).toEqual({ "gpt-6.1-sol": true, "gpt-6-sol": false, "gpt-5.5": false });
 	});
 
 	test("keeps the one-million-token floor for GPT-5.6 Codex models", async () => {

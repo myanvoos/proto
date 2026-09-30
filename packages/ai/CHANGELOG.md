@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `ultrafast` service tier (#13782). It is sent to the OpenAI API as-is, and to Codex only for models that list it in their discovered service tiers; other providers never receive it. On Codex websockets, switching into or out of `ultrafast` starts a new response chain instead of reusing `previous_response_id`, matching the Codex CLI. Ultrafast turns are costed at standard rates because no Ultrafast price is published yet.
+
+### Fixed
+
+- Fixed Codex requests sending `priority` (and `scale`) to models whose discovered service tiers list other tiers but not that one, matching the Codex CLI; an empty or missing list is treated as not reported, so `priority` is still sent and `/fast` keeps working on accounts whose `/models` lists no tiers (`flex` is always allowed) (#13782)
+- Fixed Codex priority cost: a turn the backend reports as served at `default` is no longer billed at the priority multiplier (#13782)
+
 ## [19.1.3] - 2026-09-28
 
 ### Breaking Changes

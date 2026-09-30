@@ -1,11 +1,13 @@
 import type { Model } from "./types";
 
-// Codex reports a 272K default and a stale 872K maximum for Astra; OpenAI documents 1.05M total context with at most
-// 922K input, so the curated input ceiling is 922K. A higher live maximum still wins.
+// Codex reports a 272K default and a stale 872K maximum for Astra and GPT-6.1 Sol; OpenAI documents 1.05M total
+// context with at most 922K input, so the curated input ceiling is 922K. A higher live maximum still wins.
 const CURATED_MAX_CONTEXT_WINDOWS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
 	"openai-codex": {
 		"gpt-6-astra": 922_000,
 		"gpt-6-astra-wm": 922_000,
+		"gpt-6.1-sol": 922_000,
+		"gpt-6.1-sol-wm": 922_000,
 	},
 };
 

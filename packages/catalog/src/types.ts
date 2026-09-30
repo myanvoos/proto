@@ -662,7 +662,13 @@ export interface Model<TApi extends Api = Api> {
 	useResponsesLite?: boolean;
 
 	toolMode?: "code_mode_only";
-
+	/**
+	 * Service-tier ids the provider advertises for this model (Codex discovery
+	 * `service_tiers[].id`, e.g. `priority`, `ultrafast`). Absent when the
+	 * provider publishes no per-model tier list.
+	 */
+	serviceTiers?: readonly string[];
+	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
 
 	compactionModel?: string;

@@ -31,6 +31,11 @@ const CODEX_SUBSCRIPTION_COST: Readonly<Record<string, TokenCost>> = {
 	"gpt-6-astra": { input: 10, output: 50, cacheRead: 1, cacheWrite: 0 },
 	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 0 },
 	"gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0 },
+	// GPT-6.1 Sol keeps GPT-6 Sol's $2/$10 list price but halves cached input
+	// to $0.10 (OpenAI API docs, 2026-09-29). Not bundled yet, so the `-wm`
+	// worker route does not canonicalize to the plain id and needs its own key.
+	"gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 },
+	"gpt-6.1-sol-wm": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 },
 };
 
 export function resolveCodexSubscriptionCost(canonicalModelId: string): TokenCost | undefined {

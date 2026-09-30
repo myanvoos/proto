@@ -1216,6 +1216,8 @@ function getCodexServiceTierCostMultiplier(
 	model: Pick<Model<"openai-codex-responses">, "id">,
 	serviceTier: ServiceTier | "default" | undefined,
 ): number {
+	// `ultrafast` has no published price (API preview, Codex credits), so it is
+	// shown at 1x rather than an invented multiplier.
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
@@ -1226,24 +1228,20 @@ function getCodexServiceTierCostMultiplier(
 	}
 }
 
-function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier | "default" | undefined {
-	switch (res) {
-		case "flex":
-			return "flex";
-		case "priority":
-			return "priority";
-		default:
-			if (req === "flex" || req === "priority") {
-				return req;
-			}
-			return "default";
-	}
+/**
+ * The tier a Codex response was billed at. The response echo is authoritative
+ * whenever it reports a tier (the backend may serve a requested priority/flex
+ * turn as `default`); the requested tier is used only when the echo is absent.
+ */
+function resolveCodexCostServiceTier(res: ServiceTier | undefined, req?: unknown): ServiceTier | "default" | undefined {
+	const served = res ?? req;
+	return served === "flex" || served === "priority" ? served : "default";
 }
 
 function applyCodexServiceTierPricing(
 	model: Pick<Model<"openai-codex-responses">, "id">,
 	usage: AssistantMessage["usage"],
-	resTier: unknown,
+	resTier: ServiceTier | undefined,
 	reqTier: unknown,
 ): void {
 	const resolvedTier = resolveCodexCostServiceTier(resTier, reqTier);
@@ -3075,6 +3073,7 @@ function parseCodexServiceTier(value: unknown): ServiceTier | undefined {
 		case "flex":
 		case "scale":
 		case "priority":
+		case "ultrafast":
 			return value;
 		default:
 			return undefined;
@@ -3287,11 +3286,26 @@ const CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP = {
 	service_tier: true,
 };
 
+/**
+ * Shape the next websocket turn's request body: when the session's strict
+ * history prefix is intact and request options other than the per-turn
+ * service_tier match, chain via previous_response_id + delta-only input;
+ * replay the full transcript. SSE requests never chain — the HTTP endpoint's
+ * request schema has no `previous_response_id` (codex-rs carries it only on
+ * websocket `response.create` frames) and strict gateway validators 400 it
+ * with `{"detail":"Unsupported parameter: previous_response_id"}`.
+ *
+ * Entering or leaving `ultrafast` still breaks the chain: that tier is a
+ * separate serving path, and codex-rs sends a full `response.create` across
+ * such a switch rather than a `previous_response_id` delta.
+ */
 function buildCodexChainedRequestBody(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 ): RequestBody {
-	const chainable = state?.canAppend === true;
+	const chainable =
+		state?.canAppend === true &&
+		(state.lastRequest?.service_tier === "ultrafast") === (requestBody.service_tier === "ultrafast");
 	const appendInput = chainable
 		? buildResponsesDeltaInput(
 				state.lastRequest,
