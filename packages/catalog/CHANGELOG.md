@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.4] - 2026-09-30
+
 ### Added
 
 - Added GPT-6.1 Sol (`gpt-6.1-sol` / `gpt-6.1-sol-wm`) pricing at GPT-6 Sol's $2/$10 list with $0.10 cached input, and a curated 922K extended-context maximum (#13782)

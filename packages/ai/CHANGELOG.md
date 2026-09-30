@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.1.4] - 2026-09-30
+
 ### Added
 
 - Added the `ultrafast` service tier (#13782). It is sent to the OpenAI API as-is, and to Codex only for models that list it in their discovered service tiers; other providers never receive it. On Codex websockets, switching into or out of `ultrafast` starts a new response chain instead of reusing `previous_response_id`, matching the Codex CLI. Ultrafast turns are costed at standard rates because no Ultrafast price is published yet.
