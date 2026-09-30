@@ -29,8 +29,7 @@
     "fix": "biome check --write --unsafe .",
     "fmt": "biome format --write .",
     "gen:native": "bun scripts/embed-native.ts",
-    "gen:native:reset": "bun scripts/embed-native.ts --reset",
-    "gen:npm": "bun scripts/gen-npm-packages.ts"
+    "gen:native:reset": "bun scripts/embed-native.ts --reset"
   },
   "devDependencies": {
     "@napi-rs/cli": "catalog:",

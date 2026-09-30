@@ -48,7 +48,7 @@ The SDK is an agent runtime, not a drop-in Messages HTTP client:
 
 The pinned SDK `0.3.283` bundles Claude Code `2.1.283`. Claude Opus 5.5 requires Claude Code `2.1.280` or newer; an older `PI_CLAUDE_EXECUTABLE` override will be rejected by the service.
 
-Source/npm installations use the SDK's optional native platform dependency; do not omit optional dependencies. The npm CLI bundle leaves the SDK external so it can resolve its native package normally. Compiled Proto binaries embed the target platform's SDK executable and extract it with the SDK's `extractFromBunfs()` helper. Cross-compilation needs that platform package installed (`bun install --os='*' --cpu='*'`). `PI_CLAUDE_EXECUTABLE` overrides the executable path for diagnostics or installations that manage Claude separately.
+Source installations use the SDK's optional native platform dependency; do not omit optional dependencies. Compiled Proto binaries embed the target platform's SDK executable and extract it with the SDK's `extractFromBunfs()` helper. Cross-compilation needs that platform package installed (`bun install --os='*' --cpu='*'`). `PI_CLAUDE_EXECUTABLE` overrides the executable path for diagnostics or installations that manage Claude separately.
 
 `packages/ai/src/providers/claude-agent-sdk.test.ts` drives the real SDK/native subprocess against an isolated HTTP fixture. It covers streaming, tool schemas and handoff, tool errors, image and signed-thinking replay, middleware, usage, credential failures, cancellation, and non-Anthropic routing. The fixture also enforces the observed Opus 5.5 minimum-runtime requirement against the actual SDK request. No live Anthropic account is required by these tests.
 

@@ -21,7 +21,7 @@ Two commands serve different purposes:
 - `bun --cwd=packages/natives run build:bindings` runs napi-rs for the host, installs a local variant addon and generated declarations, and regenerates explicit ESM/enum exports. Use this when the Rust public type surface changes.
 - `bun --cwd=packages/natives run build` invokes `sh ../../scripts/build-natives.sh host --dest native`. The host target builds through the local cargo/napi-rs backend (AVX2 detection picks modern vs baseline on x64) but does not regenerate declarations.
 
-Release builds run `scripts/build-natives.sh <target>` (plain cargo, `--profile ci`) on matching-host CI runners and publish `.node` files in platform leaf packages. The core publish rewrite removes addons and injects lockstep optional dependencies generated from `LEAF_TARGETS` in `gen-npm-packages.ts`.
+Release builds run `scripts/build-natives.sh <target>` (plain cargo, `--profile ci`) on matching-host CI runners; the built `.node` files feed the release's native-addons artifacts and are embedded into the compiled release binaries.
 
 ## Design the N-API boundary
 

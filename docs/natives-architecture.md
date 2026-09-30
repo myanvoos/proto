@@ -16,7 +16,6 @@
 - `packages/natives/scripts/build-bindings.ts`
 - `packages/natives/scripts/embed-native.ts`
 - `packages/natives/scripts/gen-enums.ts`
-- `packages/natives/scripts/gen-npm-packages.ts`
 - `scripts/build-natives.sh`
 - `crates/pi-natives/src/lib.rs` and its modules
 
@@ -55,11 +54,11 @@ Filename fallback is:
 - baseline x64: `-baseline.node`, then unsuffixed `.node`;
 - non-x64: unsuffixed `.node` only.
 
-The published core package contains loader JS, declarations, and metadata but no `.node` files. Release publishing generates `@oh-my-pi/pi-natives-<platform>-<arch>` optional-dependency leaf packages and injects them at the same version into the core manifest. `LEAF_TARGETS` in `gen-npm-packages.ts` is the authoritative publish target list.
+Nothing is published to npm. Compiled release binaries embed each platform's addon as `embedded-addons.<tag>.tar.gz` in the embedded manifest; source checkouts load addons from `packages/natives/native`. The loader still probes `@oh-my-pi/pi-natives-<platform>-<arch>` leaf packages when they resolve, but nothing generates or publishes them.
 
 ### Candidate ownership and order
 
-For a normal installed package, the platform leaf is probed before the core package's `native/` directory and `process.execPath` directory. Workspace development skips leaf resolution so local artifacts win.
+When a platform leaf package is present, it is probed before the core package's `native/` directory and `process.execPath` directory. Workspace development skips leaf resolution so local artifacts win.
 
 Compiled mode is detected by a populated embedded manifest, `PI_COMPILED`, or a Bun embedded marker in `import.meta.url`. It probes the versioned cache and legacy user-data directory before package/executable locations. `getNativesDir()` is `$XDG_DATA_HOME/proto/natives` only when `$XDG_DATA_HOME/proto` already exists; otherwise it is `~/.proto/natives`.
 

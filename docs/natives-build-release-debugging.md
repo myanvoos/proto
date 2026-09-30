@@ -23,7 +23,7 @@ Runner requirements: rustup/cargo with the pinned nightly (`rust-toolchain.toml`
 Package side (unchanged runtime/packaging):
 
 - `packages/natives/scripts/build-bindings.ts` — dev-only typedef regeneration
-- `packages/natives/scripts/embed-native.ts`, `gen-enums.ts`, `gen-npm-packages.ts`
+- `packages/natives/scripts/embed-native.ts`, `gen-enums.ts`
 - `packages/natives/package.json`
 - `packages/natives/native/index.js`, `native/loader-state.js`
 
@@ -112,7 +112,7 @@ This runs the napi CLI (host-only, local cargo profile) against `crates/pi-nativ
 
 `.github/workflows/ci.yml` separates `rust_validate` from `native_addons`; TypeScript jobs depend only on `native_addons`.
 
-**Pull requests never build or validate Rust.** Native-affecting PRs are rare enough that they don't warrant a PR-side addon build: `rust_validate` is skipped entirely (`if: github.event_name != 'pull_request'`), and `native_addons` fetches the latest release's Linux x64 addon pair from the `@oh-my-pi/pi-natives-linux-x64` npm leaf, smoke-loads both, and uploads them as the `native-addons` workflow artifact. The loader skips its version sentinel for workspace loads, so release-versioned addons load fine under a newer checkout. A PR whose TypeScript tests depend on changed native behavior fails visibly (and CI emits a notice on any native-touching PR); the Rust side is validated post-merge on main and again at release.
+**Pull requests never build or validate Rust.** Native-affecting PRs are rare enough that they don't warrant a PR-side addon build: `rust_validate` is skipped entirely (`if: github.event_name != 'pull_request'`), and PR CI runs no native smoke test. The Rust side is validated post-merge on main and again at release.
 
 On non-PR events both jobs run on `proto-kata` pods. `rust_validate` runs plain cargo, with an actions/cache entry over `~/.cargo/registry`, `~/.cargo/git`, and the shared `target/` dir keyed on the `Cargo.lock` hash:
 
@@ -131,11 +131,11 @@ Musl legs need `musl-gcc` on the runner image (`apt-get install musl-tools`); th
 
 ### Native artifact action
 
-`.github/actions/native-artifacts` is the no-build consumer: download the `native-addons` artifact into `$RUNNER_TEMP/proto-native-artifacts`, then a small POSIX loop copies each requested target's file into the destination (default `packages/natives/native`) under its canonical loader filename. It resolves `pi_natives.<target>.node` first (artifact layout) and falls back to the canonical name (sources already laid out canonically, e.g. `packages/natives/native` or npm tarballs).
+`.github/actions/native-artifacts` is the no-build consumer: download the `native-addons` artifact into `$RUNNER_TEMP/proto-native-artifacts`, then a small POSIX loop copies each requested target's file into the destination (default `packages/natives/native`) under its canonical loader filename. It resolves `pi_natives.<target>.node` first (artifact layout) and falls back to the canonical name (sources already laid out canonically, e.g. `packages/natives/native`).
 
 ### Release binary builds and publishing
 
-Binary builds are build-only and run in parallel with the test fan-out. `release_binary` (Linux matrix) needs only `native_addons`, whose workflow artifact supplies their addons. `release_binary_darwin` needs only `release_metadata` and starts the moment a release run is detected: darwin artifacts cannot be cross-built on Linux, so each macOS leg runs `scripts/build-natives.sh <native_targets> --dest packages/natives/native` itself (cold cargo builds accepted; no cache wiring), then `bun run ci:release:build-binaries` embeds and compiles the executable. Publishing is held behind `release_gate` (the aggregate of every validation job): `release_native_leaves` downloads all built addons and publishes the four `@oh-my-pi/pi-natives-<tag>` leaf packages (linux-x64, linux-arm64, darwin-x64, darwin-arm64).
+Binary builds are build-only and run in parallel with the test fan-out. `release_binary` (Linux matrix) needs only `native_addons`, whose workflow artifact supplies their addons. `release_binary_darwin` needs only `release_metadata` and starts the moment a release run is detected: darwin artifacts cannot be cross-built on Linux, so each macOS leg runs `scripts/build-natives.sh <native_targets> --dest packages/natives/native` itself (cold cargo builds accepted; no cache wiring), then `bun run ci:release:build-binaries` embeds and compiles the executable. Publishing is held behind `release_gate` (the aggregate of every validation job); `release_github` then attaches the binaries, browser-relay extension, LICENSE, THIRD-PARTY-NOTICES.txt, and SHA256 checksums to the GitHub release, and `release_brew` updates the Homebrew tap.
 
 ## Debugging playbook
 
