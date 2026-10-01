@@ -1030,8 +1030,22 @@ export class AgentsViewComponent implements Component {
 			}
 		}
 		try {
+			const liveSession = record.ref?.session;
 			if (isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
 				await this.#deps.renameCurrentSession(name);
+			} else if (liveSession && liveSession.sessionManager.getSessionFile() === sessionPath) {
+				// A live agent's in-memory manager rewrites the transcript on flush; renaming the
+				// file underneath it would be clobbered by the next append or rewrite.
+				const renamed = await liveSession.setSessionName(name, "user", "agents-view");
+				if (!renamed) {
+					const storage = new FileSessionStorage();
+					await storage.updateSessionTitle(sessionPath, {
+						title: name,
+						source: "user",
+						updatedAt: new Date().toISOString(),
+					});
+					if (record.session?.id) recordSessionTitle(record.session.id, name);
+				}
 			} else {
 				const storage = new FileSessionStorage();
 				await storage.updateSessionTitle(sessionPath, {

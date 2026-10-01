@@ -406,3 +406,94 @@ describe("agents view persisted subagent seeding", () => {
 		expect(registry.list().map(ref => ref.sessionFile)).toEqual([scoped.childFile]);
 	});
 });
+
+describe("agents view rename", () => {
+	function writeSideSessionTree(): { parentFile: string; childFile: string } {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-agents-rename-"));
+		tempDirs.push(dir);
+		const parentFile = path.join(dir, "sess_parent.jsonl");
+		const timestamp = new Date().toISOString();
+		fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", id: "parent", cwd: dir, timestamp })}\n`);
+		const root = parentFile.slice(0, -".jsonl".length);
+		fs.mkdirSync(root, { recursive: true });
+		const childFile = path.join(root, "Side-7.jsonl");
+		fs.writeFileSync(
+			childFile,
+			[
+				JSON.stringify({ type: "session", id: "side-7-session", cwd: dir, timestamp }),
+				JSON.stringify({
+					type: "session_init",
+					timestamp,
+					task: "side work",
+					systemPrompt: "You are a worker.",
+				}),
+				"",
+			].join("\n"),
+		);
+		return { parentFile, childFile };
+	}
+
+	test("renames a live agent through its in-memory session, not the raw file", async () => {
+		const { parentFile, childFile } = writeSideSessionTree();
+		const registry = AgentRegistry.global();
+		const setSessionName = spyOn(
+			{ setSessionName: async () => true },
+			"setSessionName",
+		).mockResolvedValue(true) as unknown as AgentSession["setSessionName"];
+		const liveStub = {
+			sessionManager: { getSessionFile: () => childFile },
+			setSessionName,
+		} as unknown as AgentSession;
+		registry.register({
+			id: "Side-7",
+			label: "Side-7",
+			kind: "side",
+			parentId: "Main",
+			session: liveStub,
+			sessionFile: childFile,
+			status: "idle",
+		});
+
+		const view = mountView({ currentSessionFile: parentFile });
+		await waitFor(() => renderPlain(view).includes("Side-7"), "the side agent row");
+		// Select the agent row: first selectable row after the parent summary.
+		view.handleInput("\x1b[B");
+		view.handleInput("\x12"); // ctrl+r → rename mode
+		expect(renderPlain(view)).toContain("Rename");
+		view.handleInput("R");
+		view.handleInput("e");
+		view.handleInput("b");
+		view.handleInput("o");
+		view.handleInput("o");
+		view.handleInput("t");
+		view.handleInput("\r");
+		await waitFor(() => setSessionName.mock.calls.length > 0, "the live rename call");
+		expect(setSessionName.mock.calls[0][0]).toBe("Reboot");
+		expect(setSessionName.mock.calls[0][1]).toBe("user");
+		// The raw transcript file was not rewritten behind the live manager's back:
+		// no user title slot appeared on disk; the live manager owns the title.
+		const lines = fs.readFileSync(childFile, "utf8").split("\n");
+		expect(lines.some(line => line.includes("Reboot"))).toBe(false);
+	});
+
+	test("renames a persisted agent through file storage", async () => {
+		const { parentFile, childFile } = writeSideSessionTree();
+		const registry = AgentRegistry.global();
+		await registerPersistedSubagents(registry, parentFile);
+		expect(registry.get("Side-7")?.session).toBeNull();
+
+		const view = mountView({ currentSessionFile: parentFile });
+		await waitFor(() => renderPlain(view).includes("Side-7"), "the side agent row");
+		view.handleInput("\x1b[B");
+		view.handleInput("\x12");
+		view.handleInput("P");
+		view.handleInput("e");
+		view.handleInput("r");
+		view.handleInput("k");
+		view.handleInput("\r");
+		await waitFor(
+			() => fs.readFileSync(childFile, "utf8").includes("Perk"),
+			"the persisted title rewrite",
+		);
+	});
+});

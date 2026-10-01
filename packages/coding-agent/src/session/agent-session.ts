@@ -378,7 +378,7 @@ type AgentContinueOutcome =
 type PromptDispatchOutcome = { sessionClaimed: boolean };
 
 type SessionTitleSource = "auto" | "user";
-type SessionNameTrigger = "replan";
+type SessionNameTrigger = "replan" | "agents-view";
 type SetSessionNameWithTrigger = (
 	name: string,
 	source?: SessionTitleSource,

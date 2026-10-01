@@ -105,6 +105,7 @@ export class SideAgentController {
 				copyArtifacts: false,
 				suppressBreadcrumb: true,
 				sessionFile: cloneFile,
+				copyTitle: false,
 			});
 
 			jobId = manager.register(

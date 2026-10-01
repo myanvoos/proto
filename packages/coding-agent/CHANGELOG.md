@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- The double-esc session tree lists the session's subagents and side agents in an Agents section; Enter focuses that agent, where the model picker now retargets it
+
+### Fixed
+
+- Esc while focused on a subagent or side agent now stops that agent's streaming/retry/compaction before unfocusing
+- Side-agent sessions no longer inherit the parent session's title; renaming a live side agent now updates its in-memory session instead of being clobbered by the next transcript flush
+
 ## [19.1.4] - 2026-09-30
 
 ### Added
