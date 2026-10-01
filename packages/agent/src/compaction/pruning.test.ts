@@ -89,16 +89,17 @@ describe("pruneSupersededToolResults read supersede", () => {
 			readCall("c2", "src/foo.ts", 3),
 			readResult("c2", `${DETAILED}\n// rest of file`, 4),
 		];
-		const prunedBefore = (entries[1].message as { prunedAt?: number }).prunedAt;
+		const prunedAtOf = (entry: SessionEntry) => (entry as { message: { prunedAt?: number } }).message.prunedAt;
+		const prunedBefore = prunedAtOf(entries[1]);
 
 		const result = prune(entries);
 		expect(result.prunedCount).toBe(1);
 		expect(textOf(entries[1])).not.toBe(DETAILED);
-		expect((entries[1].message as { prunedAt?: number }).prunedAt).toBeTypeOf("number");
+		expect(prunedAtOf(entries[1])).toBeTypeOf("number");
 
 		result.undo();
 		expect(textOf(entries[1])).toBe(DETAILED);
-		expect((entries[1].message as { prunedAt?: number }).prunedAt).toBe(prunedBefore);
+		expect(prunedAtOf(entries[1])).toBe(prunedBefore);
 	});
 
 	test("a pass that prunes nothing returns a no-op undo", () => {

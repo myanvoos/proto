@@ -88,6 +88,7 @@ test("focused-agent gestures: Esc returns to main, ←← hops to the parent, �
 	const context = {
 		editor,
 		session: { isStreaming: false, isBashRunning: false, isEvalRunning: false, extensionRunner: undefined },
+		viewSession: { isCompacting: false, isRetrying: false, isStreaming: false },
 		focusedAgentId: "Side-1",
 		lastLeftTapTime: 0,
 		lastRightTapTime: 0,
