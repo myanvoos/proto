@@ -345,7 +345,7 @@ export interface InteractiveModeContext {
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;
 	showCopySelector(): void;
-	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void;
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void>;
 	annotateLastResponse(note?: string): Promise<void>;
 	showBookmarks(): void;
 	showSessionSelector(source?: ForeignSessionSource): void;

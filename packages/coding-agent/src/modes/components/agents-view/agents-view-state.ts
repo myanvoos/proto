@@ -1,10 +1,12 @@
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import { type AgentRef, MAIN_AGENT_ID } from "../../../registry/agent-registry";
+import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../../registry/agent-registry";
+import { registerPersistedSubagents } from "../../../registry/persisted-agents";
 import type { SessionInfo } from "../../../session/session-listing";
 import { formatCost } from "../../../tools/render-utils";
 import { agentRefMetrics } from "../agent-fleet-projection";
+import type { TreeAgentEntry } from "../tree-selector";
 
 export type AgentsViewSection = "running" | "idle" | "current" | "inactive";
 
@@ -100,6 +102,46 @@ export function formatModelCellLabel(model: { provider: string; id: string }, le
 }
 
 const FILE_IDENTITY_PREFIX = "file:";
+
+/**
+ * Subagents and side agents belonging to one session: live registry refs plus persisted
+ * transcripts registered from that session's artifact directory. The session tree shows them
+ * as their own section; Enter focuses the agent instead of rewinding a branch.
+ */
+export async function collectSessionTreeAgents(options: {
+	registry: AgentRegistry;
+	currentSessionFile: string | null | undefined;
+	ownAgentId: string | undefined;
+}): Promise<TreeAgentEntry[]> {
+	const { registry, currentSessionFile, ownAgentId } = options;
+	if (!currentSessionFile) return [];
+	await registerPersistedSubagents(registry, currentSessionFile);
+	const artifactRoot = path.resolve(currentSessionFile.slice(0, -".jsonl".length));
+	const rows: Array<TreeAgentEntry & { lastActivity: number }> = [];
+	for (const ref of registry.list()) {
+		if (ref.kind !== "sub" && ref.kind !== "side") continue;
+		const refFile = ref.sessionFile ? path.resolve(ref.sessionFile) : undefined;
+		const inSubtree = refFile !== undefined && refFile.startsWith(`${artifactRoot}${path.sep}`);
+		const liveChild = ownAgentId !== undefined && ref.parentId === ownAgentId;
+		if (!inSubtree && !liveChild) continue;
+		const title = ref.label && !GENERIC_LABEL.test(ref.label) ? ref.label : ref.id;
+		rows.push({
+			id: ref.id,
+			title,
+			kindLabel: ref.kind === "side" ? "side agent" : "subagent",
+			status: ref.status,
+			running: ref.status === "running",
+			aborted: ref.status === "aborted",
+			model: ref.history?.resolvedModel ?? ref.session?.model?.id,
+			lastActivity: ref.lastActivity,
+		});
+	}
+	// Newest activity first: the row the user is most likely to focus sits on top.
+	rows.sort((a, b) => b.lastActivity - a.lastActivity || a.title.localeCompare(b.title));
+	return rows;
+}
+
+const GENERIC_LABEL = /^\(untitled\)$/;
 
 function fileIdentity(sessionPath: string): string {
 	return `${FILE_IDENTITY_PREFIX}${path.resolve(sessionPath)}`;

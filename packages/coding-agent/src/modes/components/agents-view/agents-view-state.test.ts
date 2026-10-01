@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentRef } from "../../../registry/agent-registry";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { type AgentRef, AgentRegistry } from "../../../registry/agent-registry";
 import type { SessionInfo } from "../../../session/session-listing";
 import {
 	buildAgentsViewRows,
+	collectSessionTreeAgents,
 	countAgentsBySection,
 	reconcileAgentsViewRecords,
 	sumAgentsViewUsage,
@@ -256,5 +260,66 @@ describe("agents view spend", () => {
 		expect(total.agents).toBe(2);
 		expect(total.cost).toBeCloseTo(0.16, 10);
 		expect(total.tokens).toBe(20_000);
+	});
+});
+
+describe("collectSessionTreeAgents", () => {
+	test("scopes rows to the session artifact subtree and live children, newest first", async () => {
+		const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proto-tree-agents-")));
+		try {
+			const parentFile = path.join(dir, "2026_parent.jsonl");
+			fs.writeFileSync(parentFile, "");
+			fs.mkdirSync(path.join(dir, "2026_parent"));
+			const sideFile = path.join(dir, "2026_parent", "Side-1.jsonl");
+			// The persisted scan skips transcripts without a session_init or conversation record.
+			fs.writeFileSync(
+				sideFile,
+				`${JSON.stringify({ type: "session", version: 3, id: "Side-1", timestamp: "2026-10-01T00:00:00.000Z", cwd: dir })}\n${JSON.stringify({ type: "session_init", timestamp: "2026-10-01T00:00:01.000Z", task: "side work" })}\n`,
+			);
+			const otherDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proto-tree-agents-other-")));
+			fs.writeFileSync(path.join(otherDir, "2026_other.jsonl"), "");
+
+			const registry = new AgentRegistry();
+			// Side transcript inside the parent's artifact directory — registered by the scan.
+			await collectSessionTreeAgents({ registry, currentSessionFile: parentFile, ownAgentId: "Main" });
+
+			registry.register({
+				id: "Sub-9",
+				label: "live subagent",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: null,
+				status: "running",
+				lastActivity: 200,
+			});
+			registry.register({
+				id: "Other-1",
+				label: "unrelated session agent",
+				kind: "side",
+				session: null,
+				sessionFile: path.join(otherDir, "2026_other.jsonl"),
+				status: "idle",
+				lastActivity: 300,
+			});
+			registry.register({
+				id: "Adv-1",
+				label: "advisor",
+				kind: "advisor",
+				session: null,
+				sessionFile: sideFile,
+				status: "idle",
+				lastActivity: 400,
+			});
+
+			const rows = await collectSessionTreeAgents({ registry, currentSessionFile: parentFile, ownAgentId: "Main" });
+			// Newest activity first: the scanned side transcript carries its file mtime (now),
+			// the live child the explicit lastActivity of 200.
+			expect(rows.map(row => row.id)).toEqual(["Side-1", "Sub-9"]);
+			expect(rows[0]).toMatchObject({ kindLabel: "side agent", status: "parked", aborted: false });
+			expect(rows[1]).toMatchObject({ running: true, aborted: false, kindLabel: "subagent" });
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

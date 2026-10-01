@@ -269,3 +269,75 @@ test("oversized tree search input leaves the current selection usable and report
 		await session.close();
 	}
 });
+
+test("agent section focuses side agents and subagents while branch selection still rewinds", () => {
+	const { session, users } = fixture();
+	const focused: string[] = [];
+	const chosen: string[] = [];
+	const selector = new TreeSelectorComponent(
+		session.getTree(),
+		session.getLeafId(),
+		30,
+		id => chosen.push(id),
+		() => {},
+		undefined,
+		"default",
+		undefined,
+		[
+			{
+				id: "Side-1",
+				title: "investigate flaky test",
+				kindLabel: "side agent",
+				status: "running",
+				running: true,
+				aborted: false,
+				model: "gpt-5.6",
+			},
+			{
+				id: "agent-9",
+				title: "summarize logs",
+				kindLabel: "subagent",
+				status: "aborted",
+				running: false,
+				aborted: true,
+			},
+		],
+		id => focused.push(id),
+	);
+	try {
+		const rendered = plain(selector.render(80));
+		expect(rendered).toContain("Agents (Enter to focus)");
+		expect(rendered).toContain("investigate flaky test");
+		expect(rendered).toContain("summarize logs");
+
+		// Home puts the cursor on the first branch entry; Enter there rewinds, it must not focus.
+		selector.handleInput("\x1b[H");
+		selector.handleInput("\r");
+		expect(focused).toEqual([]);
+		expect(chosen.at(-1)).toBe(users[0]);
+
+		// End lands on the last agent row; Enter focuses it.
+		selector.handleInput("\x1b[F");
+		selector.handleInput("\r");
+		expect(focused).toEqual(["agent-9"]);
+
+		// Down from the last agent wraps to the first tree row; End returns to the agents section.
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[F");
+		selector.handleInput("\r");
+		expect(focused).toEqual(["agent-9", "agent-9"]);
+
+		// Search filters agent rows too.
+		selector.handleInput("f");
+		selector.handleInput("l");
+		selector.handleInput("a");
+		selector.handleInput("k");
+		const searched = plain(selector.render(80));
+		expect(searched).toContain("investigate flaky test");
+		expect(searched).not.toContain("summarize logs");
+		selector.handleInput("\r");
+		expect(focused).toEqual(["agent-9", "agent-9", "Side-1"]);
+	} finally {
+		selector.dispose();
+	}
+});

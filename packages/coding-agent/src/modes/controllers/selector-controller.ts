@@ -41,6 +41,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
+import type { TreeAgentEntry } from "../../modes/components/tree-selector";
 import {
 	getAvailableThemes,
 	getSymbolTheme,
@@ -98,6 +99,7 @@ import type { AgentsViewPersistentState } from "../components/agents-view/agents
 import {
 	type AgentsViewScope,
 	buildAgentsViewIndex,
+	collectSessionTreeAgents,
 	getRecordSessionFile,
 	getRecordTitle,
 	reconcileAgentsViewRecords,
@@ -1232,7 +1234,7 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void {
+	async showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void> {
 		const tree = this.ctx.sessionManager.getTreeForDisplay();
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
@@ -1240,6 +1242,8 @@ export class SelectorController {
 			this.ctx.showStatus("No entries in session");
 			return;
 		}
+
+		const agents = await this.#collectTreeAgents();
 
 		this.showSelector(done => {
 			const selector = new TreeSelectorComponent(
@@ -1382,9 +1386,35 @@ export class SelectorController {
 				},
 				options?.filterMode ?? settings.get("treeFilterMode"),
 				entryId => this.ctx.sessionManager.getEntry(entryId),
+				agents,
+				agentId => {
+					done();
+					void this.#focusTreeAgent(agentId, agents);
+				},
 			);
 			return { component: selector, focus: selector };
 		});
+	}
+
+	async #collectTreeAgents(): Promise<TreeAgentEntry[]> {
+		return collectSessionTreeAgents({
+			registry: AgentRegistry.global(),
+			currentSessionFile: this.ctx.sessionManager.getSessionFile(),
+			ownAgentId: this.ctx.session.getAgentId(),
+		});
+	}
+
+	async #focusTreeAgent(agentId: string, agents: TreeAgentEntry[]): Promise<void> {
+		const entry = agents.find(candidate => candidate.id === agentId);
+		if (entry?.aborted) {
+			this.ctx.showStatus("Agent is aborted — open the agents view (→ →) to read its transcript");
+			return;
+		}
+		try {
+			await this.ctx.focusAgentSession(agentId);
+		} catch (error) {
+			this.ctx.showError(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	#treeRewindBoundary(

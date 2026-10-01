@@ -74,6 +74,17 @@ interface ToolCallInfo {
 	arguments: Record<string, unknown>;
 }
 
+/** A subagent/side-agent row shown beneath the branch tree; Enter focuses it. */
+export interface TreeAgentEntry {
+	id: string;
+	title: string;
+	kindLabel: string;
+	status: string;
+	running: boolean;
+	aborted: boolean;
+	model?: string;
+}
+
 class TreeList implements Component {
 	#flatNodes: FlatNode[] = [];
 	#filteredNodes: FlatNode[] = [];
@@ -85,10 +96,14 @@ class TreeList implements Component {
 	#multipleRoots = false;
 	#activePathIds: Set<string> = new Set();
 	#lastSelectedId: string | null = null;
+	#agents: TreeAgentEntry[] = [];
+	#filteredAgents: TreeAgentEntry[] = [];
+	#lastSelectedAgentId: string | null = null;
 
 	onSelect?: (entryId: string, options: { summarize: boolean }) => void;
 	onCancel?: () => void;
 	onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
+	onFocusAgent?: (agentId: string) => void;
 
 	constructor(
 		tree: SessionTreeNode[],
@@ -97,10 +112,12 @@ class TreeList implements Component {
 		initialFilterMode: FilterMode = "default",
 		initialSelectedId?: string,
 		private readonly resolveEntry?: (entryId: string) => SessionEntry | undefined,
+		agents: TreeAgentEntry[] = [],
 	) {
 		this.#filterMode = initialFilterMode;
 		this.#multipleRoots = tree.length > 1;
 		this.#flatNodes = this.#flattenTree(tree);
+		this.#agents = agents;
 		this.#buildActivePath();
 		this.#applyFilter();
 
@@ -242,6 +259,15 @@ class TreeList implements Component {
 		return result;
 	}
 
+	/** Combined selectable count: branch entries first, then the agents section. */
+	get #selectableCount(): number {
+		return this.#filteredNodes.length + this.#filteredAgents.length;
+	}
+
+	#selectedAgent(): TreeAgentEntry | undefined {
+		return this.#filteredAgents[this.#selectedIndex - this.#filteredNodes.length];
+	}
+
 	#applyFilter(): void {
 		if (this.#filteredNodes.length > 0) {
 			this.#lastSelectedId = this.#filteredNodes[this.#selectedIndex]?.node.entry.id ?? this.#lastSelectedId;
@@ -306,13 +332,28 @@ class TreeList implements Component {
 			return true;
 		});
 
-		if (this.#lastSelectedId) {
-			this.#selectedIndex = this.#findNearestVisibleIndex(this.#lastSelectedId);
-		} else if (this.#selectedIndex >= this.#filteredNodes.length) {
-			this.#selectedIndex = Math.max(0, this.#filteredNodes.length - 1);
+		if (searchTokens.length > 0) {
+			this.#filteredAgents = this.#agents.filter(agent => {
+				const haystack = `${agent.title} ${agent.kindLabel} ${agent.status} ${agent.model ?? ""}`;
+				return searchTokens.every(token => fuzzyMatch(token, haystack).matches);
+			});
+		} else {
+			this.#filteredAgents = this.#agents;
 		}
 
-		if (this.#filteredNodes.length > 0) {
+		if (this.#lastSelectedAgentId && this.#filteredAgents.some(agent => agent.id === this.#lastSelectedAgentId)) {
+			const agentIndex = this.#filteredAgents.findIndex(agent => agent.id === this.#lastSelectedAgentId);
+			this.#selectedIndex = this.#filteredNodes.length + agentIndex;
+		} else {
+			this.#lastSelectedAgentId = null;
+			if (this.#lastSelectedId) {
+				this.#selectedIndex = this.#findNearestVisibleIndex(this.#lastSelectedId);
+			} else if (this.#selectedIndex >= this.#selectableCount) {
+				this.#selectedIndex = Math.max(0, this.#selectableCount - 1);
+			}
+		}
+
+		if (this.#selectedIndex < this.#filteredNodes.length && this.#filteredNodes.length > 0) {
 			this.#lastSelectedId = this.#filteredNodes[this.#selectedIndex]?.node.entry.id ?? this.#lastSelectedId;
 		}
 	}
@@ -453,47 +494,62 @@ class TreeList implements Component {
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
 
-		if (this.#filteredNodes.length === 0) {
-			if (this.#flatNodes.length === 0) {
+		if (this.#selectableCount === 0) {
+			if (this.#flatNodes.length === 0 && this.#agents.length === 0) {
 				lines.push(truncateToWidth(theme.fg("muted", "No entries found"), width));
 				lines.push(truncateToWidth(theme.fg("muted", `(0/0)${this.getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
 				lines.push(truncateToWidth(theme.fg("muted", `No entries match search "${this.#searchQuery}"`), width));
 				lines.push(truncateToWidth(theme.fg("muted", "Press Backspace to clear the search"), width));
 				lines.push(
-					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
+					truncateToWidth(
+						theme.fg("muted", `(0/${this.#flatNodes.length + this.#agents.length})${this.getFilterLabel()}`),
+						width,
+					),
 				);
 			} else {
 				const filterLabel = this.getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
-						theme.fg("muted", `${this.#flatNodes.length} entries hidden by the current filter ${filterLabel}`),
+						theme.fg(
+							"muted",
+							`${this.#flatNodes.length + this.#agents.length} entries hidden by the current filter ${filterLabel}`,
+						),
 						width,
 					),
 				);
 				lines.push(truncateToWidth(theme.fg("muted", "Press Alt+A to show all, Alt+D for default"), width));
 				lines.push(
-					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
+					truncateToWidth(
+						theme.fg("muted", `(0/${this.#flatNodes.length + this.#agents.length})${this.getFilterLabel()}`),
+						width,
+					),
 				);
 			}
 			return lines.slice(0, this.maxVisibleLines);
 		}
 
-		const { startIndex, endIndex } = centeredWindow(
-			this.#selectedIndex,
-			this.#filteredNodes.length,
-			this.maxVisibleLines,
-		);
+		const { startIndex, endIndex } = centeredWindow(this.#selectedIndex, this.#selectableCount, this.maxVisibleLines);
 
 		const MIN_CONTENT_COLS = 24;
 		const OVERHEAD_COLS = 4;
 		const contentReserve = Math.max(MIN_CONTENT_COLS, Math.floor(width / 2));
 		const maxIndentLevels = Math.max(0, Math.floor((width - contentReserve - OVERHEAD_COLS) / 3));
 
-		const rowWidth = contentRowWidth(width, this.#filteredNodes.length, this.maxVisibleLines);
+		const rowWidth = contentRowWidth(width, this.#selectableCount, this.maxVisibleLines);
 		const rows: string[] = [];
 
 		for (let i = startIndex; i < endIndex; i++) {
+			const agent =
+				i >= this.#filteredNodes.length ? this.#filteredAgents[i - this.#filteredNodes.length] : undefined;
+			if (agent) {
+				if (i === this.#filteredNodes.length) {
+					const header = theme.fg("muted", "── Agents (Enter to focus) ".padEnd(rowWidth, "─"));
+					rows.push(truncateToWidth(header, rowWidth));
+				}
+				rows.push(this.#renderAgentRow(agent, i === this.#selectedIndex, rowWidth));
+				continue;
+			}
 			const flatNode = this.#filteredNodes[i];
 			const entry = flatNode.node.entry;
 			const isSelected = i === this.#selectedIndex;
@@ -557,12 +613,31 @@ class TreeList implements Component {
 		lines.push(
 			...renderScrollableList(rows, {
 				width,
-				totalRows: this.#filteredNodes.length,
+				totalRows:
+					this.#selectableCount +
+					(endIndex > this.#filteredNodes.length && startIndex <= this.#filteredNodes.length ? 1 : 0),
 				scrollOffset: startIndex,
 			}),
 		);
 
 		return lines;
+	}
+
+	#renderAgentRow(agent: TreeAgentEntry, isSelected: boolean, rowWidth: number): string {
+		const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+		const statusGlyph = agent.running
+			? theme.fg("success", "●")
+			: agent.aborted
+				? theme.fg("error", "✗")
+				: theme.fg("muted", "○");
+		const title = normalizeTreeText(agent.title) || agent.id;
+		const details: string[] = [agent.kindLabel];
+		if (agent.model) details.push(agent.model);
+		details.push(agent.status);
+		const suffix = theme.fg("dim", `  ${details.join(" · ")}`);
+		let line = `${cursor}${statusGlyph} ${title}${suffix}`;
+		if (isSelected) line = theme.bg("selectedBg", line);
+		return truncateToWidth(line, rowWidth);
 	}
 
 	#getEntryDisplayText(node: SessionTreeNode, isSelected: boolean, compact: boolean): string {
@@ -755,11 +830,8 @@ class TreeList implements Component {
 	}
 
 	#moveToAdjacentTurn(direction: -1 | 1): void {
-		for (
-			let index = this.#selectedIndex + direction;
-			index >= 0 && index < this.#filteredNodes.length;
-			index += direction
-		) {
+		let index = Math.min(this.#selectedIndex, this.#filteredNodes.length - 1) + direction;
+		for (; index >= 0 && index < this.#filteredNodes.length; index += direction) {
 			const entry = this.#filteredNodes[index]?.node.entry;
 			if (entry?.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")) {
 				this.#selectedIndex = index;
@@ -768,12 +840,17 @@ class TreeList implements Component {
 		}
 	}
 
+	#focusAgent(agent: TreeAgentEntry): void {
+		this.#lastSelectedAgentId = agent.id;
+		if (this.onFocusAgent) this.onFocusAgent(agent.id);
+	}
+
 	handleInput(keyData: string): void {
 		this.#searchRejection = undefined;
 		if (matchesSelectUp(keyData)) {
-			this.#selectedIndex = this.#selectedIndex === 0 ? this.#filteredNodes.length - 1 : this.#selectedIndex - 1;
+			this.#selectedIndex = this.#selectedIndex === 0 ? this.#selectableCount - 1 : this.#selectedIndex - 1;
 		} else if (matchesSelectDown(keyData)) {
-			this.#selectedIndex = this.#selectedIndex === this.#filteredNodes.length - 1 ? 0 : this.#selectedIndex + 1;
+			this.#selectedIndex = this.#selectedIndex === this.#selectableCount - 1 ? 0 : this.#selectedIndex + 1;
 		} else if (matchesKey(keyData, "alt+up")) {
 			this.#moveToAdjacentTurn(-1);
 		} else if (matchesKey(keyData, "alt+down")) {
@@ -781,25 +858,35 @@ class TreeList implements Component {
 		} else if (matchesKey(keyData, "home")) {
 			this.#selectedIndex = 0;
 		} else if (matchesKey(keyData, "end")) {
-			this.#selectedIndex = Math.max(0, this.#filteredNodes.length - 1);
+			this.#selectedIndex = Math.max(0, this.#selectableCount - 1);
 		} else if (matchesSelectPageUp(keyData) || matchesKey(keyData, "left")) {
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.maxVisibleLines);
 		} else if (matchesSelectPageDown(keyData) || matchesKey(keyData, "right")) {
-			this.#selectedIndex = Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + this.maxVisibleLines);
+			this.#selectedIndex = Math.min(this.#selectableCount - 1, this.#selectedIndex + this.maxVisibleLines);
 		} else if (
 			matchesKey(keyData, "shift+enter") ||
 			matchesKey(keyData, "shift+return") ||
 			keyData === "\n" ||
 			keyData === "\x1b[13;2~"
 		) {
-			const selected = this.#filteredNodes[this.#selectedIndex];
-			if (selected && this.onSelect) {
-				this.onSelect(selected.node.entry.id, { summarize: true });
+			const agent = this.#selectedAgent();
+			if (agent) {
+				this.#focusAgent(agent);
+			} else {
+				const selected = this.#filteredNodes[this.#selectedIndex];
+				if (selected && this.onSelect) {
+					this.onSelect(selected.node.entry.id, { summarize: true });
+				}
 			}
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return")) {
-			const selected = this.#filteredNodes[this.#selectedIndex];
-			if (selected && this.onSelect) {
-				this.onSelect(selected.node.entry.id, { summarize: false });
+			const agent = this.#selectedAgent();
+			if (agent) {
+				this.#focusAgent(agent);
+			} else {
+				const selected = this.#filteredNodes[this.#selectedIndex];
+				if (selected && this.onSelect) {
+					this.onSelect(selected.node.entry.id, { summarize: false });
+				}
 			}
 		} else if (matchesAppInterrupt(keyData)) {
 			if (this.#searchQuery) {
@@ -840,7 +927,7 @@ class TreeList implements Component {
 				this.#searchQuery = this.#searchQuery.slice(0, -1);
 				this.#applyFilter();
 			}
-		} else if (matchesKey(keyData, "shift+l") && !this.#searchQuery) {
+		} else if (matchesKey(keyData, "shift+l") && !this.#searchQuery && !this.#selectedAgent()) {
 			const selected = this.#filteredNodes[this.#selectedIndex];
 			if (selected && this.onLabelEdit) {
 				this.onLabelEdit(selected.node.entry.id, selected.node.label);
@@ -945,17 +1032,28 @@ export class TreeSelectorComponent extends OverlayPanel {
 		private readonly onLabelChangeCallback?: (entryId: string, label: string | undefined) => void,
 		initialFilterMode: FilterMode = "default",
 		resolveEntry?: (entryId: string) => SessionEntry | undefined,
+		agents: TreeAgentEntry[] = [],
+		onFocusAgent?: (agentId: string) => void,
 	) {
 		super("Session Tree");
 
 		this.#height = Math.max(1, terminalHeight);
-		this.#treeList = new TreeList(tree, currentLeafId, this.#height, initialFilterMode, undefined, resolveEntry);
+		this.#treeList = new TreeList(
+			tree,
+			currentLeafId,
+			this.#height,
+			initialFilterMode,
+			undefined,
+			resolveEntry,
+			agents,
+		);
 		this.#searchLine = new SearchLine(this.#treeList);
 		this.#treeList.onSelect = onSelect;
 		this.#treeList.onCancel = onCancel;
 		this.#treeList.onLabelEdit = (entryId, currentLabel) => this.#showLabelInput(entryId, currentLabel);
+		this.#treeList.onFocusAgent = onFocusAgent;
 
-		if (tree.length === 0) {
+		if (tree.length === 0 && agents.length === 0) {
 			setTimeout(() => onCancel(), 100);
 		}
 	}

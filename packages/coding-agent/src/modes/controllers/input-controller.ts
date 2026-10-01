@@ -238,6 +238,12 @@ export class InputController {
 		});
 	}
 
+	#abortFocusedStreamingTurn(): void {
+		void this.ctx.viewSession.abort({ reason: USER_INTERRUPT_LABEL }).catch(error => {
+			this.ctx.showError(`Failed to abort agent: ${error instanceof Error ? error.message : String(error)}`);
+		});
+	}
+
 	setupKeyHandlers(): void {
 		this.#draftText ??= this.ctx.editor.getText();
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
@@ -340,9 +346,26 @@ export class InputController {
 				if (this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText("");
 					this.ctx.ui.requestRender();
-				} else {
-					this.#navigateFocus(this.ctx.unfocusSession());
+					return;
 				}
+				// Esc while focused mirrors the main session: stop the focused agent's in-flight
+				// work first; a second Esc (with nothing running) leaves focus.
+				const viewSession = this.ctx.viewSession;
+				let aborted = false;
+				if (viewSession.isCompacting) {
+					safeAbort("focused compaction", () => viewSession.abortCompaction());
+					aborted = true;
+				}
+				if (viewSession.isRetrying) {
+					safeAbort("focused retry", () => viewSession.abortRetry());
+					aborted = true;
+				}
+				if (!aborted && viewSession.isStreaming) {
+					this.#abortFocusedStreamingTurn();
+					aborted = true;
+				}
+				if (aborted) return;
+				this.#navigateFocus(this.ctx.unfocusSession());
 				return;
 			}
 			if (this.ctx.loadingAnimation) {

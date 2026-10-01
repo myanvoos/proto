@@ -3027,8 +3027,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showCopySelector();
 	}
 
-	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void {
-		this.#selectorController.showTreeSelector(options);
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void> {
+		return this.#selectorController.showTreeSelector(options);
 	}
 
 	annotateLastResponse(note?: string): Promise<void> {
