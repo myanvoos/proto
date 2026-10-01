@@ -271,8 +271,28 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			);
 			return commandConsumed();
 		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector();
+		handleTui: async (command, runtime) => {
+			// With an explicit model id, switch the session being viewed — a focused side agent
+			// gets the model, not the parent. Bare /model opens the picker, which retargets too.
+			const modelId = command.args.trim();
+			if (modelId) {
+				const target = runtime.ctx.viewSession;
+				const match = target
+					.getAvailableModels()
+					.find(candidate => candidate.id === modelId || `${candidate.provider}/${candidate.id}` === modelId);
+				if (!match) {
+					runtime.ctx.showWarning(`Unknown model: ${modelId}`);
+				} else {
+					try {
+						await target.setModel(match);
+						runtime.ctx.showStatus(`Model set to ${match.provider}/${match.id}`);
+					} catch (err) {
+						runtime.ctx.showError(`Failed to set model: ${errorMessage(err)}`);
+					}
+				}
+			} else {
+				runtime.ctx.showModelSelector();
+			}
 			runtime.ctx.editor.setText("");
 		},
 	},

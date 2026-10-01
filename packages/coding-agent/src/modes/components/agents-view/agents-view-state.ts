@@ -121,7 +121,7 @@ export async function collectSessionTreeAgents(options: {
 	for (const ref of registry.list()) {
 		if (ref.kind !== "sub" && ref.kind !== "side") continue;
 		const refFile = ref.sessionFile ? path.resolve(ref.sessionFile) : undefined;
-		const inSubtree = refFile !== undefined && refFile.startsWith(`${artifactRoot}${path.sep}`);
+		const inSubtree = refFile?.startsWith(`${artifactRoot}${path.sep}`) ?? false;
 		const liveChild = ownAgentId !== undefined && ref.parentId === ownAgentId;
 		if (!inSubtree && !liveChild) continue;
 		const title = ref.label && !GENERIC_LABEL.test(ref.label) ? ref.label : ref.id;

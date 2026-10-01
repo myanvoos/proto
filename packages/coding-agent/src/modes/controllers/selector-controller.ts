@@ -1235,6 +1235,9 @@ export class SelectorController {
 	}
 
 	async showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void> {
+		// The tree rewinds the main session's branches; opening it over a focused agent would
+		// edit a transcript the user cannot see, so land on the main session first.
+		if (this.ctx.focusedAgentId) await this.ctx.unfocusSession();
 		const tree = this.ctx.sessionManager.getTreeForDisplay();
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
