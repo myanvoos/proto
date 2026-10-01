@@ -1450,18 +1450,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Max Retry Delay",
 			description:
-				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows).",
+				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping — unless retry.waitForUsageReset authorizes the wait from an authoritative reset time.",
 		},
 	},
 	"retry.waitForUsageReset": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "model",
 			group: "Retry & Fallback",
 			label: "Wait For Usage Reset",
 			description:
-				"When a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), sleep until the reset instead of failing fast past retry.maxDelayMs. Waits are abortable (Esc) but also hold subagents, so leave off for unattended runs.",
+				"When a provider reports usage-limit exhaustion with an authoritative reset time (a parsed retry hint, or a complete usage-report window such as the 5-hour/weekly windows on Claude Pro/Max and ChatGPT plans), sleep until the reset instead of failing fast past retry.maxDelayMs. A heuristic backoff alone never triggers the wait; configured fallback models still take precedence, and waits are abortable (Esc). Set false to fail fast on long waits.",
 		},
 	},
 	"retry.modelFallback": {

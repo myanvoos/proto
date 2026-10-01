@@ -6,6 +6,10 @@
 
 - The double-esc session tree lists the session's subagents and side agents in an Agents section; Enter focuses that agent, where the model picker now retargets it
 
+### Changed
+
+- Usage-limit errors with a provider-stated reset (retry-after hint or a complete usage-report window, e.g. Claude Pro/Max 5-hour windows) now wait out the reset by default instead of failing fast; these waits no longer consume the retry budget, so unattended runs survive consecutive usage windows. Opt out with `retry.waitForUsageReset: false`
+
 ### Fixed
 
 - Esc while focused on a subagent or side agent now stops that agent's streaming/retry/compaction before unfocusing

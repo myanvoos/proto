@@ -1934,24 +1934,41 @@ export class TurnRecovery {
 			}
 		}
 
+		// retry.waitForUsageReset sleeps past the cap only on authoritative provider timing (a parsed reset hint
+		// or a complete usage-report reset). Heuristic-only usage limits (402 balance, dead spend caps) still
+		// fail fast, and the wait is bounded by the stated reset so an unrelated backoff cannot ride along.
+		// Computed before the budget branch: an authorized wait also exempts the error from budget
+		// termination, so overnight runs survive consecutive usage windows instead of aborting mid-wait.
+		const maxDelayMs = retrySettings.maxDelayMs;
+		const waitForUsageReset =
+			retrySettings.waitForUsageReset === true &&
+			recordedUsageLimitOutcome !== undefined &&
+			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
+			effectiveUsageLimitWaitMs !== undefined &&
+			delayMs <= effectiveUsageLimitWaitMs;
 		if (retryBudgetExhausted) {
 			if (!switchedModel && !switchedCredential) {
-				const attempt = this.#retryAttempt - 1;
-				const terminalError = terminalRetryError(errorMessage, thinkingLoop);
-				message.errorMessage = `${RETRY_BUDGET_EXHAUSTED_PREFIX} ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${terminalError}`;
-				await this.persistTerminalEmptyErrorTurn(message);
-				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt,
-					finalError: terminalError,
-					retryErrors,
-				});
-				this.#clearPendingRetryErrors();
-				this.#retryAttempt = 0;
-				this.resolveRetry();
-				return false;
+				if (!waitForUsageReset) {
+					const attempt = this.#retryAttempt - 1;
+					const terminalError = terminalRetryError(errorMessage, thinkingLoop);
+					message.errorMessage = `${RETRY_BUDGET_EXHAUSTED_PREFIX} ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${terminalError}`;
+					await this.persistTerminalEmptyErrorTurn(message);
+					const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
+					await this.#host.emitSessionEvent({
+						type: "auto_retry_end",
+						success: false,
+						attempt,
+						finalError: terminalError,
+						retryErrors,
+					});
+					this.#clearPendingRetryErrors();
+					this.#retryAttempt = 0;
+					this.resolveRetry();
+					return false;
+				}
+				// A provider-stated usage-limit wait is not a hot retry loop — every sleep is bounded
+				// by the stated reset — so waiting out usage windows does not consume the budget.
+				this.#retryAttempt = 1;
 			}
 
 			if (switchedModel) this.#retryAttempt = 1;
@@ -1992,16 +2009,6 @@ export class TurnRecovery {
 			return false;
 		}
 
-		// retry.waitForUsageReset sleeps past the cap only on authoritative provider timing (a parsed reset hint
-		// or a complete usage-report reset). Heuristic-only usage limits (402 balance, dead spend caps) still
-		// fail fast, and the wait is bounded by the stated reset so an unrelated backoff cannot ride along.
-		const maxDelayMs = retrySettings.maxDelayMs;
-		const waitForUsageReset =
-			retrySettings.waitForUsageReset === true &&
-			recordedUsageLimitOutcome !== undefined &&
-			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
-			effectiveUsageLimitWaitMs !== undefined &&
-			delayMs <= effectiveUsageLimitWaitMs;
 		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel && !waitForUsageReset) {
 			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retryAttempt;

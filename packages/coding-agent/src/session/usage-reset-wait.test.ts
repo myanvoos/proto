@@ -57,7 +57,12 @@ describe("retry.waitForUsageReset", () => {
 		vi.restoreAllMocks();
 	});
 
-	async function run(errorMessage: string, waitForUsageReset: boolean) {
+	async function run(
+		errorMessage: string,
+		waitForUsageReset: boolean | undefined,
+		errorsBeforeSuccess = 1,
+		extraSettings: Record<string, unknown> = {},
+	) {
 		const sleeps: number[] = [];
 		vi.spyOn(utils, "sleepLong").mockImplementation(async delayMs => {
 			sleeps.push(delayMs);
@@ -71,7 +76,9 @@ describe("retry.waitForUsageReset", () => {
 			streamFn: () => {
 				calls++;
 				const message =
-					calls === 1 ? reply({ content: [], stopReason: "error", errorStatus: 429, errorMessage }) : reply({});
+					calls <= errorsBeforeSuccess
+						? reply({ content: [], stopReason: "error", errorStatus: 429, errorMessage })
+						: reply({});
 				const stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
 					if (message.stopReason === "error") stream.push({ type: "error", reason: "error", error: message });
@@ -88,7 +95,8 @@ describe("retry.waitForUsageReset", () => {
 				"retry.baseDelayMs": 1,
 				"retry.maxDelayMs": 100,
 				"retry.modelFallback": false,
-				"retry.waitForUsageReset": waitForUsageReset,
+				...(waitForUsageReset === undefined ? {} : { "retry.waitForUsageReset": waitForUsageReset }),
+				...extraSettings,
 			}),
 			modelRegistry: new ModelRegistry(authStorage),
 		});
@@ -110,6 +118,25 @@ describe("retry.waitForUsageReset", () => {
 
 		expect(result.calls).toBe(1);
 		expect(result.last.stopReason).toBe("error");
+	});
+
+	it("waits out a provider-stated reset by default when the setting is unset", async () => {
+		const result = await run(`429 Usage limit reached. retry-after-ms=${TWO_HOURS_MS}`, undefined);
+
+		expect(result.calls).toBe(2);
+		expect(result.sleeps.some(delayMs => delayMs > 100 && delayMs <= TWO_HOURS_MS + 60_000)).toBe(true);
+		expect(result.last.stopReason).toBe("stop");
+	});
+
+	it("keeps waiting provider-stated resets past retry-budget exhaustion", async () => {
+		const result = await run(`429 Usage limit reached. retry-after-ms=${TWO_HOURS_MS}`, true, 3, {
+			"retry.maxRetries": 1,
+		});
+
+		expect(result.calls).toBe(4);
+		expect(result.sleeps.length).toBe(3);
+		expect(result.sleeps.every(delayMs => delayMs > 100)).toBe(true);
+		expect(result.last.stopReason).toBe("stop");
 	});
 
 	it("fails fast on a usage limit with no provider reset timing even when enabled", async () => {
