@@ -5,4 +5,5 @@
 {{this.text}}
 {{/each}}
 Act on this now. Still-running monitors keep delivering; you MAY end the turn again to keep waiting.
+Events arrive on their own schedule — this is not a reply from the user.
 </system-notice>
