@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `PruneResult.undo()` to restore the tool results a `pruneToolOutputs()` / `pruneSupersededToolResults()` pass blanked, for callers whose persistence of the pruned history fails
+
 ## [19.1.3] - 2026-09-28
 
 ### Changed

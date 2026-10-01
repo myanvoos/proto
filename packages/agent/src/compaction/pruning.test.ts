@@ -82,6 +82,39 @@ describe("pruneSupersededToolResults read supersede", () => {
 		expect(textOf(entries[1])).toBe(DETAILED);
 	});
 
+	test("undo restores the exact content and pruned stamp a pass blanked", () => {
+		const entries = [
+			readCall("c1", "src/foo.ts:100-200", 1),
+			readResult("c1", DETAILED, 2),
+			readCall("c2", "src/foo.ts", 3),
+			readResult("c2", `${DETAILED}\n// rest of file`, 4),
+		];
+		const prunedBefore = (entries[1].message as { prunedAt?: number }).prunedAt;
+
+		const result = prune(entries);
+		expect(result.prunedCount).toBe(1);
+		expect(textOf(entries[1])).not.toBe(DETAILED);
+		expect((entries[1].message as { prunedAt?: number }).prunedAt).toBeTypeOf("number");
+
+		result.undo();
+		expect(textOf(entries[1])).toBe(DETAILED);
+		expect((entries[1].message as { prunedAt?: number }).prunedAt).toBe(prunedBefore);
+	});
+
+	test("a pass that prunes nothing returns a no-op undo", () => {
+		const entries = [
+			readCall("c1", "src/foo.ts:100-200", 1),
+			readResult("c1", DETAILED, 2),
+			readCall("c2", "src/foo.ts", 3),
+			readResult("c2", "1-3: export function compute\n4-104: <elided>", 4, 100),
+		];
+
+		const result = prune(entries);
+		expect(result.prunedCount).toBe(0);
+		expect(() => result.undo()).not.toThrow();
+		expect(textOf(entries[1])).toBe(DETAILED);
+	});
+
 	test("a verbatim whole-file read still supersedes an earlier ranged read", () => {
 		const entries = [
 			readCall("c1", "src/foo.ts:100-200", 1),
