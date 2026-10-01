@@ -6,6 +6,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
 import { AgentRegistry, getAgentTombstonePath } from "../../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../../registry/persisted-agents";
+import type { AgentSession } from "../../../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../../../session/messages";
 import type { SessionInfo } from "../../../session/session-listing";
 import { SessionManager } from "../../../session/session-manager";
@@ -436,13 +437,13 @@ describe("agents view rename", () => {
 	test("renames a live agent through its in-memory session, not the raw file", async () => {
 		const { parentFile, childFile } = writeSideSessionTree();
 		const registry = AgentRegistry.global();
-		const setSessionName = spyOn(
-			{ setSessionName: async () => true },
+		const renameMock = spyOn(
+			{ setSessionName: async (_name: string, _source: "auto" | "user") => true },
 			"setSessionName",
-		).mockResolvedValue(true) as unknown as AgentSession["setSessionName"];
+		).mockResolvedValue(true);
 		const liveStub = {
 			sessionManager: { getSessionFile: () => childFile },
-			setSessionName,
+			setSessionName: renameMock as unknown as AgentSession["setSessionName"],
 		} as unknown as AgentSession;
 		registry.register({
 			id: "Side-7",
@@ -453,11 +454,24 @@ describe("agents view rename", () => {
 			sessionFile: childFile,
 			status: "idle",
 		});
+		registry.register({
+			id: "Main",
+			label: "Main",
+			kind: "side",
+			session: null,
+			sessionFile: parentFile,
+			status: "idle",
+		});
 
-		const view = mountView({ currentSessionFile: parentFile });
+		// Scoped to the fixture tree: the global registry/storage also hold this machine's real
+		// sessions, whose rows would otherwise shift the blind down-arrow navigation. The parent
+		// ref must not be the host session (host refs are hidden), so currentSessionFile stays null.
+		const view = mountView({
+			initialScopeIdentity: `file:${path.resolve(parentFile)}`,
+			initialScopeTitle: "parent",
+		});
 		await waitFor(() => renderPlain(view).includes("Side-7"), "the side agent row");
-		// Select the agent row: first selectable row after the parent summary.
-		view.handleInput("\x1b[B");
+		// The scope root is elided, so Side-7 is the only (and initially selected) agent row.
 		view.handleInput("\x12"); // ctrl+r → rename mode
 		expect(renderPlain(view)).toContain("Rename");
 		view.handleInput("R");
@@ -467,9 +481,9 @@ describe("agents view rename", () => {
 		view.handleInput("o");
 		view.handleInput("t");
 		view.handleInput("\r");
-		await waitFor(() => setSessionName.mock.calls.length > 0, "the live rename call");
-		expect(setSessionName.mock.calls[0][0]).toBe("Reboot");
-		expect(setSessionName.mock.calls[0][1]).toBe("user");
+		await waitFor(() => renameMock.mock.calls.length > 0, "the live rename call");
+		expect(renameMock.mock.calls[0][0]).toBe("Reboot");
+		expect(renameMock.mock.calls[0][1]).toBe("user");
 		// The raw transcript file was not rewritten behind the live manager's back:
 		// no user title slot appeared on disk; the live manager owns the title.
 		const lines = fs.readFileSync(childFile, "utf8").split("\n");
@@ -481,19 +495,26 @@ describe("agents view rename", () => {
 		const registry = AgentRegistry.global();
 		await registerPersistedSubagents(registry, parentFile);
 		expect(registry.get("Side-7")?.session).toBeNull();
+		registry.register({
+			id: "Main",
+			label: "Main",
+			kind: "side",
+			session: null,
+			sessionFile: parentFile,
+			status: "idle",
+		});
 
-		const view = mountView({ currentSessionFile: parentFile });
+		const view = mountView({
+			initialScopeIdentity: `file:${path.resolve(parentFile)}`,
+			initialScopeTitle: "parent",
+		});
 		await waitFor(() => renderPlain(view).includes("Side-7"), "the side agent row");
-		view.handleInput("\x1b[B");
-		view.handleInput("\x12");
+		view.handleInput("\x12"); // ctrl+r → rename mode
 		view.handleInput("P");
 		view.handleInput("e");
 		view.handleInput("r");
 		view.handleInput("k");
 		view.handleInput("\r");
-		await waitFor(
-			() => fs.readFileSync(childFile, "utf8").includes("Perk"),
-			"the persisted title rewrite",
-		);
+		await waitFor(() => fs.readFileSync(childFile, "utf8").includes("Perk"), "the persisted title rewrite");
 	});
 });
