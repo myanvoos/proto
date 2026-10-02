@@ -7,6 +7,7 @@ import {
 	type Model,
 	streamAnthropic,
 	streamOpenAICompletions,
+	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -410,12 +411,12 @@ test("shared tool results follow provider call order while completion events sta
 	expect(turns[0]).toEqual(["call-1", "call-2"]);
 });
 
-test("external cancellation replaces a rejected in-flight tool with the run abort result", async () => {
-	const started = deferred<void>();
+async function abortInFlightTool(rejectWith: (signal: AbortSignal) => unknown): Promise<ToolResultMessage | undefined> {
+	const started = deferred<AbortSignal>();
 	const rejection = deferred<never>();
 	const controller = new AbortController();
-	const tool = basicTool("abortable", async () => {
-		started.resolve();
+	const tool = basicTool("abortable", async (_toolCallId, _params, signal) => {
+		if (signal) started.resolve(signal);
 		return rejection.promise;
 	});
 	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
@@ -427,15 +428,29 @@ test("external cancellation replaces a rejected in-flight tool with the run abor
 		responseFor(() => toolMessage(model, [{ id: "call-1", name: tool.name }])),
 	);
 	const result = stream.result();
-	await started.promise;
+	const toolSignal = await started.promise;
 	controller.abort("timeout");
-	rejection.reject(new Error("tool exploded"));
+	rejection.reject(rejectWith(toolSignal));
 	const messages = await result;
-	const toolResult = messages.find(message => message.role === "toolResult");
-	expect(toolResult?.content[0]).toMatchObject({
-		type: "text",
-		text: "Tool was not executed because the run was aborted: timeout.",
+	return messages.find((message): message is ToolResultMessage => message.role === "toolResult");
+}
+
+test("external cancellation keeps the partial output an in-flight tool reported while aborting", async () => {
+	const toolResult = await abortInFlightTool(() => new Error("step-1\nstep-2\n\n[Command aborted]"));
+	expect(toolResult).toMatchObject({
+		isError: true,
+		content: [{ type: "text", text: "Tool execution was aborted: timeout.\n\nstep-1\nstep-2\n\n[Command aborted]" }],
 	});
+});
+
+test("external cancellation does not echo a bare abort rejection after the cancellation line", async () => {
+	for (const rejectWith of [
+		() => new DOMException("This operation was aborted", "AbortError"),
+		(signal: AbortSignal) => signal.reason,
+	]) {
+		const toolResult = await abortInFlightTool(rejectWith);
+		expect(toolResult?.content).toEqual([{ type: "text", text: "Tool execution was aborted: timeout." }]);
+	}
 });
 
 function openAIStreamResponse(body: string | ReadableStream<Uint8Array>): Response {

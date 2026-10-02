@@ -6,6 +6,10 @@
 
 - Added `PruneResult.undo()` to restore the tool results a `pruneToolOutputs()` / `pruneSupersededToolResults()` pass blanked, for callers whose persistence of the pruned history fails
 
+### Fixed
+
+- Aborting the run while a tool executes now records `Tool execution was aborted` followed by what the tool reported (e.g. a command's partial output), instead of claiming the tool was never executed
+
 ## [19.1.3] - 2026-09-28
 
 ### Changed

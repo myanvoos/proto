@@ -2408,7 +2408,9 @@ async function executeToolCalls(
 		const abortedDuringExecution = perToolAborted && isError && !completedToolExecution;
 		if (abortedDuringExecution && signal?.aborted) {
 			record.skipped = true;
-			result = createToolSignalAbortedResult(record.signal);
+			result = executionStarted
+				? createToolExecutionAbortedResult(record.signal, caughtError)
+				: createToolSignalAbortedResult(record.signal);
 			isError = true;
 			emitToolResult(record, result, true);
 		} else if (interrupted && abortedDuringExecution) {
@@ -2686,6 +2688,25 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 		content: [{ type: "text", text: `Tool was not executed because the run was aborted: ${reason}.` }],
 		details: {},
 	};
+}
+
+/**
+ * Result for a tool the run aborted mid-execution. The tool's rejection follows the cancellation line: it is what the
+ * tool reported before stopping (e.g. a command's partial output), unless it merely restates the abort itself.
+ */
+function createToolExecutionAbortedResult(signal: AbortSignal, rejection: unknown): AgentToolResult<unknown> {
+	const header = `Tool execution was aborted: ${abortReasonText(signal)}.`;
+	const report = toolAbortReport(signal, rejection);
+	return {
+		content: [{ type: "text", text: report ? `${header}\n\n${report}` : header }],
+		details: {},
+	};
+}
+
+function toolAbortReport(signal: AbortSignal, rejection: unknown): string | undefined {
+	if (rejection === signal.reason) return undefined;
+	const text = rejection instanceof Error ? (rejection.name === "AbortError" ? "" : rejection.message) : rejection;
+	return typeof text === "string" && text.trim() ? text.trim() : undefined;
 }
 
 function createSkippedToolResult(
