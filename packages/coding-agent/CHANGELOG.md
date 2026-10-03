@@ -12,6 +12,7 @@
 
 ### Changed
 
+- `context`, `recall`, `checkpoint`, `rewind`, and `jobs` now load as native tools on every request instead of being mounted behind `protolens` — their schemas ship in the tool list directly (the shell bridge still accepts `protolens <tool>` dispatches)
 - At most 32 kernel `completion()` requests run at once; larger fan-outs queue instead of flooding providers
 - Streamed Bash and eval artifacts are capped at 16 MiB by default, with `tools.artifactMaxBytes` to tune or disable the cap
 - Smooth streaming batches fast token bursts into one render per frame, reducing CPU use on fast providers

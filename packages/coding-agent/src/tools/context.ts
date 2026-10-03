@@ -249,7 +249,7 @@ export class ContextTool implements AgentTool<typeof contextSchema, ContextToolD
 	readonly description: string;
 	readonly parameters = contextSchema;
 	readonly strict = true;
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly intent = (args: Partial<ContextParams>): string =>
 		`${args.op ?? "inspecting"} ${args.resource ?? "context"} ${args.lane ?? (args.resource === "lane" ? "" : "main")}`.trim();
 

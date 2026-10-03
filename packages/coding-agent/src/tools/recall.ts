@@ -44,7 +44,7 @@ export interface RecallToolDetails {
 export class RecallTool implements AgentTool<typeof recallSchema, RecallToolDetails> {
 	readonly name = "recall";
 	readonly label = "Recall";
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly description = recallDescription;
 	readonly parameters = recallSchema;
 	readonly strict = true;

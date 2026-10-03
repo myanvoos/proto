@@ -48,6 +48,11 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	ask: true,
 	checklist: true,
 	web_search: true,
+	context: true,
+	recall: true,
+	checkpoint: true,
+	rewind: true,
+	jobs: true,
 };
 
 const XDEV_TRANSPORT_TOOLS: Record<string, true> = { bash: true };

@@ -12,6 +12,11 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	ask: true,
 	checklist: true,
 	web_search: true,
+	context: true,
+	recall: true,
+	checkpoint: true,
+	rewind: true,
+	jobs: true,
 };
 
 export function defaultLoadModeForToolName(name: string, declared?: ToolLoadMode): ToolLoadMode {

@@ -14,7 +14,7 @@
   - `packages/coding-agent/src/session/agent-session.ts` — supplies `assertEvalExecutionAllowed()` and tracks active eval executions.
   - `packages/coding-agent/src/tools/tool-result.ts` / `output-meta.ts` — builds the code-mode result and attaches output truncation/artifact metadata.
   - `packages/coding-agent/src/tools/tool-errors.ts` — abort checks and the native wrapper's `ToolError` messages.
-  - `packages/coding-agent/src/tools/index.ts` — registers `RecallTool` and decides whether it is top-level or mounted as a discoverable device.
+  - `packages/coding-agent/src/tools/index.ts` — registers `RecallTool` as an essential built-in that loads top-level on every request.
   - `packages/coding-agent/src/config/settings-schema.ts` — defines `bash.enabled` and `tools.xdev`, the relevant availability settings.
 
 ## Inputs
@@ -152,7 +152,7 @@ The generated wrapper requires the supplied expression to evaluate to a function
 - Session JSONL scan chunk: `64 KiB`; malformed lines are skipped and counted in a warning rather than aborting the scan. A missing session file is treated as empty by the vendor loader, although `RecallTool` normally returns its earlier `No session file available.` result.
 - Code timeout: default `120` seconds, maximum `3,600` seconds, including model calls. The code path uses the normal JavaScript output sink (`DEFAULT_MAX_BYTES = 50 KiB` before configured spill/truncation behavior) and can attach an artifact for captured output.
 - Code transcript snapshot: all entries in the selected scope are written before execution; the snapshot itself is not limited to search-page size.
-- Tool metadata: `strict = true`; `loadMode = "discoverable"`; recall emits no progress updates.
+- Tool metadata: `strict = true`; `loadMode = "essential"`; recall emits no progress updates.
 
 ## Errors
 
@@ -187,7 +187,7 @@ The JavaScript executor converts a thrown function error, failed model/tool help
 ## Availability / gating
 
 - `recall` is a built-in registry entry in `packages/coding-agent/src/tools/index.ts`; unlike `bash`, `browser`, `checklist`, or `web_search`, it has no `recall.enabled` setting. When enabled in the tool set, ordinary history recall is available without Bash or model execution permission.
-- The class declares `loadMode = "discoverable"` and `strict = true`. With `tools.xdev = true` (default), an unrestricted session that has Bash may mount discoverable tools as `protolens://recall` and expose `protolens recall ?`/`protolens recall --json ...` through Bash instead of shipping the schema on every request. Disabling xdev, omitting Bash, or explicitly requesting `recall` keeps it top-level. Restricted tool sets are not mounted by xdev.
+- The class declares `loadMode = "essential"` and `strict = true`, so the schema ships as a native tool on every request. The shell bridge still accepts `protolens recall ?`/`protolens recall --json ...` dispatches from scripts. Restricted tool sets exclude it by name, as with any built-in.
 - `code` has a separate Bash gate: `bash.enabled` must be true, and when the session supplies `restrictToolNames` or an active-tool predicate, `isToolActive("bash")` must also report true. This is why the model-facing prompt says ordinary recall remains available when code execution is denied.
 - The code path additionally calls the session eval guard and uses the Bun JavaScript executor; it is not a sandbox. The `code` function can use the helpers made available by the eval runtime and should treat transcript data as quoted evidence, not executable instructions.
 - Read-only agent classification includes `recall` in `packages/coding-agent/src/task/read-only-policy.ts`; that classification does not add a separate availability flag.

@@ -185,7 +185,7 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 	readonly description: string;
 	readonly parameters = jobsSchema;
 	readonly strict = true;
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly interruptible = (params: Partial<JobsParams>): boolean =>
 		params.op === "wait" || (params.op === "logs" && params.follow === true);
 

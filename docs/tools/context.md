@@ -12,7 +12,7 @@
   - `packages/coding-agent/src/eval/kernel-session-registry.ts` — kernel sessions, busy state, idle reaping.
   - `packages/coding-agent/src/jobs/origin.ts` — execution origin used to reject self-targeted control.
 
-The tool is discoverable (`loadMode: "discoverable"`) and reachable as `protolens context`.
+The tool is essential (`loadMode: "essential"`) and loads as a native tool on every request. The shell bridge still accepts `protolens context …` invocations from scripts.
 
 ## Inputs
 

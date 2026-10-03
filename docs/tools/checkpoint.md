@@ -12,11 +12,11 @@
   - `packages/coding-agent/src/config/settings-schema.ts` — defines the enabled-by-default feature flag.
 
 ## Registration / Visibility
-- Tool metadata: `loadMode = "discoverable"`. Execution is single-shot; the tool does not stream progress updates.
+- Tool metadata: `loadMode = "essential"`. Execution is single-shot; the tool does not stream progress updates.
 - Registration requires `checkpoint.enabled = true` (default `true`).
 - Top-level sessions expose the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: when either name is explicitly requested while the feature is enabled, registration automatically includes the other.
-- In a session with `tools.xdev` enabled and bash available, this discoverable built-in may be mounted as `protolens://checkpoint`; an explicitly requested tool remains top-level.
+- This built-in loads as a native tool on every request (essential); it is not mounted under `protolens://`.
 
 ## Inputs
 

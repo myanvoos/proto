@@ -12,11 +12,11 @@
   - `packages/coding-agent/src/tools/index.ts` — registers the tool and shares the `checkpoint.enabled` gate.
 
 ## Registration / Visibility
-- Tool metadata: `loadMode = "discoverable"`. Execution is single-shot; rewind side effects are deferred rather than streamed as progress updates.
+- Tool metadata: `loadMode = "essential"`. Execution is single-shot; rewind side effects are deferred rather than streamed as progress updates.
 - Registration requires `checkpoint.enabled = true` (default `true`).
 - Top-level sessions receive the tool when enabled. Subagents do not discover it by default, but may receive it through an explicit `tools:`/requested-tools list.
 - `checkpoint` and `rewind` are a safety pair: explicitly requesting either while the feature is enabled automatically includes the other.
-- In a session with `tools.xdev` enabled and bash available, this discoverable built-in may be mounted as `protolens://rewind`; an explicitly requested tool remains top-level.
+- This built-in loads as a native tool on every request (essential); it is not mounted under `protolens://`.
 
 ## Inputs
 

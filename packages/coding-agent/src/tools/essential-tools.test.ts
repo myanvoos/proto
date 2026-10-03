@@ -9,7 +9,18 @@ import { isMountableUnderXdev, planXdevPromptDocs, renderXdevPromptDocs, xdevDoc
 // Contract: only these built-ins ship their schemas as native tools on every request. Everything
 // else mounts under protolens:// and is dispatched from bash. If this set drifts, every session silently
 // gains or loses native tool schemas.
-const ALWAYS_NATIVE_TOOL_NAMES = ["bash", "read", "ask", "checklist", "web_search"] as const;
+const ALWAYS_NATIVE_TOOL_NAMES = [
+	"bash",
+	"read",
+	"ask",
+	"checklist",
+	"web_search",
+	"context",
+	"recall",
+	"checkpoint",
+	"rewind",
+	"jobs",
+] as const;
 
 describe("ESSENTIAL_BUILTIN_TOOL_NAMES", () => {
 	test("contains exactly the always-native built-ins", () => {
