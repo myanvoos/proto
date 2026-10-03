@@ -122,10 +122,8 @@ jobs:
                  target
               key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
               restore-keys: cargo-${{ runner.os }}-
-         - name: Clippy
-           run: cargo clippy --workspace --exclude brush-core --no-deps -- -D warnings
-         - name: Rustfmt
-           run: cargo fmt --all --check
+         - name: Clippy and Rustfmt
+           run: bun scripts/run-rs-task.ts check:rs
 
    native_addons:
       name: "Build native addons: ${{ matrix.arch }}"
