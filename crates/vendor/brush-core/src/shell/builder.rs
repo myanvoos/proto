@@ -268,6 +268,7 @@ impl<SE: extensions::ShellExtensions> Default for Shell<SE> {
 			key_bindings: None,
 			fs_observations: fsobserve::FsObservationLog::default(),
 			history: None,
+			resource_limits: crate::rlimits::ResourceLimits::default(),
 		}
 	}
 }

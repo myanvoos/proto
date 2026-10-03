@@ -78,3 +78,26 @@ test("Perplexity joins a large reversed citation list within a linear-time budge
 	expect(result.sources.at(-1)?.title).toBe("Result 0");
 	expect(elapsedMs).toBeLessThan(200);
 });
+
+test("Perplexity treats a source-less anonymous answer (signup wall) as a provider failure", async () => {
+	const anonymousAuthStorage = {
+		getOAuthAccess: async () => undefined,
+		getCredentialOrigin: () => undefined,
+		getApiKey: async () => undefined,
+	} as unknown as AuthStorage;
+	const event = {
+		final: true,
+		display_model: "turbo",
+		text: JSON.stringify([
+			{ step_type: "FINAL", content: { answer: JSON.stringify({ answer: "Sign up and repeat your request." }) } },
+		]),
+	};
+	const fetchImpl: FetchImpl = async () =>
+		new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, {
+			headers: { "content-type": "text/event-stream" },
+		});
+
+	await expect(
+		searchPerplexity({ query: "Zen Browser version", authStorage: anonymousAuthStorage, fetch: fetchImpl }),
+	).rejects.toThrow(/anonymous ask returned no sources/);
+});

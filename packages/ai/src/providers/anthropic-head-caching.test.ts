@@ -303,6 +303,42 @@ describe("anthropic head caching (general API-key path)", () => {
 		expect(flapCached).not.toContain(last);
 	});
 
+	it("spends the OAuth system breakpoint on the last system block without taking one from the messages", async () => {
+		const oAuthModel = buildModel({ ...MODEL_SPEC, id: "claude-opus-5", name: "Claude Opus 5" });
+		const controller = new AbortController();
+		const { promise, resolve } = Promise.withResolvers<MessageCreateParams>();
+		const stream = streamAnthropicMessages(
+			oAuthModel,
+			{
+				systemPrompt: ["You are helpful.", "Follow the house style."],
+				messages: [
+					{ role: "user", content: "hello", timestamp: 1 },
+					assistantMessage("hi there", 2),
+					{ role: "user", content: "again", timestamp: 3 },
+				],
+				tools: CONTEXT.tools,
+			},
+			{
+				apiKey: "sk-ant-api-test",
+				signal: controller.signal,
+				isOAuth: true,
+				sessionId: "sess-oauth-anchor",
+				onPayload: payload => {
+					resolve(payload as unknown as MessageCreateParams);
+					controller.abort();
+				},
+			},
+		);
+		void stream.result().catch(() => undefined);
+		const body = await promise;
+		const system = textSystemBlocks(body);
+		const cachedSystem = system
+			.map((block, index) => ("cache_control" in block && block.cache_control != null ? index : -1))
+			.filter(index => index >= 0);
+		expect(cachedSystem).toEqual([system.length - 1]);
+		expect(findCachedMessageIndices(body)).toEqual([1, 2]);
+	});
+
 	it("keeps the head breakpoint on the stable prefix when the recall suffix refreshes", async () => {
 		const oAuthModel = buildModel({ ...MODEL_SPEC, id: "claude-opus-5", name: "Claude Opus 5" });
 		const providerSessionState = new Map<string, ProviderSessionState>();

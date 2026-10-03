@@ -1,4 +1,4 @@
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { attach, create, Flag, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import {
 	createOpenAICodexCompactionRequestContext,
@@ -26,6 +26,7 @@ import type {
 	ProviderSessionState,
 } from "@oh-my-pi/pi-ai/types";
 import {
+	dropMalformedOpenAIResponsesToolCalls,
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	normalizeResponsesToolCallId,
@@ -89,6 +90,8 @@ function normalizeRemoteCompactionEstimateValue(value: unknown): NormalizedEstim
 	const normalized: Record<string, unknown> = {};
 	let imageTokens = 0;
 	for (const [key, item] of Object.entries(record)) {
+		// Opaque encrypted reasoning/compaction state: its local base64 size far exceeds what the provider bills.
+		if (key === "encrypted_content" && typeof item === "string") continue;
 		const result = normalizeRemoteCompactionEstimateValue(item);
 		normalized[key] = result.value;
 		imageTokens += result.imageTokens;
@@ -101,6 +104,8 @@ export interface TrimRemoteCompactionInputResult {
 	rewrittenOutputs: number;
 	estimatedTokensBefore: number;
 	estimatedTokensAfter: number;
+	/** Whether `input` fits the model window; false means it must not be sent. */
+	fits: boolean;
 }
 
 interface RemoteCompactionBudgetProbe {
@@ -168,6 +173,7 @@ export function trimRemoteCompactionInputToContextWindow(
 			rewrittenOutputs: 0,
 			estimatedTokensBefore: before.tokens,
 			estimatedTokensAfter: before.tokens,
+			fits: true,
 		};
 	}
 
@@ -189,6 +195,7 @@ export function trimRemoteCompactionInputToContextWindow(
 			rewrittenOutputs: 0,
 			estimatedTokensBefore: before.tokens,
 			estimatedTokensAfter: before.tokens,
+			fits: false,
 		};
 	}
 
@@ -230,6 +237,7 @@ export function trimRemoteCompactionInputToContextWindow(
 			rewrittenOutputs: 0,
 			estimatedTokensBefore: before.tokens,
 			estimatedTokensAfter: before.tokens,
+			fits: false,
 		};
 	}
 
@@ -244,7 +252,23 @@ export function trimRemoteCompactionInputToContextWindow(
 		rewrittenOutputs: firstFittingCount,
 		estimatedTokensBefore: before.tokens,
 		estimatedTokensAfter: after.tokens,
+		fits: true,
 	};
+}
+
+/**
+ * Refuse a native compaction request whose prepared input cannot fit the model window, before any network I/O.
+ * The error is flagged `ContextOverflow` so callers skip retries and advance to the next compaction method.
+ */
+export function assertRemoteCompactionInputFits(trimmed: TrimRemoteCompactionInputResult, model: Model): void {
+	if (trimmed.fits) return;
+	throw attach(
+		new Error(
+			`Remote compaction input exceeds the context window of ${model.provider}/${model.id}: ` +
+				`estimated ${trimmed.estimatedTokensAfter} tokens > ${model.contextWindow}`,
+		),
+		create(Flag.ContextOverflow),
+	);
 }
 
 function withRequestTimeout(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal | undefined {
@@ -521,7 +545,10 @@ export function buildOpenAiNativeHistory(
 						}
 					}
 				}
-				const historyItems = adaptComputerHistoryForCompaction(rawHistoryItems, model.supportsComputerUse === true);
+				const historyItems = adaptComputerHistoryForCompaction(
+					dropMalformedOpenAIResponsesToolCalls(rawHistoryItems),
+					model.supportsComputerUse === true,
+				);
 				input.push(...historyItems);
 				addOpenAiCallIds(historyItems, knownCallIds, customCallIds, computerCallIds);
 				msgIndex++;
@@ -571,7 +598,7 @@ export function buildOpenAiNativeHistory(
 					}
 				}
 				const historyItems = adaptComputerHistoryForCompaction(
-					providerPayload.items,
+					dropMalformedOpenAIResponsesToolCalls(providerPayload.items),
 					model.supportsComputerUse === true,
 				);
 				if (providerPayload.dt) {
@@ -779,6 +806,7 @@ export async function requestOpenAiRemoteCompaction(
 			contextWindow: model.contextWindow,
 		});
 	}
+	assertRemoteCompactionInputFits(trimmed, model);
 	const request: OpenAiRemoteCompactionRequest = {
 		model: requestModel,
 

@@ -101,25 +101,68 @@ function responseHeaders(message: IncomingMessage): Headers {
 function decodedResponseStream(message: IncomingMessage): stream.Readable {
 	const rawEncoding = message.headers["content-encoding"];
 	const encoding = (Array.isArray(rawEncoding) ? rawEncoding[0] : rawEncoding)?.trim().toLowerCase();
+	let decoder: stream.Transform;
 	switch (encoding) {
 		case "gzip":
-			return message.pipe(zlib.createGunzip());
+			decoder = zlib.createGunzip();
+			break;
 		case "deflate":
-			return message.pipe(zlib.createInflate());
+			decoder = zlib.createInflate();
+			break;
 		case "br":
-			return message.pipe(zlib.createBrotliDecompress());
+			decoder = zlib.createBrotliDecompress();
+			break;
 		case "zstd":
-			return message.pipe(zlib.createZstdDecompress());
+			decoder = zlib.createZstdDecompress();
+			break;
 		default:
 			return message;
 	}
+	// A pipeline couples decoded-body cancellation to the source so its keep-alive socket cannot be stranded.
+	return stream.pipeline(message, decoder, () => {});
 }
 
-function createResponse(message: IncomingMessage, method: string): Response {
+// Bun's node:http reports a body cut off mid-stream as a bare Error("aborted") (ECONNRESET), indistinguishable
+// from a cancellation, so it classified as terminal. Re-raise with native fetch's retryable wording unless the
+// caller aborted.
+function withFetchParityErrors(
+	body: ReadableStream<Uint8Array>,
+	signal: AbortSignal | undefined,
+): ReadableStream<Uint8Array> {
+	const reader = body.getReader();
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const chunk = await reader.read();
+				if (chunk.done) controller.close();
+				else controller.enqueue(chunk.value);
+			} catch (error) {
+				const prematureClose =
+					!signal?.aborted &&
+					error instanceof Error &&
+					error.message === "aborted" &&
+					(error as NodeJS.ErrnoException).code === "ECONNRESET";
+				controller.error(
+					prematureClose
+						? Object.assign(
+								new Error("The socket connection was closed unexpectedly before the response completed", {
+									cause: error,
+								}),
+								{ code: "ECONNRESET" },
+							)
+						: error,
+				);
+			}
+		},
+		cancel: reason => reader.cancel(reason),
+	});
+}
+
+function createResponse(message: IncomingMessage, method: string, signal: AbortSignal | undefined): Response {
 	const status = message.statusCode;
 	if (status === undefined) throw new Error("Cowork transport received a response without an HTTP status.");
 	const hasBody = method !== "HEAD" && status !== 204 && status !== 304;
-	const body = hasBody ? stream.Readable.toWeb(decodedResponseStream(message)) : null;
+	const body = hasBody ? withFetchParityErrors(stream.Readable.toWeb(decodedResponseStream(message)), signal) : null;
 	return new Response(body, {
 		status,
 		statusText: message.statusMessage,
@@ -180,7 +223,7 @@ async function sendCoworkRequest(
 				});
 			}
 			try {
-				result.resolve(createResponse(message, method));
+				result.resolve(createResponse(message, method, signal));
 			} catch (error) {
 				message.destroy();
 				release();

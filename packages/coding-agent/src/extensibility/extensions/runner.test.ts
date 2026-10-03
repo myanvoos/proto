@@ -1,9 +1,12 @@
 import { afterEach, expect, test, vi } from "bun:test";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { Settings } from "../../config/settings";
-import type { SessionManager } from "../../session/session-manager";
+import { Settings } from "../../config/settings";
+import { SessionManager } from "../../session/session-manager";
+import { SessionProviderBoundary } from "../../session/session-provider-boundary";
 import { ExtensionRunner } from "./runner";
-import type { Extension, ExtensionRuntime, InputEventResult, ToolCallEventResult } from "./types";
+import type { Extension, ExtensionRuntime, InputEventResult, ToolCallEventResult, ToolResultEvent } from "./types";
+import { ExtensionToolWrapper } from "./wrapper";
 
 type TestHandler = (...args: unknown[]) => Promise<unknown>;
 
@@ -97,4 +100,118 @@ test("normal extension dispatch still applies a handler result", async () => {
 	const runner = makeRunner(extension);
 
 	expect(await runner.emitInput("hello", undefined, "interactive")).toEqual({ text: "HELLO" });
+});
+
+test("context usage and compaction work when the host provides no command actions", async () => {
+	const runner = makeRunner(makeExtension({}));
+	const usage = { tokens: 1200, contextWindow: 8000, percent: 15 };
+	const compact = vi.fn(async () => {});
+
+	runner.initialize(
+		{
+			sendMessage: () => {},
+			sendUserMessage: () => {},
+			appendEntry: () => {},
+			setLabel: () => {},
+			getActiveTools: () => [],
+			getAllTools: () => [],
+			setActiveTools: async () => {},
+			getCommands: () => [],
+			setModel: async () => false,
+			getThinkingLevel: () => undefined,
+			setThinkingLevel: () => {},
+			getSessionName: () => undefined,
+			setSessionName: async () => {},
+		},
+		{
+			getModel: () => undefined,
+			isIdle: () => true,
+			abort: () => {},
+			hasPendingMessages: () => false,
+			shutdown: () => {},
+			getContextUsage: () => usage,
+			compact,
+			getSystemPrompt: () => [],
+		},
+	);
+
+	expect(runner.createContext().getContextUsage()).toEqual(usage);
+	await runner.createContext().compact("preserve current task");
+	expect(compact).toHaveBeenCalledWith("preserve current task", true);
+});
+
+test("a tool-reported error stays an error through extension result rewrites", async () => {
+	const extension = makeExtension({
+		tool_result: [
+			async event => {
+				const result = event as ToolResultEvent;
+				return { content: [{ type: "text", text: result.isError ? "observed failure" : "observed success" }] };
+			},
+		],
+	});
+	const tool: AgentTool = {
+		name: "flagged",
+		label: "Flagged",
+		description: "returns a non-throwing failure",
+		parameters: {} as never,
+		execute: async () => ({ content: [{ type: "text", text: "reported failure" }], isError: true }),
+	};
+	const wrapper = new ExtensionToolWrapper(tool, makeRunner(extension));
+
+	const result = await wrapper.execute("call-reported-failure", {} as never);
+
+	expect(result.content).toEqual([{ type: "text", text: "observed failure" }]);
+	expect(result.isError).toBe(true);
+});
+
+test("cancelling a side request releases a stalled provider hook without quarantining its extension", async () => {
+	for (const phase of ["before_provider_request", "after_provider_response"] as const) {
+		const entered = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<undefined>();
+		let calls = 0;
+		const runner = makeRunner(
+			makeExtension({
+				[phase]: [
+					async () => {
+						calls++;
+						if (calls === 1) {
+							entered.resolve();
+							return held.promise;
+						}
+						return undefined;
+					},
+				],
+			}),
+		);
+		const boundary = new SessionProviderBoundary({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({}),
+			model: () => undefined,
+			transformContext: messages => messages,
+			convertToLlm: () => [],
+			onPayload: (payload, model, signal) => runner.emitBeforeProviderRequest(payload, model, signal),
+			onResponse: (response, model, signal) => runner.emitAfterProviderResponse(response, model, signal),
+			onSseEvent: undefined,
+			obfuscator: undefined,
+		});
+		const controller = new AbortController();
+		const options = boundary.prepareSimpleStreamOptions({ signal: controller.signal });
+		const invoke = () =>
+			phase === "before_provider_request"
+				? options.onPayload?.({ request: 1 })
+				: options.onResponse?.({ status: 200, headers: {} });
+		const pending = invoke();
+		await entered.promise;
+		controller.abort();
+		try {
+			await pending;
+			expect(calls).toBe(1);
+			if (phase === "before_provider_request") await runner.emitBeforeProviderRequest({ request: 2 });
+			else await runner.emitAfterProviderResponse({ status: 200, headers: {} });
+			expect(calls).toBe(2);
+		} finally {
+			held.resolve(undefined);
+		}
+	}
 });

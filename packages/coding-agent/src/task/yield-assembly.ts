@@ -3,6 +3,9 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import type { YieldItem } from "./types";
 
+/** Declared output-schema shape per section label: arrays accumulate, scalars keep the latest value. */
+export type YieldSectionShapes = ReadonlyMap<string, "array" | "scalar">;
+
 interface AssembledYieldResult {
 	data: unknown;
 	schemaOverridden: boolean;
@@ -55,12 +58,14 @@ function appendYieldSection(
 	sectionCounts: Map<string, number>,
 	label: string,
 	value: unknown,
-	forceArray: boolean,
+	shape: "array" | "scalar" | undefined,
 ): void {
 	const count = sectionCounts.get(label) ?? 0;
 	const existing = sections[label];
-	if (count === 0) {
-		sections[label] = forceArray ? [value] : value;
+	if (shape === "scalar") {
+		sections[label] = value;
+	} else if (count === 0) {
+		sections[label] = shape === "array" ? [value] : value;
 	} else if (Array.isArray(existing)) {
 		existing.push(value);
 	} else {
@@ -81,25 +86,47 @@ function isArrayTypedSchema(value: unknown): boolean {
 	return false;
 }
 
-export function arrayValuedLabels(outputSchema: unknown): ReadonlySet<string> {
-	const labels = new Set<string>();
-
-	const { jsonSchema } = buildOutputValidator(outputSchema);
-	if (jsonSchema === undefined) return labels;
-	const dereferenced = dereferenceJsonSchema(jsonSchema);
-	const labelSchema = isRecord(dereferenced) ? dereferenced : jsonSchema;
-	const properties = labelSchema.properties;
-	if (!isRecord(properties)) return labels;
-	for (const key in properties) {
-		if (isArrayTypedSchema(properties[key])) labels.add(key);
+function collectPropertyShapes(schema: Record<string, unknown>, shapes: Map<string, "array" | "scalar" | "mixed">) {
+	const properties = schema.properties;
+	if (isRecord(properties)) {
+		for (const key in properties) {
+			const shape = isArrayTypedSchema(properties[key]) ? "array" : "scalar";
+			const existing = shapes.get(key);
+			shapes.set(key, existing === undefined || existing === shape ? shape : "mixed");
+		}
 	}
-	return labels;
+	for (const key of ["allOf", "oneOf", "anyOf"] as const) {
+		const branches = schema[key];
+		if (!Array.isArray(branches)) continue;
+		for (const branch of branches) {
+			if (isRecord(branch)) collectPropertyShapes(branch, shapes);
+		}
+	}
+}
+
+/**
+ * Shape of every output-schema property declared at the root or in its `allOf`/`oneOf`/`anyOf` branches (JTD
+ * discriminators compile to a root `oneOf`). Array properties accumulate even a single section; other declared
+ * properties are scalar, so a revised section replaces the earlier one instead of assembling an array the schema
+ * rejects. A label declared array in one branch and scalar in another gets no shape and keeps the generic merge.
+ */
+export function yieldSectionShapes(outputSchema: unknown): YieldSectionShapes {
+	const shapes = new Map<string, "array" | "scalar">();
+	const { jsonSchema } = buildOutputValidator(outputSchema);
+	if (jsonSchema === undefined) return shapes;
+	const dereferenced = dereferenceJsonSchema(jsonSchema);
+	const collected = new Map<string, "array" | "scalar" | "mixed">();
+	collectPropertyShapes(isRecord(dereferenced) ? dereferenced : jsonSchema, collected);
+	for (const [key, shape] of collected) {
+		if (shape !== "mixed") shapes.set(key, shape);
+	}
+	return shapes;
 }
 
 export function assembleYieldResult(
 	yieldItems: YieldItem[],
 	lastAssistantText?: string,
-	arrayLabels?: ReadonlySet<string>,
+	sectionShapes?: YieldSectionShapes,
 ): AssembledYieldResult | undefined {
 	if (yieldItems.length === 0) return undefined;
 
@@ -114,18 +141,28 @@ export function assembleYieldResult(
 
 	const sections: Record<string, unknown> = {};
 	const sectionCounts = new Map<string, number>();
+	// A scalar section replaced by a later yield drops the earlier yield's schema-override provenance.
+	const overriddenScalars = new Set<string>();
 	let schemaOverridden = false;
 	let missingData = false;
 	let hasSections = false;
 	for (const item of yieldItems) {
 		if (item.status === "aborted") continue;
 		if (!isIncrementalYieldType(item.type)) continue;
-		schemaOverridden ||= item.schemaOverridden === true;
+		const overridden = item.schemaOverridden === true;
 		const labels = getYieldLabels(item.type);
 		const resolved = resolveYieldPayload(item, lastAssistantText, labels);
 		missingData ||= resolved.missingData;
+		if (labels.length === 0) schemaOverridden ||= overridden;
 		for (const label of labels) {
-			appendYieldSection(sections, sectionCounts, label, resolved.value, arrayLabels?.has(label) ?? false);
+			const shape = sectionShapes?.get(label);
+			appendYieldSection(sections, sectionCounts, label, resolved.value, shape);
+			if (shape === "scalar") {
+				if (overridden) overriddenScalars.add(label);
+				else overriddenScalars.delete(label);
+			} else {
+				schemaOverridden ||= overridden;
+			}
 			hasSections = true;
 		}
 	}
@@ -141,7 +178,12 @@ export function assembleYieldResult(
 	}
 
 	if (hasSections) {
-		return { data: sections, schemaOverridden, rawText: false, missingData };
+		return {
+			data: sections,
+			schemaOverridden: schemaOverridden || overriddenScalars.size > 0,
+			rawText: false,
+			missingData,
+		};
 	}
 
 	if (!terminalItem) return undefined;

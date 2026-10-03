@@ -57,9 +57,6 @@ export function searchableChar(data: string): string | null {
 	if (printableText && printableText.length === 1) {
 		const printableCharCode = printableText.charCodeAt(0);
 		if (printableCharCode > 32 && printableCharCode < 127) {
-			if (printableText === "j" || printableText === "k") {
-				return null;
-			}
 			return printableText;
 		}
 	}

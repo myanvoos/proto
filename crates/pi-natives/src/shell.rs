@@ -367,6 +367,7 @@ pub fn execute_shell<'env>(
 }
 
 const BRIDGE_QUEUE_CHUNKS: usize = 64;
+const FORWARD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn bridge_chunks(
 	on_chunk: Option<ThreadsafeFunction<String, UnknownReturnValue>>,
@@ -375,13 +376,18 @@ fn bridge_chunks(
 		return (None, None);
 	};
 	let (tx, rx) = flume::bounded::<String>(BRIDGE_QUEUE_CHUNKS);
-	let handle = napi::tokio::spawn(pump_chunks(rx, async move |payload: String| {
-		on_chunk.call_async(Ok(payload)).await.is_ok()
-	}));
+	let handle =
+		napi::tokio::spawn(pump_chunks(rx, FORWARD_STALL_TIMEOUT, async move |payload: String| {
+			on_chunk.call_async(Ok(payload)).await.is_ok()
+		}));
 	(Some(tx), Some(handle))
 }
 
-async fn pump_chunks(rx: flume::Receiver<String>, mut forward: impl AsyncFnMut(String) -> bool) {
+async fn pump_chunks(
+	rx: flume::Receiver<String>,
+	stall_timeout: Duration,
+	mut forward: impl AsyncFnMut(String) -> bool,
+) {
 	const MAX_BATCH_BYTES: usize = 64 * 1024;
 
 	const INITIAL_BATCH_CAP: usize = 8 * 1024;
@@ -396,8 +402,9 @@ async fn pump_chunks(rx: flume::Receiver<String>, mut forward: impl AsyncFnMut(S
 			}
 		}
 		let payload = std::mem::replace(&mut batch, String::with_capacity(INITIAL_BATCH_CAP));
-		if !forward(payload).await {
-			return;
+		match napi::tokio::time::timeout(stall_timeout, forward(payload)).await {
+			Ok(true) => {},
+			Ok(false) | Err(_) => return,
 		}
 	}
 }
@@ -437,6 +444,20 @@ mod tests {
 
 	use super::*;
 
+	#[tokio::test(flavor = "multi_thread")]
+	async fn wedged_forward_disconnects_output_readers() {
+		let (tx, rx) = flume::bounded::<String>(1);
+		tx.send("first".into()).unwrap();
+		let pump = tokio::spawn(pump_chunks(rx, Duration::from_millis(25), async |_| {
+			std::future::pending::<bool>().await
+		}));
+		time::timeout(Duration::from_secs(2), pump)
+			.await
+			.unwrap()
+			.unwrap();
+		assert!(tx.send_async("late".into()).await.is_err());
+	}
+
 	fn run_result(cancelled: bool, timed_out: bool) -> ShellRunResult {
 		ShellRunResult {
 			exit_code: Some(0),
@@ -455,7 +476,8 @@ mod tests {
 	async fn interrupted_drain_disconnects_an_orphaned_output_sender() {
 		let (tx, rx) = flume::bounded::<String>(BRIDGE_QUEUE_CHUNKS);
 		let orphan = tx.clone();
-		let handle = napi::tokio::spawn(pump_chunks(rx, async |_payload: String| true));
+		let handle =
+			napi::tokio::spawn(pump_chunks(rx, FORWARD_STALL_TIMEOUT, async |_payload: String| true));
 		drop(tx);
 		let started = Instant::now();
 		let result = Ok(run_result(false, true));
@@ -474,11 +496,15 @@ mod tests {
 		let (tx, rx) = flume::bounded::<String>(BRIDGE_QUEUE_CHUNKS);
 		let forwarded = Arc::new(AtomicBool::new(false));
 		let observed = Arc::clone(&forwarded);
-		let handle = napi::tokio::spawn(pump_chunks(rx, async move |_payload: String| {
-			time::sleep(Duration::from_millis(25)).await;
-			observed.store(true, Ordering::Release);
-			true
-		}));
+		let handle = napi::tokio::spawn(pump_chunks(
+			rx,
+			FORWARD_STALL_TIMEOUT,
+			async move |_payload: String| {
+				time::sleep(Duration::from_millis(25)).await;
+				observed.store(true, Ordering::Release);
+				true
+			},
+		));
 		tx.send("accepted".to_string())
 			.expect("pump should be connected");
 		drop(tx);

@@ -6,6 +6,8 @@ export * from "./append-only-context";
 
 export * from "./compaction/index";
 
+export * from "./output-budget";
+
 export * from "./pause";
 
 export * from "./proxy";

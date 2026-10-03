@@ -129,6 +129,7 @@ export interface InteractiveModeContext {
 	unfocusSession(): Promise<void>;
 
 	clearTransientSessionUi(): void;
+	prepareSessionSwitch(): void;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: AgentSession["agent"];
@@ -203,7 +204,11 @@ export interface InteractiveModeContext {
 	shutdown(): Promise<void>;
 	/** Shut down like {@link shutdown}, then update the binary and relaunch resuming this session. */
 	updateAndRestart(): Promise<void>;
+	/** Request graceful shutdown at the next fully settled boundary, including turns no terminal input started. */
+	requestShutdown(): void;
 	checkShutdownRequested(): Promise<void>;
+	/** True while the guided /goal interview is questioning the user and no goal record exists yet. */
+	isGuidedGoalInterviewActive(): boolean;
 
 	setToolUIContext(uiContext: ExtensionUIContext, hasUI: boolean): void;
 	initializeHookRunner(uiContext: ExtensionUIContext, hasUI: boolean): void;
@@ -229,7 +234,12 @@ export interface InteractiveModeContext {
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
-	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
+	queueCompactionMessage(
+		text: string,
+		mode: "steer" | "followUp",
+		images?: ImageContent[],
+		options?: { preserveDraft?: boolean },
+	): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;
 	setWorkingMessage(message?: string): void;
@@ -244,7 +254,7 @@ export interface InteractiveModeContext {
 			display?: boolean;
 			streamingBehavior?: "steer" | "followUp";
 		},
-		options?: { preserveDraft?: boolean },
+		options?: { preserveDraft?: boolean; clearEditor?: boolean },
 	): SubmittedUserInput;
 	cancelPendingSubmission(): boolean;
 	markPendingSubmissionStarted(input: SubmittedUserInput): boolean;
@@ -298,7 +308,7 @@ export interface InteractiveModeContext {
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setChecklist(items: ChecklistItem[] | ChecklistPhase[]): void;
-	reloadChecklist(): Promise<void>;
+	reloadChecklist(source?: AgentSession): Promise<void>;
 	toggleChecklistExpansion(): void;
 
 	handleChecklistCommand(args: string): Promise<void>;
@@ -366,7 +376,10 @@ export interface InteractiveModeContext {
 	handleDequeue(): void;
 	handleImagePaste(): Promise<boolean>;
 
-	handleQueueCommand(message: string): Promise<void>;
+	handleQueueCommand(
+		message: string,
+		detached?: Pick<SubmittedUserInput, "text" | "images" | "imageLinks">,
+	): Promise<void>;
 	handleSideCommand(mode: SideCommandMode, text: string): Promise<void>;
 	hasActiveSideQuestion(): boolean;
 	handleSideQuestionEscape(): boolean;

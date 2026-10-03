@@ -25,7 +25,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 2048,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -55,7 +56,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -85,7 +87,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -115,7 +118,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -145,7 +149,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -175,7 +180,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -216,6 +222,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -257,6 +264,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -298,6 +306,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -339,6 +348,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -380,6 +390,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -421,6 +432,49 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"anthropic.claude-sonnet-5-5": {
+		"id": "anthropic.claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -450,7 +504,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"apac.amazon.nova-micro-v1:0": {
@@ -478,7 +533,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"apac.amazon.nova-pro-v1:0": {
@@ -507,7 +563,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"apac.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -547,6 +604,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -587,6 +645,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -627,6 +686,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -668,6 +728,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -709,6 +770,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -750,6 +812,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -791,6 +854,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -831,6 +895,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -871,6 +936,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -912,6 +978,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -941,7 +1008,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"cohere.command-r-plus-v1:0": {
@@ -969,6 +1037,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -998,6 +1067,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -1038,6 +1108,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1078,6 +1149,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1116,6 +1188,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		},
 		"supportsComputerUse": false
@@ -1156,6 +1229,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1185,7 +1259,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"eu.amazon.nova-micro-v1:0": {
@@ -1213,7 +1288,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"eu.amazon.nova-pro-v1:0": {
@@ -1242,7 +1318,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"eu.anthropic.claude-3-5-haiku-20241022-v1:0": {
@@ -1271,7 +1348,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 2048,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1301,7 +1379,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1331,7 +1410,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1361,7 +1441,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1391,7 +1472,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1421,7 +1503,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1451,7 +1534,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -1493,6 +1577,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1536,6 +1621,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1576,6 +1662,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1616,6 +1703,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1655,6 +1743,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		},
 		"supportsComputerUse": false
@@ -1696,6 +1785,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1736,6 +1826,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1777,6 +1868,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1818,6 +1910,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1859,6 +1952,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1900,6 +1994,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -1940,6 +2035,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -1980,6 +2076,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2020,6 +2117,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2061,6 +2159,49 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"eu.anthropic.claude-sonnet-5-5": {
+		"id": "eu.anthropic.claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5 (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2090,7 +2231,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"global.amazon.nova-2-lite-v1:0": {
@@ -2129,6 +2271,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2170,6 +2313,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2213,6 +2357,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2253,6 +2398,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2293,6 +2439,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2333,6 +2480,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2374,6 +2522,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2415,6 +2564,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2456,6 +2606,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2497,6 +2648,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2537,6 +2689,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2577,6 +2730,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2617,6 +2771,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -2658,6 +2813,49 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"global.anthropic.claude-sonnet-5-5": {
+		"id": "global.anthropic.claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5 (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -2679,7 +2877,7 @@
 			"cacheWrite": 3.75
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -2698,6 +2896,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2739,6 +2938,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2780,6 +2980,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2821,6 +3022,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2862,6 +3064,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2903,6 +3106,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2944,6 +3148,49 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"global.openai.gpt-6.1-sol": {
+		"id": "global.openai.gpt-6.1-sol",
+		"name": "GPT-6.1 Sol (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -2984,6 +3231,48 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"global.xai.grok-4.7": {
+		"id": "global.xai.grok-4.7",
+		"name": "Grok 4.7 (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -3014,6 +3303,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -3044,6 +3334,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -3084,6 +3375,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -3124,6 +3416,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -3164,8 +3457,134 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"in.anthropic.claude-haiku-4-5-20251001-v1:0": {
+		"id": "in.anthropic.claude-haiku-4-5-20251001-v1:0",
+		"name": "Claude Haiku 4.5 (India)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.1,
+			"output": 5.5,
+			"cacheRead": 0.11,
+			"cacheWrite": 1.375
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"in.anthropic.claude-opus-5": {
+		"id": "in.anthropic.claude-opus-5",
+		"name": "Claude Opus 5 (India)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"in.anthropic.claude-sonnet-5": {
+		"id": "in.anthropic.claude-sonnet-5",
+		"name": "Claude Sonnet 5 (India)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
 		}
 	},
 	"in.openai.gpt-5.6-luna": {
@@ -3205,6 +3624,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -3246,6 +3666,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -3286,6 +3707,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3326,6 +3748,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3367,6 +3790,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -3408,6 +3832,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -3449,6 +3874,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -3489,6 +3915,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3529,6 +3956,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3570,6 +3998,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -3598,6 +4027,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -3628,6 +4058,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -3657,6 +4088,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -3696,6 +4128,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3715,7 +4148,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 204800,
+		"contextWindow": 196608,
 		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
@@ -3735,6 +4168,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3774,6 +4208,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3793,7 +4228,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
+		"contextWindow": 262144,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -3802,7 +4237,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.magistral-small-2509": {
@@ -3841,6 +4277,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -3870,7 +4307,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.ministral-3-3b-instruct": {
@@ -3899,7 +4337,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.ministral-3-8b-instruct": {
@@ -3928,7 +4367,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.mistral-large-2402-v1:0": {
@@ -3955,7 +4395,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -3976,7 +4417,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
+		"contextWindow": 262144,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -3985,7 +4426,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.pixtral-large-2502-v1:0": {
@@ -4014,7 +4456,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.voxtral-mini-3b-2507": {
@@ -4042,7 +4485,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"mistral.voxtral-small-24b-2507": {
@@ -4070,7 +4514,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"moonshot.kimi-k2-thinking": {
@@ -4089,7 +4534,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 262143,
+		"contextWindow": 262144,
 		"maxTokens": 16000,
 		"thinking": {
 			"mode": "budget",
@@ -4110,6 +4555,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -4131,7 +4577,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 262143,
+		"contextWindow": 262144,
 		"maxTokens": 16384,
 		"thinking": {
 			"mode": "budget",
@@ -4151,6 +4597,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -4172,7 +4619,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
+		"contextWindow": 131072,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -4182,6 +4629,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -4220,6 +4668,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -4243,7 +4692,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 8192,
 		"int": 6.8,
-		"tps": 155.2,
+		"tps": 155.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -4252,6 +4701,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -4290,6 +4740,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -4331,6 +4782,133 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"openai.gpt-6-luna": {
+		"id": "openai.gpt-6-luna",
+		"name": "GPT-6 Luna",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.11,
+			"output": 0.55,
+			"cacheRead": 0.011,
+			"cacheWrite": 0.1375
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"openai.gpt-6-sol": {
+		"id": "openai.gpt-6-sol",
+		"name": "GPT-6 Sol",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"openai.gpt-6.1-sol": {
+		"id": "openai.gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.11,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -4351,8 +4929,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 16384,
+		"contextWindow": 131072,
+		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4370,6 +4948,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4389,8 +4968,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 16384,
+		"contextWindow": 131072,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4408,6 +4987,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4427,8 +5007,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 16384,
+		"contextWindow": 131072,
+		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4446,6 +5026,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4465,8 +5046,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 16384,
+		"contextWindow": 131072,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4484,6 +5065,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4522,6 +5104,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4560,6 +5143,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4588,7 +5172,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"qwen.qwen3-32b-v1:0": {
@@ -4626,6 +5211,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4654,7 +5240,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"qwen.qwen3-coder-480b-a35b-v1:0": {
@@ -4682,7 +5269,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"qwen.qwen3-coder-next": {
@@ -4710,7 +5298,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"qwen.qwen3-next-80b-a3b": {
@@ -4738,7 +5327,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"qwen.qwen3-vl-235b-a22b": {
@@ -4767,7 +5357,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us-gov.anthropic.claude-fable-5": {
@@ -4808,6 +5399,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -4851,6 +5443,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -4891,6 +5484,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4931,6 +5525,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -4971,6 +5566,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5011,6 +5607,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5052,6 +5649,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5093,6 +5691,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5134,6 +5733,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5175,6 +5775,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5215,6 +5816,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5255,6 +5857,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5296,6 +5899,49 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"us-gov.anthropic.claude-sonnet-5-5": {
+		"id": "us-gov.anthropic.claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5 (GovCloud)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5334,6 +5980,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5372,6 +6019,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5411,6 +6059,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5440,7 +6089,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us.amazon.nova-micro-v1:0": {
@@ -5468,7 +6118,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us.amazon.nova-premier-v1:0": {
@@ -5497,7 +6148,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us.amazon.nova-pro-v1:0": {
@@ -5526,7 +6178,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
@@ -5555,7 +6208,8 @@
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4
+			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true
 		},
 		"supportsComputerUse": false
 	},
@@ -5597,6 +6251,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5640,6 +6295,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5680,6 +6336,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5720,6 +6377,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5759,6 +6417,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		},
 		"supportsComputerUse": false
@@ -5800,6 +6459,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5840,6 +6500,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -5881,6 +6542,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5922,6 +6584,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -5963,6 +6626,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -6004,6 +6668,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 512,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": false,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -6044,6 +6709,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -6084,6 +6750,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -6124,6 +6791,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		}
 	},
@@ -6165,6 +6833,7 @@
 			"supportsLongPromptCacheRetention": true,
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 900000
 		}
 	},
@@ -6203,6 +6872,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"streamIdleTimeoutMs": 600000
 		},
 		"supportsComputerUse": false
@@ -6233,6 +6903,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -6262,6 +6933,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -6291,6 +6963,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -6320,6 +6993,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -6349,6 +7023,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -6379,6 +7054,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		},
 		"supportsComputerUse": false
@@ -6409,6 +7085,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -6439,6 +7116,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -6469,6 +7147,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true
 		}
 	},
@@ -6498,7 +7177,8 @@
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true
 		}
 	},
 	"us.moonshotai.kimi-k3": {
@@ -6519,7 +7199,7 @@
 			"cacheWrite": 4.125
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -6538,6 +7218,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6579,6 +7260,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6620,6 +7302,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6661,6 +7344,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6702,6 +7386,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6743,6 +7428,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6784,6 +7470,49 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.openai.gpt-6.1-sol": {
+		"id": "us.openai.gpt-6.1-sol",
+		"name": "GPT-6.1 Sol (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.11,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6823,6 +7552,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6862,6 +7592,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6902,6 +7633,48 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
+			"requiresToolResultImageHoisting": true,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.xai.grok-4.7": {
+		"id": "us.xai.grok-4.7",
+		"name": "Grok 4.7 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 6.6,
+			"cacheRead": 0.55,
+			"cacheWrite": 0
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6941,6 +7714,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -6980,6 +7754,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -7020,6 +7795,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -7060,6 +7836,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -7080,7 +7857,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 204800,
+		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
@@ -7099,6 +7876,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -7119,7 +7897,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
@@ -7138,6 +7916,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}
@@ -7178,6 +7957,7 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
+			"supportsForcedToolChoice": true,
 			"requiresToolResultImageHoisting": true,
 			"streamIdleTimeoutMs": 600000
 		}

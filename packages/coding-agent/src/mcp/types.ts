@@ -56,6 +56,7 @@ interface MCPServerConfigBase {
 	oauth?: {
 		clientId?: string;
 		clientSecret?: string;
+		scope?: string;
 		redirectUri?: string;
 		callbackPort?: number;
 		callbackPath?: string;
@@ -71,6 +72,7 @@ export interface MCPStdioServerConfig extends MCPServerConfigBase {
 	env?: Record<string, string>;
 
 	envPolicy?: "literal";
+	envLiteralKeys?: string[];
 	cwd?: string;
 }
 
@@ -189,6 +191,7 @@ export interface MCPAuthChallenge {
 export interface MCPToolCallResult {
 	content: MCPContent[];
 	isError?: boolean;
+	structuredContent?: Record<string, unknown>;
 	_meta?: Record<string, unknown>;
 }
 

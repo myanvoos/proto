@@ -5,11 +5,14 @@ import * as path from "node:path";
 import { loadCapability } from "../capability";
 import { clearCache as clearFsCache } from "../capability/fs";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
+import { type Rule, ruleCapability } from "../capability/rule";
+import { type Skill, skillCapability } from "../capability/skill";
 import { MCPManager } from "../mcp/manager";
 import "./claude-plugins";
 import {
 	clearClaudePluginRootsCache,
 	expandEnvVarsDeep,
+	parseAgentFields,
 	resolveActiveProjectRegistryPath,
 	shouldPreloadPluginRoots,
 } from "./helpers";
@@ -150,6 +153,200 @@ test("plugin env expands before root substitution and survives subprocess config
 		clearFsCache();
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
+});
+
+test("default placeholders also replace empty variables", () => {
+	const env = { EMPTY: "", SET: "value" };
+	expect(expandEnvVarsDeep(envPlaceholder("EMPTY", "fallback"), env)).toBe("fallback");
+	expect(expandEnvVarsDeep(envPlaceholder("EMPTY"), env)).toBe("");
+	expect(expandEnvVarsDeep(envPlaceholder("SET", "fallback"), env)).toBe("value");
+});
+
+test("expanded plugin env values are never reinterpreted at connect time", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-plugin-env-literal-test-"));
+	const claudeConfigDir = path.join(tempDir, ".claude");
+	const pluginPath = path.join(tempDir, "plugins", "literal");
+	const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+	const originalPluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+	const originalToken = process.env.PROTO_TEST_PLUGIN_TOKEN;
+	const ambientHome = Bun.env.HOME;
+	if (typeof ambientHome !== "string") throw new Error("HOME must be available to test env-name resolution");
+
+	try {
+		vi.spyOn(os, "homedir").mockReturnValue(tempDir);
+		restoreEnvValue("CLAUDE_CONFIG_DIR", claudeConfigDir);
+		restoreEnvValue("CLAUDE_PLUGIN_ROOT", "/caller/plugin");
+		restoreEnvValue("PROTO_TEST_PLUGIN_TOKEN", "HOME");
+		clearClaudePluginRootsCache();
+		clearFsCache();
+
+		await fs.mkdir(path.join(claudeConfigDir, "plugins"), { recursive: true });
+		await fs.mkdir(pluginPath, { recursive: true });
+		await Bun.write(
+			path.join(claudeConfigDir, "plugins", "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"literal@market": [{ scope: "user", installPath: pluginPath, version: "1.0.0" }],
+					"broken@market": [{ scope: "user", installPath: path.join(tempDir, "plugins", "broken") }],
+				},
+			}),
+		);
+		await fs.mkdir(path.join(tempDir, "plugins", "broken"), { recursive: true });
+		await Bun.write(
+			path.join(tempDir, "plugins", "broken", ".mcp.json"),
+			JSON.stringify({ broken: { command: "noop", env: null } }),
+		);
+		await Bun.write(
+			path.join(pluginPath, ".mcp.json"),
+			JSON.stringify({
+				literal: {
+					command: "noop",
+					env: {
+						TOKEN: envPlaceholder("PROTO_TEST_PLUGIN_TOKEN"),
+						EMPTY: envPlaceholder("PROTO_TEST_PLUGIN_UNSET", ""),
+						ROOT: envPlaceholder("CLAUDE_PLUGIN_ROOT"),
+						LEGACY: "HOME",
+					},
+				},
+			}),
+		);
+
+		const result = await loadCapability<MCPServer>(mcpCapability.id, {
+			cwd: tempDir,
+			providers: ["claude-plugins"],
+		});
+		expect(result.warnings.some(warning => warning.includes('"broken"') && warning.includes("malformed env"))).toBe(
+			true,
+		);
+		const server = result.items.find(item => item.name === "literal:literal");
+		if (server?.env === undefined) throw new Error(`Missing discovered test server: ${result.warnings.join("; ")}`);
+		expect(server.envLiteralKeys).toEqual(["TOKEN", "EMPTY", "ROOT"]);
+
+		const delivered = await new MCPManager(tempDir).prepareConfig({
+			type: "stdio",
+			command: server.command ?? "noop",
+			env: server.env,
+			envLiteralKeys: server.envLiteralKeys,
+		});
+		if (delivered.type !== "stdio" || delivered.env === undefined) {
+			throw new Error("Prepared stdio config lost its environment");
+		}
+		expect({ ...delivered.env }).toEqual({ TOKEN: "HOME", EMPTY: "", ROOT: pluginPath, LEGACY: ambientHome });
+	} finally {
+		restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
+		restoreEnvValue("CLAUDE_PLUGIN_ROOT", originalPluginRoot);
+		restoreEnvValue("PROTO_TEST_PLUGIN_TOKEN", originalToken);
+		vi.restoreAllMocks();
+		clearClaudePluginRootsCache();
+		clearFsCache();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("marketplace plugin rules load and honor enabled: false frontmatter", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-plugin-rules-test-"));
+	const claudeConfigDir = path.join(tempDir, ".claude");
+	const pluginPath = path.join(tempDir, "plugins", "rules-plugin");
+	const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+	try {
+		vi.spyOn(os, "homedir").mockReturnValue(tempDir);
+		restoreEnvValue("CLAUDE_CONFIG_DIR", claudeConfigDir);
+		clearClaudePluginRootsCache();
+		clearFsCache();
+
+		await fs.mkdir(path.join(claudeConfigDir, "plugins"), { recursive: true });
+		await fs.mkdir(path.join(pluginPath, "rules"), { recursive: true });
+		await Bun.write(
+			path.join(claudeConfigDir, "plugins", "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: { "rules-plugin@market": [{ scope: "user", installPath: pluginPath, version: "1.0.0" }] },
+			}),
+		);
+		await Bun.write(
+			path.join(pluginPath, "rules", "style.md"),
+			"---\ndescription: Marketplace style rule\n---\nUse tabs.\n",
+		);
+		await Bun.write(path.join(pluginPath, "rules", "off.md"), "---\nenabled: false\n---\nIgnored.\n");
+
+		const result = await loadCapability<Rule>(ruleCapability.id, { cwd: tempDir, providers: ["claude-plugins"] });
+
+		expect(result.items.map(rule => rule.name)).toEqual(["style"]);
+		expect(result.items[0]?.description).toBe("Marketplace style rule");
+	} finally {
+		restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
+		vi.restoreAllMocks();
+		clearClaudePluginRootsCache();
+		clearFsCache();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+for (const catalogDir of [".claude-plugin", ".proto-plugin"]) {
+	test(`marketplace-root ${catalogDir} entry limits shared skills to declared paths`, async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-shared-root-skills-test-"));
+		const claudeConfigDir = path.join(tempDir, ".claude");
+		const pluginPath = path.join(tempDir, "plugins", "anthropic-skills");
+		const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+		try {
+			vi.spyOn(os, "homedir").mockReturnValue(tempDir);
+			restoreEnvValue("CLAUDE_CONFIG_DIR", claudeConfigDir);
+			clearClaudePluginRootsCache();
+			clearFsCache();
+
+			for (const skill of ["xlsx", "skill-creator"]) {
+				await Bun.write(
+					path.join(pluginPath, "skills", skill, "SKILL.md"),
+					`---\nname: ${skill}\ndescription: ${skill} skill\n---\nBody\n`,
+				);
+			}
+			await Bun.write(
+				path.join(pluginPath, catalogDir, "marketplace.json"),
+				JSON.stringify({
+					name: "anthropic-agent-skills",
+					owner: { name: "Anthropic" },
+					plugins: [
+						{ name: "document-skills", source: "./", skills: ["./skills/xlsx"] },
+						{ name: "example-skills", source: "./", skills: ["./skills/skill-creator"] },
+					],
+				}),
+			);
+			await Bun.write(
+				path.join(claudeConfigDir, "plugins", "installed_plugins.json"),
+				JSON.stringify({
+					version: 2,
+					plugins: {
+						"document-skills@anthropic-agent-skills": [
+							{ scope: "user", installPath: pluginPath, version: "1.0.0" },
+						],
+					},
+				}),
+			);
+
+			const result = await loadCapability<Skill>(skillCapability.id, {
+				cwd: tempDir,
+				providers: ["claude-plugins"],
+			});
+
+			expect(result.items.map(skill => skill.name)).toEqual(["xlsx"]);
+		} finally {
+			restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
+			vi.restoreAllMocks();
+			clearClaudePluginRootsCache();
+			clearFsCache();
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+}
+
+describe("parseAgentFields", () => {
+	test("keeps an explicitly empty tools list distinct from an absent one", () => {
+		expect(parseAgentFields({ name: "quiet", description: "desc", tools: [] })?.tools).toEqual(["yield"]);
+		expect(parseAgentFields({ name: "quiet", description: "desc" })?.tools).toBeUndefined();
+	});
 });
 
 describe("resolveActiveProjectRegistryPath", () => {

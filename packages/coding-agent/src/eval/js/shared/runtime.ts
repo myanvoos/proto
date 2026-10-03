@@ -733,7 +733,8 @@ export class JsRuntime {
 					},
 				});
 				const tableConsole = new Console({ stdout: stream, colorMode: false });
-				(tableConsole.table as (...a: unknown[]) => void)(...args);
+				const tableCapable = tableConsole as unknown as { table: (...args: unknown[]) => void };
+				tableCapable.table(...args);
 				hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
 			},
 			__proto_display__: (value: unknown) => this.displayValue(value),

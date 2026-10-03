@@ -394,3 +394,61 @@ test("tools/list_changed storms coalesce into one in-flight refresh applying the
 	expect(toolsChanged).toBe(3);
 	expect(stormToolName()).toMatch(/tool_3$/);
 }, 15000);
+
+test("incremental connectServers keeps tools of already-connected servers", async () => {
+	const manager = new MCPManager(process.cwd());
+	managers.push(manager);
+	const config = {
+		type: "stdio" as const,
+		command: process.execPath,
+		args: ["--smol", STDIO_FIXTURE_PATH],
+		timeout: 5000,
+	};
+
+	await manager.connectServers({ alpha: config }, {});
+	expect(manager.getTools().map(tool => tool.mcpServerName)).toEqual(["alpha"]);
+
+	const result = await manager.connectServers({ bravo: config }, {});
+	const servers = manager
+		.getTools()
+		.map(tool => tool.mcpServerName)
+		.sort();
+	expect(servers).toEqual(["alpha", "bravo"]);
+	expect(result.tools.map(tool => tool.name)).toEqual(manager.getTools().map(tool => tool.name));
+}, 15000);
+
+test("a startup handshake timeout is retried, and pending-connection waits observe the recovery", async () => {
+	const server = serveTestMcpServer(["late-tool"]);
+	try {
+		server.setInitializeMode("hang");
+		const manager = new MCPManager(process.cwd());
+		managers.push(manager);
+		const events: string[] = [];
+		await manager.connectServers({ slow: { type: "http", url: server.url, timeout: 100 } }, {}, event => {
+			events.push(event.type);
+			if (event.type === "failed") server.setInitializeMode("healthy");
+		});
+
+		await withTimeout(manager.waitForPendingConnections(), 5_000, "pending connections did not settle");
+		expect(events).toEqual(["connecting", "failed", "reconnecting", "connected"]);
+		expect(manager.getConnectionStatus("slow")).toBe("connected");
+		expect(manager.getStartupDiagnostics().failures).toEqual([]);
+		expect(manager.getTools().map(tool => tool.mcpServerName)).toEqual(["slow"]);
+	} finally {
+		server.stop();
+	}
+});
+
+test("waitForStartup reports servers still connecting at its deadline", async () => {
+	const server = serveTestMcpServer(["late-tool"]);
+	try {
+		server.setInitializeMode("hang");
+		const manager = new MCPManager(process.cwd());
+		managers.push(manager);
+		await manager.connectServers({ slow: { type: "http", url: server.url, timeout: 60_000 } }, {});
+
+		expect(await manager.waitForStartup(50)).toEqual(["slow"]);
+	} finally {
+		server.stop();
+	}
+});

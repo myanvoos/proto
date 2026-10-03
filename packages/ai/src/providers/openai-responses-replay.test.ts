@@ -4,7 +4,11 @@ import type { AssistantMessage, Context, Model, ModelSpec, ToolResultMessage } f
 import { createOpenAIResponsesHistoryPayload } from "../utils";
 import { streamAzureOpenAIResponses } from "./azure-openai-responses";
 import { buildParams } from "./openai-responses";
-import { buildResponsesInput, SYNTHETIC_REASONING_REPLAY_PLACEHOLDER } from "./openai-shared";
+import {
+	buildResponsesInput,
+	hoistInterleavedResponsesToolBatchMessages,
+	SYNTHETIC_REASONING_REPLAY_PLACEHOLDER,
+} from "./openai-shared";
 
 const zeroUsage = {
 	input: 0,
@@ -201,5 +205,29 @@ describe("Azure Responses malformed replay", () => {
 		const { input } = await promise;
 		expect(input).not.toContainEqual(expect.objectContaining({ call_id: "call_bad" }));
 		expect(JSON.stringify(input)).toContain("durable result");
+	});
+});
+
+describe("Responses interrupted tool batch hoisting", () => {
+	it("hoists assistant notes across an interleaved output batch", () => {
+		const items = [
+			{ type: "function_call", call_id: "call-a", name: "a", arguments: "{}" },
+			{ type: "message", role: "assistant", content: "first note" },
+			{ type: "function_call_output", call_id: "call-a", output: "a" },
+			{ type: "function_call", call_id: "call-b", name: "b", arguments: "{}" },
+			{ type: "message", role: "assistant", content: "second note" },
+			{ type: "function_call_output", call_id: "call-b", output: "b" },
+		];
+		const result = hoistInterleavedResponsesToolBatchMessages(items);
+		expect(result.map(item => item.type ?? item.content)).toEqual([
+			"message",
+			"function_call",
+			"function_call_output",
+			"message",
+			"function_call",
+			"function_call_output",
+		]);
+		expect(result[0]?.content).toBe("first note");
+		expect(result[3]?.content).toBe("second note");
 	});
 });

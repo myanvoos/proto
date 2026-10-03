@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { gunzipSync } from "node:zlib";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
+	GetChatMessageRequestSchema,
 	GetChatMessageResponseSchema,
+	GetUserJwtRequestSchema,
 	GetUserJwtResponseSchema,
 	StopReason,
 } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
-import { create, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import * as AIError from "../error";
 import type { Context, FetchImpl, ModelSpec } from "../types";
 import { streamDevin } from "./devin";
@@ -125,5 +128,38 @@ describe("Devin Connect stream termination", () => {
 		const result = await runChat(Buffer.concat([messageFrame(StopReason.STOP_PATTERN), endStreamFrame()]));
 		expect(result.stopReason).toBe("stop");
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
+	});
+});
+
+describe("Devin legacy Windsurf credentials", () => {
+	it("retries auth with the raw API key and keeps it for chat", async () => {
+		const authBytes = toBinary(GetUserJwtResponseSchema, create(GetUserJwtResponseSchema, { userJwt: "test-jwt" }));
+		const chatBytes = Buffer.concat([messageFrame(StopReason.STOP_PATTERN), endStreamFrame()]);
+		const authApiKeys: string[] = [];
+		let chatApiKey: string | undefined;
+		const fetchImpl: FetchImpl = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				const url = input instanceof Request ? input.url : String(input);
+				const body = new Uint8Array(init?.body as ArrayBuffer);
+				if (url.endsWith("/exa.auth_pb.AuthService/GetUserJwt")) {
+					const apiKey = fromBinary(GetUserJwtRequestSchema, body).metadata?.apiKey ?? "";
+					authApiKeys.push(apiKey);
+					return apiKey.startsWith("devin-session-token$")
+						? new Response("", { status: 401 })
+						: new Response(authBytes);
+				}
+				const length = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(1, false);
+				chatApiKey = fromBinary(GetChatMessageRequestSchema, gunzipSync(body.subarray(5, 5 + length))).metadata
+					?.apiKey;
+				return new Response(chatBytes);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+
+		const result = await streamDevin(model, context, { apiKey: "legacy-windsurf-key", fetch: fetchImpl }).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(authApiKeys).toEqual(["devin-session-token$legacy-windsurf-key", "legacy-windsurf-key"]);
+		expect(chatApiKey).toBe("legacy-windsurf-key");
 	});
 });

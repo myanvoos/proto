@@ -65,6 +65,8 @@ Terminal breadcrumb files are written under:
 
 Breadcrumb content is the original cwd and session file path, followed by optional `fresh` and `cwdstat <device> <inode>` lines. A fresh breadcrumb preserves a `/new` boundary whose lazily-created JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Writes are synchronous, ordered, and best-effort.
 
+A file-backed session whose transcript the managed sessions glob cannot see (outside `~/.proto/agent/sessions`, or not named `*.jsonl`, as with `--session-dir`/`--session`) is also recorded as one marker under `~/.proto/agent/custom-session-files/`, holding the absolute transcript path. Such transcripts still store images in the shared blob store, so `proto gc` scans every registered file that still exists, plus each breadcrumb's session file (resolved against the breadcrumb's cwd), before it deletes unreferenced blobs. Breadcrumb and marker writes are skipped when the file already holds the same content.
+
 ### Unwritable session directories
 
 The default session directory is the harness's choice, not the user's, so a directory it cannot create degrades instead of aborting: the run continues entirely in memory and both modes state the cause and the fix once at startup. Print mode says `Cannot create the session directory "…": permission denied on "…". This run is not being saved.`; interactive mode says `This session is not being saved.`; both include a remedy naming `chmod u+w`, `PI_CODING_AGENT_DIR`, and `--no-session`. The same fallback applies when the `autoResume` setting (default `false`) is enabled; it is an implicit startup choice, not an explicit request.

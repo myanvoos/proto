@@ -569,3 +569,30 @@ test("configured headers resolve per request, never on catalog reads, and surviv
 		delete process.env[tenantEnv];
 	}
 });
+
+test("a disabled provider's model neither resolves by name nor gets a key", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-registry-disabled-"));
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	authStorage.setRuntimeApiKey("openai", "test-key");
+	const options = {
+		cacheDbPath: path.join(tempDir, "models.db"),
+		fetch: () => Promise.reject(new Error("network disabled in test")),
+	};
+	const bundled = catalogModels.getBundledModels("openai")[0];
+	if (!bundled) throw new Error("the bundled catalog has no openai model");
+
+	const disabled = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), {
+		...options,
+		settings: Settings.isolated({ disabledProviders: ["openai"] }),
+	});
+	expect(disabled.find("openai", bundled.id)).toBeUndefined();
+	expect(await disabled.getApiKey(bundled)).toBeUndefined();
+	expect(await disabled.getApiKeyForProvider("openai")).toBeUndefined();
+
+	const enabled = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), {
+		...options,
+		settings: Settings.isolated(),
+	});
+	expect(enabled.find("openai", bundled.id)?.id).toBe(bundled.id);
+	expect(await enabled.getApiKey(bundled)).toBe("test-key");
+});

@@ -3,7 +3,7 @@ import { setKeybindings } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import { Settings } from "../../config/settings";
 import { getEditorTheme, initThemeSync } from "../theme/theme";
-import { CustomEditor } from "./custom-editor";
+import { CustomEditor, extractBracketedImagePastePaths, extractImagePathFromText } from "./custom-editor";
 
 await Settings.init();
 initThemeSync();
@@ -54,4 +54,14 @@ test("typed Enter still submits after a paste burst has ended", () => {
 	editor.handleInput("\r");
 
 	expect(submitted).toEqual(["pasted line typed tail"]);
+});
+
+test("a relative URL-ish image path pastes as text; anchored paths stay attachable", () => {
+	const address = "api/file/icon/867d45144217eec6d3c5805fd5a2d548.png";
+	expect(extractBracketedImagePastePaths(`${PASTE_START}${address}${PASTE_END}`)).toBeUndefined();
+	expect(extractImagePathFromText(address)).toBeUndefined();
+	expect(extractBracketedImagePastePaths(`${PASTE_START}./images/icon.png${PASTE_END}`)).toEqual([
+		"./images/icon.png",
+	]);
+	expect(extractBracketedImagePastePaths(`${PASTE_START}/tmp/icon.png${PASTE_END}`)).toEqual(["/tmp/icon.png"]);
 });

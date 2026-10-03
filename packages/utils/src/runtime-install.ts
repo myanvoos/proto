@@ -123,9 +123,30 @@ function resolverRegistry(): ResolverRegistration[] {
 	holder[REGISTRY] ??= [];
 	return holder[REGISTRY];
 }
-function pathContains(root: string, candidate: string): boolean {
-	const relative = path.relative(root, candidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+const canonicalPaths = new Map<string, string>();
+
+/**
+ * Realpath of `target` (memoized; resolution runs per module request). The stock resolver reports realpath-resolved
+ * filenames while a registered root is whatever the caller configured (a symlinked home or cache, macOS `/tmp`), so
+ * both sides must be canonical before comparing. Missing paths fall back to `path.resolve` and are not cached.
+ */
+function canonicalPath(target: string): string {
+	const cached = canonicalPaths.get(target);
+	if (cached !== undefined) return cached;
+	try {
+		const canonical = fs.realpathSync.native(target);
+		canonicalPaths.set(target, canonical);
+		return canonical;
+	} catch {
+		return path.resolve(target);
+	}
+}
+
+/** `candidate`'s path relative to `root` when inside (or equal to) it, else `null`; both sides canonicalized. */
+function relativeWithin(root: string, candidate: string): string | null {
+	const relative = path.relative(canonicalPath(root), canonicalPath(candidate));
+	if (relative !== "" && (relative.startsWith("..") || path.isAbsolute(relative))) return null;
+	return relative;
 }
 
 function parentFilename(parent: unknown): string | null {
@@ -169,11 +190,12 @@ export function installRuntimeModuleResolver({ runtimeNodeModules, stubs = {} }:
 		if (bare) {
 			const parentFile = parentFilename(parent);
 			for (const registration of resolverRegistry()) {
-				const parentInRuntime = parentFile !== null && pathContains(registration.runtimeNodeModules, parentFile);
+				const parentInRuntime =
+					parentFile !== null && relativeWithin(registration.runtimeNodeModules, parentFile) !== null;
 				if (parentInRuntime) {
 					const stub = registration.stubs[request];
 					if (stub) return stub;
-					if (!stockResolved || !pathContains(registration.runtimeNodeModules, stockResolved)) {
+					if (!stockResolved || relativeWithin(registration.runtimeNodeModules, stockResolved) === null) {
 						const fallback = resolveRuntimeModule(registration.runtimeNodeModules, request);
 						if (fallback) return fallback;
 					}
@@ -181,8 +203,9 @@ export function installRuntimeModuleResolver({ runtimeNodeModules, stubs = {} }:
 				if (stockResolved) {
 					const { packageName } = splitBareSpecifier(request);
 					const pkgDir = path.join(registration.runtimeNodeModules, ...packageName.split("/"));
-					if (!stockResolved.startsWith(pkgDir + path.sep)) continue;
-					if (path.relative(pkgDir, stockResolved).split(path.sep).includes("node_modules")) continue;
+					const relative = relativeWithin(pkgDir, stockResolved);
+					if (relative === null || relative === "") continue;
+					if (relative.split(path.sep).includes("node_modules")) continue;
 					const expected = resolveRuntimeModule(registration.runtimeNodeModules, request);
 					if (expected) return expected;
 				} else {

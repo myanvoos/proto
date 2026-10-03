@@ -5,7 +5,11 @@ import {
 } from "../../session/execution-metadata";
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary } from "../../session/streaming-output";
 import type { ToolSession } from "../../tools";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
+import {
+	resolveOutputArtifactMaxBytes,
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+} from "../../tools/output-meta";
 import { renderError } from "../../tools/tool-errors";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import type { JsKernelRuntime } from "../kernel-environment";
@@ -111,6 +115,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 		spillThreshold: DEFAULT_MAX_BYTES,
 		headBytes: resolveOutputSinkHeadBytes(options.session.settings),
 		maxColumns: resolveOutputMaxColumns(options.session.settings),
+		artifactMaxBytes: resolveOutputArtifactMaxBytes(options.session.settings),
 		onChunk: chunk => options.onChunk?.(chunk),
 	});
 	const legacyTimeoutMs = getExecutionTimeoutMs(options);

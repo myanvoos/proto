@@ -6,10 +6,12 @@ import {
 	resolveCliModel,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
+import { restoreInputDraft } from "../modes/composer-attachments";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
+import { clearSubmittedText } from "./helpers/draft";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
@@ -24,10 +26,15 @@ export async function runWithDetachedModeDraft(
 	run: () => Promise<boolean>,
 ): Promise<void> {
 	const { editor } = runtime.ctx;
-	if (!runtime.draftDetached) editor.clearDraft();
+	clearSubmittedText(runtime, true);
 	try {
 		const submitted = await run();
-		if (!submitted && ((runtime.input?.images?.length ?? 0) > 0 || (runtime.input?.imageLinks?.length ?? 0) > 0)) {
+		const hasAttachments = (runtime.input?.images?.length ?? 0) > 0 || (runtime.input?.imageLinks?.length ?? 0) > 0;
+		if (!submitted && hasAttachments && runtime.draftDetached) {
+			restoreInputDraft(editor, command.text, runtime.input?.images, runtime.input?.imageLinks);
+			return;
+		}
+		if (!submitted && hasAttachments) {
 			editor.pendingImages = [...(runtime.input?.images ?? []), ...editor.pendingImages];
 			editor.pendingImageLinks = [
 				...(runtime.input?.imageLinks ?? runtime.input?.images?.map(() => undefined) ?? []),
@@ -36,12 +43,7 @@ export async function runWithDetachedModeDraft(
 			editor.imageLinks = editor.pendingImageLinks.length > 0 ? editor.pendingImageLinks : undefined;
 		}
 	} catch (error) {
-		if (!editor.getText() && editor.pendingImages.length === 0) {
-			editor.setText(command.text);
-			editor.pendingImages = runtime.input?.images ? [...runtime.input.images] : [];
-			editor.pendingImageLinks = runtime.input?.imageLinks ? [...runtime.input.imageLinks] : [];
-			editor.imageLinks = editor.pendingImageLinks.length > 0 ? editor.pendingImageLinks : undefined;
-		}
+		restoreInputDraft(editor, command.text, runtime.input?.images, runtime.input?.imageLinks);
 		runtime.ctx.showError(error instanceof Error ? error.message : String(error));
 	}
 }
@@ -173,7 +175,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description: "Open settings menu",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSettingsSelector();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -192,7 +194,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			} else {
 				runtime.ctx.showWarning(`Usage: /${command.name} [providers]`);
 			}
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -229,7 +231,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return count === 0 ? undefined : `${formatCount("message", count)} scheduled`;
 		},
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleQueueCommand(command.args);
+			await runtime.ctx.handleQueueCommand(
+				command.args,
+				runtime.draftDetached ? { ...runtime.input, text: command.text } : undefined,
+			);
 		},
 	},
 	{
@@ -293,7 +298,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			} else {
 				runtime.ctx.showModelSelector();
 			}
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -320,7 +325,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const message = runFastCommand(command.args.trim().toLowerCase(), runtime.ctx.session);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(message ?? FAST_USAGE);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -346,7 +351,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const output = applyExtendedContextCommand(runtime.ctx.settings, command.args);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(output ?? "Usage: /extended-context [on|off|status]");
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -379,18 +384,18 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
 				runtime.ctx.showStatus(await formatComputerUseStatus(runtime.ctx.session));
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
 				const enable =
 					arg === "off" ? false : arg === "on" || !runtime.ctx.session.settings.get("computer.enabled");
 				runtime.ctx.showStatus(await applyComputerUseToggle(runtime.ctx.session, enable));
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /computer [on|off|status]");
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 

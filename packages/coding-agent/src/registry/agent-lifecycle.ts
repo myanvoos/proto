@@ -62,27 +62,34 @@ export class AgentLifecycleManager {
 	static #global: AgentLifecycleManager | undefined;
 
 	static global(): AgentLifecycleManager {
-		if (!AgentLifecycleManager.#global) {
-			AgentLifecycleManager.#global = new AgentLifecycleManager();
+		const current = AgentLifecycleManager.#global;
+		if (current) {
+			// Tests may swap the global registry alone; a manager still bound to the old
+			// one would publish terminal transitions nobody observes. Production never resets.
+			if (current.#registry === AgentRegistry.global()) return current;
+			current.#retire();
 		}
+		AgentLifecycleManager.#global = new AgentLifecycleManager();
 		return AgentLifecycleManager.#global;
 	}
 
 	static resetGlobalForTests(): void {
 		const current = AgentLifecycleManager.#global;
-		if (current) {
-			current.#unsubscribe?.();
-			current.#unsubscribe = undefined;
-			for (const adopted of current.#adopted.values()) {
-				clearTimeout(adopted.timer);
-			}
-			current.#adopted.clear();
-			current.#revivals.clear();
-			current.#parks.clear();
-			current.#focusHeldId = undefined;
-			current.#persistedReviverFactory = undefined;
-		}
+		if (current) current.#retire();
 		AgentLifecycleManager.#global = undefined;
+	}
+
+	#retire(): void {
+		this.#unsubscribe?.();
+		this.#unsubscribe = undefined;
+		for (const adopted of this.#adopted.values()) {
+			clearTimeout(adopted.timer);
+		}
+		this.#adopted.clear();
+		this.#revivals.clear();
+		this.#parks.clear();
+		this.#focusHeldId = undefined;
+		this.#persistedReviverFactory = undefined;
 	}
 
 	readonly #registry: AgentRegistry;
@@ -349,17 +356,28 @@ export class AgentLifecycleManager {
 			await park.promise;
 		}
 
-		if (options?.tombstone) {
-			if (ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
-			this.#registry.setStatus(id, "aborted", ref);
-		}
 		const live = this.#registry.get(id) === ref ? ref.session : null;
-		if (options?.tombstone) this.#registry.detachSession(id, ref);
-		if (live) {
-			try {
-				await live.dispose();
-			} catch (error) {
-				logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
+		// The terminal transition lands before any await: the dying session's dispose path unregisters every ref
+		// that is not already aborted and detached, so a later transition would let it delete the tombstone. Detach
+		// first, because `setStatus` notifies subscribers synchronously and they must never see an aborted ref that
+		// still holds a session.
+		if (
+			options?.tombstone &&
+			(!this.#registry.detachSession(id, ref) || !this.#registry.setStatus(id, "aborted", ref))
+		) {
+			logger.warn("AgentLifecycleManager.release: terminal transition rejected", { id });
+		}
+		try {
+			// The sidecar keeps a later discovery pass from reviving this transcript as a fresh parked ref.
+			if (options?.tombstone && ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
+		} finally {
+			// Detaching removed the registry's only route to the session; dispose it even when the sidecar write fails.
+			if (live) {
+				try {
+					await live.dispose();
+				} catch (error) {
+					logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
+				}
 			}
 		}
 		if (!options?.tombstone) this.#registry.unregister(id, ref);

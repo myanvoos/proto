@@ -485,7 +485,7 @@ export class UiHelpers {
 			if (
 				nextToolName === "fleet" &&
 				previous.isDisplaceableBlock() &&
-				this.ctx.chatContainer.canRemoveBlock(previous)
+				this.ctx.chatContainer.canDisplaceBlock(previous)
 			) {
 				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			}
@@ -571,8 +571,10 @@ export class UiHelpers {
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
-					resolveWaitingPoll(content.name);
-					resolveChecklistSnapshot(content.name);
+					const tool = this.ctx.viewSession.getToolByName(content.name);
+					const toolName = tool?.name ?? content.name;
+					resolveWaitingPoll(toolName);
+					resolveChecklistSnapshot(toolName);
 
 					const partialJson = getStreamingPartialJson(content);
 					const rawInput = content.customWireName !== undefined;
@@ -581,11 +583,11 @@ export class UiHelpers {
 							? decodeStreamedToolArgs(partialJson, {
 									rawInput,
 									fullArgs: content.arguments,
-									streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+									streamingStringKeys: streamingStringKeysForTool(toolName, rawInput),
 								})
 							: content.arguments;
 
-					if (content.name === "read" && readArgsCollapseIntoGroup(renderArgs)) {
+					if (toolName === "read" && readArgsCollapseIntoGroup(renderArgs)) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -622,12 +624,11 @@ export class UiHelpers {
 
 					readGroup?.seal();
 					readGroup = null;
-					const tool = this.ctx.viewSession.getToolByName(content.name);
 					const component = new ToolExecutionComponent(
-						content.name,
+						toolName,
 						renderArgs,
 						{
-							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
+							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(toolName),
 							showImages: settings.get("terminal.showImages"),
 						},
 						tool,
@@ -878,7 +879,9 @@ export class UiHelpers {
 		this.ctx.chatContainer = stagedChatContainer;
 		this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
 		this.ctx.pendingTools = new Map<string, ToolExecutionHandle>();
-		if (resetPendingMessages) this.ctx.pendingMessagesContainer.disposeChildren();
+		// Drops deferred bash/python blocks with the old transcript but repaints the queued-message bar:
+		// a mid-turn rebuild (rewind) keeps the session queue, so it must stay visible.
+		if (resetPendingMessages) this.ctx.updatePendingMessagesDisplay();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
@@ -1039,10 +1042,16 @@ export class UiHelpers {
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}
 
-	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {
+	queueCompactionMessage(
+		text: string,
+		mode: "steer" | "followUp",
+		images?: ImageContent[],
+		options?: { preserveDraft?: boolean },
+	): void {
 		const queuedImages = images && images.length > 0 ? images : undefined;
 		this.ctx.compactionQueuedMessages.push({ text, mode, images: queuedImages } as CompactionQueuedMessage);
-		this.ctx.editor.clearDraft(text);
+		if (options?.preserveDraft) this.ctx.editor.addToHistory(text);
+		else this.ctx.editor.clearDraft(text);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
 			queuedImages ? "Queued message with image for after compaction" : "Queued message for after compaction",

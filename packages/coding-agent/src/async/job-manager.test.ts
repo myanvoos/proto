@@ -87,6 +87,62 @@ describe("AsyncJobManager registration and shutdown", () => {
 		}
 	});
 
+	test("discarding a queued result cannot retry delivery after its job was evicted", async () => {
+		const failure = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		let calls = 0;
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {
+				calls++;
+				started.resolve();
+				await failure.promise;
+			},
+		});
+		try {
+			manager.register("worker", "evicted delivery", async () => "finished");
+			await manager.waitForAll();
+			await started.promise;
+			expect(manager.evictCompletedJobs()).toBe(1);
+			failure.reject(new Error("queue entry discarded"));
+			expect(await manager.drainDeliveries({ timeoutMs: 100 })).toBe(true);
+			expect(calls).toBe(1);
+			expect(manager.getDeliveryState().pendingJobIds).toEqual([]);
+		} finally {
+			failure.resolve();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
+	test("a consumed result evicts after the short grace while an unconsumed one keeps the full window", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({ retentionMs: 60_000, consumedResultEvictionMs: 1_000 });
+		const delivered: string[] = [];
+		manager.registerDeliverySink("main", async jobId => {
+			delivered.push(jobId);
+		});
+		try {
+			const consumedId = manager.register("bash", "delivered", async () => "done", { ownerId: "main" });
+			const unconsumedId = manager.register("bash", "unowned", async () => "done", { ownerId: "nobody" });
+			await manager.waitForAll();
+			expect(await manager.drainDeliveries({ filter: { ownerId: "main" }, timeoutMs: 1_000 })).toBe(true);
+			expect(delivered).toEqual([consumedId]);
+
+			vi.advanceTimersByTime(1_500);
+			expect(manager.getJob(consumedId)).toBeUndefined();
+			expect(manager.getJob(unconsumedId)?.status).toBe("completed");
+
+			const waitedId = manager.register("bash", "waited", async () => "done", { ownerId: "nobody" });
+			await manager.waitForAll();
+			manager.acknowledgeDeliveries([waitedId]);
+			vi.advanceTimersByTime(1_500);
+			expect(manager.getJob(waitedId)).toBeUndefined();
+			expect(manager.getJob(unconsumedId)?.status).toBe("completed");
+		} finally {
+			vi.useRealTimers();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
 	test("late delivery failures cannot resurrect a disposed manager", async () => {
 		const failure = Promise.withResolvers<void>();
 		const started = Promise.withResolvers<void>();

@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Skill } from "../extensibility/skills";
 import { InternalUrlRouter } from "../internal-urls/router";
-import { expandInternalUrls, expandSkillUrls } from "./bash-skill-urls";
+import { expandInternalUrls } from "./bash-skill-urls";
 
 // Scheme URLs are assembled at runtime: this source must not contain
 // expandable literals, or the agent's own bash tool rewrites them.
@@ -130,13 +130,40 @@ test("multiple heredocs each keep their bodies while surrounding commands expand
 	}
 });
 
-test("skill URLs in heredoc bodies are preserved by expandSkillUrls", () => {
+test("skill URLs in heredoc bodies are preserved", async () => {
 	const greetUrl = "skill" + "://greet";
 	const command = ["cat > /tmp/skill-script <<'EOF'", `const url = "${greetUrl}"`, "EOF", greetUrl].join("\n");
-	const expanded = expandSkillUrls(command, [skill]);
+	const expanded = await expandInternalUrls(command, { skills: [skill] });
 	const lines = expanded.split("\n");
 	expect(lines[1]).toBe(`const url = "${greetUrl}"`);
 	expect(lines[3]).toContain("/skills/greet");
+});
+
+test("contained skills fail closed for bare and nested URLs that leave the plugin root", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-contain-"));
+	try {
+		const root = path.join(dir, "plugin");
+		const outside = path.join(dir, "outside");
+		await fs.mkdir(root);
+		await fs.mkdir(outside);
+		await fs.writeFile(path.join(outside, "SKILL.md"), "outside");
+		await fs.symlink(outside, path.join(root, "escaped"));
+		const escaped: Skill = {
+			name: "escaped",
+			description: "escapes its root",
+			filePath: path.join(root, "escaped", "SKILL.md"),
+			baseDir: path.join(root, "escaped"),
+			source: "test",
+			containRoot: root,
+		};
+		const url = "skill" + "://escaped";
+		await expect(expandInternalUrls(`ls ${url}`, { skills: [escaped] })).rejects.toThrow("outside the plugin root");
+		await expect(expandInternalUrls(`cat ${url}/SKILL.md`, { skills: [escaped] })).rejects.toThrow(
+			"outside the plugin root",
+		);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
 });
 
 describe("expansion stays scoped", () => {

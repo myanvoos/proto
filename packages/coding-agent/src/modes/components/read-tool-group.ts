@@ -93,6 +93,7 @@ type ReadToolResultDetails = {
 	};
 	conflictCount?: number;
 	displayReadTargets?: unknown;
+	displayReadTargetLinks?: unknown;
 	displayContent?: {
 		text?: string;
 		startLine?: number;
@@ -119,10 +120,13 @@ function getSuffixResolution(details: ReadToolResultDetails | undefined): ReadTo
 	return { from: details.suffixResolution.from, to: details.suffixResolution.to };
 }
 
+/** One target of a delimited read, with the resolved fs path its row links to. */
+type ReadDisplayPathSpec = { path: string; linkPath?: string };
+
 type ReadEntry = {
 	toolCallId: string;
 	path: string;
-	displayPaths?: string[];
+	displayPaths?: ReadDisplayPathSpec[];
 	linkPath?: string;
 	status: "pending" | "success" | "warning" | "error";
 	correctedFrom?: string;
@@ -165,12 +169,17 @@ const READ_STATUS_RANK: Record<ReadEntry["status"], number> = {
 
 const URL_LIKE_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-function getDisplayReadTargets(details: ReadToolResultDetails | undefined): string[] | undefined {
+function getDisplayReadTargets(details: ReadToolResultDetails | undefined): ReadDisplayPathSpec[] | undefined {
 	if (!Array.isArray(details?.displayReadTargets)) return undefined;
-	const targets = details.displayReadTargets
-		.filter((target): target is string => typeof target === "string")
-		.map(target => target.trim())
-		.filter(target => target.length > 0);
+	const links = Array.isArray(details.displayReadTargetLinks) ? details.displayReadTargetLinks : undefined;
+	const targets: ReadDisplayPathSpec[] = [];
+	for (const [index, raw] of details.displayReadTargets.entries()) {
+		if (typeof raw !== "string") continue;
+		const target = raw.trim();
+		if (!target) continue;
+		const link = links?.[index];
+		targets.push({ path: target, linkPath: typeof link === "string" && link.length > 0 ? link : undefined });
+	}
 	return targets.length > 0 ? targets : undefined;
 }
 
@@ -597,15 +606,19 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#displayTargetsForEntries(entries: ReadEntry[]): ReadDisplayTarget[] {
 		const targets: ReadDisplayTarget[] = [];
 		for (const entry of entries) {
-			const pathSpecs = entry.displayPaths ?? splitReadDisplayPathSpecs(entry.path);
+			const pathSpecs: ReadDisplayPathSpec[] =
+				entry.displayPaths ?? splitReadDisplayPathSpecs(entry.path).map(spec => ({ path: spec }));
 			const useEntryLinkPath = pathSpecs.length === 1;
 			for (const pathSpec of pathSpecs) {
-				const split = splitPathAndSel(pathSpec);
-				const linkPath = readTargetLinkPath(split.path, useEntryLinkPath ? entry.linkPath : undefined);
+				const split = splitPathAndSel(pathSpec.path);
+				const linkPath = readTargetLinkPath(
+					split.path,
+					pathSpec.linkPath ?? (useEntryLinkPath ? entry.linkPath : undefined),
+				);
 				for (const selector of splitSelectorDisplayParts(split.sel)) {
 					targets.push({
 						entry,
-						targetPath: selector ? `${split.path}:${selector}` : pathSpec,
+						targetPath: selector ? `${split.path}:${selector}` : pathSpec.path,
 						basePath: split.path,
 						linkPath,
 						selector,

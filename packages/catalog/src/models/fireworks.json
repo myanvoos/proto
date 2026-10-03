@@ -350,7 +350,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -435,7 +436,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -523,7 +525,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -611,7 +614,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1028,7 +1032,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1115,7 +1120,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1204,7 +1210,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1294,7 +1301,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1384,7 +1392,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1473,7 +1482,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1821,7 +1831,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1908,7 +1919,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -1993,7 +2005,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2078,7 +2091,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2164,7 +2178,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2250,7 +2265,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2336,7 +2352,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2425,7 +2442,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2512,7 +2530,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"
@@ -2600,7 +2619,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortMap": {
 				"minimal": "none"

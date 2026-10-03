@@ -35,6 +35,7 @@ export interface JobSnapshot {
 	events?: AsyncJobEvent[];
 	resolvedModel?: string;
 	resultText?: string;
+	rawArtifactId?: string;
 	errorText?: string;
 }
 

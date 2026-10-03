@@ -5,14 +5,17 @@ import { type AutocompleteProvider, EDITOR_LIMITS, matchesKey, type SlashCommand
 import { formatBytes, formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
+import { AskDialogComponent } from "../../modes/components/ask-dialog";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { COMPOSER_IMAGE_LIMITS, extractImagePathFromText } from "../../modes/components/custom-editor";
+import { HistorySearchComponent } from "../../modes/components/history-search";
+import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
-import { chipLabel, compactImageMarkers, shiftImageMarkers } from "../../modes/composer-attachments";
+import { chipLabel, compactImageMarkers, restoreInputDraft, shiftImageMarkers } from "../../modes/composer-attachments";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { materializeImageReferenceLinks, setCachedImageDimensions } from "../../modes/image-references";
 import { deliverMessages } from "../../modes/message-delivery";
@@ -25,8 +28,9 @@ import {
 	splitQueuedMessages,
 } from "../../modes/queue-input";
 import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
-import type { InteractiveModeContext } from "../../modes/types";
+import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
+import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { isUserQueuedMessage, toRestoredQueuedMessage } from "../../session/queued-messages";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
@@ -83,6 +87,8 @@ function isExpandable(obj: unknown): obj is Expandable {
 
 interface PasteTarget {
 	pasteText(text: string): void;
+	/** Reserves delivery before an async clipboard read; the completion releases it (`undefined` = no text). */
+	beginPaste?(): (text: string | undefined) => boolean;
 }
 
 function hasPasteText(value: unknown): value is PasteTarget {
@@ -115,6 +121,12 @@ function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
 // Commands the focused-agent view answers itself instead of bouncing to the main session: the model
 // selector already retargets whatever session is in view.
 const FOCUS_SCOPED_COMMANDS: Record<string, true> = { model: true, models: true };
+
+interface SubmittedInput {
+	text: string;
+	images: ImageContent[] | undefined;
+	imageLinks: (string | undefined)[] | undefined;
+}
 
 function parsePythonCommandInput(text: string): { code: string; isExcluded: boolean } | undefined {
 	const trimmed = text.trimStart();
@@ -162,8 +174,8 @@ export class InputController {
 		},
 	) {}
 
-	notifyTitleGenerationStart(): void {
-		this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
+	notifyTitleGenerationStart(): (() => void) | undefined {
+		return this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
 	}
 
 	#enhancedPaste?: EnhancedPasteController;
@@ -173,6 +185,7 @@ export class InputController {
 	#focusedPasteListenerInstalled = false;
 	#sideQuestionBranchListenerInstalled = false;
 	#sideQuestionCopyListenerInstalled = false;
+	#globalEditorActionsListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
 
 	getDraftText(): string {
@@ -188,7 +201,8 @@ export class InputController {
 
 	#lastChipsSignature = "";
 
-	#showTinyTitleDownloadProgress(modelKey: string): void {
+	/** Returns cleanup that drops the progress row when the title request settles before the download does. */
+	#showTinyTitleDownloadProgress(modelKey: string): (() => void) | undefined {
 		if (!isTinyTitleLocalModelKey(modelKey)) return;
 		const component = new TinyTitleDownloadProgressComponent(modelKey);
 		let added = false;
@@ -230,6 +244,7 @@ export class InputController {
 			}
 		};
 		const unsubscribe = tinyTitleClient.onProgress(update);
+		return remove;
 	}
 
 	#abortStreamingTurn(): void {
@@ -304,14 +319,67 @@ export class InputController {
 				return { consume: true };
 			});
 		}
+		if (!this.#globalEditorActionsListenerInstalled) {
+			this.#globalEditorActionsListenerInstalled = true;
+			// These actions target the main transcript/editor, not the focused prompt, so they work while an Ask
+			// dialog or hook prompt holds focus. Overlays and focused components that rebind a key stay authoritative.
+			this.ctx.ui.addInputListener(data => {
+				if (this.ctx.keybindings.matches(data, "app.thinking.toggle")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					this.ctx.toggleThinkingBlockVisibility();
+					return { consume: true };
+				}
+				if (this.ctx.keybindings.matches(data, "app.history.search")) {
+					if (this.ctx.ui.hasOverlay() || this.ctx.ui.getFocused() instanceof HistorySearchComponent) {
+						return undefined;
+					}
+					this.ctx.showHistorySearch();
+					return { consume: true };
+				}
+				if (this.ctx.keybindings.matches(data, "app.editor.external")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					const focused = this.ctx.ui.getFocused();
+					if (
+						focused instanceof HookEditorComponent ||
+						focused === this.ctx.hookSelector ||
+						focused === this.ctx.hookInput
+					) {
+						return undefined;
+					}
+					void this.openExternalEditor();
+					return { consume: true };
+				}
+				if (this.ctx.keybindings.matches(data, "app.tools.toggleVisibility")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					if (
+						this.ctx.ui.getFocused() instanceof TreeSelectorComponent &&
+						(matchesKey(data, "shift+ctrl+o") || matchesKey(data, "ctrl+shift+o"))
+					) {
+						return undefined;
+					}
+					this.toggleToolActivityVisibility();
+					return { consume: true };
+				}
+				if (this.ctx.keybindings.matches(data, "app.display.reset")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					// The inline tree selector binds Alt+L to its labeled-only filter.
+					if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "alt+l"))
+						return undefined;
+					this.ctx.resetDisplayAfterAppearanceRefresh();
+					return { consume: true };
+				}
+				return undefined;
+			});
+		}
 		if (!this.#expandToolsListenerInstalled) {
 			this.#expandToolsListenerInstalled = true;
 
 			this.ctx.ui.addInputListener(data => {
 				if (!this.ctx.keybindings.matches(data, "app.tools.expand")) return undefined;
 				if (this.ctx.ui.hasOverlay()) return undefined;
-				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
-					return undefined;
+				const focused = this.ctx.ui.getFocused();
+				if (focused instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o")) return undefined;
+				if (focused instanceof AskDialogComponent && focused.toggleQuestionExpansion()) return { consume: true };
 				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
@@ -433,12 +501,6 @@ export class InputController {
 
 		this.ctx.editor.setActionKeys("app.model.select", this.ctx.keybindings.getKeys("app.model.select"));
 		this.ctx.editor.onSelectModel = () => this.ctx.showModelSelector();
-		this.ctx.editor.setActionKeys("app.history.search", this.ctx.keybindings.getKeys("app.history.search"));
-		this.ctx.editor.onHistorySearch = () => this.ctx.showHistorySearch();
-		this.ctx.editor.setActionKeys("app.thinking.toggle", this.ctx.keybindings.getKeys("app.thinking.toggle"));
-		this.ctx.editor.onToggleThinking = () => this.ctx.toggleThinkingBlockVisibility();
-		this.ctx.editor.setActionKeys("app.editor.external", this.ctx.keybindings.getKeys("app.editor.external"));
-		this.ctx.editor.onExternalEditor = () => void this.openExternalEditor();
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.pasteImage",
 			this.ctx.keybindings.getKeys("app.clipboard.pasteImage"),
@@ -458,11 +520,6 @@ export class InputController {
 		);
 		this.ctx.editor.onCopyPrompt = () => this.handleCopyPrompt();
 		this.ctx.editor.onCopySelection = text => this.handleCopySelection(text);
-		this.ctx.editor.setActionKeys(
-			"app.tools.toggleVisibility",
-			this.ctx.keybindings.getKeys("app.tools.toggleVisibility"),
-		);
-		this.ctx.editor.onToggleToolActivity = () => this.toggleToolActivityVisibility();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
 		this.ctx.editor.clearCustomKeyHandlers();
@@ -625,7 +682,8 @@ export class InputController {
 
 			if (!text && !hasPendingImages) return;
 
-			if (text === "." || text === "c") {
+			// During a guided /goal interview "c" is a plausible answer (e.g. option C), so it is sent as a reply.
+			if (text === "." || (text === "c" && !this.ctx.isGuidedGoalInterviewActive())) {
 				await this.ctx.ensureLatestTranscriptWindow();
 				if (this.ctx.onInputCallback) {
 					this.ctx.editor.clearDraft();
@@ -648,21 +706,12 @@ export class InputController {
 			const submittedImages = inputImages;
 
 			if (runner?.hasHandlers("input")) {
-				const result = await runner.emitInput(text, inputImages, "interactive");
-				if (result?.handled) {
+				const result = await this.#runInputHandlers(text, inputImages, inputImageLinks);
+				if (result === "handled") {
 					this.ctx.editor.clearDraft();
 					return;
 				}
-				if (result?.text !== undefined) {
-					text = result.text.trim();
-				}
-				if (result?.images !== undefined) {
-					inputImages = result.images;
-					inputImageLinks = await materializeImageReferenceLinks(
-						inputImages,
-						this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
-					);
-				}
+				({ text, images: inputImages, imageLinks: inputImageLinks } = result);
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
 			const submittedMode = parseSlashCommand(text)?.name;
@@ -775,14 +824,7 @@ export class InputController {
 				try {
 					await this.ctx.session.prompt(text, { images: inputImages });
 				} catch (error) {
-					if (inputImages && inputImages.length > 0) {
-						this.ctx.editor.pendingImages = [...inputImages];
-						this.ctx.editor.pendingImageLinks = inputImageLinks
-							? [...inputImageLinks]
-							: inputImages.map(() => undefined);
-						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-					}
-					this.ctx.editor.setCollapsedText(text);
+					restoreInputDraft(this.ctx.editor, text, inputImages, inputImageLinks);
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
 				return;
@@ -790,7 +832,7 @@ export class InputController {
 
 			if (this.ctx.session.isStreaming) {
 				this.ctx.editor.addToHistory(text);
-				this.ctx.editor.setText("");
+				// Enter already cleared the editor; clearing again here would erase input typed or pasted since.
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.editor.pendingImages = [];
@@ -803,14 +845,7 @@ export class InputController {
 						{ imageCount: images?.length ?? 0 },
 					);
 				} catch (error) {
-					if (images && images.length > 0) {
-						this.ctx.editor.pendingImages = [...images];
-						this.ctx.editor.pendingImageLinks = inputImageLinks
-							? [...inputImageLinks]
-							: images.map(() => undefined);
-						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-					}
-					this.ctx.editor.setCollapsedText(text);
+					restoreInputDraft(this.ctx.editor, text, images, inputImageLinks);
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
 				this.ctx.updatePendingMessagesDisplay();
@@ -826,12 +861,15 @@ export class InputController {
 				this.ctx.editor.pendingImages = [];
 				this.ctx.editor.pendingImageLinks = [];
 
-				const submission = this.ctx.startPendingSubmission({
-					text,
-					images,
-					imageLinks: inputImageLinks,
-					streamingBehavior: "steer",
-				});
+				const submission = this.ctx.startPendingSubmission(
+					{
+						text,
+						images,
+						imageLinks: inputImageLinks,
+						streamingBehavior: "steer",
+					},
+					{ clearEditor: false },
+				);
 
 				this.#maybeStartTitleGeneration(text);
 
@@ -851,14 +889,7 @@ export class InputController {
 						},
 					);
 				} catch (error) {
-					if (images && images.length > 0) {
-						this.ctx.editor.pendingImages = [...images];
-						this.ctx.editor.pendingImageLinks = inputImageLinks
-							? [...inputImageLinks]
-							: images.map(() => undefined);
-						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-					}
-					this.ctx.editor.setCollapsedText(text);
+					restoreInputDraft(this.ctx.editor, text, images, inputImageLinks);
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
 				this.ctx.updatePendingMessagesDisplay();
@@ -882,9 +913,9 @@ export class InputController {
 		if (this.#isLocalExtensionCommand(text)) {
 			return;
 		}
-		this.ctx.session.maybeStartTitleGeneration(text, () => {
-			this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
-		});
+		this.ctx.session.maybeStartTitleGeneration(text, () =>
+			this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel")),
+		);
 	}
 
 	async #submitToFocusedSession(text: string, streamingBehavior: "steer" | "followUp"): Promise<void> {
@@ -917,12 +948,7 @@ export class InputController {
 				imageCount: images?.length ?? 0,
 			});
 		} catch (error) {
-			if (images && images.length > 0) {
-				this.ctx.editor.pendingImages = [...images];
-				this.ctx.editor.pendingImageLinks = imageLinks ? [...imageLinks] : images.map(() => undefined);
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
-			this.ctx.editor.setCollapsedText(text);
+			restoreInputDraft(this.ctx.editor, text, images, imageLinks);
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 		this.ctx.updatePendingMessagesDisplay();
@@ -964,7 +990,11 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
+		// Stopping the TUI pauses stdin, leaving Bun no referenced handle while stopped; without one it exits right
+		// after `fg` instead of delivering SIGCONT.
+		const suspendKeepalive = setInterval(() => {}, 2 ** 30);
 		const onResume = (): void => {
+			clearInterval(suspendKeepalive);
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender(true);
 		};
@@ -975,6 +1005,7 @@ export class InputController {
 		try {
 			process.kill(0, "SIGSTOP");
 		} catch (err) {
+			clearInterval(suspendKeepalive);
 			process.removeListener("SIGCONT", onResume);
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender(true);
@@ -984,12 +1015,25 @@ export class InputController {
 	}
 
 	handleDequeue(): void {
-		const restored = this.restoreQueuedMessagesToEditor();
-		if (restored === 0) {
+		const fromSessionQueue = this.ctx.session.peekLastQueuedMessage();
+		const last = fromSessionQueue ?? this.ctx.compactionQueuedMessages.at(-1);
+		if (!last) {
 			this.ctx.showStatus("No queued messages to restore");
-		} else {
-			this.ctx.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+			return;
 		}
+		const restore = this.#composeRestore([last], this.ctx.editor.getText());
+		if (!restore) {
+			this.ctx.showStatus("Queued message exceeds the draft limit; it remains queued");
+			return;
+		}
+		if (fromSessionQueue) this.ctx.session.popLastQueuedMessage();
+		else this.ctx.compactionQueuedMessages = this.ctx.compactionQueuedMessages.slice(0, -1);
+		// Only the popped message loses its local-submission signature: the ones still queued
+		// must keep theirs so their delivery echo does not blank the restored draft.
+		this.ctx.locallySubmittedUserSignatures.delete(`${last.text}\u0000${last.images?.length ?? 0}`);
+		this.#applyRestore(restore);
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.showStatus("Restored last queued message to editor");
 	}
 
 	async #invokeSkillCommand(
@@ -997,22 +1041,15 @@ export class InputController {
 		streamingBehavior: "steer" | "followUp",
 		images?: ImageContent[],
 		imageLinks?: (string | undefined)[],
+		draftDetached = false,
 	): Promise<boolean> {
 		if (!isKnownSkillCommand(this.ctx, text)) return false;
 		const draftImages = images && images.length > 0 ? [...images] : undefined;
 		const draftImageLinks = draftImages && imageLinks && imageLinks.length > 0 ? [...imageLinks] : undefined;
-		const restoreDraft = () => {
-			this.ctx.editor.setText(text);
-			if (draftImages && draftImages.length > 0) {
-				this.ctx.editor.pendingImages = [...draftImages];
-				this.ctx.editor.pendingImageLinks = draftImageLinks
-					? [...draftImageLinks]
-					: draftImages.map(() => undefined);
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
-		};
+		const restoreDraft = () => restoreInputDraft(this.ctx.editor, text, draftImages, draftImageLinks);
 
-		this.ctx.editor.clearDraft(text);
+		if (draftDetached) this.ctx.editor.addToHistory(text);
+		else this.ctx.editor.clearDraft(text);
 		let optimistic = false;
 		try {
 			const built = await buildSkillCommandPrompt(this.ctx, text, streamingBehavior, draftImages);
@@ -1046,27 +1083,38 @@ export class InputController {
 		}
 	}
 
-	async handleQueueCommand(text: string): Promise<void> {
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-		const imageLinks =
-			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
+	async handleQueueCommand(
+		text: string,
+		detached?: Pick<SubmittedUserInput, "text" | "images" | "imageLinks">,
+	): Promise<void> {
+		const source = detached ?? {
+			images: this.ctx.editor.pendingImages,
+			imageLinks: this.ctx.editor.pendingImageLinks,
+		};
+		const images = source.images?.length ? [...source.images] : undefined;
+		const imageLinks = images && source.imageLinks?.length ? [...source.imageLinks] : undefined;
 		const command = parseQueueArgs(text);
 		if (command.kind === "error") {
+			if (detached) restoreInputDraft(this.ctx.editor, detached.text, images, imageLinks);
 			this.ctx.showWarning(command.message);
 			return;
 		}
 		if (command.kind === "cancel") {
-			this.#cancelScheduled(command.target);
+			this.#cancelScheduled(command.target, detached !== undefined);
 			return;
 		}
 		if (command.kind === "schedule") {
-			this.#scheduleForLater(command.delayMs, command.text, { images, imageLinks });
+			this.#scheduleForLater(command.delayMs, command.text, {
+				images,
+				imageLinks,
+				draftDetached: detached !== undefined,
+			});
 			return;
 		}
-		await this.#queueForYield(command.text, { images, imageLinks });
+		await this.#queueForYield(command.text, { images, imageLinks, detachedText: detached?.text });
 	}
 
-	#cancelScheduled(target: number | "all"): void {
+	#cancelScheduled(target: number | "all", draftDetached = false): void {
 		if (target === "all") {
 			const count = this.ctx.scheduledQueue.cancelAll();
 			this.ctx.showStatus(
@@ -1080,7 +1128,7 @@ export class InputController {
 			this.ctx.showWarning(`No scheduled message ${target}.`);
 			return;
 		}
-		this.ctx.editor.clearDraft();
+		if (!draftDetached) this.ctx.editor.clearDraft();
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.ui.requestRender();
 	}
@@ -1088,15 +1136,15 @@ export class InputController {
 	#scheduleForLater(
 		delayMs: number,
 		text: string,
-		options: { images?: ImageContent[]; imageLinks?: (string | undefined)[] },
+		options: { images?: ImageContent[]; imageLinks?: (string | undefined)[]; draftDetached?: boolean },
 	): void {
 		const messages = splitQueuedMessages(text);
 		if (messages.length === 0) {
-			this.ctx.editor.clearDraft();
+			if (!options.draftDetached) this.ctx.editor.clearDraft();
 			this.ctx.showWarning(QUEUE_USAGE);
 			return;
 		}
-		this.ctx.editor.clearDraft();
+		if (!options.draftDetached) this.ctx.editor.clearDraft();
 		const entry = this.ctx.scheduledQueue.schedule(delayMs, messages, options);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
@@ -1109,28 +1157,29 @@ export class InputController {
 		text: string,
 		options: {
 			historyText?: string;
+			detachedText?: string;
 			images?: ImageContent[];
 			imageLinks?: (string | undefined)[];
 		},
 	): Promise<void> {
 		const splitMessages = splitQueuedMessages(text);
 		if (splitMessages.length === 0 && !options.images?.length) {
-			this.ctx.editor.clearDraft();
+			if (options.detachedText === undefined) this.ctx.editor.clearDraft();
 			this.ctx.showWarning(QUEUE_USAGE);
 			return;
 		}
 
 		const messages = splitMessages.length > 0 ? splitMessages : [""];
-		const originalDraft = this.ctx.editor.getText();
+		const originalDraft = options.detachedText ?? this.ctx.editor.getExpandedText();
 		const images = options.images?.length ? [...options.images] : undefined;
 		const imageLinks = options.imageLinks
 			? [...options.imageLinks]
 			: images
 				? images.map(() => undefined)
 				: undefined;
-		this.ctx.editor.clearDraft(options.historyText);
+		if (options.detachedText === undefined) this.ctx.editor.clearDraft(options.historyText);
 
-		const result = await deliverMessages(this.ctx, messages, { images, imageLinks });
+		const result = await deliverMessages(this.ctx, messages, { images, imageLinks, preserveDraft: true });
 		if (result.outcome === "compaction") {
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showStatus(`Queued ${formatCount("message", messages.length)} for after compaction`);
@@ -1165,26 +1214,41 @@ export class InputController {
 		imageLinks: (string | undefined)[] | undefined,
 	): void {
 		if (delivered === 0) {
-			this.ctx.editor.setText(originalDraft);
-			if (images) {
-				this.ctx.editor.pendingImages = images;
-				this.ctx.editor.pendingImageLinks = imageLinks ?? images.map(() => undefined);
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
+			restoreInputDraft(this.ctx.editor, originalDraft, images, imageLinks);
 			return;
 		}
 		const remaining = messages.slice(delivered);
-		this.ctx.editor.setText(
+		restoreInputDraft(
+			this.ctx.editor,
 			remaining.length === 1
 				? `=> ${remaining[0]}`
 				: `=>\n${remaining.map((message, index) => `${index + 1}. ${message.replaceAll("\n", "\n   ")}`).join("\n")}`,
 		);
 	}
 
+	/** Runs extension `input` handlers; text and image replacements chain, omitted fields keep their value. */
+	async #runInputHandlers(
+		text: string,
+		images: ImageContent[] | undefined,
+		imageLinks: (string | undefined)[] | undefined,
+	): Promise<SubmittedInput | "handled"> {
+		const result = await this.ctx.session.extensionRunner?.emitInput(text, images, "interactive");
+		if (result?.handled) return "handled";
+		if (result?.text !== undefined) text = result.text.trim();
+		if (result?.images !== undefined) {
+			images = result.images;
+			imageLinks = await materializeImageReferenceLinks(
+				images,
+				this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
+			);
+		}
+		return { text, images, imageLinks };
+	}
+
 	async handleFollowUp(): Promise<void> {
-		const text = this.#compactDraftImages(this.ctx.editor.getExpandedText().trim());
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-		const imageLinks =
+		let text = this.#compactDraftImages(this.ctx.editor.getExpandedText().trim());
+		let images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
+		let imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 		if (!text && !images) return;
 
@@ -1193,38 +1257,53 @@ export class InputController {
 			return;
 		}
 
+		// Anything typed after this point belongs to the next submission, even while input hooks run.
+		this.ctx.editor.clearDraft();
+		if (this.ctx.session.extensionRunner?.hasHandlers("input")) {
+			try {
+				const result = await this.#runInputHandlers(text, images, imageLinks);
+				if (result === "handled") return;
+				({ text, images, imageLinks } = result);
+			} catch (error) {
+				restoreInputDraft(this.ctx.editor, text, images, imageLinks);
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			if (!text && !images?.length) return;
+		}
+
 		if (this.ctx.session.isCompacting) {
-			const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-			this.ctx.queueCompactionMessage(text, "followUp", images);
+			this.ctx.queueCompactionMessage(text, "followUp", images, { preserveDraft: true });
 			return;
 		}
 
 		if (text) {
-			const input = (images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
-			const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input });
-			if (slashResult === true) {
-				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
+			try {
+				const input =
+					(images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
+				const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input, draftDetached: true });
+				if (slashResult === true) {
+					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
+					return;
+				}
+			} catch (error) {
+				restoreInputDraft(this.ctx.editor, text, images, imageLinks);
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
 				return;
 			}
 		}
 
-		if (text && (await this.#invokeSkillCommand(text, "followUp", images, imageLinks))) {
+		if (text && (await this.#invokeSkillCommand(text, "followUp", images, imageLinks, true))) {
 			return;
 		}
 
 		const restoreOnError = (error: unknown) => {
-			if (images && images.length > 0) {
-				this.ctx.editor.pendingImages = [...images];
-				this.ctx.editor.pendingImageLinks = imageLinks ? [...imageLinks] : images.map(() => undefined);
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
-
-			this.ctx.editor.setCollapsedText(text);
+			restoreInputDraft(this.ctx.editor, text, images, imageLinks);
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		};
 
 		if (this.ctx.session.isStreaming) {
-			this.ctx.editor.clearDraft(text);
+			this.ctx.editor.addToHistory(text);
 			try {
 				await this.ctx.withLocalSubmission(
 					text,
@@ -1239,7 +1318,7 @@ export class InputController {
 			return;
 		}
 
-		this.ctx.editor.clearDraft(text);
+		this.ctx.editor.addToHistory(text);
 		try {
 			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
 				imageCount: images?.length ?? 0,
@@ -1251,58 +1330,65 @@ export class InputController {
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
 		// Prepare before clearQueue: an over-budget restore must not erase accepted work.
-		const currentText = options?.currentText ?? this.ctx.editor.getText();
 		const allQueued = [
 			...this.ctx.session.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(toRestoredQueuedMessage),
 			...this.ctx.compactionQueuedMessages.filter(e => e.mode === "steer"),
 			...this.ctx.session.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(toRestoredQueuedMessage),
 			...this.ctx.compactionQueuedMessages.filter(e => e.mode === "followUp"),
 		];
-		const rejectRestore = (): number => {
+		const restore = this.#composeRestore(allQueued, options?.currentText ?? this.ctx.editor.getText());
+		if (!restore) {
 			this.ctx.showStatus("Queued messages exceed the draft limit; messages remain queued");
 			if (options?.abort) void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 			return 0;
-		};
-		const queuedImages = allQueued.flatMap(e => e.images ?? []);
-		const images = [...this.ctx.editor.pendingImages, ...queuedImages];
-		const imageBytes = images.reduce((sum, image) => sum + Buffer.byteLength(image.data), 0);
-		if (images.length > COMPOSER_IMAGE_LIMITS.count || imageBytes > COMPOSER_IMAGE_LIMITS.bytes)
-			return rejectRestore();
-
-		const parts: string[] = [];
-		let imageOffset = this.ctx.editor.pendingImages.length;
-		let textBytes = 0;
-		for (const entry of allQueued) {
-			// Check before marker replacement, then account for any renumbering growth.
-			if (textBytes + Buffer.byteLength(entry.text) > EDITOR_LIMITS.draftBytes) return rejectRestore();
-			const text = queuedImages.length > 0 ? shiftImageMarkers(entry.text, imageOffset) : entry.text;
-			textBytes += Buffer.byteLength(text) + (parts.length > 0 ? 2 : 0);
-			if (textBytes > EDITOR_LIMITS.draftBytes) return rejectRestore();
-			parts.push(text);
-			imageOffset += entry.images?.length ?? 0;
 		}
-		const queuedText = parts.join("\n\n");
-		const combinedParts = [queuedText, currentText].filter(t => t.trim());
-		const combinedBytes =
-			combinedParts.reduce((sum, text) => sum + Buffer.byteLength(text), 0) +
-			Math.max(0, combinedParts.length - 1) * 2;
-		if (combinedBytes > EDITOR_LIMITS.draftBytes) return rejectRestore();
-		const combinedText = combinedParts.join("\n\n");
 
 		this.ctx.locallySubmittedUserSignatures.clear();
 		this.ctx.session.clearQueue({ forInterrupt: options?.abort });
 		this.ctx.compactionQueuedMessages = [];
-		if (allQueued.length > 0) {
-			if (queuedImages.length > 0) {
-				this.ctx.editor.pendingImages = images;
-				this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
-			this.ctx.editor.setCollapsedText(combinedText);
-		}
+		if (allQueued.length > 0) this.#applyRestore(restore);
 		this.ctx.updatePendingMessagesDisplay();
 		if (options?.abort) void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 		return allQueued.length;
+	}
+
+	/** Merges queued entries (oldest first) ahead of the draft; undefined when the result exceeds draft limits. */
+	#composeRestore(
+		entries: readonly RestoredQueuedMessage[],
+		currentText: string,
+	): { text: string; queuedImages: ImageContent[] } | undefined {
+		const queuedImages = entries.flatMap(e => e.images ?? []);
+		const images = [...this.ctx.editor.pendingImages, ...queuedImages];
+		const imageBytes = images.reduce((sum, image) => sum + Buffer.byteLength(image.data), 0);
+		if (images.length > COMPOSER_IMAGE_LIMITS.count || imageBytes > COMPOSER_IMAGE_LIMITS.bytes) return undefined;
+
+		const parts: string[] = [];
+		let imageOffset = this.ctx.editor.pendingImages.length;
+		let textBytes = 0;
+		for (const entry of entries) {
+			// Check before marker replacement, then account for any renumbering growth.
+			if (textBytes + Buffer.byteLength(entry.text) > EDITOR_LIMITS.draftBytes) return undefined;
+			const text = queuedImages.length > 0 ? shiftImageMarkers(entry.text, imageOffset) : entry.text;
+			textBytes += Buffer.byteLength(text) + (parts.length > 0 ? 2 : 0);
+			if (textBytes > EDITOR_LIMITS.draftBytes) return undefined;
+			parts.push(text);
+			imageOffset += entry.images?.length ?? 0;
+		}
+		const combinedParts = [parts.join("\n\n"), currentText].filter(t => t.trim());
+		const combinedBytes =
+			combinedParts.reduce((sum, text) => sum + Buffer.byteLength(text), 0) +
+			Math.max(0, combinedParts.length - 1) * 2;
+		if (combinedBytes > EDITOR_LIMITS.draftBytes) return undefined;
+		return { text: combinedParts.join("\n\n"), queuedImages };
+	}
+
+	#applyRestore(restore: { text: string; queuedImages: ImageContent[] }): void {
+		if (restore.queuedImages.length > 0) {
+			this.ctx.editor.pendingImages = [...this.ctx.editor.pendingImages, ...restore.queuedImages];
+			this.ctx.editor.pendingImageLinks.push(...restore.queuedImages.map(() => undefined));
+			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+		}
+		this.ctx.editor.setCollapsedText(restore.text);
 	}
 
 	async #insertPendingImage(imageData: ImageContent, dims: ImageDimensions): Promise<boolean> {
@@ -1509,10 +1595,12 @@ export class InputController {
 	}
 
 	async #readClipboardPaste(): Promise<boolean> {
+		let finishPaste: ((text: string | undefined) => boolean) | undefined;
 		try {
 			const focusedNow = this.ctx.ui.getFocused();
 			const promptTarget =
 				focusedNow && focusedNow !== this.ctx.editor && hasPasteText(focusedNow) ? focusedNow : null;
+			finishPaste = promptTarget?.beginPaste?.();
 
 			const fileUrls = promptTarget ? [] : ((await this.clipboard.readMacFileUrls?.()) ?? []);
 			let attachedFromFileUrls = false;
@@ -1552,8 +1640,15 @@ export class InputController {
 				return true;
 			}
 
-			const target = promptTarget ?? this.ctx.editor;
-			target.pasteText(text);
+			// A prompt that closed during the read must not leak its paste into whatever replaced it.
+			if (promptTarget && this.ctx.ui.getFocused() !== promptTarget) return false;
+			if (finishPaste) {
+				const accepted = finishPaste(text);
+				finishPaste = undefined;
+				if (!accepted) return false;
+			} else {
+				(promptTarget ?? this.ctx.editor).pasteText(text);
+			}
 			this.ctx.ui.requestRender();
 			return true;
 		} catch (error) {
@@ -1563,6 +1658,8 @@ export class InputController {
 					: "Failed to read clipboard",
 			);
 			return false;
+		} finally {
+			finishPaste?.(undefined);
 		}
 	}
 

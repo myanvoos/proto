@@ -39,6 +39,8 @@ export interface AuthGatewayCommandArgs {
 		noAuth?: boolean;
 
 		strict?: boolean;
+
+		trustProxyHeaders?: boolean;
 	};
 }
 
@@ -201,6 +203,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		bind,
 		bearerTokens: gatewayToken ? [gatewayToken] : [],
 		version: VERSION,
+		trustProxyHeaders: flags.trustProxyHeaders,
 		resolveModel: (id: string) => modelById.get(id),
 		listModels: () => modelById.values(),
 	});

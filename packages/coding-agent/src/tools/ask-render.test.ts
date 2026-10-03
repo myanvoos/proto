@@ -145,3 +145,55 @@ test("ask returns the interactive dialog selection without requesting real user 
 	expect(presented).toBe(1);
 	expect(result.details?.selectedOptions).toEqual(["One"]);
 });
+
+test("ask strips injected carriage returns from dialog prose but keeps option labels as the answer identity", async () => {
+	const tool = new AskTool({
+		hasUI: false,
+		settings: { get: () => 0 },
+	} as unknown as ToolSession);
+	let presented: Array<{
+		question: string;
+		options: Array<{ label: string; description?: string; preview?: string }>;
+	}> = [];
+	const context = {
+		hasUI: true,
+		abort: () => {
+			throw new Error("Unexpected abort");
+		},
+		ui: {
+			askDialog: async (questions: typeof presented) => {
+				presented = questions;
+				return { kind: "submit", results: [{ id: "q", selectedOptions: ["Keep\r\rthis"] }] };
+			},
+		},
+	} as unknown as AgentToolContext;
+	const result = await tool.execute(
+		"ask-cr",
+		{
+			questions: [
+				{
+					id: "q",
+					question: "Which\r\r\rone?",
+					options: [{ label: "Keep\r\rthis", description: "word\rby\r\rword", preview: "line one\r\nline\rtwo" }],
+				},
+			],
+		},
+		undefined,
+		undefined,
+		context,
+	);
+	expect(presented[0]?.question).toBe("Which one?");
+	expect(presented[0]?.options[0]).toEqual({
+		label: "Keep\r\rthis",
+		description: "word by word",
+		preview: "line one\nline two",
+	});
+	expect(result.details?.selectedOptions).toEqual(["Keep\r\rthis"]);
+
+	const rendered = askToolRenderer
+		.renderCall({ questions: [{ id: "q", question: "Which\r\r\rone?", options: [] }] }, PENDING, theme)
+		.render(WIDTH)
+		.map(strip)
+		.join("\n");
+	expect(rendered).toContain("Which one?");
+});

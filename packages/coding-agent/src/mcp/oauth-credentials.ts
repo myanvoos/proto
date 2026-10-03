@@ -1,3 +1,4 @@
+import { isDefinitiveOAuthFailure, REMOTE_REFRESH_SENTINEL, type StoredOAuthRefreshResult } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import { expandEnvVarsDeep } from "../discovery/helpers";
@@ -7,6 +8,7 @@ import {
 	type MCPStoredOAuthCredential,
 	mcpOAuthCredentialId,
 	mcpOAuthCredentialProfile,
+	mcpOAuthServerUrlFromCredentialId,
 	refreshMCPOAuthToken,
 } from "./oauth-flow";
 import type { MCPAuthConfig, MCPServerConfig } from "./types";
@@ -98,6 +100,93 @@ export function refreshManagedMcpOAuthCredential(
 		authorizationUrl,
 		stripSameOriginResource: resourceIsFallback,
 		signal: opts.signal,
+	});
+}
+
+async function refreshBrokeredMcpOAuthCredential(
+	authStorage: AuthStorage,
+	credentialId: number,
+	provider: string,
+	signal?: AbortSignal,
+): Promise<OAuthCredentials> {
+	const entry = await authStorage.forceRefreshCredentialById(credentialId, signal);
+	if (entry.credential.type !== "oauth") {
+		throw new Error(`Broker returned non-OAuth credential for ${provider}`);
+	}
+	const refreshed = entry.credential;
+	return {
+		access: refreshed.access,
+		refresh: REMOTE_REFRESH_SENTINEL,
+		expires: refreshed.expires,
+		accountId: refreshed.accountId,
+		email: refreshed.email,
+		projectId: refreshed.projectId,
+		enterpriseUrl: refreshed.enterpriseUrl,
+	};
+}
+
+/**
+ * Refreshes one stored MCP OAuth row through the durable credential owner so rotating refresh tokens are persisted
+ * before callers use them. `serverUrl` supplies the fallback resource indicator (omit it for stdio servers);
+ * standalone callers holding only the credential id set `recoverServerUrlFromCredentialId` instead.
+ */
+export async function refreshStoredManagedMcpOAuthCredential(
+	authStorage: AuthStorage,
+	provider: string,
+	opts: {
+		credentialId?: number;
+		serverUrl?: string;
+		recoverServerUrlFromCredentialId?: boolean;
+		auth?: MCPAuthConfig;
+		forceRefresh?: boolean;
+		signal?: AbortSignal;
+		onRefreshFailure?: (error: unknown) => void;
+	} = {},
+): Promise<StoredOAuthRefreshResult<MCPStoredOAuthCredential>> {
+	const row = authStorage
+		.listStoredCredentials(provider)
+		.find(
+			entry =>
+				entry.credential.type === "oauth" && (opts.credentialId === undefined || entry.id === opts.credentialId),
+		);
+	if (row?.credential.type !== "oauth") {
+		return { credential: undefined, refreshed: false, removed: false };
+	}
+	const serverUrl =
+		opts.serverUrl ??
+		(opts.recoverServerUrlFromCredentialId ? mcpOAuthServerUrlFromCredentialId(provider) : undefined);
+	return authStorage.refreshStoredOAuthCredential<MCPStoredOAuthCredential>(provider, {
+		credentialId: row.id,
+		observedCredential: row.credential,
+		credentialFromRow: credential => credential,
+		forceRefresh: opts.forceRefresh,
+		signal: opts.signal,
+		refreshSkewMs: 5 * 60_000,
+		canRefresh: current => {
+			const material = selectMcpOAuthRefreshMaterial(current, opts.auth);
+			return Boolean(current.refresh && material?.tokenUrl);
+		},
+		refresh: (current, signal) =>
+			current.refresh === REMOTE_REFRESH_SENTINEL
+				? refreshBrokeredMcpOAuthCredential(authStorage, row.id, provider, signal)
+				: refreshManagedMcpOAuthCredential(current, { serverUrl, auth: opts.auth, signal }),
+		mergeRefreshedCredential: (current, refreshed) => {
+			const material = selectMcpOAuthRefreshMaterial(current, opts.auth);
+			const resourceIsFallback = !material?.resource && Boolean(serverUrl);
+			return {
+				...current,
+				...refreshed,
+				tokenUrl: material?.tokenUrl,
+				clientId: material?.clientId,
+				clientSecret: material?.clientSecret,
+				resource: resourceIsFallback ? undefined : material?.resource,
+				authorizationUrl: material && "authorizationUrl" in material ? material.authorizationUrl : undefined,
+			};
+		},
+		isDefinitiveFailure: error => isDefinitiveOAuthFailure(error instanceof Error ? error.message : String(error)),
+		disabledCause: error => `oauth refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+		keepCredentialOnRefreshFailure: true,
+		onRefreshFailure: opts.onRefreshFailure,
 	});
 }
 

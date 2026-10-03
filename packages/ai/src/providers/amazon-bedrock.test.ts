@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import * as AIError from "../error";
-import type { AssistantMessage, Context, FetchImpl, ModelSpec } from "../types";
-import { streamBedrock } from "./amazon-bedrock";
+import type { AssistantMessage, Context, FetchImpl, Model, ModelSpec } from "../types";
+import { type BedrockOptions, streamBedrock } from "./amazon-bedrock";
 import { crc32 } from "./aws-eventstream";
 
 const model = buildModel({
@@ -260,5 +261,64 @@ describe("Bedrock stream timeouts", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("Bedrock forced tool choice", () => {
+	const toolContext: Context = {
+		messages: [{ role: "user", content: "hi", timestamp: 0 }],
+		tools: [{ name: "echo", description: "Echo text", parameters: { type: "object", properties: {} } }],
+	};
+	const claude = (id: string): Model<"bedrock-converse-stream"> =>
+		buildModel({
+			id,
+			name: id,
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+			baseUrl: "https://bedrock.example.test",
+			reasoning: true,
+			thinking: { mode: "anthropic-adaptive", efforts: [Effort.Low, Effort.Medium] },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 32_000,
+		} satisfies ModelSpec<"bedrock-converse-stream">);
+	type ToolChoicePayload = {
+		toolConfig?: { toolChoice?: Record<string, unknown> };
+		additionalModelRequestFields?: { thinking?: unknown };
+	};
+	const capture = async (
+		target: Model<"bedrock-converse-stream">,
+		toolChoice: BedrockOptions["toolChoice"],
+	): Promise<ToolChoicePayload> => {
+		let captured: ToolChoicePayload | undefined;
+		await streamBedrock(target, toolContext, {
+			bearerToken: "test-token",
+			toolChoice,
+			reasoning: Effort.Low,
+			fetch: fetchForBody(Buffer.concat(completeFrames())),
+			onPayload: payload => {
+				captured = payload as ToolChoicePayload;
+				return undefined;
+			},
+		}).result();
+		if (!captured) throw new Error("request payload was not built");
+		return captured;
+	};
+
+	it("downgrades forced choice to auto for Opus 5.5 and keeps thinking", async () => {
+		const model55 = claude("us.anthropic.claude-opus-5-5");
+		const anyPayload = await capture(model55, "any");
+		expect(anyPayload.toolConfig?.toolChoice).toEqual({ auto: {} });
+		expect(anyPayload.additionalModelRequestFields?.thinking).toBeDefined();
+
+		const namedPayload = await capture(model55, { type: "tool", name: "echo" });
+		expect(namedPayload.toolConfig?.toolChoice).toEqual({ auto: {} });
+	});
+
+	it("still forces the tool on Opus 5, dropping thinking instead", async () => {
+		const payload = await capture(claude("us.anthropic.claude-opus-5"), "any");
+		expect(payload.toolConfig?.toolChoice).toEqual({ any: {} });
+		expect(payload.additionalModelRequestFields?.thinking).toBeUndefined();
 	});
 });

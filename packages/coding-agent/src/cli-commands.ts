@@ -116,6 +116,7 @@ export const commands: CommandEntry[] = [
 	{
 		name: "plugin",
 		load: () => import("./commands/plugin").then(m => m.default),
+		aliases: ["plugins"],
 		help: commandHelp.pluginHelp,
 	},
 	{
@@ -200,7 +201,7 @@ const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	discover:
 		'`proto discover` is not a top-level command. Use `proto plugin discover [marketplace]` to browse available plugins, or run `proto launch discover` if you meant to send "discover" as a prompt.',
 	upgrade:
-		'`proto upgrade` is not a top-level command. Use `proto plugin upgrade [name@marketplace]` to upgrade plugins, or run `proto launch upgrade` if you meant to send "upgrade" as a prompt.',
+		'`proto upgrade` is not a top-level command. Use `proto plugin upgrade [name]` to upgrade plugins, or run `proto launch upgrade` if you meant to send "upgrade" as a prompt.',
 	enable:
 		'`proto enable` is not a top-level command. Use `proto plugin enable <name@marketplace>` to enable a plugin, or run `proto launch enable` if you meant to send "enable" as a prompt.',
 	disable:

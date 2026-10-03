@@ -179,3 +179,32 @@ describe("auth-gateway usage attribution", () => {
 		expect(recorded).toHaveLength(2);
 	});
 });
+
+describe("auth-gateway bearer confinement", () => {
+	it("rejects an authenticated request that also leaks the gateway token outside Authorization", async () => {
+		const body = { model: model.id, messages: [{ role: "user", content: "hi" }] };
+		const leaks: { path: string; headers?: Record<string, string> }[] = [
+			{ path: "/v1/chat/completions", headers: { "anthropic-beta": TOKEN } },
+			{ path: "/v1/chat/completions", headers: { "x-stainless-custom": TOKEN } },
+			{ path: "/v1/chat/completions", headers: { forwarded: `for=${TOKEN}` } },
+			{ path: `/v1/chat/completions?client=${TOKEN}` },
+			{ path: "/v1/chat/completions?client=gateway%2Dtoken" },
+			// One malformed escape must not hide an encoded token elsewhere in the URL.
+			{ path: "/v1/chat/completions?client=gateway%2Dtoken&junk=%zz" },
+		];
+		for (const { path, headers } of leaks) {
+			const response = await post(path, body, headers);
+			expect(response.status).toBe(400);
+			expect(await response.text()).not.toContain(TOKEN);
+		}
+		expect(calls).toHaveLength(0);
+
+		// Without valid auth the caller learns nothing about the token: still a plain 401.
+		const unauthorized = await post(`/v1/chat/completions?client=${TOKEN}`, body, { Authorization: "Bearer wrong" });
+		expect(unauthorized.status).toBe(401);
+
+		const allowed = await post("/v1/chat/completions", body, { "user-agent": TOKEN });
+		expect(allowed.status).toBe(200);
+		expect(calls).toHaveLength(1);
+	});
+});

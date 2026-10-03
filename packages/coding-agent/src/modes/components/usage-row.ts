@@ -1,9 +1,15 @@
 import type { Usage } from "@oh-my-pi/pi-ai";
-import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 
 const MIN_DURATION_MS = 100;
+
+const usageRowBlocks = new WeakSet<Component>();
+
+export function isUsageRowBlock(component: Component): boolean {
+	return usageRowBlocks.has(component);
+}
 
 function formatUsageTimestamp(ms: number): string {
 	const d = new Date(ms);
@@ -39,5 +45,6 @@ export function createUsageRowBlock(usage: Usage, durationMs?: number, ttftMs?: 
 	const block = new Container();
 	block.addChild(new Spacer(1));
 	block.addChild(new Text(theme.fg("dim", formatUsageRow(usage, durationMs, ttftMs, timestamp)), 1, 0));
+	usageRowBlocks.add(block);
 	return block;
 }

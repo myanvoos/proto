@@ -9,8 +9,8 @@ const misspelled: SpellingBackend = {
 	spellingGuesses: async () => [],
 };
 
-async function paintTypo(styledUnderlines: boolean): Promise<string> {
-	const provider = new MacOSSpellingProvider(misspelled, styledUnderlines);
+async function paintTypo(styledUnderlines: boolean, backend: SpellingBackend = misspelled): Promise<string> {
+	const provider = new MacOSSpellingProvider(backend, styledUnderlines);
 	provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
 	const updated = Promise.withResolvers<void>();
 	provider.onUpdate = updated.resolve;
@@ -28,5 +28,17 @@ describe("macOS spelling typo marks", () => {
 	it("falls back to a flat underline without the colon-form reset elsewhere", async () => {
 		// Apple Terminal paints CSI 4 : 0 m as a solid black bar to end of line.
 		expect(await paintTypo(false)).toBe("\x1b[4mrecieved\x1b[24m");
+	});
+
+	it("never re-emits text for overlapping or out-of-bounds ranges", async () => {
+		const overlapping: SpellingBackend = {
+			...misspelled,
+			checkSpelling: async () => [
+				{ start: 0, length: 8 },
+				{ start: 2, length: 3 },
+				{ start: 6, length: 10 },
+			],
+		};
+		expect(await paintTypo(false, overlapping)).toBe("\x1b[4mrecieved\x1b[24m");
 	});
 });

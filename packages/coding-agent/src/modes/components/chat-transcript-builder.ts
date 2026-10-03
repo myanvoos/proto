@@ -133,7 +133,7 @@ export class ChatTranscriptBuilder {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.canRemoveBlock(previous)) {
+		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.canDisplaceBlock(previous)) {
 			this.container.disposeAndRemoveChild(previous);
 		}
 		previous.seal();

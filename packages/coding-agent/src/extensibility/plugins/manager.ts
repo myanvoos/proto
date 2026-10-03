@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	BINARY_NAME,
 	getPluginsDir,
 	getPluginsLockfile,
 	getPluginsNodeModules,
@@ -11,6 +12,7 @@ import {
 	isEnoent,
 	logger,
 } from "@oh-my-pi/pi-utils";
+import { JSONC } from "bun";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { loadExtensions } from "../extensions/loader";
 import { refreshBunGitCache } from "./bun-git-cache";
@@ -89,6 +91,21 @@ function findGitPackageName(source: GitSource, deps: Record<string, string>): st
 		}
 	}
 	return undefined;
+}
+
+// The resolved identity bun recorded (`name@github:o/r#<commit>`, `name@1.2.3`); a git plugin on a
+// moving ref can gain commits without bumping its package.json version.
+async function readBunLockResolution(name: string): Promise<string | undefined> {
+	let text: string;
+	try {
+		text = await Bun.file(path.join(getPluginsDir(), "bun.lock")).text();
+	} catch (err) {
+		if (isEnoent(err)) return undefined;
+		throw err;
+	}
+	const lock = JSONC.parse(text) as { packages?: Record<string, unknown> } | null;
+	const entry = lock?.packages?.[name];
+	return Array.isArray(entry) && typeof entry[0] === "string" ? entry[0] : undefined;
 }
 
 interface PluginPackageSnapshot {
@@ -189,13 +206,15 @@ export class PluginManager {
 		}
 	}
 
-	async #removeDependencyEntry(pkgJsonPath: string, name: string): Promise<void> {
+	async #removeDependencyEntries(pkgJsonPath: string, names: readonly string[]): Promise<void> {
+		if (names.length === 0) return;
 		const pkgJson: { dependencies?: Record<string, string>; [key: string]: unknown } =
 			await Bun.file(pkgJsonPath).json();
-		if (!pkgJson.dependencies || !(name in pkgJson.dependencies)) {
+		const dependencies = pkgJson.dependencies;
+		if (!dependencies || !names.some(name => name in dependencies)) {
 			return;
 		}
-		delete pkgJson.dependencies[name];
+		for (const name of names) delete dependencies[name];
 		await Bun.write(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
 	}
 
@@ -471,11 +490,30 @@ export class PluginManager {
 			if (gitSource && existingActualName) {
 				const installedSource = parseGitUrl(depsBefore[existingActualName] ?? "");
 				if (installedSource && installedSource.ref !== gitSource.ref) {
-					await this.#removeDependencyEntry(pkgJsonPath, existingActualName);
+					await this.#removeDependencyEntries(pkgJsonPath, [existingActualName]);
 				}
 			}
+			// `bun install` appends a manifest edge instead of replacing it, so reinstalling over a
+			// stale, malformed (`pkg@1.0.0` as a key), or duplicated entry leaves bad keys and the next
+			// install dies with DependencyLoop. Prune them first; rollback restores package.json.
+			if (!gitSource) {
+				const npmName = extractPackageName(spec.packageName);
+				const staleNames = Object.keys(depsBefore).filter(name => extractPackageName(name) === npmName);
+				await this.#removeDependencyEntries(pkgJsonPath, staleNames);
+			}
 
-			const installProc = Bun.spawn(["bun", "install", packageInstallSpec], {
+			// npm specs resolve through bun's manifest cache, which honors the registry's
+			// Cache-Control TTL and keeps serving a stale version after a publish; `--no-cache`
+			// re-fetches the manifest while leaving the tarball cache intact. Git specs are
+			// refreshed by refreshBunGitCache + `bun update` below.
+			const installArgs = [
+				"bun",
+				"install",
+				...(gitSource ? [] : ["--no-cache"]),
+				...(options.force ? ["--force"] : []),
+				packageInstallSpec,
+			];
+			const installProc = Bun.spawn(installArgs, {
 				cwd: getPluginsDir(),
 				stdin: "ignore",
 				stdout: "pipe",
@@ -566,13 +604,21 @@ export class PluginManager {
 				}
 			}
 
+			let enabled = true;
+			if (options.preserveState) {
+				const available = manifest.features;
+				const preserved = options.preserveState.enabledFeatures;
+				enabledFeatures = preserved && available ? preserved.filter(feature => feature in available) : preserved;
+				enabled = options.preserveState.enabled;
+			}
+
 			const installedPlugin: InstalledPlugin = {
 				name: pkg.name,
 				version: pkg.version,
 				path: path.join(getPluginsNodeModules(), actualName),
 				manifest,
 				enabledFeatures,
-				enabled: true,
+				enabled,
 			};
 
 			await this.#validateInstalledExtensions(installedPlugin);
@@ -581,7 +627,7 @@ export class PluginManager {
 			config.plugins[pkg.name] = {
 				version: pkg.version,
 				enabledFeatures,
-				enabled: true,
+				enabled,
 			};
 			await this.#saveRuntimeConfig();
 
@@ -603,6 +649,45 @@ export class PluginManager {
 		} finally {
 			await this.#cleanupSnapshot(packageSnapshot);
 		}
+	}
+
+	/**
+	 * Re-install an npm or git plugin from the source recorded in plugins/package.json: git plugins
+	 * re-resolve their ref, npm plugins move to the latest version. Enabled state and features survive.
+	 */
+	async upgrade(name: string): Promise<{ from: string | undefined; plugin: InstalledPlugin; changed: boolean }> {
+		validatePackageName(name);
+		const deps = await this.#readDeps(getPluginsPackageJson());
+		const config = await this.#ensureConfigLoaded();
+		const recorded = deps[name];
+		if (recorded === undefined) {
+			if (config.plugins[name]) {
+				throw new Error(`${name} is linked from a local path; there is nothing to upgrade`);
+			}
+			throw new Error(`${name} is not installed`);
+		}
+		if (/^(file|link|workspace|portal):/i.test(recorded)) {
+			throw new Error(`${name} is installed from a local path (${recorded}); there is nothing to upgrade`);
+		}
+
+		const previous = config.plugins[name];
+		let from = previous?.version;
+		try {
+			const pkg: { version?: unknown } = await Bun.file(
+				path.join(getPluginsNodeModules(), name, "package.json"),
+			).json();
+			if (typeof pkg.version === "string") from = pkg.version;
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
+
+		const resolutionBefore = await readBunLockResolution(name);
+		const plugin = await this.install(
+			parseGitUrl(recorded) ? recorded : name,
+			previous ? { preserveState: { enabled: previous.enabled, enabledFeatures: previous.enabledFeatures } } : {},
+		);
+		const changed = from !== plugin.version || resolutionBefore !== (await readBunLockResolution(name));
+		return { from, plugin, changed };
 	}
 
 	async uninstall(name: string): Promise<void> {
@@ -633,6 +718,9 @@ export class PluginManager {
 		if (exitCode !== 0) {
 			throw new Error(`npm uninstall failed for ${name}`);
 		}
+
+		// Linked plugins have no package.json dependency for bun to remove.
+		await fs.promises.rm(this.#resolvePluginLinkPath(name).linkPath, { recursive: true, force: true });
 
 		const config = await this.#ensureConfigLoaded();
 		delete config.plugins[name];
@@ -775,15 +863,8 @@ export class PluginManager {
 		const { linkPath, nodeModulesRoot } = this.#resolvePluginLinkPath(pkg.name);
 		await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
 
-		try {
-			const stats = await fs.promises.lstat(linkPath);
-			if (stats.isSymbolicLink() || stats.isDirectory()) {
-				await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
-				await fs.promises.unlink(linkPath);
-			}
-		} catch (err) {
-			if (!isEnoent(err)) throw err;
-		}
+		// Whatever is there: a stale link, or a real directory left by a git install.
+		await fs.promises.rm(linkPath, { recursive: true, force: true });
 
 		await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
 		await fs.promises.symlink(absolutePath, linkPath);
@@ -831,8 +912,7 @@ export class PluginManager {
 		}
 
 		if (features && features.length > 0) {
-			const plugins = await this.list();
-			const plugin = plugins.find(p => p.name === name);
+			const plugin = await this.getPlugin(name, { path: path.join(getPluginsNodeModules(), name) });
 			if (plugin?.manifest.features) {
 				for (const feat of features) {
 					if (!(feat in plugin.manifest.features)) {
@@ -932,7 +1012,7 @@ export class PluginManager {
 				if (isEnoent(err)) {
 					if (!fs.existsSync(pluginPath)) {
 						if (fromDependencies) {
-							const fixed = options.fix ? await this.#fixMissingPlugin() : false;
+							const fixed = options.fix ? await this.#installPluginDependencies() : false;
 							checks.push({
 								name: `plugin:${name}`,
 								status: "error",
@@ -958,6 +1038,25 @@ export class PluginManager {
 					continue;
 				}
 				throw err;
+			}
+			// Only managed dependencies drift; config-only entries are live local links. Repair runs
+			// before manifest validation so those checks see the reinstalled package.
+			const recordedVersion = config.plugins[name]?.version;
+			if (fromDependencies && recordedVersion && pluginPkg.version && recordedVersion !== pluginPkg.version) {
+				const fixed = options.fix ? await this.#reconcileVersionDrift(name, recordedVersion) : false;
+				checks.push({
+					name: `plugin:${name}:version`,
+					status: fixed ? "ok" : "error",
+					message: fixed
+						? `Reconciled version drift: node_modules now matches lock v${recordedVersion}`
+						: `Version drift: lock records v${recordedVersion} but node_modules has v${pluginPkg.version} (run \`${BINARY_NAME} plugin install ${name} --force\`)`,
+					fixed,
+				});
+				if (fixed) {
+					try {
+						pluginPkg = await Bun.file(pluginPkgPath).json();
+					} catch {}
+				}
 			}
 			const hasManifest = !!(pluginPkg.proto || pluginPkg.pi);
 			const manifest: PluginManifest | undefined = pluginPkg.proto || pluginPkg.pi;
@@ -1007,7 +1106,7 @@ export class PluginManager {
 		return checks;
 	}
 
-	async #fixMissingPlugin(): Promise<boolean> {
+	async #installPluginDependencies(): Promise<boolean> {
 		try {
 			const proc = Bun.spawn(["bun", "install"], {
 				cwd: getPluginsDir(),
@@ -1024,6 +1123,41 @@ export class PluginManager {
 			return exit === 0;
 		} catch {
 			return false;
+		}
+	}
+
+	// Re-extracts only the drifted package (a global `bun install --force` would re-extract every
+	// sibling), restoring the previous package and manifests when the repair does not converge.
+	async #reconcileVersionDrift(name: string, expected: string): Promise<boolean> {
+		const packageJsonBefore = await Bun.file(getPluginsPackageJson()).text();
+		const bunLockPath = path.join(getPluginsDir(), "bun.lock");
+		let bunLockBefore: string | null;
+		try {
+			bunLockBefore = await Bun.file(bunLockPath).text();
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+			bunLockBefore = null;
+		}
+		const snapshot = await this.#snapshotInstalledPackage(name);
+		let fixed = false;
+		try {
+			await fs.promises.rm(path.join(getPluginsNodeModules(), name), { recursive: true, force: true });
+			if (!(await this.#installPluginDependencies())) return false;
+			try {
+				const pkg: { version?: string } = await Bun.file(
+					path.join(getPluginsNodeModules(), name, "package.json"),
+				).json();
+				fixed = pkg.version === expected;
+				return fixed;
+			} catch {
+				return false;
+			}
+		} finally {
+			try {
+				if (!fixed) await this.#rollbackFailedInstall(name, packageJsonBefore, bunLockBefore, snapshot);
+			} finally {
+				await this.#cleanupSnapshot(snapshot);
+			}
 		}
 	}
 

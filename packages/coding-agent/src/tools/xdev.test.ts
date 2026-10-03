@@ -56,9 +56,10 @@ test("protolens resolution forwards cancellation before a pending action applies
 	expect(sideEffectRan).toBe(false);
 });
 
-function probeState(seen: { args?: Record<string, unknown> }): XdevState {
+function probeState(seen: { args?: Record<string, unknown> }, lenientArgValidation = false): XdevState {
 	const probe = {
 		name: "probe",
+		lenientArgValidation,
 		label: "Probe",
 		description: "probe device",
 		parameters: type({ target: type("string > 0").describe("thing to probe") }),
@@ -92,6 +93,12 @@ test("device validation states the constraint and the offending value", async ()
 	await expect(
 		dispatchXdevTool(probeState({}), "probe", JSON.stringify({ target: "" }), "protolens-invalid"),
 	).rejects.toThrow(/target must be at least length 1 \(was ""\)/);
+});
+
+test("a lenient device receives schema-mismatched args to refuse or repair itself", async () => {
+	const seen: { args?: Record<string, unknown> } = {};
+	await dispatchXdevTool(probeState(seen, true), "probe", JSON.stringify({ target: "" }), "protolens-lenient");
+	expect(seen.args).toEqual({ target: "" });
 });
 
 test("a direct device call resolves whether the name is bare or carries the advertised protolens:// prefix", () => {

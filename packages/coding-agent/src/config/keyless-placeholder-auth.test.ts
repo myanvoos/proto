@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
-import { ModelRegistry } from "./model-registry";
+import { kNoAuth, ModelRegistry } from "./model-registry";
 import { Settings } from "./settings";
 
 const LM_KEY = "sk-lm-12281-test-key";
@@ -266,6 +266,13 @@ describe("keyless empty-paste placeholder vs. wire auth", () => {
 		}
 		expect(registry.getAll().some(model => model.provider === "vllm" && model.id === "qwen3-8b")).toBe(true);
 		expect(registry.getAvailable().some(model => model.provider === "vllm" && model.id === "qwen3-8b")).toBe(true);
+		// Request auth must resolve to the no-auth sentinel, or the session rejects the prompt before any request.
+		const model = registry.find("vllm", "qwen3-8b");
+		if (!model) throw new Error("Expected discovered vllm model");
+		expect(await registry.getApiKey(model)).toBe(kNoAuth);
+		// Selection surfaces (prewalk, role pickers) must count the placeholder as configured auth.
+		expect(registry.hasConfiguredAuth(model)).toBe(true);
+		expect(registry.hasConcreteAuth("vllm")).toBe(true);
 		storage.close();
 	}, 30_000);
 });

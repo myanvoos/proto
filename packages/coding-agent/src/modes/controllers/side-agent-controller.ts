@@ -106,6 +106,9 @@ export class SideAgentController {
 				suppressBreadcrumb: true,
 				sessionFile: cloneFile,
 				copyTitle: false,
+				// The clone's spend is its own work; the parent may also be mid-turn with tool calls in flight.
+				resetInheritedCost: true,
+				repairInterruptedTail: true,
 			});
 
 			jobId = manager.register(

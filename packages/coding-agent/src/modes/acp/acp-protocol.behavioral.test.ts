@@ -393,6 +393,26 @@ test("protocol hygiene: initialization, params, cwd, methods and sessions use th
 	}
 }, 180_000);
 
+test("stray stdout writers go to stderr instead of corrupting the JSON-RPC stream", async () => {
+	const extension = path.join(tmpDir, "stray-stdout-extension.ts");
+	await fs.writeFile(
+		extension,
+		'export default function () {\n\tconsole.log("STRAY-CONSOLE");\n\tprocess.stdout.write("STRAY-WRITE\\n");\n}\n',
+	);
+	const server = new AcpServer(["--model", "w7ok/mok", "-e", extension]);
+	try {
+		await server.initialize();
+		const sessionId = await server.newSession();
+		const frame = await server.prompt(sessionId, "hello");
+		expect(frame.result?.stopReason).toBe("end_turn");
+		expect(server.lines.every(line => line.startsWith("{"))).toBe(true);
+		expect(server.stderr).toContain("STRAY-CONSOLE");
+		expect(server.stderr).toContain("STRAY-WRITE");
+	} finally {
+		server.kill();
+	}
+}, 180_000);
+
 afterAll(async () => {
 	flaky.stop(true);
 	unauthorized.stop(true);

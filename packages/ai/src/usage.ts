@@ -338,6 +338,8 @@ export interface UsageFetchContext {
 	fetch: FetchImpl;
 	logger?: UsageLogger;
 	retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+	/** Last report cached for this credential, so a fetcher can keep a field a failed secondary probe could not re-read. */
+	previousReport?: UsageReport;
 }
 
 export interface UsageProvider {

@@ -115,7 +115,8 @@ async function readRegisteredProjects(root: string): Promise<string[]> {
 }
 
 function projectCwd(encoded: string, registered: readonly string[]): string {
-	const exact = registered.find(project => project.replaceAll(path.sep, "-") === encoded);
+	// Claude Code names a project directory by replacing every non-alphanumeric character with `-`.
+	const exact = registered.find(project => project.replace(/[^a-zA-Z0-9]/g, "-") === encoded);
 	if (exact) return exact;
 	if (!encoded.startsWith("-")) return encoded;
 	return encoded.replaceAll("-", path.sep);

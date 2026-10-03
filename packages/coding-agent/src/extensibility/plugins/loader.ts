@@ -1,7 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { OmpErrors, type } from "@oh-my-pi/omptype";
-import { getPluginsDir, getPluginsLockfile, hasFsCode, isEnoent, pathIsWithin } from "@oh-my-pi/pi-utils";
+import {
+	getPluginsDir,
+	getPluginsLockfile,
+	hasFsCode,
+	isEacces,
+	isEnoent,
+	logger,
+	pathIsWithin,
+} from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { registerPluginCacheInvalidator, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { normalizePluginRuntimeConfig } from "./runtime-config";
@@ -63,6 +71,10 @@ async function loadProjectOverrides(cwd: string): Promise<ProjectPluginOverrides
 	return {};
 }
 
+function isUnreadable(err: unknown): boolean {
+	return isEacces(err) || hasFsCode(err, "EPERM");
+}
+
 async function collectPluginsAtRoot(
 	root: string,
 	projectOverrides: ProjectPluginOverrides,
@@ -72,11 +84,17 @@ async function collectPluginsAtRoot(
 	if (!fs.existsSync(nodeModulesPath)) return [];
 
 	let depsKeys: string[] = [];
+	let hasPackageManifest = false;
 	const pkgJsonPath = path.join(root, "package.json");
 	try {
 		const pkg: { dependencies?: Record<string, string> } = await Bun.file(pkgJsonPath).json();
 		depsKeys = Object.keys(pkg.dependencies ?? {});
+		hasPackageManifest = true;
 	} catch (err) {
+		if (isUnreadable(err)) {
+			logger.warn("plugins: skipping unreadable plugin root", { root, path: pkgJsonPath });
+			return [];
+		}
 		if (!isEnoent(err)) throw err;
 	}
 
@@ -85,6 +103,10 @@ async function collectPluginsAtRoot(
 	try {
 		runtimeConfig = normalizePluginRuntimeConfig(await Bun.file(lockPath).json());
 	} catch (err) {
+		if (isUnreadable(err)) {
+			logger.warn("plugins: skipping unreadable plugin root", { root, path: lockPath });
+			return [];
+		}
 		if (!isEnoent(err)) throw err;
 		runtimeConfig = normalizePluginRuntimeConfig({});
 	}
@@ -94,14 +116,34 @@ async function collectPluginsAtRoot(
 		names.add(name);
 	}
 
+	const isSymlink = async (target: string): Promise<boolean> => {
+		try {
+			return (await fs.promises.lstat(target)).isSymbolicLink();
+		} catch (err) {
+			if (isEnoent(err) || isUnreadable(err)) return false;
+			throw err;
+		}
+	};
 	const plugins: ScopedInstalledPlugin[] = [];
 	for (const name of names) {
+		// With a package manifest, lockfile-only entries are legitimate only for links
+		// (`proto plugin link`, marketplace runtime registration). A real directory is a
+		// stale leftover of a package removed outside `proto plugin uninstall`; loading it
+		// would double-load extensions. Manifestless roots keep the lockfile-only layout.
+		if (hasPackageManifest && !depsKeys.includes(name) && !(await isSymlink(path.join(nodeModulesPath, name)))) {
+			logger.warn("plugins: skipping stale lockfile entry not declared in package.json", { name, root });
+			continue;
+		}
 		const pluginPkgPath = path.join(nodeModulesPath, name, "package.json");
 		let pluginPkg: { version: string; proto?: PluginManifest; pi?: PluginManifest };
 		try {
 			pluginPkg = await Bun.file(pluginPkgPath).json();
 		} catch (err) {
 			if (isEnoent(err)) continue;
+			if (isUnreadable(err)) {
+				logger.warn("plugins: skipping unreadable plugin", { name, root, path: pluginPkgPath });
+				continue;
+			}
 			throw err;
 		}
 

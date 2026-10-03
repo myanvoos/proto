@@ -2059,7 +2059,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 30000,
 		"int": 24.9,
-		"tps": 104.2,
+		"tps": 143.9,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -2166,7 +2166,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"int": 38.8,
-		"tps": 55.1,
+		"tps": 56.4,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -2273,7 +2273,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
@@ -2377,7 +2377,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"int": 46.4,
-		"tps": 39.3,
+		"tps": 79,
 		"compat": {
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,

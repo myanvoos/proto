@@ -441,3 +441,26 @@ test("a capped whole-file rewrite renders as a rewrite in the tool card", () => 
 	// One event can no longer bury the transcript under thousands of rows.
 	expect(lines.length).toBeLessThanOrEqual(410);
 });
+
+test("agent progress rows stay within the render width and keep the failure badge", () => {
+	const lines = render(
+		[
+			{
+				op: "agent",
+				id: `worker-${"x".repeat(120)}\nsecond-line`,
+				status: "failed",
+				toolCount: 42,
+				contextTokens: 120_000,
+				contextWindow: 200_000,
+				cost: 1.25,
+				durationMs: 90_000,
+			},
+		],
+		{ expanded: false },
+	);
+	const agentLine = lines.find(line => line.includes("worker-"));
+	expect(agentLine).toBeDefined();
+	expect(agentLine).not.toContain("second-line\n");
+	expect(agentLine).toContain("failed");
+	for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(WIDTH);
+});

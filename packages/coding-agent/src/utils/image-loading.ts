@@ -1,5 +1,12 @@
 import type { Context, ImageContent, Message, Model, ProviderPayload, TextContent } from "@oh-my-pi/pi-ai";
-import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
+import {
+	formatBytes,
+	isRecord,
+	logger,
+	parseImageMetadata,
+	readImageMetadata,
+	SUPPORTED_IMAGE_MIME_TYPES,
+} from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, type ImageResizeOptions, type ResizedImage, resizeImage } from "./image-resize";
@@ -220,12 +227,44 @@ export async function readDecodedImageDimensions(data: string | Uint8Array): Pro
 	try {
 		return await withImageDecode(data, async buffer => {
 			const { width, height } = await new Bun.Image(buffer).metadata();
-			return width && height ? { width, height } : undefined;
+			if (!width || !height) return undefined;
+			await decodeProbe(buffer);
+			return { width, height };
 		});
 	} catch (error) {
 		if (error instanceof ImageResourceLimitError) throw error;
 		logger.debug("Image decode probe failed", { error: String(error) });
 		return undefined;
+	}
+}
+
+/**
+ * Metadata reads only the header: a middle-elided PNG keeps its signature, header and trailer and still passes. A full
+ * decode is the only check matching what vision backends accept; it terminates into a 1x1 raster so nothing full-size
+ * is encoded.
+ */
+async function decodeProbe(buffer: Uint8Array): Promise<void> {
+	await new Bun.Image(buffer).resize(1, 1).png().bytes();
+}
+
+/** Why an image cannot be decoded, or `null` when it decodes. Rethrows a `busy` resource error: no verdict yet. */
+export async function imageDecodeFailureReason(image: ImageContent): Promise<string | null> {
+	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) return "invalid base64 image data";
+	const bytes = Buffer.from(image.data, "base64");
+	if (bytes.length === 0) return "empty image data";
+	if (bytes.toString("base64").replace(/=+$/, "") !== image.data.replace(/=+$/, ""))
+		return "invalid base64 image data";
+	const detected = parseImageMetadata(bytes);
+	const declared = image.mimeType.toLowerCase();
+	if (detected && detected.mimeType !== (declared === "image/jpg" ? "image/jpeg" : declared)) {
+		return `declared ${image.mimeType} but contains ${detected.mimeType}`;
+	}
+	try {
+		await withImageDecode(bytes, buffer => decodeProbe(buffer));
+		return null;
+	} catch (error) {
+		if (error instanceof ImageResourceLimitError && error.reason === "busy") throw error;
+		return error instanceof Error ? error.message : String(error);
 	}
 }
 

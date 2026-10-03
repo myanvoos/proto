@@ -116,6 +116,27 @@ function compareFuzzyRank(a: RankedSessionMatch, b: RankedSessionMatch): number 
 	return a.score - b.score || compareSessionRecency(a.session, b.session) || a.index - b.index;
 }
 
+/** Exact then partial title hits lead; `literal` is already recency-ranked, the rest keeps its order. */
+function prioritizeTitleMatches(
+	sessions: SessionInfo[],
+	tokens: string[],
+	literal: RankedSessionMatch[],
+): SessionInfo[] {
+	const query = tokens.join(" ");
+	const exact: SessionInfo[] = [];
+	const partial: SessionInfo[] = [];
+	const titleMatches = new Set<SessionInfo>();
+	for (const { session } of literal) {
+		const title = session.title?.trim().toLowerCase().replace(/\s+/g, " ");
+		if (title === query) exact.push(session);
+		else if (title && isLiteralMatch(title, tokens)) partial.push(session);
+		else continue;
+		titleMatches.add(session);
+	}
+	if (titleMatches.size === 0) return sessions;
+	return [...exact, ...partial, ...sessions.filter(session => !titleMatches.has(session))];
+}
+
 export function rankSessionSearchMatches(allSessions: SessionInfo[], query: string): SessionInfo[] {
 	const tokens = tokenizeSessionQuery(query);
 	if (tokens.length === 0) return allSessions;
@@ -138,7 +159,7 @@ export function rankSessionSearchMatches(allSessions: SessionInfo[], query: stri
 	const out: SessionInfo[] = [];
 	for (const match of literal) out.push(match.session);
 	for (const match of fuzzyMatches) out.push(match.session);
-	return out;
+	return prioritizeTitleMatches(out, tokens, literal);
 }
 
 export function mergeSessionRanking(
@@ -251,6 +272,7 @@ class SessionList implements Component {
 	#scanTimer: NodeJS.Timeout | undefined;
 
 	#selectionMoved = false;
+	#lastFilterQuery = "";
 	#formattedDates = new Map<string, CachedSessionDate>();
 	#renderedRows = new Map<string, CachedSessionRows>();
 
@@ -406,6 +428,8 @@ class SessionList implements Component {
 	}
 
 	#filterSessions(query: string): void {
+		const queryChanged = query !== this.#lastFilterQuery;
+		this.#lastFilterQuery = query;
 		this.#scanGeneration++;
 		if (this.#scanTimer !== undefined) {
 			clearTimeout(this.#scanTimer);
@@ -437,6 +461,9 @@ class SessionList implements Component {
 		}
 		literal.sort(compareLiteralRank);
 		this.#literalRanked = literal;
+		// A new query re-ranks from scratch, so focus its top hit; a same-query refilter
+		// (after a delete) only clamps, keeping focus on the deleted row's neighbor.
+		if (queryChanged) this.#selectedIndex = 0;
 
 		this.#scanFuzzySlice(this.#scanGeneration, tokens, rest, 0, FUZZY_SCAN_INLINE_COUNT);
 		this.#composeFiltered();
@@ -472,7 +499,11 @@ class SessionList implements Component {
 		for (const match of this.#literalRanked) base.push(match.session);
 		for (const match of this.#fuzzyRanked) base.push(match.session);
 		this.#setFilteredSessions(
-			this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base,
+			prioritizeTitleMatches(
+				this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base,
+				tokenizeSessionQuery(this.#lastFilterQuery),
+				this.#literalRanked,
+			),
 		);
 		// A background fuzzy-scan slice reorders the list; once the user has
 		// moved, the highlighted session - not the numeric slot - must stay put.
@@ -1076,6 +1107,10 @@ export class SessionSelectorComponent extends OverlayPanel {
 		for (const sessionPath of deletedPaths) {
 			this.#sessionList.removeSession(sessionPath);
 		}
+		// Prune the cached scope lists too, or Tab would bring deleted rows back.
+		const deleted = new Set(deletedPaths);
+		this.#folderSessions = this.#folderSessions.filter(s => !deleted.has(s.path));
+		this.#globalSessions = this.#globalSessions?.filter(s => !deleted.has(s.path)) ?? null;
 		if (firstError) {
 			const suffix =
 				deletedPaths.length < sessions.length ? ` (deleted ${deletedPaths.length} of ${sessions.length})` : "";

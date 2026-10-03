@@ -16,9 +16,8 @@ import type { OutputMeta } from "../tools/output-meta";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { callTool } from "./client";
-import { sanitizeMCPDiagnostic } from "./errors";
+import { formatMCPToolFailure, MCPTransportError } from "./errors";
 import { renderMCPCall, renderMCPResult } from "./render";
-import { MCPRequestTimeoutError } from "./timeout";
 import type {
 	MCPAuthChallenge,
 	MCPContent,
@@ -45,6 +44,7 @@ const RETRIABLE_PATTERNS = [
 
 export function isRetriableConnectionError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
+	if (error instanceof MCPTransportError) return error.retryable;
 	const msg = error.message.toLowerCase();
 
 	if (/^http (404|502|503):/.test(msg)) return true;
@@ -192,6 +192,26 @@ function formatMCPContent(content: MCPContent[]): Array<TextContent | ImageConte
 	return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
 }
 
+/**
+ * MCP `structuredContent` (spec 2025-06-18) as a fenced JSON block, unless a text block already echoes it verbatim
+ * as spec-compliant servers do for back-compat.
+ */
+function formatStructuredContent(result: MCPToolCallResult): string | undefined {
+	const structured = result.structuredContent;
+	if (structured === undefined) return undefined;
+	for (const item of result.content) {
+		if (item.type !== "text" || item.text.trim() === "") continue;
+		try {
+			if (Bun.deepEquals(JSON.parse(item.text), structured)) return undefined;
+		} catch {}
+	}
+	try {
+		return `\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\``;
+	} catch {
+		return undefined;
+	}
+}
+
 function buildResult(
 	result: MCPToolCallResult,
 	serverName: string,
@@ -217,6 +237,8 @@ function buildResult(
 			content.unshift({ type: "text", text: "Error:" });
 		}
 	}
+	const structured = formatStructuredContent(result);
+	if (structured) content.push({ type: "text", text: structured });
 	const toolResult: CustomToolResult<MCPToolDetails> = { content, details };
 	if (result.isError) {
 		toolResult.isError = true;
@@ -231,9 +253,8 @@ function buildErrorResult(
 	provider?: string,
 	providerName?: string,
 ): CustomToolResult<MCPToolDetails> {
-	const message = sanitizeMCPDiagnostic(error instanceof Error ? error.message : String(error));
-	const lines = [`MCP error: ${message}`];
-	if (error instanceof MCPRequestTimeoutError)
+	const lines = [formatMCPToolFailure(error, serverName, mcpToolName)];
+	if (error instanceof MCPTransportError && error.failure === "timeout")
 		lines.push(prompt.render(mcpRequestTimeoutHint, { server: serverName }));
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
@@ -347,6 +368,50 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 	}
 
 	return capMCPToolNameLength(`mcp__${sanitizedServerName}_${normalizedToolName}`);
+}
+
+/**
+ * Registry keys a model-emitted MCP name may have meant, in priority order; empty for non-`mcp__` or already-minted
+ * names. Models primed on Claude Code emit `mcp__<server>__<tool>` (often with the raw server spelling) while
+ * {@link createMCPToolName} mints one separator. Every `__` is tried as the split and re-minted through
+ * `createMCPToolName` (reproducing prefix stripping, placeholders and the length cap) — a raw server name may itself
+ * contain `__`; then the whole suffix sanitized and capped, for single-separator punctuation variants. Candidates are
+ * derived by the minting rules, never picked from siblings.
+ */
+export function canonicalMCPToolNameCandidates(name: string): string[] {
+	if (!name.startsWith("mcp__")) return [];
+	const suffix = name.slice("mcp__".length);
+	if (suffix.length === 0) return [];
+	const candidates: string[] = [];
+	const add = (candidate: string): void => {
+		if (candidate !== name && !candidates.includes(candidate)) candidates.push(candidate);
+	};
+	for (let boundary = suffix.indexOf("__"); boundary >= 0; boundary = suffix.indexOf("__", boundary + 1)) {
+		const serverName = suffix.slice(0, boundary);
+		const toolName = suffix.slice(boundary + 2);
+		if (serverName.length > 0 && toolName.length > 0) add(createMCPToolName(serverName, toolName));
+	}
+	const sanitizedSuffix = sanitizeMCPToolNamePart(suffix, "");
+	if (sanitizedSuffix.length > 0) add(capMCPToolNameLength(`mcp__${sanitizedSuffix}`));
+	return candidates;
+}
+
+/**
+ * Resolve a Claude Code-spelled MCP call through `lookup`, which MUST cover exactly the tools offered to the calling
+ * agent (the union of every presentation set it can reach, in one pass). Returns a tool only when exactly one candidate
+ * resolves: two boundaries can name different registered tools, and guessing would run an operation the model did not
+ * ask for.
+ */
+export function resolveMCPToolAlias<T extends { readonly name: string }>(
+	name: string,
+	lookup: (candidate: string) => T | undefined,
+): T | undefined {
+	const matches: T[] = [];
+	for (const candidate of canonicalMCPToolNameCandidates(name)) {
+		const match = lookup(candidate);
+		if (match !== undefined && !matches.some(seen => seen.name === match.name)) matches.push(match);
+	}
+	return matches.length === 1 ? matches[0] : undefined;
 }
 
 // Only used when two distinct (server, tool) pairs land on one wire name.

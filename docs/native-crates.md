@@ -2,7 +2,7 @@
 
 Contributor map for Rust workspace members under `crates/`. They are implementation details behind `@oh-my-pi/pi-natives` and its embedded shell; package consumers use JavaScript entrypoints, not these crate APIs.
 
-The root `Cargo.toml` lists every crate under `crates/` explicitly in `workspace.members` — add new crates there. It also patches crates.io `brush-core` to the vendored copy.
+The root `Cargo.toml` lists every crate under `crates/` explicitly in `workspace.members` — add new crates there. It also patches crates.io `brush-core` and `brush-parser` to the vendored copies.
 
 ## First-party crates
 
@@ -19,7 +19,7 @@ The root `Cargo.toml` lists every crate under `crates/` explicitly in `workspace
 
 | Group | Paths | Purpose |
 | ----- | ----- | ------- |
-| Brush | [`crates/vendor/brush-core`](../crates/vendor/brush-core) | Vendored shell engine consumed by `pi-shell` and `pi-builtins`. Its manifest retains upstream package metadata; a workspace patch selects this local fork. |
+| Brush | [`crates/vendor/brush-core`](../crates/vendor/brush-core), [`crates/vendor/brush-parser`](../crates/vendor/brush-parser) | Vendored shell engine and parser consumed by `pi-shell` and `pi-builtins`. Their manifests retain upstream package metadata; workspace patches select these local forks. The parser keeps quoted here-document bodies inside command substitutions opaque, including backticks, quotes, and parentheses. |
 
 `pi_builtins::utility_builtins()` and `pi_builtins::process_builtins()` are the authoritative lists of the commands linked into the embedded shell; `pi-shell` decides which of them to register. A directory being a workspace member does not by itself mean that `pi-natives` exposes it as a JavaScript API.
 

@@ -58,7 +58,12 @@ Labels (`[A-Za-z0-9_-]{1,48}`, rejected rather than rewritten) are display text 
 - `isolated: true` runs once synchronously in an isolated workspace copy (requires
   `orchestrator.isolation.mode` other than `none`), applies successful changes back by default
   (`orchestrator.isolation.apply=false` retains patch/branch artifacts), and leaves no
-  addressable worker.
+  addressable worker. If patch capture or persistence fails, the error names the retained workspace
+  containing the uncaptured changes. Recover those changes before running `proto worktree clear`
+  after the owning session exits. Clear uses native teardown for retained overlays and Btrfs snapshots;
+  missing or corrupt retention metadata and teardown failures leave the workspace intact. Retained
+  ZFS datasets require manual teardown. If a workspace cannot be moved out of its agent's slot,
+  another run with that id refuses to overwrite it until it has been recovered and cleared.
 - `list` (owned) and `inspect` report lifecycle (`live`/`parked`/`terminal`) and turn state
   (`starting`/`running`/`idle`) separately, plus model, turn count, current, last and queued
   turn job ids, usage, and terminal recovery refs.

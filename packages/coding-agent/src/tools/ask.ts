@@ -21,7 +21,7 @@ import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
-import { formatErrorMessage, formatMeta, formatTitle } from "./render-utils";
+import { formatErrorMessage, formatMeta, formatTitle, sanitizeCarriageReturns } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
 
 export const OTHER_OPTION = "Other (type your own)";
@@ -776,6 +776,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			throw new ToolAbortError("Ask tool requires interactive mode");
 		}
 
+		params = sanitizeAskDisplayText(params);
+
 		const extensionUi = context.ui;
 		const ui: UIContext = {
 			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,
@@ -1042,15 +1044,39 @@ function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
 	const out: AskRenderOption[] = [];
 	for (const entry of raw) {
 		if (typeof entry === "string") {
-			out.push({ label: entry });
+			out.push({ label: sanitizeCarriageReturns(entry) });
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;
 		const { label, description } = entry as Partial<AskRenderOption>;
 		if (typeof label !== "string") continue;
-		out.push(typeof description === "string" ? { label, description } : { label });
+		out.push(
+			typeof description === "string"
+				? { label: sanitizeCarriageReturns(label), description: sanitizeCarriageReturns(description) }
+				: { label: sanitizeCarriageReturns(label) },
+		);
 	}
 	return out;
+}
+
+/**
+ * Strip injected `\r` runs from the prose the dialog renders. Option labels and ids stay raw: they
+ * are the answer's identity, and the select path maps the chosen row back by label.
+ */
+function sanitizeAskDisplayText(params: AskParams): AskParams {
+	return {
+		...params,
+		questions: params.questions.map(question => ({
+			...question,
+			question: sanitizeCarriageReturns(question.question),
+			...(question.header !== undefined ? { header: sanitizeCarriageReturns(question.header) } : {}),
+			options: question.options.map(option => ({
+				...option,
+				...(option.description !== undefined ? { description: sanitizeCarriageReturns(option.description) } : {}),
+				...(option.preview !== undefined ? { preview: sanitizeCarriageReturns(option.preview) } : {}),
+			})),
+		})),
+	};
 }
 
 function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["questions"]> | undefined {
@@ -1068,7 +1094,7 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
 		out.push({
 			id: typeof q.id === "string" ? q.id : "?",
-			question: typeof q.question === "string" ? q.question : "",
+			question: typeof q.question === "string" ? sanitizeCarriageReturns(q.question) : "",
 			options: normalizeRenderOptions(q.options) ?? [],
 			multi: q.multi === true,
 		});

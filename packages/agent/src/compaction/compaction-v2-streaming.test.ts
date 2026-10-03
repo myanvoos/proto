@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import { buildCompactionV2Request, requestCompactionV2Streaming } from "./compaction-v2-streaming";
 
@@ -45,5 +46,38 @@ describe("V2 streaming compaction retries", () => {
 
 		expect(attempts).toBe(2);
 		expect(result.compactionItem).toEqual(compactionItem);
+	});
+
+	test("surfaces a standalone error event as a terminal failure without retrying", async () => {
+		const request = buildCompactionV2Request(
+			MODEL,
+			[{ type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] }],
+			"instructions",
+		);
+		let attempts = 0;
+		const fetchMock: FetchImpl = async () => {
+			attempts++;
+			return sseResponse([
+				{
+					type: "error",
+					status: 400,
+					error: {
+						message: "Your input exceeds the context window of this model.",
+						type: "invalid_request_error",
+						code: "context_too_large",
+					},
+				},
+			]);
+		};
+
+		const error = await requestCompactionV2Streaming(MODEL, "test-key", request, undefined, {
+			fetch: fetchMock,
+			retryWait: async () => {},
+		}).catch((cause: unknown) => cause);
+
+		expect(attempts).toBe(1);
+		expect(error).toBeInstanceOf(AIError.ProviderHttpError);
+		expect(error).toMatchObject({ status: 400 });
+		expect(String(error)).toContain("context_too_large");
 	});
 });

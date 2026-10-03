@@ -12,12 +12,13 @@ import {
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient } from "@oh-my-pi/pi-ai/auth-broker";
-import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import { discoverAuthStorage } from "../sdk";
+import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
 import { collapseSharedUsageReports, summarizeUsageResetCredits } from "../utils/usage-display";
 
 const BAR_WIDTH = 28;
@@ -31,6 +32,10 @@ interface UsageCommandArgs {
 	history?: boolean;
 
 	days?: number;
+	/** `-e <path>` extensions to load before fetching live reports. */
+	extensions?: string[];
+	/** Skip extension discovery; explicit `extensions` still load. */
+	noExtensions?: boolean;
 }
 
 export interface UsageAccountIdentity {
@@ -343,6 +348,7 @@ function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<str
 
 function formatAccountHeader(
 	report: UsageReport,
+	peers: readonly UsageReport[],
 	index: number,
 	nowMs: number,
 	redaction?: Map<string, string>,
@@ -351,14 +357,18 @@ function formatAccountHeader(
 	const icon = STATUS_COLOR[status]("●");
 	const label = reportAccountLabel(report, index);
 	let header = `${icon} ${chalk.bold(redaction?.get(label) ?? label)}`;
-	const metaOrgName = report.metadata?.orgName;
-	const metaOrgId = report.metadata?.orgId;
-	const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
-	if (typeof org === "string" && org && org !== label) {
-		header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
+	if (report.provider === "openai-codex") {
+		const identity = sanitizeText((redaction?.get(label) ?? label).replace(/[\r\n\t]+/g, " "));
+		const rendered = formatCodexUsageReportLabel(report, peers, label, redaction, true, "inline");
+		header = `${icon} ${chalk.bold(identity)}${chalk.dim(rendered.slice(identity.length))}`;
+	} else {
+		const metaOrgName = report.metadata?.orgName;
+		const metaOrgId = report.metadata?.orgId;
+		const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
+		if (typeof org === "string" && org && org !== label) header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
+		const plan = report.metadata?.planType;
+		if (typeof plan === "string" && plan.trim()) header += chalk.dim(` · plan: ${plan.trim()}`);
 	}
-	const planType = report.metadata?.planType;
-	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
 	const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
 	if (resets && resets.bankedCount > 0) {
 		header += chalk.cyan(` · ✦ ${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}`);
@@ -440,11 +450,14 @@ interface ProviderWindowStat {
 	remainingAccounts: number;
 }
 
-// Codex chat and Spark are independent meters that can share a window duration.
+// Limits holding their own pool inside a window get their own meter: Anthropic's model-scoped caps
+// (a spent Fable cap must not read as a partly-spent shared weekly window) and Codex chat versus Spark.
+// Other providers (Copilot, Devin) put the subscription plan in `tier`, which must not split a window.
 function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
-	if (report.provider !== "openai-codex") return undefined;
+	if (report.provider !== "anthropic" && report.provider !== "openai-codex") return undefined;
 	const tier = limit.scope.tier?.trim().toLowerCase();
 	if (tier) return tier;
+	if (report.provider !== "openai-codex") return undefined;
 	const slug = limit.id.toLowerCase().split(":")[1];
 	return slug && slug !== "primary" && slug !== "secondary" ? slug : "chat";
 }
@@ -683,7 +696,7 @@ export function formatUsageBreakdown(
 		const labelWidth = providerLimitTemplates.reduce((max, template) => Math.max(max, template.title.length), 0);
 
 		providerReports.forEach((report, index) => {
-			lines.push(`  ${formatAccountHeader(report, index, nowMs, redaction)}`);
+			lines.push(`  ${formatAccountHeader(report, providerReports, index, nowMs, redaction)}`);
 			if (policyOptions && policyProviders.has(provider)) {
 				lines.push(
 					`      ${chalk.dim(formatPolicyLine(provider, metadataIdentity(report), report.limits, policyOptions))}`,
@@ -1082,14 +1095,22 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 		const modelRegistry = new ModelRegistry(authStorage);
+		// Extensions contribute usage providers via `registerProvider(name, { usage })`; without loading
+		// them their accounts would show as having no usage provider.
+		await loadCliExtensionProviders(modelRegistry, settings, getProjectDir(), {
+			additionalExtensionPaths: cmd.extensions,
+			disableExtensionDiscovery: cmd.noExtensions,
+			discoverModels: false,
+		});
+		// Refresh the credential snapshot before probing extension providers with local keys and labeling
+		// accounts; an offline broker keeps the cached snapshot.
+		try {
+			await authStorage.revalidateCredentials();
+		} catch {}
 		const reports =
 			(await authStorage.fetchUsageReports({
 				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
 			})) ?? [];
-
-		try {
-			await authStorage.revalidateCredentials();
-		} catch {}
 		const storedAccounts = collectStoredAccounts(authStorage);
 		let accounts = selectReportableAccounts(
 			storedAccounts,

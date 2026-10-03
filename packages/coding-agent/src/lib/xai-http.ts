@@ -1,3 +1,4 @@
+import { parseXAIAccessTokenPayload } from "@oh-my-pi/pi-ai/oauth/xai-oauth";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -21,6 +22,7 @@ function resolveXAIBaseURL(
 	modelRegistry: ModelRegistry,
 	provider: XAIHttpProvider,
 	modelId: string | undefined,
+	bearer: string | undefined,
 ): string {
 	if (modelId) {
 		const merged = modelRegistry.getAll().find(m => m.id === modelId && m.provider === provider);
@@ -39,6 +41,10 @@ function resolveXAIBaseURL(
 		const normalized = providerBaseUrl.replace(/\/$/, "");
 		if (normalized !== DEFAULT_BASE_URL) return normalized;
 	}
+	// `XAI_BASE_URL` never receives an official xAI OAuth access token (a JWT, or unknown when no bearer is known).
+	if (provider === "xai-oauth" && (bearer === undefined || parseXAIAccessTokenPayload(bearer) !== null)) {
+		return DEFAULT_BASE_URL;
+	}
 	return ($env.XAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, "");
 }
 
@@ -49,8 +55,9 @@ export async function resolveXAIHttpTransport(
 	modelId?: string,
 	signal?: AbortSignal,
 ): Promise<XAIHttpTransport> {
+	const bearer = await modelRegistry.authStorage.peekApiKey(provider);
 	return {
-		baseURL: resolveXAIBaseURL(modelRegistry, provider, modelId),
+		baseURL: resolveXAIBaseURL(modelRegistry, provider, modelId, bearer),
 		headers: await modelRegistry.getRequestHeaders(provider, modelId, signal),
 	};
 }
@@ -64,14 +71,14 @@ export async function resolveXAIHttpCredentials(
 	if (hasDedicatedXaiOAuth) {
 		const oauthKey = await modelRegistry.getApiKeyForProvider("xai-oauth");
 		if (oauthKey) {
-			const baseURL = resolveXAIBaseURL(modelRegistry, "xai-oauth", modelId);
+			const baseURL = resolveXAIBaseURL(modelRegistry, "xai-oauth", modelId, oauthKey);
 			return { provider: "xai-oauth", apiKey: oauthKey, baseURL };
 		}
 	}
 
 	const apiKey = await modelRegistry.getApiKeyForProvider("xai");
 	if (apiKey) {
-		const baseURL = resolveXAIBaseURL(modelRegistry, "xai", modelId);
+		const baseURL = resolveXAIBaseURL(modelRegistry, "xai", modelId, apiKey);
 		return { provider: "xai", apiKey, baseURL };
 	}
 

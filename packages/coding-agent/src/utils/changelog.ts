@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { getLastChangelogVersionPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { Lexer } from "@oh-my-pi/pi-utils/marked";
 import type { BunFile } from "bun";
 import bundledChangelogPath from "../../CHANGELOG.md" with { type: "file" };
 import type { SettingValue } from "../config/settings";
@@ -56,6 +57,8 @@ function emptyStartupSelection(persistCurrentVersion: boolean): StartupChangelog
 	};
 }
 
+const UNCATEGORIZED_CHANGELOG_CATEGORY = "Other";
+
 function summarizeChangelogEntries(entries: readonly ChangelogEntry[]): {
 	changeCount: number;
 	categoryCounts: Record<string, number>;
@@ -64,16 +67,19 @@ function summarizeChangelogEntries(entries: readonly ChangelogEntry[]): {
 	let changeCount = 0;
 
 	for (const entry of entries) {
-		let category: string | undefined;
-		for (const line of entry.content.split("\n")) {
-			const heading = line.match(/^###\s+(.+?)\s*$/);
-			if (heading) {
-				category = heading[1];
+		// Count what the renderer shows: top-level list items per `###` section, via the shared lexer.
+		let category = UNCATEGORIZED_CHANGELOG_CATEGORY;
+		for (const token of Lexer.lex(entry.content)) {
+			if (token.type === "heading" && token.depth === 3) {
+				category = token.text.trim() || UNCATEGORIZED_CHANGELOG_CATEGORY;
 				continue;
 			}
-			if (!category || !/^-\s+\S/.test(line)) continue;
-			categoryCounts[category] = (categoryCounts[category] ?? 0) + 1;
-			changeCount++;
+			if (token.type !== "list") continue;
+			for (const item of token.items) {
+				if (!item.task && item.text.trim() === "") continue;
+				categoryCounts[category] = (categoryCounts[category] ?? 0) + 1;
+				changeCount++;
+			}
 		}
 	}
 

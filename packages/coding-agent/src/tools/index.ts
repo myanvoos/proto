@@ -14,6 +14,7 @@ import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { CustomTool } from "../extensibility/custom-tools/types";
+import type { PreparedExtension } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import type { LocalProtocolOptions } from "../internal-urls";
@@ -116,7 +117,8 @@ export interface ToolSession {
 
 	rules?: Rule[];
 
-	extensionPaths?: string[];
+	/** Extension factories this session imported, for child sessions to rebind. */
+	preparedExtensions?: PreparedExtension[];
 
 	customToolPaths?: ToolPathWithSource[];
 
@@ -249,6 +251,9 @@ export interface ToolSession {
 	clearPendingInvokers?(): void;
 
 	getCheckpointState?: () => CheckpointState | undefined;
+
+	/** Report text a data-less terminal yield resolves to: its own turn's prose or the prose turn right before it. */
+	getYieldReportText?: (toolCallId: string) => string | undefined;
 
 	setCheckpointState?: (state: CheckpointState | null) => void;
 
@@ -399,7 +404,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const includeYield = session.requireYieldTool === true;
 	const requestedTools = restrictToolNames
 		? normalizeToolNames(toolNames ?? [])
-		: toolNames && toolNames.length > 0
+		: toolNames
 			? normalizeToolNames(toolNames)
 			: undefined;
 	const goalEnabled = session.settings.get("goal.enabled");

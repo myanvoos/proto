@@ -15,6 +15,8 @@ const XAI_WEB_SEARCH_MODEL = "grok-4.5";
 const XAI_WEB_SEARCH_REASONING_EFFORT = "low";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 30;
+/** Unphased messages at least this long are substantive content, not relay narration. */
+const SUBSTANTIVE_MIN_CHARS = 300;
 
 interface XAIUrlCitationAnnotation {
 	type?: string;
@@ -239,31 +241,50 @@ function collectWebSearchSources(
 
 function parseAnswer(response: XAIResponsesResponse): string | undefined {
 	const output = Array.isArray(response.output) ? response.output : [];
-	const hasExplicitPhase = output.some(item => item?.phase === "commentary" || item?.phase === "final_answer");
-	const hasFinalAnswer = output.some(item => item?.phase === "final_answer");
-	const answerParts: string[] = [];
-
+	// Explicit phases are authoritative. Unphased relay messages keep the last message plus earlier ones that cite
+	// sources or are substantive; commentary keeps its position so dropping it cannot promote earlier narration.
+	const messages: Array<{ texts: string[]; hasCitations: boolean; phase: XAIResponseOutputItem["phase"] }> = [];
 	for (const item of output) {
-		if (!item || typeof item !== "object") continue;
-		// Once the relay marks a final answer, it is authoritative: unphased
-		// and commentary items may contain narration or relay internals.
-		if (hasFinalAnswer ? item.phase !== "final_answer" : item.phase === "commentary") continue;
-		const content = Array.isArray(item.content) ? item.content : [];
-		for (const part of content) {
-			if (!part || typeof part !== "object") continue;
-			const text = part.output_text ?? part.text;
-			if (text?.trim()) answerParts.push(text.trim());
-		}
+		if (!item || typeof item !== "object" || (item.type != null && item.type !== "message")) continue;
+		const content = Array.isArray(item.content) ? item.content : null;
+		if (content === null && item.type == null) continue;
+		// Relays send arbitrary JSON: unknown phase strings count as unphased.
+		const phase = item.phase === "commentary" || item.phase === "final_answer" ? item.phase : null;
+		const parts = (content ?? []).filter(part => part && typeof part === "object");
+		const texts = parts.map(part => (part.output_text ?? part.text)?.trim()).filter((text): text is string => !!text);
+		const hasCitations = [item.annotations, ...parts.map(part => part.annotations)].some(
+			annotations =>
+				Array.isArray(annotations) &&
+				annotations.some(
+					annotation =>
+						annotation?.type === "url_citation" && typeof annotation.url === "string" && !!annotation.url.trim(),
+				),
+		);
+		messages.push({ texts, hasCitations, phase });
 	}
+	const hasFinalAnswerContent = messages.some(m => m.phase === "final_answer" && m.texts.length > 0);
+	if (!hasFinalAnswerContent) {
+		// A tagged-but-empty final means no answer; the aggregate output_text mixes narration in, so never promote it.
+		if (messages.some(m => m.phase === "final_answer")) return undefined;
+		const lastMessage = messages.at(-1);
+		if (!lastMessage) return response.output_text?.trim() || undefined;
+		if (lastMessage.texts.length === 0 && lastMessage.phase !== "commentary") return undefined;
+	}
+	const kept = hasFinalAnswerContent
+		? messages.filter(entry => entry.phase === "final_answer")
+		: messages.filter(
+				(entry, index) =>
+					entry.phase == null &&
+					(index === messages.length - 1 ||
+						entry.hasCitations ||
+						entry.texts.join("").length >= SUBSTANTIVE_MIN_CHARS),
+			);
 
-	const answer = answerParts.join("\n").trim();
-	if (answer) return answer;
-	// An explicit phase means output_text may be an aggregate that includes
-	// commentary; only use that legacy fallback when no phase was supplied.
-	if (hasExplicitPhase) return undefined;
-	const topLevelText = response.output_text?.trim();
-	if (topLevelText) return topLevelText;
-	return undefined;
+	const answer = kept
+		.flatMap(entry => entry.texts)
+		.join("\n")
+		.trim();
+	return answer || undefined;
 }
 
 function parseUsage(usage: XAIResponsesUsage | null | undefined): SearchUsage | undefined {

@@ -167,6 +167,7 @@ Within either overlay list, later files override earlier files. Overlay paths ar
 Write behavior:
 
 - `settings.set(...)` writes to the **global** layer (the global YAML file selected at startup) and queues a background save.
+- `settings.setRecordEntry(path, key, value)` writes one entry of a record setting (`undefined` deletes it), building the record from the global layer alone so entries supplied by project files, overlays, or runtime overrides are never copied into the global file.
 - Discovered project settings are read-only except project model-role mutations (`setProjectModelRole` / `clearProjectModelRole`); config overlays are always read-only from the settings API.
 
 ### Settings load failures
@@ -186,7 +187,6 @@ On startup, if neither global `config.yml` nor `config.yaml` exists:
 Field-level migrations in `#migrateRawSettings`:
 
 - `queueMode` -> `steeringMode`
-- `ask.timeout` milliseconds -> seconds when old value looks like ms (`> 1000`)
 - Legacy flat `theme: "..."` -> `theme.dark/theme.light` structure (built-in `light`/`dark` values are removed so schema defaults apply)
 
 ---
@@ -326,7 +326,7 @@ Settings capability items are not deduplicated; `Settings.#loadProjectSettings()
 
 - `ConfigFile` JSON -> YAML migration for YAML-targeted files.
 - Settings migration from `settings.json` and `agent.db` to `config.yml`.
-- Field migrations cover renamed/removed settings and value-shape changes, including `queueMode`, changelog settings, `ask.timeout`, flat `theme`, checklist eager setting, compaction strategy/method-order settings, `inlineToolDescriptors`, status-line segments, provider/search settings, power/service-tier settings, extension-discovery settings, and nested-leaf renames. Consult `Settings.#migrateRawSettings()` for the current exhaustive list.
+- Field migrations cover renamed/removed settings and value-shape changes, including `queueMode`, changelog settings, flat `theme`, checklist eager setting, compaction strategy/method-order settings, `inlineToolDescriptors`, status-line segments, provider/search settings, power/service-tier settings, extension-discovery settings, and nested-leaf renames. Consult `Settings.#migrateRawSettings()` for the current exhaustive list.
 - Legacy setting names `skills.enablePiUser` / `skills.enablePiProject` are still active gates for native skill source.
 
 If these compatibility paths are removed in code, update this document immediately; several runtime behaviors still depend on them today.

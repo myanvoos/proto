@@ -47,7 +47,10 @@ class DisposableBlock implements Component {
 
 type RenderRequest = [immediate?: boolean, options?: { clearScrollback?: boolean }];
 
-function windowingContext(messages: AssistantMessage[]): {
+function windowingContext(
+	messages: AssistantMessage[],
+	queued: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] },
+): {
 	ctx: InteractiveModeContext;
 	renders: AgentMessage[][];
 	renderRequests: RenderRequest[];
@@ -61,7 +64,12 @@ function windowingContext(messages: AssistantMessage[]): {
 		ui: {
 			requestRender: (immediate?: boolean, options?: { clearScrollback?: boolean }) =>
 				renderRequests.push([immediate, options]),
+			requestComponentRender: noop,
 		},
+		updatePendingMessagesDisplay: () => new UiHelpers(ctx).updatePendingMessagesDisplay(),
+		compactionQueuedMessages: [],
+		scheduledQueue: { list: () => [] },
+		keybindings: { getDisplayString: () => "" },
 		chatContainer: new TranscriptContainer(),
 		pendingMessagesContainer: new Container(),
 		pendingTools: new Map(),
@@ -74,6 +82,7 @@ function windowingContext(messages: AssistantMessage[]): {
 		showStatus: noop,
 		viewSession: {
 			isStreaming: false,
+			getQueuedMessages: () => queued,
 			buildTranscriptSessionContext: (options?: BuildSessionContextOptions) =>
 				manager.buildSessionContext({ ...options, transcript: true }),
 			sessionManager: manager,
@@ -176,4 +185,15 @@ test("synthetic developer context the model acted on is invisible in the transcr
 	} finally {
 		chatContainer.dispose();
 	}
+});
+
+test("a transcript rebuild such as rewind keeps the queued-message bar visible", async () => {
+	const { ctx, manager } = windowingContext([assistant(0)], { steering: ["steer now"], followUp: ["queued one"] });
+	await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
+
+	const pending = Bun.stripANSI(ctx.pendingMessagesContainer.render(100).join("\n"));
+	expect(pending).toContain("steer now");
+	expect(pending).toContain("queued one");
+	ctx.chatContainer.dispose();
+	await manager.close();
 });

@@ -358,7 +358,11 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				await Bun.sleep(CONNECT_RETRY_MS);
 			}
 		}
-		throw new Error(`Failed to start daemon broker: ${lastError?.message ?? "socket unavailable"}`);
+		throw new Error(
+			`Failed to start daemon broker at ${this.#endpoint} after ${CONNECT_TIMEOUT_MS / 1000}s: ` +
+				`${lastError?.message ?? "socket unavailable"}. Scope: ${this.#runtimeDir}. ` +
+				"Run `proto ps` to inspect supervised processes.",
+		);
 	}
 
 	#spawnBroker(): void {

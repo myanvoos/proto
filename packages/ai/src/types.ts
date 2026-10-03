@@ -425,9 +425,13 @@ export interface StreamOptions {
 
 	maxInFlightRequests?: Record<string, number>;
 
-	onPayload?: (payload: unknown, model?: Model<Api>) => unknown | undefined | Promise<unknown | undefined>;
+	onPayload?: (
+		payload: unknown,
+		model?: Model<Api>,
+		signal?: AbortSignal,
+	) => unknown | undefined | Promise<unknown | undefined>;
 
-	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>) => void | Promise<void>;
+	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>, signal?: AbortSignal) => void | Promise<void>;
 
 	onSseEvent?: (event: RawSseEvent, model?: Model<Api>) => void;
 

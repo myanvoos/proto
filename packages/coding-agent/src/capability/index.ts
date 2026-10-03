@@ -81,11 +81,12 @@ async function loadImpl<T>(
 ): Promise<CapabilityResult<T>> {
 	const allItems: Array<T & { _source: SourceMeta; _shadowed?: boolean }> = [];
 	const suppressedItems = new Set<T & { _source: SourceMeta; _shadowed?: boolean }>();
+	const disabledItems = new Set<T & { _source: SourceMeta; _shadowed?: boolean }>();
 	const allWarnings: string[] = [];
 	const contributingProviders: string[] = [];
-	const disabledExtensionIds = options.includeDisabled
-		? new Set<string>()
-		: new Set<string>(options.disabledExtensions ?? settings?.get("disabledExtensions") ?? []);
+	const disabledExtensionIds = new Set<string>(
+		options.disabledExtensions ?? settings?.get("disabledExtensions") ?? [],
+	);
 
 	const results = await Promise.all(
 		providers.map(async provider => {
@@ -126,13 +127,16 @@ async function loadImpl<T>(
 			}
 
 			const extensionId = capability.toExtensionId?.(itemWithSource);
-			if (extensionId && disabledExtensionIds.has(extensionId)) {
+			const isDisabled = extensionId !== undefined && disabledExtensionIds.has(extensionId);
+			if (isDisabled && !options.includeDisabled) {
 				continue;
 			}
 
 			if (options.filter && !options.filter(itemWithSource)) {
 				continue;
 			}
+
+			if (isDisabled) disabledItems.add(itemWithSource);
 
 			if (options.suppress?.(itemWithSource)) {
 				itemWithSource._source.providerName = provider.displayName;
@@ -159,6 +163,19 @@ async function loadImpl<T>(
 	for (const item of allItems) {
 		const key = capability.key(item);
 
+		// Disabled items are listed but never claim a key or equivalence class, so they cannot
+		// shadow an enabled item; one that loses to an earlier enabled item is still marked shadowed.
+		if (disabledItems.has(item)) {
+			const keySeen = key !== undefined && seen.has(key);
+			const aliasSeen =
+				!keySeen &&
+				equivalent !== undefined &&
+				deduped.some(existing => !disabledItems.has(existing) && equivalent(existing, item));
+			if (keySeen || aliasSeen) item._shadowed = true;
+			if (!suppressedItems.has(item)) deduped.push(item);
+			continue;
+		}
+
 		if (suppressedItems.has(item)) {
 			if (key !== undefined) seen.add(key);
 			continue;
@@ -171,7 +188,10 @@ async function loadImpl<T>(
 
 		const keySeen = seen.has(key);
 		seen.add(key);
-		const aliasSeen = !keySeen && equivalent !== undefined && deduped.some(existing => equivalent(existing, item));
+		const aliasSeen =
+			!keySeen &&
+			equivalent !== undefined &&
+			deduped.some(existing => !disabledItems.has(existing) && equivalent(existing, item));
 		if (keySeen || aliasSeen) {
 			item._shadowed = true;
 		} else {
@@ -242,7 +262,7 @@ export async function loadCapability<T>(
 	const cwd = options.cwd ?? getProjectDir();
 	const home = os.homedir();
 	const repoRoot = await resolveRepoRoot(cwd);
-	const ctx: LoadContext = { cwd, home, repoRoot };
+	const ctx: LoadContext = { cwd, home, repoRoot, agentDir: options.agentDir };
 	const providers = filterProviders(capability, options);
 
 	return await loadImpl(capability, providers, ctx, options);

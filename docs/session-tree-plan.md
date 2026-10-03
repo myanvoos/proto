@@ -101,8 +101,6 @@ Default user-facing `/branch` flow (`SelectorController.showUserMessageSelector`
 - If selected user message is root (`parentId === null`): start a new session via `newSession({ parentSession: previousSessionFile })`, carrying the prior session title and title source.
 - Otherwise: `createBranchedSession(selectedEntry.parentId)` to fork history up to the selected prompt boundary.
 
-Configuration caveat: when `doubleEscapeAction=tree`, the `/branch` registry entry opens the same tree selector as `/tree`; selections therefore use `navigateTree()` and stay in the current file. This is not merely a different UI for `AgentSession.branch()`.
-
 `SessionManager.createBranchedSession(leafId)` specifics:
 
 - Builds root→leaf path via `getBranch(leafId)`; throws if missing.
@@ -148,7 +146,7 @@ Tree selector behavior (`tree-selector.ts`):
 Command routing:
 
 - `/tree` always opens the tree selector.
-- `/branch` normally opens the user-message/file-branch selector. With `doubleEscapeAction=tree`, it opens the tree selector and performs same-file navigation instead.
+- `/branch` always opens the user-message/file-branch selector; `doubleEscapeAction` only controls double-Esc.
 
 ## Extension and hook touchpoints for tree operations
 

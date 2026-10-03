@@ -91,7 +91,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -253,7 +253,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -416,7 +416,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -505,7 +505,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -587,7 +588,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -662,7 +664,6 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 6.6,
-		"tps": 103.3,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -735,7 +736,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 11.1,
-		"tps": 102,
+		"tps": 60.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -743,7 +744,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1328,7 +1330,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1336,7 +1338,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1394,7 +1397,7 @@
 	},
 	"moonshotai/Kimi-K2.5": {
 		"id": "moonshotai/Kimi-K2.5",
-		"name": "Kimi K2.5",
+		"name": "Kimi-K2.5",
 		"api": "openai-completions",
 		"provider": "coreweave",
 		"baseUrl": "https://api.inference.wandb.ai/v1",
@@ -1418,7 +1421,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -1497,7 +1501,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1505,7 +1509,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1584,7 +1589,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1592,7 +1597,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1769,7 +1775,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1844,7 +1851,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 22.9,
-		"tps": 156.1,
+		"tps": 164.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1852,7 +1859,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1933,7 +1941,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2008,7 +2017,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2089,7 +2098,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 9,
-		"tps": 183.4,
+		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2170,7 +2179,7 @@
 		"contextWindow": 32768,
 		"maxTokens": 32768,
 		"int": 6.7,
-		"tps": 61.2,
+		"tps": 63.4,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -2626,7 +2635,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 19.3,
-		"tps": 146.1,
+		"tps": 148.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2710,7 +2719,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2794,7 +2803,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 18.2,
-		"tps": 119.3,
+		"tps": 128.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2878,7 +2887,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 33.7,
-		"tps": 41.3,
+		"tps": 46.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3039,7 +3048,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3117,7 +3127,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3202,7 +3212,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

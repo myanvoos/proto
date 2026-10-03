@@ -86,7 +86,7 @@ import {
 	type ToolSession,
 } from "../../tools";
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
-import { shortenPath } from "../../tools/render-utils";
+import { sanitizeDisplayWarnings, shortenPath } from "../../tools/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { captureBrowserSession } from "../../utils/browser-session";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -183,11 +183,18 @@ export class SelectorController {
 		this.ctx.ui.setFocus(visible);
 	}
 
+	/** Temporarily replaces the editor slot with a selector; finishing restores the prior slot contents and focus. */
 	showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+		const previousChildren = [...this.ctx.editorContainer.children];
+		const previousFocus = this.ctx.ui.getFocused();
 		const done = () => {
 			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(this.ctx.editor);
-			this.ctx.ui.setFocus(this.ctx.editor);
+			for (const child of previousChildren) this.ctx.editorContainer.addChild(child);
+			const focus =
+				previousFocus && previousChildren.includes(previousFocus)
+					? previousFocus
+					: (previousChildren[0] ?? this.ctx.editor);
+			this.ctx.ui.setFocus(focus);
 		};
 		const { component, focus } = create(done);
 		this.ctx.editorContainer.clear();
@@ -289,7 +296,8 @@ export class SelectorController {
 			}
 			const dirs = { projectDir, agentDir };
 			const initialDoc = await loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(initialScope, dirs));
-			if (initialDoc.warnings?.length) this.ctx.showWarning(`WATCHDOG.yml: ${initialDoc.warnings.join("; ")}`);
+			if (initialDoc.warnings?.length)
+				this.ctx.showWarning(`WATCHDOG.yml: ${sanitizeDisplayWarnings(initialDoc.warnings).join("; ")}`);
 
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
@@ -321,7 +329,7 @@ export class SelectorController {
 					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
 					this.ctx.statusLine.invalidate();
 					if (discovered.warnings.length > 0) {
-						this.ctx.showWarning(`WATCHDOG.yml: ${discovered.warnings.join("; ")}`);
+						this.ctx.showWarning(`WATCHDOG.yml: ${sanitizeDisplayWarnings(discovered.warnings).join("; ")}`);
 					}
 					this.ctx.showStatus(
 						count > 0
@@ -537,6 +545,11 @@ export class SelectorController {
 				this.ctx.session.setAutoCompactionEnabled(value as boolean, true);
 				this.ctx.statusLine.setAutoCompactEnabled(value as boolean);
 				break;
+			case "compaction.idleEnabled":
+			case "compaction.idleThresholdTokens":
+			case "compaction.idleTimeoutSeconds":
+				this.ctx.eventController.refreshIdleCompactionTimer();
+				break;
 			case "advisor.enabled":
 				this.ctx.session.setAdvisorEnabled(value as boolean);
 				this.ctx.statusLine.invalidate();
@@ -638,6 +651,11 @@ export class SelectorController {
 				break;
 			case "tui.tight":
 				setTuiTight(value as boolean);
+				this.ctx.ui.invalidate();
+				this.ctx.ui.requestRender();
+				break;
+			case "tui.hyperlinks":
+				this.ctx.statusLine.invalidate();
 				this.ctx.ui.invalidate();
 				this.ctx.ui.requestRender();
 				break;
@@ -1024,13 +1042,7 @@ export class SelectorController {
 				},
 				onFallbackChainChange: (role, chain) => {
 					try {
-						const chains = { ...this.ctx.settings.get("retry.fallbackChains") };
-						if (chain.length === 0) {
-							delete chains[role];
-						} else {
-							chains[role] = chain;
-						}
-						this.ctx.settings.set("retry.fallbackChains", chains);
+						this.ctx.settings.setRecordEntry("retry.fallbackChains", role, chain.length > 0 ? chain : undefined);
 						const roleInfo = getRoleInfo(role, settings);
 						this.ctx.showStatus(
 							chain.length > 0
@@ -1627,6 +1639,7 @@ export class SelectorController {
 			return true;
 		}
 
+		this.ctx.prepareSessionSwitch();
 		const detached = await this.ctx.session.newSession();
 		if (!detached) {
 			return false;
@@ -1660,6 +1673,7 @@ export class SelectorController {
 				return false;
 			}
 		}
+		this.ctx.prepareSessionSwitch();
 		if (switchingToDifferentSession && !detachedSessionHolder.has(sessionPath)) {
 			const live = readSessionLiveState(sessionPath);
 			if (live.fresh && live.pid !== process.pid) {

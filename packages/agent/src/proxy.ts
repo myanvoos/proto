@@ -16,7 +16,8 @@ import {
 	type StreamingPartialJsonCarrier,
 	setStreamingPartialJson,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { parseStreamingJson, parseStreamingJsonThrottled, readSseJson } from "@oh-my-pi/pi-utils";
+import { parseToolCallArguments } from "@oh-my-pi/pi-ai/utils/tool-call-arguments";
+import { parseStreamingJsonThrottled, readSseJson } from "@oh-my-pi/pi-utils";
 
 export class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
@@ -198,7 +199,7 @@ function flushProxyToolCallArguments(
 	for (const [contentIndex, state] of partialJsonByIndex) {
 		const content = partial.content[contentIndex];
 		if (content?.type === "toolCall") {
-			content.arguments = parseStreamingJson(state.partialJson) || {};
+			content.arguments = parseToolCallArguments(state.partialJson) || {};
 		}
 	}
 }
@@ -335,7 +336,7 @@ function processProxyEvent(
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
 				const state = partialJsonByIndex.get(proxyEvent.contentIndex);
-				if (state) content.arguments = parseStreamingJson(state.partialJson) || {};
+				if (state) content.arguments = parseToolCallArguments(state.partialJson) || {};
 				partialJsonByIndex.delete(proxyEvent.contentIndex);
 				clearStreamingPartialJson(content);
 				return {

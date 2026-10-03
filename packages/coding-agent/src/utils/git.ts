@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, hasFsCode, isEacces, isEisdir, isEnoent, isEnotdir, Snowflake } from "@oh-my-pi/pi-utils";
+import { $which, formatBytes, hasFsCode, isEacces, isEisdir, isEnoent, isEnotdir, Snowflake } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import {
 	parseDiffHunks as parseCommitDiffHunks,
@@ -59,6 +59,8 @@ export interface DiffOptions {
 	readonly env?: Record<string, string | undefined>;
 	readonly files?: readonly string[];
 	readonly head?: string;
+	/** Stdout cap in bytes; defaults to {@link GIT_COMMAND_OUTPUT_LIMIT_BYTES}. */
+	readonly maxOutputBytes?: number;
 	readonly nameOnly?: boolean;
 	readonly noIndex?: { left: string; right: string };
 	readonly numstat?: boolean;
@@ -172,10 +174,9 @@ export class GitOutputTruncatedError extends Error {
 	readonly args: readonly string[];
 	readonly result: GitCommandResult;
 
-	constructor(args: readonly string[], result: GitCommandResult) {
-		const limitMiB = Math.round(GIT_COMMAND_OUTPUT_LIMIT_BYTES / (1024 * 1024));
+	constructor(args: readonly string[], result: GitCommandResult, limitBytes = GIT_COMMAND_OUTPUT_LIMIT_BYTES) {
 		super(
-			`git ${args.join(" ")} produced more than ${limitMiB} MiB of output; the captured result is truncated and incomplete.`,
+			`git ${args.join(" ")} produced more than ${formatBytes(limitBytes)} of output; the captured result is truncated and incomplete.`,
 		);
 		this.name = "GitOutputTruncatedError";
 		this.args = [...args];
@@ -1177,12 +1178,18 @@ function parseStatusPorcelain(text: string): GitStatusSummary {
 export const diff = Object.assign(
 	async function diff(cwd: string, options: DiffOptions = {}): Promise<string> {
 		const args = buildDiffArgs(options);
+		const commandOptions: CommandOptions = {
+			env: options.env,
+			maxOutputBytes: options.maxOutputBytes,
+			readOnly: true,
+			signal: options.signal,
+		};
 		if (options.allowFailure) {
-			return (await git(cwd, args, { env: options.env, readOnly: true, signal: options.signal })).stdout;
+			return (await git(cwd, args, commandOptions)).stdout;
 		}
-		const result = await runChecked(cwd, args, { env: options.env, readOnly: true, signal: options.signal });
+		const result = await runChecked(cwd, args, commandOptions);
 		if (options.requireComplete && result.truncated) {
-			throw new GitOutputTruncatedError(args, result);
+			throw new GitOutputTruncatedError(args, result, options.maxOutputBytes);
 		}
 		return result.stdout;
 	},

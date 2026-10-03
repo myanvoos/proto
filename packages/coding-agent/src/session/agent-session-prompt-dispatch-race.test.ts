@@ -6,6 +6,9 @@
  * that turn rather than disappearing or surfacing an AgentBusyError.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -21,6 +24,7 @@ describe("AgentSession concurrent prompt dispatch", () => {
 	let session: AgentSession;
 	let modelRegistry: ModelRegistry;
 	let authStorage: AuthStorage | undefined;
+	let sessionDir: string | undefined;
 
 	beforeEach(async () => {
 		authStorage = await AuthStorage.create(":memory:");
@@ -35,9 +39,11 @@ describe("AgentSession concurrent prompt dispatch", () => {
 		}
 		authStorage?.close();
 		authStorage = undefined;
+		if (sessionDir) await fs.rm(sessionDir, { recursive: true, force: true });
+		sessionDir = undefined;
 	});
 
-	function createSession(): void {
+	function createSession(sessionManager = SessionManager.inMemory()): void {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 
@@ -47,7 +53,7 @@ describe("AgentSession concurrent prompt dispatch", () => {
 				model,
 				systemPrompt: ["Test"],
 				tools: [],
-				messages: [],
+				messages: sessionManager.buildSessionContext().messages,
 			},
 			streamFn: createMockModel({
 				responses: [{ content: ["First done"] }, { content: ["Second done"] }],
@@ -56,11 +62,52 @@ describe("AgentSession concurrent prompt dispatch", () => {
 
 		session = new AgentSession({
 			agent,
-			sessionManager: SessionManager.inMemory(),
+			sessionManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
 		});
 	}
+
+	it.each(["navigateTree", "branch", "fork"] as const)(
+		"drops a prompt admitted before %s replaces its branch",
+		async transition => {
+			sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-prompt-transition-"));
+			const manager = SessionManager.create(sessionDir, sessionDir);
+			const retained = manager.appendMessage({ role: "user", content: "Retained", timestamp: 1 });
+			const abandoned = manager.appendMessage({ role: "user", content: "Abandoned", timestamp: 2 });
+			createSession(manager);
+			const reached = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const getApiKey = modelRegistry.getApiKey.bind(modelRegistry);
+			vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async (...args) => {
+				reached.resolve();
+				await release.promise;
+				return getApiKey(...args);
+			});
+			const pending = session.promptCustomMessage({
+				customType: "late-prompt",
+				content: "Admitted on the abandoned branch",
+				display: true,
+				attribution: "user",
+			});
+			try {
+				await reached.promise;
+				if (transition === "fork") {
+					expect(await session.fork()).toBe(true);
+				} else {
+					const target = transition === "navigateTree" ? retained : abandoned;
+					expect((await session[transition](target)).cancelled).toBe(false);
+					expect(manager.getLeafId()).not.toBe(abandoned);
+				}
+			} finally {
+				release.resolve();
+			}
+			await pending;
+			expect(
+				manager.getEntries().some(entry => entry.type === "custom_message" && entry.customType === "late-prompt"),
+			).toBe(false);
+		},
+	);
 
 	it("keeps concurrent prompts in submission order when the second loses the pre-dispatch race", async () => {
 		createSession();

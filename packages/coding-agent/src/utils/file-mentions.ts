@@ -28,20 +28,6 @@ function sanitizeMentionPath(rawPath: string): string | null {
 	return cleaned.length > 0 ? cleaned : null;
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await Bun.file(filePath).stat();
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-async function resolveMentionPath(filePath: string, cwd: string): Promise<string | null> {
-	const absolutePath = resolveReadPath(filePath, cwd);
-	return (await pathExists(absolutePath)) ? filePath : null;
-}
-
 function buildTextOutput(textContent: string): { output: string; lineCount: number } {
 	const allLines = textContent.split("\n");
 	const totalFileLines = allLines.length;
@@ -219,13 +205,10 @@ export async function generateFileMentionMessages(
 
 	const files: FileMentionMessage["files"] = [];
 
-	for (const filePath of filePaths) {
-		const resolvedPath = await resolveMentionPath(filePath, cwd);
-		if (!resolvedPath) {
-			continue;
-		}
+	for (const resolvedPath of filePaths) {
 		const absolutePath = resolveReadPath(resolvedPath, cwd);
 		try {
+			// A missing path throws here and is skipped by the catch below: unresolved mentions are prose.
 			const stat = await Bun.file(absolutePath).stat();
 			if (stat.isDirectory()) {
 				const { output, lineCount } = await buildDirectoryListing(absolutePath);

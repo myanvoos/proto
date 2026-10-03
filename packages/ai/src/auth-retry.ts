@@ -84,8 +84,6 @@ export interface AuthRetryKeyState {
 
 	refreshedCurrent: boolean;
 
-	legacyAuthSwitchUsed: boolean;
-
 	tokenRefreshReplayUsed?: boolean;
 
 	attempts: number;
@@ -96,7 +94,6 @@ export function createAuthRetryKeyState(initialKey: string): AuthRetryKeyState {
 		attemptedKeys: new Set([initialKey]),
 		lastKey: initialKey,
 		refreshedCurrent: false,
-		legacyAuthSwitchUsed: false,
 		tokenRefreshReplayUsed: false,
 		attempts: 1,
 	};
@@ -129,7 +126,6 @@ export async function resolveNextAuthRetryKey(
 	}
 	const directRotation = isDirectCredentialRotationError(error);
 	if (!directRotation) {
-		if (state.legacyAuthSwitchUsed) return undefined;
 		if (!state.refreshedCurrent) {
 			const refreshed = await resolveRetryKey(resolver, false, error, signal, state.lastKey);
 			state.refreshedCurrent = true;
@@ -144,9 +140,7 @@ export async function resolveNextAuthRetryKey(
 	if (signal?.aborted) return undefined;
 	const rotated = await resolveRetryKey(resolver, true, error, signal, state.lastKey);
 	if (signal?.aborted || rotated === undefined) return undefined;
-	const accepted = acceptRetryKey(state, rotated, !directRotation);
-	if (accepted !== undefined && !directRotation) state.legacyAuthSwitchUsed = true;
-	return accepted;
+	return acceptRetryKey(state, rotated, !directRotation);
 }
 
 function oauthCredentialIdentity(access: OAuthAccess): string {
@@ -250,7 +244,6 @@ export async function withOAuthAccess<T>(
 	const attemptedBearers = new Set([lastAccess.accessToken]);
 	const attemptedCredentialIdentities = new Set([oauthCredentialIdentity(lastAccess)]);
 	let attemptCount = 1;
-	let legacyAuthSwitchUsed = false;
 	let refreshedCurrent = false;
 	let tokenRefreshReplayUsed = false;
 	let attemptResult = await runOAuthAttempt(lastAccess, attempt, isAuthError);
@@ -285,7 +278,6 @@ export async function withOAuthAccess<T>(
 
 		const directRotation = isDirectCredentialRotationError(lastError);
 		if (!directRotation) {
-			if (legacyAuthSwitchUsed) break;
 			if (!refreshedCurrent) {
 				refreshedCurrent = true;
 				try {
@@ -337,7 +329,6 @@ export async function withOAuthAccess<T>(
 		attemptCount += 1;
 		lastAccess = next;
 		refreshedCurrent = !directRotation;
-		if (!directRotation) legacyAuthSwitchUsed = true;
 		attemptResult = await runOAuthAttempt(next, attempt, isAuthError);
 		if (attemptResult.ok) return attemptResult.result;
 		lastError = attemptResult.error;

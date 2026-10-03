@@ -18,7 +18,7 @@ import type { AppKeybinding, KeybindingsManager } from "../config/keybindings";
 import { CustomEditor } from "./components/custom-editor";
 import { type AnimationFrame, isRowPrefix, TranscriptContainer } from "./components/transcript-container";
 import { type RecentSession, WelcomeComponent } from "./components/welcome";
-import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
+import { ensureThemeSync, getEditorTheme, theme } from "./theme/theme";
 
 export const COMPOSER_PLACEHOLDER = "ask anything · / for commands";
 
@@ -164,7 +164,7 @@ export class Composer implements TerminalFrameProvider {
 	#transferred = false;
 
 	constructor(options: ComposerOptions = {}) {
-		if (typeof theme === "undefined") initThemeSync();
+		ensureThemeSync();
 		// Double Ctrl-C can land inside an extension-load guard window, where `process.exit` is a throwing stub.
 		this.#exit = options.exit ?? exitProcess;
 		this.#now = options.now ?? Date.now;

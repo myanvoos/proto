@@ -488,7 +488,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -575,7 +575,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -743,9 +743,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"maxTokens": 1048576,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

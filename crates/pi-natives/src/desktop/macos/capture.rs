@@ -103,6 +103,8 @@ impl MacCapture {
 		})?;
 		let mut result = Vec::new();
 		let mut seen = HashSet::new();
+		let mut active = Vec::new();
+		let mut active_pid = None;
 		for window in windows {
 			if result.len() >= MAX_LISTED_WINDOWS {
 				break;
@@ -124,17 +126,34 @@ impl MacCapture {
 			if title.is_empty() && app.is_empty() {
 				continue;
 			}
+			let pid = window.pid().ok();
+			if window.is_focused().unwrap_or(false) {
+				active.push(id);
+				active_pid = active_pid.or(pid);
+			}
 			result.push(DesktopWindow {
 				id: id.to_string(),
 				title,
 				app,
-				pid: window.pid().ok(),
+				pid,
 				x,
 				y,
 				width,
 				height,
-				focused: window.is_focused().unwrap_or(false),
+				focused: false,
 			});
+		}
+		let ax_focused = active_pid
+			.and_then(|pid| libc::pid_t::try_from(pid).ok())
+			.and_then(super::ax::focused_window_id);
+		let key = match ax_focused {
+			Some(id) => active.contains(&id).then_some(id),
+			None => active.first().copied(),
+		};
+		if let Some(key) = key.map(|id| id.to_string())
+			&& let Some(window) = result.iter_mut().find(|window| window.id == key)
+		{
+			window.focused = true;
 		}
 		Ok(result)
 	}

@@ -5,6 +5,7 @@ import { initTheme } from "../modes/theme/theme";
 
 export default class Plugin extends Command {
 	static description = commandHelp.description;
+	static aliases = ["plugins"];
 	static args = commandHelp.args;
 
 	static flags = commandHelp.flags;

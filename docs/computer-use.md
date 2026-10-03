@@ -97,7 +97,7 @@ assert(buttons.length === 1, "Expected one Save button");
 await buttons[0].press();
 ```
 
-- `win.ax({ all?, maxDepth? })` returns a textual tree with `[ref=eN]` references.
+- `win.ax({ all?, maxDepth? })` returns a textual tree with `[ref=eN]` references. Default filtering preserves controls beneath unnamed containers while omitting empty wrappers.
 - `win.find({ role?, title?, value?, limit? })` returns every match.
 - `await win.ref("e5")`, `desktop.elementAt(x, y)`, and `desktop.focusedElement()` return live elements.
 - Elements expose `value`, `setValue`, `bounds`, `attributes`, `actions`, `perform`, `press`, `click`, `focus`, `parent`, and `children` operations.
@@ -128,6 +128,8 @@ await wait(
 | Linux X11 x64/arm64     | X11 capture/input and AT-SPI accessibility. Requires a readable display plus RandR/XTEST.                                                                                                                                   |
 | Linux Wayland x64/arm64 | RemoteDesktop portal or `LIBEI_SOCKET` input and AT-SPI accessibility. ScreenCast portal/PipeWire capture ships only in builds compiled with the `wayland-pipewire` Cargo feature; released binaries omit it, so `capabilities()` reports `capture: false` there. RemoteDesktop permission is requested lazily on first native input, is not persisted, and closes with the desktop session; read-only window/AX inspection does not request it. Compositor restrictions apply; background per-window native input is unavailable. |
 | Other published targets | Unsupported unless the native addon reports capabilities.                                                                                                                                                                   |
+
+On macOS, window listings mark only the active application’s key window focused (the frontmost listed window is the fallback when Accessibility cannot identify it).
 
 Inspect `desktop.capabilities()` rather than assuming capture, input, AX, or permission state. On Wayland, input reports `prompt-or-granted` before first native input without opening a RemoteDesktop session. Released builds are compiled without the `wayland-pipewire` feature, so `capabilities()` reports `capture: false`; where the feature is present, a missing portal/PipeWire feature or denied RemoteDesktop portal is reported as a capture/input/permission failure rather than falling back to X11.
 

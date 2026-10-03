@@ -39,6 +39,18 @@ unsafe extern "C" {
 	fn AXUIElementCreateApplication(pid: libc::pid_t) -> *mut AXUIElement;
 }
 
+pub(super) fn focused_window_id(pid: libc::pid_t) -> Option<u32> {
+	if !is_trusted() {
+		return None;
+	}
+	let app = create_application(pid).ok()?;
+	set_timeout(&app).ok()?;
+	let window = copy_element(&app, "AXFocusedWindow")?;
+	let get_id = (*GET_WINDOW_ID)?;
+	let mut id = 0;
+	(unsafe { get_id(&window, &mut id) } == AXError::Success).then_some(id)
+}
+
 pub(super) fn is_trusted() -> bool {
 	unsafe { AXIsProcessTrusted() }
 }

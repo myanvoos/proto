@@ -7427,7 +7427,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -7656,7 +7657,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -7739,7 +7741,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -7824,7 +7827,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v47",
@@ -7909,7 +7913,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v47",
@@ -8067,7 +8072,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -8150,7 +8156,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -10445,7 +10452,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10739,7 +10747,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10821,7 +10830,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10904,7 +10914,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10987,7 +10998,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -11070,7 +11082,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -11154,7 +11167,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -17421,7 +17435,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -19785,7 +19800,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -20010,7 +20026,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -20237,7 +20254,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -20321,7 +20339,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -23606,7 +23625,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -25109,7 +25129,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

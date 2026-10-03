@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
+import { NativeCompactionError } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "../config/settings";
@@ -124,6 +125,28 @@ describe("armed speculative compaction and post-snapshot growth", () => {
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("summary 2");
 	});
 
+	it("discards an armed summary when the pending prompt exhausts recovery headroom", async () => {
+		let invocation = 0;
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: `summary ${++invocation}`,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForArmed();
+		sessionManager.appendMessage({ role: "user", content: "post-snapshot request", timestamp: Date.now() });
+
+		await maintenance.runAutoCompaction("threshold", false, {
+			triggerContextTokens: THRESHOLD + 45_000,
+			pendingContextTokens: 45_000,
+		});
+
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("summary 2");
+	});
+
 	it("applies an armed summary when nothing landed after its snapshot", async () => {
 		let invocation = 0;
 		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
@@ -140,5 +163,22 @@ describe("armed speculative compaction and post-snapshot growth", () => {
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("summary 1");
+	});
+
+	it("stops re-sending a native speculation that failed for good until a compaction commits", async () => {
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async () => {
+			throw new NativeCompactionError(new Error("400 invalid_request_error: the response contained a tool call"));
+		});
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		// The failed run settles through promise hops only; drain microtasks instead of guessing a delay.
+		for (let i = 0; i < 10_000 && maintenance.speculationState !== "idle"; i++) await Promise.resolve();
+		expect(maintenance.speculationState).toBe("idle");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 1_000, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("idle");
+		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1_000, CONTEXT_WINDOW)).toBe(false);
+		expect(maintenance.speculationState).toBe("idle");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
 	});
 });

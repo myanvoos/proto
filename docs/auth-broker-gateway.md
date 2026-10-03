@@ -129,13 +129,14 @@ Capability-dependent responses include `Vary: PROTO-Auth-Broker-Capabilities` so
 ### CLI
 
 ```
-proto auth-gateway serve   [--bind=host:port] [--no-auth]
+proto auth-gateway serve   [--bind=host:port] [--no-auth] [--trust-proxy-headers]
 proto auth-gateway token   [--regenerate] [--json]
 proto auth-gateway status  [--json]
 proto auth-gateway check   [--strict] [--json]
 ```
 
 - `serve` requires `PROTO_AUTH_BROKER_URL` (or `auth.broker.url` in `config.yml`) — the gateway is itself a broker client. It calls `AuthBrokerClient.fetchSnapshot()`, wraps it in `RemoteAuthCredentialStore`, and constructs an `AuthStorage` that resolves access tokens through the broker. Default bind is `127.0.0.1:4000`. The gateway token is stored at `<config-dir>/auth-gateway.token` (`0600`); `--no-auth` disables the bearer check entirely (loopback-only use).
+- Logs attribute requests to the socket peer address. Behind a trusted reverse proxy, pass `--trust-proxy-headers` to use `X-Forwarded-For` / `X-Real-IP` for authenticated requests; unauthorized requests are always logged with the socket peer, and only static routes are logged verbatim. An authenticated request that also carries the gateway token in its URL (raw or percent-encoded) or in a forwarded, logged, or identity header is rejected with `400` before any credential lookup.
 - `token` / `status` manage and inspect the gateway bearer token and upstream broker readiness.
 - `check` probes broker-backed credentials through the gateway store. Without `--strict` it uses provider usage probes; `--strict` also exercises each credential against its chat-completion endpoint and can consume a small amount of quota.
 

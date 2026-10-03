@@ -818,12 +818,13 @@ export class SettingsSelectorComponent implements Component {
 			return true;
 		}
 		if (overContent && list) {
-			const id = list.hitTest(contentLine, innerCol);
+			const itemId = list.hoverTest(contentLine, innerCol);
+			const id = itemId ?? list.hitTest(contentLine, innerCol);
 			if (id !== undefined) {
 				const wasSelected = list.getSelectedItem()?.id === id;
 				list.selectItem(id);
-
-				if (wasSelected) list.handleInput("\n");
+				// Only a repeated click on a setting row activates it; sidebar clicks just navigate.
+				if (wasSelected && itemId !== undefined) list.handleInput("\n");
 			}
 		}
 		return true;

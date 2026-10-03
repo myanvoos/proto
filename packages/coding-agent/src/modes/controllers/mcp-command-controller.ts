@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
-import { getMCPConfigPath, getProjectDir, isTimeoutError, withTimeout } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, getProjectDir, isTimeoutError, untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
@@ -283,8 +283,9 @@ export class MCPCommandController {
 	constructor(private ctx: InteractiveModeContext) {}
 
 	async handle(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
+		const parts = parseCommandArgs(text.trim());
 		const subcommand = parts[1]?.toLowerCase();
+		const serverName = parts.slice(2).join(" ") || undefined;
 
 		if (!subcommand || subcommand === "help") {
 			this.#showHelp();
@@ -303,19 +304,19 @@ export class MCPCommandController {
 				await this.#handleRemove(text);
 				break;
 			case "test":
-				await this.#handleTest(parts[2]);
+				await this.#handleTest(serverName);
 				break;
 			case "reauth":
-				await this.#handleReauth(parts[2]);
+				await this.#handleReauth(serverName);
 				break;
 			case "unauth":
-				await this.#handleUnauth(parts[2]);
+				await this.#handleUnauth(serverName);
 				break;
 			case "enable":
-				await this.#handleSetEnabled(parts[2], true);
+				await this.#handleSetEnabled(serverName, true);
 				break;
 			case "disable":
-				await this.#handleSetEnabled(parts[2], false);
+				await this.#handleSetEnabled(serverName, false);
 				break;
 			case "resources":
 				await this.#handleResources();
@@ -336,7 +337,7 @@ export class MCPCommandController {
 				await this.#handleSmitheryLogout();
 				break;
 			case "reconnect":
-				await this.#handleReconnect(parts[2]);
+				await this.#handleReconnect(serverName);
 				break;
 			case "reload":
 				await this.#handleReload();
@@ -625,6 +626,7 @@ export class MCPCommandController {
 									redirectUri: finalConfig.oauth?.redirectUri,
 									prompt: finalConfig.oauth?.prompt,
 									registrationUrl: oauth.registrationUrl,
+									issuerUrl: oauth.issuerUrl,
 									serverUrl: finalConfig.url,
 									resource: oauthResource,
 									stripSameOriginResource: oauthResourceIsFallback,
@@ -701,6 +703,7 @@ export class MCPCommandController {
 			prompt?: string;
 			serverUrl?: string;
 			registrationUrl?: string;
+			issuerUrl?: string;
 			resource?: string;
 			stripSameOriginResource?: boolean;
 
@@ -719,7 +722,7 @@ export class MCPCommandController {
 			);
 		}
 
-		const resolvedClientId = clientId.trim() || parsedAuthUrl.searchParams.get("client_id") || undefined;
+		const resolvedClientId = clientId.trim() || parsedAuthUrl.searchParams.get("client_id")?.trim() || undefined;
 		const resolvedClientSecret = clientSecret.trim() || undefined;
 
 		const manualInput = this.ctx.oauthManualInput;
@@ -757,6 +760,7 @@ export class MCPCommandController {
 					authorizationUrl: authUrl,
 					tokenUrl: tokenUrl,
 					registrationUrl: opts?.registrationUrl,
+					issuerUrl: opts?.issuerUrl,
 					clientId: resolvedClientId,
 					clientSecret: resolvedClientSecret,
 					scopes: scopes || undefined,
@@ -839,7 +843,7 @@ export class MCPCommandController {
 				type: "oauth",
 				...credentials,
 				tokenUrl,
-				clientId: flow.resolvedClientId ?? resolvedClientId,
+				clientId: flow.resolvedClientId?.trim() || resolvedClientId,
 				clientSecret: flow.registeredClientSecret ?? resolvedClientSecret,
 				resource: flow.resource,
 				authorizationUrl: flow.authorizationUrl,
@@ -886,10 +890,11 @@ export class MCPCommandController {
 			resource?: string;
 			stripSameOriginResource?: boolean;
 			clientId?: string;
+			persistOAuthClientId?: boolean;
 			userClientSecret?: string;
 		},
 	): MCPServerConfig {
-		const clientId = result.clientId ?? opts.clientId ?? config.oauth?.clientId;
+		const clientId = result.clientId?.trim() || opts.clientId?.trim() || config.oauth?.clientId?.trim();
 		const resource =
 			result.resource ?? (opts.stripSameOriginResource ? undefined : opts.resource) ?? config.auth?.resource;
 		return {
@@ -904,7 +909,7 @@ export class MCPCommandController {
 			},
 			oauth: {
 				...config.oauth,
-				clientId,
+				clientId: opts.persistOAuthClientId === false ? undefined : clientId,
 			},
 		};
 	}
@@ -1368,7 +1373,7 @@ export class MCPCommandController {
 			this.ctx.ui.requestRender();
 		});
 		try {
-			const found = await this.#resolveServerForAuth(name);
+			const found = await untilAborted(abortController.signal, this.#resolveServerForAuth(name));
 
 			if (!found) {
 				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
@@ -1667,15 +1672,31 @@ export class MCPCommandController {
 				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
 
 			const runtimeAuth = currentAuth ? expandEnvVarsDeep(currentAuth) : undefined;
-			const configuredClientId = runtimeBaseConfig.oauth?.clientId ?? runtimeAuth?.clientId;
+			const configuredClientId = runtimeBaseConfig.oauth?.clientId?.trim() || undefined;
+			const configuredClientSecret = runtimeBaseConfig.oauth?.clientSecret;
 			const existingCredential = lookupMcpOAuthCredentialForServer(authStorage, currentAuth, serverUrl)?.credential;
-			const flowClientId = oauth.clientId ?? configuredClientId ?? existingCredential?.clientId ?? "";
-			const storedClientSecret =
-				existingCredential?.clientId === flowClientId ? existingCredential.clientSecret : undefined;
+			const persistedClientId = runtimeAuth?.clientId?.trim() || undefined;
+			const storedClientId = existingCredential?.clientId?.trim() || undefined;
+			const discoveredClientId = oauth.clientId?.trim() || undefined;
+			// Client ids and secrets travel as pairs; a metadata-advertised client is only a fallback when the
+			// server offers no dynamic registration.
+			const flowClientId =
+				configuredClientId ??
+				persistedClientId ??
+				storedClientId ??
+				(oauth.registrationUrl ? undefined : discoveredClientId) ??
+				"";
+			const storedClientSecret = storedClientId === flowClientId ? existingCredential?.clientSecret : undefined;
 			const flowClientSecret =
-				runtimeBaseConfig.oauth?.clientSecret ?? runtimeAuth?.clientSecret ?? storedClientSecret ?? "";
+				(configuredClientId === flowClientId ? configuredClientSecret : undefined) ??
+				(persistedClientId === flowClientId ? runtimeAuth?.clientSecret : undefined) ??
+				storedClientSecret ??
+				"";
 
-			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
+			const userClientSecret =
+				(configuredClientId === flowClientId ? found.config.oauth?.clientSecret : undefined) ??
+				(persistedClientId === flowClientId ? currentAuth?.clientSecret : undefined);
+			const hasConfiguredOnlySecret = configuredClientId === undefined && configuredClientSecret !== undefined;
 
 			if (!options.silent) {
 				this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
@@ -1691,13 +1712,14 @@ export class MCPCommandController {
 				oauth.tokenUrl,
 				flowClientId,
 				flowClientSecret,
-				oauth.scopes ?? "",
+				oauth.scopes || runtimeBaseConfig.oauth?.scope || "",
 				{
 					callbackPort: found.config.oauth?.callbackPort,
 					callbackPath: found.config.oauth?.callbackPath,
 					redirectUri: found.config.oauth?.redirectUri,
 					prompt: found.config.oauth?.prompt,
 					registrationUrl: oauth.registrationUrl,
+					issuerUrl: oauth.issuerUrl,
 					serverUrl,
 					resource: oauthResource,
 					stripSameOriginResource: oauthResourceIsFallback,
@@ -1714,6 +1736,7 @@ export class MCPCommandController {
 				? this.#persistOAuthResult(baseConfig, oauthResult, {
 						tokenUrl: oauth.tokenUrl,
 						clientId: oauth.clientId,
+						persistOAuthClientId: !hasConfiguredOnlySecret,
 						userClientSecret,
 						resource: oauthResource,
 						stripSameOriginResource: oauthResourceIsFallback,
@@ -1759,12 +1782,16 @@ export class MCPCommandController {
 		try {
 			this.#showMessage(["", theme.fg("muted", "Reloading MCP servers and runtime tools..."), ""].join("\n"));
 			await this.reloadServers();
-			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
+			const manager = this.ctx.mcpManager;
+			const connectedCount = manager?.getConnectedServers().length ?? 0;
+			const connectingCount =
+				manager?.getAllServerNames().filter(name => manager.getConnectionStatus(name) === "connecting").length ?? 0;
 			this.#showMessage(
 				[
 					"",
 					theme.fg("success", `${theme.icon.loop} MCP reload complete`),
 					`  Connected servers: ${connectedCount}`,
+					`  Connecting servers: ${connectingCount}`,
 					"",
 				].join("\n"),
 			);

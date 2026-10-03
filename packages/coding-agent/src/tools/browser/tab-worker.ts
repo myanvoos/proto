@@ -11,8 +11,11 @@ import type {
 	ElementHandle,
 	ElementScreenshotOptions,
 	HTTPResponse,
+	JSHandle,
+	KeyboardTypeOptions,
 	KeyInput,
 	Page,
+	Realm,
 	SerializedAXNode,
 	Target,
 } from "puppeteer-core";
@@ -49,8 +52,8 @@ import {
 	loadPuppeteerInWorker,
 } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
-
 import { RunOutput } from "./run-output";
+import { assertTabPressArgs } from "./tab-arguments";
 import type {
 	Observation,
 	ObservationEntry,
@@ -67,6 +70,14 @@ import type {
 declare module "puppeteer-core" {
 	interface Frame {
 		mainRealm(): Realm;
+	}
+	interface Realm {
+		/** Re-home a DOM handle into this realm (`@internal` in puppeteer, stripped from published types). */
+		adoptHandle<T extends JSHandle>(handle: T): Promise<T>;
+	}
+	interface JSHandle {
+		/** Realm that created this handle (`@internal` in puppeteer, stripped from published types). */
+		readonly realm: Realm;
 	}
 }
 
@@ -138,6 +149,7 @@ const ZERO_MATCH_FAIL_FAST_MS = 2_000;
 const ZERO_MATCH_POLL_MS = 250;
 
 const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
+const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 
 interface OpTimeouts {
 	budgetBound: number;
@@ -282,13 +294,204 @@ function asElementHandle(handle: unknown): ElementHandle | null {
 
 type ActionableHandle = ElementHandle & { fill(value: string): Promise<void> };
 
-export function toActionableHandle(handle: ElementHandle): ActionableHandle {
-	const enriched = handle as ActionableHandle;
-	enriched.fill = value => fillViaHandle(enriched, value);
+/** Runs `fn` inside the active run's fail-fast per-op deadline, like the selector-based helpers. */
+export type HandleOpGuard = <T>(label: string, fn: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+
+/** Every handle method that dispatches input, pointer/touch, drag, or navigation work and can stall a busy page. */
+const GUARDED_HANDLE_METHODS = [
+	"click",
+	"type",
+	"hover",
+	"tap",
+	"focus",
+	"press",
+	"select",
+	"uploadFile",
+	"scrollIntoView",
+	"drag",
+	"dragEnter",
+	"dragOver",
+	"drop",
+	"dragAndDrop",
+	"touchStart",
+	"touchMove",
+	"touchEnd",
+	"autofill",
+] as const satisfies readonly (keyof ElementHandle)[];
+
+type GuardedHandleMethod = (typeof GUARDED_HANDLE_METHODS)[number];
+type RawHandleMethod = (...args: unknown[]) => Promise<unknown>;
+
+interface RawHandleMethods {
+	interactive: Partial<Record<GuardedHandleMethod, RawHandleMethod>>;
+	type: ElementHandle["type"];
+	invalidatedBy?: string;
+}
+
+// Original bound methods travel with each cached handle so every run rewraps from them, never from wrappers that
+// retain an earlier run's guard.
+const RAW_HANDLE_METHODS = Symbol("browser.rawHandleMethods");
+
+type HandleWithRawMethods = ActionableHandle & { [RAW_HANDLE_METHODS]?: RawHandleMethods };
+
+// Raw puppeteer actions take no AbortSignal: a timed-out action poisons and disposes its handle before surfacing the
+// error, so a caught retry on the stale handle cannot dispatch a duplicate action.
+async function runGuardedHandleAction<T>(
+	handle: ElementHandle,
+	state: RawHandleMethods,
+	label: string,
+	signal: AbortSignal,
+	action: () => Promise<T>,
+	invalidate?: () => Promise<void>,
+): Promise<T> {
+	if (state.invalidatedBy) {
+		throw new ToolError(
+			`${label} cannot run: this handle was invalidated after ${state.invalidatedBy} timed out; ` +
+				"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
+		);
+	}
+	throwIfAborted(signal);
+	const pending = action();
+	try {
+		return await untilAborted(signal, () => pending);
+	} catch (error) {
+		if (!signal.aborted) throw error;
+		state.invalidatedBy = label;
+		void pending.catch(() => undefined);
+		await withTimeout(
+			Promise.all([handle.dispose().catch(() => undefined), invalidate?.().catch(() => undefined)]),
+			HANDLE_ACTION_INVALIDATION_TIMEOUT_MS,
+			`Timed out invalidating ${label}`,
+		).catch(() => undefined);
+		throw error;
+	}
+}
+
+/**
+ * Attach `fill()` to a handle and, with a `guard`, route every interactive method through the per-op fail-fast
+ * wrapper so `(await tab.id(n)).click()` fails with `handle.click() timed out after …ms` instead of stalling the
+ * whole cell.
+ */
+export function toActionableHandle(
+	handle: ElementHandle,
+	guard?: HandleOpGuard,
+	invalidate?: () => Promise<void>,
+): ActionableHandle {
+	const enriched = handle as HandleWithRawMethods;
+	const methods = enriched as unknown as Partial<Record<GuardedHandleMethod, RawHandleMethod>>;
+	const preserved = enriched[RAW_HANDLE_METHODS];
+	if (!guard) {
+		if (preserved) {
+			for (const method of GUARDED_HANDLE_METHODS) {
+				const original = preserved.interactive[method];
+				if (original) methods[method] = original;
+			}
+		}
+		enriched.fill = value => fillViaHandle(enriched, value, undefined, preserved?.type);
+		return enriched;
+	}
+
+	let originals = preserved;
+	if (!originals) {
+		const interactive: Partial<Record<GuardedHandleMethod, RawHandleMethod>> = {};
+		for (const method of GUARDED_HANDLE_METHODS) {
+			const original = methods[method];
+			if (typeof original === "function") interactive[method] = original.bind(enriched);
+		}
+		originals = { interactive, type: enriched.type.bind(enriched) };
+		enriched[RAW_HANDLE_METHODS] = originals;
+	}
+	const state = originals;
+
+	for (const method of GUARDED_HANDLE_METHODS) {
+		if (method === "type") continue;
+		const original = state.interactive[method];
+		if (!original) continue;
+		const label = `handle.${method}()`;
+		methods[method] = (...args) =>
+			guard(label, signal =>
+				runGuardedHandleAction(enriched, state, label, signal, () => original(...args), invalidate),
+			);
+	}
+	enriched.type = (text, options) =>
+		guard<void>("handle.type()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				state,
+				"handle.type()",
+				signal,
+				() => typeViaHandle(enriched, text, options, signal),
+				invalidate,
+			),
+		);
+	enriched.fill = value =>
+		guard<void>("handle.fill()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				state,
+				"handle.fill()",
+				signal,
+				() => fillViaHandle(enriched, value, signal, text => typeViaHandle(enriched, text, { delay: 0 }, signal)),
+				invalidate,
+			),
+		);
 	return enriched;
 }
 
-async function fillViaHandle(handle: ElementHandle, value: string, signal?: AbortSignal): Promise<void> {
+/**
+ * Re-home element handles in `args` into `realm`: selectors resolve in puppeteer's isolated world while
+ * `tab.evaluate` runs in the main world, and CDP rejects a handle used outside its creating context. Only DOM element
+ * handles can cross worlds; others pass through. `dispose()` releases the adopted copies, never the originals.
+ */
+async function adoptElementArgs(
+	realm: Realm,
+	args: unknown[],
+): Promise<{ args: unknown[]; dispose: () => Promise<void> }> {
+	const adopted: JSHandle[] = [];
+	const dispose = async (): Promise<void> => {
+		await Promise.all(adopted.map(handle => handle.dispose().catch(() => undefined)));
+	};
+	const out = args.slice();
+	try {
+		for (let i = 0; i < args.length; i++) {
+			const arg = args[i];
+			const element = arg instanceof Object && "asElement" in arg ? (arg as JSHandle).asElement() : null;
+			if (!element || element.realm === realm) continue;
+			const copy = await realm.adoptHandle(element);
+			adopted.push(copy);
+			out[i] = copy;
+		}
+	} catch (error) {
+		await dispose();
+		throw error;
+	}
+	return { args: out, dispose };
+}
+
+/** Focus once, then type one code point at a time so an abort stops before the next key dispatch. */
+async function typeViaHandle(
+	handle: ElementHandle,
+	text: string,
+	options: Readonly<KeyboardTypeOptions> | undefined,
+	signal: AbortSignal,
+): Promise<void> {
+	await untilAborted(signal, () =>
+		handle.evaluate(el => {
+			(el as unknown as { focus?: () => void }).focus?.();
+		}),
+	);
+	for (const character of text) {
+		throwIfAborted(signal);
+		await untilAborted(signal, () => handle.frame.page().keyboard.type(character, options));
+	}
+}
+
+async function fillViaHandle(
+	handle: ElementHandle,
+	value: string,
+	signal?: AbortSignal,
+	type: (text: string) => Promise<unknown> = text => handle.type(text, { delay: 0 }),
+): Promise<void> {
 	await untilAborted(signal, () =>
 		handle.evaluate(el => {
 			const node = el as unknown as {
@@ -305,7 +508,7 @@ async function fillViaHandle(handle: ElementHandle, value: string, signal?: Abor
 			else if (node.isContentEditable) node.textContent = "";
 		}),
 	);
-	await untilAborted(signal, () => handle.type(value, { delay: 0 }));
+	await untilAborted(signal, () => type(value));
 }
 
 function fileUrlNavigationError(url: string, error: unknown): ToolError {
@@ -463,9 +666,14 @@ function replyError(payload: RunErrorPayload): Error {
 	return err;
 }
 
-async function targetIdForTarget(target: Target): Promise<string> {
+function privateTargetId(target: Target): string | undefined {
 	const raw = target as unknown as { _targetId?: unknown };
-	if (typeof raw._targetId === "string") return raw._targetId;
+	return typeof raw._targetId === "string" ? raw._targetId : undefined;
+}
+
+async function targetIdForTarget(target: Target): Promise<string> {
+	const fastTargetId = privateTargetId(target);
+	if (fastTargetId) return fastTargetId;
 	const session = await target.createCDPSession();
 	try {
 		const info = (await session.send("Target.getTargetInfo")) as { targetInfo?: { targetId?: string } };
@@ -478,6 +686,27 @@ async function targetIdForTarget(target: Target): Promise<string> {
 
 async function targetIdForPage(page: Page): Promise<string> {
 	return await targetIdForTarget(page.target());
+}
+
+// Creates the target directly so its id is reportable before Puppeteer's page initialization, which can wedge.
+async function createTrackedHeadlessPage(browser: Browser, reportTarget: (targetId: string) => void): Promise<Page> {
+	const session = await browser.target().createCDPSession();
+	let targetId: string;
+	try {
+		({ targetId } = await session.send("Target.createTarget", { url: "about:blank" }));
+		reportTarget(targetId);
+	} finally {
+		await session.detach().catch(() => undefined);
+	}
+	const existing = browser.targets().find(target => privateTargetId(target) === targetId);
+	const target =
+		existing ??
+		(await browser.waitForTarget(candidate => privateTargetId(candidate) === targetId, {
+			timeout: BROWSER_PROTOCOL_TIMEOUT_MS,
+		}));
+	const page = await target.page();
+	if (!page) throw new ToolError(`Created headless target ${targetId} did not expose a page`);
+	return page;
 }
 
 export async function collectObservationEntries(
@@ -993,23 +1222,15 @@ export class WorkerCore {
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
+			this.#transport.send({ type: "setup" });
 			if (payload.mode === "headless") {
-				this.#page = await this.#browser.newPage();
+				this.#page = await createTrackedHeadlessPage(this.#browser, targetId => {
+					this.#transport.send({ type: "page-created", targetId });
+				});
 				this.#observeDialogs();
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
-				await applyViewport(this.#page, payload.viewport);
+				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
-				if (payload.url) {
-					try {
-						await this.#page.goto(payload.url, {
-							waitUntil: payload.waitUntil ?? "load",
-							timeout: payload.timeoutMs,
-						});
-					} catch (error) {
-						if (payload.url.startsWith("file:")) throw fileUrlNavigationError(payload.url, error);
-						throw error;
-					}
-				}
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
 
@@ -1020,21 +1241,31 @@ export class WorkerCore {
 				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
-				if (payload.url) {
-					try {
-						await this.#page.goto(payload.url, {
-							waitUntil: payload.waitUntil ?? "load",
-							timeout: payload.timeoutMs,
-						});
-					} catch (error) {
-						if (payload.url.startsWith("file:")) throw fileUrlNavigationError(payload.url, error);
-						throw error;
-					}
+			}
+			if (payload.mode === "headless" || payload.emulateFocus) {
+				// Background tabs stop producing frames, stalling rAF, IntersectionObserver, and input acks; keep owned tabs
+				// interactive without raising a window.
+				await this.#page.emulateFocusedPage(true);
+			}
+			if (payload.url) {
+				try {
+					await this.#page.goto(payload.url, {
+						waitUntil: payload.waitUntil ?? "load",
+						timeout: payload.timeoutMs,
+					});
+				} catch (error) {
+					if (payload.url.startsWith("file:")) throw fileUrlNavigationError(payload.url, error);
+					throw error;
 				}
 			}
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
+			// A failed headless init would orphan its page in the shared browser; attach mode adopts an existing target.
+			const page = this.#page;
+			if (payload.mode === "headless" && page && !page.isClosed()) {
+				await page.close().catch(() => undefined);
+			}
 			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 		}
 	}
@@ -1427,6 +1658,15 @@ export class WorkerCore {
 			fn: (sig: AbortSignal) => Promise<T>,
 			selectorOpts?: { selector?: string; zeroMatchAfterMs?: number },
 		): Promise<T> => markHandled(this.#runOp(active, label, signal, perOpMs, fn, selectorOpts));
+		const enrich = (handle: ElementHandle): ActionableHandle =>
+			toActionableHandle(
+				handle,
+				(label, fn) => op(label, actionOpMs, fn),
+				async () => {
+					this.#clearElementCache();
+					await this.#stopLoading();
+				},
+			);
 		return {
 			name,
 			page,
@@ -1554,6 +1794,7 @@ export class WorkerCore {
 					`tab.press(${JSON.stringify(key)})`,
 					w,
 					async sig => {
+						assertTabPressArgs(key, opts);
 						const selector = opts?.selector;
 						if (selector) {
 							if (parseAriaRefSelector(selector) !== null) {
@@ -1587,7 +1828,7 @@ export class WorkerCore {
 				return op(
 					`tab.waitFor(${JSON.stringify(selector)})`,
 					w,
-					async sig => toActionableHandle(await this.#resolveActionHandle(selector, w, sig)),
+					async sig => enrich(await this.#resolveActionHandle(selector, w, sig)),
 					{ selector, zeroMatchAfterMs: opts?.timeout === undefined ? ZERO_MATCH_FAIL_FAST_MS : undefined },
 				);
 			},
@@ -1597,8 +1838,7 @@ export class WorkerCore {
 					`tab.waitForSelector(${JSON.stringify(selector)})`,
 					w,
 					async sig => {
-						if (parseAriaRefSelector(selector) !== null)
-							return toActionableHandle(await this.#resolveAriaRef(selector));
+						if (parseAriaRefSelector(selector) !== null) return enrich(await this.#resolveAriaRef(selector));
 						const handle = (await untilAborted(sig, () =>
 							page.waitForSelector(normalizeSelector(selector), {
 								timeout: w,
@@ -1607,7 +1847,7 @@ export class WorkerCore {
 								signal: sig,
 							}),
 						)) as ElementHandle | null;
-						return handle ? toActionableHandle(handle) : null;
+						return handle ? enrich(handle) : null;
 					},
 					{
 						selector,
@@ -1626,14 +1866,17 @@ export class WorkerCore {
 			},
 			evaluate: (fn, ...args) =>
 				op("tab.evaluate()", INF, sig =>
-					untilAborted(sig, () =>
-						typeof fn === "string"
-							? page.mainFrame().mainRealm().evaluate(fn)
-							: page
-									.mainFrame()
-									.mainRealm()
-									.evaluate(fn as (...a: unknown[]) => unknown, ...args),
-					),
+					untilAborted(sig, async () => {
+						const realm = page.mainFrame().mainRealm();
+						if (typeof fn === "string") return realm.evaluate(fn);
+						const { args: adopted, dispose } = await adoptElementArgs(realm, args);
+						try {
+							throwIfAborted(sig);
+							return await realm.evaluate(fn as (...a: unknown[]) => unknown, ...adopted);
+						} finally {
+							await dispose();
+						}
+					}),
 				) as never,
 			scrollIntoView: selector =>
 				op(
@@ -1686,8 +1929,8 @@ export class WorkerCore {
 				const w = waitMs(opts?.timeout);
 				return op("tab.waitForResponse()", w, sig => this.#waitForResponse(pattern, w, sig));
 			},
-			id: async id => toActionableHandle(await this.#resolveCachedHandle(id)),
-			ref: async id => toActionableHandle(await this.#resolveAriaRef(id)),
+			id: async id => enrich(await this.#resolveCachedHandle(id)),
+			ref: async id => enrich(await this.#resolveAriaRef(id)),
 		};
 	}
 

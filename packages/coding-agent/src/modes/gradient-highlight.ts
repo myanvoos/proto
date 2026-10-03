@@ -1,4 +1,5 @@
 import { maskNonProse } from "./markdown-prose";
+import { detectColorMode } from "./theme/color";
 import { theme } from "./theme/theme";
 
 export type KeywordHighlighter = (text: string, resetTo?: string, phase?: number) => string;
@@ -26,7 +27,8 @@ export function createGradientHighlighter(spec: GradientHighlightSpec): KeywordH
 	let cachedPalette: readonly string[] | undefined;
 
 	const palette = (): readonly string[] => {
-		const mode = theme.getColorMode();
+		// `theme` is unassigned on renders before initTheme and in cross-module-instance plugin calls.
+		const mode = typeof theme === "undefined" ? detectColorMode() : theme.getColorMode();
 		if (cachedPalette && cachedMode === mode) return cachedPalette;
 		const format = mode === "truecolor" ? "ansi-16m" : "ansi-256";
 		const next: string[] = [];

@@ -14,7 +14,11 @@ import { Settings } from "../../../config/settings";
 import { setMcpServerEnabled } from "../../../mcp/config-writer";
 import { getTabBarTheme } from "../../../modes/shared";
 import { theme } from "../../../modes/theme/theme";
-import { matchesAppInterrupt } from "../../../modes/utils/keybinding-matchers";
+import {
+	matchesAppInterrupt,
+	matchesSelectPageDown,
+	matchesSelectPageUp,
+} from "../../../modes/utils/keybinding-matchers";
 import { bottomBorder, divider, getDialogViewport, getTabStripRows, row, topBorder } from "../overlay-box";
 import { ExtensionList } from "./extension-list";
 import { InspectorPanel } from "./inspector-panel";
@@ -23,12 +27,13 @@ import {
 	applyFilter,
 	createInitialState,
 	filterByProvider,
+	isShadowedExtension,
 	refreshState,
 	toggleProvider,
 } from "./state-manager";
 import type { DashboardState, ProviderTab } from "./types";
 
-const EXT_FOOTER = " ↑/↓: navigate · Space: toggle · ←/→: provider · Esc: close";
+const EXT_FOOTER = " ↑/↓: navigate · Space: toggle · ←/→: provider · PgUp/PgDn: inspector · Esc: close";
 
 export function buildTabBarTabs(tabs: ProviderTab[]): Tab[] {
 	return tabs.map(tab => {
@@ -289,7 +294,7 @@ export class ExtensionDashboard implements Component {
 	}
 
 	#writableMcpSourcePath(extensionId: string): string | undefined {
-		const extension = this.#state.extensions.find(ext => ext.id === extensionId);
+		const extension = this.#state.extensions.find(ext => ext.id === extensionId && !isShadowedExtension(ext));
 		if (!extension) return undefined;
 		if (extension.source.provider !== "native" && extension.source.provider !== "mcp-json") return undefined;
 		return extension.path;
@@ -357,6 +362,12 @@ export class ExtensionDashboard implements Component {
 			return;
 		}
 
+		const page = matchesSelectPageUp(data) ? -1 : matchesSelectPageDown(data) ? 1 : 0;
+		if (page !== 0 && this.#body.pageInspector(page)) {
+			this.onRequestRender?.();
+			return;
+		}
+
 		if (this.#tabBar.handleInput(data)) {
 			return;
 		}
@@ -403,9 +414,19 @@ class TwoColumnBody implements Component {
 		this.#rightScroll = Math.max(0, Math.min(this.#rightScroll + delta, max));
 	}
 
+	/** Pages an overflowing inspector; false when it fits or is hidden, so the key falls through. */
+	pageInspector(delta: -1 | 1): boolean {
+		if (this.#rightTotal <= this.#maxHeight) return false;
+		const before = this.#rightScroll;
+		const max = this.#rightTotal - this.#maxHeight;
+		this.#rightScroll = Math.max(0, Math.min(this.#rightScroll + delta * Math.max(1, this.#maxHeight - 1), max));
+		return this.#rightScroll !== before;
+	}
+
 	render(width: number): readonly string[] {
 		if (width < 60 || this.#maxHeight < 3) {
 			this.#leftWidth = width;
+			this.#rightTotal = 0;
 			return this.leftPane.render(width);
 		}
 		const leftWidth = Math.floor(width * 0.5);

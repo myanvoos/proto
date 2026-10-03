@@ -1,12 +1,17 @@
 import { describe, expect, it } from "bun:test";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
+import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { initThemeSync } from "../theme/theme";
+import { AssistantMessageComponent } from "./assistant-message";
+import { SkillMessageComponent } from "./skill-message";
 import {
 	RETAINED_COMMITTED_BLOCKS,
 	RETAINED_COMMITTED_BYTES,
 	TranscriptContainer,
 	type TranscriptStableRow,
 } from "./transcript-container";
+import { createUsageRowBlock } from "./usage-row";
 import { UserMessageComponent } from "./user-message";
 
 class Block implements Component {
@@ -115,6 +120,27 @@ class ReflowingAppendBlock implements Component {
 	}
 }
 const frame = { tick: 0, now: 0 };
+
+const finalAnswer: AssistantMessage = {
+	role: "assistant",
+	content: [
+		{ type: "thinking", thinking: "Reasoning first" },
+		{ type: "text", text: "## Implemented" },
+	],
+	api: "openai-codex-responses",
+	provider: "openai-codex",
+	model: "gpt-5.6-sol",
+	stopReason: "stop",
+	usage: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	},
+	timestamp: 1,
+};
 
 describe("TranscriptContainer", () => {
 	it("preserves retirement while externally reordered and replaced live children settle", () => {
@@ -473,6 +499,48 @@ describe("TranscriptContainer", () => {
 		expect(tool.allocations.at(-1)).toBe(1);
 	});
 
+	it("keeps a completed assistant answer's prose visible behind an active prefix", () => {
+		initThemeSync();
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["stale active"], false));
+		transcript.addChild(new AssistantMessageComponent(finalAnswer));
+		transcript.addChild(new Block(["continued turn"], false));
+		transcript.addChild(new Block(["task running"], false));
+
+		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		const rows = transcript.renderViewport(80, 3, frame);
+		expect(rows[0]).toBe("2 more transcript blocks active");
+		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
+		expect(rows[2]).toBe("task running");
+	});
+
+	it("keeps an optimistic skill row removable until it is reconciled", () => {
+		initThemeSync();
+		const optimistic = new SkillMessageComponent({
+			role: "custom",
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: "run the skill",
+			display: true,
+			details: {
+				name: "test-skill",
+				path: "/skills/test-skill/SKILL.md",
+				lineCount: 12,
+			} satisfies SkillPromptDetails,
+			timestamp: 1,
+		});
+		const transcript = new TranscriptContainer();
+		optimistic.markTranscriptBlockPending();
+		transcript.addChild(optimistic);
+
+		expect(transcript.peekFlushBatch(80)).toBeUndefined();
+		expect(transcript.canRemoveBlock(optimistic)).toBe(true);
+
+		optimistic.markTranscriptBlockFinalized();
+		const batch = transcript.peekFlushBatch(80)!;
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.canRemoveBlock(optimistic)).toBe(false);
+	});
+
 	it("permits removing settled blocks until they are offered or committed", () => {
 		const transcript = new TranscriptContainer();
 		const settled = new Block(["settled snapshot"], true);
@@ -717,5 +785,27 @@ describe("TranscriptContainer viewport pressure", () => {
 			.map(row => Bun.stripANSI(row));
 		expect(viewport.filter(row => row.includes("PROMPT_")).length).toBe(2);
 		expect(viewport.some(row => row.trim().length === 0)).toBe(true);
+	});
+});
+
+describe("TranscriptContainer.canDisplaceBlock", () => {
+	it("keeps a superseded poll that sits directly above its turn's usage row", () => {
+		initThemeSync();
+		const container = new TranscriptContainer();
+		const poll = new Block(["waiting on jobs"], false);
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		container.addChild(poll);
+		expect(container.canDisplaceBlock(poll)).toBe(true);
+
+		container.addChild(createUsageRowBlock(usage));
+		expect(container.canDisplaceBlock(poll)).toBe(false);
+		expect(container.canRemoveBlock(poll)).toBe(true);
 	});
 });

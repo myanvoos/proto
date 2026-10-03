@@ -211,6 +211,8 @@ interface OpenAIImageGenerationCall {
 	result?: string;
 	revised_prompt?: string;
 	status?: string;
+	size?: string;
+	quality?: string;
 }
 
 interface OpenAIOutputText {
@@ -229,6 +231,8 @@ type OpenAIResponseOutput = OpenAIImageGenerationCall | OpenAIOutputMessage;
 
 interface OpenAIHostedImageResponse {
 	output?: OpenAIResponseOutput[];
+	/** Resolved tool config echoed by the backend, including the image model that actually ran. */
+	tools?: Array<{ type?: string; model?: string }>;
 	usage?: OpenAIResponsesUsage;
 	error?: { code?: string; message?: string };
 }
@@ -243,6 +247,8 @@ interface OpenAISseEvent {
 }
 
 interface OpenAIHostedImageResult {
+	/** Image model the backend reports having run; the ChatGPT/Codex backend substitutes its own for the catalog entry. */
+	model?: string;
 	images: InlineImageData[];
 	responseText?: string;
 	revisedPrompt?: string;
@@ -345,6 +351,9 @@ interface ImageInput {
 interface InlineImageData {
 	data: string;
 	mimeType: string;
+	/** Output dimensions (`WIDTHxHEIGHT`) the provider reports, which may differ from the request. */
+	size?: string;
+	quality?: string;
 }
 
 function normalizeDataUrl(data: string): { data: string; mimeType?: string } {
@@ -386,7 +395,8 @@ async function loadImageFromUrl(
 	if (!contentType?.startsWith("image/")) {
 		throw new Error(`Unsupported image type from URL: ${imageUrl}`);
 	}
-	const buffer = await response.bytes();
+	// `Response.bytes()` is absent from older undici types; `arrayBuffer` works across supported runtimes.
+	const buffer = new Uint8Array(await response.arrayBuffer());
 	return { data: buffer.toBase64(), mimeType: contentType };
 }
 
@@ -512,7 +522,10 @@ async function resolveAntigravityImageTarget(
 	});
 	const target: AntigravityImageTarget = {
 		model: advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL,
-		endpoints: advertised ? [advertised.endpoint] : endpoints,
+		// The discovered endpoint goes first; the other configured fallbacks stay for 429/5xx/network failover.
+		endpoints: advertised
+			? [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)]
+			: endpoints,
 	};
 	cache.set(bearer, target);
 	return target;
@@ -732,10 +745,13 @@ function buildResponseSummary(
 	model: string,
 	imagePaths: string[],
 	responseText: string | undefined,
+	images: readonly InlineImageData[] = [],
 ): string {
 	const lines = [`Provider: ${provider}`, `Model: ${model}`, `Generated ${imagePaths.length} image(s):`];
-	for (const p of imagePaths) {
-		lines.push(`  ${p}`);
+	for (const [index, imagePath] of imagePaths.entries()) {
+		const { size, quality } = images[index] ?? {};
+		const meta = [size, quality && `quality ${quality}`].filter(Boolean).join(", ");
+		lines.push(meta ? `  ${imagePath} (${meta})` : `  ${imagePath}`);
 	}
 	if (responseText) {
 		lines.push("", responseText.trim());
@@ -838,7 +854,11 @@ function collectOpenAIHostedImageResult(response: OpenAIHostedImageResponse): Op
 	for (const output of response.output ?? []) {
 		if (output.type === "image_generation_call") {
 			if (output.result) {
-				images.push(createOpenAIInlineImage(output.result));
+				images.push({
+					...createOpenAIInlineImage(output.result),
+					...(output.size ? { size: output.size } : {}),
+					...(output.quality ? { quality: output.quality } : {}),
+				});
 			}
 			if (output.revised_prompt) {
 				revisedPrompt = output.revised_prompt;
@@ -857,6 +877,7 @@ function collectOpenAIHostedImageResult(response: OpenAIHostedImageResponse): Op
 
 	const responseText = textParts.join("\n").trim();
 	return {
+		model: response.tools?.find(tool => tool.type === "image_generation")?.model,
 		images,
 		revisedPrompt,
 		responseText: responseText.length > 0 ? responseText : undefined,
@@ -943,9 +964,7 @@ async function parseOpenAIHostedImageSse(response: Response, signal?: AbortSigna
 	}
 
 	return collectOpenAIHostedImageResult(
-		completedResponse?.output?.length
-			? completedResponse
-			: { output: fallbackOutput, usage: completedResponse?.usage },
+		completedResponse?.output?.length ? completedResponse : { ...completedResponse, output: fallbackOutput },
 	);
 }
 
@@ -1169,6 +1188,8 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								),
 							{ signal: requestSignal },
 						);
+						const ranModel = parsed.model ?? model;
+						const modelLabel = ranModel === model ? ranModel : `${ranModel} (catalog entry ${provider}/${model})`;
 
 						if (parsed.images.length === 0) {
 							const messageText = parsed.responseText ? `\n\n${parsed.responseText}` : "";
@@ -1176,7 +1197,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								content: [{ type: "text", text: `No image data returned.${messageText}` }],
 								details: {
 									provider,
-									model,
+									model: ranModel,
 									imageCount: 0,
 									imagePaths: [],
 									images: [],
@@ -1191,11 +1212,20 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 						return {
 							content: [
-								{ type: "text", text: buildResponseSummary(provider, model, imagePaths, parsed.responseText) },
+								{
+									type: "text",
+									text: buildResponseSummary(
+										provider,
+										modelLabel,
+										imagePaths,
+										parsed.responseText,
+										parsed.images,
+									),
+								},
 							],
 							details: {
 								provider,
-								model,
+								model: ranModel,
 								imageCount: parsed.images.length,
 								imagePaths,
 								images: parsed.images,

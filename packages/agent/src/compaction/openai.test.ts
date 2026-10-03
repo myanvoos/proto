@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
-import { buildOpenAiNativeHistory, shouldUseOpenAiRemoteCompaction } from "./openai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { Tokenizer } from "../tokenizer";
+import {
+	assertRemoteCompactionInputFits,
+	buildOpenAiNativeHistory,
+	shouldUseOpenAiRemoteCompaction,
+	trimRemoteCompactionInputToContextWindow,
+} from "./openai";
 
 const USAGE = {
 	input: 0,
@@ -133,5 +140,51 @@ describe("OpenAI V1 compact endpoint selection", () => {
 				remoteCompaction: { endpoint: "https://compact.example/v1/responses/compact" },
 			}),
 		).toBe(true);
+	});
+});
+
+describe("remote compaction fit check", () => {
+	test("refuses an input that cannot fit the window before dispatch", () => {
+		const input: Array<Record<string, unknown>> = [
+			{
+				type: "message",
+				role: "user",
+				content: [{ type: "input_text", text: "re-expanded history ".repeat(4_000) }],
+			},
+		];
+		const trimmed = trimRemoteCompactionInputToContextWindow(input, new Tokenizer(), 2_000, "compact");
+
+		expect(trimmed.fits).toBe(false);
+		const model = { provider: "openai", id: "gpt-5", contextWindow: 2_000 } as Model;
+		let error: unknown;
+		try {
+			assertRemoteCompactionInputFits(trimmed, model);
+		} catch (cause) {
+			error = cause;
+		}
+		expect(AIError.is(AIError.classify(error), AIError.Flag.ContextOverflow)).toBe(true);
+	});
+
+	test("excludes opaque encrypted reasoning and compaction state from the estimate", () => {
+		const encrypted = Buffer.from(Array.from({ length: 3_000 }, (_, index) => (index * 131 + 7) % 256)).toString(
+			"base64",
+		);
+		const input: Array<Record<string, unknown>> = [{ type: "compaction", encrypted_content: encrypted }];
+		for (let turn = 0; turn < 20; turn++) {
+			input.push({
+				type: "reasoning",
+				id: `rs_${turn}`,
+				summary: [{ type: "summary_text", text: "Inspecting the module." }],
+				encrypted_content: encrypted,
+			});
+			input.push({ type: "function_call", call_id: `call_${turn}`, name: "read", arguments: "{}" });
+			input.push({ type: "function_call_output", call_id: `call_${turn}`, output: `result ${turn}` });
+		}
+
+		const result = trimRemoteCompactionInputToContextWindow(input, new Tokenizer(), 5_000, "compact");
+
+		expect(result.fits).toBe(true);
+		expect(result.rewrittenOutputs).toBe(0);
+		expect(result.input).toEqual(input);
 	});
 });

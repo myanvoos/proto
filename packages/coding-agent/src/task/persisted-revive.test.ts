@@ -4,7 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../config/settings";
 import type { AgentRef } from "../registry/agent-registry";
+import * as sdkModule from "../sdk";
 import type { AgentSession } from "../session/agent-session";
+import { getRetryFallbackRole, type RetryFallbackRole } from "../session/retry-fallback-chains";
 import { SessionManager } from "../session/session-manager";
 import { FileSessionStorage } from "../session/session-storage";
 import { createPersistedSubagentReviverFactory } from "./persisted-revive";
@@ -24,11 +26,16 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
-async function createPersistedSession(cwd: string): Promise<string> {
+async function createPersistedSession(cwd: string, retryFallback?: RetryFallbackRole): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
-	manager.appendSessionInit({ systemPrompt: "persisted prompt", task: "persisted task", tools: ["read", "yield"] });
+	manager.appendSessionInit({
+		systemPrompt: "persisted prompt",
+		task: "persisted task",
+		tools: ["read", "yield"],
+		retryFallback,
+	});
 	manager.appendMessage({
 		role: "assistant",
 		provider: "anthropic",
@@ -114,6 +121,25 @@ describe("SessionManager.open with throwIfMissing", () => {
 			/holds no entries/,
 		);
 		expect(await Bun.file(empty).text()).toBe("");
+	});
+});
+
+describe("persisted subagent revival", () => {
+	it("reinstalls the subagent fallback chain the spawn persisted", async () => {
+		const cwd = await makeTempDir();
+		const retryFallback = { primary: "anthropic/claude-sonnet-4-5:low", chain: ["openai/gpt-4o-mini"] };
+		const sessionFile = await createPersistedSession(cwd, retryFallback);
+		const ref = createRef(sessionFile);
+		const reviver = await createReviver(cwd, ref);
+		let revivedSettings: Settings | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			revivedSettings = options?.settings;
+			throw new Error("stop after settings capture");
+		});
+
+		await expect(reviver(ref)).rejects.toThrow("stop after settings capture");
+		if (!revivedSettings) throw new Error("Expected revived child settings");
+		expect(getRetryFallbackRole(revivedSettings, `subagent:${ref.id}`)).toEqual(retryFallback);
 	});
 });
 

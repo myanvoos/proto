@@ -98,16 +98,31 @@ export function resolveReleaseBinaryAsset(
 	};
 }
 
-function githubApiToken(): string | undefined {
-	return $env.GITHUB_TOKEN || $env.GH_TOKEN;
+async function readGitHubCliToken(ghPath: string): Promise<string | undefined> {
+	try {
+		const result = await $`${ghPath} auth token --hostname github.com`.quiet().nothrow();
+		if (result.exitCode !== 0) return undefined;
+		return result.text().trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** `GITHUB_TOKEN`/`GH_TOKEN`, else the token of a logged-in `gh` CLI, so release lookups avoid anonymous rate limits. */
+async function resolveGitHubToken(): Promise<string | undefined> {
+	const envToken = $env.GITHUB_TOKEN || $env.GH_TOKEN;
+	if (envToken) return envToken;
+	const ghPath = $which("gh");
+	return ghPath ? await readGitHubCliToken(ghPath) : undefined;
 }
 
 async function fetchReleaseJson(
 	apiPath: string,
 	timeoutMs: number,
 	fetchImpl: Fetch = fetch,
-	githubToken: string | undefined = githubApiToken(),
+	explicitGithubToken?: string,
 ): Promise<unknown> {
+	const githubToken = explicitGithubToken ?? (await resolveGitHubToken());
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -131,7 +146,7 @@ async function fetchReleaseJson(
 	}
 	if ((response.status === 403 && !githubToken) || response.status === 429) {
 		throw new Error(
-			"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
+			"GitHub API rate limit exceeded while fetching release metadata; retry later, set GITHUB_TOKEN or GH_TOKEN, or log in with `gh auth login`",
 		);
 	}
 	if (!response.ok) {
@@ -145,7 +160,7 @@ async function getReleaseBinaryAsset(
 	expectedVersion: string,
 	binaryName: string,
 	fetchImpl: Fetch = fetch,
-	githubToken: string | undefined = githubApiToken(),
+	githubToken?: string,
 ): Promise<ReleaseBinaryAsset> {
 	const tag = `v${expectedVersion}`;
 	const release = await fetchReleaseJson(
@@ -388,7 +403,7 @@ type UpdateTarget =
 	| { method: "brew" }
 	| { method: "mise" }
 	| { method: "nix" }
-	| { method: "binary"; path: string; replacesSymlink: boolean };
+	| { method: "binary"; path: string; replacesSymlink: boolean; validateExistingTarget: boolean };
 
 function resolveUpdateMethod(
 	ompPath: string,
@@ -476,7 +491,12 @@ export function resolveUpdateTargetFromPath(
 			ompLinkTarget,
 		}) !== "binary";
 	const binaryPath = ompIsSymlink && !managerLauncher ? (ompRealpath ?? ompPath) : ompPath;
-	return { method: "binary", path: binaryPath, replacesSymlink: ompIsSymlink && binaryPath === ompPath };
+	return {
+		method: "binary",
+		path: binaryPath,
+		replacesSymlink: ompIsSymlink && binaryPath === ompPath,
+		validateExistingTarget: ompIsSymlink && !managerLauncher,
+	};
 }
 
 async function resolveUpdateTarget(): Promise<UpdateTarget> {
@@ -584,28 +604,56 @@ function resolveOmpPath(): string | undefined {
 	return $which(BINARY_NAME) ?? undefined;
 }
 
-async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): Promise<InstalledVersionVerification> {
+/** Version from `proto --version` output (`proto/X.Y.Z`); undefined for any other executable's output. */
+export function parseReportedVersion(output: string): string | undefined {
+	if (!output.startsWith(`${BINARY_NAME}/`)) return undefined;
+	return /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(output.slice(BINARY_NAME.length + 1))?.[1];
+}
+
+async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {
 	try {
 		const result = await $`${binaryPath} --version`.quiet().nothrow();
-		if (result.exitCode !== 0) return { ok: false, path: binaryPath };
-		const output = result.text().trim();
-
-		const match = output.match(/\/(\d+\.\d+\.\d+)/);
-		const actual = match?.[1];
-		return { ok: actual === expectedVersion, actual, path: binaryPath };
+		if (result.exitCode !== 0) return undefined;
+		return parseReportedVersion(result.text().trim());
 	} catch {
-		return { ok: false, path: binaryPath };
+		return undefined;
 	}
+}
+
+async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): Promise<InstalledVersionVerification> {
+	const actual = await reportedVersionAtPath(binaryPath);
+	return { ok: actual === expectedVersion, actual, path: binaryPath };
+}
+
+/**
+ * A foreign symlink is followed to the file it points at, which may be a shared dispatcher script or an
+ * unrelated program. Refuse to overwrite anything that is not a native proto binary.
+ */
+async function validateExistingUpdateTarget(targetPath: string): Promise<void> {
+	let hasShebang = false;
+	try {
+		hasShebang = (await Bun.file(targetPath).slice(0, 2).text()) === "#!";
+	} catch {}
+
+	if (!hasShebang && (await reportedVersionAtPath(targetPath)) !== undefined) return;
+
+	const reason = hasShebang
+		? `is a shebang script, not a ${BINARY_NAME} binary`
+		: `does not report a ${BINARY_NAME} version when run directly`;
+	throw new Error(
+		`Refusing to replace ${targetPath}: the resolved symlink target ${reason}. Point PATH directly at the ${BINARY_NAME} binary you want to update, or reinstall with: ${installerHint()}`,
+	);
 }
 
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
 	const ompPath = resolveOmpPath();
 	if (!ompPath) return { ok: false };
-	return await verifyBinaryAtPath(ompPath, expectedVersion);
+	return await verifyBinaryAtPath(tryRealpath(ompPath) ?? ompPath, expectedVersion);
 }
 
-function printVerifiedVersion(expectedVersion: string): void {
-	console.log(chalk.green(`\n${theme.status.success} Updated to ${expectedVersion}`));
+function printVerifiedVersion(expectedVersion: string, binaryPath?: string): void {
+	const location = binaryPath ? ` at ${binaryPath}` : "";
+	console.log(chalk.green(`\n${theme.status.success} Updated to ${expectedVersion}${location}`));
 }
 
 function formatVerificationFailure(result: InstalledVersionVerification, expectedVersion: string): string {
@@ -618,7 +666,7 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
 async function printVerification(expectedVersion: string): Promise<void> {
 	const result = await verifyInstalledVersion(expectedVersion);
 	if (result.ok) {
-		printVerifiedVersion(expectedVersion);
+		printVerifiedVersion(expectedVersion, result.path);
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
@@ -634,6 +682,17 @@ async function unlinkIfExists(filePath: string): Promise<void> {
 }
 
 async function removeBackupBestEffort(filePath: string): Promise<boolean> {
+	// macOS resolves TCC permission grants against a running executable's on-disk path, so unlinking a
+	// `.bak` that a live process still maps breaks that process's permissions. Only an `lsof` exit 1 with
+	// no output proves the file unused; anything else keeps it for a later sweep.
+	if (process.platform === "darwin" && filePath.endsWith(".bak")) {
+		let provenUnused = false;
+		try {
+			const result = await $`/usr/sbin/lsof -t -- ${filePath}`.quiet().nothrow();
+			provenUnused = result.exitCode === 1 && result.stdout.length === 0 && result.stderr.length === 0;
+		} catch {}
+		if (!provenUnused) return false;
+	}
 	try {
 		await fs.promises.unlink(filePath);
 		return true;
@@ -705,8 +764,18 @@ export function buildHomebrewUpdateArgs(force: boolean): string[] {
 	return [force ? "reinstall" : "upgrade", HOMEBREW_FORMULA];
 }
 
-export function buildMiseUpgradeArgs(): string[] {
-	return ["upgrade", MISE_TOOL, "--bump"];
+/**
+ * `proto update` is an explicit request for the latest release, so it bypasses mise's
+ * `minimum_release_age` gate. `--before 0s` wins over global and per-tool settings; mise
+ * releases predating release-age filtering reject the flag, so it is only passed when supported.
+ */
+export function buildMiseUpgradeArgs(supportsReleaseAgeOverride = true): string[] {
+	return ["upgrade", MISE_TOOL, "--bump", ...(supportsReleaseAgeOverride ? ["--before", "0s"] : [])];
+}
+
+/** Process-level release-age override; mise requires a duration unit, so bare `0` is rejected. */
+function buildMiseUpdateEnv(): Record<string, string | undefined> {
+	return { ...process.env, MISE_MINIMUM_RELEASE_AGE: "0s" };
 }
 
 export function buildMiseForceInstallArgs(expectedVersion: string): string[] {
@@ -732,15 +801,18 @@ async function updateViaHomebrew(expectedVersion: string, force: boolean): Promi
 
 async function updateViaMise(expectedVersion: string, force: boolean): Promise<void> {
 	console.log(chalk.dim("Updating via mise..."));
-	const args = buildMiseUpgradeArgs();
-	const result = await $`mise ${args}`.nothrow();
+	const env = buildMiseUpdateEnv();
+	const help = await $`mise upgrade --help`.env(env).quiet().nothrow();
+	const supportsReleaseAgeOverride = help.exitCode === 0 && /(?:--minimum-release-age|--before)\b/.test(help.text());
+	const args = buildMiseUpgradeArgs(supportsReleaseAgeOverride);
+	const result = await $`mise ${args}`.env(env).nothrow();
 	if (result.exitCode !== 0) {
 		throw new Error(`mise upgrade failed with exit code ${result.exitCode}`);
 	}
 
 	if (force) {
 		const forceArgs = buildMiseForceInstallArgs(expectedVersion);
-		const forceResult = await $`mise ${forceArgs}`.nothrow();
+		const forceResult = await $`mise ${forceArgs}`.env(env).nothrow();
 		if (forceResult.exitCode !== 0) {
 			throw new Error(`mise install --force failed with exit code ${forceResult.exitCode}`);
 		}
@@ -758,9 +830,12 @@ export async function updateViaBinaryAt(
 		binaryName?: string;
 		fetchImpl?: Fetch;
 		githubToken?: string;
+		/** Refuse replacement unless the existing file is a native proto binary. */
+		validateExistingTarget?: boolean;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
 	} = {},
 ): Promise<void> {
+	if (options.validateExistingTarget) await validateExistingUpdateTarget(targetPath);
 	const binaryName = options.binaryName ?? getBinaryName();
 
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
@@ -777,19 +852,20 @@ export async function updateViaBinaryAt(
 	});
 	console.log(chalk.dim(`Verified ${asset.digest}`));
 
-	await withFileLock(targetPath, async () => {
+	const verification = await withFileLock(targetPath, async () => {
 		console.log(chalk.dim("Installing update..."));
-		await replaceBinaryForUpdate({
+		const result = await replaceBinaryForUpdate({
 			targetPath,
 			tempPath,
 			backupPath,
 			expectedVersion,
-			verifyInstalledVersion: options.verifyInstalledVersion ?? verifyInstalledVersion,
+			verifyInstalledVersion: options.verifyInstalledVersion ?? (version => verifyBinaryAtPath(targetPath, version)),
 		});
 
 		await sweepStaleUpdateArtifacts(targetPath);
+		return result;
 	});
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(expectedVersion, verification.path ?? targetPath);
 	console.log(chalk.dim(`Restart ${BINARY_NAME} to use the new version`));
 }
 
@@ -841,7 +917,9 @@ export async function runUpdate(opts: { force: boolean; check: boolean }): Promi
 			if (target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
 			}
-			await updateViaBinaryAt(target.path, release.version);
+			await updateViaBinaryAt(target.path, release.version, {
+				validateExistingTarget: target.validateExistingTarget,
+			});
 			if (target.replacesSymlink) {
 				console.log(
 					chalk.yellow(

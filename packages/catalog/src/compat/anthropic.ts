@@ -3,6 +3,7 @@ import { type AnthropicModel, bareModelId, parseAnthropicModel, semverGte } from
 import {
 	hasOpus47ApiRestrictions,
 	isAnthropicFableOrMythosModel,
+	isClaude55ForcedToolChoiceRestricted,
 	isKimiK3ModelId,
 	supportsMidConversationSystemMessages,
 } from "../identity/family";
@@ -42,6 +43,23 @@ function isBedrockAnthropicRoute(baseUrl?: string): boolean {
 	return baseUrl !== undefined && BEDROCK_ANTHROPIC_URL_MARKER.test(baseUrl);
 }
 
+const BEDROCK_RUNTIME_HOST = /^bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com$/i;
+// Mantle base URLs carry a `{region}` template until dispatch.
+const BEDROCK_MANTLE_HOST = /^bedrock-mantle\.(?:[a-z0-9-]+|\{region\})\.api\.aws$/i;
+
+/** Amazon Bedrock's Anthropic Messages API: the `/anthropic` path on bedrock-runtime or bedrock-mantle. */
+export function isBedrockAnthropicMessagesRoute(baseUrl?: string): boolean {
+	if (!baseUrl) return false;
+	let url: URL;
+	try {
+		url = new URL(baseUrl);
+	} catch {
+		return false;
+	}
+	if (url.pathname !== "/anthropic" && !url.pathname.startsWith("/anthropic/")) return false;
+	return BEDROCK_RUNTIME_HOST.test(url.hostname) || BEDROCK_MANTLE_HOST.test(url.hostname);
+}
+
 function isAzureAnthropicRoute(baseUrl?: string): boolean {
 	return baseUrl !== undefined && AZURE_ANTHROPIC_URL_MARKER.test(baseUrl);
 }
@@ -53,6 +71,7 @@ export function isAnthropicSigningProxyUrl(baseUrl?: string): boolean {
 		isCloudflareAnthropicGateway(baseUrl) ||
 		isVertexAnthropicRoute(baseUrl) ||
 		isBedrockAnthropicRoute(baseUrl) ||
+		isBedrockAnthropicMessagesRoute(baseUrl) ||
 		isAzureAnthropicRoute(baseUrl)
 	);
 }
@@ -130,7 +149,10 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 		supportsMidConversationToolChanges: midConversationControls,
 		supportsPerMessageEffort: controlProvider && claudeRevisionAtLeast(parsed, "5", "5.1"),
 		supportsThinkingBindingControls: controlProvider && parsed?.kind === "fable" && semverGte(parsed.version, "5.1"),
-		supportsForcedToolChoice: !requiresThinkingEnabled && !isAnthropicFableOrMythosModel(spec.id),
+		supportsForcedToolChoice:
+			!requiresThinkingEnabled &&
+			!isAnthropicFableOrMythosModel(spec.id) &&
+			!isClaude55ForcedToolChoiceRestricted(spec.id),
 
 		supportsSamplingParams: !hasOpus47ApiRestrictions(spec.id),
 

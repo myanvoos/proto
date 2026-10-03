@@ -19,7 +19,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 49.6,
-		"tps": 66.7,
+		"tps": 65.7,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -87,7 +87,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 53.4,
-		"tps": 64.7,
+		"tps": 68.2,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -352,7 +352,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 32000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -420,7 +420,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -488,7 +488,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 50.8,
-		"tps": 53.6,
+		"tps": 57.2,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -556,6 +556,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 57.6,
+		"tps": 93,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -595,7 +596,7 @@
 			"supportsMidConversationToolChanges": false,
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
@@ -753,7 +754,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 32000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -818,7 +819,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 38.2,
-		"tps": 78.1,
+		"tps": 85.1,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -859,6 +860,74 @@
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-sonnet-5.5": {
+		"id": "claude-sonnet-5.5",
+		"name": "Claude Sonnet 5.5",
+		"api": "anthropic-messages",
+		"provider": "github-copilot",
+		"baseUrl": "https://api.githubcopilot.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"int": 56,
+		"tps": 139.6,
+		"headers": {
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
+		},
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
@@ -1251,7 +1320,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -1348,7 +1417,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 34,
-		"tps": 180.2,
+		"tps": 198.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -1445,7 +1514,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 39.1,
-		"tps": 278.3,
+		"tps": 302.6,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -1542,7 +1611,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 40.9,
-		"tps": 275.9,
+		"tps": 242.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -1899,7 +1968,7 @@
 		"contextWindow": 264000,
 		"maxTokens": 64000,
 		"int": 16.8,
-		"tps": 107.6,
+		"tps": 138.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2522,7 +2591,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"int": 32.5,
-		"tps": 146.4,
+		"tps": 95.4,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2612,7 +2681,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"int": 39,
-		"tps": 135.8,
+		"tps": 89.5,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2702,7 +2771,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"int": 24.1,
-		"tps": 224.5,
+		"tps": 213,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2793,7 +2862,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 20.7,
-		"tps": 173.6,
+		"tps": 160.8,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2883,7 +2952,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 38.4,
-		"tps": 94.4,
+		"tps": 85,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -2974,7 +3043,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 37.3,
-		"tps": 142.3,
+		"tps": 125.1,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3065,7 +3134,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 47,
-		"tps": 80.3,
+		"tps": 79.4,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3156,7 +3225,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 42.1,
-		"tps": 82.4,
+		"tps": 101.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3247,7 +3316,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 52.7,
-		"tps": 52.7,
+		"tps": 53.7,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3337,8 +3406,8 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 37.3,
-		"tps": 153.9,
+		"int": 38.1,
+		"tps": 125.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3428,8 +3497,99 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 47.5,
-		"tps": 125.5,
+		"int": 47.6,
+		"tps": 93.3,
+		"headers": {
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
+		},
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": true,
+			"supportsStrictMode": true,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": true,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
+		}
+	},
+	"gpt-6.1-sol": {
+		"id": "gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "openai-responses",
+		"provider": "github-copilot",
+		"baseUrl": "https://api.githubcopilot.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"int": 51.8,
+		"tps": 61.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3520,7 +3680,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 128000,
 		"int": 38.8,
-		"tps": 55.1,
+		"tps": 56.4,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3536,7 +3696,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3611,7 +3772,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 128000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3627,7 +3788,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3702,7 +3864,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 128000,
 		"int": 46.4,
-		"tps": 39.3,
+		"tps": 79,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3718,7 +3880,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3807,7 +3970,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3883,7 +4047,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 32000,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3981,7 +4145,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -4101,7 +4265,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4190,7 +4355,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4279,7 +4445,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

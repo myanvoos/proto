@@ -1,7 +1,14 @@
-import { type AppKeybinding, type KeybindingsManager, keyHintPlatform, modifierLabel } from "../../config/keybindings";
+import { canonicalKeyId, type KeyId } from "@oh-my-pi/pi-tui";
+import {
+	type AppKeybinding,
+	formatKeyHints,
+	type KeybindingsManager,
+	keyHintPlatform,
+	modifierLabel,
+} from "../../config/keybindings";
 
 interface HotkeysMarkdownBindings {
-	keybindings: Pick<KeybindingsManager, "getDisplayString">;
+	keybindings: Pick<KeybindingsManager, "getDisplayString" | "getKeys" | "matchesCanonical">;
 }
 
 function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
@@ -13,6 +20,24 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 	const isMac = platform === "darwin";
 	const alt = modifierLabel("alt", platform);
 	const cmd = modifierLabel("super", platform);
+	// CustomEditor checks the pressed chord: an exit key that also carries tui.editor.deleteCharForward
+	// (readline ^D) forward-deletes while the prompt holds a draft; any other exit key quits immediately.
+	const exitKeys = bindings.keybindings.getKeys("app.exit");
+	const deletingExitKeys: KeyId[] = [];
+	const quittingExitKeys: KeyId[] = [];
+	for (const key of exitKeys) {
+		const deletes = bindings.keybindings.matchesCanonical(canonicalKeyId(key), "tui.editor.deleteCharForward");
+		(deletes ? deletingExitKeys : quittingExitKeys).push(key);
+	}
+	const exitRows: string[] = [];
+	if (deletingExitKeys.length > 0) {
+		exitRows.push(
+			`| \`${formatKeyHints(deletingExitKeys)}\` | Delete char forward (with draft) / exit (empty prompt) |`,
+		);
+	}
+	if (quittingExitKeys.length > 0 || deletingExitKeys.length === 0) {
+		exitRows.push(`| \`${formatKeyHints(quittingExitKeys) || "Disabled"}\` | Exit |`);
+	}
 	return [
 		"**Navigation**",
 		"| Key | Action |",
@@ -41,7 +66,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"| `Tab` | Path completion / accept autocomplete |",
 		`| \`${appKey(bindings, "app.interrupt")}\` | Cancel autocomplete / interrupt active work |`,
 		`| \`${appKey(bindings, "app.clear")}\` | Clear editor (first) / exit (second) |`,
-		`| \`${appKey(bindings, "app.exit")}\` | Delete char forward (with draft) / exit (empty prompt) |`,
+		...exitRows,
 		`| \`${appKey(bindings, "app.suspend")}\` | Suspend to background |`,
 		`| \`${appKey(bindings, "app.display.reset")}\` | Reset terminal display |`,
 		`| \`${appKey(bindings, "app.thinking.cycle")}\` | Cycle thinking level |`,

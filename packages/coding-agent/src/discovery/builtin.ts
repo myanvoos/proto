@@ -20,9 +20,9 @@ import { type CustomTool, toolCapability } from "../capability/tool";
 import type { LoadContext, LoadResult } from "../capability/types";
 import { expandTilde } from "../tools/path-utils";
 import {
-	buildRuleFromMarkdown,
 	createSourceMeta,
 	discoverExtensionModulePaths,
+	discoverRuleFromMarkdown,
 	expandEnvVarsDeep,
 	getExtensionNameFromPath,
 	loadFilesFromDir,
@@ -58,7 +58,7 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 		result.push({ dir: projectDir, level: "project" });
 	}
 
-	const userDir = await ifNonEmptyDir(getAgentDir());
+	const userDir = await ifNonEmptyDir(ctx.agentDir ?? getAgentDir());
 	if (userDir) {
 		result.push({ dir: userDir, level: "user" });
 	}
@@ -81,11 +81,11 @@ function getAncestorDirs(cwd: string, stopAt?: string | null): Array<{ dir: stri
 	return ancestors;
 }
 
-async function findNearestProjectConfigDir(
-	cwd: string,
-	repoRoot?: string | null,
-): Promise<{ dir: string; depth: number } | null> {
-	for (const ancestor of getAncestorDirs(cwd, repoRoot)) {
+// Home is never a project: `~/.proto` is the user config root, so a non-repo cwd under home must not
+// load it as project SYSTEM.md/RULES.md/AGENTS.md (that would also bypass PI_CODING_AGENT_DIR/profiles).
+async function findNearestProjectConfigDir(ctx: LoadContext): Promise<{ dir: string; depth: number } | null> {
+	for (const ancestor of getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home)) {
+		if (ancestor.dir === ctx.home) continue;
 		const configDir = await ifNonEmptyDir(ancestor.dir, PATHS.projectDir);
 		if (configDir) return { dir: configDir, depth: ancestor.depth };
 	}
@@ -240,7 +240,7 @@ async function loadSystemPrompt(ctx: LoadContext): Promise<LoadResult<SystemProm
 		});
 	}
 
-	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx.cwd, ctx.repoRoot);
+	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx);
 	if (nearestProjectConfigDir) {
 		const projectPath = path.join(nearestProjectConfigDir.dir, "SYSTEM.md");
 		const projectContent = await readFile(projectPath);
@@ -266,7 +266,7 @@ registerProvider<SystemPrompt>(systemPromptCapability.id, {
 });
 
 async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
-	const ancestors = getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home);
+	const ancestors = getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home).filter(({ dir }) => dir !== ctx.home);
 	const projectScans = ancestors.map(({ dir }) =>
 		scanSkillsFromDir(ctx, {
 			dir: path.join(dir, PATHS.projectDir, "skills"),
@@ -359,17 +359,17 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 		const result = await loadFilesFromDir<Rule>(ctx, rulesDir, PROVIDER_ID, level, {
 			extensions: ["md", "mdc"],
 			transform: (name, content, path, source) =>
-				buildRuleFromMarkdown(name, content, path, source, { stripNamePattern: /\.(md|mdc)$/ }),
+				discoverRuleFromMarkdown(name, content, path, source, { stripNamePattern: /\.(md|mdc)$/ }),
 		});
 		items.push(...result.items);
 		if (result.warnings) warnings.push(...result.warnings);
 	}
 
-	const userRulesFile = path.join(getAgentDir(), "RULES.md");
+	const userRulesFile = path.join(ctx.agentDir ?? getAgentDir(), "RULES.md");
 	const userRule = await loadStickyRulesFile(userRulesFile, "user");
 	if (userRule) items.push(userRule);
 
-	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx.cwd, ctx.repoRoot);
+	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx);
 	if (nearestProjectConfigDir) {
 		const projectRulesFile = path.join(nearestProjectConfigDir.dir, "RULES.md");
 		const projectRule = await loadStickyRulesFile(projectRulesFile, "project");
@@ -384,7 +384,8 @@ async function loadStickyRulesFile(filePath: string, level: "user" | "project"):
 	if (!content) return null;
 	const source = createSourceMeta(PROVIDER_ID, filePath, level);
 	const ruleName = level === "project" ? "RULES@project" : "RULES";
-	const rule = buildRuleFromMarkdown("RULES.md", content, filePath, source, { ruleName });
+	const rule = discoverRuleFromMarkdown("RULES.md", content, filePath, source, { ruleName });
+	if (!rule) return null;
 
 	return { ...rule, alwaysApply: true };
 }
@@ -881,7 +882,7 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 		});
 	}
 
-	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx.cwd, ctx.repoRoot);
+	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx);
 	if (nearestProjectConfigDir) {
 		const projectPath = path.join(nearestProjectConfigDir.dir, "AGENTS.md");
 		const projectContent = await readFile(projectPath);

@@ -195,8 +195,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 65536,
+		"contextWindow": 128000,
+		"maxTokens": 64000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -230,7 +230,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 9.9,
-		"tps": 188.6,
+		"tps": 202.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -264,7 +264,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 6.7,
-		"tps": 265.8,
+		"tps": 293.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -460,7 +460,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 16.1,
-		"tps": 125.8,
+		"tps": 124.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -656,7 +656,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 65536,
-		"maxTokens": 65536,
+		"maxTokens": 4096,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -691,7 +691,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 292.5,
+		"tps": 316.9,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -759,7 +759,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 29.7,
-		"tps": 118.4,
+		"tps": 116.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -823,7 +823,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -858,7 +858,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 22.2,
-		"tps": 357.4,
+		"tps": 360,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -893,7 +893,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 34,
-		"tps": 180.2,
+		"tps": 198.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -928,7 +928,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 39.1,
-		"tps": 278.3,
+		"tps": 302.6,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -962,7 +962,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 40.9,
-		"tps": 275.9,
+		"tps": 242.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [

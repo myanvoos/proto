@@ -3,7 +3,7 @@ import * as url from "node:url";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import { createMCPTimeout, describeMCPTimeout, resolveMCPTimeoutMs } from "./timeout";
 import { HttpTransport } from "./transports/http";
-import { LegacySseTransport } from "./transports/sse";
+import { LegacySseConnectionTimeoutError, LegacySseTransport } from "./transports/sse";
 import { StdioTransport } from "./transports/stdio";
 import type {
 	MCPGetPromptParams,
@@ -171,6 +171,14 @@ async function initializeConnection(
 	return result;
 }
 
+/** The initial handshake with an MCP server exceeded its configured timeout. */
+export class MCPConnectionTimeoutError extends Error {
+	constructor(serverName: string, timeoutMs: number) {
+		super(`Connection to MCP server "${serverName}" timed out after ${describeMCPTimeout(timeoutMs)}`);
+		this.name = "MCPConnectionTimeoutError";
+	}
+}
+
 export async function connectToServer(
 	name: string,
 	config: MCPServerConfig,
@@ -217,8 +225,8 @@ export async function connectToServer(
 			throw error;
 		}
 	} catch (error) {
-		if (timeout.timedOut()) {
-			throw new Error(`Connection to MCP server "${name}" timed out after ${describeMCPTimeout(timeoutMs)}`);
+		if (timeout.timedOut() || error instanceof LegacySseConnectionTimeoutError) {
+			throw new MCPConnectionTimeoutError(name, timeoutMs);
 		}
 		throw error;
 	} finally {

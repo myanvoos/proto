@@ -13,7 +13,7 @@ import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
 import {
 	formatBytes,
-	replaceTabs,
+	sanitizeDisplayLines,
 	sanitizeSingleLine,
 	shortenPath,
 	TRUNCATE_LENGTHS,
@@ -150,10 +150,9 @@ export const readToolRenderer = {
 				title += sanitizeSingleLine(`:${startLine}${endLine ? `-${endLine}` : ""}`);
 			}
 			const header = renderStatusLine({ icon: "error", title }, uiTheme);
-			const safeErrorText = replaceTabs(sanitizeText(errorText));
-			const errorLines = safeErrorText
-				.split("\n")
-				.map(line => uiTheme.fg("error", truncateToWidth(line, TRUNCATE_LENGTHS.LINE)));
+			const errorLines = sanitizeDisplayLines(errorText).map(line =>
+				uiTheme.fg("error", truncateToWidth(line, TRUNCATE_LENGTHS.LINE)),
+			);
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number) =>
@@ -209,7 +208,9 @@ export const readToolRenderer = {
 				{ icon: suffix ? "warning" : "success", title: "Read", description: `${displayPath}${correction}` },
 				uiTheme,
 			);
-			const detailLines = contentText ? contentText.split("\n").map(line => uiTheme.fg("toolOutput", line)) : [];
+			const detailLines = contentText
+				? sanitizeDisplayLines(contentText).map(line => uiTheme.fg("toolOutput", line))
+				: [];
 			const lines = [...detailLines, ...warningLines];
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({

@@ -676,6 +676,38 @@ test("guarded ask keeps the draft editable and reveals the answer after clearing
 	}
 });
 
+test("ask dialog regains focus only after a custom answer has been applied", async () => {
+	const { composer } = createHarness(40, 24);
+	const controller = new ExtensionUiController({
+		editor: composer.editor,
+		editorContainer: composer.editorSlot,
+		ui: composer.ui,
+	} as InteractiveModeContext);
+	const answer = controller.showAskDialog([
+		{ id: "q", question: "Choose several?", options: [{ label: "ALPHA" }], multi: true },
+	]);
+	try {
+		composer.ui.getFocused()!.handleInput!("\x1b[B");
+		composer.ui.getFocused()!.handleInput!("\r");
+		const prompt = composer.ui.getFocused()!;
+		expect(prompt).toBeInstanceOf(HookEditorComponent);
+		prompt.handleInput!("custom answer");
+		prompt.handleInput!("\r");
+		expect(composer.ui.getFocused()).toBe(prompt);
+		await Promise.resolve();
+		const dialog = composer.ui.getFocused()!;
+		expect(dialog).toBeInstanceOf(AskDialogComponent);
+		dialog.handleInput!("\x1b[A");
+		dialog.handleInput!("\r");
+		expect(await answer).toMatchObject({
+			kind: "submit",
+			results: [{ id: "q", selectedOptions: [], customInput: "custom answer" }],
+		});
+	} finally {
+		composer.stop();
+	}
+});
+
 test("hook editor retains its configured maximum while its host viewport changes", () => {
 	const { composer, scheduler } = createHarness(40, 24);
 	const editor = new HookEditorComponent(

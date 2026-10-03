@@ -15,7 +15,7 @@ import {
 import { isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
-import { getThemeEpoch, theme } from "../../modes/theme/theme";
+import { ensureThemeSync, getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { CHECKLIST_STRIKE_TOTAL_FRAMES, type ChecklistToolDetails } from "../../tools/checklist";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
@@ -317,6 +317,7 @@ export class ToolExecutionComponent extends Container {
 		ui: ToolExecutionUi,
 	) {
 		super();
+		ensureThemeSync();
 		this.#toolName = toolName;
 		this.#toolLabel = tool?.label ?? toolName;
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];

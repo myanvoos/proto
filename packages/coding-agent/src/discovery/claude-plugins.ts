@@ -5,6 +5,7 @@ import { registerProvider } from "../capability";
 import { readFile } from "../capability/fs";
 import { type Hook, hookCapability } from "../capability/hook";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
+import { type Rule, ruleCapability } from "../capability/rule";
 import { type Skill, skillCapability } from "../capability/skill";
 import { type SlashCommand, slashCommandCapability } from "../capability/slash-command";
 import { type CustomTool, toolCapability } from "../capability/tool";
@@ -13,6 +14,7 @@ import { legacyProviderAllowed } from "./agent-plugin-format";
 import {
 	type ClaudePluginRoot,
 	createSourceMeta,
+	discoverRuleFromMarkdown,
 	expandEnvVarsDeep,
 	listClaudePluginRoots,
 	loadFilesFromDir,
@@ -43,6 +45,13 @@ interface ClaudePluginManifest {
 interface ResolvedPluginDir {
 	dirs: string[];
 	warnings: string[];
+}
+
+interface ResolvePluginDirOptions {
+	manifestKeys: ReadonlyArray<keyof ClaudePluginManifest>;
+	fallback: string;
+	includeFallback: boolean;
+	marketplaceRootManifest?: ClaudePluginManifest | null;
 }
 
 interface ResolvedMCPConfig {
@@ -76,21 +85,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function skillsManifestReplacesFallback(root: ClaudePluginRoot): Promise<boolean> {
-	const raw = await readFile(path.join(root.path, "marketplace.json"));
-	if (raw === null) return false;
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return isRecord(value) && Object.values(value).every(v => typeof v === "string");
+}
 
-	try {
-		const parsed: unknown = JSON.parse(raw);
-		if (!isRecord(parsed)) return false;
-		const plugins = parsed.plugins;
-		return (
-			Array.isArray(plugins) &&
-			plugins.some(entry => isRecord(entry) && entry.name === root.plugin && entry.source === "./")
-		);
-	} catch {
-		return false;
+// The catalog entry of a plugin whose source is the marketplace root itself ("./"), as a manifest.
+async function readMarketplaceRootManifest(root: ClaudePluginRoot): Promise<ClaudePluginManifest | null> {
+	const catalogs = await Promise.all(
+		[
+			path.join(root.path, "marketplace.json"),
+			path.join(root.path, ".proto-plugin", "marketplace.json"),
+			path.join(root.path, ".claude-plugin", "marketplace.json"),
+		].map(catalogPath => readFile(catalogPath)),
+	);
+
+	for (const raw of catalogs) {
+		if (raw === null) continue;
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) continue;
+			const entry = parsed.plugins.find(
+				candidate => isRecord(candidate) && candidate.name === root.plugin && candidate.source === "./",
+			);
+			if (!isRecord(entry)) continue;
+
+			if (typeof entry.skills === "string") return { skills: entry.skills };
+			if (Array.isArray(entry.skills)) {
+				return { skills: entry.skills.filter((value): value is string => typeof value === "string") };
+			}
+			return {};
+		} catch {}
 	}
+	return null;
 }
 
 function isWithinPluginRoot(rootPath: string, targetPath: string): boolean {
@@ -98,53 +124,55 @@ function isWithinPluginRoot(rootPath: string, targetPath: string): boolean {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function resolvePluginDir(
-	root: ClaudePluginRoot,
-	manifestKeys: ReadonlyArray<keyof ClaudePluginManifest>,
-	fallback: string,
-	includeFallback: boolean,
-): Promise<ResolvedPluginDir> {
-	const manifest = await readPluginManifest(root);
-	const fallbackDir = path.join(root.path, fallback);
+// Skills add to the default `skills/` dir, except for a marketplace-root plugin: its catalog entry and
+// plugin manifest list the complete selection, so the shared root `skills/` is not scanned. Commands
+// replace their default. With no declared path the conventional fallback is used.
+async function resolvePluginDir(root: ClaudePluginRoot, options: ResolvePluginDirOptions): Promise<ResolvedPluginDir> {
+	const pluginManifest = await readPluginManifest(root);
+	const manifests = options.marketplaceRootManifest
+		? [pluginManifest, options.marketplaceRootManifest]
+		: [pluginManifest];
+	const fallbackDir = path.join(root.path, options.fallback);
+	const configured: Array<{ entryPath: string; key: keyof ClaudePluginManifest }> = [];
 
-	let configured: string[] | undefined;
-	let matchedKey: keyof ClaudePluginManifest | undefined;
-	for (const key of manifestKeys) {
-		const val = manifest?.[key];
-		const candidates: string[] = [];
-		if (typeof val === "string") {
-			const trimmed = val.trim();
-			if (trimmed) candidates.push(trimmed);
-		} else if (Array.isArray(val)) {
-			for (const entry of val) {
-				if (typeof entry !== "string") continue;
-				const trimmed = entry.trim();
+	for (const manifest of manifests) {
+		if (manifest === null) continue;
+		for (const key of options.manifestKeys) {
+			const val = manifest[key];
+			const candidates: string[] = [];
+			if (typeof val === "string") {
+				const trimmed = val.trim();
 				if (trimmed) candidates.push(trimmed);
+			} else if (Array.isArray(val)) {
+				for (const entry of val) {
+					if (typeof entry !== "string") continue;
+					const trimmed = entry.trim();
+					if (trimmed) candidates.push(trimmed);
+				}
 			}
-		}
-		if (candidates.length > 0) {
-			configured = candidates;
-			matchedKey = key;
-			break;
+			if (candidates.length > 0) {
+				configured.push(...candidates.map(entryPath => ({ entryPath, key })));
+				break;
+			}
 		}
 	}
 
-	if (configured === undefined) {
+	if (configured.length === 0) {
 		return { dirs: [fallbackDir], warnings: [] };
 	}
 
 	const seen = new Set<string>();
 	const dirs: string[] = [];
 	const warnings: string[] = [];
-	if (includeFallback) {
+	if (options.includeFallback && !options.marketplaceRootManifest) {
 		seen.add(fallbackDir);
 		dirs.push(fallbackDir);
 	}
-	for (const entry of configured) {
-		const resolved = path.resolve(root.path, entry);
+	for (const { entryPath, key } of configured) {
+		const resolved = path.resolve(root.path, entryPath);
 		if (!isWithinPluginRoot(root.path, resolved)) {
 			warnings.push(
-				`[claude-plugins] Ignoring ${String(matchedKey)} path outside plugin root for ${root.id}: ${entry}`,
+				`[claude-plugins] Ignoring ${String(key)} path outside plugin root for ${root.id}: ${entryPath}`,
 			);
 			continue;
 		}
@@ -163,13 +191,12 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	warnings.push(...rootWarnings);
 	const results = await Promise.all(
 		roots.map(async root => {
-			const includeFallback = !(await skillsManifestReplacesFallback(root));
-			const { dirs: skillsDirs, warnings: resolveWarnings } = await resolvePluginDir(
-				root,
-				["skills"],
-				"skills",
-				includeFallback,
-			);
+			const { dirs: skillsDirs, warnings: resolveWarnings } = await resolvePluginDir(root, {
+				manifestKeys: ["skills"],
+				fallback: "skills",
+				includeFallback: true,
+				marketplaceRootManifest: await readMarketplaceRootManifest(root),
+			});
 			const scanResults = await Promise.all(
 				skillsDirs.map(dir =>
 					scanSkillsFromDir(ctx, {
@@ -194,6 +221,26 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	return { items, warnings };
 }
 
+async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
+	const { roots, warnings: rootWarnings } = await allowedRoots(ctx, "other");
+	const warnings = [...rootWarnings];
+	const results = await Promise.all(
+		roots.map(root =>
+			loadFilesFromDir<Rule>(ctx, path.join(root.path, "rules"), PROVIDER_ID, root.scope, {
+				extensions: ["md", "mdc"],
+				transform: (name, content, filePath, source) =>
+					discoverRuleFromMarkdown(name, content, filePath, source, { stripNamePattern: /\.(md|mdc)$/ }),
+			}),
+		),
+	);
+	const items: Rule[] = [];
+	for (const result of results) {
+		items.push(...result.items);
+		if (result.warnings) warnings.push(...result.warnings);
+	}
+	return { items, warnings };
+}
+
 async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashCommand>> {
 	const items: SlashCommand[] = [];
 	const warnings: string[] = [];
@@ -203,12 +250,11 @@ async function loadSlashCommands(ctx: LoadContext): Promise<LoadResult<SlashComm
 
 	const results = await Promise.all(
 		roots.map(async root => {
-			const { dirs: commandsDirs, warnings: resolveWarnings } = await resolvePluginDir(
-				root,
-				["commands", "slash-commands"],
-				"commands",
-				false,
-			);
+			const { dirs: commandsDirs, warnings: resolveWarnings } = await resolvePluginDir(root, {
+				manifestKeys: ["commands", "slash-commands"],
+				fallback: "commands",
+				includeFallback: false,
+			});
 			const commandResults = await Promise.all(
 				commandsDirs.map(async dir => {
 					try {
@@ -409,6 +455,27 @@ async function resolvePluginMCPConfig(root: ClaudePluginRoot): Promise<ResolvedM
 	};
 }
 
+// Placeholder-expanded values are final package data: they are marked literal so
+// connect-time resolution never reinterprets them as an env name or `!command`.
+// Values without placeholders keep that legacy indirection, resolved only when
+// the server actually connects. The plugin-root names go through extraEnv so an
+// ambient CLAUDE_PLUGIN_ROOT cannot shadow them and the inserted root is never
+// re-scanned for `${...}`.
+function resolveMarketplaceEnv(
+	env: Record<string, string>,
+	rootPath: string,
+): { env: Record<string, string>; literalKeys: string[] } {
+	const pluginRoots = { CLAUDE_PLUGIN_ROOT: rootPath, PROTO_PLUGIN_ROOT: rootPath };
+	const resolved: Record<string, string> = Object.create(null);
+	const literalKeys: string[] = [];
+	for (const [key, rawValue] of Object.entries(env)) {
+		const value = expandEnvVarsDeep(rawValue, pluginRoots);
+		if (value !== rawValue) literalKeys.push(key);
+		resolved[key] = value;
+	}
+	return { env: resolved, literalKeys };
+}
+
 async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> {
 	const items: MCPServer[] = [];
 	const warnings: string[] = [];
@@ -480,16 +547,20 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 			const substitutedCwd = raw.cwd !== undefined ? substitutePluginRoot(raw.cwd, root.path) : undefined;
 
 			const rooted = resolvePluginStdioPaths({ command: substitutedCommand, cwd: substitutedCwd }, baseDir);
-			// Expand before inserting the plugin root so placeholders inside the
-			// install path are not scanned as untrusted environment references.
-			const expandedEnv = raw.env !== undefined ? expandEnvVarsDeep(raw.env) : undefined;
+			if (raw.env !== undefined && !isStringRecord(raw.env)) {
+				warnings.push(`[claude-plugins] Skipping MCP server "${serverName}" in ${sourcePath}: malformed env`);
+				continue;
+			}
+			const resolvedEnv = raw.env !== undefined ? resolveMarketplaceEnv(raw.env, root.path) : undefined;
 			const server: MCPServer = {
 				name: namespacedName,
 				...(raw.enabled !== undefined && { enabled: raw.enabled }),
 				...(raw.timeout !== undefined && { timeout: raw.timeout }),
 				...(rooted.command !== undefined && { command: rooted.command }),
 				...(raw.args !== undefined && { args: substitutePluginRoot(raw.args, root.path) }),
-				...(expandedEnv !== undefined && { env: substitutePluginRoot(expandedEnv, root.path) }),
+				...(resolvedEnv !== undefined && { env: resolvedEnv.env }),
+				...(resolvedEnv !== undefined &&
+					resolvedEnv.literalKeys.length > 0 && { envLiteralKeys: resolvedEnv.literalKeys }),
 				...(rooted.cwd !== undefined && { cwd: rooted.cwd }),
 				...(raw.url !== undefined && { url: expandEnvVarsDeep(raw.url) }),
 				...(raw.headers !== undefined && { headers: expandEnvVarsDeep(raw.headers) }),
@@ -511,6 +582,14 @@ registerProvider<Skill>(skillCapability.id, {
 	description: "Load skills from Claude Code marketplace plugins (~/.claude/plugins/cache/)",
 	priority: PRIORITY,
 	load: loadSkills,
+});
+
+registerProvider<Rule>(ruleCapability.id, {
+	id: PROVIDER_ID,
+	displayName: DISPLAY_NAME,
+	description: "Load rules from marketplace plugin rules directories",
+	priority: PRIORITY,
+	load: loadRules,
 });
 
 registerProvider<SlashCommand>(slashCommandCapability.id, {

@@ -171,12 +171,14 @@ Handled by `AgentProtocolHandler` over registered active session artifact direct
 - `?q=` always performs JSON extraction
 - path and query extraction cannot be combined
 - extraction requires valid JSON and returns `application/json`
+- a registered agent with no published `<id>.md` (running, or idle after non-terminal `yield` sections) returns a progress view: status, accepted `yield` sections, and latest assistant text; extraction is rejected until the output is published
+- a published output read while its agent is running a newer turn is prefixed with a banner marking it as the previous run's result
 
 Failure behavior:
 
-- if no artifact directories are registered: throws `No session - agent outputs unavailable`,
+- if no artifact directories are registered and the id is not a registered agent: throws `No session - agent outputs unavailable`,
 - if registered directories exist but none are present on disk: throws `No artifacts directory found`,
-- missing output throws `Not found: <id>` with available `.md` output IDs when directory listing succeeds.
+- missing output throws `Not found: <id>` with up to five fuzzy-matched output/agent IDs (`Did you mean: …`).
 
 Read tool integration:
 

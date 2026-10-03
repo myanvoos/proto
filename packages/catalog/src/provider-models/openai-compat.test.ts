@@ -65,6 +65,29 @@ describe("OpenRouter discovery", () => {
 		expect(inputOf("acme/vision-chat")).toEqual(["text", "image"]);
 		expect(inputOf("acme/legacy-vision")).toEqual(["text", "image"]);
 	});
+
+	it("keeps rows that advertise zero for unknown limits", async () => {
+		const fetchModels: FetchImpl = async () =>
+			Response.json({
+				data: [
+					{
+						id: "acme/zero-limits",
+						name: "Zero Limits",
+						context_length: 0,
+						top_provider: { max_completion_tokens: 0 },
+						supported_parameters: ["tools"],
+						pricing: { prompt: "0.000001", completion: "0.000002" },
+					},
+				],
+			});
+		const options = openrouterModelManagerOptions({ apiKey: "sk-test", fetch: fetchModels });
+		const result = await resolveProviderModels({ ...options, staticModels: [], cacheDbPath: ":memory:" }, "online");
+		const model = result.models.find(entry => entry.id === "acme/zero-limits");
+
+		expect(model).toBeDefined();
+		expect(model?.contextWindow).not.toBe(0);
+		expect(model?.maxTokens).not.toBe(0);
+	});
 });
 
 describe("Venice discovery", () => {

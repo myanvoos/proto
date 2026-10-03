@@ -32,14 +32,14 @@ interface BuiltSkillCommandPrompt {
 	options: SkillPromptOptions;
 }
 
-export function isKnownSkillCommand(ctx: SkillCommandHost, text: string): boolean {
+export function isKnownSkillCommand(ctx: Pick<SkillCommandHost, "skillCommands">, text: string): boolean {
 	const parsed = parseSkillInvocation(text);
 	if (!parsed) return false;
 	return ctx.skillCommands.has(getSkillSlashCommandName({ name: parsed.name }));
 }
 
 export async function buildSkillCommandPrompt(
-	ctx: SkillCommandHost,
+	ctx: Pick<SkillCommandHost, "skillCommands">,
 	text: string,
 	streamingBehavior: "steer" | "followUp",
 	images?: ImageContent[],

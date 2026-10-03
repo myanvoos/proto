@@ -1,4 +1,11 @@
-import { getEnumValues, getType, isCredential, SETTINGS_SCHEMA, type SettingPath } from "./settings-schema";
+import {
+	getEnumValues,
+	getType,
+	isCredential,
+	SETTINGS_SCHEMA,
+	type SettingPath,
+	STATUS_LINE_SEGMENT_IDS,
+} from "./settings-schema";
 
 export type ConfigIssueKind = "unknown-setting" | "invalid-value" | "quarantined-config" | "unmigrated-legacy";
 
@@ -51,6 +58,23 @@ const BOOLEAN_WORDS = new Map<string, boolean>([
 ]);
 
 const PREVIEW_LENGTH = 40;
+
+const STATUS_LINE_SEGMENT_SET: ReadonlySet<unknown> = new Set(STATUS_LINE_SEGMENT_IDS);
+
+/** Entries of a status-line segment list that name no segment, rendered for messages; empty for other settings. */
+export function unknownStatusLineSegments(settingPath: string, value: unknown): string[] {
+	if (settingPath !== "statusLine.leftSegments" && settingPath !== "statusLine.rightSegments") return [];
+	if (!Array.isArray(value)) return [];
+	const unknown = new Set<string>();
+	for (const segment of value) {
+		if (!STATUS_LINE_SEGMENT_SET.has(segment)) unknown.add(JSON.stringify(segment) ?? String(segment));
+	}
+	return [...unknown];
+}
+
+export function formatUnknownStatusLineSegments(unknown: readonly string[]): string {
+	return `unknown status line ${unknown.length === 1 ? "segment" : "segments"} ${unknown.join(", ")}; valid segments: ${STATUS_LINE_SEGMENT_IDS.join(", ")}`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -155,6 +179,16 @@ function walkLayer(
 					message: `${options.source}: "${dotted}" expects ${describeExpectedType(settingPath)}; ignoring ${previewValue(settingPath, value)}`,
 				});
 				continue;
+			}
+			const unknownSegments = unknownStatusLineSegments(dotted, coerced.value);
+			if (unknownSegments.length > 0) {
+				issues.push({
+					kind: "invalid-value",
+					source: options.source,
+					key: dotted,
+					message: `${options.source}: "${dotted}" has an ${formatUnknownStatusLineSegments(unknownSegments)}; ignoring the unknown ones`,
+				});
+				coerced.value = (coerced.value as unknown[]).filter(segment => STATUS_LINE_SEGMENT_SET.has(segment));
 			}
 			setByPath(target, dotted.split("."), coerced.value);
 			continue;

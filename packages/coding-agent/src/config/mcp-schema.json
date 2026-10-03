@@ -88,6 +88,10 @@
         "clientSecret": {
           "type": "string"
         },
+        "scope": {
+          "type": "string",
+          "description": "OAuth scope requested when the server's metadata does not advertise one."
+        },
         "redirectUri": {
           "type": "string"
         },
@@ -141,6 +145,11 @@
           "additionalProperties": false,
           "required": ["command"],
           "properties": {
+            "enabled": {},
+            "timeout": {},
+            "requestIdFormat": {},
+            "auth": {},
+            "oauth": {},
             "type": {
               "type": "string",
               "enum": ["stdio"],
@@ -183,6 +192,11 @@
           "additionalProperties": false,
           "required": ["type", "url"],
           "properties": {
+            "enabled": {},
+            "timeout": {},
+            "requestIdFormat": {},
+            "auth": {},
+            "oauth": {},
             "type": {
               "type": "string",
               "enum": ["http"],
@@ -214,6 +228,11 @@
           "additionalProperties": false,
           "required": ["type", "url"],
           "properties": {
+            "enabled": {},
+            "timeout": {},
+            "requestIdFormat": {},
+            "auth": {},
+            "oauth": {},
             "type": {
               "type": "string",
               "enum": ["sse"],

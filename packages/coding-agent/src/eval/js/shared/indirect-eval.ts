@@ -1,5 +1,7 @@
 export function indirectEval(source: string, filename?: string): unknown {
-	const withPragma = filename ? `${source}\n//# sourceURL=${filename}` : source;
+	// A line terminator in the filename would end the pragma comment and run the rest as source.
+	const sourceUrl = filename?.replace(/[\r\n\u2028\u2029]/g, separator => encodeURIComponent(separator));
+	const withPragma = sourceUrl ? `${source}\n//# sourceURL=${sourceUrl}` : source;
 
 	const geval = globalThis.eval as (src: string) => unknown;
 	return geval(withPragma);

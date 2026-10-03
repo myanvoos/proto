@@ -40,6 +40,26 @@ describe("ClaudeSessionStore", () => {
 		expect(info?.cwd).toBe(cwd);
 	});
 
+	it("maps a registered project with dots and underscores back to its cwd", async () => {
+		const root = path.join(tempRoot, ".claude");
+		const cwd = path.join(tempRoot, "my_app.v2");
+		const id = "66666666-6666-4666-8666-666666666666";
+		await Bun.write(path.join(tempRoot, ".claude.json"), JSON.stringify({ projects: { [cwd]: {} } }));
+		// The transcript records no cwd, so only the registered project can resolve the lossy directory name.
+		await writeJsonl(path.join(root, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`), [
+			{
+				type: "user",
+				uuid: "u",
+				parentUuid: null,
+				timestamp: "2026-01-01T00:00:01.000Z",
+				message: { content: "." },
+			},
+		]);
+
+		const info = (await new ClaudeSessionStore(root).list()).find(item => item.id === id);
+		expect(info?.cwd).toBe(cwd);
+	});
+
 	it("bounds cwd discovery to the transcript prefix before using the encoded fallback", async () => {
 		const root = path.join(tempRoot, ".claude");
 		const cwd = path.join(tempRoot, "late-project.dir");

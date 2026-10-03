@@ -104,6 +104,7 @@ import { resumeCommand } from "../utils/resume-command";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import {
 	disposeTerminalTitleState,
+	initTerminalTitleState,
 	popTerminalTitle,
 	pushTerminalTitle,
 	setSessionTerminalTitle,
@@ -120,10 +121,12 @@ import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "./components/hook-selector";
 import { ServedModelTracker } from "./components/served-model-marker";
+import { SkillMessageComponent } from "./components/skill-message";
 import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { buildComposerShortcuts, COMPOSER_PLACEHOLDER, Composer, ComposerShortcutsBar } from "./composer";
+import { shiftImageMarkers } from "./composer-attachments";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { ChecklistCommandController } from "./controllers/checklist-command-controller";
 import { CommandController } from "./controllers/command-controller";
@@ -284,6 +287,10 @@ const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
+
+function hasAssistantToolCall(message: AgentMessage): boolean {
+	return message.role === "assistant" && message.content.some(block => block.type === "toolCall");
+}
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
@@ -336,7 +343,6 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
-	#startupSubmitGated: boolean;
 	session: AgentSession;
 	settings: Settings;
 	keybindings: KeybindingsManager;
@@ -377,6 +383,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
 	checklistPhases: ChecklistPhase[] = [];
+	// Session whose plan `checklistPhases` mirrors. Reconciliation persists here, not to `viewSession`:
+	// mid focus-attach `viewSession` already points at the destination before its checklist reloads.
+	#checklistPhasesOwner?: AgentSession;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 
@@ -476,8 +485,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Header rows below the config warnings, kept so a live config-warning change can rebuild the header.
 	#headerAfter: readonly Component[] = [];
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
-	#goalTurnHadToolCalls = false;
-	#goalContinuationTurnInFlight = false;
+	// Submitted continuation turns whose `agent_end` has not arrived yet; session events lag submission settle.
+	#pendingGoalContinuationTurns = 0;
+	// From the guided /goal interview kickoff until a goal record appears, a turn uses tools (the interview is
+	// tool-free), the kickoff fails, or the session switches: short replies like "c" are answers, not shortcuts.
+	#guidedGoalInterviewActive = false;
+	#previousGoalContinuationActivity: string | undefined;
 	#goalSuppressNextContinuation = false;
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
@@ -620,7 +633,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
 		this.#ownsStartedUi = wasStarted;
-		this.#startupSubmitGated = true;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
 		this.#version = version;
@@ -717,9 +729,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.scheduledQueue = new ScheduledQueueController(this);
-		this.session.setTitleGenerationStart?.(() => {
-			this.#inputController.notifyTitleGenerationStart();
-		});
+		this.session.setTitleGenerationStart?.(() => this.#inputController.notifyTitleGenerationStart());
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
 		// MCP servers connect (and publish their prompt commands) before and after start(); the
@@ -740,6 +750,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#trackMcpStatusServer(serverName);
 				this.#mcpPendingServers.add(serverName);
 			}
+		} else if (event.type === "reconnecting") {
+			this.#trackMcpStatusServer(event.serverName);
+			this.#mcpConnectedServers.delete(event.serverName);
+			this.#mcpFailedServers.delete(event.serverName);
+			this.#mcpPendingServers.add(event.serverName);
 		} else if (event.type === "connected") {
 			this.#trackMcpStatusServer(event.serverName);
 			this.#mcpPendingServers.delete(event.serverName);
@@ -891,6 +906,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (refreshRecentSessions) void this.#refreshRecentSessions();
 		pushTerminalTitle();
+		initTerminalTitleState();
 		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
@@ -1004,6 +1020,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
 		});
+
+		// The composer boots with submit disabled so an early Enter cannot clear the draft into nowhere.
+		// Lift it once the submit handler and agent subscriptions are live, not at the first
+		// getUserInput(): a CLI prompt launch runs its whole first turn before the input loop starts.
+		this.editor.disableSubmit = false;
 	}
 
 	async refreshTitleSystemPrompt(cwd?: string): Promise<void> {
@@ -1185,11 +1206,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.onInputCallback = undefined;
 			resolve(input);
 		};
-		if (this.#startupSubmitGated) {
-			this.#startupSubmitGated = false;
-			this.editor.disableSubmit = false;
-			this.ui.requestRender();
-		}
 		this.#scheduleGoalContinuation();
 
 		using _ = new EventLoopKeepalive();
@@ -1202,6 +1218,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.session.settings.get("goal.continuationModes").includes("interactive")) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
 		if (this.#goalSuppressNextContinuation) return;
+		if (this.#goalOpenWorkAllBlocked()) return;
 		if (this.session.hasActiveMonitors()) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
@@ -1222,7 +1239,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 			const latestState = this.session.getGoalModeState();
 			if (!latestState?.enabled || latestState.goal.status !== "active") return;
-			this.#goalContinuationTurnInFlight = true;
+			if (this.#goalOpenWorkAllBlocked()) return;
+			this.#pendingGoalContinuationTurns++;
 			this.onInputCallback(
 				this.startPendingSubmission({
 					text: prompt,
@@ -1231,6 +1249,18 @@ export class InteractiveMode implements InteractiveModeContext {
 				}),
 			);
 		}, 800);
+	}
+
+	/** A checklist whose open work is all blocked has nothing the agent can advance on its own. */
+	#goalOpenWorkAllBlocked(): boolean {
+		let blocked = false;
+		for (const phase of this.session.getChecklistPhases()) {
+			for (const task of phase.tasks) {
+				if (task.status === "pending" || task.status === "in_progress") return false;
+				if (task.status === "blocked") blocked = true;
+			}
+		}
+		return blocked;
 	}
 
 	#cancelGoalContinuation(): void {
@@ -1303,17 +1333,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#optimisticSkillMessageComponents = this.#captureAddedChatComponents(() => {
 			this.addMessageToChat(message, options);
 		});
+		// Held live so preflight cannot retire it into scrollback, where reconcile could no longer replace it.
+		for (const component of this.#optimisticSkillMessageComponents) {
+			if (component instanceof SkillMessageComponent) component.markTranscriptBlockPending();
+		}
 		this.ensureLoadingAnimation();
 		this.ui.requestRender();
 	}
 
 	reconcileOptimisticSkillMessage(message: AgentMessage): void {
 		this.optimisticSkillMessagePending = false;
-		for (const component of this.#optimisticSkillMessageComponents) {
-			this.chatContainer.disposeAndRemoveChild(component);
-		}
+		const components = this.#optimisticSkillMessageComponents;
 		this.#optimisticSkillMessageComponents = [];
-		this.addMessageToChat(message);
+		if (
+			components.every(
+				component =>
+					!this.chatContainer.children.includes(component) || this.chatContainer.canRemoveBlock(component),
+			)
+		) {
+			for (const component of components) this.chatContainer.disposeAndRemoveChild(component);
+			this.addMessageToChat(message);
+			return;
+		}
+		// A row already in scrollback cannot be removed; adopt it instead of appending a duplicate card.
+		for (const component of components) {
+			if (component instanceof SkillMessageComponent) component.markTranscriptBlockFinalized();
+		}
 	}
 
 	clearOptimisticSkillMessage(): void {
@@ -1334,7 +1379,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			display?: boolean;
 			streamingBehavior?: "steer" | "followUp";
 		},
-		options?: { preserveDraft?: boolean },
+		options?: { preserveDraft?: boolean; clearEditor?: boolean },
 	): SubmittedUserInput {
 		const submission: SubmittedUserInput = {
 			text: input.text,
@@ -1346,6 +1391,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			cancelled: false,
 			started: false,
 		};
+		if (submission.customType !== "goal-continuation") this.#pendingGoalContinuationTurns = 0;
 		this.#pendingSubmittedInput = submission;
 		this.#pendingSubmissionPreservesDraft = options?.preserveDraft === true;
 		if (!submission.customType) {
@@ -1367,7 +1413,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else {
 			this.clearOptimisticUserMessage();
 		}
-		if (!options?.preserveDraft) {
+		if (!options?.preserveDraft && options?.clearEditor !== false) {
 			this.editor.setText("");
 			this.editor.imageLinks = undefined;
 		}
@@ -1389,17 +1435,27 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.clearOptimisticUserMessage();
 		this.#pendingWorkingMessage = undefined;
 		if (submission.customType === "goal-continuation") {
-			this.#goalContinuationTurnInFlight = false;
+			this.#pendingGoalContinuationTurns = Math.max(0, this.#pendingGoalContinuationTurns - 1);
 		}
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(true);
 		}
 		if (!submission.customType && !preserveDraft) {
-			this.editor.pendingImages = submission.images ? [...submission.images] : [];
-			this.editor.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
+			// Enter cleared the submitted draft before this cancellation; keep anything typed or attached since,
+			// after the recovered input.
+			const laterText = this.editor.getExpandedText();
+			const submittedImages = submission.images ?? [];
+			const recoveredText = laterText
+				? `${submission.text}\n${shiftImageMarkers(laterText, submittedImages.length)}`
+				: submission.text;
+			this.editor.pendingImageLinks = [
+				...(submission.imageLinks ?? submittedImages.map(() => undefined)),
+				...this.editor.pendingImageLinks,
+			];
+			this.editor.pendingImages = [...submittedImages, ...this.editor.pendingImages];
 			this.editor.imageLinks = this.editor.pendingImageLinks;
 			this.rebuildChatFromMessages();
-			this.editor.setText(submission.text);
+			this.editor.setCollapsedText(recoveredText);
 		}
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
@@ -1439,9 +1495,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#pendingSubmittedInput = undefined;
 			this.#pendingSubmissionDispose = undefined;
 			this.#pendingSubmissionPreservesDraft = false;
-		}
-		if (input.customType === "goal-continuation") {
-			this.#goalContinuationTurnInFlight = false;
 		}
 
 		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
@@ -1651,8 +1704,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		}));
 		if (!mutated) return;
-		this.session.setChecklistPhases(next);
-		this.setChecklist(next);
+		(this.#checklistPhasesOwner ?? this.session).setChecklistPhases(next);
+		this.checklistPhases = next;
+		this.#syncChecklistAutoClearTimer();
+		this.#renderChecklistList();
+		this.ui.requestRender();
 	}
 
 	#cancelChecklistAutoClearTimer(): void {
@@ -1863,8 +1919,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
-	async #loadChecklistList(): Promise<void> {
-		this.checklistPhases = this.session.getChecklistPhases();
+	async #loadChecklistList(source: AgentSession = this.session): Promise<void> {
+		this.checklistPhases = source.getChecklistPhases();
+		this.#checklistPhasesOwner = source;
 		this.#syncChecklistAutoClearTimer();
 		this.#renderChecklistList();
 	}
@@ -1880,6 +1937,26 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#resetGoalContinuationSuppression(): void {
 		this.#goalSuppressNextContinuation = false;
+		this.#previousGoalContinuationActivity = undefined;
+	}
+
+	/** Model-visible tool activity of one run; call IDs and timestamps are excluded so repeats compare equal. */
+	#goalContinuationActivity(messages: AgentMessage[]): string {
+		const digests: string[] = [];
+		const record = (value: unknown): void => {
+			const serialized = JSON.stringify(value);
+			digests.push(`${serialized.length}:${Bun.hash(serialized).toString(16)}`);
+		};
+		for (const message of messages) {
+			if (message.role === "assistant") {
+				for (const block of message.content) {
+					if (block.type === "toolCall") record(["call", block.name, block.arguments]);
+				}
+			} else if (message.role === "toolResult") {
+				record(["result", message.toolName, message.content, message.isError === true]);
+			}
+		}
+		return digests.join(":");
 	}
 
 	#getPausedGoalState(): GoalModeState | undefined {
@@ -1919,15 +1996,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async #handleGoalSessionEvent(event: AgentSessionEvent): Promise<void> {
 		if (event.type === "agent_start") {
-			this.#goalTurnHadToolCalls = false;
 			this.#cancelGoalContinuation();
-			return;
-		}
-		if (event.type === "tool_execution_start") {
-			this.#goalTurnHadToolCalls = true;
-			if (!this.#goalContinuationTurnInFlight) {
-				this.#resetGoalContinuationSuppression();
-			}
 			return;
 		}
 		if (event.type === "message_start" && event.message.role === "user" && !event.message.synthetic) {
@@ -1935,6 +2004,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		if (event.type === "goal_updated") {
+			if (event.state) this.#guidedGoalInterviewActive = false;
 			if (event.state?.goal?.status === "dropped") {
 				await this.#exitGoalMode({ reason: "dropped", silent: true });
 				return;
@@ -1957,9 +2027,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (event.type !== "agent_end") {
 			return;
 		}
-		if (this.#goalContinuationTurnInFlight) {
-			this.#goalSuppressNextContinuation = !this.#goalTurnHadToolCalls;
-			this.#goalContinuationTurnInFlight = false;
+		if (this.#guidedGoalInterviewActive && event.messages.some(hasAssistantToolCall)) {
+			this.#guidedGoalInterviewActive = false;
+		}
+		if (this.#pendingGoalContinuationTurns > 0) {
+			this.#pendingGoalContinuationTurns--;
+			// A continuation that did nothing new (no tools, or the same calls and results as the last one)
+			// would only repeat itself; wait for the user instead.
+			const activity = this.#goalContinuationActivity(event.messages);
+			this.#goalSuppressNextContinuation =
+				activity.length === 0 || activity === this.#previousGoalContinuationActivity;
+			this.#previousGoalContinuationActivity = activity;
+		} else {
+			this.#resetGoalContinuationSuppression();
 		}
 		if (this.session.getGoalModeState()?.mode === "exiting") {
 			await this.#exitGoalMode({ reason: "completed", silent: true });
@@ -1973,8 +2053,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.setGoalModeState(undefined);
 			this.goalModeEnabled = false;
 			this.goalModePaused = false;
-			this.#goalTurnHadToolCalls = false;
-			this.#goalContinuationTurnInFlight = false;
+			this.#pendingGoalContinuationTurns = 0;
+			this.#previousGoalContinuationActivity = undefined;
 			this.#goalSuppressNextContinuation = false;
 			this.#cancelGoalContinuation();
 			this.#updateGoalModeStatus();
@@ -1982,6 +2062,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async #reconcileModeFromSession(options?: { preserveActiveGoal?: boolean }): Promise<void> {
+		this.#guidedGoalInterviewActive = false;
 		const sessionContext = this.sessionManager.buildSessionContext();
 		await this.#clearTransientModeState();
 		const goalEnabled = this.session.settings.get("goal.enabled");
@@ -2060,7 +2141,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.goalModeEnabled = false;
 		this.goalModePaused = options?.paused ?? false;
-		this.#goalContinuationTurnInFlight = false;
+		this.#pendingGoalContinuationTurns = 0;
+		this.#previousGoalContinuationActivity = undefined;
+		this.#goalSuppressNextContinuation = false;
 		this.#cancelGoalContinuation();
 		this.#updateGoalModeStatus();
 		if (!options?.silent) {
@@ -2154,17 +2237,27 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const kickoff = prompt.render(guidedGoalInterviewPrompt, { initial: rest?.trim() || undefined });
 		const images = input?.images?.length ? input.images : undefined;
-		if (this.session.isStreaming) {
-			await this.session.followUp(kickoff, images, { synthetic: true });
-		} else {
-			try {
-				await this.session.prompt(kickoff, images ? { synthetic: true, images } : { synthetic: true });
-			} catch (error) {
-				if (!(error instanceof AgentBusyError)) throw error;
+		this.#guidedGoalInterviewActive = true;
+		try {
+			if (this.session.isStreaming) {
 				await this.session.followUp(kickoff, images, { synthetic: true });
+			} else {
+				try {
+					await this.session.prompt(kickoff, images ? { synthetic: true, images } : { synthetic: true });
+				} catch (error) {
+					if (!(error instanceof AgentBusyError)) throw error;
+					await this.session.followUp(kickoff, images, { synthetic: true });
+				}
 			}
+		} catch (error) {
+			this.#guidedGoalInterviewActive = false;
+			throw error;
 		}
 		return true;
+	}
+
+	isGuidedGoalInterviewActive(): boolean {
+		return this.#guidedGoalInterviewActive && !this.goalModeEnabled && !this.goalModePaused;
 	}
 
 	async #dispatchGoalSubcommand(
@@ -2536,14 +2629,40 @@ export class InteractiveMode implements InteractiveModeContext {
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
 		if (sessionId && sessionFile && this.sessionManager.isSessionOnDisk()) {
-			process.stderr.write(`\n${chalk.dim(`Resume this session with ${resumeCommand(sessionId)}`)}\n`);
+			// Command on its own line so a triple-click selects just the command.
+			process.stderr.write(`\n${chalk.dim("Resume this session with")}\n${chalk.dim(resumeCommand(sessionId))}\n`);
 		}
 
 		await quitPromise;
 	}
 
+	requestShutdown(): void {
+		this.shutdownRequested = true;
+		// A background extension may request shutdown with no terminal input coming; check the boundary now.
+		void this.checkShutdownRequested().catch(error => {
+			this.showError(`Shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+		});
+	}
+
 	async checkShutdownRequested(): Promise<void> {
-		if (!this.shutdownRequested) return;
+		if (!this.shutdownRequested || this.#isShuttingDown) return;
+		// An admitted submission that settles may start a turn whose recovery waitForIdle() must observe again.
+		for (;;) {
+			await this.session.waitForIdle();
+			if (!this.session.hasAdmittedSubmission) break;
+			await this.session.waitForAdmittedSubmissions();
+		}
+		// The final decision and the start of shutdown() share one microtask, so nothing is admitted in between.
+		if (
+			this.#isShuttingDown ||
+			this.#pendingSubmittedInput !== undefined ||
+			this.session.hasAdmittedSubmission ||
+			this.session.isStreaming ||
+			this.session.queuedMessageCount > 0 ||
+			this.session.hasPendingAsyncWork()
+		) {
+			return;
+		}
 		await this.shutdown();
 	}
 
@@ -2739,6 +2858,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	ensureLoadingAnimation(): void {
+		// A retry/compaction loader owns the status row until its end event.
+		if (this.autoCompactionLoader || this.retryLoader) return;
 		if (!this.loadingAnimation) {
 			this.statusContainer.disposeChildren();
 			const messageColorFn: LoaderMessageColorFn = message => theme.fg("muted", message);
@@ -2752,6 +2873,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.statusContainer.addChild(this.loadingAnimation);
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.disposeChildren();
+			// Detaching disposed (stopped) it; restart so the reattached spinner animates.
+			this.loadingAnimation.start();
 			this.statusContainer.addChild(this.loadingAnimation);
 			this.ui.requestRender();
 		}
@@ -2806,8 +2929,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.updatePendingMessagesDisplay();
 	}
 
-	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {
-		this.#uiHelpers.queueCompactionMessage(text, mode, images);
+	queueCompactionMessage(
+		text: string,
+		mode: "steer" | "followUp",
+		images?: ImageContent[],
+		options?: { preserveDraft?: boolean },
+	): void {
+		this.#uiHelpers.queueCompactionMessage(text, mode, images, options);
 	}
 
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
@@ -2910,14 +3038,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleContextCommand();
 	}
 
-	#prepareSessionSwitch(): void {
+	prepareSessionSwitch(): void {
 		this.#sideQuestionController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.clearPinnedError();
 	}
 
 	async handleClearCommand(): Promise<void> {
-		this.#prepareSessionSwitch();
+		this.prepareSessionSwitch();
 		await this.#commandController.handleClearCommand();
 	}
 
@@ -3044,14 +3172,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleResumeSession(sessionPath: string): Promise<void> {
-		try {
-			await this.settings.flush();
-		} catch (err) {
-			this.showError(`Failed to save pending settings: ${err instanceof Error ? err.message : String(err)}`);
-			return;
-		}
-		this.#sideQuestionController.dispose();
-		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
+		await this.#selectorController.handleResumeSession(sessionPath);
 	}
 
 	handleSessionDeleteCommand(): Promise<void> {
@@ -3114,8 +3235,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#inputController.handleImagePaste();
 	}
 
-	handleQueueCommand(message: string): Promise<void> {
-		return this.#inputController.handleQueueCommand(message);
+	handleQueueCommand(
+		message: string,
+		detached?: Pick<SubmittedUserInput, "text" | "images" | "imageLinks">,
+	): Promise<void> {
+		return this.#inputController.handleQueueCommand(message, detached);
 	}
 
 	handleSideCommand(mode: SideCommandMode, text: string): Promise<void> {
@@ -3211,13 +3335,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				},
 			];
 		}
+		this.#checklistPhasesOwner = this.viewSession;
 		this.#syncChecklistAutoClearTimer();
 		this.#renderChecklistList();
 		this.ui.requestRender();
 	}
 
-	async reloadChecklist(): Promise<void> {
-		await this.#loadChecklistList();
+	async reloadChecklist(source: AgentSession = this.session): Promise<void> {
+		await this.#loadChecklistList(source);
 		this.ui.requestRender();
 	}
 

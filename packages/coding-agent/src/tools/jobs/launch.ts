@@ -398,7 +398,9 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 		case "wait": {
 			const lines = [daemonLabel(result.daemon)];
 			if (result.matched) lines.push(`Matched: ${result.matched}`);
-			if (result.timedOut) {
+			if (params.pattern && result.matched === undefined && TERMINAL_STATES[result.daemon.state]) {
+				lines.push(`Process exited before output pattern /${params.pattern}/ matched.`);
+			} else if (result.timedOut) {
 				const pending = readyPendingSummary(result.daemon);
 				lines.push(`Wait timed out${pending.length > 0 ? ` (still waiting on: ${pending.join("; ")})` : ""}.`);
 			}
@@ -647,7 +649,9 @@ export function launchRenderResult(
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
 				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(sanitizeText(details.matched))}`));
-				if (details?.timedOut) {
+				if (params.pattern && !details?.matched && daemon && TERMINAL_STATES[daemon.state]) {
+					body.push(theme.fg("warning", "Process exited before output pattern matched."));
+				} else if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon) : [];
 					body.push(
 						theme.fg(

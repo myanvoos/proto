@@ -32,6 +32,13 @@ function abortReason(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("Aborted");
 }
 
+export class LegacySseConnectionTimeoutError extends Error {
+	constructor(timeoutMs: number) {
+		super(`Legacy SSE endpoint timeout after ${timeoutMs}ms`);
+		this.name = "LegacySseConnectionTimeoutError";
+	}
+}
+
 export class LegacySseTransport implements MCPTransport {
 	#connected = false;
 	#endpointUrl: string | null = null;
@@ -131,7 +138,7 @@ export class LegacySseTransport implements MCPTransport {
 			await readPromise?.catch(() => {});
 			if (options?.signal?.aborted) throw abortReason(options.signal);
 			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
-				throw new Error(`Legacy SSE endpoint timeout after ${timeout}ms`);
+				throw new LegacySseConnectionTimeoutError(timeout);
 			}
 			throw error;
 		}
@@ -259,6 +266,10 @@ export class LegacySseTransport implements MCPTransport {
 				operation.clear();
 				if (options?.signal?.aborted && options.signal.reason instanceof Error) {
 					deferred.reject(options.signal.reason);
+					return;
+				}
+				if (this.#lifetime.signal.aborted) {
+					deferred.reject(new Error("Transport closed"));
 					return;
 				}
 				const message = `Legacy SSE response timeout after ${timeout}ms`;

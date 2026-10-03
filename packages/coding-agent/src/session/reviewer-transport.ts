@@ -8,6 +8,7 @@ import {
 	type CompactionSummaryMessage,
 	resolveTelemetry,
 	type StreamFn,
+	TERMINAL_TOOL_RESULT_ABORT_REASON,
 	ThinkingLevel,
 	type Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
@@ -295,14 +296,9 @@ export class ReviewerTransport implements ReviewerInstance {
 		const tools = (options.toolPool ?? []).filter(t => names.has(t.name));
 		const advisorLoopTools: AgentTool<any>[] = [options.adviseTool, ...tools];
 		const advisorToolMap = new Map<string, AgentTool<any>>();
-		const availableAdvisorToolNames = new Set<string>();
 		for (const tool of advisorLoopTools) {
-			availableAdvisorToolNames.add(tool.name);
 			advisorToolMap.set(tool.name, tool);
-			if (tool.customWireName !== undefined) {
-				availableAdvisorToolNames.add(tool.customWireName);
-				advisorToolMap.set(tool.customWireName, tool);
-			}
+			if (tool.customWireName !== undefined) advisorToolMap.set(tool.customWireName, tool);
 		}
 
 		const primaryProviderSessionId = this.#host.sessionId();
@@ -387,11 +383,25 @@ export class ReviewerTransport implements ReviewerInstance {
 			transformAssistantMessage: message => {
 				this.#quarantinedAdvisorOutput = quarantineAdvisorUnsafeOutput(
 					message,
-					availableAdvisorToolNames,
 					buildAdvisorQuarantineSourceText(this.#currentAdvisorInput, advisorAgent.state.messages),
 					options.generatedTextExtractor,
 					options.quarantinePrefix,
 				);
+			},
+			// An advise-only turn has nothing left to do; re-invoking the model over the whole prefix just to say
+			// "done" never yields a note. End the review through the terminal-tool-result path (the batch persists and
+			// onTurnEnd still runs) on the LAST advise call, so a not-yet-started sibling advise is not skipped.
+			afterToolCall: ctx => {
+				const adviseName = options.adviseTool.name;
+				if (ctx.toolCall.name !== adviseName || ctx.isError) return undefined;
+				let lastAdviseId: string | undefined;
+				for (const block of ctx.assistantMessage.content) {
+					if (block.type !== "toolCall") continue;
+					if (block.name !== adviseName) return undefined;
+					lastAdviseId = block.id;
+				}
+				if (ctx.toolCall.id === lastAdviseId) advisorAgent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+				return undefined;
 			},
 			telemetry: advisorTelemetry,
 			serviceTier: undefined,
@@ -509,8 +519,13 @@ export class ReviewerTransport implements ReviewerInstance {
 		}
 	}
 
-	awaitCatchup(threshold: number, capMs: number, signal?: AbortSignal): Promise<boolean> {
-		return this.runtime.waitForCatchup(capMs, threshold, signal);
+	awaitCatchup(
+		threshold: number,
+		capMs: number,
+		signal?: AbortSignal,
+		options?: { waitThroughRecovery?: boolean },
+	): Promise<boolean> {
+		return this.runtime.waitForCatchup(capMs, threshold, signal, options);
 	}
 
 	resetForConversationBoundary(): void {

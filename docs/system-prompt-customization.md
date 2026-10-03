@@ -32,6 +32,8 @@ The CLI's direct file lookup does **not** walk ancestors. Starting PROTO in `<re
 
 A flag wins over every discovered file. For each filename, project scope wins over user scope and the first config base in the order above wins within that scope.
 
+An explicitly empty `--system-prompt ""` (or SDK `customSystemPrompt: ""`) still counts as a flag: discovered `SYSTEM.md` files are ignored and the default instructions are used unchanged.
+
 ### Text or file resolution
 
 For a single-line value, PROTO first tries to read that value as a file path. If reading fails because the path does not exist (or is too long to be a path), the value is used literally. A value containing a newline is used literally without a file read. Other file-read failures are logged and the original value is still used literally.
@@ -66,7 +68,7 @@ Without `SYSTEM.md`, append text is rendered at the end of `project-prompt.md`, 
 
 With `SYSTEM.md`, append text is rendered immediately after the custom text in `custom-system-prompt.md`. Context, skills, and rules follow it, and the separate project/environment footer follows that block. The templates prevent the append text and context files from being emitted twice.
 
-SDK-generated append content (for enabled auto-learn features and MCP guidance) is combined before the user-supplied append text.
+SDK-generated append content (for enabled auto-learn features and MCP guidance) is combined before the user-supplied append text. When generated content precedes it, the user text is placed under its own `## User Instructions` heading so it is never read as part of the server-controlled `## MCP Server Instructions` section; the user text itself is inserted verbatim. Whitespace-only append text adds nothing.
 
 ## Plain-text contract
 
@@ -127,7 +129,7 @@ leaves the session unnamed, so a later eligible title attempt can name it.
 
 ## Full provider-facing replacement (SDK only)
 
-`CreateAgentSessionOptions.systemPrompt` is a different, lower-level API. A string or array replaces the fully rendered default blocks; a callback receives the rendered block array and returns its replacement. This can omit all generated context and safety blocks.
+`CreateAgentSessionOptions.systemPrompt` is a different, lower-level API. A string or array replaces every generated block, so the default blocks are not built at all; a callback receives the rendered block array and returns its replacement. Either form can omit all generated context and safety blocks.
 
 The CLI flags and files do **not** set this property: they set `customSystemPrompt` and `appendSystemPrompt`, which continue through the bundled templates described above.
 

@@ -33,3 +33,11 @@ test("ctrl+d on an empty prompt still exits", () => {
 	editor.handleInput(CTRL_D);
 	expect(exits()).toBe(1);
 });
+
+test("ctrl+d that leaves a bare queue prefix opens the queue body like any other edit", () => {
+	const { editor, exits } = composer("->x");
+	editor.handleInput("\x1b[D");
+	editor.handleInput(CTRL_D);
+	expect(editor.getText()).toBe("->\n");
+	expect(exits()).toBe(0);
+});

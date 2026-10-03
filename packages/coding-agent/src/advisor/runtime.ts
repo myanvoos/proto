@@ -2,7 +2,6 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
-import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
 	collectNativeReplayRegexSecretValues,
@@ -44,6 +43,9 @@ export interface ReviewerRuntimeHost {
 	): Promise<boolean | undefined> | boolean | undefined;
 
 	onTurnSuccess?(): Promise<void> | void;
+
+	/** A failed batch was dropped for good, so replay-only state can be discarded. */
+	onTurnAbandoned?(): void;
 
 	notifyFailure?(error: unknown): void;
 
@@ -95,31 +97,19 @@ const ADVISOR_OUTPUT_ONLY_HAZARDS: readonly AdvisorOutputHazard[] = [
 
 export function quarantineAdvisorUnsafeOutput(
 	message: AssistantMessage,
-	availableToolNames: ReadonlySet<string>,
 	sourceText = "",
 	extractGeneratedText: ReviewerGeneratedTextExtractor = extractAdviseGeneratedText,
 	quarantinePrefix: string = ADVISOR_QUARANTINE_PREFIX,
 ): string | undefined {
+	// Only hazardous output is quarantined. A call to an ungranted tool is answered in-band by the agent loop
+	// (`Tool <name> not found`); quarantining it would replace the whole message and lose a sibling `advise` call.
 	const reasons: string[] = [];
-	const unavailableToolNames = new Set<string>();
 	const generatedParts: string[] = [];
 	for (const block of message.content) {
-		if (
-			block.type === "toolCall" &&
-			!availableToolNames.has(block.name) &&
-			(block as CursorExecResolvedCarrier)[kCursorExecResolved] !== true
-		) {
-			unavailableToolNames.add(block.name);
-		}
 		if (block.type === "toolCall") {
 			generatedParts.push(...extractGeneratedText(block));
 		}
 		if (block.type === "text") generatedParts.push(block.text);
-	}
-	if (unavailableToolNames.size > 0) {
-		const names = [...unavailableToolNames].sort();
-		const toolLabel = names.length === 1 ? "tool" : "tools";
-		reasons.push(`requested unavailable ${toolLabel} ${names.join(", ")}`);
 	}
 
 	const generatedText = generatedParts.join("\n");
@@ -180,6 +170,8 @@ interface PendingDelta extends RenderedFeedItem {
 
 interface CatchupWaiter {
 	threshold: number;
+	/** Stays parked while a failed turn is retried or recovered through the host's fallback chain. */
+	waitThroughRecovery: boolean;
 	finish: (caughtUp: boolean) => void;
 	timer?: NodeJS.Timeout;
 }
@@ -267,7 +259,7 @@ export class ReviewerRuntime {
 			rendered = this.#feed.render(all, wip);
 		} catch (err) {
 			this.#failing = true;
-			this.#wakeAllWaiters();
+			this.#releaseFailureWaiters();
 			logger.warn("advisor delta render failed", { err: String(err) });
 		}
 		if (rendered) {
@@ -278,14 +270,26 @@ export class ReviewerRuntime {
 		}
 	}
 
-	waitForCatchup(maxMs: number, threshold: number, signal?: AbortSignal): Promise<boolean> {
+	/**
+	 * A failing advisor releases waiters at once so the primary never parks on it. `waitThroughRecovery` is for a
+	 * headless drain about to dispose the session: it stays parked through retry and fallback-chain recovery and is
+	 * released only by catch-up, the deadline, the signal, or a terminal stop.
+	 */
+	waitForCatchup(
+		maxMs: number,
+		threshold: number,
+		signal?: AbortSignal,
+		options?: { waitThroughRecovery?: boolean },
+	): Promise<boolean> {
+		const waitThroughRecovery = options?.waitThroughRecovery === true;
 		if (
 			this.disposed ||
 			signal?.aborted ||
 			this.#backlog < threshold ||
 			this.#quotaExhausted ||
 			this.#halted ||
-			this.#failing
+			this.#sessionTransitionPaused ||
+			(this.#failing && !waitThroughRecovery)
 		)
 			return Promise.resolve(this.#backlog < threshold);
 		const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -300,6 +304,7 @@ export class ReviewerRuntime {
 		const abort = (): void => finish(false);
 		waiter = {
 			threshold,
+			waitThroughRecovery,
 			finish,
 			timer: setTimeout(abort, maxMs),
 		};
@@ -425,6 +430,16 @@ export class ReviewerRuntime {
 		this.#resetAdvisorContext(true, true, reason);
 	}
 
+	/** Keeps advisor context across an in-place prune of the primary transcript; see `DeltaCursorFeed.rebase`. */
+	rebaseDeliveredPrefix(reason: string): void {
+		if (this.disposed) return;
+		const all = this.host.snapshotMessages();
+		if (!this.#feed.rebase(all)) return;
+		// A quarantine re-prime replays `#latestMessages`; keep it on the rewritten transcript.
+		this.#latestMessages = all;
+		logger.debug("advisor delivered prefix rebased", { reason, lastCount: this.#feed.lastCount });
+	}
+
 	seedTo(count: number): void {
 		this.#feed.seedTo(count);
 		this.#pending = [];
@@ -456,6 +471,13 @@ export class ReviewerRuntime {
 	#wakeAllWaiters(): void {
 		for (const w of [...this.#waiters]) {
 			w.finish(false);
+		}
+	}
+
+	/** Recovery-aware waiters stay parked: a drained or dropped batch, or a terminal stop, still releases them. */
+	#releaseFailureWaiters(): void {
+		for (const w of [...this.#waiters]) {
+			if (!w.waitThroughRecovery) w.finish(false);
 		}
 	}
 
@@ -595,6 +617,14 @@ export class ReviewerRuntime {
 		}
 	}
 
+	#notifyTurnAbandoned(): void {
+		try {
+			this.host.onTurnAbandoned?.();
+		} catch (err) {
+			logger.debug("advisor onTurnAbandoned hook failed", { err: String(err) });
+		}
+	}
+
 	async #drain(): Promise<void> {
 		if (this.#busy || this.#sessionTransitionPaused) return;
 		this.#busy = true;
@@ -687,7 +717,7 @@ export class ReviewerRuntime {
 					if (this.#epoch !== epoch) continue;
 
 					this.#failing = true;
-					this.#wakeAllWaiters();
+					this.#releaseFailureWaiters();
 					const failedMessages = this.agent.state.messages.slice(messageSnapshot);
 					const terminalFailure = this.#terminalAssistantFailure(messageSnapshot);
 					const rawErrorId = AIError.classify(err);
@@ -764,6 +794,7 @@ export class ReviewerRuntime {
 
 						this.#refusalModelsTried.clear();
 						this.#notifyFailureOnce(err);
+						this.#notifyTurnAbandoned();
 						this.#clearSeenContext();
 						this.#backlog = Math.max(0, this.#backlog - finalTurns);
 						this.#notifyWaiters();
@@ -788,6 +819,7 @@ export class ReviewerRuntime {
 						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
 							this.#notifyFailureOnce(err);
 							this.#consecutiveQuarantines = 0;
+							this.#notifyTurnAbandoned();
 							this.#resetAdvisorContext(true, true, "quarantine-retry-exhausted");
 							continue;
 						}
@@ -837,6 +869,7 @@ export class ReviewerRuntime {
 					if (!terminalFailureRetriable) {
 						logger.warn("advisor terminal failure is non-retriable; dropping bounded batch");
 						this.#notifyFailureOnce(err);
+						this.#notifyTurnAbandoned();
 						this.#consecutiveFailures = 0;
 
 						this.#clearSeenContext();
@@ -847,6 +880,7 @@ export class ReviewerRuntime {
 						if (contextWasFresh) {
 							logger.warn("advisor update overflowed a fresh context; dropping bounded batch");
 							this.#notifyFailureOnce(err);
+							this.#notifyTurnAbandoned();
 							success = true;
 						} else {
 							const recoveryBatch = this.#feed.renderRaw(rawMessages, wip) ?? batch;
@@ -865,6 +899,7 @@ export class ReviewerRuntime {
 						if (this.#consecutiveFailures >= 3) {
 							logger.warn("advisor failed consecutively 3 times; dropping backlog to prevent stall");
 							this.#notifyFailureOnce(err);
+							this.#notifyTurnAbandoned();
 							this.#consecutiveFailures = 0;
 
 							this.#clearSeenContext();

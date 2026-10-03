@@ -23,6 +23,7 @@ import { formatModelSelectorValue } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import { sanitizeDisplayWarnings } from "../../tools/render-utils";
 import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { HookEditorComponent } from "./hook-editor";
@@ -247,7 +248,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const warnings = this.#doc.warnings?.length
 			? [
 					theme.fg("warning", "⚠ Config problems — dropped while loading:"),
-					...this.#doc.warnings.flatMap(warning =>
+					...sanitizeDisplayWarnings(this.#doc.warnings).flatMap(warning =>
 						wrap(warning, bodyWidth).map(line => theme.fg("warning", line)),
 					),
 					"",
@@ -342,12 +343,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (this.#doc.advisors.length === 0) this.#doc.advisors.push({ name: "default" });
 	}
 
-	#isBareDefaultDoc(doc: WatchdogConfigDoc): boolean {
-		if (doc.advisors.length !== 1 || doc.instructions?.trim()) return false;
+	#hasSyntheticDefaultAdvisor(doc: WatchdogConfigDoc): boolean {
+		if (doc.advisors.length !== 1) return false;
 		const advisor = doc.advisors[0];
-		if (!advisor) return false;
 		return (
-			advisor.name === "default" &&
+			advisor?.name === "default" &&
 			!advisor.model?.trim() &&
 			advisor.tools === undefined &&
 			!advisor.instructions?.trim() &&
@@ -408,13 +408,16 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#doc = doc;
 			this.#scope = next;
 			// The host reported the opening file's problems; only files activated by a switch report here.
-			if (doc.warnings?.length) (this.#cb.warn ?? this.#cb.notify)(`WATCHDOG.yml: ${doc.warnings.join("; ")}`);
+			if (doc.warnings?.length)
+				(this.#cb.warn ?? this.#cb.notify)(`WATCHDOG.yml: ${sanitizeDisplayWarnings(doc.warnings).join("; ")}`);
 			this.#ensureRosterVisible();
 			this.#showList();
 			return;
 		}
 		if (value === "save") {
-			await this.#cb.save(this.#scope, this.#isBareDefaultDoc(this.#doc) ? { advisors: [] } : this.#doc);
+			// The roster editor shows an implicit `default` row; persisting it would replace the implicit advisor.
+			const doc = this.#hasSyntheticDefaultAdvisor(this.#doc) ? { ...this.#doc, advisors: [] } : this.#doc;
+			await this.#cb.save(this.#scope, doc);
 			// The saved file holds only the valid entries, so its load-time warnings no longer apply.
 			this.#doc.warnings = undefined;
 			this.#dirty = false;

@@ -5,6 +5,7 @@ import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import type { OAuthCredential } from "../session/auth-storage";
+import { buildWellKnownUrls } from "./oauth-discovery";
 
 const MCP_OAUTH_URL_CREDENTIAL_PREFIX = "mcp_oauth:";
 
@@ -87,6 +88,11 @@ export interface MCPStoredOAuthCredential extends OAuthCredential {
 
 const DEFAULT_PORT = 3000;
 const CALLBACK_PATH = "/callback";
+
+function isGoogleAuthorizationHost(hostname: string): boolean {
+	const host = hostname.toLowerCase();
+	return host === "accounts.google.com" || host.endsWith(".accounts.google.com");
+}
 
 function hasOAuthScope(scopes: string | null | undefined, scope: string): boolean {
 	return !!scopes && scopes.split(/\s+/).includes(scope);
@@ -186,7 +192,7 @@ function staticClientIdFromConfig(config: MCPOAuthConfig): string | undefined {
 	const fromConfig = config.clientId?.trim();
 	if (fromConfig) return fromConfig;
 	try {
-		return new URL(config.authorizationUrl).searchParams.get("client_id") ?? undefined;
+		return new URL(config.authorizationUrl).searchParams.get("client_id")?.trim() || undefined;
 	} catch {
 		return undefined;
 	}
@@ -285,6 +291,8 @@ interface MCPOAuthConfig {
 
 	tokenUrl: string;
 
+	issuerUrl?: string;
+
 	registrationUrl?: string;
 
 	clientId?: string;
@@ -368,8 +376,12 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			params.set("response_type", "code");
 		}
 		const existingClientId = params.get("client_id")?.trim();
-		if (this.#resolvedClientId && !existingClientId) {
+		if (this.#resolvedClientId) {
 			params.set("client_id", this.#resolvedClientId);
+		} else if (existingClientId) {
+			params.set("client_id", existingClientId);
+		} else {
+			params.delete("client_id");
 		}
 		if (this.config.scopes && !params.get("scope")) {
 			params.set("scope", this.config.scopes);
@@ -378,8 +390,15 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 		if (prompt && !params.get("prompt")) {
 			params.set("prompt", prompt);
 		}
+		// Google mints refresh tokens only for access_type=offline; other issuers would ignore the parameter.
+		if (!params.get("access_type") && isGoogleAuthorizationHost(authUrl.hostname)) {
+			params.set("access_type", "offline");
+		}
 		const existingResource = params.get("resource")?.trim();
-		if (existingResource) {
+		if (this.#resource && !this.config.stripSameOriginResource) {
+			// Advertised resource metadata names the audience; a resource query embedded in the endpoint does not.
+			params.set("resource", this.#resource);
+		} else if (existingResource) {
 			const filtered = filterResourceIndicator(resolveResourceUri(existingResource), this.config.authorizationUrl);
 			if (filtered) {
 				this.#resource = filtered;
@@ -546,7 +565,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			if (typeof result.data !== "object" || result.data === null || Array.isArray(result.data)) return;
 			const data = result.data as Record<string, unknown>;
 			if (typeof data.client_id === "string" && data.client_id.trim() !== "") {
-				this.#resolvedClientId = data.client_id;
+				this.#resolvedClientId = data.client_id.trim();
 			}
 			if (typeof data.client_secret === "string" && data.client_secret.trim() !== "") {
 				this.#registeredClientSecret = data.client_secret;
@@ -561,30 +580,16 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 	}
 
 	async #resolveRegistrationEndpoint(): Promise<string | null> {
-		const authorizationUrl = new URL(this.config.authorizationUrl);
-
-		const rootUrl = new URL("/.well-known/oauth-authorization-server", authorizationUrl.origin).toString();
-		const endpoint = await this.#tryWellKnownForRegistration(rootUrl);
-		if (endpoint) return endpoint;
-
-		const normalizedPath = authorizationUrl.pathname.replace(/\/$/, "");
-		const lastSlash = normalizedPath.lastIndexOf("/");
-
-		if (lastSlash < 0) return null;
-
-		const prefixPath = lastSlash === 0 ? normalizedPath : normalizedPath.slice(0, lastSlash);
-		const prefixedUrl = new URL(
-			".well-known/oauth-authorization-server",
-			`${authorizationUrl.origin}${prefixPath}/`,
-		).toString();
-		const prefixedEndpoint = await this.#tryWellKnownForRegistration(prefixedUrl);
-		if (prefixedEndpoint) return prefixedEndpoint;
-
-		const pathfulUrl = new URL(
-			`/.well-known/oauth-authorization-server${normalizedPath}`,
-			authorizationUrl.origin,
-		).toString();
-		return await this.#tryWellKnownForRegistration(pathfulUrl);
+		const candidates = buildWellKnownUrls(
+			"/.well-known/oauth-authorization-server",
+			this.config.issuerUrl ?? this.config.authorizationUrl,
+			this.config.issuerUrl !== undefined,
+		);
+		for (const url of candidates) {
+			const endpoint = await this.#tryWellKnownForRegistration(url.toString());
+			if (endpoint) return endpoint;
+		}
+		return null;
 	}
 
 	async #tryWellKnownForRegistration(wellKnownUrl: string): Promise<string | null> {
@@ -695,7 +700,8 @@ export async function refreshMCPOAuthToken(
 		grant_type: "refresh_token",
 		refresh_token: refreshToken,
 	});
-	if (clientId) params.set("client_id", clientId);
+	const normalizedClientId = clientId?.trim();
+	if (normalizedClientId) params.set("client_id", normalizedClientId);
 
 	const resolvedResource = filterResourceIndicator(resolveResourceUri(resource), filterAnchor, {
 		stripSameOriginResource: optsFromTrailing?.stripSameOriginResource,

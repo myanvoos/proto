@@ -53,7 +53,7 @@ import {
 import { AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { type Rule, setActiveRules } from "./capability/rule";
-import { collectActiveRules, discoverRules } from "./capability/rule-buckets";
+import { collectActiveRules, discoverRules, rediscoverRules } from "./capability/rule-buckets";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -91,6 +91,7 @@ import {
 import { discoverCustomToolPaths, loadCustomTools, type ToolPathWithSource } from "./extensibility/custom-tools";
 import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./extensibility/custom-tools/types";
 import {
+	bindPreparedExtensions,
 	discoverAndLoadExtensions,
 	discoverExtensionPaths,
 	EXTENSION_HANDLER_TIMEOUT_MS,
@@ -102,6 +103,7 @@ import {
 	type LoadExtensionsResult,
 	loadExtensionFromFactory,
 	loadExtensions,
+	type PreparedExtension,
 	type RegisteredTool,
 	type ToolDefinition,
 	wrapRegisteredTools,
@@ -114,7 +116,12 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import { hookUIContextFromExtension } from "./extensibility/utils";
-import { LocalProtocolHandler, type LocalProtocolOptions, resolveFleetRoot } from "./internal-urls";
+import {
+	LocalProtocolHandler,
+	type LocalProtocolOptions,
+	PROTOLENS_URL_PREFIX,
+	resolveFleetRoot,
+} from "./internal-urls";
 import {
 	deduplicateMCPToolsByName,
 	discoverAndLoadMCPTools,
@@ -124,6 +131,7 @@ import {
 	MCPToolCache,
 	type MCPToolsLoadResult,
 	parseMCPToolName,
+	resolveMCPToolAlias,
 } from "./mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
@@ -141,8 +149,9 @@ import {
 import { AgentSession, type InitialRetryFallbackState, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { formatCredentialDisabledNotice } from "./session/credential-disabled-notice";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
-import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import {
 	type CustomMessage,
 	convertToLlm,
@@ -150,10 +159,11 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
-import { clampProviderContextImages } from "./session/provider-image-budget";
+import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
+	installRetryFallbackRole,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
@@ -168,6 +178,7 @@ import { unmountAll } from "./ssh/sshfs-mount";
 import {
 	type BuildSystemPromptResult,
 	buildSystemPrompt as buildSystemPromptInternal,
+	composeAppendPrompt,
 	loadProjectContextFiles as loadContextFilesInternal,
 	projectSystemPromptToolMetadata,
 } from "./system-prompt";
@@ -188,7 +199,6 @@ import {
 	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
 	getImageGenTools,
-	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
 	releaseComputerSessionsForOwner,
@@ -205,7 +215,14 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { ReadTool } from "./tools/read";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
-import { listXdevTools, resolveMountedXdevExecutable, xdevDocsAll, xdevEntries } from "./tools/xdev";
+import {
+	listXdevTools,
+	planXdevPromptDocs,
+	renderXdevPromptDocs,
+	resolveMountedXdevExecutable,
+	xdevEntries,
+} from "./tools/xdev";
+import { resolveYieldReportText } from "./tools/yield";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
@@ -384,7 +401,8 @@ export interface CreateAgentSessionOptions {
 
 	preloadedExtensions?: LoadExtensionsResult;
 
-	preloadedExtensionPaths?: string[];
+	/** Extension factories another session already imported; rebound to this session without re-evaluating them. */
+	preloadedPreparedExtensions?: readonly PreparedExtension[];
 
 	preloadedCustomToolPaths?: ToolPathWithSource[];
 
@@ -556,7 +574,10 @@ export async function loadCliExtensionProviders(
 	modelRegistry: ModelRegistry,
 	settings: Settings,
 	cwd: string,
-	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths"> = {},
+	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths"> & {
+		/** Discover extension model catalogs after registration (default true); usage-only callers skip it. */
+		discoverModels?: boolean;
+	} = {},
 ): Promise<void> {
 	const eventBus = new EventBus();
 	const extensionsResult = await loadSessionExtensions(options, cwd, settings, eventBus);
@@ -569,7 +590,7 @@ export async function loadCliExtensionProviders(
 		modelRegistry.registerProvider(name, config, sourceId);
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
-	await modelRegistry.refreshRuntimeProviders();
+	if (options.discoverModels !== false) await modelRegistry.refreshRuntimeProviders();
 }
 
 export async function discoverSkills(
@@ -585,11 +606,12 @@ export async function discoverSkills(
 
 export async function discoverContextFiles(
 	cwd?: string,
-	_agentDir?: string,
+	agentDir?: string,
 	disabledExtensions?: string[],
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
 	return await loadContextFilesInternal({
 		cwd: cwd ?? getProjectDir(),
+		agentDir: agentDir ?? getAgentDir(),
 		disabledExtensions,
 	});
 }
@@ -1013,14 +1035,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 	const startupCredentialDisabledEvents: CredentialDisabledEvent[] = [];
 	let credentialDisabledTarget: ExtensionRunner | undefined;
+	// Set once the session exists: an automatic sign-out must not hide behind a sibling account that keeps answering.
+	let credentialNoticeSession: AgentSession | undefined;
 	const unsubscribeCredentialDisabled: (() => void) | undefined = authStorage.onCredentialDisabled(event => {
+		const notice = credentialNoticeSession && formatCredentialDisabledNotice(event);
+		if (notice) credentialNoticeSession?.emitNotice("warning", notice, "auth");
 		if (credentialDisabledTarget) {
 			void credentialDisabledTarget.emitCredentialDisabled(event);
 		} else {
 			startupCredentialDisabledEvents.push(event);
 		}
 	});
-	await modelRegistry.hydrateCredentialScopedModelCaches();
+	await logger.time("hydrateCredentialScopedModelCaches", () => modelRegistry.hydrateCredentialScopedModelCaches());
 	if (!options.modelRegistry) {
 		modelRegistry.refreshInBackground();
 	}
@@ -1117,6 +1143,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
 	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
 	if (interruptedTurnAbort) {
+		for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
 		existingBranch = logger.time("getRecoveredSessionBranch", () => sessionManager.getBranch());
 	}
@@ -1235,20 +1262,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		skillWarnings = discovered.warnings;
 	}
 
-	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
-		"discoverTtsrRules",
-		async () => {
-			const discovered = await discoverRules({
-				cwd,
-				ttsrSettings: settings.getGroup("ttsr"),
-				...(options.rules !== undefined && { rules: options.rules }),
-			});
-			if (existingSession.injectedTtsrRules.length > 0) {
-				discovered.ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
-			}
-			return discovered;
-		},
-	);
+	const discoveredRules = await logger.time("discoverTtsrRules", async () => {
+		const discovered = await discoverRules({
+			cwd,
+			agentDir,
+			ttsrSettings: settings.getGroup("ttsr"),
+			...(options.rules !== undefined && { rules: options.rules }),
+		});
+		if (existingSession.injectedTtsrRules.length > 0) {
+			discovered.ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
+		}
+		return discovered;
+	});
+	const { ttsrManager } = discoveredRules;
+	// Reassigned when a session-scoped prompt rebuild (/clear, /new) re-reads rules from disk.
+	let { rulebookRules, alwaysApplyRules, allRules } = discoveredRules;
 
 	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
 		const deadline = AbortSignal.timeout(STARTUP_SCAN_DEADLINE_MS);
@@ -1419,6 +1447,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getChecklistPhases: () => session.getChecklistPhases(),
 			setChecklistPhases: phases => session.setChecklistPhases(phases),
 			getCheckpointState: () => session.getCheckpointState(),
+			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
 			setCheckpointState: state => session.setCheckpointState(state ?? undefined),
 			getLastCompletedRewind: () => session.getLastCompletedRewind(),
 			getToolChoiceQueue: () => session.toolChoiceQueue,
@@ -1593,13 +1622,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 			}
 
-			if (options.toolNames?.includes("web_search")) {
-				customTools.push(...(await getSearchTools()));
-			}
-
 			customToolPaths =
 				options.preloadedCustomToolPaths ??
-				(await logger.time("discoverCustomToolPaths", () => discoverCustomToolPaths([], cwd)));
+				(await logger.time("discoverCustomToolPaths", () => discoverCustomToolPaths([], cwd, agentDir)));
 			const customToolsLoadResult = await logger.time("loadCustomTools", () =>
 				loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),
 			);
@@ -1620,23 +1645,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		toolSession.customToolPaths = customToolPaths;
 
-		let extensionPaths: string[];
 		let extensionsResult: LoadExtensionsResult;
 		if (restrictToolNames) {
-			extensionPaths = [];
 			extensionsResult = await loadExtensions([], cwd, eventBus);
 		} else if (options.preloadedExtensions) {
 			extensionsResult = {
 				...options.preloadedExtensions,
 				extensions: [...options.preloadedExtensions.extensions],
 			};
-
-			extensionPaths = extensionsResult.extensions
-				.map(ext => ext.resolvedPath)
-				.filter(p => !p.startsWith("<inline"));
-		} else if (options.preloadedExtensionPaths) {
-			extensionPaths = options.preloadedExtensionPaths;
-			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
+		} else if (options.preloadedPreparedExtensions) {
+			extensionsResult = await logger.time(
+				"bindPreparedExtensions",
+				bindPreparedExtensions,
+				options.preloadedPreparedExtensions,
+				cwd,
+				eventBus,
+			);
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to load extension", { path, error });
 			}
@@ -1644,7 +1668,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				logger.warn("Extension load warning", { path, warning });
 			}
 		} else {
-			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
+			const extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
 				discoverSessionExtensionPaths(options, cwd, settings),
 			);
 			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
@@ -1656,7 +1680,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		toolSession.extensionPaths = extensionPaths;
+		toolSession.preparedExtensions = extensionsResult.preparedExtensions;
 
 		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("memory"))) {
 			const memoryExtension = await loadExtensionFromFactory(
@@ -2002,26 +2026,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						}
 					}
 					if (fallbackSelectors.length > 0) {
-						const modelRoles: Record<string, string> = {};
-						const existingRoles = settings.getModelRoles();
-						for (const role in existingRoles) {
-							const selector = existingRoles[role];
-							if (selector) {
-								modelRoles[role] = selector;
-							}
-						}
-						modelRoles[options.modelPatternFallbackRole] = primarySelector;
-						settings.override("modelRoles", modelRoles);
-						const fallbackChains: Record<string, string[]> = {
-							[options.modelPatternFallbackRole]: fallbackSelectors,
-						};
-						const existingFallbackChains = settings.get("retry.fallbackChains");
-						for (const role in existingFallbackChains) {
-							if (role !== options.modelPatternFallbackRole) {
-								fallbackChains[role] = existingFallbackChains[role];
-							}
-						}
-						settings.override("retry.fallbackChains", fallbackChains);
+						installRetryFallbackRole(settings, options.modelPatternFallbackRole, {
+							primary: primarySelector,
+							chain: fallbackSelectors,
+						});
 					}
 				}
 				model = selectedModel;
@@ -2139,6 +2147,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				model: model.id,
 			});
 			if (selectedModelAbort) {
+				for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
 				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>
@@ -2262,11 +2271,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 
-		const resolveDeviceTool = (name: string): AgentTool | undefined => {
+		// Bound to the primary agent: `advertised` is the request's tool snapshot. The alias lookup spans mounted
+		// devices and advertised tools in one pass so an alias both answer stays ambiguous instead of racing.
+		const resolveDeviceTool = (name: string, advertised: readonly AgentTool[] = []): AgentTool | undefined => {
+			const bareName = name.startsWith(PROTOLENS_URL_PREFIX) ? name.slice(PROTOLENS_URL_PREFIX.length) : name;
 			const state = toolSession.xdev;
-			if (!state) return undefined;
-			return resolveMountedXdevExecutable(state, name);
+			const exactDevice = state ? resolveMountedXdevExecutable(state, bareName) : undefined;
+			if (exactDevice) return exactDevice;
+			return resolveMCPToolAlias(
+				bareName,
+				candidate =>
+					(state ? resolveMountedXdevExecutable(state, candidate) : undefined) ??
+					advertised.find(tool => tool.name === candidate),
+			);
 		};
+		const suggestDeviceToolNames = (): Iterable<string> => toolSession.xdev?.mountedNames ?? [];
 
 		const cursorMcpResources: CursorMcpResourceAdapter | undefined = mcpManager && {
 			serverNames: () => mcpManager.getConnectedServers(),
@@ -2312,6 +2331,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.contextFiles = contextFiles;
 				session.setAdvisorContextPrompt(formatAdvisorContextPrompt(contextFiles));
 			}
+			// Rules are re-read alongside context files so a RULES.md (or any rule) created or edited mid-session
+			// reaches the prompt on /clear and /new; explicit SDK rules are still re-bucketed against live settings.
+			if (hasSession) {
+				({ rulebookRules, alwaysApplyRules, allRules } = await logger.time("rediscoverRules", () =>
+					rediscoverRules(ttsrManager, {
+						cwd: promptCwd,
+						agentDir,
+						ttsrSettings: settings.getGroup("ttsr"),
+						...(options.rules !== undefined && { rules: options.rules }),
+					}),
+				));
+				toolSession.rules = allRules;
+				if (!options.parentTaskPrefix) {
+					setActiveRules(collectActiveRules({ rulebookRules, alwaysApplyRules }, ttsrManager));
+				}
+			}
+			// A fixed SDK prompt replaces every generated block, so skip building blocks it would discard.
+			if (options.systemPrompt !== undefined && typeof options.systemPrompt !== "function") {
+				return {
+					systemPrompt: typeof options.systemPrompt === "string" ? [options.systemPrompt] : options.systemPrompt,
+				};
+			}
 
 			const serverInstructions = mcpManager?.getServerInstructions();
 
@@ -2320,8 +2361,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				: buildAutoLearnInstructions({ manageSkill: builtInToolNames.includes("manage_skill") });
 			const appendParts: string[] = [];
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
+			// List each mounted MCP tool once: a routed tool the device catalog would list carries its catalog summary
+			// on the route line and gets no catalog line; a tool the route bound omits keeps its catalog line.
+			const xdevPromptDocs = toolSession.xdev
+				? planXdevPromptDocs(
+						toolSession.xdev,
+						settings.get("tools.xdevDocs"),
+						settings.get("tools.xdevInlineDevices"),
+					)
+				: undefined;
 			const projection = projectMountedMCPXdevGuidance(
 				collectMountedMCPToolRoutes(toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
+			);
+			const routedCatalogNames = new Set(
+				projection.mappings
+					.filter(mapping => xdevPromptDocs?.catalog.has(mapping.name))
+					.map(mapping => mapping.name),
 			);
 			if (projection.mappings.length > 0 || projection.hasOmittedMappings) {
 				appendParts.push(
@@ -2330,6 +2385,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							tools: projection.mappings.map(mapping => ({
 								mcpToolName: mapping.label,
 								path: mapping.path,
+								summary: xdevPromptDocs?.catalog.get(mapping.name),
 							})),
 							hasOmittedTools: projection.hasOmittedMappings,
 						})
@@ -2348,25 +2404,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					appendParts.push(`### ${srvName}\n${truncated}`);
 				}
 			}
-			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+			const appendPrompt = composeAppendPrompt(appendParts, options.appendSystemPrompt);
 
 			const nativeTools = resolveDialect(settings.get("tools.format"), agent?.state.model ?? model) === undefined;
 			const promptTools = projectSystemPromptToolMetadata(
 				tools,
 				nativeTools && !inlineToolDescriptors ? { mode: "compact", toolNames } : { mode: "full" },
 			);
-			if (options.appendSystemPrompt) {
-				appendPrompt = appendPrompt
-					? `${appendPrompt}\n\n${options.appendSystemPrompt}`
-					: options.appendSystemPrompt;
-			}
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
 				xdevTools: toolSession.xdev ? xdevEntries(toolSession.xdev) : [],
-				xdevDocs: toolSession.xdev
-					? xdevDocsAll(toolSession.xdev, settings.get("tools.xdevDocs"), settings.get("tools.xdevInlineDevices"))
-					: "",
+				xdevDocs: xdevPromptDocs ? renderXdevPromptDocs(xdevPromptDocs, routedCatalogNames) : "",
 				resolvedCustomPrompt: options.customSystemPrompt,
 				skills: session?.skills ?? skills,
 				contextFiles,
@@ -2398,10 +2447,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (options.systemPrompt === undefined) {
 				return defaultPrompt;
 			}
-			const customPrompt =
-				typeof options.systemPrompt === "function"
-					? options.systemPrompt(defaultPrompt.systemPrompt)
-					: options.systemPrompt;
+			const customPrompt = options.systemPrompt(defaultPrompt.systemPrompt);
 			return {
 				systemPrompt: typeof customPrompt === "string" ? [customPrompt] : customPrompt,
 			};
@@ -2567,6 +2613,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 			transformed = clampProviderContextImages(transformed, transformModel);
 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			// After the model-specific normalizers (better wording for the cases they own), before any upload.
+			transformed = await dropUnreadableContextImages(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 
 			return dateCwdReminder.transform(
@@ -2575,11 +2623,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				normalizePromptPath(sessionManager.getCwd()),
 			);
 		};
-		const onPayload = async (payload: unknown, model?: Model) => {
-			return await extensionRunner.emitBeforeProviderRequest(payload, model);
+		const onPayload = async (payload: unknown, model?: Model, signal?: AbortSignal) => {
+			return await extensionRunner.emitBeforeProviderRequest(payload, model, signal);
 		};
-		const onResponse: SimpleStreamOptions["onResponse"] = async (response, model) => {
-			await extensionRunner.emitAfterProviderResponse(response, model);
+		const onResponse: SimpleStreamOptions["onResponse"] = async (response, model, signal) => {
+			await extensionRunner.emitAfterProviderResponse(response, model, signal);
 		};
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
@@ -2687,6 +2735,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getCursorTools: () => (toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
 			transformToolCallArguments,
 			resolveFallbackTool: resolveDeviceTool,
+			suggestFallbackToolNames: suggestDeviceToolNames,
 			intentTracing: !!intentField,
 			dialect: resolveDialect(settings.get("tools.format"), model),
 			abortOnFabricatedToolResult: settings.get("tools.abortOnFabricatedResult"),
@@ -2849,6 +2898,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
+		credentialNoticeSession = session;
 		disposeCallbacks.add(session.registerSessionChangeCallback(syncAgentRegistrySessionScope));
 		const orchestratorParent = (): OrchestratorParent => ({
 			cwd: sessionManager.getCwd(),
@@ -3090,6 +3140,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 						transformed = clampProviderContextImages(transformed, transformModel);
 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						transformed = await dropUnreadableContextImages(transformed, transformModel);
 						if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 						return captureDateCwdReminder.transform(
 							transformed,
@@ -3112,7 +3163,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
 					streamFn: settingsAwareStreamFn,
 					transformToolCallArguments,
-					resolveFallbackTool: resolveDeviceTool,
 					intentTracing: !!intentField,
 					dialect: resolveDialect(settings.get("tools.format"), captureModel),
 					abortOnFabricatedToolResult: settings.get("tools.abortOnFabricatedResult"),

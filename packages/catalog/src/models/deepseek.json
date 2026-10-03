@@ -44,7 +44,7 @@
 			}
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"maxTokens": 393216,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -221,9 +221,9 @@
 			}
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"maxTokens": 393216,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -401,7 +401,7 @@
 			}
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"maxTokens": 393216,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -587,9 +587,9 @@
 			}
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"maxTokens": 393216,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,

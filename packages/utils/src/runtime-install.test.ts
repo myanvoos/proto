@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as Module from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ensureRuntimeInstalled } from "./runtime-install";
+import { ensureRuntimeInstalled, installRuntimeModuleResolver } from "./runtime-install";
 
 const tempDirs: string[] = [];
 const fileLockModulePath = path.join(import.meta.dir, "file-lock.ts");
@@ -123,4 +124,53 @@ describe("ensureRuntimeInstalled install lock", () => {
 		expect(await Bun.file(path.join(runtimeDir, "node_modules", probePackage, "package.json")).exists()).toBe(true);
 		await expect(fs.stat(`${runtimeDir}.lock`)).rejects.toThrow();
 	}, 15_000);
+});
+
+interface ResolveFilenameModule {
+	_resolveFilename(request: string, parent: unknown, isMain: boolean, options?: unknown): string;
+}
+
+describe("installRuntimeModuleResolver", () => {
+	test("corrects a stock hit and a runtime-parent miss when the cache is reached through a symlink", async () => {
+		const runtimeDir = await makeTempDir("proto-runtime-resolver-");
+		const nodeModules = path.join(runtimeDir, "node_modules");
+		const packages: Record<string, { manifest: Record<string, unknown>; files: string[] }> = {
+			"@huggingface/hub": { manifest: { main: "./dist/index.js" }, files: ["index.ts", "dist/index.js"] },
+			fastembed: { manifest: { main: "lib/cjs/index.js" }, files: ["lib/cjs/index.js"] },
+			"@anush008/tokenizers": { manifest: { main: "index.js" }, files: ["index.js"] },
+		};
+		for (const name in packages) {
+			const pkgDir = path.join(nodeModules, ...name.split("/"));
+			await Bun.write(path.join(pkgDir, "package.json"), JSON.stringify({ name, ...packages[name].manifest }));
+			for (const file of packages[name].files) await Bun.write(path.join(pkgDir, file), "");
+		}
+		const linkedRuntimeDir = `${runtimeDir}-link`;
+		await fs.symlink(runtimeDir, linkedRuntimeDir);
+		tempDirs.push(linkedRuntimeDir);
+		const linkedNodeModules = path.join(linkedRuntimeDir, "node_modules");
+		const realNodeModules = await fs.realpath(nodeModules);
+
+		const moduleWithResolver = Module as unknown as { default?: ResolveFilenameModule } & ResolveFilenameModule;
+		const resolver = moduleWithResolver.default ?? moduleWithResolver;
+		const pristine = resolver._resolveFilename;
+		// Stand-in for the compiled-binary resolver: ignores `main` and reports realpath-resolved filenames.
+		resolver._resolveFilename = (request: string): string => {
+			if (request !== "@huggingface/hub") throw new Error(`Cannot find module '${request}'`);
+			return path.join(realNodeModules, "@huggingface", "hub", "index.ts");
+		};
+
+		const uninstall = installRuntimeModuleResolver({ runtimeNodeModules: linkedNodeModules });
+		try {
+			const fastembedParent = { filename: path.join(realNodeModules, "fastembed", "lib", "cjs", "index.js") };
+			expect(resolver._resolveFilename("@huggingface/hub", fastembedParent, false)).toBe(
+				path.join(linkedNodeModules, "@huggingface", "hub", "dist", "index.js"),
+			);
+			expect(resolver._resolveFilename("@anush008/tokenizers", fastembedParent, false)).toBe(
+				path.join(linkedNodeModules, "@anush008", "tokenizers", "index.js"),
+			);
+		} finally {
+			uninstall();
+			resolver._resolveFilename = pristine;
+		}
+	});
 });

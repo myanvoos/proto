@@ -4,6 +4,8 @@ This document defines the shared Rust filesystem scan cache implemented by `crat
 
 ## Ownership and data model
 
+Uncached ranked requests with a result limit retain only the best candidates in a bounded heap; they still finish traversal and honor cancellation.
+
 The cache lives in `crates/pi-walker/src/cache.rs`. It stores owned `CollectedEntry` lists from a directory walk, not final glob, fuzzy, grep, or AST results. `WalkRequest` in `crates/pi-walker/src/lib.rs` applies static filters, ranking, limits, and optional empty-result revalidation around that collection layer.
 
 Current native consumers:

@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+
+### Fixed
+
+- HTTP 402 "insufficient account funds" errors (OpenCode Go), including ones reported only through the error code, now rotate to another stored credential
+- Rolling per-minute token/request throttles (TPM/RPM) reported with quota wording now back off briefly on the same credential instead of blocking it for 30 minutes
+- Cursor "prepaid balance is used up" errors now rotate to another stored credential
+- Multiple SuperGrok (xai-oauth) accounts are now balanced by weekly/monthly credit headroom, stay usable while on-demand headroom remains, and an ambiguous over-limit monthly counter no longer blocks an account
+- An exhausted Cursor "Other Models" pool no longer blocks Grok/Composer requests on the same account (and vice versa); accounts are ranked by the requested model's pool
+- Cursor usage no longer shows an empty legacy "gpt-4 requests: 0" row next to the dollar meters
+- Capped requests with thinking (Anthropic-compatible hosts and adaptive Claude on Bedrock) now reserve the thinking budget on top of the requested output, so thinking can no longer consume the whole cap and leave no answer
+- A Z.AI account blocked after a quota error becomes selectable again as soon as a live usage report shows its credit pool recovered
+- Claude saved resets no longer disappear from usage when the reset-credit probe is rate-limited or fails
+- Requests over a local Unix socket (e.g. the auth broker) no longer get routed through `PI_PROXY`/HTTP proxies
+- A 401 now rotates through every distinct stored account until one works, instead of giving up after a single sibling
+- Turns are no longer aborted as "Provider stream stalled" right after a long local tool (e.g. Cursor exec) finishes near the idle deadline; the provider now gets a full idle window after the tool result
+- A delayed auth-broker refresh reply no longer restores a credential that was logged out or overwrites a newer login made meanwhile
+- Strata server "prompt … exceeds the context" errors are now recognized as context overflow, so compaction kicks in instead of failing the turn
+- The auth gateway rejects requests that leak its bearer token into the URL or forwarded headers, logs only static routes, and attributes requests to the socket peer instead of spoofable forwarded-IP headers
+- Fireworks chat completions now report prompt-cache hits from the `fireworks-cached-prompt-tokens` response header when the streamed usage omits cached tokens
+- Ollama Cloud messages are now priced from the model's cost card instead of always recording zero cost
+- Claude on Vertex and Cloudflare AI Gateway no longer loses its prompt cache after side questions or idle recaps, and already-sent tool/effort controls are never rewritten
+- Cursor turns now report the final input, output, cache and reasoning token counts (no longer double-counting cached prompt tokens), and context occupancy stays current after output starts streaming
+- Cursor MCP calls handed to an external tool executor now reach the client as runnable tool calls instead of ending the turn as plain text
+- Gemini/Vertex billing-cap 429s ("monthly spending cap") are now treated as account limits instead of being retried as transient throttles
+- Anthropic Messages requests over the cowork transport now retry mid-response connection drops and release the connection when a compressed response is cancelled
+- Claude models configured on Amazon Bedrock's `/anthropic` Messages route (bedrock-runtime or bedrock-mantle) no longer fail with 400s from tool `strict` flags or unsupported metadata
+- Keyless Anthropic-compatible endpoints (`auth: none`) no longer receive a bogus `Authorization: Bearer N/A` or `X-Api-Key: N/A` header
+- LiteLLM-proxied Claude thinking (`thinking_blocks`) is now captured with its signature and replayed on tool-call turns, so multi-step tool use keeps its reasoning
+- Gemini and Antigravity usage no longer reports negative input tokens when cached tokens exceed or the prompt count is missing
+- Cursor native reads now return raw file text, honor negative (from-end) offsets, report missing files as not found, and give StrReplace the whole file (up to 4 MiB) instead of a truncated read
+- Cursor native shell failures report the command's real exit code, and deletes report the removed file's size
+- Final tool-call arguments are no longer auto-repaired from truncated streaming previews; malformed JSON is rejected with a bounded diagnostic instead
+- OpenAI Responses replay drops malformed invocation-text tool names and pairs only the corresponding native tool output, preserving later calls with reused IDs
+- Cursor and in-band tool decoders now preserve authoritative completion arguments while refusing cut-off buffers
+- Legacy Windsurf API keys work again with the Devin provider and its usage reports
+- Claude Opus/Sonnet 5.5 no longer fail with a 400 when a tool call is forced (Anthropic and Bedrock); the choice is relaxed to `auto` and thinking stays on
+
 ## [19.1.4] - 2026-09-30
 
 ### Added

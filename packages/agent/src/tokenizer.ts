@@ -1,7 +1,8 @@
 import type { Model, ProviderPayload, UserContent } from "@oh-my-pi/pi-ai";
 import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
 import * as natives from "@oh-my-pi/pi-natives";
-import { stringifyJson } from "@oh-my-pi/pi-utils";
+import { materializeString, stringifyJson } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { isEstimateCacheable, messageEstimateVersion } from "./compaction/message-cache";
 import type { AgentMessage } from "./types";
 
@@ -46,6 +47,23 @@ interface NativeTokenCount {
 	exact: boolean;
 }
 
+// Growing streamed text and large tool results must not evict the reusable short fragments.
+const NATIVE_CACHE_MAX_LENGTH = 16 * 1024;
+
+function countNativeFragment(
+	text: string,
+	encoding: natives.Encoding | null | undefined,
+	counts: LRUCache<string, number>,
+): number {
+	if (text.length > NATIVE_CACHE_MAX_LENGTH) return natives.countTokens(text, encoding);
+	const cached = counts.get(text);
+	if (cached !== undefined) return cached;
+	const tokens = natives.countTokens(text, encoding);
+	// Detach sliced strings so a small key cannot retain a much larger source.
+	counts.set(materializeString(text), tokens);
+	return tokens;
+}
+
 /**
  * A stale native addon rejects encodings its string enum does not know yet (the version sentinel does not cover
  * that skew); fall back to the byte bound instead of failing spawn and compaction. Only `approximate` takes the
@@ -55,9 +73,20 @@ function countTokensNat(
 	text: string | string[],
 	encoding: natives.Encoding | null | undefined,
 	mode: TokenCountMode,
+	counts: LRUCache<string, number>,
 ): NativeTokenCount {
 	try {
-		return { tokens: natives.countTokens(text, encoding), exact: true };
+		let tokens: number;
+		if (typeof text === "string") {
+			tokens = countNativeFragment(text, encoding, counts);
+		} else if (text.length > 0 && text.length < 16) {
+			// The native API sums independent fragments; arrays of 16+ keep its parallel batch path.
+			tokens = 0;
+			for (const fragment of text) tokens += countNativeFragment(fragment, encoding, counts);
+		} else {
+			tokens = natives.countTokens(text, encoding);
+		}
+		return { tokens, exact: true };
 	} catch (error) {
 		if (
 			!(error instanceof Error) ||
@@ -108,6 +137,13 @@ interface MessageEstimate {
 export class Tokenizer {
 	readonly #encoding: natives.Encoding | null;
 
+	/** Exact native counts only; byte fallbacks stay mode-dependent and uncached. */
+	readonly #nativeCounts = new LRUCache<string, number>({
+		max: 256,
+		maxSize: 512 * 1024,
+		sizeCalculation: (_tokens, text) => text.length * 2 + 64,
+	});
+
 	#estimates = new WeakMap<AgentMessage, MessageEstimate>();
 
 	constructor(model?: Pick<Model, "tokenizer"> | null) {
@@ -119,16 +155,17 @@ export class Tokenizer {
 	}
 
 	countTokens(text: string | string[], mode: TokenCountMode = "approximate"): number {
-		if (mode === "strict") return countTokensNat(text, this.#encoding, mode).tokens;
-		if (!testEnv && this.#encoding !== null) return countTokensNat(text, this.#encoding, mode).tokens;
-		if (accurate) return countTokensNat(text, undefined, mode).tokens;
+		if (mode === "strict") return countTokensNat(text, this.#encoding, mode, this.#nativeCounts).tokens;
+		if (!testEnv && this.#encoding !== null)
+			return countTokensNat(text, this.#encoding, mode, this.#nativeCounts).tokens;
+		if (accurate) return countTokensNat(text, undefined, mode, this.#nativeCounts).tokens;
 		return sumFragments(text, mode === "upperbound" ? byteLength : byteEstimate);
 	}
 
 	checkTokenBudget(text: string | string[], budget: number): TokenBudgetCheck {
 		const bound = sumFragments(text, byteLength);
 		if (bound <= budget) return { fits: true, tokens: bound, exact: false };
-		const result = countTokensNat(text, this.#encoding, "strict");
+		const result = countTokensNat(text, this.#encoding, "strict", this.#nativeCounts);
 		return { fits: result.tokens <= budget, tokens: result.tokens, exact: result.exact };
 	}
 

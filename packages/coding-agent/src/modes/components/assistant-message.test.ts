@@ -293,3 +293,35 @@ test("switching a finalized transcript block to prose-only thinking drops fenced
 	expect(Bun.stripANSI(assistant.render(80).join("\n"))).not.toContain("const hidden");
 	assistant.dispose();
 });
+
+test("hidden thinking renders like a fresh component across emptiness transitions and reveals on toggle", () => {
+	const reused = new AssistantMessageComponent(undefined, true);
+	const latestReasoning = "Latest canonical reasoning";
+	try {
+		// A comment is raw-nonempty but display-empty; whitespace is canonically empty.
+		for (const thinking of ["", "<!-- -->", " \n", latestReasoning]) {
+			const update: AssistantMessage = {
+				...message,
+				content: [
+					{ type: "text", text: "Visible answer" },
+					{ type: "thinking", thinking },
+				],
+			};
+			const fresh = new AssistantMessageComponent(undefined, true);
+			try {
+				reused.updateContent(update, { transient: true });
+				fresh.updateContent(update, { transient: true });
+				expect(reused.render(80).join("\n")).toBe(fresh.render(80).join("\n"));
+			} finally {
+				fresh.dispose();
+			}
+		}
+
+		reused.setHideThinkingBlock(false);
+		const revealed = Bun.stripANSI(reused.render(80).join("\n"));
+		expect(revealed).toContain(latestReasoning);
+		expect(revealed).toContain("Visible answer");
+	} finally {
+		reused.dispose();
+	}
+});

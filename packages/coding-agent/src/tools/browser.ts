@@ -5,12 +5,15 @@ import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import browserDescription from "../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { enforceInlineByteCap } from "../session/streaming-output";
+import { resolveSpawnArgs } from "./browser/attach";
 import { resolveCmuxKind } from "./browser/cmux/rpc";
+import { ensureChromiumExecutable } from "./browser/launch";
 import {
 	acquireBrowser,
 	type BrowserHandle,
 	type BrowserKind,
 	type BrowserKindTag,
+	browserKey,
 	holdBrowser,
 	releaseBrowser,
 } from "./browser/registry";
@@ -93,7 +96,7 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 	}
 	if (app?.path) {
 		const exe = resolveToCwd(app.path, session.cwd);
-		return { kind: "spawned", path: exe };
+		return { kind: "spawned", path: exe, args: resolveSpawnArgs(exe, app.args, session.cwd) };
 	}
 	const relayUrl = session.settings.get("browser.relayUrl") as string | undefined;
 
@@ -237,12 +240,17 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		details.browser = kind.kind;
 
 		const existing = getTab(name);
-		if (existing && !sameBrowserKind(existing.browser.kind, kind)) {
+		if (existing && browserKey(existing.browser.kind) !== browserKey(kind)) {
 			throw new ToolError(
 				`Tab ${JSON.stringify(name)} is bound to a different browser (${describeKind(existing.browser.kind)}). Close it first.`,
 			);
 		}
 
+		// A first-use Chrome for Testing download is a one-time install, not part of the open: it runs before the open
+		// deadline. The install promise is module-cached, so an abort here leaves it finishing in the background.
+		if (kind.kind === "headless") await untilAborted(signal, () => ensureChromiumExecutable());
+
+		const deadlineStart = performance.now();
 		const timeoutSignal = AbortSignal.timeout(timeoutMs);
 		const openSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		try {
@@ -256,7 +264,6 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 								deviceScaleFactor: params.viewport.scale,
 							}
 						: undefined,
-					appArgs: params.app?.args,
 					signal: openSignal,
 				}),
 			);
@@ -277,13 +284,15 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 							: undefined,
 						target: params.app?.target,
 						timeoutMs,
+						deadlineStartMs: deadlineStart,
 						dialogs: params.dialogs,
 						signal: openSignal,
 						ownerSessionId: this.session.getSessionId?.() ?? undefined,
 					}),
 				);
 			} catch (error) {
-				await releaseBrowser(browser, { kill: false });
+				// Reap an app process proto spawned for this failed open; never a borrowed one.
+				await releaseBrowser(browser, { kill: "subprocess" in browser && browser.subprocess !== undefined });
 				throw error;
 			}
 			await releaseBrowser(browser, { kill: false });
@@ -417,16 +426,6 @@ function describeKind(kind: BrowserKind): string {
 		case "cmux":
 			return `cmux:${kind.surface ?? "split"}`;
 	}
-}
-
-function sameBrowserKind(a: BrowserKind, b: BrowserKind): boolean {
-	if (a.kind !== b.kind) return false;
-	if (a.kind === "headless" && b.kind === "headless") return a.headless === b.headless;
-	if (a.kind === "spawned" && b.kind === "spawned") return a.path === b.path;
-	if (a.kind === "connected" && b.kind === "connected") return a.cdpUrl === b.cdpUrl;
-	if (a.kind === "relay" && b.kind === "relay") return a.cdpUrl === b.cdpUrl;
-	if (a.kind === "cmux" && b.kind === "cmux") return a.socketPath === b.socketPath;
-	return false;
 }
 
 function stringifyReturnValue(value: unknown): string {

@@ -151,6 +151,8 @@ interface ResolvedWorker {
 	modelOverride?: string | string[];
 
 	modelRole?: string;
+	/** The caller named the model; it must fail rather than fall back to the parent's model. */
+	modelRequested?: boolean;
 }
 
 interface ResolvedWorkerSchema {
@@ -206,6 +208,8 @@ interface WorkerRecord {
 	modelOverride?: string | string[];
 
 	modelRole?: string;
+	/** The spawn named its model: no fallback to the parent's model when that one has no credentials. */
+	modelRequested?: boolean;
 
 	/** Override queued by `send(model=)` that the next orchestrator-driven turn must apply to the worker session. */
 	pendingModelOverride?: string | string[];
@@ -811,13 +815,19 @@ export class OrchestratorRuntime {
 	): Promise<ResolvedWorker> {
 		if (this.#testResolvedWorker) return this.#testResolvedWorker;
 		const requested = agentName?.trim() || "worker";
-		const { agents } = await discoverAgents(cwd);
+		const discovery = await discoverAgents(cwd);
+		const { agents } = discovery;
 		const agent = getAgent(agents, requested);
 		if (!agent) {
-			throw new ToolError(describeUnknownAgent(requested, agents));
+			throw new ToolError(describeUnknownAgent(requested, discovery));
 		}
 		const agentModelOverrides = session.settings.get("orchestrator.agentModelOverrides");
-		const { patterns, role, requestError } = resolveAgentSpawnModelSelection({
+		const {
+			patterns,
+			role,
+			requested: modelRequested,
+			requestError,
+		} = resolveAgentSpawnModelSelection({
 			requestModel,
 			settingsOverride: agentModelOverrides[requested],
 			agentModel: agent.model,
@@ -827,7 +837,7 @@ export class OrchestratorRuntime {
 			...(session.modelRegistry ? { modelRegistry: session.modelRegistry } : {}),
 		});
 		if (requestError) throw new ToolError(requestError);
-		return { agent, modelOverride: patterns, modelRole: role };
+		return { agent, modelOverride: patterns, modelRole: role, ...(modelRequested ? { modelRequested } : {}) };
 	}
 
 	#resolveOutputSchema(
@@ -1440,7 +1450,7 @@ export class OrchestratorRuntime {
 				resolved = undefined;
 			}
 			if (!resolved) continue;
-			const { agent, model, modelOverride, modelRole } = resolved;
+			const { agent, model, modelOverride, modelRole, modelRequested } = resolved;
 			let schema: ResolvedWorkerSchema;
 			try {
 				schema = this.#resolveOutputSchema(session, agent, {
@@ -1475,6 +1485,7 @@ export class OrchestratorRuntime {
 				...(initialPending ? { pendingInitialMessage: spawn.message } : {}),
 				modelOverride,
 				modelRole,
+				...(modelRequested ? { modelRequested } : {}),
 				...(spawn.effort !== undefined ? { effort: spawn.effort } : {}),
 				...schema,
 				state: "idle",
@@ -1581,7 +1592,7 @@ export class OrchestratorRuntime {
 		if (disabledAgents.includes(requestedAgent)) {
 			throw new ToolError(`Worker agent "${requestedAgent}" is disabled in settings.`);
 		}
-		const { agent, model, modelOverride, modelRole } = await this.#resolveWorker(
+		const { agent, model, modelOverride, modelRole, modelRequested } = await this.#resolveWorker(
 			session,
 			session.cwd,
 			requestedAgent,
@@ -1624,6 +1635,7 @@ export class OrchestratorRuntime {
 			agent,
 			modelOverride,
 			modelRole,
+			...(modelRequested ? { modelRequested } : {}),
 			...(args.effort !== undefined ? { effort: args.effort } : {}),
 			...schema,
 			state: "starting",
@@ -2200,7 +2212,7 @@ export class OrchestratorRuntime {
 			detached: true,
 			modelOverride: record.modelOverride,
 			modelRole: record.modelRole,
-			parentActiveModelPattern: session.getActiveModelString?.(),
+			parentActiveModelPattern: record.modelRequested ? undefined : session.getActiveModelString?.(),
 			thinkingLevel: agent.thinkingLevel,
 			effort: record.effort,
 			outputSchema: record.outputSchema,
@@ -2225,7 +2237,7 @@ export class OrchestratorRuntime {
 			workspaceTree: session.workspaceTree,
 			promptTemplates: session.promptTemplates,
 			rules: session.rules,
-			preloadedExtensionPaths: session.extensionPaths,
+			preloadedPreparedExtensions: session.preparedExtensions,
 			preloadedCustomToolPaths: session.customToolPaths,
 			localProtocolOptions,
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,

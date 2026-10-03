@@ -7,7 +7,11 @@ import {
 } from "../session/execution-metadata";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
 import type { ToolSession } from "../tools";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
+import {
+	resolveOutputArtifactMaxBytes,
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+} from "../tools/output-meta";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEvent } from "./bridge-timeout";
 import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { FsObservation } from "./fs-observations";
@@ -455,6 +459,7 @@ export async function executeWithKernelBase<
 		artifactId: options?.artifactId,
 		headBytes: resolveOutputSinkHeadBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
+		artifactMaxBytes: resolveOutputArtifactMaxBytes(settings),
 	});
 
 	const displayBudget = new PythonDisplayBudget();

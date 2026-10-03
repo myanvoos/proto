@@ -55,6 +55,8 @@ export interface ReviewerFeed {
 	clearSecrets(): void;
 
 	scrubCommittedHistory(text: string): string;
+
+	rebase(messages: AgentMessage[]): boolean;
 }
 
 interface DeliveredMessage {
@@ -62,7 +64,7 @@ interface DeliveredMessage {
 	fingerprint: bigint | undefined;
 }
 
-function fingerprintMessage(message: AgentMessage): bigint | undefined {
+export function fingerprintMessage(message: AgentMessage): bigint | undefined {
 	try {
 		const m = message as unknown as Record<string, unknown>;
 		const payload = JSON.stringify({
@@ -128,6 +130,33 @@ export class DeltaCursorFeed implements ReviewerFeed {
 		this.#prefixBackup = undefined;
 		this.#lastCount = 0;
 		this.#deliveredPrefix = [];
+	}
+
+	/**
+	 * Re-points the delivered prefix at `messages` after an in-place rewrite the advisor's context already covers
+	 * (the primary's per-turn prune), so the next render compares against the rewritten messages instead of stale
+	 * fingerprints. Slot i aligns when it renders the same or is the same tool result now pruned in place. All or
+	 * nothing: any misaligned slot leaves the prefix untouched so the next render resets the advisor as before.
+	 */
+	rebase(messages: AgentMessage[]): boolean {
+		if (messages.length < this.#lastCount) return false;
+		const rebased: DeliveredMessage[] = [];
+		for (let i = 0; i < this.#lastCount; i++) {
+			const delivered = this.#deliveredPrefix[i];
+			const current = messages[i];
+			if (delivered === undefined || current === undefined) return false;
+			const fingerprint = fingerprintMessage(current);
+			const prunedInPlace =
+				current.role === "toolResult" &&
+				current.prunedAt !== undefined &&
+				delivered.message.role === "toolResult" &&
+				delivered.message.toolCallId === current.toolCallId;
+			if (fingerprint === undefined || (fingerprint !== delivered.fingerprint && !prunedInPlace)) return false;
+			rebased.push({ message: current, fingerprint });
+		}
+		this.#prefixBackup = undefined;
+		this.#deliveredPrefix = rebased;
+		return true;
 	}
 
 	clearSeenContext(): void {

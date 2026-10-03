@@ -228,6 +228,7 @@ export interface BashToolDetails {
 	exitCode?: number;
 
 	timedOut?: boolean;
+	/** Live ACP updates only; completed results must not refer clients to the released terminal. */
 	terminalId?: string;
 	async?: {
 		state: "running" | "completed" | "failed";
@@ -1105,7 +1106,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		options: {
 			requestedTimeoutSec?: number;
 			notices?: readonly string[];
-			terminalId?: string;
 			wallTimeMs?: number;
 			images?: readonly ImageContent[];
 			statusEvents?: readonly EvalStatusEvent[];
@@ -1231,9 +1231,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (options.requestedTimeoutSec !== undefined && options.requestedTimeoutSec !== timeoutSec) {
 			details.requestedTimeoutSeconds = options.requestedTimeoutSec;
-		}
-		if (options.terminalId !== undefined) {
-			details.terminalId = options.terminalId;
 		}
 		if (options.wallTimeMs !== undefined) {
 			details.wallTimeMs = options.wallTimeMs;
@@ -2114,7 +2111,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					commandCwd,
 					requestedTimeoutSec,
 					notices: bridgeNotices,
-					terminalId: handle.terminalId,
 					wallTimeMs: performance.now() - bridgeWallTimeStart,
 				});
 			} finally {

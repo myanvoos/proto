@@ -51,6 +51,8 @@ export async function buildAvailableSlashCommands(
 			subcommands: command.subcommands,
 			source: "builtin",
 		});
+		// Builtin aliases are dispatched before custom commands, so a custom command sharing one would never run.
+		for (const alias of command.aliases ?? []) seenNames.add(alias);
 	}
 
 	if (session.skillsSettings?.enableSkillCommands) {

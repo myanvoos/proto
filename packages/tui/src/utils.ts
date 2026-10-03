@@ -262,6 +262,7 @@ const OSC66_PREFIX = "\x1b]66;";
 
 const APC_SPAN_REGEX = /\x1b_[\s\S]*?(?:\x07|\x1b\\)/g;
 const APC_PREFIX = "\x1b_";
+const HANGUL_COMPAT_JAMO_REGEX = /[\u3131-\u318e]/;
 const PRINTABLE_ASCII_REGEX = /^[\u0020-\u007e]*$/;
 
 const STRING_WIDTH_OPTS = { countAnsiEscapeCodes: false, ambiguousIsNarrow: true } as const;
@@ -350,6 +351,14 @@ export function visibleWidth(str: string): number {
 		}
 		const cached = visibleWidthCache.get(str);
 		if (cached !== undefined) return cached;
+	} else if (
+		// Long uncached lines skip the per-char scan when no correction applies.
+		!str.includes("\t") &&
+		!HANGUL_COMPAT_JAMO_REGEX.test(str) &&
+		!str.includes(APC_PREFIX) &&
+		!str.includes(OSC66_PREFIX)
+	) {
+		return Bun.stringWidth(str, STRING_WIDTH_OPTS);
 	}
 
 	let tabCount = 0;

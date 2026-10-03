@@ -173,7 +173,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -254,7 +255,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -974,7 +976,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 65536,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1055,7 +1057,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 65536,
 		"int": 9,
-		"tps": 183.4,
+		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1367,7 +1369,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 16384,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1451,7 +1453,7 @@
 		"contextWindow": 131042,
 		"maxTokens": 16384,
 		"int": 33.7,
-		"tps": 41.3,
+		"tps": 46.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

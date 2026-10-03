@@ -147,3 +147,29 @@ test("aborting tool_call dispatch stops waiting for a hook that ignores cancella
 	expect(errors).toEqual([]);
 	late.resolve({ block: true, reason: "too late" });
 });
+
+test("tool_result patches merge per field, keeping an earlier redaction and a tool-reported error", async () => {
+	const seen: boolean[] = [];
+	const runner = makeRunner(
+		makeHook({
+			tool_result: [
+				async event => {
+					seen.push(!!event && typeof event === "object" && "isError" in event && event.isError === true);
+					return { content: [{ type: "text", text: "[redacted]" }] };
+				},
+				async () => ({ details: { audited: true } }),
+			],
+		}),
+	);
+	const failing: AgentTool = {
+		...makeTool(),
+		execute: async () => ({ content: [{ type: "text", text: "secret failure" }], details: undefined, isError: true }),
+	};
+
+	const result = await new HookToolWrapper(failing, runner).execute("call-1", {});
+
+	expect(seen).toEqual([true]);
+	expect(result.content).toEqual([{ type: "text", text: "[redacted]" }]);
+	expect(result.details).toEqual({ audited: true });
+	expect(result.isError).toBe(true);
+});

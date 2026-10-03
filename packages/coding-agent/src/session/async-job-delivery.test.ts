@@ -88,3 +88,21 @@ test("oversized job text is capped and recoverable through an artifact", async (
 		await rm(artifactDir, { recursive: true, force: true });
 	}
 });
+
+test("raw-capture previews link the original output and retain terminal exit notices", async () => {
+	const text = `${"stdout line\n".repeat(2_000)}\nCommand exited with code 42\nWall time: 1.5 seconds`;
+	let allocations = 0;
+	const formatted = await formatAsyncJobTextForContext(
+		text,
+		async () => {
+			allocations++;
+			return {};
+		},
+		"original-42",
+	);
+	expect(allocations).toBe(0);
+	expect(formatted).toContain("Full output: artifact://original-42");
+	expect(formatted).toContain("Command exited with code 42");
+	expect(formatted).toContain("Wall time: 1.5 seconds");
+	expect(formatted.length).toBeLessThan(4_500);
+});

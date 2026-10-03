@@ -156,6 +156,7 @@ export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): 
 	const { apiKey, baseUrl, fetch } = config;
 	return {
 		providerId: "devin",
+		cacheProviderId: resolveModelCacheProviderId("devin"),
 		staticModels:
 			baseUrl === undefined || baseUrl === DEVIN_DEFAULT_BASE_URL
 				? DEVIN_STATIC_MODELS

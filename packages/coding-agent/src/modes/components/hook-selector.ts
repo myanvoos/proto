@@ -603,6 +603,22 @@ export class HookSelectorComponent extends OverlayPanel {
 		return true;
 	}
 
+	/**
+	 * A digit picks the option labelled `N. …` (as in `/review`); single-select menus confirm it,
+	 * checkbox menus only move the cursor. Digits are search text once a query is typed.
+	 */
+	#handleQuickSelect(keyData: string): boolean {
+		if (this.#searchQuery.length > 0 || keyData.length !== 1 || keyData < "1" || keyData > "9") return false;
+		const targetIndex = this.#filteredOptions.findIndex(({ option }) => option.label.startsWith(`${keyData}. `));
+		if (targetIndex < 0) return false;
+		const target = this.#filteredOptions[targetIndex]!;
+		if (this.#isDisabled(target.index)) return true;
+		this.#selectedIndex = targetIndex;
+		this.#updateList();
+		if (this.#selectionMarker !== "checkbox" && this.#choiceExposed) this.#onSelectCallback(target.option.label);
+		return true;
+	}
+
 	handleInput(keyData: string): void {
 		if (this.#countdown) {
 			this.#countdown.reset();
@@ -614,7 +630,7 @@ export class HookSelectorComponent extends OverlayPanel {
 			return;
 		}
 
-		if (this.#handleSearchInput(keyData)) {
+		if (this.#handleQuickSelect(keyData) || this.#handleSearchInput(keyData)) {
 			return;
 		}
 

@@ -568,6 +568,36 @@ export async function splitDelimitedPathEntry(
 	);
 }
 
+/**
+ * Split a `;` list naming URLs alongside local paths (`https://x;src/a.ts:1-20`,
+ * `proto://;Makefile:1-3`), which URL detection would otherwise claim whole.
+ * Every part must be a URL or an existing literal path without glob characters,
+ * so a URL containing `;` (`https://a/x;v=1`) and a literal `a;b.md:1-2` stay whole.
+ */
+export async function splitMixedUrlPathList(
+	entry: string,
+	cwd: string,
+	isUrl: (part: string) => boolean,
+): Promise<string[] | null> {
+	const normalizedEntry = normalizePathLikeInput(entry);
+	if (!normalizedEntry.includes(";") || !isUrl(normalizedEntry)) return null;
+	if (!isInternalUrlPath(normalizedEntry)) {
+		if ((await probeLiteralPathExists(normalizedEntry, cwd)) !== "missing") return null;
+		const selectorSplit = splitPathAndSel(normalizedEntry);
+		if (selectorSplit.sel !== undefined && (await probeLiteralPathExists(selectorSplit.path, cwd)) !== "missing") {
+			return null;
+		}
+	}
+	const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, parseSearchPath, "semicolon", "none");
+	if (!parts) return null;
+	for (const part of parts) {
+		if (isUrl(part)) continue;
+		const partPath = splitPathAndSel(part).path;
+		if (hasGlobPathChars(partPath) || (await probeLiteralPathExists(partPath, cwd)) !== "exists") return null;
+	}
+	return parts;
+}
+
 interface ParsedSearchPath {
 	basePath: string;
 	glob?: string;
@@ -598,39 +628,41 @@ export function parseSearchPath(filePath: string): ParsedSearchPath {
 	};
 }
 
-export function resolveReadPath(filePath: string, cwd: string): string {
-	const resolved = resolveToCwd(filePath, cwd);
+/** Spellings of a read path to probe in order: as given, shell-unescaped, then macOS screenshot/NFD/curly-quote variants. */
+function* readPathCandidates(resolved: string): Generator<string> {
 	const shellEscapedVariant = tryShellEscapedPath(resolved);
 	const baseCandidates = shellEscapedVariant !== resolved ? [resolved, shellEscapedVariant] : [resolved];
-
+	yield* baseCandidates;
 	for (const baseCandidate of baseCandidates) {
-		if (fileExists(baseCandidate)) {
-			return baseCandidate;
-		}
-	}
-
-	for (const baseCandidate of baseCandidates) {
-		const amPmVariant = tryMacOSScreenshotPath(baseCandidate);
-		if (amPmVariant !== baseCandidate && fileExists(amPmVariant)) {
-			return amPmVariant;
-		}
-
 		const nfdVariant = tryNFDVariant(baseCandidate);
-		if (nfdVariant !== baseCandidate && fileExists(nfdVariant)) {
-			return nfdVariant;
-		}
-
-		const curlyVariant = tryCurlyQuoteVariant(baseCandidate);
-		if (curlyVariant !== baseCandidate && fileExists(curlyVariant)) {
-			return curlyVariant;
-		}
-
-		const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
-		if (nfdCurlyVariant !== baseCandidate && fileExists(nfdCurlyVariant)) {
-			return nfdCurlyVariant;
+		for (const variant of [
+			tryMacOSScreenshotPath(baseCandidate),
+			nfdVariant,
+			tryCurlyQuoteVariant(baseCandidate),
+			tryCurlyQuoteVariant(nfdVariant),
+		]) {
+			if (variant !== baseCandidate) yield variant;
 		}
 	}
+}
 
+export function resolveReadPath(filePath: string, cwd: string): string {
+	const resolved = resolveToCwd(filePath, cwd);
+	for (const candidate of readPathCandidates(resolved)) {
+		if (fileExists(candidate)) return candidate;
+	}
+	return resolved;
+}
+
+/** Non-blocking {@link resolveReadPath} for async tool paths; same candidates and winner. */
+export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {
+	const resolved = resolveToCwd(filePath, cwd);
+	for (const candidate of readPathCandidates(resolved)) {
+		try {
+			await fs.promises.access(candidate, fs.constants.F_OK);
+			return candidate;
+		} catch {}
+	}
 	return resolved;
 }
 

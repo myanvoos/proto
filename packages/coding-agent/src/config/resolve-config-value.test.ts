@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { Process } from "@oh-my-pi/pi-natives";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import {
 	createConfigHeaderResolver,
 	invalidateAllCommandConfigs,
 	invalidateCommandConfig,
+	runShellCommand,
 } from "./resolve-config-value";
+
+const resolverUrl = pathToFileURL(path.join(import.meta.dir, "resolve-config-value.ts")).href;
 
 const TEMP_ENV_KEYS: string[] = [];
 
@@ -110,5 +118,89 @@ describe("request-time config header resolution", () => {
 		expect(headers?.["X-Base"]).toBe("b");
 		expect(headers?.[`X-L${depth - 1}`]).toBe(String(depth - 1));
 		expect(baseReads).toBe(1);
+	});
+});
+
+async function runResolverProbe(script: string, options: { env?: Record<string, string>; fd3?: number } = {}) {
+	const proc = Bun.spawn({
+		cmd: [process.execPath, "--eval", script],
+		cwd: import.meta.dir,
+		env: options.env ?? Bun.env,
+		stdio: options.fd3 === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", options.fd3],
+		timeout: 15_000,
+	});
+	const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+	expect(exitCode, stdout).toBe(0);
+	return stdout.trim().split("\n");
+}
+
+async function expectProcessGone(pid: number): Promise<void> {
+	const deadline = Date.now() + 2_000;
+	let child = Process.fromPid(pid);
+	// Signal delivery and reaping are asynchronous OS events with no completion hook to await.
+	while (Date.now() < deadline && child?.status() === "running") {
+		await Bun.sleep(25);
+		child = Process.fromPid(pid);
+	}
+	try {
+		expect(child?.status(), `descendant ${pid} survived the timeout`).not.toBe("running");
+	} finally {
+		child?.killTree(9);
+	}
+}
+
+describe("!command process isolation", () => {
+	it("does not hand descriptors the launcher passed proto to the command", async () => {
+		await using dir = await TempDir.create("@proto-config-fd-");
+		const canaryPath = path.join(dir.path(), "canary.txt");
+		await Bun.write(canaryPath, "CANARY-THAT-MUST-NOT-RESOLVE");
+		const spyPath = path.join(dir.path(), "fd3-spy.sh");
+		await Bun.write(spyPath, "#!/bin/sh\ncat <&3\n");
+		await fs.promises.chmod(spyPath, 0o755);
+		const canary = await fs.promises.open(canaryPath, "r");
+		try {
+			const lines = await runResolverProbe(
+				`import { resolveConfigValue } from ${JSON.stringify(resolverUrl)};
+console.log(String(await resolveConfigValue("!echo control-ok")));
+console.log(String(await resolveConfigValue(${JSON.stringify(`!${spyPath}`)})));`,
+				{ fd3: canary.fd },
+			);
+			expect(lines).toEqual(["control-ok", "undefined"]);
+		} finally {
+			await canary.close();
+		}
+	});
+
+	it("resolves commands when PATH has no shell", async () => {
+		await using dir = await TempDir.create("@proto-config-no-sh-");
+		const lines = await runResolverProbe(
+			`import { runShellCommand } from ${JSON.stringify(resolverUrl)};
+console.log(String(await runShellCommand("echo pathless-ok", 5_000)));`,
+			{ env: { ...Bun.env, PATH: dir.path() } },
+		);
+		expect(lines).toEqual(["pathless-ok"]);
+	});
+
+	it("kills backgrounded, reparented, and SIGTERM-ignoring descendants when the command times out", async () => {
+		await using dir = await TempDir.create("@proto-config-treekill-");
+		const workers = [
+			{ name: "backgrounded", launch: (script: string) => `"${script}" &`, body: "sleep 30" },
+			{ name: "reparented", launch: (script: string) => `sh -c '"${script}" &' &`, body: "sleep 30" },
+			{ name: "term-ignoring", launch: (script: string) => `"${script}" &`, body: "trap '' TERM\nexec sleep 30" },
+		];
+		let command = "";
+		const pidFiles: string[] = [];
+		for (const worker of workers) {
+			const script = path.join(dir.path(), `${worker.name}.sh`);
+			const pidFile = path.join(dir.path(), `${worker.name}.pid`);
+			await Bun.write(script, `#!/bin/sh\necho $$ > "${pidFile}"\n${worker.body}\n`);
+			await fs.promises.chmod(script, 0o755);
+			command += `${worker.launch(script)} until [ -s "${pidFile}" ]; do sleep 0.01; done; `;
+			pidFiles.push(pidFile);
+		}
+		expect(await runShellCommand(`${command}sleep 10`, 3_000, dir.path())).toBeUndefined();
+		for (const pidFile of pidFiles) {
+			await expectProcessGone(Number.parseInt((await Bun.file(pidFile).text()).trim(), 10));
+		}
 	});
 });

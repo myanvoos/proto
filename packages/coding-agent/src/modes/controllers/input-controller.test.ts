@@ -136,7 +136,9 @@ test("focused-agent gestures: Esc returns to main, ←← hops to the parent, �
 	expect(navigation).toEqual(["main", "parent", "agents:current"]);
 });
 
-function submitHarness(options: { fileSlashCommands?: string[]; promptTemplates?: string[] } = {}) {
+function submitHarness(
+	options: { fileSlashCommands?: string[]; promptTemplates?: string[]; guidedGoalInterview?: boolean } = {},
+) {
 	vi.spyOn(commandUsage, "recordSlashCommandUsage").mockImplementation(() => {});
 	const statuses: string[] = [];
 	const submitted: string[] = [];
@@ -171,6 +173,7 @@ function submitHarness(options: { fileSlashCommands?: string[]; promptTemplates?
 		fileSlashCommands: new Set(options.fileSlashCommands ?? []),
 		isKnownSlashCommand: (text: string) => options.fileSlashCommands?.includes(text.slice(1)) ?? false,
 		ensureLatestTranscriptWindow: async () => {},
+		isGuidedGoalInterviewActive: () => options.guidedGoalInterview === true,
 		flushPendingBashComponents: () => {},
 		startPendingSubmission: (input: { text: string }) => input,
 		onInputCallback: (input: { text: string }) => submitted.push(input.text),
@@ -289,6 +292,17 @@ test("/model retargets the focused agent while other commands still bounce to th
 	expect(harness.modelSelectors).toBe(1);
 	expect(harness.statuses).toEqual(["Commands run in the main session — press Esc to return first"]);
 	expect(harness.prompted).toEqual([]);
+});
+
+test("bare c continues the agent, except as an answer during the guided goal interview", async () => {
+	const idle = submitHarness();
+	await idle.submit("c");
+	expect(idle.submitted).not.toContain("c");
+	expect(idle.submitted).toHaveLength(1);
+
+	const interview = submitHarness({ guidedGoalInterview: true });
+	await interview.submit("c");
+	expect(interview.submitted).toEqual(["c"]);
 });
 
 test("a bare unknown slash command is reported and kept in the editor instead of prompting the model", async () => {
@@ -644,6 +658,86 @@ test("eligible queue restoration preserves ordering and accepts the exact UTF-8 
 	expect(harness.clearQueue).toHaveBeenCalledTimes(1);
 	expect(harness.context.compactionQueuedMessages).toEqual([]);
 	expect(harness.statuses).toEqual([]);
+});
+
+test("dequeue restores only the newest queued message and keeps the rest queued and recognized", () => {
+	const statuses: string[] = [];
+	const steering: AgentMessage[] = [
+		{ role: "user", content: [{ type: "text", text: "first" }], timestamp: 1 },
+		{ role: "user", content: [{ type: "text", text: "second" }], timestamp: 2 },
+	];
+	const editor = {
+		text: "draft",
+		pendingImages: [] as ImageContent[],
+		getText() {
+			return this.text;
+		},
+		setCollapsedText(text: string) {
+			this.text = text;
+		},
+	};
+	const context = {
+		editor,
+		session: {
+			peekLastQueuedMessage: () => ({ text: "second" }),
+			popLastQueuedMessage: () => {
+				steering.pop();
+				return { text: "second" };
+			},
+		},
+		locallySubmittedUserSignatures: new Set(["first\u00000", "second\u00000"]),
+		compactionQueuedMessages: [],
+		showStatus: (text: string) => statuses.push(text),
+		updatePendingMessagesDisplay: () => {},
+	} as unknown as InteractiveModeContext;
+
+	new InputController(context).handleDequeue();
+
+	expect(editor.text).toBe("second\n\ndraft");
+	expect(steering).toHaveLength(1);
+	expect([...context.locallySubmittedUserSignatures]).toEqual(["first\u00000"]);
+	expect(statuses).toEqual(["Restored last queued message to editor"]);
+});
+
+test("Ctrl+Enter follow-ups pass through extension input handlers before dispatch", async () => {
+	const prompts: string[] = [];
+	const editor = {
+		text: "raw follow-up",
+		addToHistory: () => {},
+		pendingImages: [] as ImageContent[],
+		pendingImageLinks: [] as Array<string | undefined>,
+		getExpandedText() {
+			return this.text;
+		},
+		clearDraft() {
+			this.text = "";
+		},
+	};
+	const context = {
+		editor,
+		session: {
+			isCompacting: false,
+			isStreaming: true,
+			extensionRunner: {
+				hasHandlers: (event: string) => event === "input",
+				emitInput: async (text: string) => ({ text: `rewritten: ${text}` }),
+			},
+			prompt: async (text: string) => {
+				prompts.push(text);
+			},
+		},
+		withLocalSubmission: (_text: string, fn: () => Promise<void>) => fn(),
+		updatePendingMessagesDisplay: () => {},
+		ui: { requestRender: () => {} },
+		showError: (message: string) => {
+			throw new Error(message);
+		},
+	} as unknown as InteractiveModeContext;
+
+	await new InputController(context).handleFollowUp();
+
+	expect(prompts).toEqual(["rewritten: raw follow-up"]);
+	expect(editor.text).toBe("");
 });
 
 test("a rejected image marker does not retain the unattached image or reference link", async () => {

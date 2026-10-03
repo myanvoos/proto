@@ -3,6 +3,7 @@ import { settings } from "../config/settings";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
+import { clearSubmittedText } from "./helpers/draft";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
@@ -77,7 +78,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					runtime.ctx.showStatus("Advisor disabled.");
 				}
 				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (verb === "on") {
@@ -86,28 +87,28 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
 				);
 				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (verb === "off") {
 				runtime.ctx.session.setAdvisorEnabled(false);
 				runtime.ctx.showStatus("Advisor disabled.");
 				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (verb === "status") {
 				await runtime.ctx.handleAdvisorStatusCommand();
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (verb === "configure") {
 				runtime.ctx.showAdvisorConfigure();
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /advisor [on|off|status|configure]");
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -154,7 +155,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			let next = current;
 			if (!(settings.get("browser.enabled" as SettingPath) as boolean)) {
 				runtime.ctx.showWarning("Browser tool is disabled (enable in settings)");
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (!arg) {
@@ -165,7 +166,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				next = false;
 			} else {
 				runtime.ctx.showStatus("Usage: /browser [headless|visible]");
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			settings.set("browser.headless" as SettingPath, next as SettingValue<SettingPath>);
@@ -175,12 +176,12 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					await (tool as { restartForModeChange: () => Promise<void> }).restartForModeChange();
 				} catch (error) {
 					runtime.ctx.showWarning(`Failed to restart browser: ${errorMessage(error)}`);
-					runtime.ctx.editor.setText("");
+					clearSubmittedText(runtime);
 					return;
 				}
 			}
 			runtime.ctx.showStatus(`Browser mode: ${next ? "headless" : "visible"}`);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -191,35 +192,35 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			const arg = command.args.trim().toLowerCase();
 			if (!arg) {
 				runtime.ctx.showCopySelector();
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (arg === "code") {
 				const block = extractLastCodeBlock(runtime.ctx.session.messages);
 				if (!block) {
 					runtime.ctx.showStatus("No code block to copy.");
-					runtime.ctx.editor.setText("");
+					clearSubmittedText(runtime);
 					return;
 				}
 				await copyToClipboard(block.code);
 				runtime.ctx.showStatus("Copied code block to clipboard");
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			if (arg === "cmd" || arg === "command") {
 				const lastCommand = extractLastCommand(runtime.ctx.session.messages);
 				if (!lastCommand) {
 					runtime.ctx.showStatus("No command to copy.");
-					runtime.ctx.editor.setText("");
+					clearSubmittedText(runtime);
 					return;
 				}
 				await copyToClipboard(lastCommand.code);
 				runtime.ctx.showStatus("Copied bash command to clipboard");
-				runtime.ctx.editor.setText("");
+				clearSubmittedText(runtime);
 				return;
 			}
 			runtime.ctx.showStatus("Usage: /copy [code|cmd]");
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 ];

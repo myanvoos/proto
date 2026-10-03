@@ -586,7 +586,7 @@
 		"contextWindow": 262000,
 		"maxTokens": 262000,
 		"int": 12.1,
-		"tps": 40.5,
+		"tps": 41,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -1117,7 +1117,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 393216,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1279,7 +1279,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 393216,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1360,6 +1360,89 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 384000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": true,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": true,
+			"allowsSyntheticReasoningContentForToolCalls": false,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": true,
+			"streamMarkupHealingPattern": "dsml",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"deepseek-ai/deepseek-v4.1-flash": {
+		"id": "deepseek-ai/deepseek-v4.1-flash",
+		"name": "DeepSeek V4.1 Flash",
+		"api": "openai-completions",
+		"provider": "nvidia",
+		"baseUrl": "https://integrate.api.nvidia.com/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 384000,
+		"int": 39.5,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1634,6 +1717,89 @@
 			"dropThinkingWhenReasoningEffort": false
 		},
 		"supportsComputerUse": false
+	},
+	"google/diffusiongemma-26b-a4b-it": {
+		"id": "google/diffusiongemma-26b-a4b-it",
+		"name": "DiffusionGemma 26B A4B IT",
+		"api": "openai-completions",
+		"provider": "nvidia",
+		"baseUrl": "https://integrate.api.nvidia.com/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 250000,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
 	},
 	"google/gemma-2-27b-it": {
 		"id": "google/gemma-2-27b-it",
@@ -2306,7 +2472,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3812,7 +3979,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4843,7 +5011,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4926,7 +5094,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 16384,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4934,7 +5102,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5086,7 +5255,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5597,7 +5767,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5821,7 +5992,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6255,7 +6427,6 @@
 		"maxTokens": 262144,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -6306,7 +6477,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"moonshotai/kimi-k2-thinking": {
 		"id": "moonshotai/kimi-k2-thinking",
@@ -6333,7 +6505,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -6420,7 +6593,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -6499,7 +6673,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6507,7 +6681,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6586,7 +6761,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6828,7 +7003,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7122,7 +7298,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7203,7 +7380,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7568,7 +7746,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7650,7 +7829,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7803,7 +7983,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8026,7 +8207,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8107,7 +8289,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8614,7 +8797,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8690,7 +8874,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 65536,
 		"int": 10.3,
-		"tps": 270.1,
+		"tps": 272.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8698,7 +8882,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -8780,7 +8965,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8861,7 +9047,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9013,7 +9200,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9379,7 +9567,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10093,7 +10282,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 6.8,
-		"tps": 155.2,
+		"tps": 155.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -10101,7 +10290,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10372,7 +10562,7 @@
 	},
 	"openai/gpt-oss-120b": {
 		"id": "openai/gpt-oss-120b",
-		"name": "GPT-OSS-120B",
+		"name": "GPT OSS 120B",
 		"api": "openai-completions",
 		"provider": "nvidia",
 		"baseUrl": "https://integrate.api.nvidia.com/v1",
@@ -10399,7 +10589,6 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -10449,7 +10638,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"openai/gpt-oss-20b": {
 		"id": "openai/gpt-oss-20b",
@@ -10470,7 +10660,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 9,
-		"tps": 183.4,
+		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -10557,7 +10747,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -10846,7 +11037,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 66536,
 		"int": 11.9,
-		"tps": 54.6,
+		"tps": 53.7,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -10919,7 +11110,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 16384,
 		"int": 9.6,
-		"tps": 168.9,
+		"tps": 169.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -11074,7 +11265,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 129.2,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11158,7 +11349,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 8192,
 		"int": 18.4,
-		"tps": 85.7,
+		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11384,7 +11575,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 16384,
 		"int": 17,
-		"tps": 126.9,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11392,7 +11583,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -11468,7 +11660,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 16384,
 		"int": 19.5,
-		"tps": 197.1,
+		"tps": 207,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11476,7 +11668,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -11623,7 +11816,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 16384,
 		"int": 25,
-		"tps": 110.6,
+		"tps": 169.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11631,7 +11824,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12115,7 +12309,7 @@
 	},
 	"z-ai/glm-5.1": {
 		"id": "z-ai/glm-5.1",
-		"name": "GLM 5.1",
+		"name": "GLM-5.1",
 		"api": "openai-completions",
 		"provider": "nvidia",
 		"baseUrl": "https://integrate.api.nvidia.com/v1",
@@ -12138,7 +12332,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -12216,7 +12411,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12300,7 +12495,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12385,7 +12580,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12475,7 +12670,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12556,7 +12752,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

@@ -7,8 +7,9 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 } from "@oh-my-pi/pi-agent-core";
-import { escapeXmlAttribute, escapeXmlText } from "@oh-my-pi/pi-utils";
+import { escapeXmlAttribute, escapeXmlText, logger } from "@oh-my-pi/pi-utils";
 import adviseDescription from "../prompts/advisor/advise-tool.md" with { type: "text" };
+import { AdvisorEmissionGuard, type AdvisorSuppressionReason, normalizeAdvisorNote } from "./emission-guard";
 
 const adviseSchema = type({
 	note: type("string").describe(
@@ -94,14 +95,19 @@ export function deriveAdvisorTelemetry(
 
 export const ADVISOR_DEFAULT_TOOL_NAMES: ReadonlySet<string> = new Set(["read"]);
 
-function advisorNoteDedupeKey(note: string): string {
-	return note.trim().replace(/\s+/g, " ");
-}
-
 const ADVISOR_SEVERITY_RANK: Record<AdvisorSeverity, number> = { nit: 1, concern: 2, blocker: 3 };
 function advisorSeverityRank(severity: AdvisorSeverity | undefined): number {
 	return ADVISOR_SEVERITY_RANK[severity ?? "nit"];
 }
+
+const ADVISOR_ACK_SENT = "Delivered.";
+const ADVISOR_ACK_DEFERRED = "Queued for the end of the turn. Do not re-raise.";
+const ADVISOR_ACK_SUPPRESSED: Record<AdvisorSuppressionReason, string> = {
+	empty: "Dropped: empty note.",
+	noise: "Dropped: nothing actionable.",
+	duplicate: "Dropped: already raised.",
+	"rate-limit": "Dropped: this update's advice budget is spent.",
+};
 
 export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails> {
 	readonly name = "advise";
@@ -110,26 +116,35 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 	readonly parameters = adviseSchema;
 	readonly intent = "omit" as const;
 
-	#deliveredNoteSeverities = new Map<string, number>();
+	/** Sole admission authority: the tool keeps no parallel dedupe or budget state. */
+	readonly #guard = new AdvisorEmissionGuard();
 	#inProgressUpdate = false;
-
+	/** Admitted but withheld while the primary is mid-turn; flushed in arrival order, never re-admitted. */
 	#deferredNotes: { key: string; note: string; severity?: AdviseDetails["severity"] }[] = [];
 
+	/** `onAdvice` routes an admitted note to the primary; it never re-filters. */
 	constructor(private readonly onAdvice: (note: string, severity?: AdviseDetails["severity"]) => void) {}
 
+	/**
+	 * Starts one advisor update with a fresh budget. Non-blockers reviewing an in-progress primary turn are withheld;
+	 * the transition to a completed update flushes the backlog.
+	 */
 	beginUpdate(inProgress: boolean): void {
 		const wasInProgress = this.#inProgressUpdate;
 		this.#inProgressUpdate = inProgress;
-
-		if (wasInProgress && !inProgress && this.#deferredNotes.length > 0) {
-			const pending = this.#deferredNotes;
-			this.#deferredNotes = [];
-			for (const { note, severity } of pending) this.#deliver(note, severity);
-		}
+		this.#guard.beginUpdate();
+		if (wasInProgress && !inProgress) this.#flushDeferred();
 	}
 
+	/** The primary's terminal boundary: flush the backlog without opening a new update budget. */
+	flushDeferredNotes(): void {
+		this.#inProgressUpdate = false;
+		this.#flushDeferred();
+	}
+
+	/** A fresh advisor conversation may re-raise old issues. */
 	resetDeliveredNotes(): void {
-		this.#deliveredNoteSeverities.clear();
+		this.#guard.reset();
 		this.#inProgressUpdate = false;
 		this.#deferredNotes = [];
 	}
@@ -141,40 +156,55 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 		_onUpdate?: AgentToolUpdateCallback<AdviseDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<AdviseDetails>> {
+		const rank = advisorSeverityRank(args.severity);
+		const key = normalizeAdvisorNote(args.note);
 		if (this.#inProgressUpdate && args.severity !== "blocker") {
-			const key = advisorNoteDedupeKey(args.note);
 			const pending = this.#deferredNotes.find(item => item.key === key);
-			if (!pending) {
-				this.#deferredNotes.push({ key, note: args.note, severity: args.severity });
-			} else if (advisorSeverityRank(args.severity) > advisorSeverityRank(pending.severity)) {
-				pending.severity = args.severity;
+			if (pending) {
+				if (rank > advisorSeverityRank(pending.severity)) {
+					pending.severity = args.severity;
+					this.#guard.escalatePending(args.note, rank);
+				}
+				return this.#result(ADVISOR_ACK_DEFERRED, args);
 			}
-			return {
-				content: [
-					{
-						type: "text",
-						text: "Deferred — primary is mid-turn; this note will be delivered automatically when the turn completes. Do not re-raise the same point.",
-					},
-				],
-				details: { note: args.note, severity: args.severity },
-				useless: true,
-			};
+			const decision = this.#guard.admit(args.note, { rank, pending: true });
+			if (!decision.accepted) return this.#suppressed(args, decision.reason);
+			if (decision.displacedKey !== undefined) {
+				const displacedIndex = this.#deferredNotes.findIndex(item => item.key === decision.displacedKey);
+				if (displacedIndex !== -1) this.#deferredNotes.splice(displacedIndex, 1);
+			}
+			this.#deferredNotes.push({ key, note: args.note, severity: args.severity });
+			return this.#result(ADVISOR_ACK_DEFERRED, args);
 		}
-		const delivered = this.#deliver(args.note, args.severity);
+		// A blocker re-raise of a queued note pulls the reservation and interrupts now at blocker severity.
+		const reservedIndex = this.#deferredNotes.findIndex(item => item.key === key);
+		if (reservedIndex !== -1) this.#deferredNotes.splice(reservedIndex, 1);
+		const decision = this.#guard.admit(args.note, { rank, pending: false });
+		if (!decision.accepted) return this.#suppressed(args, decision.reason);
+		this.onAdvice(args.note, args.severity);
+		return this.#result(ADVISOR_ACK_SENT, args);
+	}
+
+	#flushDeferred(): void {
+		if (this.#deferredNotes.length === 0) return;
+		const pending = this.#deferredNotes;
+		this.#deferredNotes = [];
+		for (const { note, severity } of pending) {
+			this.#guard.markRouted(note);
+			this.onAdvice(note, severity);
+		}
+	}
+
+	#suppressed(args: AdviseParams, reason: AdvisorSuppressionReason | undefined): AgentToolResult<AdviseDetails> {
+		logger.debug("advisor advice suppressed by emission guard", { reason, severity: args.severity });
+		return this.#result(ADVISOR_ACK_SUPPRESSED[reason ?? "duplicate"], args);
+	}
+
+	#result(text: string, args: AdviseParams): AgentToolResult<AdviseDetails> {
 		return {
-			content: [{ type: "text", text: delivered ? "Recorded." : "Duplicate advice ignored." }],
+			content: [{ type: "text", text }],
 			details: { note: args.note, severity: args.severity },
 			useless: true,
 		};
-	}
-
-	#deliver(note: string, severity?: AdviseDetails["severity"]): boolean {
-		const key = advisorNoteDedupeKey(note);
-		const rank = advisorSeverityRank(severity);
-		const previousRank = this.#deliveredNoteSeverities.get(key) ?? 0;
-		if (rank <= previousRank) return false;
-		this.#deliveredNoteSeverities.set(key, rank);
-		this.onAdvice(note, severity);
-		return true;
 	}
 }

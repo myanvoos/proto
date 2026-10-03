@@ -21,10 +21,11 @@ const model = buildModel({
 
 const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }] };
 
-function fetchFor(frames: readonly unknown[]): FetchImpl {
+function fetchFor(frames: readonly unknown[], responseHeaders?: Record<string, string>): FetchImpl {
 	const body = frames.map(frame => `data: ${typeof frame === "string" ? frame : JSON.stringify(frame)}\n\n`).join("");
 	return Object.assign(
-		async (): Promise<Response> => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+		async (): Promise<Response> =>
+			new Response(body, { headers: { "content-type": "text/event-stream", ...responseHeaders } }),
 		{ preconnect: fetch.preconnect },
 	);
 }
@@ -354,5 +355,36 @@ describe("OpenAI Completions scheduled pricing", () => {
 		} finally {
 			clock.mockRestore();
 		}
+	});
+});
+
+describe("OpenAI Completions cached prompt tokens", () => {
+	async function usageWithFireworksHeader(usage: Record<string, unknown>) {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor(
+				[
+					{ choices: [{ delta: { content: "ok" } }] },
+					{ choices: [{ delta: {}, finish_reason: "stop" }], usage },
+					"[DONE]",
+				],
+				{ "fireworks-cached-prompt-tokens": "7" },
+			),
+		}).result();
+		return result.usage;
+	}
+
+	it("reads cacheRead from the fireworks-cached-prompt-tokens header when the body omits cached_tokens", async () => {
+		const usage = await usageWithFireworksHeader({ prompt_tokens: 11, completion_tokens: 3 });
+		expect(usage).toMatchObject({ input: 4, cacheRead: 7, output: 3, totalTokens: 14 });
+	});
+
+	it("prefers body-reported cached_tokens over the header", async () => {
+		const usage = await usageWithFireworksHeader({
+			prompt_tokens: 11,
+			completion_tokens: 3,
+			prompt_tokens_details: { cached_tokens: 8 },
+		});
+		expect(usage).toMatchObject({ input: 3, cacheRead: 8, output: 3 });
 	});
 });

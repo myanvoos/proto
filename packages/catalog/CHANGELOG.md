@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+
+### Changed
+
+- Devin requests identify as Devin CLI 3000.11.3
+
+### Fixed
+
+- Devin Fusion pairings now run through their available lead model (with the lead's limits and pricing) instead of failing with "no API providers are available"; pairings without a live lead are hidden
+- MiniMax Token Plan (minimax-code, minimax-code-cn) models are priced at MiniMax pay-as-you-go rates instead of showing as free
+- OpenRouter models that advertise `0` context or output limits are kept instead of disappearing from discovery
+
 ## [19.1.4] - 2026-09-30
 
 ### Added

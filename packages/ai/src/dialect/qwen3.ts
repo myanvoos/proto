@@ -1,5 +1,6 @@
 import { parseJsonWithRepair } from "@oh-my-pi/pi-utils";
 import type { Message, ToolCall } from "../types";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { asRecord, mintToolCallId, partialSuffixOverlapAny } from "./coercion";
 import dialectPrompt from "./qwen3.md" with { type: "text" };
 import { renderChatMlTranscript, renderToolResponseResults, stringifyJson } from "./rendering";
@@ -181,7 +182,7 @@ export class Qwen3InbandScanner implements InbandScanner {
 			let args = parsed.arguments;
 			if (typeof args === "string") {
 				try {
-					args = parseJsonWithRepair<unknown>(args);
+					args = parseToolCallArguments(args);
 				} catch {
 					args = {};
 				}

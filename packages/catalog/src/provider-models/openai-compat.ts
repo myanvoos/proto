@@ -3614,12 +3614,9 @@ export function openrouterModelManagerOptions(
 							cacheRead: parseFloat(String(pricing?.input_cache_read ?? "0")) * 1_000_000,
 							cacheWrite: parseFloat(String(pricing?.input_cache_write ?? "0")) * 1_000_000,
 						},
-						contextWindow:
-							typeof entry.context_length === "number" ? entry.context_length : baseModel.contextWindow,
-						maxTokens:
-							typeof topProvider?.max_completion_tokens === "number"
-								? topProvider.max_completion_tokens
-								: baseModel.maxTokens,
+						// Some rows advertise `0` for unknown limits; that is not a usable limit.
+						contextWindow: toPositiveNumber(entry.context_length, baseModel.contextWindow),
+						maxTokens: toPositiveNumber(topProvider?.max_completion_tokens, baseModel.maxTokens),
 						...(!supportsToolChoice && {
 							compat: { ...(baseModel.compat ?? {}), supportsToolChoice: false },
 						}),

@@ -22,7 +22,7 @@ This document describes how MCP servers are discovered, connected, exposed as to
 
 `createAgentSession()` in `src/sdk.ts` performs MCP startup when `enableMCP` is true (default). There are two paths:
 
-- **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set.
+- **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set. Print mode (`-p`) then calls `MCPManager.waitForStartup()` before the first prompt, bounded by the MCP request timeout (`PROTO_MCP_TIMEOUT_MS`, else 30s; `0` waits until settled), refreshes the session's MCP tools, and warns on stderr about servers still not ready.
 - **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disconnecting the manager if the session was torn down mid-connect).
 
 Both paths:
@@ -67,6 +67,7 @@ So startup does not fail the whole agent session when individual MCP servers fai
 - `#pendingReconnections: Map<string, Promise<MCPServerConnection | null>>` — reconnects in progress after a dropped transport or explicit reconnect.
 - `#serverConfigs: Map<string, MCPServerConfig>` — original unresolved configs preserved so reconnect can re-resolve credentials without leaking resolved tokens.
 - `#reconnectHistory: Map<string, number[]>` plus `#epoch` — per-server crash-window accounting and invalidation of reconnect attempts that outlive a global disconnect.
+- `#lostRemoteServers` — http/sse servers that were connected and then lost, with their background retry timer and next delay.
 - per-server cancellation controllers covering initial connect/tool loading and the complete reconnect sequence, including credential resolution and retry backoff.
 - listener/callback state, including a bounded pending-notification FIFO and tracked resource subscriptions/refreshes.
 
@@ -129,6 +130,7 @@ Each pending `toolsPromise` also has a background continuation that eventually:
 - invokes `#onToolsChanged` so a live session can rebind the late tools,
 - writes cache,
 - logs late failures only after startup (`allowBackgroundLogging`).
+- retries an initial handshake that timed out (`MCPConnectionTimeoutError`) once on the per-server reconnect ladder, reporting `reconnecting` and then `connected` or `failed` to the startup status callback.
 
 ## Tool exposure and live-session availability
 
@@ -144,10 +146,10 @@ Server and tool name components are lowercased and sanitized to letters, digits,
 
 - `MCPTool` calls tools through an already connected `MCPServerConnection`.
 - `DeferredMCPTool` waits for `waitForConnection(server)` before calling; this allows cached tools to exist before connection is ready.
-- Both attempt a reconnect + single retry for retriable connection failures.
+- Both attempt a reconnect + single retry for retriable connection failures. Pre-acceptance HTTP request timeouts and stdio request timeouts retain that one retry. Once an HTTP POST receives a successful response, failures while reading its body or resuming its SSE stream are not replayed, including EOF, timeout, and resume authentication failures; verify the tool's outcome before retrying manually.
 - A structured tool-result auth challenge can trigger the configured auth handler, reconnect, and one retry. Interactive mode wires this to the `/mcp` OAuth controller; without a handler the challenge remains an MCP error.
 
-Both return structured tool output and convert remaining transport/tool errors into `MCP error: ...` tool content (abort remains abort). When the client-side request timeout fired, that content also names the server and how to raise the limit: its `timeout` config field or the process-wide `PROTO_MCP_TIMEOUT_MS`.
+Both return structured tool output and convert remaining transport/tool errors into actionable `MCP failure` diagnostics (abort remains abort), including transport, failure stage, retryability, and bounded credential-redacted server data and safe trace IDs. When the client-side request timeout fired, that content also names the server and how to raise the limit: its `timeout` config field or the process-wide `PROTO_MCP_TIMEOUT_MS`.
 
 ## Refresh/reload paths (startup vs live reload)
 
@@ -187,6 +189,7 @@ Current runtime behavior is connection-event driven:
 - **No autonomous polling health monitor** in manager/client.
 - **Automatic reconnect is wired to `transport.onClose`** for managed connections.
 - Reconnect retries with backoff (`500`, `1000`, `2000`, `4000` ms), reloads tools, and notifies consumers on success. A crash-storm circuit breaker suspends automatic reconnects for a server after more than 5 reconnect attempts within 30s; manual `/mcp reconnect` resets that history.
+- When that ladder fails for an `http`/`sse` server that was connected, the manager keeps retrying in the background: one quiet attempt after 15s, doubling to a 5 min ceiling, until the server answers or is disconnected or reconfigured. Scheduled attempts log at debug level and do not count toward the crash breaker (a breaker trip ends the schedule). Stdio servers stop at the ladder, and a server that never connected is not scheduled.
 - Tool calls that see retriable connection errors also attempt one reconnect + retry.
 - Reconnect is also explicit via `/mcp reconnect <name>` or broader `/mcp reload`.
 

@@ -41,9 +41,10 @@ function resolveSearchUrl(): string {
 	}
 	url.search = "";
 	url.hash = "";
-	url.pathname = url.pathname.replace(/\/+$/, "");
-	if (!/\/v[12]$/i.test(url.pathname)) url.pathname += "/v2";
-	url.pathname += "/search";
+	// Assigning "" to URL.pathname normalizes back to "/", so a bare origin would yield "//v2/search".
+	let basePath = url.pathname.replace(/\/+$/, "");
+	if (!/\/v[12]$/i.test(basePath)) basePath += "/v2";
+	url.pathname = `${basePath}/search`;
 	return url.toString();
 }
 

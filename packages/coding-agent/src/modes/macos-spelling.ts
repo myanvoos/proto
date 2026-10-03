@@ -144,6 +144,8 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		let cursor = 0;
 		for (const range of ranges) {
 			const end = range.start + range.length;
+			// Overlapping or out-of-bounds ranges would re-emit rendered text and desync the measured width.
+			if (range.start < cursor || end > text.length) continue;
 			if (!this.#sourceRangeIsProse(context, context.startCol + range.start, context.startCol + end)) {
 				continue;
 			}

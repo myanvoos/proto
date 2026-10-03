@@ -13,6 +13,9 @@ afterEach(async () => {
 test("accepts MCP server names containing spaces", () => {
 	expect(validateServerName("MaaS Slack")).toBeUndefined();
 	expect(validateServerName("MaaS/Slack")).toContain("can only contain");
+	for (const malformed of [" ", " MaaS Slack", "MaaS Slack ", "MaaS  Slack"]) {
+		expect(validateServerName(malformed)).toContain("can only contain");
+	}
 });
 
 test("persists an MCP server name containing spaces through the write path", async () => {

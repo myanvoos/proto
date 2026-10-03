@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ModelRegistry } from "./config/model-registry";
 import { Settings } from "./config/settings";
+import type { ExtensionFactory } from "./extensibility/extensions/types";
 import { createAgentSession } from "./sdk";
 import { AuthStorage } from "./session/auth-storage";
 import { SessionManager } from "./session/session-manager";
@@ -304,6 +305,52 @@ test("filesystem custom tools see the host UI once the mode installs it", async 
 		}
 	} finally {
 		delete globals[captureKey];
+		authStorage.close();
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("an extension web_search tool replaces the built-in instead of being shadowed by it", async () => {
+	const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-sdk-web-search-override-"));
+	const authStorage = await AuthStorage.create(path.join(agentDir, "auth.db"));
+	const settings = Settings.isolated({ "web_search.enabled": true });
+	const customWebSearch: ExtensionFactory = pi => {
+		pi.registerTool({
+			name: "web_search",
+			label: "Custom Web Search",
+			description: "Custom extension web search",
+			parameters: pi.zod.object({}),
+			execute: async () => ({ content: [{ type: "text", text: "custom-web-search-result" }] }),
+		});
+	};
+	try {
+		const { session } = await createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			authStorage,
+			modelRegistry: new ModelRegistry(authStorage, path.join(agentDir, "models.yml"), { settings }),
+			settings,
+			sessionManager: SessionManager.inMemory(agentDir),
+			hasUI: false,
+			disableExtensionDiscovery: true,
+			enableMCP: false,
+			extensions: [customWebSearch],
+			toolNames: ["web_search"],
+			skills: [],
+			rules: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			workspaceTree: { rootPath: agentDir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+		});
+		try {
+			const tool = session.getToolByName("web_search");
+			const result = await tool?.execute("call-web-search", {});
+			expect(result?.content).toEqual([{ type: "text", text: "custom-web-search-result" }]);
+		} finally {
+			await session.dispose();
+		}
+	} finally {
 		authStorage.close();
 		await fs.rm(agentDir, { recursive: true, force: true });
 	}

@@ -46,6 +46,7 @@ export interface ServingModel {
 	selector: string;
 
 	isFallback: boolean;
+	contextWindow?: number | null;
 }
 
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
@@ -123,6 +124,44 @@ export function getRetryFallbackChains(settings: Settings): RetryFallbackChains 
 	const configuredChains = settings.get("retry.fallbackChains");
 	if (!configuredChains || typeof configuredChains !== "object") return {};
 	return expandDefaultRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()));
+}
+
+/** A session-scoped role pinned to one selector with its own chain; subagents own `subagent:<id>`. */
+export interface RetryFallbackRole {
+	primary: string;
+	chain: string[];
+}
+
+export function getRetryFallbackRole(settings: Settings, role: string): RetryFallbackRole | undefined {
+	const primary = settings.getModelRole(role);
+	const chain = settings.get("retry.fallbackChains")?.[role];
+	if (!primary || !Array.isArray(chain) || chain.length === 0) return undefined;
+	return { primary, chain };
+}
+
+/**
+ * Assign `role` its primary and install its chain ahead of every configured chain, so another role assigned the
+ * same model cannot capture its routing. Session-scoped overrides only; the user's config is untouched.
+ */
+export function installRetryFallbackRole(
+	settings: Settings,
+	role: string,
+	{ primary, chain }: RetryFallbackRole,
+): void {
+	const modelRoles: Record<string, string> = {};
+	const existingRoles = settings.getModelRoles();
+	for (const key in existingRoles) {
+		const selector = existingRoles[key];
+		if (selector) modelRoles[key] = selector;
+	}
+	modelRoles[role] = primary;
+	settings.override("modelRoles", modelRoles);
+	const fallbackChains: RetryFallbackChains = { [role]: chain };
+	const existingChains = settings.get("retry.fallbackChains");
+	for (const key in existingChains) {
+		if (key !== role) fallbackChains[key] = existingChains[key];
+	}
+	settings.override("retry.fallbackChains", fallbackChains);
 }
 
 // `isDiscoveryPending` suppresses "unknown model" for selectors whose discovery provider has not populated the
@@ -208,13 +247,14 @@ function getRetryFallbackPrimarySelector(
 	return configuredSelector ? parseRetryFallbackSelector(configuredSelector, context.modelLookup) : undefined;
 }
 
-type SelectorMatchKind = "exact" | "normalized" | "base" | "none";
+type SelectorMatchKind = "exact" | "normalized" | "base" | "effort" | "none";
 
 /**
  * Classify a chain key's primary against the current selector on parsed values, so effort
  * aliases (`hi`) match their canonical form. `normalized`: both efforts clamp to the same
  * level on the active model (`max` vs `high` on a high-capped model). `base`: a suffixless
- * key matches the model at any effort. A distinct explicit effort never matches.
+ * key matches the model at any effort. `effort`: same model at a distinct explicit effort; model keys treat it as no
+ * match, role keys as their weakest tier (a role's chain follows its model across `/thinking` or spawn effort).
  */
 function selectorMatchKind(
 	primary: RetryFallbackSelector | undefined,
@@ -239,7 +279,7 @@ function selectorMatchKind(
 	) {
 		return "normalized";
 	}
-	return "none";
+	return "effort";
 }
 
 export function resolveRetryFallbackChainKey(
@@ -300,22 +340,27 @@ export function resolveRetryFallbackChainKey(
 	if (wildcardMatch) return wildcardMatch;
 
 	if (roleHint && Array.isArray(context.chains[roleHint])) return roleHint;
+	// A role assigned the live model at another explicit effort still owns it, after every effort-matched role.
 	let matchedRole: string | undefined;
+	let effortRole: string | undefined;
 	for (const key in context.chains) {
 		if (isRetryFallbackModelKey(key)) continue;
-		if (
-			selectorMatchKind(
-				getRetryFallbackPrimarySelector(context, key),
-				parsedCurrent,
-				parsedPlainCurrent,
-				currentModel,
-			) !== "none"
-		) {
-			if (key === "default") return "default";
-			matchedRole ??= key;
+		const kind = selectorMatchKind(
+			getRetryFallbackPrimarySelector(context, key),
+			parsedCurrent,
+			parsedPlainCurrent,
+			currentModel,
+		);
+		if (kind === "none") continue;
+		if (kind === "effort") {
+			if (key === "default" || effortRole === undefined) effortRole = key;
+			continue;
 		}
+		if (key === "default") return "default";
+		matchedRole ??= key;
 	}
 	if (matchedRole) return matchedRole;
+	if (effortRole) return effortRole;
 
 	// The default chain applies even when its role primary is a different model than the live one
 	// (e.g. after /model), so a retry past maxDelayMs still reaches a fallback.

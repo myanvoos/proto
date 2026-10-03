@@ -45,6 +45,7 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
+import { schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema/json-schema-validator";
 import { stamp } from "@oh-my-pi/pi-ai/utils/schema/stamps";
 import { INTENT_FIELD, logger, normalizeIntent, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { agentPauseGate } from "./pause";
@@ -504,18 +505,19 @@ export function agentLoop(
 	const stream = createAgentStream();
 
 	(async () => {
-		const newMessages: AgentMessage[] = [...prompts];
-		const currentContext: AgentContext = {
-			...context,
-			messages: [...context.messages, ...prompts],
-		};
-		for (const prompt of prompts) {
-			(prompt as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
-		}
-
-		stream.push({ type: "agent_start" });
-
+		// Host commit hooks run inside the try: a throw must fail the stream, not leave callers awaiting result().
 		try {
+			const newMessages: AgentMessage[] = [...prompts];
+			const currentContext: AgentContext = {
+				...context,
+				messages: [...context.messages, ...prompts],
+			};
+			for (const prompt of prompts) {
+				(prompt as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
+			}
+
+			stream.push({ type: "agent_start" });
+
 			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, prompts);
 		} catch (err) {
 			stream.fail(err);
@@ -542,12 +544,12 @@ export function agentLoopContinue(
 	const stream = createAgentStream();
 
 	(async () => {
-		const newMessages: AgentMessage[] = [];
-		const currentContext: AgentContext = { ...context, messages: [...context.messages] };
-
-		stream.push({ type: "agent_start" });
-
 		try {
+			const newMessages: AgentMessage[] = [];
+			const currentContext: AgentContext = { ...context, messages: [...context.messages] };
+
+			stream.push({ type: "agent_start" });
+
 			await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
 		} catch (err) {
 			stream.fail(err);
@@ -825,6 +827,9 @@ function resolveIntentMode(intent: AgentTool["intent"]): "require" | "optional" 
 	if (intent === "optional" || intent === "omit") return intent;
 	return "require";
 }
+
+/** Longest `i` accepted as a "concise intent"; anything longer is a tool payload put in the wrong field. */
+const MAX_INTENT_LENGTH = 200;
 
 function extractIntent(args: Record<string, unknown>): { intent?: string; strippedArgs: Record<string, unknown> } {
 	const { [INTENT_FIELD]: intent, ...strippedArgs } = args;
@@ -1930,7 +1935,7 @@ function resolveToolForCall(
 	return (
 		tools?.find(t => t.name === toolCall.name) ??
 		tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
-		resolveFallbackTool?.(toolCall.name)
+		resolveFallbackTool?.(toolCall.name, tools ?? [])
 	);
 }
 
@@ -1940,16 +1945,24 @@ const MIN_TOOL_NAME_SUGGESTION_SEGMENT = 3;
 const MAX_TOOL_NAME_SUGGESTIONS = 3;
 
 /**
- * Advertised tool names sharing a trailing `_`-delimited segment with `name`. A model mis-transcribing a long opaque
- * tool name (`mcp__<id>__<id>_read`) reliably keeps the meaningful trailing verb while garbling the id segments. Both
- * the last `__` and last `_` boundaries are tried; the `__` tail (never shorter) is matched first, so a distinctive
- * tail's match outranks tools that merely share a generic suffix. Advisory only: dispatch never consults it.
+ * Tool names sharing a trailing `_`-delimited segment with `name`. A model mis-transcribing a long opaque tool name
+ * (`mcp__<id>__<id>_read`) reliably keeps the meaningful trailing verb while garbling the id segments. Both the last
+ * `__` and last `_` boundaries are tried; the `__` tail (never shorter) is matched first, so a distinctive tail's match
+ * outranks tools that merely share a generic suffix. `fallbackNames` adds routable-but-unadvertised targets (mounted
+ * devices), ranked after the advertised set. Advisory only: dispatch never consults it.
  */
 function suggestToolNames(
 	name: string,
 	tools: ReadonlyArray<Pick<AgentTool, "name" | "customWireName">> | undefined,
+	fallbackNames?: Iterable<string>,
 ): string[] {
-	if (!tools || tools.length === 0) return [];
+	const candidates: string[] = [];
+	for (const tool of tools ?? []) {
+		candidates.push(tool.name);
+		if (tool.customWireName !== undefined) candidates.push(tool.customWireName);
+	}
+	if (fallbackNames !== undefined) candidates.push(...fallbackNames);
+	if (candidates.length === 0) return [];
 	const segments: string[] = [];
 	for (const boundary of ["__", "_"]) {
 		const idx = name.lastIndexOf(boundary);
@@ -1959,11 +1972,9 @@ function suggestToolNames(
 	}
 	const matches: string[] = [];
 	for (const segment of segments) {
-		for (const tool of tools) {
-			for (const candidate of [tool.name, tool.customWireName]) {
-				if (candidate === undefined || candidate === name || matches.includes(candidate)) continue;
-				if (candidate === segment || candidate.endsWith(`_${segment}`)) matches.push(candidate);
-			}
+		for (const candidate of candidates) {
+			if (candidate === name || matches.includes(candidate)) continue;
+			if (candidate === segment || candidate.endsWith(`_${segment}`)) matches.push(candidate);
 		}
 	}
 	return matches;
@@ -1972,8 +1983,9 @@ function suggestToolNames(
 function formatToolNotFoundMessage(
 	name: string,
 	tools: ReadonlyArray<Pick<AgentTool, "name" | "customWireName">> | undefined,
+	fallbackNames?: Iterable<string>,
 ): string {
-	const suggestions = suggestToolNames(name, tools);
+	const suggestions = suggestToolNames(name, tools, fallbackNames);
 	if (suggestions.length === 0) return `Tool ${name} not found`;
 	if (suggestions.length === 1) return `Tool ${name} not found. Did you mean ${suggestions[0]}?`;
 	return `Tool ${name} not found. Closest available: ${suggestions.slice(0, MAX_TOOL_NAME_SUGGESTIONS).join(", ")}`;
@@ -1985,18 +1997,33 @@ async function prepareToolCallDispatch(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<Map<string, PreparedToolCall>> {
-	const { resolveFallbackTool, intentTracing, beforeToolCall } = config;
+	const { resolveFallbackTool, suggestFallbackToolNames, intentTracing, beforeToolCall } = config;
 	const prepared = new Map<string, PreparedToolCall>();
 	for (const toolCall of assistantMessage.content) {
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
 		const tool = resolveToolForCall(context.tools, toolCall, resolveFallbackTool);
+		// A host fallback accepts aliases (`protolens://<device>`, a mis-separated MCP name) that providers reject as a
+		// replayed function name. Record the call under the resolved tool's name; custom-wire calls keep their wire name.
+		if (tool && toolCall.name !== tool.name && toolCall.name !== tool.customWireName) toolCall.name = tool.name;
 		const entry: PreparedToolCall = { tool, args: toolCall.arguments as Record<string, unknown> };
 		prepared.set(toolCall.id, entry);
 		let argsForExecution = toolCall.arguments as Record<string, unknown>;
 		if (intentTracing) {
 			const { intent, strippedArgs } = extractIntent(toolCall.arguments);
 			argsForExecution = strippedArgs;
+			// Stripping a payload-sized `i` would run the tool with the leftover args. Unknown tools fall through to the
+			// not-found error; a tool owning `i` as a real parameter keeps its long value.
+			if (
+				intent !== undefined &&
+				intent.length > MAX_INTENT_LENGTH &&
+				tool &&
+				!schemaDefinesProperty(toolWireSchema(tool), INTENT_FIELD)
+			) {
+				entry.args = strippedArgs;
+				entry.validationErrorMessage = `\`${INTENT_FIELD}\` is a short intent label (at most ${MAX_INTENT_LENGTH} chars); the value you sent is ${intent.length} chars. The tool was not run. Put that content in the tool's own parameters and retry with a brief \`${INTENT_FIELD}\`.`;
+				continue;
+			}
 			if (intent) {
 				toolCall.intent = intent;
 			} else if (typeof tool?.intent === "function") {
@@ -2010,16 +2037,19 @@ async function prepareToolCallDispatch(
 		}
 		const validate = (args: Record<string, unknown>): Record<string, unknown> | undefined => {
 			try {
-				if (!tool) throw new Error(formatToolNotFoundMessage(toolCall.name, context.tools));
+				if (!tool) {
+					throw new Error(formatToolNotFoundMessage(toolCall.name, context.tools, suggestFallbackToolNames?.()));
+				}
 				return validateToolArguments(tool, { ...toolCall, arguments: args });
 			} catch (validationError) {
-				if (tool?.lenientArgValidation) {
+				// Lenience covers schema mismatches; a parse failure has no args to hand over.
+				const parseFailed = "__parseError" in args;
+				if (tool?.lenientArgValidation && !parseFailed) {
 					const fallback = { ...args };
-					delete fallback.__parseError;
 					delete fallback.__rawJson;
 					return fallback;
 				}
-				entry.args = "__parseError" in args ? { __parseError: args.__parseError } : args;
+				entry.args = parseFailed ? { __parseError: args.__parseError } : args;
 				entry.validationErrorMessage =
 					validationError instanceof Error ? validationError.message : String(validationError);
 				return undefined;
@@ -2105,6 +2135,7 @@ async function executeToolCalls(
 		getToolContext,
 		transformToolCallArguments,
 		resolveFallbackTool,
+		suggestFallbackToolNames,
 		afterToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
@@ -2313,7 +2344,7 @@ async function executeToolCalls(
 
 		await runInActiveSpan(toolSpan, async () => {
 			try {
-				if (!tool) throw new Error(formatToolNotFoundMessage(toolCall.name, tools));
+				if (!tool) throw new Error(formatToolNotFoundMessage(toolCall.name, tools, suggestFallbackToolNames?.()));
 				if (record.signal.aborted) {
 					result = createToolSignalAbortedResult(record.signal);
 					isError = true;

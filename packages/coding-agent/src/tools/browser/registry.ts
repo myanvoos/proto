@@ -3,7 +3,7 @@ import { isCompiledBinary, logger, withTimeout, workerHostEntry } from "@oh-my-p
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError, ToolError } from "../tool-errors";
-import { findFreeCdpPort, findReusableCdp, gracefulKillTreeOnce, killExistingByPath, waitForCdp } from "./attach";
+import { findFreeCdpPort, findReusableCdp, gracefulKillTreeOnce, resolveSpawnArgs, waitForCdp } from "./attach";
 import type { CmuxKind } from "./cmux/rpc";
 import { CmuxSocketClient } from "./cmux/socket-client";
 import {
@@ -14,13 +14,14 @@ import {
 	removeUserDataDir,
 	type UserAgentOverride,
 } from "./launch";
+import { reapOrphanSharedTargets } from "./orphan-registry";
 import { ensureRelayDaemon, isLoopbackRelayUrl } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { ensureSharedBrowser } from "./shared-daemon";
 
 type PuppeteerBrowserKind =
 	| { kind: "headless"; headless: boolean }
-	| { kind: "spawned"; path: string }
+	| { kind: "spawned"; path: string; args?: string[] }
 	| { kind: "connected"; cdpUrl: string }
 	| RelayKind;
 
@@ -69,12 +70,12 @@ const browsers = new Map<string, BrowserHandle>();
 
 const pendingOpens = new Map<string, Promise<BrowserHandle>>();
 
-function browserKey(kind: BrowserKind): string {
+export function browserKey(kind: BrowserKind): string {
 	switch (kind.kind) {
 		case "headless":
 			return `headless:${kind.headless ? "1" : "0"}`;
 		case "spawned":
-			return `spawned:${kind.path}`;
+			return `spawned:${JSON.stringify([kind.path, kind.args ?? []])}`;
 		case "connected":
 			return `connected:${kind.cdpUrl}`;
 		case "relay":
@@ -87,11 +88,11 @@ function browserKey(kind: BrowserKind): string {
 interface AcquireBrowserOptions {
 	cwd: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
-	appArgs?: string[];
 	signal?: AbortSignal;
 }
 
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
+	if (kind.kind === "spawned") kind = { ...kind, args: resolveSpawnArgs(kind.path, kind.args, opts.cwd) };
 	const key = browserKey(kind);
 	for (;;) {
 		const existing = browsers.get(key);
@@ -225,7 +226,8 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			`app.path must be absolute (got ${JSON.stringify(exe)}). Pass the binary inside Foo.app/Contents/MacOS/, not the .app bundle.`,
 		);
 	}
-	const reused = await findReusableCdp(exe, opts.signal);
+	const appArgs = kind.args ?? [];
+	const reused = await findReusableCdp(exe, { signal: opts.signal, appArgs });
 	let cdpUrl: string;
 	let pid: number;
 	let subprocess: Subprocess | undefined;
@@ -234,11 +236,10 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		cdpUrl = reused.cdpUrl;
 		pid = reused.pid;
 	} else {
-		const killed = await killExistingByPath(exe, opts.signal);
-		if (killed > 0) logger.debug("Killed existing instances before attach", { exe, killed });
 		const port = await findFreeCdpPort();
-		const launchArgs = [...(opts.appArgs ?? []), `--remote-debugging-port=${port}`];
+		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
 		const child = Bun.spawn([exe, ...launchArgs], {
+			cwd: opts.cwd,
 			stdout: "ignore",
 			stderr: "ignore",
 			stdin: "ignore",
@@ -340,7 +341,10 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 			logger.debug("Failed to disconnect from spawned browser", { error: (err as Error).message });
 		}
 	}
-	if (opts.kill && handle.pid !== undefined) await gracefulKillTreeOnce(handle.pid);
+	// A discovered CDP PID is borrowed, not ours to kill.
+	if (opts.kill && handle.subprocess && handle.subprocess.exitCode === null) {
+		await gracefulKillTreeOnce(handle.subprocess.pid);
+	}
 }
 
 async function openSharedHeadlessHandle(
@@ -372,6 +376,8 @@ async function openSharedHeadlessHandle(
 				: null,
 			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 		});
+		// Sweep pages left by processes that died without teardown; detached so a slow reap never delays the open.
+		void reapOrphanSharedTargets(browser, { projectDir: shared.projectDir, daemonName: shared.daemonName });
 		return {
 			key: browserKey(kind),
 			kind,

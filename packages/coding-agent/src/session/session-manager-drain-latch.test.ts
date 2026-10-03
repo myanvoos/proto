@@ -35,3 +35,16 @@ describe("drain-only storage failures", () => {
 		expect(observed).toEqual([backend.failure]);
 	});
 });
+
+it("replays a failure latched before the host subscribed", async () => {
+	const backend = new FailingPublishBackend();
+	const storage = new IndexedSessionStorage(backend);
+	await storage.initialize();
+	const manager = SessionManager.create("/cwd", "/sessions", storage);
+	storage.writeTextSync("/sessions/headless.jsonl", '{"type":"session"}\n');
+	await expect(manager.flush()).rejects.toBe(backend.failure);
+
+	const observed: Error[] = [];
+	manager.onPersistenceError(error => observed.push(error));
+	expect(observed).toEqual([backend.failure]);
+});

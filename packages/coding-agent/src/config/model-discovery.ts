@@ -730,6 +730,7 @@ async function discoverOpenAIModelsList(
 						id?: string;
 						max_model_len?: unknown;
 						context_length?: unknown;
+						limits?: unknown;
 						input?: unknown;
 						input_modalities?: unknown;
 						architecture?: unknown;
@@ -760,9 +761,23 @@ async function discoverOpenAIModelsList(
 			providerConfig.discovery.type === "litellm"
 				? resolveLiteLLMApi(undefined, id, providerConfig.api)
 				: providerConfig.api;
+		const limits = isRecord(item.limits) ? item.limits : undefined;
+		const maxInputTokens = toPositiveNumberOrUndefined(limits?.max_input_tokens);
+		const maxOutputTokens = toPositiveNumberOrUndefined(limits?.max_output_tokens);
+		const reportedLimitsContextWindow =
+			maxInputTokens !== undefined &&
+			maxOutputTokens !== undefined &&
+			Number.isSafeInteger(maxInputTokens) &&
+			Number.isSafeInteger(maxOutputTokens) &&
+			Number.isSafeInteger(maxInputTokens + maxOutputTokens)
+				? maxInputTokens + maxOutputTokens
+				: undefined;
+		const reportedMaxTokens =
+			maxOutputTokens !== undefined && Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : undefined;
 		const contextWindow =
 			toPositiveNumberOrUndefined(item.max_model_len) ??
 			toPositiveNumberOrUndefined(item.context_length) ??
+			reportedLimitsContextWindow ??
 			nativeMetadataForModel?.contextWindow ??
 			reference?.contextWindow ??
 			DISCOVERY_DEFAULT_CONTEXT_WINDOW;
@@ -783,7 +798,10 @@ async function discoverOpenAIModelsList(
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow,
 
-				maxTokens: Math.min(reference?.maxTokens ?? discoveryDefaultMaxTokens(api), contextWindow),
+				maxTokens: Math.min(
+					reportedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
+					contextWindow,
+				),
 				headers,
 				compat: {
 					supportsStore: false,

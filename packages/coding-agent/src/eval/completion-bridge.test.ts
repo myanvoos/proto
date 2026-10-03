@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as agentCore from "@oh-my-pi/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { Settings } from "../config/settings";
 import { ArtifactManager } from "../session/artifacts";
 import type { ToolSession } from "../tools";
 import { MAX_EVAL_ARTIFACT_BYTES, publishEvalArtifact } from "./artifact-values";
@@ -103,8 +104,8 @@ function contentSession(
 	} as unknown as ToolSession;
 }
 
-function providerSpy() {
-	const response: AssistantMessage = {
+function providerResponse(): AssistantMessage {
+	return {
 		role: "assistant",
 		content: [{ type: "text", text: "provider result" }],
 		api: "openai-completions",
@@ -121,7 +122,10 @@ function providerSpy() {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 	};
-	return vi.spyOn(agentCore, "instrumentedCompleteSimple").mockResolvedValue(response);
+}
+
+function providerSpy() {
+	return vi.spyOn(agentCore, "instrumentedCompleteSimple").mockResolvedValue(providerResponse());
 }
 
 test("text completion keeps its exact user content and text result at the provider boundary", async () => {
@@ -258,4 +262,112 @@ test("completion enforces text, part count, media bytes, and aggregate bounds be
 		request(Array.from({ length: 21 }, () => ({ type: "text", text: "x".repeat(MAX_EVAL_COMPLETION_TEXT_BYTES) }))),
 	).rejects.toThrow("total byte limit");
 	expect(call).not.toHaveBeenCalled();
+});
+
+function fallbackSession(available: Model<Api>[], overrides: Record<string, unknown>): ToolSession {
+	return {
+		settings: Settings.isolated({ modelRoles: { smol: "p/smol" }, ...overrides }),
+		modelRegistry: {
+			getAvailable: () => available,
+			find: (provider: string, id: string) => available.find(m => m.provider === provider && m.id === id),
+			hasProvider: (provider: string) => available.some(m => m.provider === provider),
+			getApiKey: async () => "test-only-key",
+			resolver: () => async () => "test-only-key",
+		},
+	} as unknown as ToolSession;
+}
+
+/** Answers each model id with its scripted text or provider error; returns the model ids in attempt order. */
+function scriptedProvider(outcomes: Record<string, string | Error>): string[] {
+	const attempted: string[] = [];
+	vi.spyOn(agentCore, "instrumentedCompleteSimple").mockImplementation(async selected => {
+		attempted.push(selected.id);
+		const outcome = outcomes[selected.id];
+		const failed = outcome instanceof Error;
+		return {
+			role: "assistant",
+			content: failed ? [] : [{ type: "text", text: outcome ?? "" }],
+			api: "openai-completions",
+			provider: selected.provider,
+			model: selected.id,
+			timestamp: 1,
+			stopReason: failed ? "error" : "stop",
+			errorMessage: failed ? outcome.message : undefined,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		} as AssistantMessage;
+	});
+	return attempted;
+}
+
+const FALLBACK_MODELS = ["smol", "b", "c"].map(id => model("p", id));
+
+test("a failed tier model falls through its retry chain, including a fallback's own chain", async () => {
+	const session = fallbackSession(FALLBACK_MODELS, { "retry.fallbackChains": { smol: ["p/b"], "p/b": ["p/c"] } });
+	const attempted = scriptedProvider({ smol: new Error("quota exhausted"), b: new Error("b down"), c: "c answer" });
+	const result = await runEvalCompletion({ prompt: "q", model: "smol" }, { session });
+	expect(attempted).toEqual(["smol", "b", "c"]);
+	expect(result.text).toBe("c answer");
+	expect(result.details.model).toBe("p/c");
+});
+
+test("completion fallbacks stop at retry.maxRetries and terminate on cyclic chains", async () => {
+	const down = { smol: new Error("always down"), b: new Error("always down"), c: new Error("always down") };
+	const limited = fallbackSession(FALLBACK_MODELS, {
+		"retry.fallbackChains": { smol: ["p/b", "p/c"] },
+		"retry.maxRetries": 1,
+	});
+	let attempted = scriptedProvider(down);
+	await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session: limited })).rejects.toThrow("always down");
+	expect(attempted).toEqual(["smol", "b"]);
+
+	vi.restoreAllMocks();
+	const cyclic = fallbackSession(FALLBACK_MODELS, { "retry.fallbackChains": { smol: ["p/b"], "p/b": ["p/smol"] } });
+	attempted = scriptedProvider(down);
+	await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session: cyclic })).rejects.toThrow("always down");
+	expect(attempted).toEqual(["smol", "b"]);
+});
+
+test("disabling model fallback keeps completion on the tier model", async () => {
+	const session = fallbackSession(FALLBACK_MODELS, {
+		"retry.fallbackChains": { smol: ["p/b"] },
+		"retry.modelFallback": false,
+	});
+	const attempted = scriptedProvider({ smol: new Error("quota exhausted"), b: "unused" });
+	await expect(runEvalCompletion({ prompt: "q", model: "smol" }, { session })).rejects.toThrow("quota exhausted");
+	expect(attempted).toEqual(["smol"]);
+});
+
+test("a completion fan-out keeps at most 32 provider requests in flight", async () => {
+	using tmp = TempDir.createSync("@completion-fanout-");
+	const session = contentSession(tmp.path());
+	const saturated = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let started = 0;
+	vi.spyOn(agentCore, "instrumentedCompleteSimple").mockImplementation(async () => {
+		started += 1;
+		if (started === 32) saturated.resolve();
+		await release.promise;
+		return providerResponse();
+	});
+	const calls = Array.from({ length: 40 }, () =>
+		runEvalCompletion({ prompt: "q", model: "content-test/model" }, { session }),
+	);
+	await saturated.promise;
+	// Let every queued call run its pre-request work; none may reach the provider while 32 are held.
+	for (let turn = 0; turn < 20; turn++) {
+		const nextTurn = Promise.withResolvers<void>();
+		setImmediate(nextTurn.resolve);
+		await nextTurn.promise;
+	}
+	expect(started).toBe(32);
+	release.resolve();
+	expect((await Promise.all(calls)).map(result => result.text)).toEqual(Array(40).fill("provider result"));
+	expect(started).toBe(40);
 });

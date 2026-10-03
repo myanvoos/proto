@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
-import { getBlobsDir, getSessionsDir } from "@oh-my-pi/pi-utils";
+import { getBlobsDir, getCustomSessionFilesDir, getSessionsDir, getTerminalSessionsDir } from "@oh-my-pi/pi-utils";
 import { runGcCommand } from "./gc-cli";
 
 const tempDirs: string[] = [];
@@ -33,6 +33,31 @@ afterEach(async () => {
 });
 
 describe("blob GC streaming reference scan", () => {
+	it("keeps blobs referenced by transcripts outside the managed roots", async () => {
+		const { agentDir, blobsDir } = await fixture();
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), "proto-gc-custom-session-"));
+		tempDirs.push(outside);
+		const [registered, breadcrumbed, orphan] = ["a", "b", "c"].map(char => char.repeat(64));
+		// A `--session` path without the .jsonl suffix, known only through the persistent registry.
+		const registeredFile = path.join(outside, "named-session");
+		await Bun.write(registeredFile, `{"type":"message","image":"blob:sha256:${registered}"}\n`);
+		await Bun.write(path.join(getCustomSessionFilesDir(agentDir), "marker"), registeredFile);
+		// A breadcrumb records the session path relative to the cwd that wrote it.
+		await Bun.write(
+			path.join(outside, "rel", "current.jsonl"),
+			`{"type":"message","image":"blob:sha256:${breadcrumbed}"}\n`,
+		);
+		await Bun.write(path.join(getTerminalSessionsDir(agentDir), "tty-1"), `${outside}\nrel/current.jsonl\n`);
+		const files = await Promise.all([registered, breadcrumbed, orphan].map(hash => writeBlob(blobsDir, hash)));
+
+		const result = await runGcCommand({ flags: { agentDir, blobs: true, archive: false, wal: false, apply: true } });
+
+		expect(result.blobs).toMatchObject({ referenced: 2, deleted: 1, errors: [] });
+		expect(await Bun.file(files[0]).exists()).toBe(true);
+		expect(await Bun.file(files[1]).exists()).toBe(true);
+		expect(await Bun.file(files[2]).exists()).toBe(false);
+	});
+
 	it("skips malformed transcripts when the blob directory has no candidates", async () => {
 		const { agentDir, sessionsDir } = await fixture();
 		await Bun.write(path.join(sessionsDir, "broken.jsonl.gz"), "not gzip");

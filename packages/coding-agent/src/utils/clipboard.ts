@@ -15,7 +15,7 @@ import {
 } from "./image-resources";
 import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text" };
 
-type SpawnCaptureOptions = { input?: string; timeoutMs?: number };
+type SpawnCaptureOptions = { input?: string; timeoutMs?: number; env?: Record<string, string | undefined> };
 
 async function spawnCapture(cmd: string[], options: SpawnCaptureOptions & { encoding: "bytes" }): Promise<Uint8Array>;
 async function spawnCapture(cmd: string[], options?: SpawnCaptureOptions): Promise<string>;
@@ -28,6 +28,7 @@ async function spawnCapture(
 		stdout: "pipe",
 		stderr: "ignore",
 		stdin: options.input !== undefined ? Buffer.from(options.input) : "ignore",
+		...(options.env ? { env: options.env } : {}),
 	});
 	let timedOut = false;
 	const timer = setTimeout(() => {
@@ -60,6 +61,11 @@ function hasDisplay(): boolean {
 	return process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 
+// pbcopy(1) sniffs leading bytes and stores PDF, EPS, or RTF headers as that document type instead of text.
+function isPasteboardTypedByHeader(text: string): boolean {
+	return text.startsWith("%PDF-") || text.startsWith("%!PS") || text.startsWith("{\\rtf");
+}
+
 export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 	if (process.platform !== "darwin") return [];
 	try {
@@ -73,6 +79,8 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 		return [];
 	}
 }
+
+let macClipboardWrite = Promise.resolve();
 
 export async function copyToClipboard(text: string): Promise<void> {
 	if (process.stdout.isTTY) {
@@ -101,6 +109,16 @@ export async function copyToClipboard(text: string): Promise<void> {
 		}
 	}
 
+	// Keep pbcopy and native fallback writes in invocation order.
+	let releaseWrite: (() => void) | undefined;
+	if (process.platform === "darwin") {
+		const previousWrite = macClipboardWrite;
+		const { promise, resolve } = Promise.withResolvers<void>();
+		macClipboardWrite = promise;
+		releaseWrite = resolve;
+		await previousWrite;
+	}
+
 	try {
 		if (process.env.TERMUX_VERSION) {
 			try {
@@ -108,9 +126,25 @@ export async function copyToClipboard(text: string): Promise<void> {
 				return;
 			} catch {}
 		}
+		// The in-process AppKit write logs `NSPasteboard ... returns false` to the terminal's stderr when it
+		// loses pasteboard ownership (e.g. at exit); a pbcopy child cannot. pbcopy decodes stdin per LANG,
+		// so force UTF-8 to keep non-ASCII text intact.
+		if (process.platform === "darwin" && !isPasteboardTypedByHeader(text)) {
+			try {
+				await spawnCapture(["pbcopy"], {
+					input: text,
+					timeoutMs: 5000,
+					env: { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+				});
+				return;
+			} catch {}
+		}
 
 		await nativeCopyToClipboard(text);
-	} catch {}
+	} catch {
+	} finally {
+		releaseWrite?.();
+	}
 }
 
 async function readTextFromX11Clipboard(): Promise<string> {
@@ -179,7 +213,7 @@ export async function readTextFromClipboard(): Promise<string> {
 		const hasX11Display = Boolean(process.env.DISPLAY);
 		if (hasWaylandDisplay) {
 			try {
-				return await spawnCapture(["wl-paste", "--type", "text/plain", "--no-newline"]);
+				return await spawnCapture(["wl-paste", "--type", "text", "--no-newline"]);
 			} catch (error) {
 				if (error instanceof RangeError) throw error;
 				if (hasX11Display) {

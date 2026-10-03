@@ -1,5 +1,5 @@
 use brush_parser::{
-	ParserOptions, SourceInfo,
+	ParserOptions,
 	ast::{
 		AndOr, Command, CommandPrefixOrSuffixItem, CompoundListItem, IoFileRedirectTarget,
 		IoRedirect, Pipeline, Program, SeparatorOperator, SimpleCommand, Word,
@@ -40,9 +40,8 @@ pub fn analyze(command: &str) -> CommandPlan {
 
 fn parse(command: &str) -> Option<Program> {
 	let options = ParserOptions::default();
-	let source_info = SourceInfo::default();
 	let reader = std::io::Cursor::new(command.as_bytes());
-	let mut parser = brush_parser::Parser::new(reader, &options, &source_info);
+	let mut parser = brush_parser::Parser::new(reader, &options);
 	parser.parse_program().ok()
 }
 

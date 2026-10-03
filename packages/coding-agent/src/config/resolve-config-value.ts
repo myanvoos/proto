@@ -1,5 +1,4 @@
-import { executeShell } from "@oh-my-pi/pi-natives";
-import { $envExact, directoryIsEnterable, getProjectDir, logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { $envExact, directoryIsEnterable, getProjectDir, logger, ptree, untilAborted } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 
 const MAX_COMMAND_CACHE_ENTRIES = 512;
@@ -92,14 +91,25 @@ async function executeCommand(valueConfig: string): Promise<string | undefined> 
 	return await promise;
 }
 
-async function runShellCommand(command: string, timeoutMs: number, cwd: string): Promise<string | undefined> {
+/**
+ * Runs one `!command` under the absolute OS shell with piped-only stdio, so descriptors a launcher handed proto
+ * (e.g. a credential on fd 3) never reach the helper; the detached group is killed whole on timeout.
+ */
+export async function runShellCommand(
+	command: string,
+	timeoutMs: number,
+	cwd: string = getProjectDir(),
+): Promise<string | undefined> {
 	try {
-		let output = "";
-		const result = await executeShell({ command, cwd, timeoutMs }, (err, chunk) => {
-			if (!err) output += chunk;
+		const result = await ptree.exec(["/bin/sh", "-c", command], {
+			cwd,
+			timeout: timeoutMs,
+			allowNonZero: true,
+			allowAbort: true,
+			detached: true,
 		});
-		if (result.timedOut || result.exitCode !== 0) return undefined;
-		const trimmed = output.trim();
+		if (!result.ok || result.exitError?.aborted) return undefined;
+		const trimmed = result.stdout.trim();
 		return trimmed.length > 0 ? trimmed : undefined;
 	} catch (error) {
 		logger.warn("config: !command value resolution failed", {

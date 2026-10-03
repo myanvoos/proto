@@ -1,6 +1,12 @@
-import type { StreamFn } from "@oh-my-pi/pi-agent-core";
+import {
+	fitOutputTokensToContextWindow,
+	type StreamFn,
+	Tokenizer,
+	tokenizerEncodingForModel,
+} from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { isAnthropicFableOrMythosModel } from "@oh-my-pi/pi-catalog/identity";
+import type { Encoding } from "@oh-my-pi/pi-natives";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
 
 function timeoutSecondsToMs(value: number): number | undefined {
@@ -9,7 +15,12 @@ function timeoutSecondsToMs(value: number): number | undefined {
 	return Math.max(1, Math.trunc(value * 1000));
 }
 
+/**
+ * Caller-supplied `streamOptions` always win; the helper only fills holes. The one exception is the output cap, which
+ * is lowered when prompt plus cap would exceed the model's context window, for every request the session drives.
+ */
 export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn = streamSimple): StreamFn {
+	const tokenizers = new Map<Encoding | null, Tokenizer>();
 	return (model, context, streamOptions) => {
 		const openrouterRoutingPreset = settings.get("providers.openrouterVariant");
 		const openrouterVariant =
@@ -34,10 +45,18 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			model.api === "anthropic-messages" &&
 			model.provider === "anthropic" &&
 			isAnthropicFableOrMythosModel(model.id);
+		// Targets must be in the model's published `allowed_fallback_models`; Fable/Mythos 5 reject `claude-opus-5-5`.
 		const fallbacks =
-			streamOptions?.fallbacks ?? (serverSideFallbackEnabled ? [{ model: "claude-opus-5-5" }] : undefined);
+			streamOptions?.fallbacks ?? (serverSideFallbackEnabled ? [{ model: "claude-opus-5" }] : undefined);
+		const encoding = tokenizerEncodingForModel(model);
+		let tokenizer = tokenizers.get(encoding);
+		if (!tokenizer) {
+			tokenizer = new Tokenizer(model);
+			tokenizers.set(encoding, tokenizer);
+		}
 		const merged: SimpleStreamOptions = {
 			...streamOptions,
+			maxTokens: fitOutputTokensToContextWindow(model, context, streamOptions?.maxTokens, tokenizer),
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
 			antigravityEndpointMode: streamOptions?.antigravityEndpointMode ?? antigravityEndpointMode,
 			textVerbosity: streamOptions?.textVerbosity ?? textVerbosity,

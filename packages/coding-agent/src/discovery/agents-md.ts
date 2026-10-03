@@ -25,10 +25,12 @@ export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<Context
 	const repoRoot = ctx.repoRoot ? path.resolve(ctx.repoRoot) : null;
 	const filesystemRoot = path.parse(cwd).root;
 	const cwdIsUnderHome = isWithin(home, cwd);
-	const repoIsUnderHome = repoRoot !== null && isWithin(home, repoRoot);
+	// A repository rooted at home is not nested below it: its AGENTS.md stays project context.
+	const repoIsHome = repoRoot !== null && samePath(home, repoRoot);
+	const repoIsUnderHome = repoRoot !== null && isWithin(home, repoRoot) && !repoIsHome;
 	const scanToHome = repoRoot !== null && cwdIsUnderHome && repoIsUnderHome;
 	const boundary = scanToHome ? home : (repoRoot ?? (cwdIsUnderHome ? home : filesystemRoot));
-	const includeBoundary = repoRoot === null ? cwdIsUnderHome : !samePath(boundary, home);
+	const includeBoundary = repoRoot === null ? cwdIsUnderHome : !samePath(boundary, home) || repoIsHome;
 	const excludeHome = scanToHome;
 
 	let current = cwd;
@@ -39,7 +41,8 @@ export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<Context
 			const candidate = path.join(current, "AGENTS.md");
 			const content = await readFile(candidate);
 
-			if (content !== null) {
+			// An empty file must not claim the depth slot and shadow a non-empty sibling.
+			if (content !== null && content !== "") {
 				const parent = path.dirname(candidate);
 				const baseName = parent.split(path.sep).pop() ?? "";
 

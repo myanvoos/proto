@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
+import type { WatchdogConfigDoc } from "../../advisor/config";
 import { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
@@ -253,4 +254,46 @@ test("advisor instructions editor renders inside the host frame without a blank 
 			for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
 		}
 	}
+});
+
+test("saving keeps shared instructions but drops the editor's synthetic default advisor row", async () => {
+	const saved: WatchdogConfigDoc[] = [];
+	const save = async (doc: WatchdogConfigDoc) => {
+		const persisted = Promise.withResolvers<void>();
+		const overlay = new AdvisorConfigOverlayComponent(
+			{ terminal: { rows: 24 } } as TUI,
+			{
+				modelRegistry: {} as ModelRegistry,
+				settings: Settings.isolated(),
+				scopedModels: [],
+				availableToolNames: [],
+			},
+			"project",
+			doc,
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, savedDoc) => {
+					saved.push(savedDoc);
+					persisted.resolve();
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		overlay.render(80);
+		// advisor:0 → add → shared → scope → save
+		for (let i = 0; i < 4; i++) overlay.handleInput(DOWN);
+		overlay.handleInput("\r");
+		await persisted.promise;
+	};
+
+	await save({ instructions: "shared rules", advisors: [] });
+	await save({ instructions: "shared rules", advisors: [{ name: "default", instructions: "custom" }] });
+
+	expect(saved[0]).toMatchObject({ instructions: "shared rules", advisors: [] });
+	expect(saved[1]).toMatchObject({
+		instructions: "shared rules",
+		advisors: [{ name: "default", instructions: "custom" }],
+	});
 });

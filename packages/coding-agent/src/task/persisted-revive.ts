@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelRoleAlias } from "../config/model-roles";
@@ -10,9 +11,15 @@ import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
+import { installRetryFallbackRole } from "../session/retry-fallback-chains";
 import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
-import { attachWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
+import {
+	attachWakeTurnMonitor,
+	createMCPProxyTools,
+	createSubagentSettings,
+	subagentRetryFallbackRole,
+} from "./executor";
 import type { AgentDefinition } from "./types";
 
 interface PersistedSubagentReviveContext {
@@ -80,6 +87,11 @@ export function createPersistedSubagentReviverFactory(
 						}
 					: undefined),
 			});
+			// The transcript cannot rebuild the spawn's `subagent:<id>` chain (multi-model patterns and inherited role
+			// chains resolve only at spawn), so reinstall the persisted one.
+			if (init.retryFallback) {
+				installRetryFallbackRole(subagentSettings, subagentRetryFallbackRole(ref.id), init.retryFallback);
+			}
 			const explicitOverride =
 				typeof init.modelOverride === "string"
 					? init.modelOverride
@@ -126,7 +138,7 @@ export function createPersistedSubagentReviverFactory(
 					? {
 							enableIrc: false,
 							enableMCP: false,
-							preloadedExtensionPaths: [],
+							preloadedPreparedExtensions: [],
 							preloadedCustomToolPaths: [],
 						}
 					: {
@@ -158,7 +170,7 @@ export function createPersistedSubagentReviverFactory(
 				sessionFile,
 				outputSchema: init.outputSchema,
 				outputSchemaMode: init.outputSchemaMode,
-				artifactsDir: ctx.session.sessionFile?.slice(0, -6),
+				artifactsDir: path.dirname(sessionFile),
 			});
 			return session;
 		};

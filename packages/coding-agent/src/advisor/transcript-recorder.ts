@@ -5,6 +5,7 @@ import type { Message, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { SessionManager } from "../session/session-manager";
+import { fingerprintMessage } from "./delta-feed";
 
 export const ADVISOR_TRANSCRIPT_STEM = "__advisor";
 export const ADVISOR_TRANSCRIPT_FILENAME = `${ADVISOR_TRANSCRIPT_STEM}.jsonl`;
@@ -74,6 +75,13 @@ export class AdvisorTranscriptRecorder {
 	#filename: string;
 
 	#queue: Promise<void>;
+	/**
+	 * Fingerprints of user deltas persisted since the last committed turn. A failed delivery re-sends the identical
+	 * batch in order, so a positional match is a replay that would only add bytes; genuinely new content diverges.
+	 */
+	#replayWindow: bigint[] = [];
+	#replayCursor = 0;
+	#windowFile: string | undefined;
 
 	constructor(
 		private readonly resolveSessionFile: () => string | undefined,
@@ -106,6 +114,25 @@ export class AdvisorTranscriptRecorder {
 		const sessionFile = this.resolveSessionFile();
 		if (!sessionFile?.endsWith(JSONL_SUFFIX)) return;
 		const file = path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), this.#filename);
+		if (file !== this.#windowFile) {
+			this.#windowFile = file;
+			this.#clearReplayWindow();
+		}
+		// Assistant/tool turns are billed work and always persist; only replayed user deltas are skipped.
+		if (message.role === "user") {
+			const fingerprint = fingerprintMessage(message);
+			if (fingerprint !== undefined) {
+				if (this.#replayCursor < this.#replayWindow.length) {
+					if (this.#replayWindow[this.#replayCursor] === fingerprint) {
+						this.#replayCursor++;
+						return;
+					}
+					this.#replayWindow.length = this.#replayCursor;
+				}
+				this.#replayWindow.push(fingerprint);
+				this.#replayCursor = this.#replayWindow.length;
+			}
+		}
 		const cwd = this.resolveCwd();
 		this.#enqueue(async () => {
 			if (file !== this.#file) {
@@ -118,6 +145,26 @@ export class AdvisorTranscriptRecorder {
 			}
 			this.#manager?.appendMessage(persisted);
 		});
+	}
+
+	/** Starts one delivery attempt: a retry of the uncommitted batch matches the window from its start. */
+	beginTurn(): void {
+		this.#replayCursor = 0;
+	}
+
+	/** The delivered batch landed; later deltas are new content even when they render like it. */
+	commitTurn(): void {
+		this.#clearReplayWindow();
+	}
+
+	/** The failed batch is dropped for good; nothing will replay it. */
+	abandonTurn(): void {
+		this.#clearReplayWindow();
+	}
+
+	#clearReplayWindow(): void {
+		this.#replayWindow = [];
+		this.#replayCursor = 0;
 	}
 
 	flush(): Promise<void> {

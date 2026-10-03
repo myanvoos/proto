@@ -3,10 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as natives from "@oh-my-pi/pi-natives";
-import { formatBytes, getWorktreeDir, logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { formatBytes, getWorktreeDir, isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as git from "../utils/git";
 import * as jj from "../utils/jj";
-import { writeIsolationOwner } from "./isolation-ownership";
+import { writeIsolationOwner, writeRetainedBackend } from "./isolation-ownership";
 import { mapWithConcurrencyLimit } from "./parallel";
 
 const { IsoBackendKind } = natives;
@@ -87,14 +87,19 @@ async function discoverNestedRepos(repoRoot: string): Promise<string[]> {
 
 export const ISOLATION_BASELINE_MAX_CONTENT_BYTES = 1024 * 1024 * 1024;
 
+/** `contentBytes` is undefined when a staged/unstaged diff crossed the budget: git output stops at the cap, so the full size is unknown. */
 export class IsolationBaselineTooLargeError extends Error {
 	constructor(
 		readonly repoRoot: string,
-		readonly contentBytes: number,
+		readonly contentBytes: number | undefined,
+		readonly budgetBytes: number = ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 	) {
+		const measured =
+			contentBytes === undefined
+				? `more than ${formatBytes(budgetBytes)} of uncommitted content`
+				: `${formatBytes(contentBytes)} of uncommitted content, over the ${formatBytes(budgetBytes)} isolation-snapshot budget`;
 		super(
-			`Working tree at ${repoRoot} carries ${formatBytes(contentBytes)} of uncommitted content, ` +
-				`over the ${formatBytes(ISOLATION_BASELINE_MAX_CONTENT_BYTES)} isolation-snapshot budget. ` +
+			`Working tree at ${repoRoot} carries ${measured}. ` +
 				`Isolated task snapshots buffer this content in memory, so proceeding would exhaust the host. ` +
 				`Commit or gitignore the bulk (untracked files that aren't ignored are the usual culprit), ` +
 				`or set \`orchestrator.isolation.mode: none\` to run tasks without isolation.`,
@@ -130,16 +135,35 @@ async function captureUntrackedPatch(repoRoot: string, untracked: readonly strin
 	return untrackedDiffs.filter((diff): diff is string => !!diff?.trim()).join("\n");
 }
 
-async function captureRepoBaseline(repoRoot: string): Promise<RepoBaseline> {
+async function captureRepoBaseline(repoRoot: string, budgetBytes: number): Promise<RepoBaseline> {
 	const headCommit = (await git.head.sha(repoRoot)) ?? "";
-	const staged = await git.diff(repoRoot, { binary: true, cached: true });
-	const unstaged = await git.diff(repoRoot, { binary: true });
+	// Diffs are read under the remaining budget and must be complete: a truncated diff is a corrupt baseline.
+	let staged: string;
+	let unstaged: string;
+	try {
+		staged = await git.diff(repoRoot, {
+			binary: true,
+			cached: true,
+			maxOutputBytes: budgetBytes,
+			requireComplete: true,
+		});
+		unstaged = await git.diff(repoRoot, {
+			binary: true,
+			maxOutputBytes: budgetBytes - Buffer.byteLength(staged),
+			requireComplete: true,
+		});
+	} catch (error) {
+		if (error instanceof git.GitOutputTruncatedError) {
+			throw new IsolationBaselineTooLargeError(repoRoot, undefined, budgetBytes);
+		}
+		throw error;
+	}
 	const untracked = await git.ls.untracked(repoRoot);
 
 	const untrackedBytes = await sumUntrackedBytes(repoRoot, untracked);
-	const contentBytes = untrackedBytes + staged.length + unstaged.length;
-	if (contentBytes > ISOLATION_BASELINE_MAX_CONTENT_BYTES) {
-		throw new IsolationBaselineTooLargeError(repoRoot, contentBytes);
+	const contentBytes = untrackedBytes + Buffer.byteLength(staged) + Buffer.byteLength(unstaged);
+	if (contentBytes > budgetBytes) {
+		throw new IsolationBaselineTooLargeError(repoRoot, contentBytes, budgetBytes);
 	}
 	const untrackedPatch = await captureUntrackedPatch(repoRoot, untracked);
 	return { repoRoot, headCommit, staged, unstaged, untracked, untrackedPatch };
@@ -176,12 +200,18 @@ async function writeSyntheticTree(
 	}
 }
 
-export async function captureBaseline(repoRoot: string): Promise<WorktreeBaseline> {
-	const [root, nestedPaths] = await Promise.all([captureRepoBaseline(repoRoot), discoverNestedRepos(repoRoot)]);
+export async function captureBaseline(
+	repoRoot: string,
+	budgetBytes: number = ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+): Promise<WorktreeBaseline> {
+	const [root, nestedPaths] = await Promise.all([
+		captureRepoBaseline(repoRoot, budgetBytes),
+		discoverNestedRepos(repoRoot),
+	]);
 	const nested = await Promise.all(
 		nestedPaths.map(async relativePath => ({
 			relativePath,
-			baseline: await captureRepoBaseline(path.join(repoRoot, relativePath)),
+			baseline: await captureRepoBaseline(path.join(repoRoot, relativePath), budgetBytes),
 		})),
 	);
 	return { root, nested };
@@ -403,6 +433,17 @@ export async function ensureIsolation(
 	const sourceCommonDir = repository?.commonDir ?? path.join(repoRoot, ".git");
 	const baseDir = getWorktreeDir(getTaskIsolationSegment(repoRoot, id));
 	const mergedDir = path.join(baseDir, WORKER_ISOLATION_MOUNT_DIR);
+	// A failed retention rename can leave the only copy in this deterministic slot.
+	// Never reclaim an existing workspace implicitly; worktree clear owns that decision.
+	const existingWorkspace = await fs.lstat(mergedDir).catch(error => {
+		if (!isEnoent(error)) throw error;
+		return undefined;
+	});
+	if (existingWorkspace) {
+		throw new Error(
+			`Isolation workspace already exists at ${mergedDir}; recover its changes, then use proto worktree clear before reusing this agent id.`,
+		);
+	}
 	const resolution = natives.isoResolve(preferred ?? null);
 	const candidates = resolution.candidates.length > 0 ? resolution.candidates : [resolution.kind];
 	let fallbackReason = resolution.reason ?? null;
@@ -413,6 +454,8 @@ export async function ensureIsolation(
 		await fs.mkdir(baseDir, { recursive: true });
 		await writeIsolationOwner(baseDir, id);
 		try {
+			// Keep the teardown guard even if later disk pressure prevents both retention writes and renames.
+			await writeRetainedBackend(baseDir, candidate);
 			await natives.isoStart(candidate, repoRoot, mergedDir);
 
 			await git.detachGitDir(mergedDir, sourceCommonDir);

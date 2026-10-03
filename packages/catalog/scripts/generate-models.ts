@@ -68,10 +68,10 @@ import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
 import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
 import {
-	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
 	applyOllamaCloudOutputCap,
+	applyPricingPeerFallback,
 	CLOUDFLARE_FALLBACK_MODEL,
 	hasBillableCost,
 	linkOpenAIPromotionTargets,
@@ -611,7 +611,7 @@ async function generateModels() {
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyXaiCatalogPricing(allModels);
 	allModels = applyCodexPricingFallback(allModels);
-	allModels = applyAntigravityPricingFallback(allModels);
+	allModels = applyPricingPeerFallback(allModels);
 	allModels = applyKimiMaxTokensCap(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	allModels = filterModelsDevCatalogRows(allModels);

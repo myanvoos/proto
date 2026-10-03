@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { resolveContainedPathSync } from "../discovery/contained-path";
+import { type ContainedPathResolution, resolveContainedPath } from "../discovery/contained-path";
 import type { Skill } from "../extensibility/skills";
 import { type LocalProtocolOptions, resolveFleetUrlToPath, resolveLocalUrlToPath } from "../internal-urls";
 import { validateRelativePath } from "../internal-urls/skill-protocol";
@@ -8,8 +8,6 @@ import type { InternalResource, ResolveContext } from "../internal-urls/types";
 import type { ImageAttachmentEntry } from ".";
 import { normalizeLocalScheme, splitInternalUrlSel } from "./path-utils";
 import { ToolError } from "./tool-errors";
-
-const SKILL_URL_PATTERN = /'skill:\/\/[^'\s")`\\]+'|"skill:\/\/[^"\s')`\\]+"|skill:\/\/[^\s'")`\\;&|<>($]+/g;
 
 const INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL =
 	/'(?:[a-z][a-z0-9+.-]*):\/\/[^'\s")`\\]*'|"(?:[a-z][a-z0-9+.-]*):\/\/[^"\s')`\\]*"|(?:[a-z][a-z0-9+.-]*):\/\/[^\s'")`\\;&|<>($]*|'local:\/[^'\s")`\\]*'|"local:\/[^"\s')`\\]*"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]*/gi;
@@ -29,7 +27,17 @@ export interface InternalUrlExpansionOptions {
 	ensureLocalParentDirs?: boolean;
 }
 
-export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): string {
+function containedSkillPath(url: string, contained: ContainedPathResolution): string {
+	if (contained.status === "outside") {
+		throw new ToolError(`skill:// path resolves outside the plugin root: ${url}`);
+	}
+	if (contained.status === "missing") {
+		throw new ToolError(`skill:// path does not exist: ${url}`);
+	}
+	return contained.realPath;
+}
+
+async function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): Promise<string> {
 	const parsed = /^skill:\/\/([^/?#]+)(\/[^?#]*)?(?:[?#].*)?$/.exec(url);
 	if (!parsed) {
 		throw new ToolError(`Invalid skill:// URL: ${url}`);
@@ -55,7 +63,9 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	const hasRelativePath = rawPath !== "" && rawPath !== "/";
 
 	if (!hasRelativePath) {
-		return path.resolve(skill.baseDir);
+		const baseDir = path.resolve(skill.baseDir);
+		if (!skill.containRoot) return baseDir;
+		return containedSkillPath(url, await resolveContainedPath(skill.containRoot, baseDir));
 	}
 
 	let relativePath: string;
@@ -78,18 +88,8 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 		throw new ToolError("Path traversal is not allowed in skill:// URLs");
 	}
 
-	if (skill.containRoot) {
-		const contained = resolveContainedPathSync(skill.containRoot, resolvedPath);
-		if (contained.status === "outside") {
-			throw new ToolError(`skill:// path resolves outside the plugin root: ${url}`);
-		}
-		if (contained.status === "missing") {
-			throw new ToolError(`skill:// path does not exist: ${url}`);
-		}
-		return contained.realPath;
-	}
-
-	return resolvedPath;
+	if (!skill.containRoot) return resolvedPath;
+	return containedSkillPath(url, await resolveContainedPath(skill.containRoot, resolvedPath));
 }
 
 function matchSkillName(
@@ -447,20 +447,6 @@ export function heredocBodyRanges(command: string): Array<[number, number]> {
 
 function isInHeredocBody(ranges: ReadonlyArray<readonly [number, number]>, index: number): boolean {
 	return ranges.some(([start, end]) => index >= start && index < end);
-}
-
-export function expandSkillUrls(command: string, skills: readonly Skill[]): string {
-	if (skills.length === 0 || !command.includes("skill://")) {
-		return command;
-	}
-
-	const bodies = heredocBodyRanges(command);
-	return command.replace(SKILL_URL_PATTERN, (token, offset: number) => {
-		if (isInHeredocBody(bodies, offset)) return token;
-		const url = unquoteToken(token);
-		const resolvedPath = resolveSkillUrlToPath(url, skills);
-		return shellEscape(resolvedPath);
-	});
 }
 
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {

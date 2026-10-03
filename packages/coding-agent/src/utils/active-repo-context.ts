@@ -111,6 +111,11 @@ function* resolveActiveRepoContextCore(
 		if (!resolvedChildPath) continue;
 		const gitMarker = (yield reader.stat(path.join(resolvedChildPath, ".git"))) as fs.Stats | null;
 		if (!gitMarker || (!gitMarker.isDirectory() && !gitMarker.isFile())) continue;
+		// An empty or broken `.git` marker is not a repository; never adopt an ancestor in its place.
+		const childRepository = (yield reader.resolveRepository(resolvedChildPath)) as GitRepository | null;
+		if (!childRepository || path.resolve(childRepository.repoRoot) !== resolvedChildPath) continue;
+		const head = (yield reader.stat(childRepository.headPath)) as fs.Stats | null;
+		if (!head?.isFile()) continue;
 		if (context) return null;
 		context = buildContext(resolvedCwd, resolvedChildPath);
 	}

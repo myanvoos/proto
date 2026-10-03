@@ -659,6 +659,8 @@ export class PluginSettingsComponent extends Container {
 		});
 
 		this.addChild(this.#viewComponent);
+		// The list mounts after async listing resolves, past the first frame.
+		this.callbacks.requestRender?.();
 	}
 
 	#showPluginDetail(plugin: InstalledPlugin): void {

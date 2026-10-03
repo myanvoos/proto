@@ -113,6 +113,19 @@ impl std::fmt::Display for OpenFile {
 }
 
 impl OpenFile {
+	/// File identity without closing a descriptor, which could release host locks.
+	#[cfg(unix)]
+	pub fn regular_file_identity(&self) -> Option<(u64, u64)> {
+		let stat = nix::sys::stat::fstat(self.try_borrow_as_fd().ok()?).ok()?;
+		(stat.st_mode & nix::libc::S_IFMT == nix::libc::S_IFREG)
+			.then_some((stat.st_dev as u64, stat.st_ino as u64))
+	}
+
+	#[cfg(not(unix))]
+	pub fn regular_file_identity(&self) -> Option<(u64, u64)> {
+		None
+	}
+
 
 	pub fn try_clone(&self) -> Result<Self, std::io::Error> {
 		let result = match self {

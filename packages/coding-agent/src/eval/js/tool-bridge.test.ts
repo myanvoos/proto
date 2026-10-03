@@ -68,6 +68,34 @@ test("tools that declare an intent parameter still receive one", async () => {
 	expect(seen?.[INTENT_FIELD]).toBe("js prelude");
 });
 
+test("bridged calls are validated like model tool calls before the tool runs", async () => {
+	const calls: unknown[] = [];
+	const tool = {
+		name: "strict",
+		label: "strict",
+		description: "",
+		parameters: {
+			type: "object",
+			properties: { value: { type: "string" }, note: { type: "string" } },
+			required: ["value"],
+			additionalProperties: false,
+		},
+		execute: async (_id: string, args: unknown) => {
+			calls.push(args);
+			return { content: [{ type: "text" as const, text: "ok" }] };
+		},
+	};
+	const session = {
+		getToolByName: (name: string) => (name === tool.name ? tool : undefined),
+	} as unknown as ToolSession;
+
+	expect(await callSessionTool("strict", { value: "x", note: null }, { session })).toBe("ok");
+	expect(calls).toEqual([{ value: "x" }]);
+
+	await expect(callSessionTool("strict", { value: null }, { session })).rejects.toThrow("Validation failed");
+	expect(calls).toHaveLength(1);
+});
+
 test("kernel tool bridge preserves native audio/video blocks instead of dropping them", async () => {
 	const mediaTool = {
 		name: "native-media",
@@ -191,4 +219,30 @@ test("cancelled nested async calls keep their lane until their callback actually
 		finish.resolve();
 		await manager.dispose();
 	}
+});
+
+test("bridged checklist calls report whether they committed a new plan", async () => {
+	const tool = {
+		name: "checklist",
+		label: "checklist",
+		description: "",
+		parameters: { type: "object", properties: { op: { type: "string" } } },
+		execute: async (_id: string, args: unknown) => ({
+			content: [{ type: "text" as const, text: "ok" }],
+			details: { op: (args as { op: string }).op, phases: [], storage: "memory" },
+		}),
+	};
+	const session = {
+		getToolByName: (name: string) => (name === tool.name ? tool : undefined),
+	} as unknown as ToolSession;
+	const events: Record<string, unknown>[] = [];
+	const emitStatus = (event: Record<string, unknown>) => events.push(event);
+
+	await callSessionTool("checklist", { op: "done" }, { session, emitStatus });
+	await callSessionTool("checklist", { op: "view" }, { session, emitStatus });
+
+	expect(events.map(event => [event.op, event.committed])).toEqual([
+		["checklist", true],
+		["checklist", false],
+	]);
 });

@@ -1,9 +1,9 @@
-import { getMCPConfigPath } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, isRecord, logger } from "@oh-my-pi/pi-utils";
 import { mcpCapability } from "../capability/mcp";
 import type { SourceMeta } from "../capability/types";
 import type { MCPServer } from "../discovery";
 import { loadCapability } from "../discovery";
-import { readDisabledServers, readEnabledServers } from "./config-writer";
+import { readMCPConfigFile } from "./config-writer";
 import type { MCPServerConfig } from "./types";
 
 interface LoadMCPConfigsOptions {
@@ -43,6 +43,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 		if (server.args) config.args = server.args;
 		if (server.env) config.env = server.env;
 		if (server.envPolicy) config.envPolicy = server.envPolicy;
+		if (server.envLiteralKeys) config.envLiteralKeys = server.envLiteralKeys;
 		if (server.cwd) config.cwd = server.cwd;
 		return config;
 	}
@@ -82,10 +83,20 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 	const filterBrowser = options?.filterBrowser ?? false;
 
 	const userPath = getMCPConfigPath("user", cwd);
-	const [disabledServers, forcedEnabled] = await Promise.all([
-		readDisabledServers(userPath).then(list => new Set(list)),
-		readEnabledServers(userPath).then(list => new Set(list)),
-	]);
+	// A malformed user mcp.json contributes no entries (the mcp-json provider already warns); it must not take down
+	// every other MCP source.
+	let userConfig: unknown;
+	try {
+		userConfig = await readMCPConfigFile(userPath);
+	} catch (error) {
+		logger.warn("Ignoring unreadable user MCP config for server lists", { path: userPath, error: String(error) });
+	}
+	const serverList = (key: "disabledServers" | "enabledServers"): Set<string> => {
+		const list = isRecord(userConfig) ? userConfig[key] : undefined;
+		return new Set(Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
+	};
+	const disabledServers = serverList("disabledServers");
+	const forcedEnabled = serverList("enabledServers");
 
 	const includeServer = (server: MCPServer & { _source: SourceMeta }): boolean =>
 		enableProjectConfig || server._source.level !== "project";

@@ -3,8 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	APP_NAME,
 	directoryIsEnterable,
 	directoryIsMissing,
+	getLogPath,
 	getProjectDir,
 	getWorktreesDir,
 	pathIsWithin,
@@ -99,4 +101,56 @@ describe("project directory adoption", () => {
 			chdir.mockRestore();
 		}
 	});
+});
+
+describe("dated log path", () => {
+	test("names the file with the local day, matching the rotating sink", () => {
+		const date = new Date(2026, 4, 31, 0, 30);
+		expect(path.basename(getLogPath(date, 123))).toBe("proto.2026-05-31.123.log");
+	});
+});
+
+describe("global daemon runtime root", () => {
+	test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+		"follows an initialized $XDG_STATE_HOME and is shared across profiles and custom agent dirs",
+		async () => {
+			const root = await makeTree();
+			const xdgState = path.join(root, "state");
+			await fs.mkdir(path.join(xdgState, APP_NAME), { recursive: true });
+			const dirsModule = path.join(import.meta.dir, "dirs.ts");
+			const script = [
+				`import { getGlobalDaemonRuntimeDir, setAgentDir, setProfile } from ${JSON.stringify(dirsModule)};`,
+				`const seen = [getGlobalDaemonRuntimeDir("relay")];`,
+				`setProfile("profile-a");`,
+				`seen.push(getGlobalDaemonRuntimeDir("relay"));`,
+				`setProfile(undefined);`,
+				`setAgentDir(${JSON.stringify(path.join(root, "custom-agent"))});`,
+				`seen.push(getGlobalDaemonRuntimeDir("relay"));`,
+				`process.stdout.write(JSON.stringify(seen));`,
+			].join("\n");
+			const env: Record<string, string | undefined> = {
+				...process.env,
+				HOME: root,
+				XDG_STATE_HOME: xdgState,
+				PI_CONFIG_DIR: ".proto-dirs-test",
+			};
+			delete env.PI_CODING_AGENT_DIR;
+			delete env.PROTO_PROFILE;
+			delete env.PI_PROFILE;
+			const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+				env,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+
+			expect(exitCode, stderr).toBe(0);
+			const shared = path.join(xdgState, APP_NAME, "run", "daemons", "global", "relay");
+			expect(JSON.parse(stdout)).toEqual([shared, shared, shared]);
+		},
+	);
 });

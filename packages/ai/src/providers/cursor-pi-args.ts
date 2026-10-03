@@ -45,7 +45,9 @@ export function cursorRawReadPath(readPath: string): string {
 	return `${readPath}:raw`;
 }
 
-export function cursorEditOwnedReadPath(readPath: string, offset?: number, limit?: number): string | null {
+// Raw selector for a Cursor exec read: compose the requested window, then force `:raw` on whole-file reads.
+// Callers drop `offset`/`limit` after composing so the handler cannot append another selector.
+export function cursorExecReadPath(readPath: string, offset?: number, limit?: number): string | null {
 	const ranged = piReadPath(readPath, offset, limit);
 	if (ranged === null) return null;
 	return cursorRawReadPath(ranged);
@@ -82,6 +84,12 @@ export function piLimit(limit: number | undefined): number | undefined {
 
 export function piTimeout(timeout: number | undefined): number | undefined {
 	return timeout !== undefined && timeout >= 0 ? timeout : undefined;
+}
+
+// Legacy ShellArgs/ShellStreamArgs timeouts are milliseconds; the bash tool takes seconds (0 = no deadline, so round up).
+export function shellTimeoutSeconds(timeoutMs: number | undefined): number | undefined {
+	if (!timeoutMs || timeoutMs <= 0) return undefined;
+	return Math.max(1, Math.round(timeoutMs / 1000));
 }
 
 export function omitUndefinedArgs<T extends Record<string, unknown>>(

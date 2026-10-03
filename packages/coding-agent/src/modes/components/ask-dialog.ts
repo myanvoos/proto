@@ -23,9 +23,11 @@ import type {
 	ExtensionAskDialogResultItem,
 	ExtensionAskDialogSubmitResult,
 } from "../../extensibility/extensions";
+import { expandKeyHint, sanitizeCarriageReturns } from "../../tools/render-utils";
 import { getTabBarTheme } from "../shared";
 import { getMarkdownTheme, highlightCode, theme } from "../theme/theme";
 import {
+	matchesAppToolsExpand,
 	matchesSelectCancel,
 	matchesSelectDown,
 	matchesSelectPageDown,
@@ -50,6 +52,8 @@ const MAX_PROMPT_TITLE_ROWS = 3;
 const PROMPT_TITLE_CHROME_COLUMNS = 4;
 
 const MAX_HEADER_ROWS = 4;
+
+const MAX_DESC_ROWS = 2;
 
 function promptTitleContentWidth(): number {
 	const cols = process.stdout.columns ?? 80;
@@ -125,25 +129,35 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(value, max));
 }
 
-function stripRecommendedSuffix(label: string): string {
-	const suffix = " (Recommended)";
-	return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
-}
-
 function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): string {
 	const base = question.header?.trim() || question.id || `Q${index + 1}`;
 	return truncateToWidth(replaceTabs(sanitizeText(base)), MAX_HEADER_CHIP_WIDTH, Ellipsis.Unicode);
 }
 
-function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
+function wrapQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
 	const mdTheme = getMarkdownTheme();
 	const questionText = renderInlineMarkdown(replaceTabs(question.question), mdTheme, t => theme.fg("text", t));
-	const wrapped = wrapTextWithAnsi(questionText, Math.max(1, width));
-	if (wrapped.length <= MAX_HEADER_ROWS) return wrapped;
+	return wrapTextWithAnsi(questionText, Math.max(1, width));
+}
+
+function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number, maxRows = MAX_HEADER_ROWS): string[] {
+	const wrapped = wrapQuestionTitle(question, width);
+	if (wrapped.length <= maxRows) return wrapped;
 	return [
-		...wrapped.slice(0, MAX_HEADER_ROWS - 1),
-		truncateToWidth(wrapped.slice(MAX_HEADER_ROWS - 1).join(" "), Math.max(1, width), Ellipsis.Unicode),
+		...wrapped.slice(0, maxRows - 1),
+		truncateToWidth(wrapped.slice(maxRows - 1).join(" "), Math.max(1, width), Ellipsis.Unicode),
 	];
+}
+
+function wrapOptionDescription(description: string, width: number): string[] {
+	const rendered = renderInlineMarkdown(description.trim(), getMarkdownTheme(), t => theme.fg("muted", t));
+	return wrapTextWithAnsi(rendered, Math.max(1, width - 6));
+}
+
+function questionDescriptionsOverflow(question: ExtensionAskDialogQuestion, width: number): boolean {
+	return question.options.some(
+		option => !!option.description?.trim() && wrapOptionDescription(option.description, width).length > MAX_DESC_ROWS,
+	);
 }
 
 function splitPreviewSegments(preview: string): PreviewSegment[] {
@@ -297,12 +311,13 @@ function renderRowLabel(
 	mdTheme: MarkdownTheme,
 	previewCache: PreviewRenderCache,
 	width: number,
+	expanded = false,
 ): string[] {
 	const isOption = rowItem.kind === "option";
 	const isOther = rowItem.kind === "other";
-	const checked = isOption
-		? state.selectedOptions.has(stripRecommendedSuffix(rowItem.label))
-		: isOther && state.customInput !== undefined;
+	const option = isOption ? question.options[rowItem.optionIndex ?? -1] : undefined;
+	const checked =
+		option !== undefined ? state.selectedOptions.has(option.label) : isOther && state.customInput !== undefined;
 	const color = selected ? "accent" : checked ? "toolOutput" : "text";
 	const marker = `${theme.fg(checked ? "success" : "dim", optionMarker(question, checked))} `;
 	const cursor = selected ? theme.fg("accent", `${theme.nav.cursor} `) : "  ";
@@ -320,9 +335,8 @@ function renderRowLabel(
 	if (rowItem.kind === "option") {
 		const option = question.options[rowItem.optionIndex ?? -1];
 		if (option?.description?.trim()) {
-			const description = renderInlineMarkdown(option.description.trim(), mdTheme, t => theme.fg("muted", t));
-			const wrapped = wrapTextWithAnsi(description, Math.max(1, width - 6));
-			for (const line of wrapped.slice(0, 2)) {
+			const wrapped = wrapOptionDescription(option.description, width);
+			for (const line of expanded ? wrapped : wrapped.slice(0, MAX_DESC_ROWS)) {
 				lines.push(`      ${truncateToWidth(line, Math.max(1, width - 6), Ellipsis.Unicode)}`);
 			}
 		}
@@ -351,15 +365,15 @@ function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): Exte
 				const o = opt as Partial<ExtensionAskDialogOption>;
 				options.push({
 					label: typeof o.label === "string" ? o.label : "",
-					...(typeof o.description === "string" ? { description: o.description } : {}),
-					...(typeof o.preview === "string" ? { preview: o.preview } : {}),
+					...(typeof o.description === "string" ? { description: sanitizeCarriageReturns(o.description) } : {}),
+					...(typeof o.preview === "string" ? { preview: sanitizeCarriageReturns(o.preview) } : {}),
 				});
 			}
 		}
 		out.push({
 			id: typeof q.id === "string" ? q.id : "?",
-			question: typeof q.question === "string" ? q.question : "",
-			...(typeof q.header === "string" ? { header: q.header } : {}),
+			question: typeof q.question === "string" ? sanitizeCarriageReturns(q.question) : "",
+			...(typeof q.header === "string" ? { header: sanitizeCarriageReturns(q.header) } : {}),
 			options,
 			...(typeof q.multi === "boolean" ? { multi: q.multi } : {}),
 			...(Number.isInteger(q.recommended) ? { recommended: q.recommended } : {}),
@@ -389,6 +403,9 @@ export class AskDialogComponent implements Component {
 	#stableHeight: { key: string; total: number } | undefined;
 	#previewCache: PreviewRenderCache = new Map();
 	#overflowLayouts = new WeakMap<ExtensionAskDialogQuestion, Set<string>>();
+	#expanded = false;
+	#contentWidth = 76;
+	#expandable = false;
 	readonly #questions: ExtensionAskDialogQuestion[];
 
 	constructor(
@@ -435,12 +452,33 @@ export class AskDialogComponent implements Component {
 		this.#countdown?.dispose();
 	}
 
+	/** Toggles truncated question/description text; false when nothing is truncated, so Ctrl+O can fall through. */
+	toggleQuestionExpansion(): boolean {
+		if (this.#closed || this.#isSubmitTab()) return false;
+		const question = this.#questions[this.#currentQuestionIndex()];
+		if (!question || (!this.#expanded && !this.#questionOverflows(question, this.#contentWidth))) return false;
+		this.#expanded = !this.#expanded;
+		this.invalidate();
+		this.#requestRender();
+		return true;
+	}
+
+	#questionOverflows(question: ExtensionAskDialogQuestion, width: number): boolean {
+		return (
+			wrapQuestionTitle(question, width).length > MAX_HEADER_ROWS || questionDescriptionsOverflow(question, width)
+		);
+	}
+
 	handleInput(keyData: string): void {
 		if (this.#closed || this.#promptActive) return;
 
 		this.#countdown?.reset();
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
+			return;
+		}
+		if (matchesAppToolsExpand(keyData)) {
+			this.toggleQuestionExpansion();
 			return;
 		}
 		const inputGuard = this.options.inputGuard;
@@ -463,12 +501,15 @@ export class AskDialogComponent implements Component {
 	render(width: number): readonly string[] {
 		this.options.inputGuard?.syncPresentation?.();
 		let innerWidth = Math.max(1, width - 4);
+		this.#contentWidth = innerWidth;
 
 		const totalRows = Math.min(
 			this.#maxHeight,
 			this.#dialogHeight(innerWidth, this.options.tui?.terminal.rows ?? (process.stdout.rows || 40)),
 		);
-		const headerLines = this.#renderHeader(innerWidth);
+		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
+		const maxTitleRows = Math.max(1, totalRows - 5 - MIN_BODY_ROWS - tabBarRows);
+		const headerLines = this.#renderHeader(innerWidth, maxTitleRows);
 
 		const layout = getDialogViewport(totalRows, headerLines.length);
 		innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
@@ -493,7 +534,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	#dialogHeight(width: number, termRows: number): number {
-		const key = `${width}:${termRows}`;
+		const key = `${width}:${termRows}:${this.#expanded ? 1 : 0}`;
 		if (this.#stableHeight?.key === key) return this.#stableHeight.total;
 		const total = this.#measureHeight(width, termRows);
 		this.#stableHeight = { key, total };
@@ -513,12 +554,22 @@ export class AskDialogComponent implements Component {
 			const question = this.#questions[index];
 			const state = this.#states[index];
 			if (!question || !state) continue;
-			const headerRows = tabBarRows + renderQuestionTitle(question, width).length;
+			const titleRows = this.#expanded ? Number.POSITIVE_INFINITY : MAX_HEADER_ROWS;
+			const headerRows = tabBarRows + renderQuestionTitle(question, width, titleRows).length;
 			const rowItems = this.#questionRows(question);
 			const listRows = (listWidth: number): number => {
 				let total = 0;
 				for (const rowItem of rowItems) {
-					total += renderRowLabel(rowItem, question, state, false, mdTheme, this.#previewCache, listWidth).length;
+					total += renderRowLabel(
+						rowItem,
+						question,
+						state,
+						false,
+						mdTheme,
+						this.#previewCache,
+						listWidth,
+						this.#expanded,
+					).length;
 				}
 				return total;
 			};
@@ -556,7 +607,7 @@ export class AskDialogComponent implements Component {
 		this.options.tui?.requestRender();
 	}
 
-	#renderHeader(width: number): string[] {
+	#renderHeader(width: number, maxTitleRows: number): string[] {
 		const lines: string[] = [];
 		if (this.#hasSubmitTab()) {
 			const tabs: Tab[] = [
@@ -570,6 +621,7 @@ export class AskDialogComponent implements Component {
 			this.#tabBar.showHint = false;
 			lines.push(...this.#tabBar.render(width));
 		}
+		this.#expandable = false;
 		if (this.#isSubmitTab()) {
 			lines.push(theme.bold(theme.fg("accent", "Review answers")));
 			return lines;
@@ -577,14 +629,20 @@ export class AskDialogComponent implements Component {
 		const questionIndex = this.#currentQuestionIndex();
 		const question = this.#questions[questionIndex];
 		if (!question) return lines;
-		lines.push(...renderQuestionTitle(question, width));
+		this.#expandable = this.#questionOverflows(question, width);
+		lines.push(...renderQuestionTitle(question, width, this.#expanded ? maxTitleRows : MAX_HEADER_ROWS));
 		return lines;
+	}
+
+	#expandHint(): string {
+		if (!this.#expandable) return "";
+		return ` · ${expandKeyHint()} ${this.#expanded ? "collapse" : "expand"}`;
 	}
 
 	#footerHintText(indicator: string): string {
 		const cancel = `${cancelKeyLabel()} cancel`;
 		const inputGuard = this.options.inputGuard;
-		if (inputGuard?.isBlocked()) return `${inputGuard.hint} · ${cancel}`;
+		if (inputGuard?.isBlocked()) return `${inputGuard.hint}${this.#expandHint()} · ${cancel}`;
 		if (this.#isSubmitTab()) {
 			const scroll = indicator ? ` ${indicator} scroll ·` : "";
 			return `Enter submit · ↑/↓ scroll ·${scroll} ${cancel}`;
@@ -594,11 +652,12 @@ export class AskDialogComponent implements Component {
 		const enterAction = this.#questions.length > 1 ? "next" : "submit";
 		const action = question?.multi ? `Space toggle · Enter ${enterAction}` : "Enter select · n note";
 		const tabs = this.#hasSubmitTab() ? " · Tab/←/→" : "";
+		const expand = this.#expandHint();
 		if (this.#questionCanPage && indicator) {
-			return `${action} · ↑/↓${tabs} · ${cancel} · ${pageKeysLabel()} ${indicator}`;
+			return `${action} · ↑/↓${tabs} · ${cancel}${expand} · ${pageKeysLabel()} ${indicator}`;
 		}
 		const scroll = indicator ? ` ${indicator} scroll ·` : "";
-		return `${action} · ↑/↓ move${tabs} ·${scroll} ${cancel}`;
+		return `${action} · ↑/↓ move${tabs} ·${scroll} ${cancel}${expand}`;
 	}
 
 	#questionRows(question: ExtensionAskDialogQuestion): QuestionRow[] {
@@ -613,7 +672,9 @@ export class AskDialogComponent implements Component {
 	}
 
 	#optionLabel(question: ExtensionAskDialogQuestion, label: string, index: number): string {
-		return question.recommended === index ? `${label} (Recommended)` : label;
+		const suffix = " (Recommended)";
+		if (question.recommended !== index || label.endsWith(suffix)) return label;
+		return `${label}${suffix}`;
 	}
 
 	#activeQuestionState(): { question: ExtensionAskDialogQuestion; state: QuestionState } | undefined {
@@ -742,6 +803,11 @@ export class AskDialogComponent implements Component {
 			if (!question.multi) {
 				state.selectedOptions.clear();
 				clearNoteUnlessRow(state, rowItem.key);
+			}
+			if (question.multi && this.#questions.length === 1) {
+				this.#activeTabIndex = this.#submitTabIndex();
+				this.#submitScrollOffset = 0;
+			} else {
 				this.#advanceAfterQuestion();
 			}
 		} finally {
@@ -805,6 +871,7 @@ export class AskDialogComponent implements Component {
 						mdTheme,
 						this.#previewCache,
 						contentWidth,
+						this.#expanded,
 					),
 				);
 			}

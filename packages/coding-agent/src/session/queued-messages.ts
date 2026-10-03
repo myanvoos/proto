@@ -58,6 +58,10 @@ export function isUserQueuedMessage(message: AgentMessage): boolean {
 	return message.role === "custom" && message.attribution === "user" && message.display !== false;
 }
 
+export function isUserAuthoredQueuedMessage(message: AgentMessage): boolean {
+	return isUserQueuedMessage(message) && !("attribution" in message && message.attribution === "agent");
+}
+
 const MAGIC_KEYWORD_NOTICE_TYPES: Record<string, true> = {
 	"ultrathink-notice": true,
 	"workflow-notice": true,

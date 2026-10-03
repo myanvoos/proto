@@ -665,12 +665,12 @@ export class ComputerWorkerCore {
 					matchesFilter(window, filter),
 				);
 			},
-			window: async (selector: string | WindowFilter): Promise<Win> => {
+			window: async (selector: string | number | WindowFilter): Promise<Win> => {
 				const { signal } = getContext();
 				const windows = await nativeCall(signal, () => session.listWindows());
 				const matches =
-					typeof selector === "string"
-						? windows.filter(window => window.id === selector)
+					typeof selector === "string" || typeof selector === "number"
+						? windows.filter(window => window.id === String(selector))
 						: windows.filter(window => matchesFilter(window, selector));
 				if (matches.length === 0) throw new ToolError(`no window matches ${JSON.stringify(selector)}`);
 				if (matches.length > 1) {

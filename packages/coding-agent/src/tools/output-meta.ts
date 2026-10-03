@@ -40,6 +40,8 @@ export interface TruncationMeta {
 	artifactId?: string;
 
 	nextOffset?: number;
+	/** The shown body is a byte-capped preview of one oversized line; output/total bytes compare preview vs line. */
+	partialLine?: boolean;
 }
 
 export type SourceMeta =
@@ -98,6 +100,21 @@ export class OutputMetaBuilder {
 				: "bytes";
 
 		const effectiveTotalLines = totalFileLines ?? result.totalLines;
+
+		if (result.firstLineExceedsLimit) {
+			this.#meta.truncation = {
+				direction,
+				truncatedBy: "bytes",
+				totalLines: effectiveTotalLines,
+				totalBytes: result.totalBytes,
+				outputLines,
+				outputBytes,
+				shownRange: { start: startLine, end: startLine },
+				partialLine: true,
+				artifactId,
+			};
+			return this;
+		}
 
 		if (isMiddle) {
 			const elidedLines = result.elidedLines ?? Math.max(0, effectiveTotalLines - outputLines);
@@ -403,6 +420,15 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 		return notice;
 	}
 
+	if (truncation.partialLine) {
+		const line = truncation.shownRange?.start ?? 1;
+		notice = `Showing line ${line} (partial, ${formatBytes(truncation.outputBytes)} of ${formatBytes(truncation.totalBytes)}) of ${truncation.totalLines}`;
+		if (truncation.artifactId != null) {
+			notice += `. ${formatFullOutputReference(truncation.artifactId)}`;
+		}
+		return notice;
+	}
+
 	const range = truncation.shownRange;
 	if (range && range.end >= range.start) {
 		notice = `Showing lines ${range.start}-${range.end} of ${truncation.totalLines}`;
@@ -510,6 +536,11 @@ function getSpillConfig(s: Settings | undefined) {
 		tailLines: get("tools.artifactTailLines"),
 		headBytes: get("tools.artifactHeadBytes") * 1024,
 	};
+}
+
+export function resolveOutputArtifactMaxBytes(s: Settings | undefined): number {
+	const megabytes = s?.get("tools.artifactMaxBytes") ?? 16;
+	return Math.max(0, megabytes * 1024 * 1024);
 }
 
 export function resolveOutputSinkHeadBytes(s: Settings | undefined): number {

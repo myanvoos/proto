@@ -111,9 +111,12 @@ export class RpcSubagentRegistry {
 	#unsubscribers: Array<() => void> = [];
 	#output: RpcSubagentOutput;
 	#subscriptionLevel: RpcSubagentSubscriptionLevel = "off";
+	#eventBus: EventBus | undefined;
+	#eventUnsubscribe: (() => void) | undefined;
 
 	constructor(eventBus: EventBus, output: RpcSubagentOutput) {
 		this.#output = output;
+		this.#eventBus = eventBus;
 		this.#unsubscribers.push(
 			eventBus.on(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				this.handleLifecycle(data as SubagentLifecyclePayload);
@@ -121,15 +124,15 @@ export class RpcSubagentRegistry {
 			eventBus.on(WORKER_SUBAGENT_PROGRESS_CHANNEL, data => {
 				this.handleProgress(data as SubagentProgressPayload);
 			}),
-			eventBus.on(WORKER_SUBAGENT_EVENT_CHANNEL, data => {
-				this.handleEvent(data as SubagentEventPayload);
-			}),
 		);
 	}
 
 	dispose(): void {
 		for (const unsubscribe of this.#unsubscribers) unsubscribe();
 		this.#unsubscribers = [];
+		this.#eventUnsubscribe?.();
+		this.#eventUnsubscribe = undefined;
+		this.#eventBus = undefined;
 		this.#subagents.clear();
 		this.#transcriptSessionFilesBySubagentId.clear();
 		this.#staleSubagentIds.clear();
@@ -148,6 +151,16 @@ export class RpcSubagentRegistry {
 
 	setSubscriptionLevel(level: RpcSubagentSubscriptionLevel): void {
 		this.#subscriptionLevel = level;
+		// Every streamed subagent event costs a handler dispatch; listen only while a client asked for them.
+		const eventBus = this.#eventBus;
+		if (level === "events" && !this.#eventUnsubscribe && eventBus) {
+			this.#eventUnsubscribe = eventBus.on(WORKER_SUBAGENT_EVENT_CHANNEL, data => {
+				this.handleEvent(data as SubagentEventPayload);
+			});
+		} else if (level !== "events" && this.#eventUnsubscribe) {
+			this.#eventUnsubscribe();
+			this.#eventUnsubscribe = undefined;
+		}
 	}
 
 	getSubscriptionLevel(): RpcSubagentSubscriptionLevel {

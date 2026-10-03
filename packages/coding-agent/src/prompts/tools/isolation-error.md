@@ -1,0 +1,4 @@
+{{#when kind "==" "merge-failed"}}Merge failed: {{message}}{{#if captureError}}; patch capture failed: {{captureError}}{{/if}}.{{#if rescueBranch}} The agent's commits are preserved on branch {{rescueBranch}} — merge or cherry-pick it manually.{{/if}}{{/when}}
+{{#when kind "==" "patch-capture-failed"}}Patch capture failed: {{message}}.{{/when}}
+{{#when kind "==" "nested-capture-failed"}}Nested patch capture failed: {{message}}.{{/when}}
+{{#if retainedDir}}Isolation workspace retained at {{retainedDir}} — recover its changes before cleanup.{{#if sidecarMissing}} Cleanup metadata could not be saved; automatic cleanup is unsafe. Unmount overlays or tear down snapshot datasets manually before removing the workspace.{{else}} After recovery, `proto worktree clear` reclaims it once this session exits (retained ZFS datasets require manual teardown).{{/if}}{{/if}}

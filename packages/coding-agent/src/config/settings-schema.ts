@@ -129,31 +129,34 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
-export type StatusLineSegmentId =
-	| "pi"
-	| "model"
-	| "account"
-	| "mode"
-	| "path"
-	| "git"
-	| "pr"
-	| "subagents"
-	| "token_in"
-	| "token_out"
-	| "token_total"
-	| "token_rate"
-	| "cost"
-	| "context_pct"
-	| "context_total"
-	| "time_spent"
-	| "time"
-	| "session"
-	| "hostname"
-	| "cache_read"
-	| "cache_write"
-	| "cache_hit"
-	| "session_name"
-	| "usage";
+export const STATUS_LINE_SEGMENT_IDS = [
+	"pi",
+	"model",
+	"account",
+	"mode",
+	"path",
+	"git",
+	"pr",
+	"subagents",
+	"token_in",
+	"token_out",
+	"token_total",
+	"token_rate",
+	"cost",
+	"context_pct",
+	"context_total",
+	"time_spent",
+	"time",
+	"session",
+	"hostname",
+	"cache_read",
+	"cache_write",
+	"cache_hit",
+	"session_name",
+	"usage",
+] as const;
+
+export type StatusLineSegmentId = (typeof STATUS_LINE_SEGMENT_IDS)[number];
 
 export type SubmenuOption<V extends string = string> = {
 	value: V;
@@ -578,6 +581,16 @@ export const SETTINGS_SCHEMA = {
 			label: "Compact Thinking Level",
 			description:
 				"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
+		},
+	},
+	"tools.artifactMaxBytes": {
+		type: "number",
+		default: 16,
+		ui: {
+			tab: "tools",
+			group: "Output Limits",
+			label: "Maximum Artifact Size (MB)",
+			description: "Cap streamed tool artifacts; 0 is unbounded",
 		},
 	},
 	"tools.artifactSpillThreshold": {
@@ -1572,7 +1585,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Anthropic Server-Side Fallback (Fable 5)",
 			description:
-				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 5.5 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
+				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 5 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
 		},
 	},
 
@@ -2000,7 +2013,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			group: "Compaction",
 			label: "Mid-Turn Compaction",
-			description: "Check thresholds at safe mid-turn tool-loop boundaries before the next provider request",
+			description:
+				"Check thresholds at safe mid-turn tool-loop boundaries before the next provider request; subagents always check, since their whole assignment is one turn",
 		},
 	},
 
@@ -2055,10 +2069,10 @@ export const SETTINGS_SCHEMA = {
 				"Fixed token limit for context maintenance; overrides percentage if set, and is used exactly as written",
 			options: [
 				{ value: "default", label: "Default", description: "Use percentage-based threshold" },
-				{ value: "25000", label: "25K tokens", description: "Quarter of a 200K window" },
-				{ value: "50000", label: "50K tokens", description: "Half of a 200K window" },
-				{ value: "100000", label: "100K tokens", description: "Half of a 200K window" },
-				{ value: "150000", label: "150K tokens", description: "Three-quarters of a 200K window" },
+				{ value: "25000", label: "25K tokens", description: "1/8 of a 200K window" },
+				{ value: "50000", label: "50K tokens", description: "1/4 of a 200K window" },
+				{ value: "100000", label: "100K tokens", description: "1/2 of a 200K window" },
+				{ value: "150000", label: "150K tokens", description: "3/4 of a 200K window" },
 				{ value: "200000", label: "200K tokens", description: "Full standard context window" },
 				{ value: "300000", label: "300K tokens", description: "Large context window" },
 				{ value: "500000", label: "500K tokens", description: "Very large context window" },
@@ -4173,7 +4187,12 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 								: never;
 
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
-	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
+	const definition = SETTINGS_SCHEMA[path];
+	// Callers may mutate what they get; never hand out the shared schema object.
+	if (definition.type === "array" || definition.type === "record") {
+		return structuredClone(definition.default) as SettingValue<P>;
+	}
+	return definition.default as SettingValue<P>;
 }
 
 export function isCredential(path: SettingPath): boolean {

@@ -137,7 +137,11 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	transformToolCallArguments?: (args: Record<string, unknown>, toolName: string) => Record<string, unknown>;
 
-	resolveFallbackTool?: (name: string) => AgentTool<any> | undefined;
+	/** `advertised` is the snapshot exact-name dispatch just searched; resolve against it, never live tool state, so a mid-stream roster change cannot widen what this request reaches. */
+	resolveFallbackTool?: (name: string, advertised: readonly AgentTool<any>[]) => AgentTool<any> | undefined;
+
+	/** Names {@link resolveFallbackTool} routes but the advertised set omits (mounted devices); only used to suggest a target when a call misses. */
+	suggestFallbackToolNames?: () => Iterable<string>;
 
 	intentTracing?: boolean;
 

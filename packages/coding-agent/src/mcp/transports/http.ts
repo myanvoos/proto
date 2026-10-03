@@ -12,7 +12,14 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { readBoundedText } from "../../tools/fetch";
-import { sanitizeMCPDiagnostic } from "../errors";
+import {
+	createMCPJsonRpcError,
+	type MCPFailureStage,
+	MCPTransportError,
+	mcpTraceIdFromHeaders,
+	normalizeMCPTransportError,
+	sanitizeMCPDiagnostic,
+} from "../errors";
 import { RequestIdAllocator } from "../request-id";
 import {
 	createMCPTimeout,
@@ -39,7 +46,13 @@ interface SSEResumeState {
 	retryMs: number;
 }
 
-class SSEResumeError extends Error {}
+class SSEResumeError extends MCPTransportError {
+	constructor(message: string) {
+		const diagnostic = normalizeMCPTransportError(new Error(message), { transport: "http", stage: "receive" });
+		super({ ...diagnostic, message, requestAccepted: true });
+		this.name = "SSEResumeError";
+	}
+}
 
 function clampSSERetryMs(retryMs: number): number {
 	return Math.min(MAX_SSE_RETRY_MS, Math.max(MIN_SSE_RETRY_MS, retryMs));
@@ -448,7 +461,12 @@ export class HttpTransport implements MCPTransport {
 			return await this.#executeRequest<T>(method, params, options);
 		} catch (error) {
 			const status = error instanceof Error ? AIError.status(error) : undefined;
-			if (!(error instanceof SSEResumeError) && this.onAuthError && (status === 401 || status === 403)) {
+			if (
+				!(error instanceof SSEResumeError) &&
+				!(error instanceof MCPTransportError && error.requestAccepted) &&
+				this.onAuthError &&
+				(status === 401 || status === 403)
+			) {
 				const newHeaders = await this.onAuthError();
 				if (newHeaders) {
 					this.config = { ...this.config, headers: newHeaders };
@@ -465,7 +483,10 @@ export class HttpTransport implements MCPTransport {
 		options: MCPRequestOptions | undefined,
 	): Promise<T> {
 		if (!this.#connected) {
-			throw new Error("Transport not connected");
+			throw normalizeMCPTransportError(new Error("Transport not connected"), {
+				transport: "http",
+				stage: "connect",
+			});
 		}
 
 		const id = this.#requestIds.next(this.config.requestIdFormat);
@@ -502,12 +523,19 @@ export class HttpTransport implements MCPTransport {
 			callerSignal = controller.signal;
 		}
 		const operation = createMCPTimeout(timeout, this.#signal(callerSignal));
+		let stage: MCPFailureStage = "send";
+		let traceId: string | undefined;
+		let requestAccepted = false;
 
 		try {
 			const response = await this.#fetch(
 				{ method: "POST", body: JSON.stringify(body), signal: operation.signal },
 				generated,
 			);
+
+			stage = "receive";
+			traceId = mcpTraceIdFromHeaders(response.headers);
+			requestAccepted = response.ok;
 
 			const newSessionId = response.headers.get("Mcp-Session-Id");
 			if (newSessionId) {
@@ -532,9 +560,10 @@ export class HttpTransport implements MCPTransport {
 
 			if (contentType.includes("text/event-stream")) {
 				// Awaited so the fetch and the stream parser share one deadline.
-				return await this.#parseSSEResponse<T>(response, id, operation, timeout, releaseCaller);
+				return await this.#parseSSEResponse<T>(response, id, operation, releaseCaller);
 			}
 
+			stage = "decode";
 			const text = await readResponseText(response, MAX_JSON_RESPONSE_BYTES, "MCP JSON response");
 			let decoded: unknown;
 			try {
@@ -545,16 +574,20 @@ export class HttpTransport implements MCPTransport {
 			const result = parseJsonRpcResponse(decoded, id);
 
 			if (result.error) {
-				throw new Error(sanitizeMCPDiagnostic(`MCP error ${result.error.code}: ${result.error.message}`));
+				throw createMCPJsonRpcError("http", result.error, traceId);
 			}
 
 			return result.result as T;
 		} catch (error) {
+			// Preserve the resume sentinel: authentication recovery must never re-POST an accepted call.
 			if (error instanceof SSEResumeError) throw error;
 			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
-				throw new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
+				const timeoutError = new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`, "http");
+				if (!requestAccepted) throw timeoutError;
+				throw normalizeMCPTransportError(timeoutError, { transport: "http", stage, traceId, requestAccepted });
 			}
-			throw error;
+			if (options?.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+			throw normalizeMCPTransportError(error, { transport: "http", stage, traceId, requestAccepted });
 		} finally {
 			operation.clear();
 			releaseCaller?.();
@@ -565,7 +598,6 @@ export class HttpTransport implements MCPTransport {
 		response: Response,
 		expectedId: string | number,
 		operation: MCPTimeoutOperation,
-		timeout: number,
 		releaseCaller?: () => void,
 	): Promise<T> {
 		if (!response.body) {
@@ -603,11 +635,7 @@ export class HttpTransport implements MCPTransport {
 									releaseCaller = undefined;
 									if (validated.error) {
 										reject(
-											new Error(
-												sanitizeMCPDiagnostic(
-													`MCP error ${validated.error.code}: ${validated.error.message}`,
-												),
-											),
+											createMCPJsonRpcError("http", validated.error, mcpTraceIdFromHeaders(current.headers)),
 										);
 									} else {
 										resolve(validated.result as T);
@@ -627,6 +655,7 @@ export class HttpTransport implements MCPTransport {
 						});
 					}
 					if (captured) return;
+					if (responseSignal.aborted) throw abortReason(responseSignal);
 					if (resume.lastEventId === null) {
 						throw new Error(`No response received for request ID ${expectedId}`);
 					}
@@ -637,11 +666,7 @@ export class HttpTransport implements MCPTransport {
 				}
 			} catch (error) {
 				if (captured) return;
-				if (operation.isTimeoutAbort(error) || operation.timedOut()) {
-					reject(new Error(`SSE response timeout after ${timeout}ms`));
-				} else {
-					reject(error as Error);
-				}
+				reject(error);
 			} finally {
 				operation.clear();
 			}
@@ -711,7 +736,10 @@ export class HttpTransport implements MCPTransport {
 
 	async notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected) {
-			throw new Error("Transport not connected");
+			throw normalizeMCPTransportError(new Error("Transport not connected"), {
+				transport: "http",
+				stage: "connect",
+			});
 		}
 
 		const body = {
@@ -731,12 +759,17 @@ export class HttpTransport implements MCPTransport {
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
 		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
+		let stage: MCPFailureStage = "send";
+		let traceId: string | undefined;
 
 		try {
 			const response = await this.#fetch(
 				{ method: "POST", body: JSON.stringify(body), signal: operation.signal },
 				generated,
 			);
+
+			stage = "receive";
+			traceId = mcpTraceIdFromHeaders(response.headers);
 
 			if (!response.ok && response.status !== 202) {
 				const text = await readDiagnosticText(response);
@@ -754,9 +787,14 @@ export class HttpTransport implements MCPTransport {
 			}
 		} catch (error) {
 			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
-				throw new Error(`Notify timeout after ${timeout}ms`);
+				throw normalizeMCPTransportError(new Error(`Notify timeout after ${timeout}ms`), {
+					transport: "http",
+					stage,
+					traceId,
+				});
 			}
-			throw error;
+			if (options?.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+			throw normalizeMCPTransportError(error, { transport: "http", stage, traceId });
 		} finally {
 			operation.clear();
 		}

@@ -31,11 +31,14 @@ export function canUseRemoteCompaction(model: Model | null | undefined, settings
 	);
 }
 
+/** `skipRemote` passes over native compaction, e.g. after it failed for good this compaction cycle. */
 export function resolveSpeculationMethod(
 	model: Model | null | undefined,
 	settings: CompactionSettings,
+	skipRemote = false,
 ): CompactionMethod | undefined {
 	for (const candidate of resolveCompactionMethodOrder(settings.methodOrder)) {
+		if (skipRemote && candidate === "remote") continue;
 		const available =
 			candidate === "remote" ? canUseRemoteCompaction(model, resolveMethodSettings(settings, candidate)) : true;
 		if (!available) continue;

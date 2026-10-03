@@ -483,7 +483,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -726,7 +726,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 393216,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -889,7 +889,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1194,7 +1194,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1276,7 +1277,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1564,7 +1566,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 18.6,
-		"tps": 91.9,
+		"tps": 97.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1646,7 +1648,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 20.9,
-		"tps": 80.8,
+		"tps": 102.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1728,7 +1730,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1810,7 +1812,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1893,7 +1895,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 512000,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1901,7 +1903,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2122,7 +2125,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 22,
-		"tps": 121.5,
+		"tps": 130.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2130,7 +2133,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -2216,7 +2220,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2294,7 +2299,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2302,7 +2307,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2381,7 +2387,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2389,7 +2395,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2467,7 +2474,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2560,7 +2567,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2641,7 +2648,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 9,
-		"tps": 183.4,
+		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2874,7 +2881,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 16384,
 		"int": 12,
-		"tps": 57.2,
+		"tps": 60.5,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3188,7 +3195,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 9.6,
-		"tps": 75.3,
+		"tps": 84.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3261,7 +3268,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 66536,
 		"int": 11.9,
-		"tps": 54.6,
+		"tps": 53.7,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3334,7 +3341,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 9.2,
-		"tps": 93.2,
+		"tps": 80.1,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3407,7 +3414,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 66536,
 		"int": 9.6,
-		"tps": 168.9,
+		"tps": 169.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3552,7 +3559,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 9.9,
-		"tps": 52.8,
+		"tps": 53,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -3708,7 +3715,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 129.2,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3792,7 +3799,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 22.9,
-		"tps": 75.3,
+		"tps": 75.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3876,7 +3883,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 19.3,
-		"tps": 146.1,
+		"tps": 148.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3960,7 +3967,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 32768,
 		"int": 18.4,
-		"tps": 85.7,
+		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4043,8 +4050,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 13.7,
-		"tps": 58,
+		"int": 11.2,
+		"tps": 52.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4128,7 +4135,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4212,7 +4219,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 18.2,
-		"tps": 119.3,
+		"tps": 128.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4295,7 +4302,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 131072,
 		"int": 39.9,
-		"tps": 37.7,
+		"tps": 39.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4379,7 +4386,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 32768,
 		"int": 33.7,
-		"tps": 41.3,
+		"tps": 46.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4462,7 +4469,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 256000,
 		"int": 17,
-		"tps": 126.9,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4470,7 +4477,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4546,7 +4554,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 256000,
 		"int": 19.5,
-		"tps": 197.1,
+		"tps": 207,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4554,7 +4562,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4637,7 +4646,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4718,7 +4728,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4794,7 +4805,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
 		"int": 25,
-		"tps": 110.6,
+		"tps": 169.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4802,7 +4813,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4877,8 +4889,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 1048576,
-		"int": 27.8,
-		"tps": 205,
+		"int": 25.7,
+		"tps": 178.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4886,7 +4898,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5126,7 +5139,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 26,
-		"tps": 47.7,
+		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5217,7 +5230,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5292,7 +5306,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 98304,
 		"int": 11.1,
-		"tps": 84.5,
+		"tps": 85.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5300,7 +5314,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5376,7 +5391,7 @@
 		"contextWindow": 65536,
 		"maxTokens": 16384,
 		"int": 6.7,
-		"tps": 37,
+		"tps": 51.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5384,7 +5399,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5459,7 +5475,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 14.9,
-		"tps": 34.2,
+		"tps": 36.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5467,7 +5483,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5549,7 +5566,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5624,7 +5642,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.2,
-		"tps": 102.1,
+		"tps": 68.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5632,7 +5650,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5707,7 +5726,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 14.9,
-		"tps": 82.5,
+		"tps": 65.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5715,7 +5734,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5790,7 +5810,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 27.9,
-		"tps": 67.1,
+		"tps": 78.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5798,7 +5818,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5874,7 +5895,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 26.1,
-		"tps": 35.3,
+		"tps": 43.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5882,7 +5903,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5958,7 +5980,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 131072,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6042,7 +6064,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6127,7 +6149,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

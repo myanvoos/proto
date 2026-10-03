@@ -15,6 +15,7 @@ import {
 import { MCPCommandController } from "../modes/controllers/mcp-command-controller";
 import type { InteractiveModeContext } from "../modes/types";
 import { refreshAgentDiscovery } from "../task";
+import { clearSubmittedText } from "./helpers/draft";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
@@ -225,7 +226,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 			}
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const args = command.args.trim().split(/\s+/);
 			const sub = args[0] || "install";
 			const rest = args.slice(1).join(" ").trim();
@@ -411,6 +412,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 	},
 	{
 		name: "plugins",
+		aliases: ["plugin"],
 		description: "View and manage installed plugins",
 		acpDescription: "Manage plugins",
 		acpInputHint: "[list|enable|disable]",
@@ -468,7 +470,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 			}
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const args = command.args.trim().split(/\s+/);
 			const sub = args[0] || "list";
 			const rest = args.slice(1).join(" ").trim();
@@ -551,7 +553,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 		handleTui: async (_command, runtime) => {
 			await reloadTuiPluginState(runtime.ctx);
 			runtime.ctx.showStatus("Plugins reloaded.");
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 ];

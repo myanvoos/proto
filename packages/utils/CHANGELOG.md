@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+
+### Fixed
+
+- The process log path now uses the local calendar day like the log files themselves, and redirected terminal stderr follows the log across midnight/size rotation instead of staying in the startup file
+- Runtime-installed modules (e.g. embeddings) now resolve correctly when the runtime cache is reached through a symlinked directory
+- A corrupt local SQLite store whose damage surfaces as a different error (e.g. "no such table") is now quarantined and recreated instead of crashing every launch
+- Machine-global daemons (e.g. the browser relay) now keep their runtime directory under $XDG_STATE_HOME when XDG is in use, shared by every profile and custom agent dir
+- Managed Chrome install extracts the full browser binary, refuses linux/arm64 (no Chrome for Testing build) instead of fetching an x86 archive, and serializes concurrent installs across processes
+- Native library diagnostics written straight to stderr on Linux no longer paint over the TUI; they go to the log file while the TUI owns the terminal
+
 ## [19.0.0] - 2026-09-27
 
 ### Added

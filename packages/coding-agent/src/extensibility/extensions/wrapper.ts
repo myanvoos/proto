@@ -12,6 +12,27 @@ import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { RegisteredTool, ToolCallEventResult } from "./types";
 
+/**
+ * Second `renderCall` argument serving both renderer contracts: proto calls `renderCall(args, options, theme)`,
+ * while pi-era renderers declare `renderCall(args, theme, context)`. Own keys stay the render options; every other
+ * property resolves against the live theme, with methods bound to the theme (it keeps state in `#private` fields).
+ */
+function renderOptionsWithTheme<T extends object>(options: T, theme: Theme): T & Theme {
+	const delegates = new Map<PropertyKey, unknown>();
+	return new Proxy(options, {
+		get(target, prop, receiver) {
+			if (Object.hasOwn(target, prop)) return Reflect.get(target, prop, receiver);
+			const delegate = delegates.get(prop);
+			if (delegate !== undefined) return delegate;
+			const value = Reflect.get(theme, prop, theme);
+			if (typeof value !== "function") return value;
+			const bound = value.bind(theme);
+			delegates.set(prop, bound);
+			return bound;
+		},
+	}) as T & Theme;
+}
+
 export class RegisteredToolAdapter implements AgentTool<any, any, any> {
 	declare name: string;
 	declare description: string;
@@ -32,7 +53,11 @@ export class RegisteredToolAdapter implements AgentTool<any, any, any> {
 
 		if (registeredTool.definition.renderCall) {
 			this.renderCall = (args: any, options: any, theme: any) =>
-				registeredTool.definition.renderCall!(args, options, theme as Theme);
+				registeredTool.definition.renderCall!(
+					args,
+					renderOptionsWithTheme(options, theme as Theme),
+					theme as Theme,
+				);
 		}
 		if (registeredTool.definition.renderResult) {
 			this.renderResult = (result: any, options: any, theme: any, args?: any) =>
@@ -167,7 +192,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				input: toolEventArgs(effectiveParams, context),
 				content: result.content,
 				details: result.details,
-				isError: !!executionError,
+				isError: !!executionError || result.isError === true,
 			});
 
 			if (resultResult) {

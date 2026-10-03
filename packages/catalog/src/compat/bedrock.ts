@@ -1,57 +1,59 @@
 import { bareModelId, parseKnownModel } from "../identity/classify";
-import { supportsAdaptiveThinkingDisplay } from "../identity/family";
+import { isClaude55ForcedToolChoiceRestricted, supportsAdaptiveThinkingDisplay } from "../identity/family";
 import type { ModelSpec, ResolvedBedrockCompat } from "../types";
 import { applyCompatOverrides } from "./apply";
 
-const NO_EXPLICIT_CHECKPOINTS: ResolvedBedrockCompat = {
+type BedrockCachePolicy = Omit<ResolvedBedrockCompat, "supportsForcedToolChoice">;
+
+const NO_EXPLICIT_CHECKPOINTS: BedrockCachePolicy = {
 	promptCacheMode: "none",
 	supportsLongPromptCacheRetention: false,
 	promptCacheMinimumTokens: 0,
 	promptCacheMaximumCheckpoints: 0,
 };
-const EXPLICIT_CHECKPOINTS_1024_5M: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_1024_5M: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: false,
 	promptCacheMinimumTokens: 1024,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-const EXPLICIT_CHECKPOINTS_1024_1H: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_1024_1H: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: true,
 	promptCacheMinimumTokens: 1024,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-const EXPLICIT_CHECKPOINTS_2048_5M: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_2048_5M: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: false,
 	promptCacheMinimumTokens: 2048,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-const EXPLICIT_CHECKPOINTS_4096_5M: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_4096_5M: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: false,
 	promptCacheMinimumTokens: 4096,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-const EXPLICIT_CHECKPOINTS_4096_1H: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_4096_1H: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: true,
 	promptCacheMinimumTokens: 4096,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-const EXPLICIT_CHECKPOINTS_512_1H: ResolvedBedrockCompat = {
+const EXPLICIT_CHECKPOINTS_512_1H: BedrockCachePolicy = {
 	promptCacheMode: "explicit",
 	supportsLongPromptCacheRetention: true,
 	promptCacheMinimumTokens: 512,
 	promptCacheMaximumCheckpoints: 4,
 };
 
-function detectedBedrockCompat(modelId: string): ResolvedBedrockCompat {
+function detectedBedrockCompat(modelId: string): BedrockCachePolicy {
 	const id = modelId.toLowerCase();
 
 	if (
@@ -138,7 +140,10 @@ const BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS = 600_000;
 const BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS = 900_000;
 
 export function buildBedrockCompat(spec: ModelSpec<"bedrock-converse-stream">): ResolvedBedrockCompat {
-	const compat = { ...detectedBedrockCompat(spec.id) };
+	const compat: ResolvedBedrockCompat = {
+		...detectedBedrockCompat(spec.id),
+		supportsForcedToolChoice: !isClaude55ForcedToolChoiceRestricted(spec.id),
+	};
 	if (requiresToolResultImageHoisting(spec.id)) compat.requiresToolResultImageHoisting = true;
 	compat.streamIdleTimeoutMs = spec.reasoning
 		? supportsAdaptiveThinkingDisplay(spec.id)

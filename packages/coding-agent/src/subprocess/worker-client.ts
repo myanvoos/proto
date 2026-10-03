@@ -4,14 +4,17 @@ import * as path from "node:path";
 import { Process } from "@oh-my-pi/pi-natives";
 import {
 	$env,
+	APP_NAME,
 	isBunTestRuntime,
 	isCompiledBinary,
 	isSessionBridgeEnvName,
 	logger,
+	openCloexecSync,
 	postmortem,
 	stripGitRepoLocationEnv,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
+import { isExecutable } from "@oh-my-pi/pi-utils/procmgr";
 import { terminateProcess } from "@oh-my-pi/pi-utils/ptree";
 import type { Subprocess } from "bun";
 
@@ -59,8 +62,36 @@ interface WorkerSpawnCommand {
 	cwd?: string;
 }
 
-export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
+/**
+ * A package manager can prune the running binary's version directory mid-upgrade, leaving
+ * `process.execPath` dangling; re-resolve the compiled binary from PATH so workers still spawn.
+ */
+function resolveExecutablePath(): string {
 	const executable = process.execPath;
+	if (!isCompiledBinary() || isExecutable(executable)) return executable;
+	// Never resolve against the cwd: a relative launcher path or a relative PATH entry could pick up a binary planted
+	// in an untrusted working tree. Prefer the original launcher, then the app name.
+	const argv0 = process.argv0;
+	const candidates = [
+		path.isAbsolute(argv0) ? argv0 : null,
+		argv0 && !argv0.includes("/") ? whichInAbsolutePaths(argv0) : null,
+		whichInAbsolutePaths(APP_NAME),
+	];
+	return candidates.find(candidate => candidate !== null && isExecutable(candidate)) ?? executable;
+}
+
+function whichInAbsolutePaths(command: string): string | null {
+	const safePath = (process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter(dir => path.isAbsolute(dir))
+		.join(path.delimiter);
+	if (!safePath) return null;
+	const found = Bun.which(command, { PATH: safePath });
+	return found && path.isAbsolute(found) ? found : null;
+}
+
+export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
+	const executable = resolveExecutablePath();
 	if (isCompiledBinary()) return { cmd: [executable, workerArg] };
 	const hostEntry = workerHostEntry();
 	if (hostEntry) {
@@ -281,7 +312,10 @@ interface StderrCapture {
 function createStderrCapture(exitLabel: string): StderrCapture {
 	try {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-worker-stderr-"));
-		const fd = fs.openSync(path.join(dir, "stderr.log"), "w+");
+		const fd = openCloexecSync(
+			path.join(dir, "stderr.log"),
+			fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+		);
 		const cleanupOnExit = (): void => cleanupStderrCapture({ target: fd, fd, dir, cleanupOnExit: null });
 		process.once("exit", cleanupOnExit);
 		return { target: fd, fd, dir, cleanupOnExit };

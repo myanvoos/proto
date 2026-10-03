@@ -25,7 +25,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -108,7 +109,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -191,7 +193,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -274,7 +277,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -343,9 +347,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.1,
-			"output": 0.5,
-			"cacheRead": 0.01,
+			"input": 0.015,
+			"output": 0.676999,
+			"cacheRead": 0.002097,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -421,9 +425,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.39996,
-			"output": 1.19988,
-			"cacheRead": 0.012726,
+			"input": 0.132,
+			"output": 0.396,
+			"cacheRead": 0.0042,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -499,9 +503,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.038,
-			"output": 0.55,
-			"cacheRead": 0.0228,
+			"input": 0.0115,
+			"output": 1.28,
+			"cacheRead": 0.0115,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -594,7 +598,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -676,7 +681,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -744,9 +750,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 1.4989,
-			"output": 10.758,
-			"cacheRead": 0.3,
+			"input": 1,
+			"output": 11.357,
+			"cacheRead": 0.29,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -758,7 +764,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -841,7 +848,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -923,7 +931,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1005,7 +1014,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1087,7 +1097,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1157,7 +1168,7 @@
 		"cost": {
 			"input": 2,
 			"output": 10,
-			"cacheRead": 0.2,
+			"cacheRead": 0.1,
 			"cacheWrite": 2.5
 		},
 		"contextWindow": 1050000,
@@ -1169,7 +1180,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1251,7 +1263,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1319,9 +1332,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 1.6,
-			"output": 4.8,
-			"cacheRead": 0.4,
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
 			"cacheWrite": 0
 		},
 		"contextWindow": 500000,
@@ -1333,7 +1346,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1401,13 +1415,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.075,
-			"output": 0.25,
-			"cacheRead": 0.015,
+			"input": 0.02625,
+			"output": 0.928749,
+			"cacheRead": 0.01125,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"maxTokens": 943718,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1415,7 +1429,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1482,9 +1497,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.5614,
-			"output": 1.7644,
-			"cacheRead": 0.10426,
+			"input": 0.12,
+			"output": 4,
+			"cacheRead": 0.08,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -1496,7 +1511,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1793,7 +1809,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1874,7 +1891,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1955,7 +1973,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2036,7 +2055,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2117,7 +2137,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2989,7 +3010,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3425,7 +3447,6 @@
 		"int": 5.6,
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -3475,7 +3496,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"anthropic/claude-3.5-haiku": {
 		"id": "anthropic/claude-3.5-haiku",
@@ -3651,7 +3673,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -3802,7 +3825,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 49.6,
-		"tps": 66.7,
+		"tps": 65.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3810,7 +3833,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -3887,7 +3911,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 53.4,
-		"tps": 64.7,
+		"tps": 68.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3895,7 +3919,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"prefixBinding": true
 		},
@@ -3979,7 +4004,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4038,11 +4064,11 @@
 	},
 	"anthropic/claude-opus-4": {
 		"id": "anthropic/claude-opus-4",
-		"name": "Claude 4 Opus",
+		"name": "Claude Opus 4",
 		"api": "openai-completions",
 		"provider": "kilo",
 		"baseUrl": "https://api.kilo.ai/api/gateway",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
 			"text",
 			"image"
@@ -4107,6 +4133,17 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
 		"supportsComputerUse": false
 	},
 	"anthropic/claude-opus-4.1": {
@@ -4135,7 +4172,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4212,7 +4250,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"int": 23.7,
-		"tps": 45.7,
+		"tps": 47.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4220,7 +4258,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4297,7 +4336,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 26.4,
-		"tps": 38.7,
+		"tps": 38.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4305,7 +4344,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4388,7 +4428,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -4466,7 +4507,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4474,7 +4515,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4557,7 +4599,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4634,7 +4677,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4642,7 +4685,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4725,7 +4769,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4802,7 +4847,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 50.8,
-		"tps": 53.6,
+		"tps": 57.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4810,7 +4855,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4893,7 +4939,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -4970,6 +5017,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 57.6,
+		"tps": 93,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4977,7 +5025,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -5060,7 +5109,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -5143,7 +5193,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -5220,7 +5271,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5228,7 +5279,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -5305,7 +5357,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 38.2,
-		"tps": 78.1,
+		"tps": 85.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5313,7 +5365,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -5333,6 +5386,174 @@
 			"alwaysSendMaxTokens": false,
 			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"anthropic/claude-sonnet-5.5": {
+		"id": "anthropic/claude-sonnet-5.5",
+		"name": "Claude Sonnet 5.5",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"int": 56,
+		"tps": 139.6,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"apodex/apodex-1.1-mini:free": {
+		"id": "apodex/apodex-1.1-mini:free",
+		"name": "Apodex 1.1 Mini (free)",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 235929,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
 			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
@@ -5749,7 +5970,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 80000,
 		"int": 10.8,
-		"tps": 334.6,
+		"tps": 351.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5757,7 +5978,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -5911,7 +6133,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6064,7 +6287,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6291,7 +6515,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6661,7 +6886,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6743,7 +6969,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6825,7 +7052,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6907,7 +7135,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6989,7 +7218,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7071,7 +7301,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7360,7 +7591,7 @@
 		"contextWindow": 192000,
 		"maxTokens": 64000,
 		"int": 13.1,
-		"tps": 239.7,
+		"tps": 227.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -7368,7 +7599,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7662,7 +7894,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7872,13 +8105,13 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.32,
-			"output": 0.89,
+			"input": 0.2574,
+			"output": 1.0287,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 163840,
-		"maxTokens": 16384,
+		"contextWindow": 128000,
+		"maxTokens": 16000,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
@@ -7944,13 +8177,13 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.25,
-			"output": 1,
-			"cacheRead": 0,
+			"input": 0.29,
+			"output": 1.14,
+			"cacheRead": 0.11,
 			"cacheWrite": 0
 		},
-		"contextWindow": 163840,
-		"maxTokens": 147456,
+		"contextWindow": 128000,
+		"maxTokens": 115200,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
@@ -8016,9 +8249,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.27,
-			"output": 1,
-			"cacheRead": 0.135,
+			"input": 0.25,
+			"output": 0.95,
+			"cacheRead": 0.13,
 			"cacheWrite": 0
 		},
 		"contextWindow": 163840,
@@ -8399,11 +8632,11 @@
 		"cost": {
 			"input": 0.27,
 			"output": 1,
-			"cacheRead": 0.135,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 32768,
+		"contextWindow": 163840,
+		"maxTokens": 147456,
 		"int": 13.9,
 		"thinking": {
 			"mode": "effort",
@@ -8550,12 +8783,12 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.269,
-			"output": 0.4,
-			"cacheRead": 0.1345,
+			"input": 0.28,
+			"output": 0.42,
+			"cacheRead": 0.028,
 			"cacheWrite": 0
 		},
-		"contextWindow": 163840,
+		"contextWindow": 131072,
 		"maxTokens": 65536,
 		"int": 16,
 		"thinking": {
@@ -8636,7 +8869,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 163840,
-		"maxTokens": 65536,
+		"maxTokens": 147456,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8790,7 +9023,7 @@
 		"contextWindow": 1024000,
 		"maxTokens": 384000,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8951,7 +9184,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 943718,
+		"maxTokens": 262144,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9186,7 +9419,7 @@
 		"contextWindow": 1024000,
 		"maxTokens": 384000,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9265,8 +9498,8 @@
 			"cacheRead": 0.044,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1024000,
-		"maxTokens": 384000,
+		"contextWindow": 1048576,
+		"maxTokens": 393216,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9429,7 +9662,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 943718,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9518,7 +9751,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9717,6 +9951,89 @@
 			"dropThinkingWhenReasoningEffort": false
 		},
 		"supportsComputerUseConfig": false
+	},
+	"fireworks/ember-1": {
+		"id": "fireworks/ember-1",
+		"name": "Ember-1",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 943718,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
 	},
 	"giga-potato": {
 		"id": "giga-potato",
@@ -9974,7 +10291,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65535,
 		"int": 9.9,
-		"tps": 188.6,
+		"tps": 202.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -10128,7 +10445,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65535,
 		"int": 6.7,
-		"tps": 265.8,
+		"tps": 293.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -10293,7 +10610,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 16.1,
-		"tps": 125.8,
+		"tps": 124.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11159,7 +11476,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 292.5,
+		"tps": 316.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11243,7 +11560,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 29.7,
-		"tps": 118.4,
+		"tps": 116.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11405,7 +11722,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11489,7 +11806,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 22.2,
-		"tps": 357.4,
+		"tps": 360,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11573,7 +11890,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 34,
-		"tps": 180.2,
+		"tps": 198.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11657,7 +11974,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 39.1,
-		"tps": 278.3,
+		"tps": 302.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11741,7 +12058,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 40.9,
-		"tps": 275.9,
+		"tps": 242.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12250,7 +12567,7 @@
 		"cost": {
 			"input": 0.042,
 			"output": 0.22,
-			"cacheRead": 0,
+			"cacheRead": 0.021,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -12262,7 +12579,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12344,7 +12662,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12776,7 +13095,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 117964,
 		"int": 11.1,
-		"tps": 102,
+		"tps": 60.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12784,7 +13103,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12931,7 +13251,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 50000,
 		"int": 13.8,
-		"tps": 749.5,
+		"tps": 871.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12939,7 +13259,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13013,6 +13334,8 @@
 		},
 		"contextWindow": 260000,
 		"maxTokens": 65536,
+		"int": 12.3,
+		"tps": 762.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -13020,7 +13343,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13452,8 +13776,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 32768,
-		"int": 24.9,
-		"tps": 346.4,
+		"int": 20.1,
+		"tps": 360.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -13461,7 +13785,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13528,15 +13853,15 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.06,
-			"output": 0.18,
-			"cacheRead": 0.012,
+			"input": 0.075,
+			"output": 0.22,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 235929,
+		"maxTokens": 32768,
 		"int": 22.6,
-		"tps": 158.5,
+		"tps": 312.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -13544,7 +13869,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13625,11 +13951,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -13679,7 +14005,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"inclusionai/ling-3.0-flash-sante:free": {
 		"id": "inclusionai/ling-3.0-flash-sante:free",
@@ -13706,7 +14033,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13774,15 +14102,14 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.06,
-			"output": 0.18,
-			"cacheRead": 0.012,
+			"input": 0.075,
+			"output": 0.22,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
+		"contextWindow": 262144,
 		"maxTokens": 32768,
 		"int": 24.6,
-		"tps": 145.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -13790,7 +14117,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13872,11 +14200,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -13926,7 +14254,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"inclusionai/ling-3.0-flash:free": {
 		"id": "inclusionai/ling-3.0-flash:free",
@@ -14025,7 +14354,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14082,6 +14412,88 @@
 		},
 		"supportsComputerUseConfig": false
 	},
+	"inclusionai/ling-3.1-flash": {
+		"id": "inclusionai/ling-3.1-flash",
+		"name": "Ling 3.1 Flash (new)",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"inclusionai/ring-2.6-1t": {
 		"id": "inclusionai/ring-2.6-1t",
 		"name": "Ring-2.6-1T",
@@ -14107,7 +14519,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14549,7 +14962,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14631,7 +15045,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14712,7 +15127,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14794,7 +15210,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -14876,7 +15293,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -15674,7 +16092,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -15899,7 +16318,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -15980,7 +16400,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16843,7 +17264,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 10,
-		"tps": 112.5,
+		"tps": 78.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -16917,7 +17338,7 @@
 		"contextWindow": 327680,
 		"maxTokens": 16384,
 		"int": 8.1,
-		"tps": 105.7,
+		"tps": 103.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -17276,7 +17697,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
-		"maxTokens": 16384,
+		"maxTokens": 117964,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -17284,7 +17705,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17360,6 +17782,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 943718,
 		"int": 33.7,
+		"tps": 120.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -17367,7 +17790,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17443,7 +17867,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 943718,
 		"int": 39.6,
-		"tps": 173.7,
+		"tps": 243.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -17451,7 +17875,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17533,7 +17958,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17609,7 +18035,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 943718,
 		"int": 48.1,
-		"tps": 218.6,
+		"tps": 140.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -17617,7 +18043,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17699,7 +18126,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18065,7 +18493,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18137,10 +18566,10 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 204800,
-		"maxTokens": 131072,
+		"contextWindow": 196608,
+		"maxTokens": 176947,
 		"int": 18.6,
-		"tps": 91.9,
+		"tps": 97.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18293,7 +18722,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 20.9,
-		"tps": 80.8,
+		"tps": 102.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18375,7 +18804,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18526,10 +18955,10 @@
 			"cacheRead": 0.06,
 			"cacheWrite": 0
 		},
-		"contextWindow": 204800,
-		"maxTokens": 131072,
+		"contextWindow": 196608,
+		"maxTokens": 176947,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18612,7 +19041,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 512000,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18620,7 +19049,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -19771,8 +20201,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 52429,
+		"maxTokens": 209715,
 		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -19822,8 +20253,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"mistralai/mistral-medium-3": {
 		"id": "mistralai/mistral-medium-3",
@@ -19845,7 +20275,6 @@
 		"contextWindow": 131072,
 		"maxTokens": 104857,
 		"int": 9,
-		"tps": 151.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -19919,7 +20348,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 209715,
 		"int": 14.2,
-		"tps": 140.7,
+		"tps": 169.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -19927,7 +20356,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20003,7 +20433,6 @@
 		"contextWindow": 131072,
 		"maxTokens": 104857,
 		"int": 9.2,
-		"tps": 145.3,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -20068,9 +20497,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.019,
-			"output": 0.03,
-			"cacheRead": 0,
+			"input": 0.15,
+			"output": 0.15,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
@@ -20297,7 +20726,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20437,9 +20867,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.09375,
-			"output": 0.25,
-			"cacheRead": 0,
+			"input": 0.1,
+			"output": 0.3,
+			"cacheRead": 0.01,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -20876,7 +21306,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 98304,
 		"int": 12.7,
-		"tps": 49.2,
+		"tps": 52,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
@@ -20951,7 +21381,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 98304,
 		"int": 15.3,
-		"tps": 47.9,
+		"tps": 52.4,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
@@ -21094,13 +21524,13 @@
 		"cost": {
 			"input": 0.6,
 			"output": 2.5,
-			"cacheRead": 0.15,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 98304,
+		"maxTokens": 235929,
 		"int": 22,
-		"tps": 121.5,
+		"tps": 130.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21108,7 +21538,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -21194,7 +21625,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -21338,15 +21770,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.95,
-			"output": 4,
-			"cacheRead": 0.16,
+			"input": 0.43415,
+			"output": 1.828,
+			"cacheRead": 0.07312,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21354,7 +21786,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -21499,15 +21932,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.7062,
-			"output": 3.3,
+			"input": 0.6712,
+			"output": 3.35,
 			"cacheRead": 0.18,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21515,7 +21948,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -21585,15 +22019,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
+			"input": 2.7,
+			"output": 13.5,
+			"cacheRead": 0.27,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 943718,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -22124,7 +22558,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -22206,7 +22641,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -22431,11 +22867,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -22485,7 +22921,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"nex-agi/nex-n2.5-pro": {
 		"id": "nex-agi/nex-n2.5-pro",
@@ -22513,7 +22950,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -22595,11 +23033,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -22649,7 +23087,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"nousresearch/hermes-2-pro-llama-3-8b": {
 		"id": "nousresearch/hermes-2-pro-llama-3-8b",
@@ -23104,7 +23543,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23187,7 +23627,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23269,7 +23710,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23351,7 +23793,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -23433,7 +23876,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23514,7 +23958,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23586,8 +24031,8 @@
 			"cacheRead": 0.1,
 			"cacheWrite": 0
 		},
-		"contextWindow": 202800,
-		"maxTokens": 182520,
+		"contextWindow": 262144,
+		"maxTokens": 16384,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -23595,7 +24040,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23676,7 +24122,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23885,15 +24332,15 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.065,
+			"input": 0.039,
 			"output": 0.18,
-			"cacheRead": 0,
+			"cacheRead": 0.0195,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 131072,
+		"maxTokens": 32768,
 		"int": 12.9,
-		"tps": 267.1,
+		"tps": 300,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -23901,7 +24348,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -23982,7 +24430,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -24064,7 +24513,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -24146,7 +24596,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -24202,6 +24653,77 @@
 			"dropThinkingWhenReasoningEffort": false
 		},
 		"supportsComputerUseConfig": false
+	},
+	"nvidia/switchyard": {
+		"id": "nvidia/switchyard",
+		"name": "Switchyard",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": null,
+		"maxTokens": null,
+		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		},
+		"supportsComputerUse": false
 	},
 	"openai/gpt-3.5-turbo": {
 		"id": "openai/gpt-3.5-turbo",
@@ -24723,7 +25245,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 4096,
 		"int": 7,
-		"tps": 32.1,
+		"tps": 32,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -24868,7 +25390,7 @@
 		"contextWindow": 1047576,
 		"maxTokens": 32768,
 		"int": 12.7,
-		"tps": 144.4,
+		"tps": 138.7,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -24942,7 +25464,7 @@
 		"contextWindow": 1047576,
 		"maxTokens": 32768,
 		"int": 10.2,
-		"tps": 139.2,
+		"tps": 143.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25016,7 +25538,7 @@
 		"contextWindow": 1047576,
 		"maxTokens": 32768,
 		"int": 7.8,
-		"tps": 149,
+		"tps": 125.4,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25090,7 +25612,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 8.4,
-		"tps": 137.5,
+		"tps": 118.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25164,7 +25686,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 4096,
 		"int": 7.3,
-		"tps": 103.6,
+		"tps": 105.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25238,7 +25760,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 7.7,
-		"tps": 100.9,
+		"tps": 108.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25456,7 +25978,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 6.7,
-		"tps": 109.8,
+		"tps": 102.3,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -25818,7 +26340,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 23,
-		"tps": 98.4,
+		"tps": 80.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -26218,7 +26740,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 16.8,
-		"tps": 107.6,
+		"tps": 138.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -26301,7 +26823,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 13,
-		"tps": 161.4,
+		"tps": 150.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -26465,7 +26987,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 24.7,
-		"tps": 112.6,
+		"tps": 112.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -26864,7 +27386,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 30.4,
-		"tps": 79.5,
+		"tps": 80,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27254,7 +27776,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"int": 32.5,
-		"tps": 146.4,
+		"tps": 95.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27337,7 +27859,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 39,
-		"tps": 135.8,
+		"tps": 89.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27491,7 +28013,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 24.1,
-		"tps": 224.5,
+		"tps": 213,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27574,7 +28096,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 20.7,
-		"tps": 173.6,
+		"tps": 160.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27738,7 +28260,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 38.4,
-		"tps": 94.4,
+		"tps": 85,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -27904,7 +28426,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 37.3,
-		"tps": 142.3,
+		"tps": 125.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28070,7 +28592,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 47,
-		"tps": 80.3,
+		"tps": 79.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28318,7 +28840,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 42.1,
-		"tps": 82.4,
+		"tps": 101.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28484,7 +29006,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 52.7,
-		"tps": 52.7,
+		"tps": 53.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28649,8 +29171,8 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 37.3,
-		"tps": 153.9,
+		"int": 38.1,
+		"tps": 125.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28815,8 +29337,8 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 47.5,
-		"tps": 125.5,
+		"int": 47.6,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -28895,6 +29417,172 @@
 			"input": 2,
 			"output": 10,
 			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"openai/gpt-6.1-sol": {
+		"id": "openai/gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"int": 51.8,
+		"tps": 61.3,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"openai/gpt-6.1-sol-pro": {
+		"id": "openai/gpt-6.1-sol-pro",
+		"name": "GPT-6.1 Sol Pro",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
 			"cacheWrite": 2.5
 		},
 		"contextWindow": 1050000,
@@ -29193,9 +29881,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
-		"maxTokens": 65536,
+		"maxTokens": 117964,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29342,13 +30030,13 @@
 		"cost": {
 			"input": 0.018,
 			"output": 0.09,
-			"cacheRead": 0,
+			"cacheRead": 0.009,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 9,
-		"tps": 183.4,
+		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29516,7 +30204,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -29599,7 +30288,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -29676,7 +30366,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 100000,
 		"int": 20.2,
-		"tps": 105.4,
+		"tps": 104.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29684,7 +30374,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -29767,7 +30458,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -29844,7 +30536,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 100000,
 		"int": 12.5,
-		"tps": 207.3,
+		"tps": 199,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29852,7 +30544,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -29928,7 +30621,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 100000,
 		"int": 11,
-		"tps": 227.4,
+		"tps": 195.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29936,7 +30629,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -30020,7 +30714,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -30097,7 +30792,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 100000,
 		"int": 16.7,
-		"tps": 143.7,
+		"tps": 143.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -30105,7 +30800,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -30188,7 +30884,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -30266,7 +30963,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 100000,
 		"int": 16.7,
-		"tps": 143.7,
+		"tps": 143.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -30274,7 +30971,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -30429,7 +31127,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -30725,7 +31424,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31021,7 +31721,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31220,6 +31921,89 @@
 		},
 		"supportsComputerUse": false
 	},
+	"perceptron/perceptron-mk1.5": {
+		"id": "perceptron/perceptron-mk1.5",
+		"name": "Perceptron Mk1.5",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 1.5,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 36864,
+		"maxTokens": 8192,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"perplexity/sonar": {
 		"id": "perplexity/sonar",
 		"name": "Sonar",
@@ -31387,7 +32171,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"effortRouting": {
 				"off": "perplexity/sonar-pro",
@@ -31395,7 +32180,8 @@
 				"low": "perplexity/sonar-reasoning-pro",
 				"medium": "perplexity/sonar-reasoning-pro",
 				"high": "perplexity/sonar-reasoning-pro",
-				"xhigh": "perplexity/sonar-reasoning-pro"
+				"xhigh": "perplexity/sonar-reasoning-pro",
+				"max": "perplexity/sonar-reasoning-pro"
 			}
 		},
 		"requiresGlyphTokenization": false,
@@ -31547,7 +32333,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31629,7 +32416,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31711,7 +32499,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31792,7 +32581,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31873,7 +32663,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -31954,7 +32745,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -32035,7 +32827,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -32117,7 +32910,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -32199,7 +32993,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -32270,7 +33065,7 @@
 		"cost": {
 			"input": 0.075,
 			"output": 0.5,
-			"cacheRead": 0,
+			"cacheRead": 0.0375,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -34141,7 +34936,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 9.6,
-		"tps": 75.3,
+		"tps": 84.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -34285,7 +35080,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 9.2,
-		"tps": 93.2,
+		"tps": 80.1,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -34501,7 +35296,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 52.5,
+		"tps": 63.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -34654,9 +35449,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 16384,
+		"maxTokens": 235929,
 		"int": 9.6,
-		"tps": 168.9,
+		"tps": 169.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -34811,7 +35606,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 9.9,
-		"tps": 52.8,
+		"tps": 53,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -34964,10 +35759,10 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
-		"maxTokens": 32768,
+		"contextWindow": 262144,
+		"maxTokens": 16384,
 		"int": 7.9,
-		"tps": 112.9,
+		"tps": 113.6,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -35123,7 +35918,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 8.4,
-		"tps": 67.5,
+		"tps": 70.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -35197,7 +35992,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 7.3,
-		"tps": 114.8,
+		"tps": 119.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -35353,7 +36148,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 15.6,
-		"tps": 129.2,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -35437,7 +36232,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 22.9,
-		"tps": 75.3,
+		"tps": 75.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -35518,10 +36313,10 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 256000,
-		"maxTokens": 16384,
+		"contextWindow": 262144,
+		"maxTokens": 235929,
 		"int": 19.3,
-		"tps": 146.1,
+		"tps": 148.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -35605,7 +36400,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 18.4,
-		"tps": 85.7,
+		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -35688,8 +36483,8 @@
 		},
 		"contextWindow": 256000,
 		"maxTokens": 32768,
-		"int": 13.7,
-		"tps": 58,
+		"int": 11.2,
+		"tps": 52.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36017,9 +36812,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 262140,
+		"maxTokens": 81920,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36103,7 +36898,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 235929,
 		"int": 18.2,
-		"tps": 119.3,
+		"tps": 128.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36350,7 +37145,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 27,
-		"tps": 55.1,
+		"tps": 55.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36661,7 +37456,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 29.5,
-		"tps": 197.1,
+		"tps": 203.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36745,7 +37540,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 25.2,
-		"tps": 63.5,
+		"tps": 55.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36901,7 +37696,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 39.9,
-		"tps": 37.7,
+		"tps": 39.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -36985,7 +37780,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 33.7,
-		"tps": 41.3,
+		"tps": 46.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -37304,6 +38099,88 @@
 			"output": 6,
 			"cacheRead": 0.25,
 			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "qwen",
+			"reasoningDisableMode": "qwen-enable-thinking-false",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"qwen/qwen3.8-max-prime": {
+		"id": "qwen/qwen3.8-max-prime",
+		"name": "Qwen 3.8 Max Prime",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 12,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
@@ -37979,7 +38856,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -38061,7 +38939,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -38143,7 +39022,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -38225,7 +39105,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -38658,7 +39539,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 26.4,
-		"tps": 38.7,
+		"tps": 38.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -38666,7 +39547,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -38743,7 +39625,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -38751,7 +39633,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -38828,7 +39711,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -38836,7 +39719,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -38913,7 +39797,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -38921,7 +39805,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -39087,7 +39972,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -39163,7 +40049,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 27,
-		"tps": 55.1,
+		"tps": 55.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -39233,9 +40119,10 @@
 		"api": "openai-completions",
 		"provider": "kilo",
 		"baseUrl": "https://api.kilo.ai/api/gateway",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -39245,7 +40132,19 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 524288,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
 		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -39295,8 +40194,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"stepfun/step-3.5-flash": {
 		"id": "stepfun/step-3.5-flash",
@@ -39317,7 +40215,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 17,
-		"tps": 126.9,
+		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -39325,7 +40223,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -39473,7 +40372,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 230400,
 		"int": 19.5,
-		"tps": 197.1,
+		"tps": 207,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -39481,7 +40380,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -39563,7 +40463,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -39986,9 +40887,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.13,
-			"output": 0.53,
-			"cacheRead": 0.033,
+			"input": 0.0825,
+			"output": 0.33,
+			"cacheRead": 0.020625,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -40002,7 +40903,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40084,7 +40986,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40237,7 +41140,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40304,9 +41208,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.834,
-			"output": 2.501,
-			"cacheRead": 0.042,
+			"input": 0.7506,
+			"output": 2.2509,
+			"cacheRead": 0.0378,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -40318,7 +41222,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40676,9 +41581,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 524288,
-		"maxTokens": 471859,
+		"maxTokens": 262144,
 		"int": 25,
-		"tps": 110.6,
+		"tps": 169.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -40686,7 +41591,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40761,8 +41667,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 262144,
-		"int": 27.8,
-		"tps": 205,
+		"int": 25.7,
+		"tps": 178.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -40770,7 +41676,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40852,7 +41759,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -40934,7 +41842,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -41062,6 +41971,77 @@
 		},
 		"supportsComputerUseConfig": false
 	},
+	"typesafe/jev-router": {
+		"id": "typesafe/jev-router",
+		"name": "Jev Router",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": null,
+		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		},
+		"supportsComputerUse": false
+	},
 	"unbiased/pareto": {
 		"id": "unbiased/pareto",
 		"name": "Pareto",
@@ -41080,6 +42060,78 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"unbiased/pareto-26.10-preview": {
+		"id": "unbiased/pareto-26.10-preview",
+		"name": "Pareto 26.10 Preview",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.8,
+			"output": 3.2,
+			"cacheRead": 0.03,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -41223,6 +42275,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 131072,
+		"int": 24.1,
+		"tps": 198.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -41230,7 +42284,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -41305,7 +42360,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 117964,
 		"int": 7.8,
-		"tps": 151.5,
+		"tps": 144.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -41313,7 +42368,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -41388,7 +42444,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 131072,
 		"int": 28.2,
-		"tps": 54,
+		"tps": 104.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -41396,7 +42452,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -41837,7 +42894,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -41920,7 +42978,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42003,7 +43062,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42080,7 +43140,7 @@
 		"contextWindow": 2000000,
 		"maxTokens": 1800000,
 		"int": 25.7,
-		"tps": 106.2,
+		"tps": 124.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -42088,7 +43148,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42242,7 +43303,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42390,7 +43452,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 900000,
 		"int": 24.9,
-		"tps": 104.2,
+		"tps": 143.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -42398,7 +43460,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42474,7 +43537,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 450000,
 		"int": 38.8,
-		"tps": 55.1,
+		"tps": 56.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -42482,7 +43545,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42558,7 +43622,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 450000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -42566,7 +43630,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42634,15 +43699,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 1.6,
-			"output": 4.8,
-			"cacheRead": 0.4,
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
 			"cacheWrite": 0
 		},
 		"contextWindow": 500000,
 		"maxTokens": 450000,
 		"int": 46.4,
-		"tps": 39.3,
+		"tps": 79,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -42650,7 +43715,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42732,7 +43798,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -42813,7 +43880,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -43447,7 +44515,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 26,
-		"tps": 47.7,
+		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -43524,13 +44592,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.14,
+			"input": 0.12,
 			"output": 0.28,
-			"cacheRead": 0.0028,
+			"cacheRead": 0.006,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 37.9,
+		"tps": 52.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -43609,13 +44679,13 @@
 		"cost": {
 			"input": 0.435,
 			"output": 0.87,
-			"cacheRead": 0.0036,
+			"cacheRead": 0.004,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 46.3,
-		"tps": 54.2,
+		"tps": 45.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -43861,7 +44931,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -43936,7 +45007,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 98304,
 		"int": 11.1,
-		"tps": 84.5,
+		"tps": 85.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -43944,7 +45015,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44020,7 +45092,7 @@
 		"contextWindow": 65536,
 		"maxTokens": 16384,
 		"int": 6.7,
-		"tps": 37,
+		"tps": 51.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44028,7 +45100,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44103,7 +45176,7 @@
 		"contextWindow": 198000,
 		"maxTokens": 16384,
 		"int": 14.9,
-		"tps": 34.2,
+		"tps": 36.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44111,7 +45184,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44253,13 +45327,13 @@
 		"cost": {
 			"input": 0.3,
 			"output": 0.9,
-			"cacheRead": 0.055,
+			"cacheRead": 0.05,
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 8.4,
-		"tps": 71.8,
+		"tps": 87,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44267,7 +45341,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44334,15 +45409,15 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.4,
-			"output": 1.75,
-			"cacheRead": 0.08,
+			"input": 0.6,
+			"output": 2.2,
+			"cacheRead": 0.11,
 			"cacheWrite": 0
 		},
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 22.2,
-		"tps": 102.1,
+		"tps": 68.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44350,7 +45425,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44425,7 +45501,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 117964,
 		"int": 14.9,
-		"tps": 82.5,
+		"tps": 65.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44433,7 +45509,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44508,7 +45585,7 @@
 		"contextWindow": 198000,
 		"maxTokens": 128000,
 		"int": 27.9,
-		"tps": 67.1,
+		"tps": 78.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44516,7 +45593,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44599,7 +45677,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44672,10 +45751,10 @@
 			"cacheRead": 0.26,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
-		"maxTokens": 128000,
+		"contextWindow": 202752,
+		"maxTokens": 131072,
 		"int": 26.1,
-		"tps": 35.3,
+		"tps": 43.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44683,7 +45762,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -44757,9 +45837,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"maxTokens": 943718,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44915,7 +45995,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -44997,10 +46077,10 @@
 			"cacheRead": 0.03,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1048576,
-		"maxTokens": 943718,
+		"contextWindow": 1048575,
+		"maxTokens": 943717,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -45079,7 +46159,7 @@
 		"cost": {
 			"input": 0.37,
 			"output": 1.25,
-			"cacheRead": 0.075,
+			"cacheRead": 0.09,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -45091,8 +46171,91 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"z-ai/glm-5.3-prime": {
+		"id": "z-ai/glm-5.3-prime",
+		"name": "GLM 5.3 Prime",
+		"api": "openai-completions",
+		"provider": "kilo",
+		"baseUrl": "https://api.kilo.ai/api/gateway",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 2.8,
+			"output": 8.8,
+			"cacheRead": 0.56,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
@@ -45175,7 +46338,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

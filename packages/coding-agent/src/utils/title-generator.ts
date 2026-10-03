@@ -400,6 +400,9 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 }
 
 export function setTerminalTitle(title: string): void {
+	// Every title write funnels through here; after teardown handed the tab back to the shell, a delayed
+	// caller must not write into it.
+	if (terminalTitleRuntime.disposed) return;
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
 	if (next === lastTerminalTitle) return;
@@ -407,14 +410,16 @@ export function setTerminalTitle(title: string): void {
 	lastTerminalTitle = next;
 }
 
+/** Routine session update; never releases the teardown latch — only {@link initTerminalTitleState} does. */
 export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: string): void {
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
 	emitTerminalTitle();
 }
 
+/** A title that renders to nothing releases the extension's claim instead of stranding the bare brand. */
 export function setExtensionTerminalTitle(title: string): void {
-	terminalTitleRuntime.extensionOverride = title;
+	terminalTitleRuntime.extensionOverride = sanitizeTerminalTitlePart(title);
 	emitTerminalTitle();
 }
 
@@ -435,6 +440,8 @@ const terminalTitleRuntime: {
 	timer: NodeJS.Timeout | undefined;
 
 	extensionOverride: string | undefined;
+	// Set at teardown, cleared only when the UI claims the terminal again (`initTerminalTitleState`).
+	disposed: boolean;
 } = {
 	label: undefined,
 	state: "idle",
@@ -442,6 +449,7 @@ const terminalTitleRuntime: {
 	enabled: true,
 	timer: undefined,
 	extensionOverride: undefined,
+	disposed: false,
 };
 
 export function buildTerminalTitleWithState(
@@ -478,10 +486,11 @@ function stopTerminalTitleSpinner(): void {
 }
 
 function startTerminalTitleSpinner(): void {
-	if (terminalTitleRuntime.timer || !process.stdout.isTTY) return;
+	if (terminalTitleRuntime.disposed || terminalTitleRuntime.timer || !process.stdout.isTTY) return;
 	terminalTitleRuntime.timer = setInterval(() => {
 		terminalTitleRuntime.frame = (terminalTitleRuntime.frame + 1) % TITLE_SPINNER_FRAMES.length;
-		emitTerminalTitle();
+		// An extension override is frame-independent; re-emitting it each tick is wasted work.
+		if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
 	}, TITLE_SPINNER_INTERVAL_MS);
 
 	terminalTitleRuntime.timer.unref?.();
@@ -501,7 +510,19 @@ export function setTerminalTitleStateEnabled(enabled: boolean): void {
 	emitTerminalTitle();
 }
 
+/** Claim the terminal title; the only release of the teardown latch. */
+export function initTerminalTitleState(): void {
+	terminalTitleRuntime.disposed = false;
+	lastTerminalTitle = undefined;
+	if (terminalTitleRuntime.state === "working" && terminalTitleRuntime.enabled) startTerminalTitleSpinner();
+}
+
+/**
+ * Stop the spinner and latch the runtime off. Teardown restores the shell's title before the session
+ * unsubscribes, so without the latch a late run-state change would re-arm the spinner into the shell's tab.
+ */
 export function disposeTerminalTitleState(): void {
+	terminalTitleRuntime.disposed = true;
 	stopTerminalTitleSpinner();
 	lastTerminalTitle = undefined;
 }

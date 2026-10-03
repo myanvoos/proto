@@ -22,7 +22,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
+import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
@@ -34,7 +34,7 @@ import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-func
 };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import { clampThinkingLevelToCeiling, modelSupportsEffortCeiling } from "../thinking";
+import { clampThinkingLevelToCeiling, modelSupportsEffortCeiling, resolveThinkingLevelForModel } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type {
 	InitialRetryFallbackState,
@@ -96,7 +96,7 @@ const HTTP2_STREAM_RESET_ERROR_RE =
 	/stream closed with error code\s+nghttp2_(?:internal_error|refused_stream)|nghttp2_(?:internal_error|refused_stream)|HTTP2(?:StreamReset|RefusedStream)/i;
 
 const PREMATURE_STREAM_CLOSE_ERROR_RE =
-	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event)/i;
+	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
 const IMMUTABLE_ANTHROPIC_THINKING_ERROR_PATTERN =
 	/messages\.\d+\.content\.\d+.*\b(?:thinking|redacted_thinking)\b.*\blatest assistant message cannot be modified\b/is;
 
@@ -264,6 +264,7 @@ export class TurnRecovery {
 		const value: ServingModel = {
 			selector: formatRetryFallbackSelector(model, level),
 			isFallback: this.#fallbackRouted,
+			contextWindow: model.contextWindow,
 		};
 		this.#bootstrapCache = { model, level, routed: this.#fallbackRouted, value };
 		return value;
@@ -300,6 +301,7 @@ export class TurnRecovery {
 				attribution: {
 					selector: formatRetryFallbackSelector(model, this.#host.thinkingLevel()),
 					isFallback: this.#fallbackRouted,
+					contextWindow: model.contextWindow,
 				},
 				sessionId: this.#host.sessionManager.getSessionId(),
 			};
@@ -329,6 +331,7 @@ export class TurnRecovery {
 		});
 		this.#clearPendingRetryErrors();
 		this.#retryAttempt = 0;
+		this.resolveRetry();
 	}
 
 	async onErrorSettledWithoutRetry(message: AssistantMessage, compaction: RecoveryCompactionResult): Promise<void> {
@@ -1177,6 +1180,18 @@ export class TurnRecovery {
 		);
 	}
 
+	#isFirstAttemptMidStreamSocketDrop(message: AssistantMessage, id: number, retryBudgetExhausted: boolean): boolean {
+		if (this.#retryAttempt !== 1 || retryBudgetExhausted) return false;
+		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
+		if (!isUnexpectedSocketCloseMessage(message.errorMessage ?? "")) return false;
+		return message.content.some(
+			block =>
+				(block.type === "thinking" && block.thinking.trim().length > 0) ||
+				block.type === "toolCall" ||
+				(block.type === "text" && block.text.trim().length > 0),
+		);
+	}
+
 	isClassifierRefusal(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
 		const stopType = message.stopDetails?.type;
@@ -1561,6 +1576,21 @@ export class TurnRecovery {
 		return true;
 	}
 
+	#isNoOpRetryFallback(candidate: Model, selector: RetryFallbackSelector): boolean {
+		const active = this.#host.model();
+		if (!active || formatModelStringWithRouting(candidate) !== formatModelStringWithRouting(active)) return false;
+		const configured = this.#host.configuredThinkingLevel();
+		const effective = resolveThinkingLevelForModel(
+			candidate,
+			clampThinkingLevelToCeiling(
+				candidate,
+				selector.thinkingLevel ?? configured,
+				this.#host.thinkingLevelCeiling(),
+			),
+		);
+		return effective === configured;
+	}
+
 	async #tryRetryModelFallback(
 		currentSelector: string,
 		failedMessage: AssistantMessage,
@@ -1578,7 +1608,7 @@ export class TurnRecovery {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-				if (!candidate) continue;
+				if (!candidate || this.#isNoOpRetryFallback(candidate, selector)) continue;
 				if (options?.excludeProvider === candidate.provider) continue;
 
 				if (
@@ -1911,7 +1941,8 @@ export class TurnRecovery {
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
 				!waitForSiblingCredential &&
-				!(retryBudgetExhausted && classifierRefusal)
+				!(retryBudgetExhausted && classifierRefusal) &&
+				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
 			) {
 				if (!classifierRefusal) {
 					this.noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);

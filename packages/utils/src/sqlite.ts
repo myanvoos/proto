@@ -60,6 +60,29 @@ function openConnection(dbPath: string): Database {
 	return db;
 }
 
+/**
+ * Bun's multi-statement `db.run()` reports only the final statement's step error (oven-sh/bun#37415), so a corrupt
+ * page hit mid-script can resurface as an unrelated failure such as "no such table". After any other initializer
+ * failure, `quick_check` on the still-open handle decides whether the store itself is damaged. Failure path only.
+ */
+function revealHiddenCorruption(db: Database | undefined, error: unknown): unknown {
+	if (!db || isSqliteCorruptionError(error) || isSqliteBusyError(error)) return error;
+	let detail: string;
+	let code: unknown = "SQLITE_CORRUPT";
+	let errno: unknown = 11;
+	try {
+		const rows = db.query<{ quick_check: string }, []>("PRAGMA quick_check(1)").all();
+		if (rows[0]?.quick_check === "ok") return error;
+		detail = `database disk image is malformed (${rows[0]?.quick_check})`;
+	} catch (probeError) {
+		if (!isSqliteCorruptionError(probeError)) return error;
+		detail = probeError instanceof Error ? probeError.message : String(probeError);
+		({ code, errno } = probeError as { code: unknown; errno?: unknown });
+	}
+	const original = error instanceof Error ? error.message : String(error);
+	return Object.assign(new Error(`${detail}; initialization failed: ${original}`, { cause: error }), { code, errno });
+}
+
 async function openWithBusyRetries<T>(
 	dbPath: string,
 	initialize: (db: Database) => T | Promise<T>,
@@ -71,7 +94,8 @@ async function openWithBusyRetries<T>(
 		try {
 			db = openConnection(dbPath);
 			return await initialize(db);
-		} catch (error) {
+		} catch (caught) {
+			const error = options.recoverCorruption ? revealHiddenCorruption(db, caught) : caught;
 			if (options.recoverCorruption && isSqliteCorruptionError(error)) {
 				throw new SqliteAttemptFailure(error, identity, { db });
 			}
@@ -90,7 +114,8 @@ function openOnce<T>(dbPath: string, initialize: (db: Database) => T, options: S
 	try {
 		db = openConnection(dbPath);
 		return initialize(db);
-	} catch (error) {
+	} catch (caught) {
+		const error = options.recoverCorruption ? revealHiddenCorruption(db, caught) : caught;
 		if (options.recoverCorruption && isSqliteCorruptionError(error)) {
 			throw new SqliteAttemptFailure(error, identity, { db });
 		}

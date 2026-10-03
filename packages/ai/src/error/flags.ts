@@ -32,6 +32,7 @@ export const Flag = {
 	AccountPolicy: 0x0000_4000,
 	ContextOverflow: 0x0080_0000,
 	AuthFailed: 0x0100_0000,
+	SilentAbort: 0x0200_0000,
 	UserInterrupt: 0x0400_0000,
 	Abort: 0x0800_0000,
 
@@ -60,6 +61,7 @@ const KIND_MASK =
 	Flag.ContextOverflow |
 	Flag.AuthFailed |
 	Flag.PayloadRejected |
+	Flag.SilentAbort |
 	Flag.UserInterrupt |
 	Flag.Abort |
 	Flag.Grammar |
@@ -83,6 +85,8 @@ const CONTEXT_OVERFLOW_EVIDENCE_PATTERNS = [
 	/reduce the length of the messages/i,
 	/maximum context length is \d+ tokens/i,
 	/exceeds the available context size/i,
+	/\bprompt\s*\(\s*\d+\s+tokens\s*\)\s*\+\s*max\s+tokens\s*\(\s*\d+\s*\)\s+exceeds\s+the\s+context\s*\(\s*\d+\s*\)/i,
+	/\bprompt\s*\(\s*\d+\s+tokens\s*\)\s+leaves\s+no\s+room\s+to\s+answer\s+in\s+the\s+context\s*\(\s*\d+\s*\)/i,
 	/requested tokens?.*exceed.*context (window|length|size)/i,
 	/context (window|length|size).*(exceeded|overflow|too small)/i,
 	/(prompt|input).*(too long|too large).*(context|n_ctx)/i,
@@ -314,6 +318,7 @@ const ERROR_KIND_LABELS: readonly [Flag, string][] = [
 	[Flag.ContextOverflow, "context-overflow"],
 	[Flag.PayloadRejected, "payload-rejected"],
 	[Flag.AuthFailed, "auth-failed"],
+	[Flag.SilentAbort, "silent-abort"],
 	[Flag.UserInterrupt, "user-interrupt"],
 	[Flag.Abort, "abort"],
 ];
@@ -589,7 +594,8 @@ export function classify(error: unknown, api?: Api): number {
 				code === "usage_limit_reached" ||
 				(code === "insufficient_quota" && !isDashScopeTokenLimitText(link.message)) ||
 				(codeStatus === 402 &&
-					(code === "payment_required" || code === "deactivated_workspace" || is402BillingCapBody(link.message)))
+					(is402BillingCapBody(link.message) ||
+						(code !== undefined && !isOpaqueStatusBody(code) && is402BillingCapBody(code))))
 			) {
 				linkKinds |= Flag.UsageLimit;
 			}

@@ -116,7 +116,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -214,7 +214,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -313,7 +313,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -645,7 +645,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 26.1,
-		"tps": 35.3,
+		"tps": 43.2,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -680,7 +680,7 @@
 		"contextWindow": 976000,
 		"maxTokens": 131072,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -713,7 +713,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -750,7 +750,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -946,7 +946,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -982,7 +982,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1018,7 +1018,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1122,7 +1122,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1157,7 +1157,7 @@
 		"contextWindow": 196608,
 		"maxTokens": 196608,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1193,7 +1193,7 @@
 		"contextWindow": 512000,
 		"maxTokens": 131072,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",

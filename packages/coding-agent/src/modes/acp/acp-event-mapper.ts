@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import type {
 	SessionNotification,
 	SessionUpdate,
@@ -9,7 +10,7 @@ import type {
 import { parseProtolensUrl } from "../../internal-urls/protolens-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { ChecklistStatus } from "../../tools/checklist";
-import { resolveToCwd } from "../../tools/path-utils";
+import { resolveToCwd, splitPathAndSel } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
 import { parseProtolensBashCommand } from "../../tools/xdev";
 import { probeXdevCliArgs } from "../../tools/xdev-cli";
@@ -56,6 +57,10 @@ interface BinaryLikeContent extends TypedValue {
 
 interface PathContainer {
 	path?: unknown;
+}
+
+interface ResolvedPathContainer {
+	resolvedPath?: unknown;
 }
 
 interface OldPathContainer {
@@ -246,7 +251,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 			if (content.length > 0) {
 				update.content = content;
 			}
-			const locations = extractToolLocations(event.args, options.cwd);
+			const locations = extractToolLocations(event.args, options.cwd, event.toolName);
 			if (locations.length > 0) {
 				update.locations = locations;
 			}
@@ -508,7 +513,7 @@ export function buildToolCallStartUpdate(input: {
 	if (content.length > 0) {
 		update.content = content;
 	}
-	const locations = extractToolLocations(input.args, input.cwd);
+	const locations = extractToolLocations(input.args, input.cwd, input.toolName);
 	if (locations.length > 0) {
 		update.locations = locations;
 	}
@@ -606,7 +611,30 @@ function toAcpLocationPath(value: string, cwd?: string): string {
 
 const INTERNAL_URL_SUBJECT = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-function extractToolLocations(args: unknown, cwd?: string): ToolCallLocation[] {
+function existingFileLocationPath(raw: string | undefined, cwd?: string): string | undefined {
+	if (!raw || INTERNAL_URL_SUBJECT.test(raw)) return undefined;
+	const resolved = toAcpLocationPath(raw, cwd);
+	try {
+		return fs.statSync(resolved).isFile() ? resolved : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// ACP locations are editor navigation targets: a read argument may carry selectors, globs, directories or
+// archive members, so publish only the regular file it names. A literal file named like `notes:1-20` wins.
+function readLocationPath(
+	raw: string | undefined,
+	cwd: string | undefined,
+	toolName: string | undefined,
+): string | undefined {
+	if (raw === undefined || toolName !== "read") return raw;
+	if (!cwd) return undefined;
+	const { path, sel } = splitPathAndSel(raw);
+	return existingFileLocationPath(raw, cwd) ?? (sel === undefined ? undefined : existingFileLocationPath(path, cwd));
+}
+
+function extractToolLocations(args: unknown, cwd?: string, toolName?: string): ToolCallLocation[] {
 	const locations: ToolCallLocation[] = [];
 	const seen = new Set<string>();
 	const pushPath = (raw: string | undefined) => {
@@ -617,7 +645,7 @@ function extractToolLocations(args: unknown, cwd?: string): ToolCallLocation[] {
 		locations.push({ path });
 	};
 
-	pushPath(extractStringProperty<PathContainer>(args, "path"));
+	pushPath(readLocationPath(extractStringProperty<PathContainer>(args, "path"), cwd, toolName));
 	pushPath(extractStringProperty<OldPathContainer>(args, "oldPath"));
 	pushPath(extractStringProperty<NewPathContainer>(args, "newPath"));
 
@@ -629,6 +657,13 @@ function extractToolLocationsFromResult(result: unknown, cwd?: string): ToolCall
 	const details = (result as { details?: unknown }).details;
 	if (typeof details !== "object" || details === null) return [];
 	const direct = extractToolLocations(details, cwd);
+	const resolvedFile = existingFileLocationPath(
+		extractStringProperty<ResolvedPathContainer>(details, "resolvedPath"),
+		cwd,
+	);
+	if (resolvedFile && !direct.some(location => location.path === resolvedFile)) {
+		direct.push({ path: resolvedFile });
+	}
 	const perFile = (details as { perFileResults?: unknown }).perFileResults;
 	if (!Array.isArray(perFile)) {
 		return direct;
@@ -941,9 +976,8 @@ function extractReadableText(value: unknown): string | undefined {
 		if (text.length > 0) {
 			return normalizeText(text);
 		}
-		if (hasBinaryContentBlock(contentBlocks)) {
-			return undefined;
-		}
+		// Envelopes without text already ride the frame as rawOutput; serializing them would render a JSON blob row.
+		return undefined;
 	}
 	if (extractDetailsImages(value)) {
 		return undefined;
@@ -994,13 +1028,6 @@ function getContentType(value: unknown): string | undefined {
 	}
 	const type = (value as TypedValue).type;
 	return typeof type === "string" ? type : undefined;
-}
-
-function hasBinaryContentBlock(blocks: unknown[]): boolean {
-	return blocks.some(block => {
-		const type = getContentType(block);
-		return type === "image" || type === "audio";
-	});
 }
 
 function extractStringProperty<T extends object>(value: unknown, key: keyof T): string | undefined {

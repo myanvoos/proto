@@ -5,7 +5,13 @@ import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
 import { clinePassClientHeaders } from "@oh-my-pi/pi-catalog/wire/cline-pass";
-import { $env, classifyJsonPrefix, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	classifyJsonPrefix,
+	logger,
+	parseStreamingJsonThrottled,
+	type ServerSentEvent,
+} from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
@@ -18,7 +24,6 @@ import type {
 	Model,
 	ModelSpec,
 	ProviderSessionState,
-	RawSseEvent,
 	ServiceTier,
 	StopReason,
 	StreamFunction,
@@ -63,6 +68,7 @@ import {
 	StreamMarkupHealing,
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { isForcedToolChoice, mapToOpenAICompletionsToolChoice } from "../utils/tool-choice";
 import { servedModelFromOpenRouterReasoning } from "./anthropic-signature";
 import { resolveCopilotRequestIdentity, wrapFetchForCopilotFallback } from "./github-copilot-headers";
@@ -233,9 +239,49 @@ function mergeStoredGeminiSignature(existing: string | undefined, update: Stored
 	return JSON.stringify(merged);
 }
 
+// LiteLLM streams Anthropic thinking as `delta.thinking_blocks` (mirrored under `provider_specific_fields`) and
+// requires them back verbatim, in order, on the assistant turn carrying `tool_calls`.
+// https://docs.litellm.ai/docs/reasoning_content#tool-calling-with-thinking
+type LiteLLMThinkingBlock =
+	| { type: "thinking"; thinking: string; signature: string }
+	| { type: "redacted_thinking"; data: string };
+
+function getLiteLLMThinkingBlocksDelta(delta: object): unknown[] | undefined {
+	const direct = Reflect.get(delta, "thinking_blocks");
+	if (Array.isArray(direct) && direct.length > 0) return direct;
+	const providerFields = Reflect.get(delta, "provider_specific_fields");
+	if (typeof providerFields !== "object" || providerFields === null) return undefined;
+	const mirrored = Reflect.get(providerFields, "thinking_blocks");
+	return Array.isArray(mirrored) && mirrored.length > 0 ? mirrored : undefined;
+}
+
+// Blocks parsed from `thinking_blocks` keep the raw Anthropic signature; `reasoning_content`-style blocks carry the
+// field name instead and are skipped. transformMessages strips signatures on cross-model replays.
+function encodeLiteLLMThinkingBlocks(content: AssistantMessage["content"]): LiteLLMThinkingBlock[] {
+	const blocks: LiteLLMThinkingBlock[] = [];
+	for (const block of content) {
+		if (block.type === "thinking") {
+			const signature = block.thinkingSignature;
+			if (
+				!signature ||
+				signature === "reasoning_content" ||
+				signature === "reasoning" ||
+				signature === "reasoning_text"
+			) {
+				continue;
+			}
+			blocks.push({ type: "thinking", thinking: block.thinking, signature });
+		} else if (block.type === "redactedThinking") {
+			blocks.push({ type: "redacted_thinking", data: block.data });
+		}
+	}
+	return blocks;
+}
+
 type OpenAICompletionsAssistantMessageParam = ChatCompletionAssistantMessageParam &
 	Partial<Record<OpenAICompletionsReasoningField | GeminiMessageThoughtSignatureField, string>> & {
 		reasoning_details?: unknown[];
+		thinking_blocks?: LiteLLMThinkingBlock[];
 	};
 
 type OpenAICompletionsToolMessageParam = ChatCompletionToolMessageParam & {
@@ -695,7 +741,7 @@ const streamOpenAICompletionsOnce = (
 		// successful turn.
 		let sawStreamChunk = false;
 		let streamResponseDescription: string | undefined;
-		const rawSseObserver = (event: RawSseEvent) => {
+		const rawSseObserver = (event: ServerSentEvent) => {
 			if (event.data === "[DONE]") sawDoneSentinel = true;
 			if (onSseEvent) {
 				if (!event.event && event.data && event.data !== "[DONE]") {
@@ -713,7 +759,7 @@ const streamOpenAICompletionsOnce = (
 						}
 					} catch {}
 				}
-				onSseEvent(event, model);
+				onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model);
 			}
 		};
 
@@ -825,12 +871,14 @@ const streamOpenAICompletionsOnce = (
 					streamResponseDescription = `HTTP ${response.status}${responseContentType ? `, content-type ${responseContentType}` : ", no content-type"}`;
 					// Headers arrived: a slow onResponse callback must not trip the first-event watchdog.
 					if (requestTimeout !== undefined) clearTimeout(requestTimeout);
+					responseHeaders = response.headers;
 					await notifyProviderResponse(options, response, model, requestId);
 					return events;
 				} finally {
 					if (requestTimeout !== undefined) clearTimeout(requestTimeout);
 				}
 			};
+			let responseHeaders: Headers | undefined;
 			let openaiStream: AsyncIterable<ChatCompletionChunk>;
 			try {
 				openaiStream = await createCompletionsStream();
@@ -924,7 +972,7 @@ const streamOpenAICompletionsOnce = (
 					}
 				}
 				block.arguments =
-					typeof block.partialArgs === "string" ? parseStreamingJson(block.partialArgs) : block.partialArgs;
+					typeof block.partialArgs === "string" ? parseToolCallArguments(block.partialArgs) : block.partialArgs;
 				delete block.partialArgs;
 				clearStreamingPartialJson(block);
 				if (block.streamIndex !== undefined) {
@@ -978,35 +1026,63 @@ const streamOpenAICompletionsOnce = (
 					partial: message,
 				});
 			};
-			const appendThinking = (
-				message: AssistantMessage,
-				eventStream: AssistantMessageEventStream,
-				thinking: string,
-				signature?: string,
-			): void => {
-				if (
-					currentBlock?.type !== "thinking" ||
-					(signature !== undefined && currentBlock.thinkingSignature !== signature)
-				) {
+			const openThinkingBlock = (signature?: string): ThinkingContent => {
+				if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
+				const block: ThinkingContent = { type: "thinking", thinking: "", thinkingSignature: signature };
+				currentBlock = block;
+				output.content.push(block);
+				stream.push({ type: "thinking_start", contentIndex: blockIndex(block), partial: output });
+				return block;
+			};
+			const appendThinking = (thinking: string, signature?: string): void => {
+				const block =
+					currentBlock?.type === "thinking" &&
+					(signature === undefined || currentBlock.thinkingSignature === signature)
+						? currentBlock
+						: openThinkingBlock(signature);
+				if (signature !== undefined && !block.thinkingSignature) {
+					block.thinkingSignature = signature;
+				}
+				block.thinking += thinking;
+				stream.push({ type: "thinking_delta", contentIndex: blockIndex(block), delta: thinking, partial: output });
+			};
+			// Each LiteLLM `thinking_blocks` entry carries a text fragment, a signature fragment, or a whole redacted
+			// block. A signature seals its block (text after it opens the next); signature fragments concatenate.
+			let liteLLMThinkingBlock: ThinkingContent | undefined;
+			const appendLiteLLMThinkingBlock = (entry: unknown): void => {
+				if (typeof entry !== "object" || entry === null) return;
+				const type = Reflect.get(entry, "type");
+				if (type === "redacted_thinking") {
+					const data = Reflect.get(entry, "data");
+					if (typeof data !== "string" || data.length === 0) return;
 					if (currentBlock?.type !== "toolCall") finishCurrentBlock(currentBlock);
-					currentBlock = { type: "thinking", thinking: "", thinkingSignature: signature };
-					message.content.push(currentBlock);
-					eventStream.push({
-						type: "thinking_start",
-						contentIndex: blockIndex(currentBlock),
-						partial: message,
+					currentBlock = undefined;
+					liteLLMThinkingBlock = undefined;
+					output.content.push({ type: "redactedThinking", data });
+					return;
+				}
+				if (type !== "thinking") return;
+				const rawThinking = Reflect.get(entry, "thinking");
+				const rawSignature = Reflect.get(entry, "signature");
+				const thinking = typeof rawThinking === "string" ? rawThinking : "";
+				const signature = typeof rawSignature === "string" ? rawSignature : "";
+				if (!thinking && !signature) return;
+				if (!firstTokenTime) firstTokenTime = performance.now();
+				let block = currentBlock === liteLLMThinkingBlock ? liteLLMThinkingBlock : undefined;
+				if (!block || (thinking && block.thinkingSignature)) {
+					block = openThinkingBlock();
+					liteLLMThinkingBlock = block;
+				}
+				if (thinking) {
+					block.thinking += thinking;
+					stream.push({
+						type: "thinking_delta",
+						contentIndex: blockIndex(block),
+						delta: thinking,
+						partial: output,
 					});
 				}
-				if (signature !== undefined && !currentBlock.thinkingSignature) {
-					currentBlock.thinkingSignature = signature;
-				}
-				currentBlock.thinking += thinking;
-				eventStream.push({
-					type: "thinking_delta",
-					contentIndex: blockIndex(currentBlock),
-					delta: thinking,
-					partial: message,
-				});
+				if (signature) block.thinkingSignature = (block.thinkingSignature ?? "") + signature;
 			};
 
 			const appendTextDelta = (text: string): void => {
@@ -1033,7 +1109,7 @@ const streamOpenAICompletionsOnce = (
 					if (!emittedThinking) return;
 				}
 				if (!firstTokenTime) firstTokenTime = performance.now();
-				appendThinking(output, stream, emittedThinking, signature);
+				appendThinking(emittedThinking, signature);
 			};
 
 			let deepseekStripBuffer = "";
@@ -1076,7 +1152,7 @@ const streamOpenAICompletionsOnce = (
 					arguments: {},
 					partialArgs: call.arguments,
 				};
-				block.arguments = parseStreamingJson(call.arguments);
+				block.arguments = parseToolCallArguments(call.arguments);
 				setStreamingPartialJson(block, call.arguments);
 				currentBlock = block;
 				output.content.push(block);
@@ -1110,7 +1186,13 @@ const streamOpenAICompletionsOnce = (
 			let sawUsagePayload = false;
 			let awaitTrailingUsageDetails = false;
 			const applyUsagePayload = (rawUsage: object): void => {
-				output.usage = parseChunkUsage(rawUsage, model, premiumRequestsTotal, output.timestamp);
+				output.usage = parseChunkUsage(
+					rawUsage,
+					model,
+					premiumRequestsTotal,
+					output.timestamp,
+					parseFireworksCachedPromptTokens(responseHeaders),
+				);
 				sawUsagePayload = true;
 				awaitTrailingUsageDetails = !hasPositiveCacheReadTokenField(rawUsage);
 			};
@@ -1187,7 +1269,13 @@ const streamOpenAICompletionsOnce = (
 						}
 					}
 
-					if (foundReasoningField) {
+					// LiteLLM mirrors Anthropic thinking into `reasoning_content` too; only `thinking_blocks` carries the
+					// signature, so it wins and the text alias is skipped.
+					const liteLLMThinkingBlocks = getLiteLLMThinkingBlocksDelta(choice.delta);
+					if (liteLLMThinkingBlocks) {
+						for (const entry of liteLLMThinkingBlocks) appendLiteLLMThinkingBlock(entry);
+						suppressHealedThinking = true;
+					} else if (foundReasoningField) {
 						appendThinkingDelta(
 							foundReasoningDelta,
 							foundReasoningField,
@@ -1806,11 +1894,20 @@ function buildParams(
 	};
 }
 
+// Fireworks reports prompt-cache hits on this response header; streamed bodies may omit `cached_tokens`.
+function parseFireworksCachedPromptTokens(headers: Headers | undefined): number | undefined {
+	const raw = headers?.get("fireworks-cached-prompt-tokens");
+	if (!raw) return undefined;
+	const value = Number(raw);
+	return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 export function parseChunkUsage(
 	rawUsage: object,
 	model: Model<"openai-completions">,
 	premiumRequests: number | undefined,
 	timestamp?: number,
+	cachedTokensHeader?: number,
 ): AssistantMessage["usage"] {
 	const usageLike = rawUsage as OpenAICompletionsUsageLike;
 	const rawPromptTokenDetails = usageLike.prompt_tokens_details;
@@ -1841,6 +1938,7 @@ export function parseChunkUsage(
 			promptCacheHitTokens,
 			promptTokenCachedTokens,
 			cachedContentTokenCount,
+			cachedTokensHeader,
 		),
 		reasoningTokens: typeof completionReasoningTokens === "number" ? completionReasoningTokens : 0,
 		cacheWriteOpenRouter: typeof cacheWriteTokens === "number" ? cacheWriteTokens : undefined,
@@ -2148,6 +2246,9 @@ export function convertMessages(
 					}
 				}
 			}
+
+			const liteLLMThinkingBlocks = encodeLiteLLMThinkingBlocks(msg.content);
+			if (liteLLMThinkingBlocks.length > 0) assistantMsg.thinking_blocks = liteLLMThinkingBlocks;
 
 			const toolCalls = msg.content.filter(b => b.type === "toolCall") as ToolCall[];
 

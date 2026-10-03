@@ -85,7 +85,7 @@ export interface InstalledPlugin {
 	enabled: boolean;
 }
 
-interface PluginRuntimeState {
+export interface PluginRuntimeState {
 	version: string;
 
 	enabledFeatures: string[] | null;
@@ -121,6 +121,8 @@ export interface InstallOptions {
 	force?: boolean;
 
 	dryRun?: boolean;
+	/** Runtime state kept instead of fresh-install defaults (upgrades); features the new version dropped fall out. */
+	preserveState?: Pick<PluginRuntimeState, "enabled" | "enabledFeatures">;
 }
 
 export interface LinkOptions {

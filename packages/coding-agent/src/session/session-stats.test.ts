@@ -125,3 +125,18 @@ test("cached context bookkeeping matches the legacy branch scan across transcrip
 		authStorage.close();
 	}
 });
+
+test("session stats skip assistant turns persisted without usage metadata", async () => {
+	const legacy = { ...assistantMessage(1, 0), usage: undefined } as unknown as AssistantMessage;
+	const current = assistantMessage(2, 120);
+	const { authStorage, manager, tracker } = await createTracker([legacy, current]);
+	try {
+		const stats = tracker.getSessionStats();
+		expect(stats.assistantMessages).toBe(2);
+		expect(stats.tokens.input).toBe(120);
+		expect(stats.tokens.output).toBe(10);
+	} finally {
+		await manager.close();
+		authStorage.close();
+	}
+});

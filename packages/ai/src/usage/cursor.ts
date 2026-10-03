@@ -1,6 +1,8 @@
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { extractCursorAccessTokenUserId } from "../registry/oauth/cursor";
 import type {
+	CredentialRankingContext,
+	CredentialRankingStrategy,
 	UsageAmount,
 	UsageFetchContext,
 	UsageFetchParams,
@@ -10,7 +12,7 @@ import type {
 	UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
-import { parseIsoTimestamp, usageStatus } from "./shared";
+import { DAY_MS, parseIsoTimestamp, usageStatus } from "./shared";
 
 function parseTimestamp(value: unknown): number | undefined {
 	const numeric = toNumber(value);
@@ -245,6 +247,45 @@ export function parseCursorIndividualUsage(payload: unknown, fetchedAt = Date.no
 	};
 }
 
+const CURSOR_MODELS_LIMIT_ID = "cursor:usd:individual-auto";
+const OTHER_MODELS_LIMIT_ID = "cursor:usd:individual-api";
+// Cursor's dashboard bills native Grok/Composer traffic to "Cursor Models" and everything else to "Other Models".
+const CURSOR_MODELS_POOL_PATTERN = /grok|composer/i;
+
+function cursorBillingPool(modelId: string): "auto" | "api" {
+	return CURSOR_MODELS_POOL_PATTERN.test(modelId) ? "auto" : "api";
+}
+
+function scopeCursorLimitsForModel(report: UsageReport, context: CredentialRankingContext | undefined): UsageLimit[] {
+	const splitLimits = report.limits.filter(
+		limit => limit.id === CURSOR_MODELS_LIMIT_ID || limit.id === OTHER_MODELS_LIMIT_ID,
+	);
+	if (splitLimits.length > 0) {
+		const modelId = context?.modelId;
+		if (!modelId) return [];
+		const limitId = cursorBillingPool(modelId) === "auto" ? CURSOR_MODELS_LIMIT_ID : OTHER_MODELS_LIMIT_ID;
+		return splitLimits.filter(limit => limit.id === limitId);
+	}
+	const combinedLimits = report.limits.filter(
+		limit => limit.id === "cursor:usd:individual-plan" || limit.id === "cursor:usd:individual-overall",
+	);
+	return combinedLimits.length > 0 ? combinedLimits : report.limits;
+}
+
+/** Ranks, gates, and backs off Cursor credentials per the requested model's billing pool. */
+export const cursorRankingStrategy: CredentialRankingStrategy = {
+	findWindowLimits(report, context) {
+		return { secondary: scopeCursorLimitsForModel(report, context)[0] };
+	},
+	scopeLimits: scopeCursorLimitsForModel,
+	scopeLimitsForReserve: scopeCursorLimitsForModel,
+	// An exhausted Other Models pool must not block Grok/Composer on the same account (and vice versa).
+	blockScope(context) {
+		return context?.modelId ? `pool:${cursorBillingPool(context.modelId)}` : undefined;
+	},
+	windowDefaults: { primaryMs: 30 * DAY_MS, secondaryMs: 30 * DAY_MS },
+};
+
 export function parseCursorUsage(payload: unknown, fetchedAt = Date.now()): UsageReport | null {
 	if (!isRecord(payload)) return null;
 	const limits: UsageLimit[] = [];
@@ -406,10 +447,15 @@ export const cursorUsageProvider: UsageProvider = {
 		]);
 		let report: UsageReport | null;
 		if (legacyReport && summaryReport) {
+			// `/auth/usage` is the pre-usage-pricing request-count API; current plans answer it with an uncapped,
+			// always-zero `gpt-4` bucket. Beside the summary's dollar rails, drop uncapped buckets with no requests.
+			const legacyLimits = legacyReport.limits.filter(
+				limit => limit.amount.limit !== undefined || (limit.amount.used ?? 0) > 0,
+			);
 			report = {
 				provider: "cursor",
 				fetchedAt,
-				limits: [...legacyReport.limits, ...summaryReport.limits],
+				limits: [...legacyLimits, ...summaryReport.limits],
 				raw: {
 					authUsage: legacyReport.raw,
 					usageSummary: summaryReport.raw,

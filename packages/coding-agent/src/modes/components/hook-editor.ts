@@ -22,6 +22,9 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 	#onCancelCallback: () => void;
 	#tui: TUI;
 	#promptStyle: boolean;
+	#pastePending = false;
+	#submitQueued = false;
+	#disposed = false;
 
 	focused = false;
 
@@ -84,6 +87,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 	}
 
 	handleInput(keyData: string): void {
+		if (this.#disposed) return;
 		if (this.#promptStyle) {
 			this.#handlePromptStyleInput(keyData);
 		} else {
@@ -91,12 +95,57 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		}
 	}
 
-	#submitCurrentText(): void {
-		this.#onSubmitCallback(this.#editor.getExpandedText());
+	#submitCurrentText(requireText = false): void {
+		if (this.#disposed) return;
+		if (this.#pastePending) {
+			this.#submitQueued = true;
+			return;
+		}
+		const text = this.#editor.getExpandedText();
+		if (requireText && text.trim().length === 0) return;
+		this.dispose();
+		this.#onSubmitCallback(text);
+	}
+
+	/**
+	 * Reserves the editor for an async clipboard read: a submit arriving meanwhile waits for the text. The returned
+	 * completion inserts nonempty text once (then runs the deferred submit) or releases the reservation on `undefined`;
+	 * it returns whether the text landed.
+	 */
+	beginPaste(): (text: string | undefined) => boolean {
+		if (this.#disposed) return () => false;
+		this.#pastePending = true;
+		let settled = false;
+		return text => {
+			if (this.#disposed || settled) return false;
+			settled = true;
+			this.#pastePending = false;
+			if (text) this.#editor.pasteText(text);
+			else this.#submitQueued = false;
+			if (this.#submitQueued) {
+				this.#submitQueued = false;
+				this.#submitCurrentText(true);
+			}
+			return !!text;
+		};
 	}
 
 	pasteText(text: string): void {
+		if (this.#disposed) return;
 		this.#editor.pasteText(text);
+	}
+
+	override dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#pastePending = false;
+		this.#submitQueued = false;
+		super.dispose();
+	}
+
+	#cancel(): void {
+		this.dispose();
+		this.#onCancelCallback();
 	}
 
 	#handlePromptStyleInput(keyData: string): void {
@@ -106,7 +155,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		}
 
 		if (matchesKey(keyData, "escape") || matchesKey(keyData, "esc") || matchesAppInterrupt(keyData)) {
-			this.#onCancelCallback();
+			this.#cancel();
 			return;
 		}
 
@@ -135,7 +184,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		}
 
 		if (matchesAppInterrupt(keyData)) {
-			this.#onCancelCallback();
+			this.#cancel();
 			return;
 		}
 
@@ -155,7 +204,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		try {
 			this.#tui.stop();
 			const result = await openInEditor(editorCmd, currentText);
-			if (result !== null) {
+			if (!this.#disposed && result !== null) {
 				this.#editor.setText(result);
 			}
 		} finally {

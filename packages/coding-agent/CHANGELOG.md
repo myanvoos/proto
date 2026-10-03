@@ -4,13 +4,329 @@
 
 ### Added
 
+- `proto auth-gateway serve --trust-proxy-headers` to attribute requests by `X-Forwarded-For`/`X-Real-IP` behind a trusted reverse proxy
+- PgUp/PgDn scroll an overflowing `/extensions` inspector pane
+- Extension `registerProvider` model configs accept `preferWebsockets`
+
 - The double-esc session tree lists the session's subagents and side agents in an Agents section; Enter focuses that agent, where the model picker now retargets it
 
 ### Changed
 
+- At most 32 kernel `completion()` requests run at once; larger fan-outs queue instead of flooding providers
+- Streamed Bash and eval artifacts are capped at 16 MiB by default, with `tools.artifactMaxBytes` to tune or disable the cap
+- Smooth streaming batches fast token bursts into one render per frame, reducing CPU use on fast providers
+- `/fork` now tells you how to return to the original session instead of printing the new file name
+- The resume hint printed on exit now puts the resume command on its own line so it can be selected with a triple-click
+- proto no longer rewrites unchanged startup composer cache files on every model or settings event
+- Finished background jobs whose result was already delivered or waited on drop out of job listings about 30 seconds later instead of lingering for 5 minutes
+- The advisor no longer makes an extra model request after a turn that only delivered advice, cutting advisor spend
+- The unknown-agent error now lists the agent directories that were searched
+- An unavailable requested worker model now tells the agent to stop and report rather than pick a substitute
+- Read results no longer store a second copy of the returned text in their truncation details, shrinking session files
+
 - Usage-limit errors with a provider-stated reset (retry-after hint or a complete usage-report window, e.g. Claude Pro/Max 5-hour windows) now wait out the reset by default instead of failing fast; these waits no longer consume the retry budget, so unattended runs survive consecutive usage windows. Opt out with `retry.waitForUsageReset: false`
 
 ### Fixed
+
+- Node.js kernel cells remain usable when log rotation is enabled; Bun-only stderr redirection loads only when requested
+
+- MCP failures now report actionable transport diagnostics with bounded, credential-redacted server details and safe trace IDs instead of runtime-only fetch advice.
+
+- MCP tool calls are no longer replayed after an accepted HTTP response loses its stream, times out, or fails authentication while resuming.
+
+- Ctrl+Enter now clears submitted drafts immediately, preventing duplicate submissions and preserving new typing and pasted images while commands run. Failed prompts, skills, goals, and queued messages return beside the newer draft with their attachments intact.
+
+- MCP tool calls spelled the Claude Code way (`mcp__<server>__<tool>`, raw server name) now run the registered tool instead of failing with "not found"; ambiguous spellings still fail safely
+- `jobs` process waits with an output pattern now return as soon as the process exits without printing it, reporting the exit instead of a misleading timeout
+- Commands run from the bash tool no longer inherit an open handle to the session transcript
+- Cursor shell timeouts are converted from milliseconds to seconds, so a requested 15 s timeout no longer becomes 15000 s
+- Browser relay `/json/version` now advertises a WebSocket URL using the request Host, so remote CDP clients can connect
+- First browser `open` on a cold host no longer times out with no tab: a stalled tab-worker startup now falls back to the inline worker within the caller's timeout, and pages from abandoned startups are closed
+- Browser `app.path` no longer kills an already-running instance of the app; it reuses a matching CDP endpoint or fails with guidance (a distinct `--user-data-dir` in `app.args` launches beside it)
+- Browser `app.path` with Chrome/Chromium now launches on a proto-owned profile so remote debugging works beside the user's open browser, and finds Chromium started through distro wrapper scripts
+- First-use Chrome for Testing download no longer counts against the browser `open` timeout, and a failed open kills only app processes proto spawned
+- Browser element handles from `tab.id()`/`tab.ref()`/`tab.waitFor()` now fail fast with a named timeout (e.g. `handle.click() timed out after 8000ms`) instead of stalling the whole cell, and a timed-out handle cannot silently repeat the action
+- Pages opened in the shared headless browser by a proto process that crashed or was killed are now closed by the next process that attaches, instead of accumulating forever
+- Browser with `browser.headless: false` no longer pins the visible window to a fixed viewport, so the page resizes with the window
+- `tab.evaluate(fn, handle)` now accepts element handles from `tab.waitForSelector()`/`tab.id()` instead of failing with a cross-context error
+- Browser tabs proto owns stay interactive in the background (focus emulation), so clicks, animations, and observers no longer stall
+- `tab.press(selector, key)` (inverted arguments) now fails with the corrected call instead of pressing the wrong key
+- `/extensions` no longer lets you toggle a shadowed duplicate row, which used to flip the winning item's state instead
+- `/extensions` list rows stay on one line when a name or rule glob contains newlines
+- `/extensions` search accepts the letters `j` and `k`
+- Multi-select `ask` options whose label already ends in "(Recommended)" now show their checked state, and the suffix is no longer doubled
+- The Plugins tab in `/settings` paints as soon as the plugin list loads instead of staying blank
+- `/tree` shows advisor notes as `advisor (name, severity): note` instead of raw advisory XML
+- `/tree` rows and search hide the `<system-…>` wrapper around injected reminder/notice messages
+- Numbered menus such as `/review` select an option when you press its digit
+- Clicking a section in the `/settings` sidebar twice no longer toggles that section's first setting
+- Pasting a relative URL-like path ending in an image extension (e.g. `api/file/icon.png`) inserts it as text instead of trying to attach an image
+- Ctrl+D that deletes text down to a bare `->`/`=>` queue prefix now opens the queue body like other edits
+- `/tree` keeps branch connectors aligned when deep branching exceeds the available width
+- `/resume` search focuses the best match when you type a new query instead of keeping the previous row position
+- `/resume` search lists sessions whose title matches the query before newer sessions that only mention it
+- A remote (http/sse) MCP server that drops is retried in the background until it comes back, instead of staying disconnected until a tool call or `/mcp reconnect`
+- A completed assistant reply stays represented by its prose (not a thinking row) when many active blocks crowd the transcript viewport
+- The status line usage segment now shows daily quota windows (for example Google Antigravity) as `1d` with a minute-precision reset timer
+- `/mcp add` wizard OAuth no longer sends the server URL as a resource indicator when the server did not advertise one, so gateway provider audiences take precedence
+- Device tool calls spelled as `protolens://<name>` now render with the device's own tool card instead of a generic fallback, live and after transcript rebuilds
+- Rendering a magic keyword (for example `ultrathink`) before the theme initializes no longer crashes, and the gradient stays within the terminal's color depth
+- Saving advisor settings with shared instructions no longer writes the placeholder `default` advisor into WATCHDOG.yml
+- A `/skill:` invocation with a slow preflight no longer shows the skill card twice in the transcript
+- Each row of a grouped multi-path read is now a clickable file link, like a single-file read row
+- `/hotkeys` describes a remapped exit key as plain "Exit" instead of claiming it deletes forward, with one row per key role
+- Queued prompts stay visible in the pending-message bar after a mid-turn `/rewind` rebuilds the transcript
+- Extensions that render tool cards, assistant replies or user messages before the theme initializes no longer crash
+- Extensions that register their own `web_search` tool now replace the built-in one instead of being silently overridden by it
+- Tool calls made from `bash` kernel cells (JS `tool.*` / Python `tool.*`) are now validated and normalized like model tool calls, so optional `null` arguments are accepted and invalid arguments are rejected before the tool runs
+- `APPEND_SYSTEM.md` / `--append-system-prompt` text now appears under its own "User Instructions" heading instead of reading as part of the MCP server instructions section
+- The /extensions dashboard no longer shows an active item as shadowed by a disabled one (e.g. AGENTS.md vs a disabled GEMINI.md); it now matches what the session actually loads
+- `RULES.md` and rule files created, edited, renamed, or deleted mid-session now take effect on `/clear` and `/new` instead of requiring a restart
+- `completion()` in `bash` kernel cells now falls back through the tier's `retry.fallbackChains` when the tier model fails (quota, outage, missing credentials), instead of failing on the first error
+- `--system-prompt ""` now counts as an explicit override: a discovered `SYSTEM.md` is ignored instead of silently suppressing matching `RULES.md` rules
+- A JavaScript kernel cell filename containing a line break can no longer inject code through the source-map pragma
+- SDK sessions now discover user rules and custom tools from their configured `agentDir`, not from whichever global profile happens to be active
+- Streaming assistant text no longer gets cut off when a tool call starts before the smooth reveal finishes typing it
+- An assistant reply whose stream died mid-message no longer freezes the transcript layout when the retry starts
+- TTSR rule interruptions no longer show an abort error line, live or after resuming/rebuilding the session
+- Assistant text between tool calls no longer holds back transcript scrollback until the whole reply finishes
+- Switching between agent views quickly no longer leaves the wrong agent's checklist, status or subscription behind; a slow-to-revive agent no longer steals the view after you picked another or returned to main
+- A failed attempt to view an agent now returns you to the main session instead of leaving the view detached
+- Returning to an agent's view keeps its running tools' live output, its queued messages, and tool results that finished while you were elsewhere
+- Viewing the checklist no longer brings back a completed checklist that was already cleared
+- Checklist updates made from inside a bash/kernel cell now refresh the checklist HUD right away
+- A user message delivered by an extension no longer erases the draft you are typing
+- An extension message shown at startup no longer appears twice in the transcript
+- A repeated fleet wait no longer removes the previous wait card from beside its turn usage row
+- Extensions running in hosts without command actions (e.g. subagents) can read context usage and trigger compaction again
+- Tool failures reported without throwing stay marked as errors when an extension's `tool_result` handler rewrites the content
+- Custom tool discovery no longer tries to load `.md`/`.json` metadata, `.d.ts` or shell/Python scripts in tools directories as tools, and such files no longer shadow a same-named tool module
+- `/review` now reviews the session's current directory after `/move` instead of the directory it started in
+- Extensions can destructure `ExtensionAPI` methods (e.g. `const { on } = pi`) or pass them as callbacks without losing their binding
+- Extension tool renderers written in pi's `renderCall(args, theme, context)` order now render styled tool calls instead of throwing and falling back to the plain label
+- Hook `tool_result` patches no longer turn a failed tool call into a success, and a later hook's partial patch no longer discards an earlier hook's content redaction
+- Pressing Esc during `/mcp test` now cancels immediately even while the server config is still being read
+- Ctrl+O in the ask dialog now expands and collapses truncated questions and option descriptions instead of toggling hidden transcript tool output
+- `/mcp reauth` keeps configured or previously registered OAuth client IDs and secrets together, prefers dynamic registration over a server-advertised client, and no longer sends or saves blank client IDs
+- Changing the hyperlink setting in /settings now repaints existing transcript and status-line links immediately
+- Enabling or retuning idle compaction in /settings while the session is idle now arms the idle timer without waiting for another turn
+- Starting a new session while viewing a subagent returns to the main session, and no longer carries over stale streaming state or cached request context from the previous session
+- Ask custom answers on multi-select questions now advance to the next question or the review tab instead of leaving the dialog on the same question
+- Pressing Enter in an Ask custom-answer prompt while a clipboard paste is still being read now waits for the pasted text, and late pastes no longer land in a closed prompt
+- Ctrl+T, Ctrl+R, Ctrl+G, Ctrl+Shift+O and Alt+L work while an Ask dialog has focus, and closing history search returns to the open Ask dialog
+- The working spinner no longer freezes after being re-shown, and no longer replaces a running retry or compaction status row
+- Resuming a Ctrl+Z-suspended session with `fg` restores the TUI instead of exiting immediately
+- Sessions deleted in `/resume` no longer reappear after switching between the folder and all-projects views with Tab
+- Alt+Up now restores only the most recently queued message to the editor instead of draining the whole queue
+- `/mcp reload` now lists servers that are still connecting instead of reporting only connected ones
+- Extension-initiated new session, branch, and session switch now close an open `/side` question and clear the pinned error like `/clear` does
+- WATCHDOG.yml config warnings no longer break the TUI with control characters or long lists: each is shown on one line with home paths shortened, and long lists are capped
+- A prompt submitted just before forking, branching, or navigating the session tree no longer lands in the new branch
+- `/mcp test`, `reauth`, `unauth`, `enable`, `disable`, and `reconnect` now work with server names that contain spaces
+- Editing a fallback chain in the model hub no longer copies chains from `--config` overlays or CLI overrides into config.yml
+- A `/goal` that fails while you keep typing is restored above your new draft instead of being lost
+- Resuming a session that exited mid-tool keeps the interrupted tool calls (such as a pending `ask` question) in the model context, marked as having an unknown outcome
+- Extension `input` handlers now also see and can rewrite or consume messages sent with Ctrl+Enter
+- macOS typo underlines no longer duplicate editor text when the spell checker reports overlapping ranges
+- Focusing a subagent now shows that agent's own checklist in the HUD, and returning to the main session restores the main checklist instead of overwriting it
+- The startup composer now honors cache-directory settings (e.g. XDG_CACHE_HOME) from your home .env file
+- Prompt-action labels for moving the cursor to the start of the message or line are no longer truncated
+- When proto is launched with a prompt, pressing Enter during the first turn now submits or steers instead of doing nothing
+- Background workers (session host, launch broker, blob broker) still start after a package manager upgrade removed the running proto binary's original path
+- Resuming or importing a session from the session picker, or deleting the active session, now closes an open /side question instead of leaving it attached to the old session
+- Goal mode no longer keeps auto-continuing when a continuation turn repeats the same tool activity or does nothing
+- Goal mode waits for you instead of auto-continuing when every open checklist item is blocked
+- proto no longer writes its title or spinner into the parent shell's tab after exiting
+- An extension setting a blank terminal title now hands the title back to proto's run-state title instead of freezing it
+- An extension calling ctx.shutdown() while proto is idle now exits right away instead of waiting for the next keystroke, and still lets queued or in-flight work finish first
+- Text typed or pasted right after pressing Enter is no longer erased while the previous message is being submitted, and cancelling a submission keeps it after the restored draft
+- During the guided /goal interview, answering with a bare "c" (e.g. option C) is sent as your reply instead of being treated as the continue shortcut
+- A `/skill:` command used as a `/goal` objective now runs the skill instead of sending the literal `/skill:` text to the model
+- `proto update` reuses a logged-in `gh` CLI token for GitHub release lookups when `GITHUB_TOKEN`/`GH_TOKEN` are unset, avoiding anonymous rate limits
+- Internal worker subprocesses started without a parent IPC channel exit instead of idling forever
+- `proto update` no longer overwrites a shared launcher script or unrelated program that a `proto` symlink points to, and reports which binary it updated
+- `proto update` on mise installs now picks up just-published releases instead of being held back by mise's minimum release age setting
+- Starting proto in a project whose parent directories deny path lookups no longer fails while resolving the project directory
+- `proto update` on macOS no longer deletes the previous binary while a running proto still uses it, which could break that process's granted permissions
+- `proto bench` resolves models served by discovery-backed providers (models.yml discovery, Ollama, LM Studio, llama.cpp) instead of reporting them as not found
+- `proto plugins` and `/plugin` now work as aliases of `proto plugin` and `/plugins`
+- Setting `OTEL_TRACES_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_METRICS_EXPORTER` to a non-`otlp` exporter such as `console` no longer sends telemetry to the OTLP endpoint
+- zsh completions for `--resume`, `--model` and other dynamic values now offer candidates instead of nothing
+- `proto usage` capacity rows show Claude model-scoped weekly caps (e.g. Fable, Opus) separately instead of blending them into the shared weekly window
+- `proto usage` and `/usage` show the current Codex plan instead of the plan recorded at login
+- `proto usage` reports accounts of usage providers registered by extensions, also when usage is served by the auth broker; added `-e/--extension` and `--no-extensions`
+- A one-shot command that stalls without finishing now exits with code 1 and names the command, instead of silently exiting 0
+- A mistyped `--model` in print mode now suggests the closest available models instead of asking you to set an API key
+- Long-running print, RPC and ACP sessions no longer keep accumulating startup timing data in memory
+- Enabling an MCP server at runtime no longer drops the tools of servers that were already connected
+- Cancelling an MCP HTTP request while the server is still streaming now reports the cancellation instead of "No response received"
+- OAuth settings (client id/secret, scope, callback port, redirect URI) on OpenCode-configured MCP servers are now honored, and a configured `oauth.scope` is used during `/mcp reauth` when the server advertises none
+- `proto token` now refreshes and persists managed MCP OAuth tokens (rotating refresh tokens are saved) and refuses credentials that belong to another profile
+- MCP OAuth discovery now finds path-scoped resources' own authorization servers (RFC 9728 protected-resource metadata, Keycloak-style sub-path issuers) instead of a shared gateway's generic login, and dynamic client registration uses the discovered issuer
+- MCP OAuth sign-in now requests the resource advertised by the server's metadata instead of a conflicting resource embedded in the authorization URL
+- MCP tools that return their data in `structuredContent` (with only a short text acknowledgement) now show that data to the model
+- An MCP server whose first handshake times out at startup (e.g. a cold `npx`/`uvx` start) is now retried automatically instead of staying failed until `/mcp reconnect`
+- Reading an `mcp://` resource no longer fails with "No MCP server has resource" while its server is still connecting
+- `proto -p` now waits for configured MCP servers to finish loading their tools (bounded by the MCP timeout) before running the prompt, and warns about servers that are still not ready
+- A malformed or non-object user `mcp.json` no longer disables every other MCP server source
+- Long-running MCP calls over HTTP/SSE are no longer cut off by the runtime idle timer when the server stays silent (configured MCP timeouts, including `0` = disabled, are honored)
+- Google-hosted MCP servers now receive a refresh token at sign-in, so their OAuth sessions renew instead of expiring
+- `/branch` always opens the message branch picker; `doubleEscapeAction` now only controls double-Esc
+- `proto commit` keeps working with models from extension-registered providers instead of losing their credentials mid-run
+- Pasting CJK/non-ASCII text on Wayland no longer garbles it
+- Agentic `proto commit` now runs on the configured commit model (or `--model`) and its thinking level instead of the smol model
+- The startup "Updated to" notice no longer undercounts changes (bullets before a category heading, `+`/`*` markers, indented lists)
+- Cancelling an ACP `/rename` (no title) now stops title generation and no longer applies a late title
+- `.cuh` CUDA headers are highlighted as C++
+- Copying on macOS no longer prints `NSPasteboard ... returns false` noise into the terminal, and rapid copies land in order
+- Leftover or broken `.git` folders in sibling directories no longer stop proto from detecting the single child repository of a workspace
+- File links in VS Code's terminal now open the file at the right line, and other terminals get plain `file:` links that editors and language servers accept
+- Reading a running agent's output URL now shows its progress (status, submitted sections, latest text) instead of "Not found", and unknown ids suggest a few close matches instead of listing every output
+- Reading an agent's output while it runs a newer turn now marks the result as coming from its previous run
+- `--model <provider>/<id>` now refuses a provider listed in `disabledProviders` instead of starting a session on it; prewalk skips disabled candidates
+- A disabled provider is never reached through fallback lookups (retry chains, advisors, restored models) and never receives a credential
+- Selecting a model by a retired wire id shared by several effort levels no longer forces thinking off
+- vLLM servers logged in with an empty key can be prompted again instead of being rejected for a missing API key
+- The built-in `smol` role no longer picks large Gemini or MiniMax models through a loose "mini" match
+- Models from providers logged in with an empty (keyless) key count as configured when picking prewalk and role targets
+- A key saved with `/login` for an extension provider is no longer shadowed by the provider's default `apiKey` (e.g. an unset environment variable name)
+- OpenAI-compatible model discovery now honors nested `limits` token caps advertised by model-list endpoints
+- Subagent `model` selectors such as `default:high` and `inherit:low` are rejected clearly; use `@default` to inherit
+- Marketplace plugins now load rules from their `rules/` directory.
+- Marketplace plugin MCP servers expand `${VAR}` / `${VAR:-default}` env placeholders, keep explicitly empty expanded values, never re-run expanded values as env-name or `!command` lookups, ignore an ambient `CLAUDE_PLUGIN_ROOT`, and skip only the server whose `env` is malformed instead of dropping every marketplace server.
+- `${VAR:-default}` placeholders now use the default when the variable is set but empty.
+- `proto plugin uninstall <name>` resolves a bare name to the single marketplace plugin that supplies it and lists the qualified ids when several do, instead of reporting a removal that did not happen.
+- `proto plugin features` and feature validation resolve marketplace-installed plugins.
+- An empty AGENTS.md no longer hides a non-empty context file at the same depth, and a repository rooted at the home directory loads its AGENTS.md.
+- Stale plugin lockfile entries left behind after removing a package outside `proto plugin uninstall` no longer load (and double-load extensions); unreadable plugin roots or packages are skipped with a warning instead of failing plugin loading.
+- A package's declared `proto.extensions` list is authoritative: when its entries are missing, `index.ts` is no longer loaded as a fallback.
+- Rule files with `enabled: false` frontmatter are no longer loaded by discovery.
+- Marketplace and plugin names may contain uppercase letters; names, runtime package names, and cache paths that differ only by case are rejected before they can overwrite another plugin on case-insensitive filesystems, and a case-only rename keeps the plugin's features and settings.
+- `proto plugin link` replaces a directory left by an earlier git install, and `proto plugin uninstall` removes a linked plugin's `node_modules` entry.
+- `proto plugin doctor` reports when a plugin's installed version differs from the lockfile, and `--fix` reinstalls just that plugin, restoring it if the repair fails.
+- Installing an npm plugin fetches fresh registry metadata so newly published versions resolve, `--force` is passed to bun, and stale or malformed `package.json` dependency keys no longer break reinstalls.
+- `proto plugin upgrade <name>` upgrades npm- and git-installed plugins from their recorded source (keeping enabled state and features) and accepts a bare marketplace plugin name.
+- `proto plugin install name@marketplace --dry-run` validates the install without installing it, and `proto plugin link --dry-run` no longer links.
+- Marketplace plugins whose source is the marketplace root load only the skills their catalog entry declares, including catalogs under `.proto-plugin/` or `.claude-plugin/`.
+- A working directory under home outside any repository no longer loads `~/.proto` SYSTEM.md, RULES.md, AGENTS.md, or skills as project configuration.
+- ACP clients no longer show a raw JSON blob for tool progress updates that carry no text
+- ACP read locations name only the actual file read (selectors stripped; globs, directories, archive members and missing paths omitted), so editor follow opens the right file
+- Completed ACP bash results no longer reference the already-released client terminal
+- RPC `prompt` commands that invoke a skill now answer as soon as the skill is loaded instead of blocking the command queue until the turn starts
+- Interrupting `proto -p` with SIGINT/SIGTERM/SIGHUP now saves the interrupted turn to the session and keeps the signal exit code
+- `proto -p` reports session-store write failures on stderr and exits 1 when the transcript could not be saved, instead of crashing with a raw error dump
+- RPC mode reports session-store write failures as a `session-persistence` notice, exits 1 when the transcript was lost, and delivers all pending output before exiting after stdin closes
+- `proto acp` no longer corrupts the JSON-RPC stream when an extension or dependency writes to stdout; that output goes to stderr
+- When an account is signed out automatically (revoked or failed OAuth refresh), the session now shows a warning naming the account and suggesting /login, and the disable is logged, instead of silently switching to another account
+- An abort sent while a prompt with images is still being prepared now cancels that prompt instead of letting it start a new turn afterwards
+- Background job results remain recoverable until delivered to the model, and discarded results no longer retry after their job is removed.
+- Successful retries clear retry status before terminal handling, avoiding stuck sessions.
+- Messages queued as a continuation settles start a fresh continuation instead of remaining stranded.
+- Custom-message senders correctly report when an interrupt cancels a turn before dispatch.
+- Fallback aliases that resolve to the same route and effective effort no longer reset the retry budget indefinitely.
+- Subagent context usage reflects the serving model after a fallback switch.
+- Displayable idle extension messages appear immediately without starting a model turn.
+- Rewinding preserves completed sibling tool calls and results from the same batch.
+- Queue editing leaves agent-generated notices out of user drafts.
+- Cancelling a side request releases stalled provider extension hooks without disabling the extension.
+- Large background-job previews link the original capture and preserve trailing exit notices.
+- A mid-stream socket drop retries the same model once before falling back when retry budget remains.
+- Cursor turns missing their final stream event can continue after completed tool calls.
+- A subagent output artifact (`agent://<id>`) is replaced atomically, so a failed or short write no longer truncates or destroys the previous turn's output
+- A `/side --agent` clone no longer reports the parent's accumulated cost as its own, and forking a parent mid-turn no longer leaves the clone showing the parent's in-flight tool calls as pending work
+- `/rename` without a title: the newest request wins, an interrupt (Esc) cancels title generation without a late rename or error message, and the local title-model download progress shows while it runs
+- `proto gc` no longer deletes images still referenced by sessions stored with `--session-dir`/`--session` outside the default sessions directory
+- `proto gc` archives and restores sessions without loading whole transcripts into memory
+- Deleting `config.yml` now starts from defaults instead of resurrecting settings migrated from the legacy agent.db
+- Sessions containing assistant turns saved without usage data open normally instead of failing to load
+- Imported Claude Code sessions whose project path contains dots or underscores now open in the right directory
+- Subagent retry fallback chains now survive effort changes and cold revival
+- Advisor transcripts no longer re-save the same session update on every retry, so `__advisor*.jsonl` files stop growing quadratically during advisor failure loops
+- Session stats no longer fail on transcripts whose assistant turns predate usage metadata
+- Waiting on a supervised process with a restart policy now returns when that run exits instead of hanging into the restarted process until the wait times out
+- A corrupt image (for example a truncated PNG with an intact header) can no longer wedge a session: `read` rejects it, and undecodable images already in history are replaced with a short note instead of making every request fail
+- An advisor turn that calls a tool it was not granted no longer discards the advice it gave in the same turn
+- Advisor notes queued while the agent is mid-turn are all delivered when the turn ends (previously only the first survived), blockers always get through, and the advisor is told plainly whether each note was delivered, queued or dropped
+- After an in-place upgrade removes the running binary, workers relaunch only from an absolute launcher path or absolute PATH entries, never from a binary in the current directory
+- Mounting or unmounting a `read`/`computer` device now refreshes the system prompt sections that depend on those capabilities
+- A background compaction summary is no longer applied when the pending prompt would leave the compacted context above the recovery band
+- Reconnecting MCP servers no longer keeps every obsolete generation of their tools alive in memory
+- `/compact` issued while a prompt is still being prepared no longer nudges the model to "continue" on the old transcript
+- Print mode now waits for a failing advisor to switch to its configured fallback reviewer instead of abandoning the review at shutdown
+- Advisors keep their context when the primary prunes old tool results, instead of re-reading the whole transcript after every prune
+- Large-output models (e.g. DeepSeek V4) no longer fail every request once the prompt grows past window minus output cap; the output cap now shrinks to fit the remaining context window
+- Anthropic server-side fallback for Claude Fable 5 / Mythos 5 now targets Claude Opus 5 instead of a model the API rejects with a 400
+- A background native compaction that failed for a non-retriable reason is no longer re-sent at every maintenance boundary, and compaction no longer waits on it
+- A tool call the model addressed as `protolens://<tool>` (or a misspelled MCP name) is recorded under the real tool name, so later requests and resumed sessions are no longer rejected by the provider
+- `XAI_BASE_URL` no longer receives xAI OAuth access tokens; xAI OAuth image generation and web search stay on the official endpoint
+- A TTSR rule interrupt no longer loses its rule injection when the interrupted turn is still settling; the continuation waits and retries
+- `!command` config values (auth broker URL/token, custom headers, API keys) no longer expose file descriptors inherited by proto to the helper command, run under `/bin/sh` even when `PATH` lacks a shell, and kill the helper's whole process group on timeout
+- Saved `config.yml`, migrated configs, and migrated keybindings files no longer leave trailing spaces after nested section headers
+- An edit made to `config.yml` outside proto (another proto instance or by hand) is no longer overwritten by a pending in-session change to the same setting; unrelated pending changes still save, and re-setting a value that is already saved no longer rewrites the file
+- The fixed context-maintenance token limit options describe their share of a 200K window correctly
+- Saving settings through a dangling `config.yml` symlink chain (dotfile managers) now writes the final target and keeps every link, resolves `..` the way the filesystem does, and fails instead of writing a file the link never reads
+- Reloading settings (e.g. after `/move` or a settings reload) now picks up a project `.proto/config.yml` that was created, edited, or removed after startup
+- Unknown status line segment names in `statusLine.leftSegments`/`rightSegments` are now reported as config issues (the valid ones still show), and `proto config set` rejects them instead of silently hiding them
+- Migrating a legacy `settings.json` no longer loses it when writing `config.yml` fails: the file is archived only after its settings are saved
+- A malformed project `.claude/settings.json` (or other imported project settings file) is now logged instead of silently ignored, including when it breaks after startup
+- `ask.timeout` values above 1000 seconds are kept as written instead of being treated as legacy milliseconds and divided by 1000
+- The published MCP config schema no longer flags `enabled`, `timeout`, `requestIdFormat`, `auth`, and `oauth` on a server entry as unknown properties
+- A worker that answers a peer message or follow-up without calling `yield` no longer replaces its completed result at `agent://<id>`
+- Worker system prompts list at most 32 live peers and only count parked workers, so long sessions no longer bloat every new worker's prompt
+- A worker that already returned its result is no longer reported as aborted ("cleanup exceeded …") when its teardown runs long, and isolated workers keep their changes in that case
+- Extension packages listed under `extensions:` in `config.yml` now contribute their agents, skills, and hooks, and a project `extensions` list replaces the user list instead of being merged with it
+- Spawning workers no longer re-evaluates every extension module for each worker, so memory no longer grows with each spawned agent; SDK option `preloadedExtensionPaths` is replaced by `preloadedPreparedExtensions`
+- A killed worker no longer vanishes from the agent list (and can no longer come back as a parked worker) when its session shuts down while the kill is being recorded
+- A worker with an output schema that yields no data is reported as an invalid result instead of a valid one, and fails outright in strict schema mode
+- Read-only workers such as `scout` are no longer given the `jobs` tool, which could launch arbitrary processes
+- Isolated workers that change nested repositories now write each nested patch to disk before their worktree is removed, and the result names those files instead of claiming an empty root patch holds the changes
+- When an isolated worker finishes but its changes cannot be captured or committed, the result now explains why and where the captured artifacts are, instead of only reporting "merge failed"
+- Agents from Claude Code plugins no longer treat Claude model aliases such as `sonnet` as proto model selectors; they inherit the parent model unless settings override it
+- Revived parked subagents now write their final output next to their own transcript, so nested agents revived after a restart stay readable via `agent://`
+- A subagent that finishes with a data-less `yield` no longer returns its mid-run narration as the final result; it returns its last report turn or flags the missing data
+- Isolated subagents on a checkout with very large staged or unstaged changes now fail with a clear snapshot-budget error instead of starting from a silently truncated baseline
+- A subagent pinned to `yield` by the final reminder no longer loops forever submitting progress sections; its first accepted section ends the run
+- Subagents with their own model fallback list keep using it on retries even when the parent's default model is the same model
+- Long subagent runs compact at the configured threshold even when `compaction.midTurnEnabled` is off for the main session
+- Subagents waiting on their own background jobs are no longer nagged with yield reminders or failed for a missing yield before those jobs finish
+- A subagent that revises a single-value output section (e.g. re-yields its `explanation`) now delivers the latest value instead of failing schema validation with a list
+- When a finished subagent's follow-up step fails (e.g. merging isolated changes), the error now names the child's exit status and keeps its `agent://` output readable
+- A worker spawned with an explicit `model` whose provider has no working credentials now fails instead of silently running on the parent's model
+- Agents declaring an empty `tools: []` list now get only the yield tool instead of every tool
+- When a command's shell backend stops responding after a timeout, the result now says its output may be incomplete instead of looking like an empty run
+- Firecrawl web search against a self-hosted bare-origin `FIRECRAWL_BASE_URL` (e.g. `http://localhost:3002`) no longer requests `//v2/search`
+- The system prompt no longer advertises `skill://` URLs when no skills are loaded or no tool can read them
+- A bare `skill://<name>` in bash commands now refuses plugin skills whose directory resolves outside the plugin root, like nested skill paths already did
+- Reading a file whose first line exceeds the byte budget now reports the partial line shown (e.g. "Showing line 1 (partial, 50KB of 120KB)") instead of "0 lines" with a continuation that re-reads the same line
+- Bounded reads of very large files no longer report the number of lines scanned so far as the file's total line count
+- Subagent results that send an empty `error` string next to valid `data` (common on non-strict OpenAI-compatible backends) are now accepted instead of being retried until the subagent aborts
+- Antigravity image generation fails over to the sandbox endpoint again when the discovered endpoint returns 429/5xx or a network error
+- Read and URL-read results containing CRLF, carriage-return progress output or tabs no longer break the framed result block in the TUI
+- Subagent progress rows under bash/eval cells no longer overflow narrow terminals; long or multi-line agent ids are truncated and the failed/aborted badge stays visible
+- Ask dialogs no longer splatter questions, descriptions and previews one word per row when a model injects stray carriage returns into tool-call text
+- `read` now reads each entry of a `;` list that mixes URLs (web or internal) with local paths, instead of treating the whole list as one URL
+- Grouped `read` rows list every file of a list that mixes `,` and `;` separators instead of one joined entry
+- A subagent that yields without `data` after a thinking-only turn is asked to resend its result instead of failing the run with a null-data warning; a data-less yield now returns the preceding report
+- Kept-alive workers start each follow-up or wake turn with fresh yield retry state, so an earlier incremental section no longer lets an empty final yield through
+- Yield schema retries count consecutive failures only, and JSON-encoded strings such as `"\"correct\""` or `"42"` are accepted when they decode to a valid value
+- Output schemas written as JSON Schema without a root `type` keep their `items` and `required`, so strict providers no longer reject the `yield` tool
+- Reader-mode `read` of web pages drops inline `data:` image payloads (base64 images, inline SVG icons) that buried the article text, keeping their alt text
+- Auto-QA grievance pushes no longer stall forever on one row the collector refuses: over-long tool names are clamped, refused rows are parked as rejected, and `proto grievances list`/`push` show each row's state and the server error
+- `protolens://` device calls to tools that repair their own arguments (e.g. `checklist`) reach the tool instead of failing with a generic validation error
+- Each mounted MCP tool appears once in the system prompt: its route line carries the device summary instead of a duplicate `protolens://` catalog entry
+- `generate_image` through the ChatGPT/Codex backend reports the image model that actually ran and each image's size and quality, instead of the selected chat model
+- `read` rejects FIFOs and device paths named like SQLite files before the SQLite header probe can block
+- Reading `ollama.com/<model>` shorthand URLs now renders the model card, and marketing pages like `/pricing` or `/turbo` fall back to normal page scraping instead of being treated as models
+- xAI web search answers no longer include the relay's "I'll search for…" narration, reasoning text, or a stale aggregate answer when the final message is empty
+- When Perplexity's anonymous quota is exhausted, web search now falls back to the next provider instead of returning the signup-wall text as the answer
+- Selecting a model by one of its effort-specific wire ids (for example `devin/claude-mythos-9-high`) now keeps that thinking level instead of falling back to the default
+- Daemon broker startup failures now report the socket endpoint, scope directory and how to inspect supervised processes
+- Restarting a finished background daemon now delivers its completion to the current owner, and a broker that shut down no longer overwrites a detached daemon's state recorded by its successor
+- Quoted here-documents inside command substitutions now preserve quotes, parentheses, and backticks as literal text instead of misparsing or executing their contents.
+- Failed isolated-worker patch capture now preserves the workspace and reports its recovery path instead of deleting uncaptured changes.
+- Worktree cleanup safely tears down retained overlays and Btrfs snapshots, and leaves work intact when recovery metadata or teardown fails.
+- Binary installation now extracts the correct release tag from minified GitHub responses.
+- Signed macOS builds can request Automation permission for Xcode MCP.
 
 - Esc while focused on a subagent or side agent now stops that agent's streaming/retry/compaction before unfocusing
 - Pressing Esc during a running bash command now keeps the output it printed so far in the transcript and the model's context, instead of reporting the command as never executed

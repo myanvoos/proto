@@ -8,6 +8,7 @@ import {
 	type DisabledCredentialSummary,
 	type OAuthCredential,
 	REMOTE_REFRESH_SENTINEL,
+	type RemoteOAuthCredential,
 	type StoredAuthCredential,
 	type StoredCredentialBlock,
 } from "../auth-storage";
@@ -618,15 +619,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	async markCredentialSuspect(credentialId: number, opts: { signal?: AbortSignal } = {}): Promise<void> {
-		const { entry } = await this.#client.refreshCredential(credentialId, opts.signal);
-		if (entry.credential.type !== "oauth") {
-			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
-		}
-		if (!this.#applyCredentialEntry(entry)) {
-			throw new AIError.AuthBrokerError(
-				`Broker refreshed credential id=${credentialId} outside the configured account pool`,
-			);
-		}
+		await this.#refreshThroughBroker(credentialId, opts.signal);
 		this.#maybeRefreshSnapshot("suspect credential refresh");
 	}
 
@@ -859,21 +852,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		_credential: OAuthCredential,
 		signal?: AbortSignal,
 	): Promise<OAuthCredentials> {
-		const { entry } = await this.#client.refreshCredential(credentialId, signal);
-		if (entry.credential.type !== "oauth") {
-			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
-		}
-		if (!this.#applyCredentialEntry(entry)) {
-			throw new AIError.AuthBrokerError(
-				`Broker refreshed credential id=${credentialId} outside the configured account pool`,
-			);
-		}
+		const refreshed = await this.#refreshThroughBroker(credentialId, signal);
 		if (!this.#streamingActive) {
 			await this.refreshSnapshot().catch(error => {
 				logger.debug("auth-broker snapshot refresh after credential refresh failed", { error: String(error) });
 			});
 		}
-		const refreshed = entry.credential;
 		return {
 			access: refreshed.access,
 			refresh: REMOTE_REFRESH_SENTINEL,
@@ -883,6 +867,33 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			projectId: refreshed.projectId,
 			enterpriseUrl: refreshed.enterpriseUrl,
 		};
+	}
+
+	/**
+	 * Refresh one credential through the broker and apply the reply. If this client's copy changed to something
+	 * else while the request was in flight, the reply may be stale, so the broker's current row wins: a logout
+	 * stays logged out and a newer login is kept.
+	 */
+	async #refreshThroughBroker(credentialId: number, signal?: AbortSignal): Promise<RemoteOAuthCredential> {
+		const local = () => this.#snapshot.credentials.find(candidate => candidate.id === credentialId);
+		const before = JSON.stringify(local()?.credential);
+		let { entry } = await this.#client.refreshCredential(credentialId, signal);
+		const current = JSON.stringify(local()?.credential);
+		if (current !== before && current !== JSON.stringify(entry.credential)) {
+			await this.refreshSnapshot();
+			const latest = local();
+			if (!latest) throw new AIError.AuthBrokerError(`Credential id=${credentialId} was removed during refresh`);
+			entry = latest;
+		}
+		if (entry.credential.type !== "oauth") {
+			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
+		}
+		if (!this.#applyCredentialEntry(entry)) {
+			throw new AIError.AuthBrokerError(
+				`Broker refreshed credential id=${credentialId} outside the configured account pool`,
+			);
+		}
+		return entry.credential;
 	}
 
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {

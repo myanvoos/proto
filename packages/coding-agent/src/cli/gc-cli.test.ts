@@ -198,17 +198,13 @@ describe("GC archive active-session safety", () => {
 		const root = await writeColdSession(agentDir.path(), "project/root.jsonl");
 		const child = await writeColdSession(agentDir.path(), "project/root/agents/child.jsonl");
 		let heartbeat: SessionLiveHeartbeat | undefined;
-		const originalWrite = Bun.write;
-		vi.spyOn(Bun, "write").mockImplementation(async (destination, input, options?) => {
-			const written = await originalWrite(
-				destination,
-				input instanceof Response || input instanceof Request ? await input.blob() : input,
-				options,
-			);
-			if (typeof destination === "string" && destination.startsWith(`${root.archive}.`) && !heartbeat) {
+		const originalOpen = fs.open;
+		vi.spyOn(fs, "open").mockImplementation(async (file, ...rest) => {
+			const handle = await originalOpen(file, ...rest);
+			if (typeof file === "string" && file.startsWith(`${root.archive}.`) && !heartbeat) {
 				heartbeat = createSessionLiveHeartbeat(target === "root" ? root.file : child.file);
 			}
-			return written;
+			return handle;
 		});
 		try {
 			const result = await runGcCommand({ flags: { ...ARCHIVE_FLAGS, agentDir: agentDir.path(), apply: true } });
@@ -229,21 +225,17 @@ describe("GC archive active-session safety", () => {
 		const sourceStat = await fs.stat(root.file);
 		const replacement = root.contents.replace("Finished", "Replaced");
 		let replaced = false;
-		const originalWrite = Bun.write;
-		vi.spyOn(Bun, "write").mockImplementation(async (destination, input, options?) => {
-			const written = await originalWrite(
-				destination,
-				input instanceof Response || input instanceof Request ? await input.blob() : input,
-				options,
-			);
-			if (typeof destination === "string" && destination.startsWith(`${root.archive}.`) && !replaced) {
+		const originalOpen = fs.open;
+		vi.spyOn(fs, "open").mockImplementation(async (file, ...rest) => {
+			const handle = await originalOpen(file, ...rest);
+			if (typeof file === "string" && file.startsWith(`${root.archive}.`) && !replaced) {
 				replaced = true;
 				const replacementFile = `${root.file}.replacement`;
-				await originalWrite(replacementFile, replacement);
+				await Bun.write(replacementFile, replacement);
 				await fs.utimes(replacementFile, sourceStat.atime, sourceStat.mtime);
 				await fs.rename(replacementFile, root.file);
 			}
-			return written;
+			return handle;
 		});
 
 		const result = await runGcCommand({ flags: { ...ARCHIVE_FLAGS, agentDir: agentDir.path(), apply: true } });

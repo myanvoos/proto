@@ -5,7 +5,7 @@
 # The release build (`ci:release:build-binaries`) ad-hoc signs the binary so it
 # runs locally. This script *replaces* that signature with a real Developer ID
 # Application signature plus the hardened runtime, a secure timestamp, and the
-# JIT / library-validation entitlements the Bun + JavaScriptCore runtime and the
+# JIT / Apple Events / library-validation entitlements the Bun runtime and the
 # runtime-extracted native addon require (see scripts/macos-entitlements.plist),
 # then notarizes the result with App Store Connect API credentials.
 #

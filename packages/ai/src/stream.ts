@@ -1579,9 +1579,17 @@ function mapOptionsForApi<TApi extends Api>(
 					? mapEffortToAnthropicAdaptiveEffort(model, reasoning)
 					: undefined;
 
+			// A caller's maxTokens is the output it asked for, but thinking spends the same max_tokens:
+			// give thinking its budget on top. An uncapped request keeps the provider default.
+			const maxTokensWithThinking =
+				base.maxTokens === undefined
+					? undefined
+					: maxTokensWithThinkingBudget(base.maxTokens, model.maxTokens, thinkingBudget);
+
 			if (thinkingMode === "anthropic-adaptive") {
 				return castApi<"anthropic-messages">({
 					...base,
+					maxTokens: maxTokensWithThinking,
 					requestModelId: resolveWireModelId(model, reasoning),
 					thinkingEnabled: true,
 					effort,
@@ -1592,25 +1600,33 @@ function mapOptionsForApi<TApi extends Api>(
 			}
 
 			if (ANTHROPIC_USE_INTERLEAVED_THINKING) {
-				return castApi<"anthropic-messages">({
-					...base,
-					requestModelId: resolveWireModelId(model, reasoning),
-					thinkingEnabled: true,
-					thinkingBudgetTokens: thinkingBudget,
-					effort,
-					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
-					thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
-					serviceTier: options?.serviceTier,
-				});
+				if (model.maxTokens !== null && model.maxTokens < thinkingBudget + OUTPUT_FALLBACK_BUFFER) {
+					thinkingBudget = model.maxTokens - OUTPUT_FALLBACK_BUFFER;
+				}
+				if (thinkingBudget >= ANTHROPIC_THINKING.minimal) {
+					return castApi<"anthropic-messages">({
+						...base,
+						maxTokens: maxTokensWithThinking,
+						requestModelId: resolveWireModelId(model, reasoning),
+						thinkingEnabled: true,
+						thinkingBudgetTokens: thinkingBudget,
+						effort,
+						toolChoice: mapAnthropicToolChoice(options?.toolChoice),
+						thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+						serviceTier: options?.serviceTier,
+					});
+				}
 			}
 
 			const maxTokens = maxTokensWithThinkingBudget(base.maxTokens, model.maxTokens, thinkingBudget);
 
-			if (maxTokens <= thinkingBudget) {
-				thinkingBudget = maxTokens - MIN_OUTPUT_TOKENS;
+			// Keep the provider's output buffer after thinking so its wire-level clamp cannot push the budget
+			// below the API minimum.
+			if (maxTokens < thinkingBudget + OUTPUT_FALLBACK_BUFFER) {
+				thinkingBudget = maxTokens - OUTPUT_FALLBACK_BUFFER;
 			}
 
-			if (thinkingBudget <= 0) {
+			if (thinkingBudget < ANTHROPIC_THINKING.minimal) {
 				return castApi<"anthropic-messages">({
 					...base,
 					requestModelId: resolveWireModelId(model, undefined),
@@ -1648,8 +1664,23 @@ function mapOptionsForApi<TApi extends Api>(
 				requestMetadata: options?.requestMetadata,
 			};
 
-			// Effort modes send the effort directly (no budget_tokens), so skip budget inflation.
-			if (model.thinking?.mode === "effort" || model.thinking?.mode === "anthropic-adaptive") {
+			// Adaptive Claude shares maxTokens between thinking and the answer: a caller's cap is the output it
+			// wants, so add the effort's budget on top. Uncapped requests keep the provider default.
+			if (model.thinking?.mode === "anthropic-adaptive") {
+				const reasoning = bedrockBase.reasoning;
+				const budget = reasoning
+					? (options?.thinkingBudgets?.[reasoning] ?? BEDROCK_CLAUDE_THINKING[reasoning])
+					: 0;
+				if (!model.reasoning || bedrockBase.maxTokens === undefined || budget <= 0) {
+					return castApi<"bedrock-converse-stream">(bedrockBase);
+				}
+				return castApi<"bedrock-converse-stream">({
+					...bedrockBase,
+					maxTokens: maxTokensWithThinkingBudget(bedrockBase.maxTokens, model.maxTokens, budget),
+				});
+			}
+			// Effort mode sends the effort directly (no budget_tokens), so skip budget inflation.
+			if (model.thinking?.mode === "effort") {
 				return castApi<"bedrock-converse-stream">(bedrockBase);
 			}
 			const budgetInfo = resolveBedrockThinkingBudget(model as Model<"bedrock-converse-stream">, options);

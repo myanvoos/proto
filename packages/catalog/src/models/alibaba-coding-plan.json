@@ -18,7 +18,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 16384,
 		"int": 22.2,
-		"tps": 102.1,
+		"tps": 68.3,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -104,7 +104,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 16384,
 		"int": 27.9,
-		"tps": 67.1,
+		"tps": 78.1,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -279,7 +279,7 @@
 		"contextWindow": 196608,
 		"maxTokens": 24576,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -365,7 +365,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 9.2,
-		"tps": 93.2,
+		"tps": 80.1,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -678,6 +678,18 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -728,19 +740,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			]
-		},
-		"requiresGlyphTokenization": false,
-		"tokenizer": "qwen3",
 		"supportsComputerUse": false,
-		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsDeveloperRole": false
 		}
@@ -765,7 +765,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 27,
-		"tps": 55.1,
+		"tps": 55.8,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -853,6 +853,18 @@
 		"maxTokens": 65536,
 		"int": 29.5,
 		"tps": 197.1,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -903,19 +915,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			]
-		},
-		"requiresGlyphTokenization": false,
-		"tokenizer": "qwen3",
 		"supportsComputerUse": false,
-		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsDeveloperRole": false
 		}
@@ -940,7 +940,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 25.2,
-		"tps": 63.5,
+		"tps": 55.9,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,

@@ -1579,8 +1579,11 @@ export class Editor implements Component, Focusable {
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
 					if (
 						!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected) ||
-						this.#selectedCompletionNeedsExplicitAcceptance(currentTextBeforeCursor)
+						this.#selectedCompletionNeedsExplicitAcceptance(currentTextBeforeCursor) ||
+						(selected !== null && this.#selectedSlashArgumentIsAlreadyTyped(selected))
 					) {
+						// Accepting a fully typed slash-command argument (`/mcp list` + Enter)
+						// would only append whitespace: fall through to submission instead.
 						this.#cancelAutocomplete();
 					} else {
 						if (selected && this.#autocompleteProvider) {
@@ -3510,6 +3513,21 @@ export class Editor implements Component, Focusable {
 
 	#selectedCompletionIsSkillNamespace(): boolean {
 		return this.#autocompleteList?.getSelectedItem()?.value === SKILL_NAMESPACE;
+	}
+
+	/**
+	 * Whether the selected completion for a submitted slash command's argument
+	 * only restates what the user already typed (`list ` for `/mcp list`), so
+	 * Enter should submit. A selection whose usage hint still names a required
+	 * `<arg>` outside any optional `[...]` group keeps Enter's accept role.
+	 */
+	#selectedSlashArgumentIsAlreadyTyped(selected: SelectItem): boolean {
+		if (!this.#isInSubmittedSlashCommandContext()) return false;
+		const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
+		if (this.#state.cursorCol !== currentLine.length) return false;
+		if (selected.hint?.replace(/\[[^\]]*\]/g, "").includes("<")) return false;
+		const typed = this.#autocompletePrefix.trimEnd();
+		return typed.length > 0 && selected.value.trimEnd() === typed;
 	}
 
 	#selectedCompletionNeedsExplicitAcceptance(textBeforeCursor: string): boolean {

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import inspector from "node:inspector";
 import { isMainThread } from "node:worker_threads";
+import { BINARY_NAME } from "./dirs";
 import * as logger from "./logger";
 import { restoreTerminalStderr } from "./stderr-guard";
 
@@ -238,6 +239,46 @@ export function registerStdioDisconnectHandling(): () => void {
 		if (isMainThread && stdioDisconnectRegistrations === 0)
 			process.stdout.removeListener("error", onStdoutDisconnect);
 	};
+}
+
+/**
+ * Fail a process entry whose event loop drains while `work` is still pending. The CLI starts from a floating
+ * `runCli()` call (top-level await breaks `--bytecode` builds), so a command awaiting a promise that can never
+ * settle would otherwise exit 0 without output.
+ *
+ * `beforeExit` marks the drain; the verdict waits for `exit`, because a `beforeExit` listener may schedule work
+ * that resumes the loop (an unref'd timer clears the mark once the loop turns again). A non-zero exit code is
+ * already a failure verdict and is left alone.
+ *
+ * `describe` names what was running (the resolved subcommand) and must never return user arguments.
+ */
+export function reportUnsettledEntry(work: Promise<unknown>, describe?: () => string | undefined): void {
+	if (!isMainThread) return;
+	let pending = true;
+	let drained = false;
+	const settled = (): void => {
+		pending = false;
+	};
+	// Observe both outcomes without claiming the rejection: the caller's `.catch` still owns it.
+	void work.then(settled, settled);
+	process.on("beforeExit", () => {
+		if (!pending) return;
+		drained = true;
+		setTimeout(() => {
+			drained = false;
+		}, 0).unref();
+	});
+	process.once("exit", code => {
+		if (!pending || !drained || code !== 0) return;
+		const command = describe?.();
+		const subject = command ? `\`${BINARY_NAME} ${command}\`` : "command";
+		const message = `${subject} ended before completing: the event loop drained while it was still pending (rerun with PI_DEBUG_STARTUP=1 to see the last phase reached)`;
+		try {
+			fs.writeSync(2, `${BINARY_NAME}: ${message}\n`);
+		} catch {}
+		logger.error(message, { command });
+		process.exitCode = 1;
+	});
 }
 
 const EXPECTED_CLEANUP = Symbol.for("proto.expectedCleanupError");

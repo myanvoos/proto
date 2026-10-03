@@ -35,7 +35,7 @@ This document describes how `crates/pi-natives` schedules native work and how ca
    - Records a profiling sample through `profile_region(tag)`.
 
 3. `CancelToken` / `AbortToken` / `AbortReason`
-   - `CancelToken::new(timeout_ms, signal)` wraps the shared `pi_shell::cancel::CancelToken`, adding an optional JS `AbortSignal` bridge.
+   - `CancelToken::new(timeout_ms, signal)` wraps the shared `pi_shell::cancel::CancelToken`, adding an optional JS `AbortSignal` bridge. Already-aborted signals cancel immediately without replacing their existing `onabort` handler.
    - `CancelToken::heartbeat()` is cooperative cancellation for blocking loops.
    - `CancelToken::wait()` asynchronously waits for signal or timeout.
    - `CancelToken::abort_token()` returns an abort handle backed by the shared flag when one already exists; without a flag, the handle is inert. `emplace_abort_token()` lazily installs the flag and returns a live handle. `CancelToken::new` uses the latter to bridge a JS `AbortSignal` to `AbortReason::Signal`.
@@ -56,7 +56,7 @@ Use when work is CPU-heavy or fundamentally synchronous/blocking:
 Behavior:
 
 - Work closure receives a cloned `CancelToken`.
-- Cancellation is only observed where code checks `ct.heartbeat()?`.
+- Worker cancellation is cooperative at `ct.heartbeat()?` checks. Before promise settlement, an explicit abort also discards a completed result with an `AbortError`; a deadline elapsed only while waiting for the JS thread does not discard completed work.
 - Closure `Err(...)` rejects the JS promise.
 
 ### Use `task::future`

@@ -12,7 +12,7 @@ import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/ext
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, PROTOLENS_URL_PREFIX } from "../internal-urls";
-import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
+import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
@@ -146,6 +146,9 @@ interface XdevMountNoticeDetails {
 	removed: string[];
 }
 
+/** Mounted devices whose presence gates system-prompt sections (see `buildSystemPrompt`). */
+const PROMPT_GATING_MOUNTS: Record<string, true> = { read: true, computer: true };
+
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#toolRegistry: Map<string, AgentTool>;
@@ -181,6 +184,19 @@ export class SessionTools {
 	#promptModelKey: string | undefined;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
+	// Session-lifetime so custom-tool wrappers never close over an MCP refresh frame and its rollback maps.
+	readonly #getCustomToolContext = (): CustomToolContext => ({
+		sessionManager: this.#host.sessionManager,
+		modelRegistry: this.#host.modelRegistry,
+		model: this.#host.model(),
+		isIdle: () => !this.#host.isStreaming(),
+		hasQueuedMessages: () => this.#host.queuedMessageCount() > 0,
+		abort: () => {
+			this.#host.agent.abort();
+		},
+		settings: this.#host.settings,
+		localProtocolOptions: this.#host.localProtocolOptions(),
+	});
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
@@ -279,8 +295,13 @@ export class SessionTools {
 		return [...(this.#xdev?.mountedNames ?? [])];
 	}
 
+	/** Registry lookup by name or `protolens://` device spelling, then a unique Claude Code-spelled MCP alias. */
 	getToolByName(name: string): AgentTool | undefined {
-		return this.#toolRegistry.get(name);
+		const bareName = name.startsWith(PROTOLENS_URL_PREFIX) ? name.slice(PROTOLENS_URL_PREFIX.length) : name;
+		return (
+			this.#toolRegistry.get(bareName) ??
+			resolveMCPToolAlias(bareName, candidate => this.#toolRegistry.get(candidate))
+		);
 	}
 
 	getToolForEvalBridge(name: string): AgentTool | undefined {
@@ -895,7 +916,13 @@ export class SessionTools {
 			instructionsSegment = entries.join("\u0006");
 		}
 
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}`;
+		// Mounted devices stay out of the direct inventory, but a mounted `read`/`computer` still flips prompt sections
+		// (skills catalog, computer safety); mount churn of other devices keeps the prompt byte-stable.
+		const mountedGateSegment = [...(this.#xdev?.mountedNames ?? [])]
+			.filter(name => PROMPT_GATING_MOUNTS[name] === true)
+			.sort()
+			.join("\u0002");
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}\u0009${mountedGateSegment}`;
 	}
 
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
@@ -920,22 +947,11 @@ export class SessionTools {
 			this.#mcpManagerToolNames = previousMcpManagerToolNames;
 		};
 
-		const getCustomToolContext = (): CustomToolContext => ({
-			sessionManager: this.#host.sessionManager,
-			modelRegistry: this.#host.modelRegistry,
-			model: this.#host.model(),
-			isIdle: () => !this.#host.isStreaming(),
-			hasQueuedMessages: () => this.#host.queuedMessageCount() > 0,
-			abort: () => {
-				this.#host.agent.abort();
-			},
-			settings: this.#host.settings,
-			localProtocolOptions: this.#host.localProtocolOptions(),
-		});
-
 		const extensionRunner = this.#host.extensionRunner();
 		const managerTools = deduplicateMCPToolsByName(mcpTools).map(customTool => {
-			const wrapped = wrapToolWithMetaNotice(CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool);
+			const wrapped = wrapToolWithMetaNotice(
+				CustomToolAdapter.wrap(customTool, this.#getCustomToolContext) as AgentTool,
+			);
 			return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
 		});
 		const managerToolSet = new Set(managerTools);
@@ -962,7 +978,12 @@ export class SessionTools {
 		];
 		try {
 			await this.#applyActiveToolsByName(nextActive);
-			if (this.#host.isDisposed()) restorePreviousMcpTools();
+			if (this.#host.isDisposed()) {
+				restorePreviousMcpTools();
+			} else {
+				// The settled mutation promise can retain this frame; drop the rollback references once committed.
+				previousMcpTools.clear();
+			}
 		} catch (error) {
 			restorePreviousMcpTools();
 			throw error;

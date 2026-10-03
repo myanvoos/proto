@@ -22,6 +22,8 @@ import {
 } from "./agent-registry";
 
 const MAX_METADATA_LINES = 64;
+/** Caps the history scan of a legacy multi-GB advisor transcript; healthy advisor files sit far below it. */
+const MAX_ADVISOR_HISTORY_LINES = 200_000;
 const TRANSCRIPT_SCAN_CACHE_MAX = 2048;
 
 interface TranscriptScanCacheEntry<T> {
@@ -201,7 +203,12 @@ async function scanPersistedAgentHistory(
 				const message = recordOf(record.message);
 				if (message?.role === "assistant") assistantById.set(id, assistantMetrics(message));
 			},
-			{ shouldContinue },
+			{
+				shouldContinue,
+				maxRecords: isAdvisorTranscriptName(path.basename(transcript.sessionFile))
+					? MAX_ADVISOR_HISTORY_LINES
+					: undefined,
+			},
 		);
 	} catch {
 		return undefined;

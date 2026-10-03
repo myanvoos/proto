@@ -273,7 +273,7 @@ describe("StdinBuffer deferred flush and UTF-8 mode boundaries", () => {
 	});
 });
 
-describe("StdinBuffer raw-paste classification toggle", () => {
+describe("StdinBuffer raw-paste stall probe", () => {
 	function collectAll(): { keys: string[]; pastes: string[]; buffer: StdinBuffer } {
 		const keys: string[] = [];
 		const pastes: string[] = [];
@@ -283,20 +283,21 @@ describe("StdinBuffer raw-paste classification toggle", () => {
 		return { keys, pastes, buffer };
 	}
 
-	it("keeps stall-batched Enter keystrokes as submits once bracketed paste is confirmed", () => {
+	it("replays a stall-batched burst split across reads as keys so every Enter submits", () => {
 		const { keys, pastes, buffer } = collectAll();
-		buffer.setRawPasteClassification(false);
-		buffer.process("aaa\rbbb\rccc");
+		buffer.setRawPasteStallProbe(() => true);
+		buffer.process("aaa\r");
+		buffer.process("bbb\r");
+		buffer.process("ccc");
 		expect(pastes).toEqual([]);
 		expect(keys).toEqual(["a", "a", "a", "\r", "b", "b", "b", "\r", "c", "c", "c"]);
 	});
 
-	it("replays a candidate held by the classification window as keys when disabled", () => {
+	it("delivers an input-method multiline commit on a responsive loop as one paste", () => {
 		const { keys, pastes, buffer } = collectAll();
-		buffer.process("hello\r");
+		buffer.setRawPasteStallProbe(() => false);
+		buffer.process("aaa\rbbb\rccc");
 		expect(keys).toEqual([]);
-		buffer.setRawPasteClassification(false);
-		expect(pastes).toEqual([]);
-		expect(keys).toEqual(["h", "e", "l", "l", "o", "\r"]);
+		expect(pastes).toEqual(["aaa\rbbb\rccc"]);
 	});
 });

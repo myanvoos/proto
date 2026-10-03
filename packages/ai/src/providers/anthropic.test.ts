@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { NO_AUTH_SENTINEL } from "../auth-retry";
 import type { AssistantMessage, Context, FetchImpl, Model, ModelSpec } from "../types";
-import { isInvalidThinkingSignatureError, streamAnthropicMessages } from "./anthropic";
+import {
+	buildAnthropicClientOptions,
+	buildAnthropicHeaders,
+	isInvalidThinkingSignatureError,
+	streamAnthropicMessages,
+} from "./anthropic";
 
 describe("isInvalidThinkingSignatureError", () => {
 	it("recognizes Anthropic's invalid-signature rejection", () => {
@@ -267,5 +273,72 @@ describe("Anthropic context management compatibility", () => {
 		expect(request.payload.thinking?.type).toBe("enabled");
 		expect(request.payload.context_management).toBeUndefined();
 		expect(request.beta).not.toContain("context-management-2025-06-27");
+	});
+});
+
+describe("Anthropic keyless endpoints", () => {
+	it("sends no Authorization or X-Api-Key for the keyless sentinel on non-official endpoints", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: NO_AUTH_SENTINEL,
+			baseUrl: "https://proxy.example.test",
+			stream: true,
+		});
+
+		expect(headers.Authorization).toBeUndefined();
+		expect(headers["X-Api-Key"]).toBeUndefined();
+	});
+
+	it("suppresses the client X-Api-Key for the keyless sentinel", () => {
+		const options = buildAnthropicClientOptions({
+			model: buildModel({
+				id: "claude-haiku-4-5",
+				name: "Claude Haiku 4.5",
+				api: "anthropic-messages",
+				provider: "custom-anthropic",
+				baseUrl: "https://proxy.example.test/anthropic",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 8_192,
+			} satisfies ModelSpec<"anthropic-messages">),
+			apiKey: NO_AUTH_SENTINEL,
+			stream: true,
+		});
+
+		expect(options.defaultHeaders.Authorization).toBeUndefined();
+		expect(options.apiKey).toBeNull();
+	});
+});
+
+describe("Anthropic output ceiling", () => {
+	it("requests the model's full output ceiling for OAuth credentials", async () => {
+		const model = buildModel({
+			id: "claude-opus-5-5",
+			name: "Claude Opus 5.5",
+			api: "anthropic-messages",
+			provider: "custom-anthropic",
+			baseUrl: "https://claude-gateway.example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+		} satisfies ModelSpec<"anthropic-messages">);
+		const controller = new AbortController();
+		controller.abort();
+		const { promise, resolve } = Promise.withResolvers<{ max_tokens?: number }>();
+		streamAnthropicMessages(
+			model,
+			{ messages: [{ role: "user", content: "hi", timestamp: 0 }] },
+			{
+				apiKey: "sk-ant-oat-test",
+				isOAuth: true,
+				signal: controller.signal,
+				onPayload: payload => resolve(payload as { max_tokens?: number }),
+			},
+		);
+
+		expect((await promise).max_tokens).toBe(128_000);
 	});
 });

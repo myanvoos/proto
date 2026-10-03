@@ -1,15 +1,18 @@
 import { expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { CHECKLIST_STRIKE_TOTAL_FRAMES } from "../../tools/checklist";
+import type { AssistantMessageComponent } from "../components/assistant-message";
 import { ServedModelTracker } from "../components/served-model-marker";
 import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme, theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
+import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { EventController } from "./event-controller";
 
 await Settings.init();
@@ -272,6 +275,8 @@ test("post-tool assistant text that grows alongside the next tool call renders i
 		const postToolComponents = controller.getLivePostToolAssistantComponents();
 		expect(postToolComponents).toHaveLength(1);
 		expect(visibleText(postToolComponents[0])).toBe(POST_TOOL_TEXT);
+		// Followed by another tool call, the segment is complete and must not pin history retirement.
+		expect((postToolComponents[0] as AssistantMessageComponent).isTranscriptBlockFinalized()).toBe(true);
 	} finally {
 		controller.dispose();
 		chatContainer.dispose();
@@ -523,5 +528,122 @@ test("unlocking thinking visibility requests a destructive display reset", async
 	} finally {
 		controller.dispose();
 		chatContainer.dispose();
+	}
+});
+
+test("a streaming assistant that never ended is retired when the next message starts", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({ type: "message_start", message: snapshot([]) } as unknown as AgentSessionEvent);
+		const partial = snapshot([{ type: "thinking", thinking: "dead attempt" } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "dead attempt", partial },
+		} as unknown as AgentSessionEvent);
+		const orphan = context.streamingComponent;
+		expect(orphan?.isTranscriptBlockFinalized()).toBe(false);
+
+		await controller.handleEvent({ type: "message_start", message: snapshot([]) } as unknown as AgentSessionEvent);
+
+		expect(chatContainer.children).not.toContain(orphan);
+		expect(orphan?.isTranscriptBlockFinalized()).toBe(true);
+
+		const withPostToolText = snapshot([toolCallBlock("call-1"), { type: "text", text: POST_TOOL_TEXT } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: withPostToolText,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 1,
+				delta: POST_TOOL_TEXT,
+				partial: withPostToolText,
+			},
+		} as unknown as AgentSessionEvent);
+		const [postTool] = controller.getLivePostToolAssistantComponents();
+		expect(postTool).toBeDefined();
+		expect((postTool as AssistantMessageComponent).isTranscriptBlockFinalized()).toBe(false);
+
+		await controller.handleEvent({ type: "message_start", message: snapshot([]) } as unknown as AgentSessionEvent);
+
+		expect((postTool as AssistantMessageComponent).isTranscriptBlockFinalized()).toBe(true);
+	} finally {
+		controller.dispose();
+	}
+});
+
+test("a TTSR rule interruption shows no abort line live or when the transcript is rebuilt", async () => {
+	const { context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({ type: "message_start", message: snapshot([]) } as unknown as AgentSessionEvent);
+		const component = context.streamingComponent;
+		const message = {
+			...snapshot([{ type: "text", text: TEXT } as Block]),
+			stopReason: "aborted",
+			errorMessage: "TTSR matched rule: no-unwrap",
+			errorId: AIError.create(AIError.Flag.SilentAbort),
+		} as AssistantMessage;
+		await controller.handleEvent({ type: "message_end", message } as unknown as AgentSessionEvent);
+
+		const rendered = visibleText(component);
+		expect(rendered).toContain(TEXT);
+		expect(rendered).not.toContain("TTSR matched rule");
+		expect(rendered).not.toContain("aborted");
+		expect(message.errorMessage).toBe("TTSR matched rule: no-unwrap");
+		expect(resolveAssistantErrorPresentation(message)).toEqual({ kind: "none" });
+	} finally {
+		controller.dispose();
+	}
+});
+
+test("checklist HUD ignores read-only views and refreshes after a cell's bridged checklist update", async () => {
+	const { context } = createContext();
+	const updates: unknown[] = [];
+	const sessionPhases = [{ name: "Plan", tasks: [{ content: "ship", status: "completed" }] }];
+	context.setChecklist = phases => updates.push(phases);
+	(context.viewSession as unknown as { getChecklistPhases: () => unknown }).getChecklistPhases = () => sessionPhases;
+	const controller = new EventController(context);
+	const end = (toolName: string, details: unknown) =>
+		controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: `${toolName}-${updates.length}-${JSON.stringify(details).length}`,
+			toolName,
+			isError: false,
+			result: { content: [{ type: "text", text: "ok" }], details },
+		} as unknown as AgentSessionEvent);
+	try {
+		await end("checklist", { op: "view", phases: sessionPhases });
+		expect(updates).toEqual([]);
+
+		await end("bash", { statusEvents: [{ op: "checklist", committed: false }] });
+		expect(updates).toEqual([]);
+
+		await end("bash", { statusEvents: [{ op: "run" }, { op: "checklist", committed: true }] });
+		expect(updates).toEqual([sessionPhases]);
+
+		const done = [{ name: "Plan", tasks: [] }];
+		await end("checklist", { op: "done", phases: done });
+		expect(updates).toEqual([sessionPhases, done]);
+	} finally {
+		controller.dispose();
+	}
+});
+
+test("an inbound user message from an extension leaves the composer draft alone", async () => {
+	const { context } = createContext();
+	const setText = vi.fn();
+	context.editor.setText = setText;
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: { role: "user", content: "delivered by an extension", timestamp: 1 },
+		} as unknown as AgentSessionEvent);
+
+		expect(setText).not.toHaveBeenCalled();
+	} finally {
+		controller.dispose();
 	}
 });

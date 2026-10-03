@@ -85,3 +85,42 @@ test("schema-invalid project overrides are rejected", async () => {
 
 	await expect(readProjectPluginOverrides(overridesPath)).rejects.toThrow(/Invalid project plugin overrides/);
 });
+
+async function writePlugin(dir: string, name: string): Promise<void> {
+	await Bun.write(
+		path.join(dir, "package.json"),
+		JSON.stringify({ name, version: "1.0.0", proto: { version: "1.0.0" } }),
+	);
+}
+
+test("lockfile-only plugins load only when linked, unless the root has no package.json", async () => {
+	const tempDir = await makeTempDir("proto-plugin-stale-lock-");
+	const home = path.join(tempDir, "home");
+	const cwd = path.join(tempDir, "project");
+	const pluginRoot = getPluginsDir(home);
+	const nodeModules = path.join(pluginRoot, "node_modules");
+	const linkedSource = path.join(tempDir, "linked-source");
+	await Promise.all([
+		writePlugin(path.join(nodeModules, "declared"), "declared"),
+		writePlugin(path.join(nodeModules, "stale"), "stale"),
+		writePlugin(linkedSource, "linked"),
+	]);
+	await fs.symlink(linkedSource, path.join(nodeModules, "linked"), "dir");
+	const enabled = { version: "1.0.0", enabledFeatures: null, enabled: true };
+	await Bun.write(
+		path.join(pluginRoot, "proto-plugins.lock.json"),
+		JSON.stringify({ plugins: { declared: enabled, stale: enabled, linked: enabled }, settings: {} }),
+	);
+
+	const packageJsonPath = path.join(pluginRoot, "package.json");
+	await Bun.write(packageJsonPath, JSON.stringify({ dependencies: { declared: "1.0.0" } }));
+	expect((await getEnabledPlugins(cwd, { home })).map(plugin => plugin.name).sort()).toEqual(["declared", "linked"]);
+
+	await fs.rm(packageJsonPath);
+	const manifestlessCwd = path.join(tempDir, "other-project");
+	expect((await getEnabledPlugins(manifestlessCwd, { home })).map(plugin => plugin.name).sort()).toEqual([
+		"declared",
+		"linked",
+		"stale",
+	]);
+});

@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { localDay } from "../dirs";
 
 interface AuditEntry {
 	readonly date: number;
@@ -23,6 +24,8 @@ export interface RotatingFileOptions {
 	readonly auditFile: string;
 	readonly maxBytes: number;
 	readonly maxFiles: number;
+	/** Called with the new active file path whenever the sink switches files (construction, day or size rotation). */
+	readonly onRotate?: (filePath: string) => void;
 }
 
 function isAuditEntry(value: unknown): value is AuditEntry {
@@ -38,6 +41,7 @@ export class RotatingFileSink {
 	readonly #auditFile: string;
 	readonly #maxBytes: number;
 	readonly #maxFiles: number;
+	readonly #onRotate: ((filePath: string) => void) | undefined;
 	#files: AuditEntry[];
 	#activeDay: string | undefined;
 	#activeIndex = 0;
@@ -52,9 +56,10 @@ export class RotatingFileSink {
 		this.#auditFile = options.auditFile;
 		this.#maxBytes = options.maxBytes;
 		this.#maxFiles = options.maxFiles;
+		this.#onRotate = options.onRotate;
 		this.#files = this.#readAudit();
 		const now = new Date();
-		this.#selectFile(this.#localDay(now));
+		this.#selectFile(localDay(now));
 		const activePath = this.#activePath;
 		if (activePath) {
 			this.#registerFile(activePath, now.getTime());
@@ -67,7 +72,7 @@ export class RotatingFileSink {
 		const now = new Date();
 		const record = `${line}${os.EOL}`;
 		const recordBytes = Buffer.byteLength(record);
-		this.#selectFile(this.#localDay(now), recordBytes);
+		this.#selectFile(localDay(now), recordBytes);
 		const activePath = this.#activePath;
 		if (!activePath) return;
 		this.#registerFile(activePath, now.getTime());
@@ -77,10 +82,6 @@ export class RotatingFileSink {
 
 	close(): void {
 		this.#closed = true;
-	}
-
-	#localDay(date: Date): string {
-		return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 	}
 
 	#selectFile(day: string, recordBytes = 0): void {
@@ -99,14 +100,23 @@ export class RotatingFileSink {
 
 	#setActivePath(day: string, index: number): void {
 		const suffix = index === 0 ? "" : `.${index}`;
-		this.#activePath = path.join(
+		const nextPath = path.join(
 			this.#directory,
 			`${this.#filenamePrefix}.${day}.${this.#filenameSuffix}.log${suffix}`,
 		);
+		const changed = nextPath !== this.#activePath;
+		this.#activePath = nextPath;
 		try {
 			this.#activeBytes = fs.statSync(this.#activePath).size;
 		} catch {
 			this.#activeBytes = 0;
+		}
+		if (changed) {
+			try {
+				this.#onRotate?.(this.#activePath);
+			} catch {
+				// A rotation observer must never break logging.
+			}
 		}
 	}
 

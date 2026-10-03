@@ -6,10 +6,13 @@ import type { ImageContent, Model, TextContent, UserContent } from "@oh-my-pi/pi
 import { isHeldSqliteStore } from "@oh-my-pi/pi-natives";
 import {
 	BINARY_SNIFF_BYTES,
+	DEFAULT_IMAGE_METADATA_HEADER_BYTES,
 	type ImageMetadata,
 	isProbablyBinary,
 	isProbablyBinaryHeader,
 	logger,
+	parseImageMetadata,
+	parseMediaMetadata,
 	prompt,
 	readImageMetadata,
 	readMediaMetadata,
@@ -65,10 +68,11 @@ import {
 	isReadableUrlPath,
 	type LineRange,
 	probeLiteralPathExists,
-	resolveReadPath,
+	resolveReadPathAsync,
 	shouldExpandRangeContext,
 	splitDelimitedPathEntry,
 	splitInternalUrlSel,
+	splitMixedUrlPathList,
 	splitPathAndSel,
 	splitPathAndSelPreferringLiteral,
 } from "./path-utils";
@@ -84,6 +88,7 @@ import {
 	prependSuffixResolutionNotice,
 	READ_CHUNK_SIZE,
 	splitAddressableFileLines,
+	toReadTruncationStats,
 } from "./read-format";
 import {
 	describeUnreadableFileType,
@@ -719,9 +724,11 @@ const readSchema = type({
 
 export type ReadToolInput = typeof readSchema.infer;
 
+export type ReadTruncationStats = Omit<TruncationResult, "content">;
+
 export interface ReadToolDetails {
 	kind?: "file" | "url";
-	truncation?: TruncationResult;
+	truncation?: ReadTruncationStats;
 	isDirectory?: boolean;
 	resolvedPath?: string;
 	suffixResolution?: { from: string; to: string };
@@ -746,8 +753,17 @@ export interface ReadToolDetails {
 	conflictCount?: number;
 
 	displayReadTargets?: string[];
+	/** Resolved fs path per {@link displayReadTargets} entry (index-aligned; null when unlinkable) for row hyperlinks. */
+	displayReadTargetLinks?: Array<string | null>;
 }
 type ReadParams = ReadToolInput;
+
+/** The fs path a read result hyperlinks to: its resolved path, else the plain-file `meta.source` path. */
+function readDetailsLinkPath(details: ReadToolDetails | undefined): string | null {
+	if (typeof details?.resolvedPath === "string") return details.resolvedPath;
+	const source = details?.meta?.source;
+	return source?.type === "path" && typeof source.value === "string" ? source.value : null;
+}
 
 const REPEAT_READ_HINT_THRESHOLD = 3;
 
@@ -819,8 +835,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		routedUrlPredicate?: (entry: string) => boolean,
 	): Promise<AgentToolResult<ReadToolDetails> | null> {
 		const parts = await splitDelimitedPathEntry(readPath, this.session.cwd, { routedUrlPredicate });
-		if (!parts) return null;
+		return parts ? this.#readDelimitedParts(parts, signal) : null;
+	}
 
+	async #readDelimitedParts(parts: string[], signal?: AbortSignal): Promise<AgentToolResult<ReadToolDetails>> {
 		const renderedParts = parts.map(part => truncateToWidth(replaceTabs(sanitizeText(part)), TRUNCATE_LENGTHS.LINE));
 		const notice = truncateToWidth(
 			`Note: interpreted as ${parts.length} paths: ${renderedParts.join(", ")}`,
@@ -829,6 +847,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const notes = [notice];
 		const content: UserContent[] = [];
 		const displayReadTargets: string[] = [];
+		const displayReadTargetLinks: Array<string | null> = [];
 		let pendingText = notice;
 		const flushText = () => {
 			if (pendingText.length === 0) return;
@@ -842,8 +861,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		for (const [index, part] of parts.entries()) {
 			try {
 				const result = await this.execute("read-delimited-part", { path: part }, signal);
-				const displayTarget = result.details?.suffixResolution?.to ?? renderedParts[index] ?? part;
-				displayReadTargets.push(truncateToWidth(replaceTabs(sanitizeText(displayTarget)), TRUNCATE_LENGTHS.LINE));
+				const nestedTargets = result.details?.displayReadTargets;
+				if (nestedTargets?.length) {
+					displayReadTargets.push(...nestedTargets);
+					const nestedLinks = result.details?.displayReadTargetLinks;
+					for (let i = 0; i < nestedTargets.length; i++) displayReadTargetLinks.push(nestedLinks?.[i] ?? null);
+				} else {
+					displayReadTargetLinks.push(readDetailsLinkPath(result.details));
+					const displayTarget = result.details?.suffixResolution?.to ?? renderedParts[index] ?? part;
+					displayReadTargets.push(
+						truncateToWidth(replaceTabs(sanitizeText(displayTarget)), TRUNCATE_LENGTHS.LINE),
+					);
+				}
 				for (const block of result.content) {
 					if (block.type === "text") {
 						appendText(block.text);
@@ -861,12 +890,31 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				);
 				notes.push(errorNote);
 				displayReadTargets.push(renderedParts[index] ?? "");
+				displayReadTargetLinks.push(null);
 				appendText(`[${errorNote}]`);
 			}
 		}
 		flushText();
 
-		return toolResult<ReadToolDetails>({ notes, displayReadTargets }).content(content).done();
+		return toolResult<ReadToolDetails>({ notes, displayReadTargets, displayReadTargetLinks }).content(content).done();
+	}
+
+	// A `;` list mixing URLs with local paths must split before URL detection claims it whole.
+	async #splitMixedUrlPathList(readPath: string): Promise<string[] | null> {
+		if (!readPath.includes(";") || !(isReadableUrlPath(readPath) || isPotentialInternalUrlPath(readPath))) {
+			return null;
+		}
+		// Lazy like the other URL paths in this file: keeps fetch/internal-url modules off the plain-file read path.
+		const [{ parseReadUrlTarget }, { InternalUrlRouter }] = await Promise.all([
+			import("./fetch"),
+			import("../internal-urls"),
+		]);
+		const router = InternalUrlRouter.instance();
+		return splitMixedUrlPathList(
+			readPath,
+			this.session.cwd,
+			part => parseReadUrlTarget(part) !== null || router.canResolve(part),
+		);
 	}
 
 	async #readPdfPageScreenshot(options: {
@@ -1145,20 +1193,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				const totalSelectedLines = window.reachedEof
 					? Math.max(0, totalFileLines - rangeStart)
 					: Math.max(requestedLength, collectedLines.length);
-				const totalBytes =
-					window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes
-						? window.firstLineByteLength
-						: window.collectedBytes;
+				const oversizedFirstLine =
+					window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes;
+				const previewBytes = oversizedFirstLine ? (window.firstLinePreview?.bytes ?? 0) : 0;
 				const result: TruncationResult = {
 					content: collectedLines.join("\n"),
 					truncated: true,
 					truncatedBy: window.stoppedByByteLimit ? "bytes" : "lines",
 					totalLines: totalSelectedLines,
-					totalBytes,
-					outputLines: collectedLines.length,
-					outputBytes: window.collectedBytes,
+					totalBytes: oversizedFirstLine ? (window.firstLineByteLength ?? previewBytes) : window.collectedBytes,
+					outputLines: oversizedFirstLine ? (previewBytes > 0 ? 1 : 0) : collectedLines.length,
+					outputBytes: oversizedFirstLine ? previewBytes : window.collectedBytes,
 					lastLinePartial: false,
-					firstLineExceedsLimit: window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes,
+					firstLineExceedsLimit: oversizedFirstLine,
 				};
 				truncation = {
 					result,
@@ -1268,6 +1315,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (readPath.startsWith("file://")) {
 			readPath = expandPath(readPath);
 		}
+		const mixedParts = await this.#splitMixedUrlPathList(readPath);
+		if (mixedParts) return this.#readDelimitedParts(mixedParts, signal);
 
 		const attachmentReference = parseImageAttachmentReference(readPath);
 		if (attachmentReference) {
@@ -1434,7 +1483,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const localReadPath = localTarget.path;
 		const parsed = parseSel(localTarget.sel);
 
-		let absolutePath = resolveReadPath(localReadPath, this.session.cwd);
+		let absolutePath = await resolveReadPathAsync(localReadPath, this.session.cwd);
 		let suffixResolution: { from: string; to: string } | undefined;
 
 		let isDirectory = false;
@@ -1516,9 +1565,23 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			});
 		}
 
-		const imageMetadata = await readImageMetadata(absolutePath);
+		const ext = path.extname(absolutePath).toLowerCase();
+		const shouldConvertWithMarkit = isPotentialMarkitExtension(ext)
+			? (await import("../utils/markit")).CONVERTIBLE_EXTENSIONS.has(ext)
+			: false;
+		// Buffer once for the image/media sniffs and the text path below instead of re-opening the file per consumer.
+		const wholeFileBytes =
+			!shouldConvertWithMarkit && fileSize <= MAX_BUFFERED_READ_BYTES
+				? await readWholeFile(absolutePath)
+				: undefined;
+		const sniffHeader = wholeFileBytes?.subarray(0, DEFAULT_IMAGE_METADATA_HEADER_BYTES);
+		const imageMetadata = sniffHeader ? parseImageMetadata(sniffHeader) : await readImageMetadata(absolutePath);
 		const mimeType = imageMetadata?.mimeType;
-		const mediaMetadata = mimeType ? undefined : await readMediaMetadata(absolutePath);
+		const mediaMetadata = mimeType
+			? undefined
+			: sniffHeader
+				? parseMediaMetadata(sniffHeader)
+				: await readMediaMetadata(absolutePath);
 		if (mediaMetadata?.kind === "audio" || mediaMetadata?.kind === "video") {
 			return this.#readNativeMedia({
 				readPath,
@@ -1529,11 +1592,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				signal,
 			});
 		}
-		const ext = path.extname(absolutePath).toLowerCase();
 		const resolvedDisplayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
-		const shouldConvertWithMarkit = isPotentialMarkitExtension(ext)
-			? (await import("../utils/markit")).CONVERTIBLE_EXTENSIONS.has(ext)
-			: false;
 
 		if (!mimeType && !isRawSelector(parsed) && fileSize <= MAX_PROFILE_SUMMARY_BYTES) {
 			let rendered: string | null = null;
@@ -1626,8 +1685,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: conversion failed]` }];
 			}
 		} else {
-			const wholeFileBytes = fileSize <= MAX_BUFFERED_READ_BYTES ? await readWholeFile(absolutePath) : undefined;
-
 			const looksBinary =
 				!isRawSelector(parsed) &&
 				(wholeFileBytes
@@ -1693,7 +1750,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourcePath = absolutePath;
 					details = multiResult.displayContent ? { displayContent: multiResult.displayContent } : {};
 					if (multiResult.truncation) {
-						details.truncation = multiResult.truncation.result;
+						details.truncation = toReadTruncationStats(multiResult.truncation.result);
 						truncationInfo = multiResult.truncation;
 					}
 					if (multiResult.columnTruncated > 0) {
@@ -1813,21 +1870,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					const userLimitedLines = collectedLines.length;
 
 					const totalSelectedLines = totalFileLines - startLine;
-					const totalSelectedBytes =
-						stoppedByByteLimit && firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead
-							? firstLineByteLength
-							: collectedBytes;
 					const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
 					const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
+					// An oversized first line collects no complete line, but its byte-capped preview is shown.
+					const previewBytes = firstLineExceedsLimit ? (firstLinePreview?.bytes ?? 0) : 0;
 
 					const truncation: TruncationResult = {
 						content: selectedContent,
 						truncated: wasTruncated,
 						truncatedBy: stoppedByByteLimit ? "bytes" : wasTruncated ? "lines" : undefined,
 						totalLines: totalSelectedLines,
-						totalBytes: totalSelectedBytes,
-						outputLines: collectedLines.length,
-						outputBytes: collectedBytes,
+						totalBytes: firstLineExceedsLimit ? (firstLineByteLength ?? previewBytes) : collectedBytes,
+						outputLines: firstLineExceedsLimit ? (previewBytes > 0 ? 1 : 0) : collectedLines.length,
+						outputBytes: firstLineExceedsLimit ? previewBytes : collectedBytes,
 						lastLinePartial: false,
 						firstLineExceedsLimit,
 					};
@@ -1886,27 +1941,35 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								firstLineBytes,
 							)}, exceeds ${formatBytes(maxBytesForRead)} limit. Unable to display a valid UTF-8 snippet.]`;
 						}
-						details = { truncation };
 						sourcePath = absolutePath;
-						truncationInfo = {
-							result: truncation,
-							options: {
-								direction: "head",
-								startLine: startLineDisplay,
-								totalFileLines: reachedEof ? totalFileLines : undefined,
-								maxBytes: maxBytesForRead,
-							},
-						};
-					} else if (truncation.truncated) {
+						if (reachedEof) {
+							details = { truncation: toReadTruncationStats(truncation) };
+							truncationInfo = {
+								result: truncation,
+								options: {
+									direction: "head",
+									startLine: startLineDisplay,
+									totalFileLines,
+									maxBytes: maxBytesForRead,
+								},
+							};
+						} else {
+							// A partial scan has no line total to report.
+							outputText += `\n\n[Showing line ${startLineDisplay} (partial, ${formatBytes(
+								snippet.bytes,
+							)} of ${formatBytes(firstLineBytes)}); file not scanned to EOF]`;
+							details = {};
+						}
+					} else if (reachedEof && truncation.truncated) {
 						outputText = formatBracketAwareText() ?? formatText(truncation.content, startLineDisplay);
-						details = { truncation };
+						details = { truncation: toReadTruncationStats(truncation) };
 						sourcePath = absolutePath;
 						truncationInfo = {
 							result: truncation,
 							options: {
 								direction: "head",
 								startLine: startLineDisplay,
-								totalFileLines: reachedEof ? totalFileLines : undefined,
+								totalFileLines,
 								maxBytes: maxBytesForRead,
 							},
 						};
@@ -2144,7 +2207,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			);
 			if (read.bridgeResult) return read.bridgeResult;
 			if (read.displayContent) details.displayContent = read.displayContent;
-			if (read.truncation) details.truncation = read.truncation.result;
+			if (read.truncation) details.truncation = toReadTruncationStats(read.truncation.result);
 			let text = read.outputText;
 			if (!rawSelector && artifact.size > MAX_ARTIFACT_RAW_INLINE_BYTES) {
 				text = text
@@ -2201,20 +2264,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const shouldAddLineNumbers = rawSelector ? false : displayMode.lineNumbers;
 		const selectedContent = collectedLines.join("\n");
 		const totalSelectedLines = totalFileLines - startLine;
-		const totalSelectedBytes =
-			stoppedByByteLimit && firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead
-				? firstLineByteLength
-				: collectedBytes;
 		const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
 		const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
+		const previewBytes = firstLineExceedsLimit ? (firstLinePreview?.bytes ?? 0) : 0;
 		const truncation: TruncationResult = {
 			content: selectedContent,
 			truncated: wasTruncated,
 			truncatedBy: stoppedByByteLimit ? "bytes" : wasTruncated ? "lines" : undefined,
 			totalLines: totalSelectedLines,
-			totalBytes: totalSelectedBytes,
-			outputLines: collectedLines.length,
-			outputBytes: collectedBytes,
+			totalBytes: firstLineExceedsLimit ? (firstLineByteLength ?? previewBytes) : collectedBytes,
+			outputLines: firstLineExceedsLimit ? (previewBytes > 0 ? 1 : 0) : collectedLines.length,
+			outputBytes: firstLineExceedsLimit ? previewBytes : collectedBytes,
 			lastLinePartial: false,
 			firstLineExceedsLimit,
 		};
@@ -2246,26 +2306,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					: `[Line ${startLineDisplay} is ${formatBytes(
 							firstLineBytes,
 						)}, exceeds ${formatBytes(maxBytesForRead)} limit. Unable to display a valid UTF-8 snippet.]`;
-			truncationInfo = {
-				result: truncation,
-				options: {
-					direction: "head",
-					startLine: startLineDisplay,
-					totalFileLines: reachedEof ? totalFileLines : undefined,
-					maxBytes: maxBytesForRead,
-				},
-			};
-		} else {
-			outputText = formatText(truncation.content, startLineDisplay);
-			if (truncation.truncated) {
+			if (reachedEof) {
 				truncationInfo = {
 					result: truncation,
-					options: {
-						direction: "head",
-						startLine: startLineDisplay,
-						totalFileLines: reachedEof ? totalFileLines : undefined,
-						maxBytes: maxBytesForRead,
-					},
+					options: { direction: "head", startLine: startLineDisplay, totalFileLines, maxBytes: maxBytesForRead },
+				};
+			} else {
+				outputText += `\n\n[Showing line ${startLineDisplay} (partial, ${formatBytes(
+					snippet.bytes,
+				)} of ${formatBytes(firstLineBytes)}); artifact not scanned to EOF]`;
+			}
+		} else {
+			outputText = formatText(truncation.content, startLineDisplay);
+			if (reachedEof && truncation.truncated) {
+				truncationInfo = {
+					result: truncation,
+					options: { direction: "head", startLine: startLineDisplay, totalFileLines, maxBytes: maxBytesForRead },
 				};
 			} else if (startLine + collectedLines.length < totalFileLines || !reachedEof) {
 				const nextOffset = startLine + collectedLines.length + 1;
@@ -2290,7 +2346,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		if (reachedEof) details.totalLines = totalFileLines;
 		if (displayContent) details.displayContent = displayContent;
-		if (truncationInfo) details.truncation = truncationInfo.result;
+		if (truncationInfo) details.truncation = toReadTruncationStats(truncationInfo.result);
 		const resultBuilder = toolResult<ReadToolDetails>(details)
 			.text(outputText)
 			.sourcePath(artifact.path)
@@ -2491,7 +2547,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const resultBuilder = toolResult(details).text(truncation.content).sourcePath(tree.rootPath);
 		if (truncation.truncated) {
 			resultBuilder.truncation(truncation, { direction: "head" });
-			details.truncation = truncation;
+			details.truncation = toReadTruncationStats(truncation);
 		}
 
 		return resultBuilder.done();

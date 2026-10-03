@@ -122,7 +122,7 @@
 		"priority": 7,
 		"applyPatchToolType": "freeform",
 		"int": 38.4,
-		"tps": 94.4,
+		"tps": 85,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -221,7 +221,7 @@
 		"priority": 3,
 		"applyPatchToolType": "freeform",
 		"int": 37.3,
-		"tps": 142.3,
+		"tps": 125.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -321,7 +321,7 @@
 		"priority": 1,
 		"applyPatchToolType": "freeform",
 		"int": 47,
-		"tps": 80.3,
+		"tps": 79.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -421,7 +421,7 @@
 		"priority": 2,
 		"applyPatchToolType": "freeform",
 		"int": 42.1,
-		"tps": 82.4,
+		"tps": 101.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -511,7 +511,7 @@
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
 		"int": 52.7,
-		"tps": 52.7,
+		"tps": 53.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -600,8 +600,8 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
-		"int": 37.3,
-		"tps": 153.9,
+		"int": 38.1,
+		"tps": 125.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -690,8 +690,98 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
-		"int": 47.5,
-		"tps": 125.5,
+		"int": 47.6,
+		"tps": 93.3,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": false,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": false,
+			"supportsImageDetailOriginal": true,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
+		}
+	},
+	"gpt-6.1-sol": {
+		"id": "gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "openai-codex-responses",
+		"provider": "openai-codex",
+		"baseUrl": "https://chatgpt.com/backend-api",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 0
+		},
+		"remoteCompaction": {
+			"enabled": true,
+			"api": "openai-codex-responses",
+			"v2StreamingEnabled": true
+		},
+		"contextWindow": 272000,
+		"maxTokens": 128000,
+		"preferWebsockets": true,
+		"int": 51.8,
+		"tps": 61.3,
+		"applyPatchToolType": "freeform",
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

@@ -1,3 +1,5 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { CustomEditor } from "./components/custom-editor";
 import { SYMBOL_PRESETS } from "./theme/symbols";
 import { theme } from "./theme/theme";
 
@@ -55,6 +57,23 @@ export function shiftImageMarkers(text: string, offset: number): string {
 		const marker = `[Image #${Number(idx) + offset}${tail}]`;
 		return attachmentIdx === undefined ? marker : `${marker} attachment://${Number(attachmentIdx) + offset}`;
 	});
+}
+
+/** Merge a failed submission beside newer typing, keeping image markers paired with their attachments. */
+export function restoreInputDraft(
+	editor: CustomEditor,
+	text: string,
+	images?: ImageContent[],
+	imageLinks?: (string | undefined)[],
+): void {
+	const currentText = editor.getExpandedText();
+	const restoredText = shiftImageMarkers(text, editor.pendingImages.length);
+	if (images?.length) {
+		editor.pendingImages = [...editor.pendingImages, ...images];
+		editor.pendingImageLinks = [...editor.pendingImageLinks, ...(imageLinks ?? images.map(() => undefined))];
+		editor.imageLinks = editor.pendingImageLinks;
+	}
+	editor.setCollapsedText([restoredText, currentText].filter(part => part.trim()).join("\n\n"));
 }
 
 export function collapseImageMarkers(

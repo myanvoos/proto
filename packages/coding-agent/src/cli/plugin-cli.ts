@@ -1,4 +1,5 @@
-import { BINARY_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
+import * as path from "node:path";
+import { BINARY_NAME, getPluginsNodeModules, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { resolveOrDefaultProjectRegistryPath } from "../discovery/helpers";
@@ -86,7 +87,7 @@ export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
 			await handleDiscover(cmd.args, cmd.flags);
 			break;
 		case "upgrade":
-			await handleUpgrade(cmd.args, cmd.flags);
+			await handleUpgrade(manager, cmd.args, cmd.flags);
 			break;
 	}
 }
@@ -203,9 +204,37 @@ async function handleDiscover(args: string[], _flags: PluginCommandArgs["flags"]
 	}
 }
 
-async function handleUpgrade(args: string[], flags: PluginCommandArgs["flags"]): Promise<void> {
+async function handleUpgrade(
+	pluginManager: PluginManager,
+	args: string[],
+	flags: PluginCommandArgs["flags"],
+): Promise<void> {
 	const manager = await makeMarketplaceManager();
-	const pluginId = args[0];
+	let pluginId = args[0];
+	// A non-`name@marketplace` argument is a bare marketplace plugin name or an npm/git plugin.
+	if (pluginId && !parsePluginId(pluginId)) {
+		const bareName = pluginId;
+		const candidates = [
+			...new Set(
+				(await manager.listInstalledPlugins())
+					.map(p => p.id)
+					.filter(id => id.slice(0, id.lastIndexOf("@")) === bareName),
+			),
+		];
+		if (candidates.length > 1) {
+			console.error(
+				chalk.red(
+					`${bareName} is installed from ${candidates.length} marketplaces. Qualify it: ${candidates.join(", ")}`,
+				),
+			);
+			process.exit(1);
+		}
+		if (candidates.length === 0) {
+			await upgradePackagePlugin(pluginManager, bareName, flags);
+			return;
+		}
+		pluginId = candidates[0];
+	}
 	try {
 		if (pluginId) {
 			if (flags.scope) {
@@ -240,6 +269,37 @@ async function handleUpgrade(args: string[], flags: PluginCommandArgs["flags"]):
 	}
 }
 
+async function upgradePackagePlugin(
+	manager: PluginManager,
+	name: string,
+	flags: PluginCommandArgs["flags"],
+): Promise<void> {
+	if (flags.scope === "project") {
+		console.error(
+			chalk.yellow(
+				`Warning: --scope is only supported for marketplace plugins (name@marketplace). Ignoring for ${name}.`,
+			),
+		);
+	}
+	try {
+		const { from, plugin, changed } = await manager.upgrade(name);
+		if (flags.json) {
+			console.log(
+				JSON.stringify({ upgraded: plugin.name, from: from ?? null, to: plugin.version, changed }, null, 2),
+			);
+		} else if (!changed) {
+			console.log(chalk.green(`${plugin.name} is up to date (${plugin.version})`));
+		} else if (from === plugin.version) {
+			console.log(chalk.green(`Upgraded ${plugin.name} to a new revision (${plugin.version})`));
+		} else {
+			console.log(chalk.green(`Upgraded ${plugin.name}${from ? ` from ${from}` : ""} to ${plugin.version}`));
+		}
+	} catch (err) {
+		console.error(chalk.red(`Failed to upgrade ${name}: ${err instanceof Error ? err.message : err}`));
+		process.exit(1);
+	}
+}
+
 async function handleInstall(
 	manager: PluginManager,
 	packages: string[],
@@ -259,6 +319,29 @@ async function handleInstall(
 		const target = classifyInstallTarget(spec, knownMarketplaces);
 
 		if (target.type === "marketplace") {
+			if (flags.dryRun) {
+				try {
+					await mktMgr.validateInstallPlugin(target.name, target.marketplace, {
+						force: flags.force,
+						scope: flags.scope,
+					});
+				} catch (err) {
+					console.error(chalk.red(`${theme.status.error} Failed to install ${spec}: ${err}`));
+					process.exit(1);
+				}
+				if (flags.json) {
+					console.log(
+						JSON.stringify(
+							{ dryRun: true, action: "install", plugin: target.name, marketplace: target.marketplace },
+							null,
+							2,
+						),
+					);
+				} else {
+					console.log(chalk.dim(`[dry-run] Would install ${spec}`));
+				}
+				continue;
+			}
 			try {
 				const entry = await mktMgr.installPlugin(target.name, target.marketplace, {
 					force: flags.force,
@@ -351,9 +434,25 @@ async function handleUninstall(
 	}
 
 	const mktMgr = await makeMarketplaceManager();
-	const installedPlugins = new Set((await mktMgr.listInstalledPlugins()).map(p => p.id));
+	const installedIds = (await mktMgr.listInstalledPlugins()).map(p => p.id);
+	const installedPlugins = new Set(installedIds);
 
-	for (const name of packages) {
+	for (const rawName of packages) {
+		let name = rawName;
+		if (!installedPlugins.has(name)) {
+			// Marketplace ids are `name@marketplace`; accept the bare name when it is unambiguous.
+			const candidates = installedIds.filter(id => id.slice(0, id.lastIndexOf("@")) === name);
+			if (candidates.length === 1) {
+				name = candidates[0];
+			} else if (candidates.length > 1) {
+				console.error(
+					chalk.red(
+						`${theme.status.error} ${rawName} is installed from ${candidates.length} marketplaces. Qualify it: ${candidates.join(", ")}`,
+					),
+				);
+				process.exit(1);
+			}
+		}
 		const viaMarketplace = installedPlugins.has(name);
 
 		if (flags.dryRun) {
@@ -463,10 +562,19 @@ async function handleList(manager: PluginManager, flags: { json?: boolean }): Pr
 async function handleLink(
 	manager: PluginManager,
 	paths: string[],
-	flags: { json?: boolean; force?: boolean },
+	flags: { json?: boolean; force?: boolean; dryRun?: boolean },
 ): Promise<void> {
 	if (paths.length === 0) {
 		throw new CliUsageError(`${BINARY_NAME} plugin link <path>`);
+	}
+
+	if (flags.dryRun) {
+		if (flags.json) {
+			console.log(JSON.stringify({ dryRun: true, action: "link", path: paths[0] }, null, 2));
+		} else {
+			console.log(chalk.dim(`[dry-run] Would link ${paths[0]}`));
+		}
+		return;
 	}
 
 	try {
@@ -535,8 +643,7 @@ async function handleFeatures(
 	}
 
 	const pluginName = args[0];
-	const plugins = await manager.list();
-	const plugin = plugins.find(p => p.name === pluginName);
+	const plugin = await manager.getPlugin(pluginName, { path: path.join(getPluginsNodeModules(), pluginName) });
 
 	if (!plugin) {
 		console.error(chalk.red(`Plugin "${pluginName}" not found`));

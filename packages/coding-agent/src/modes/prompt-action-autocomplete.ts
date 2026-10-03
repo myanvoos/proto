@@ -267,14 +267,14 @@ export function createPromptActionAutocompleteProvider(
 		},
 		{
 			id: "cursor-message-start",
-			label: "Move cursor to beginning of message",
+			label: "Move cursor to start of message",
 			description: "Current message",
 			keywords: ["move", "cursor", "message", "start", "beginning", "prompt", "first", "top"],
 			execute: options.moveCursorToMessageStart,
 		},
 		{
 			id: "cursor-line-start",
-			label: "Move cursor to beginning of line",
+			label: "Move cursor to start of line",
 			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.cursorLineStart")),
 			keywords: ["move", "cursor", "line", "start", "beginning", "home"],
 			execute: options.moveCursorToLineStart,

@@ -21,7 +21,6 @@ import { logger } from "@oh-my-pi/pi-utils";
 import {
 	AdviseTool,
 	type AdvisorConfig,
-	AdvisorEmissionGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
 	AdvisorRuntime,
@@ -99,7 +98,6 @@ interface ActiveAdvisor {
 	name: string;
 	slug: string;
 	adviseTool: AdviseTool;
-	emissionGuard: AdvisorEmissionGuard;
 	instance: ReviewerTransport;
 }
 
@@ -251,7 +249,7 @@ export class SessionAdvisors {
 			for (const advisor of this.#advisors) {
 				// Only the terminal primary boundary owns the deferred flush: the advisor may be quota-paused or
 				// halted before its next dispatch, and continuing tool turns keep partial-work critiques withheld.
-				if (terminalBoundary && !advisor.instance.runtime.disposed) advisor.adviseTool.beginUpdate(false);
+				if (terminalBoundary && !advisor.instance.runtime.disposed) advisor.adviseTool.flushDeferredNotes();
 				advisor.instance.pushTurn(messages, willContinue);
 			}
 			const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
@@ -265,8 +263,15 @@ export class SessionAdvisors {
 		}
 	}
 
-	#awaitCatchup(threshold: number, capMs: number, signal?: AbortSignal): Promise<boolean[]> {
-		return Promise.all(this.#advisors.map(advisor => advisor.instance.awaitCatchup(threshold, capMs, signal)));
+	#awaitCatchup(
+		threshold: number,
+		capMs: number,
+		signal?: AbortSignal,
+		options?: { waitThroughRecovery?: boolean },
+	): Promise<boolean[]> {
+		return Promise.all(
+			this.#advisors.map(advisor => advisor.instance.awaitCatchup(threshold, capMs, signal, options)),
+		);
 	}
 
 	onModelRolesChanged(): void {
@@ -340,6 +345,10 @@ export class SessionAdvisors {
 
 	resetAllRuntimes(reason?: string): void {
 		this.#resetAllAdvisorRuntimes(reason);
+	}
+
+	rebaseDeliveredPrefixes(reason: string): void {
+		for (const advisor of this.#advisors) advisor.instance.runtime.rebaseDeliveredPrefix(reason);
 	}
 
 	runtimeMatchesCurrentConfig(): boolean {
@@ -431,7 +440,6 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			a.instance.resetForConversationBoundary();
 			a.adviseTool.resetDeliveredNotes();
-			a.emissionGuard.reset();
 			this.#attachAdvisorRecorderFeed(a);
 		}
 		this.#advisorPrimaryTurnsCompleted = 0;
@@ -567,7 +575,6 @@ export class SessionAdvisors {
 				noticeLabel: "Advisor",
 			};
 
-			const emissionGuard = new AdvisorEmissionGuard();
 			const adviseTool = new AdviseTool((note, severity) => this.#routeAdvice(advisorRef, note, severity));
 
 			const systemPrompt = [advisorSystemPrompt];
@@ -604,12 +611,13 @@ export class SessionAdvisors {
 						obfuscator: this.#host.obfuscator,
 						getModelIdentity: () => formatModelString(advisorRef.instance.agent.state.model),
 						beginAdvisorUpdate: inProgress => {
+							advisorRef.instance.recorder.beginTurn();
 							advisorRef.adviseTool.beginUpdate(inProgress);
-							advisorRef.emissionGuard.beginUpdate();
 						},
 						onTurnError: (error, failedMessages, signal) =>
 							advisorRef.instance.recoverTurn(error, failedMessages, signal),
 						onTurnSuccess: async () => {
+							advisorRef.instance.recorder.commitTurn();
 							advisorRef.instance.noteTurnSucceeded();
 							const fallback = advisorRef.instance.retryFallback;
 							if (!advisorRef.instance.retryFallbackPendingSuccess || !fallback) return;
@@ -623,6 +631,7 @@ export class SessionAdvisors {
 								role: fallback.role,
 							});
 						},
+						onTurnAbandoned: () => advisorRef.instance.recorder.abandonTurn(),
 						notifyFailure: error => {
 							this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
 							const message = error instanceof Error ? error.message : String(error);
@@ -647,7 +656,6 @@ export class SessionAdvisors {
 				name: advisorName,
 				slug,
 				adviseTool,
-				emissionGuard,
 				instance: transport,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
@@ -687,11 +695,6 @@ export class SessionAdvisors {
 	}
 
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
-		if (!advisor.emissionGuard.accept(note)) {
-			logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
-			return;
-		}
-
 		const source = advisor.slug ? advisor.name : undefined;
 		const interrupting = isInterruptingSeverity(severity);
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
@@ -829,9 +832,13 @@ export class SessionAdvisors {
 		return true;
 	}
 
-	async waitForAdvisorCatchup(timeoutMs: number): Promise<boolean> {
+	/**
+	 * A failing advisor releases the drain at once unless `waitThroughRecovery` is set; then its retry and
+	 * fallback-chain recovery is waited through instead of being abandoned mid-switch by disposal.
+	 */
+	async waitForAdvisorCatchup(timeoutMs: number, options?: { waitThroughRecovery?: boolean }): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
-		const results = await this.#awaitCatchup(1, timeoutMs);
+		const results = await this.#awaitCatchup(1, timeoutMs, undefined, options);
 		const cardEventsCaughtUp = await this.#waitForPendingAdvisorCardEvents(Math.max(0, deadline - Date.now()));
 		const abandoned = this.#advisors.filter(
 			(advisor, index) => results[index] === false && advisor.instance.runtime.backlog > 0,

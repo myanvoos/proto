@@ -9,7 +9,7 @@ import {
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
-import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatBytes, isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import {
@@ -45,6 +45,65 @@ function sanitizeTreeValue(value: unknown): unknown {
 		return sanitized;
 	}
 	return value;
+}
+
+/** Advisor rows show `details.notes`, not the model-facing `<advisory>` content. */
+function advisorTreeDisplay(details: unknown): { qualifier: string; text: string } {
+	if (!isRecord(details) || !Array.isArray(details.notes)) return { qualifier: "", text: "" };
+	const notes: string[] = [];
+	const advisors: string[] = [];
+	const severities: string[] = [];
+	for (const note of details.notes) {
+		if (!isRecord(note)) continue;
+		if (typeof note.note === "string") notes.push(note.note);
+		if (typeof note.advisor === "string") {
+			const name = normalizeTreeText(note.advisor);
+			if (name && name !== "default" && !advisors.includes(name)) advisors.push(name);
+		}
+		if (typeof note.severity === "string") {
+			const severity = normalizeTreeText(note.severity);
+			if (severity && !severities.includes(severity)) severities.push(severity);
+		}
+	}
+	return { qualifier: [...advisors, ...severities].join(", "), text: notes.join(" ") };
+}
+
+/**
+ * Strips one model-facing `<system-*>` envelope; nested system tags belong to the payload.
+ * Linear scan, quote-aware so `>` inside attribute values doesn't end the opening tag.
+ */
+function stripSystemWrapper(content: string): string {
+	const trimmed = content.trim();
+	const opening = /^<(system-[\w-]+)/i.exec(trimmed);
+	if (!opening) return content;
+
+	const attributeStart = opening[0].length;
+	const afterName = trimmed[attributeStart];
+	if (afterName !== ">" && !/\s/.test(afterName ?? "")) return content;
+
+	let quote: '"' | "'" | undefined;
+	let openingEnd = -1;
+	for (let index = attributeStart; index < trimmed.length; index++) {
+		const character = trimmed[index];
+		if (quote) {
+			if (character === quote) quote = undefined;
+		} else if (character === '"' || character === "'") {
+			quote = character;
+		} else if (character === "<") {
+			return content;
+		} else if (character === ">") {
+			openingEnd = index;
+			break;
+		}
+	}
+	if (openingEnd === -1 || quote) return content;
+
+	const closingTag = `</${opening[1]}>`;
+	const closingStart = trimmed.length - closingTag.length;
+	if (closingStart <= openingEnd || trimmed.slice(closingStart).toLowerCase() !== closingTag.toLowerCase()) {
+		return content;
+	}
+	return trimmed.slice(openingEnd + 1, closingStart).trim();
 }
 
 interface GutterInfo {
@@ -382,10 +441,11 @@ class TreeList implements Component {
 			}
 			case "custom_message": {
 				parts.push(entry.customType);
-				if (typeof entry.content === "string") {
-					parts.push(entry.content);
+				if (entry.customType === "advisor") {
+					const { qualifier, text } = advisorTreeDisplay(entry.details);
+					parts.push(qualifier, text);
 				} else {
-					parts.push(this.#extractContent(entry.content, false));
+					parts.push(stripSystemWrapper(this.#extractContent(entry.content, false)));
 				}
 				break;
 			}
@@ -539,6 +599,15 @@ class TreeList implements Component {
 		const rowWidth = contentRowWidth(width, this.#selectableCount, this.maxVisibleLines);
 		const rows: string[] = [];
 
+		// One horizontal scroll offset for the whole window: per-row offsets would put a
+		// different tree depth in the same column on each line and break connectors/gutters.
+		const depthOf = (flatNode: FlatNode): number =>
+			this.#multipleRoots ? Math.max(0, flatNode.indent - 1) : flatNode.indent;
+		let deepest = 0;
+		for (const flatNode of this.#filteredNodes.slice(startIndex, endIndex))
+			deepest = Math.max(deepest, depthOf(flatNode));
+		const windowOffset = Math.max(0, deepest - maxIndentLevels);
+
 		for (let i = startIndex; i < endIndex; i++) {
 			const agent =
 				i >= this.#filteredNodes.length ? this.#filteredAgents[i - this.#filteredNodes.length] : undefined;
@@ -556,13 +625,13 @@ class TreeList implements Component {
 
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
 
-			const displayIndent = this.#multipleRoots ? Math.max(0, flatNode.indent - 1) : flatNode.indent;
+			const displayIndent = depthOf(flatNode);
 
 			const hasConnector = flatNode.showConnector && !flatNode.isVirtualRootChild;
 			const connectorSymbol = hasConnector ? (flatNode.isLast ? theme.tree.last : theme.tree.branch) : "";
 			const connectorChars = hasConnector ? Array.from(connectorSymbol) : [];
-			const renderedIndent = Math.min(displayIndent, maxIndentLevels);
-			const scrollOffset = displayIndent - renderedIndent;
+			const scrollOffset = Math.min(windowOffset, displayIndent);
+			const renderedIndent = displayIndent - scrollOffset;
 			const connectorPositionDisplay = hasConnector ? renderedIndent - 1 : -1;
 
 			const totalChars = renderedIndent * 3;
@@ -707,6 +776,12 @@ class TreeList implements Component {
 				break;
 			}
 			case "custom_message": {
+				if (entry.customType === "advisor") {
+					const { qualifier, text } = advisorTreeDisplay(entry.details);
+					const label = qualifier ? `advisor (${qualifier}): ` : "advisor: ";
+					result = theme.fg("customMessageLabel", label) + normalize(text);
+					break;
+				}
 				const content =
 					typeof entry.content === "string"
 						? entry.content
@@ -714,7 +789,9 @@ class TreeList implements Component {
 								.filter((c): c is { type: "text"; text: string } => c.type === "text")
 								.map(c => c.text)
 								.join("");
-				result = theme.fg("customMessageLabel", `[${normalize(entry.customType)}]: `) + normalize(content);
+				result =
+					theme.fg("customMessageLabel", `[${normalize(entry.customType)}]: `) +
+					normalize(stripSystemWrapper(content));
 				break;
 			}
 			case "compaction": {

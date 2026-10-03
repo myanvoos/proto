@@ -193,7 +193,11 @@ export async function loadCustomTools(
 	};
 }
 
-export async function discoverCustomToolPaths(configuredPaths: string[], cwd: string): Promise<ToolPathWithSource[]> {
+export async function discoverCustomToolPaths(
+	configuredPaths: string[],
+	cwd: string,
+	agentDir?: string,
+): Promise<ToolPathWithSource[]> {
 	const allPathsWithSources: ToolPathWithSource[] = [];
 	const seen = new Set<string>();
 
@@ -205,7 +209,13 @@ export async function discoverCustomToolPaths(configuredPaths: string[], cwd: st
 		}
 	};
 
-	const discoveredTools = await loadCapability<CustomTool>(toolCapability.id, { cwd });
+	// Providers also expose metadata (.md/.json) and scripts; filter before name deduplication so those
+	// entries cannot shadow executable modules of the same name.
+	const discoveredTools = await loadCapability<CustomTool>(toolCapability.id, {
+		cwd,
+		agentDir,
+		filter: tool => /\.(ts|js|mjs|cjs)$/.test(tool.path) && !tool.path.endsWith(".d.ts"),
+	});
 	for (const tool of discoveredTools.items) {
 		addPath(tool.path, {
 			provider: tool._source.provider,
@@ -235,7 +245,8 @@ export async function discoverAndLoadCustomTools(
 		apply(reason: string): Promise<AgentToolResult<unknown>>;
 		reject?(reason: string): Promise<AgentToolResult<unknown> | undefined>;
 	}) => void,
+	agentDir?: string,
 ) {
-	const pathsWithSources = await discoverCustomToolPaths(configuredPaths, cwd);
+	const pathsWithSources = await discoverCustomToolPaths(configuredPaths, cwd, agentDir);
 	return loadCustomTools(pathsWithSources, cwd, builtInToolNames, pushPendingAction);
 }

@@ -1,12 +1,22 @@
 import { expect, test } from "bun:test";
+import type { KeyId } from "@oh-my-pi/pi-tui";
 import { buildHotkeysMarkdown } from "./hotkeys-markdown";
 
-const bindings = {
-	keybindings: {
-		getDisplayString: (action: string) =>
-			action === "app.agents.fleet" ? "Alt+A" : action === "app.session.observe" ? "Ctrl+S" : action,
-	},
-};
+function bindingsWith(exitKeys: KeyId[], deleteCharForwardKeys: readonly string[] = ["ctrl+d"]) {
+	return {
+		keybindings: {
+			getDisplayString: (action: string) =>
+				action === "app.agents.fleet" ? "Alt+A" : action === "app.session.observe" ? "Ctrl+S" : action,
+			getKeys: (action: string): KeyId[] => (action === "app.exit" ? exitKeys : []),
+			matchesCanonical: (canonical: string | undefined, action: string) =>
+				action === "tui.editor.deleteCharForward" &&
+				canonical !== undefined &&
+				deleteCharForwardKeys.includes(canonical),
+		},
+	};
+}
+
+const bindings = bindingsWith(["ctrl+d"]);
 
 function rowFor(markdown: string, match: string): string {
 	const row = markdown.split("\n").find(line => line.includes(match));
@@ -28,4 +38,19 @@ test("the double-tap arrow gestures are documented as the views they actually op
 
 	expect(rowFor(markdown, "double-tap `←`")).toContain("session switcher");
 	expect(rowFor(markdown, "double-tap `→`")).toContain("subagents");
+});
+
+test("exit hotkey rows describe each key by the role it actually has", () => {
+	const exitRows = (markdown: string) =>
+		markdown.split("\n").filter(line => /\| (Exit|Delete char forward)/.test(line));
+
+	expect(exitRows(buildHotkeysMarkdown(bindingsWith(["ctrl+d"])))).toEqual([
+		"| `Ctrl+D` | Delete char forward (with draft) / exit (empty prompt) |",
+	]);
+	expect(exitRows(buildHotkeysMarkdown(bindingsWith(["ctrl+q"])))).toEqual(["| `Ctrl+Q` | Exit |"]);
+	expect(exitRows(buildHotkeysMarkdown(bindingsWith(["ctrl+d", "ctrl+q"])))).toEqual([
+		"| `Ctrl+D` | Delete char forward (with draft) / exit (empty prompt) |",
+		"| `Ctrl+Q` | Exit |",
+	]);
+	expect(exitRows(buildHotkeysMarkdown(bindingsWith([])))).toEqual(["| `Disabled` | Exit |"]);
 });

@@ -286,9 +286,9 @@ type ToolChoice =
 | --- | --- | --- | --- |
 | OpenAI Completions | `tool_choice` | strings + nested function object | `!supportsNamedToolChoice` → filter tools + `"required"`; `!supportsForcedToolChoice` → `"auto"`; forced tool absent from `tools` → delete `tool_choice`; `"none"` with no tools → dropped (LiteLLM/Bedrock proxies 400) |
 | OpenAI Responses | `tool_choice` | strings + flat function/custom/computer objects | Same named/forced downgrades; choice validated against tools **surviving schema quarantine** — a pin on a dropped tool is deleted; `{ type: "computer" }` on models without native computer use is remapped to the function tool name (also `azure-openai-responses.ts`) |
-| Anthropic | `tool_choice` | `{ type: "auto" \| "none" \| "any" \| "tool", name? }` | Names via `encodeAnthropicToolName`; `!supportsForcedToolChoice` (Fable/Mythos) → `auto` |
+| Anthropic | `tool_choice` | `{ type: "auto" \| "none" \| "any" \| "tool", name? }` | Names via `encodeAnthropicToolName`; `!supportsForcedToolChoice` (Fable/Mythos, Opus/Sonnet 5.5) → `auto` |
 | Google Gemini/Vertex | `toolConfig.functionCallingConfig` | `mode: AUTO \| NONE \| ANY` (+ `allowedFunctionNames` for pins) | Antigravity/Gemini CLI uses `mode: VALIDATED` default (`google-gemini-cli.ts`) |
-| Bedrock | `toolConfig.toolChoice` | `{ auto: {} } \| { any: {} } \| { tool: { name } }` | `planToolConfig`; `"none"` + tool history + no tools → `NO_TOOLS_SENTINEL` with `{ auto: {} }` |
+| Bedrock | `toolConfig.toolChoice` | `{ auto: {} } \| { any: {} } \| { tool: { name } }` | `planToolConfig`; `supportsForcedToolChoice: false` (Opus/Sonnet 5.5) → `{ auto: {} }` with thinking kept; `"none"` + tool history + no tools → `NO_TOOLS_SENTINEL` with `{ auto: {} }` |
 | Ollama | `tool_choice` | only `"none"` / `"required"` | Pins emulated by `selectToolsForToolChoice`: filter tools to the target, send `"required"` |
 
 ### Emulation and fallback paths
@@ -303,7 +303,7 @@ type ToolChoice =
 Several backends reject thinking + forced tool choice together:
 
 - **Anthropic**: `disableThinkingIfToolChoiceForced` deletes `params.thinking`; adaptive-only models pin `output_config.effort = "low"` so default adaptive thinking doesn't kick back in.
-- **Bedrock**: forced `any`/`tool` clears `additionalModelRequestFields` (where thinking config lives).
+- **Bedrock**: forced `any`/`tool` clears `additionalModelRequestFields` (where thinking config lives), except prefix-bound (Fable) thinking, which downgrades the choice to `auto` instead.
 - **OpenAI compat**: `resolveOpenAICompatPolicy` honors `disableReasoningOnForcedToolChoice` / `disableReasoningOnToolChoice`. Exception: Kimi K3 keeps reasoning effort with forced `"required"` (`hasActiveNativeKimiK3Reasoning` in `openai-completions.ts`).
 
 ### How the agent loop drives it (`packages/agent`)

@@ -12,8 +12,8 @@ import { type CustomTool, toolCapability } from "../capability/tool";
 import type { LoadContext, LoadResult } from "../capability/types";
 import { legacyProviderAllowed } from "./agent-plugin-format";
 import {
-	buildRuleFromMarkdown,
 	createSourceMeta,
+	discoverRuleFromMarkdown,
 	expandEnvVarsDeep,
 	loadFilesFromDir,
 	parseRequestIdFormat,
@@ -81,7 +81,7 @@ async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
 			loadFilesFromDir<Rule>(ctx, path.join(root.path, "rules"), PROVIDER_ID, root.level, {
 				extensions: ["md", "mdc"],
 				transform: (name, content, filePath, source) =>
-					buildRuleFromMarkdown(name, content, filePath, source, { stripNamePattern: /\.(md|mdc)$/ }),
+					discoverRuleFromMarkdown(name, content, filePath, source, { stripNamePattern: /\.(md|mdc)$/ }),
 			}),
 		),
 	);

@@ -11,6 +11,7 @@ import {
 } from "./schema/json-schema-validator";
 import { stamp } from "./schema/stamps";
 import { arkToWireSchema, isArkSchema } from "./schema/wire";
+import { boundRawToolArguments } from "./tool-call-arguments";
 
 const JSON_NUMBER_PATTERN = /^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
@@ -1612,12 +1613,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 	const originalArgs = toolCall.arguments;
 	if (originalArgs && typeof originalArgs === "object" && "__parseError" in originalArgs) {
 		const parseError = originalArgs.__parseError;
-		const rawJson = String(originalArgs.__rawJson ?? "");
-		const maxLen = 512;
-		const truncatedRawJson =
-			rawJson.length <= maxLen
-				? rawJson
-				: `${rawJson.slice(0, maxLen)}… [truncated ${rawJson.length - maxLen} chars]`;
+		const truncatedRawJson = boundRawToolArguments(String(originalArgs.__rawJson ?? ""));
 		throw new AIError.ValidationError(
 			`Validation failed for tool "${toolCall.name}": Tool call arguments are not valid JSON.\nParse Error: ${parseError}\nRaw JSON:\n${truncatedRawJson}`,
 		);

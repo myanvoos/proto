@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
 import type { MessageCountOptions, Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import { calculateContextTokens, hasContextTokenUsage } from "./compaction";
@@ -28,6 +28,30 @@ export function findTranscriptUsageAnchor(
 		return { index, message, tokens: calculateContextTokens(message.usage) };
 	}
 	return undefined;
+}
+
+/**
+ * Newest assistant turn in a provider request's `messages` whose usage still describes the prefix it sits on.
+ * Request contexts carry no compaction index, so staleness is read from the rewrite markers: a summary
+ * (`historyRewriteAt`, committed at its `timestamp`) or a pruned tool result (`prunedAt`) replaced text every report
+ * made at or before the rewrite already counted.
+ */
+export function findRequestUsageAnchor(messages: readonly Message[]): TranscriptUsageAnchor | undefined {
+	let rewriteAt = Number.NEGATIVE_INFINITY;
+	let anchorIndex = -1;
+	let anchor: AssistantMessage | undefined;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		if (message.role === "user" && message.historyRewriteAt !== undefined) {
+			rewriteAt = Math.max(rewriteAt, message.historyRewriteAt, message.timestamp);
+		} else if (message.role === "toolResult" && message.prunedAt !== undefined) {
+			rewriteAt = Math.max(rewriteAt, message.prunedAt);
+		} else if (isTranscriptUsageAnchor(message) && message.timestamp > rewriteAt) {
+			anchorIndex = index;
+			anchor = message;
+		}
+	}
+	return anchor && { index: anchorIndex, message: anchor, tokens: calculateContextTokens(anchor.usage) };
 }
 
 export interface TranscriptTokenOptions {

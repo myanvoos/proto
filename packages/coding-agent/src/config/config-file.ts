@@ -4,6 +4,13 @@ import { OmpErrors, type Type } from "@oh-my-pi/omptype";
 import { getAgentDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
 
+const YAML_MAPPING_HEADER_TRAILING_SPACE = /: +$/gm;
+
+/** Serializes config YAML without Bun's trailing space after block mapping headers. */
+export function stringifyYamlConfig(value: unknown): string {
+	return YAML.stringify(value, null, 2).replace(YAML_MAPPING_HEADER_TRAILING_SPACE, ":");
+}
+
 interface ConfigSchemaError {
 	instancePath: string;
 	message: string | undefined;
@@ -35,7 +42,7 @@ function migrateJsonToYml(jsonPath: string, ymlPath: string) {
 			migratedPaths.add(key);
 			return;
 		}
-		fs.writeFileSync(ymlPath, YAML.stringify(parsed, null, 2));
+		fs.writeFileSync(ymlPath, stringifyYamlConfig(parsed));
 		migratedPaths.add(key);
 	} catch (error) {
 		logger.warn("migrateJsonToYml: migration failed", { error: String(error) });

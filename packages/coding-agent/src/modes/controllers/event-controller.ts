@@ -3,7 +3,15 @@ import { type AssistantMessage, type ImageContent, thinkingLoopDetail } from "@o
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, isTerminalFocused, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
-import { formatDuration, INTENT_FIELD, logger, normalizeIntent, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import {
+	formatDuration,
+	INTENT_FIELD,
+	isRecord,
+	logger,
+	normalizeIntent,
+	prompt,
+	sanitizeText,
+} from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
@@ -22,7 +30,7 @@ import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { ChecklistPhase, InteractiveModeContext } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { isSilentAbort, isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { RETRY_BUDGET_EXHAUSTED_PREFIX } from "../../session/turn-recovery";
 import { nextActionableTask } from "../../tools/checklist";
 import { PREVIEW_LIMITS, previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -216,6 +224,14 @@ export class EventController {
 			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
+	}
+
+	refreshIdleCompactionTimer(): void {
+		if (this.ctx.viewSession.isStreaming) {
+			this.#cancelIdleCompaction();
+			return;
+		}
+		this.#scheduleIdleCompaction();
 	}
 
 	dispose(): void {
@@ -453,6 +469,13 @@ export class EventController {
 		return true;
 	}
 
+	// Post-tool segments finalize at message_end; one whose message never ended would otherwise stay live at the
+	// transcript frontier and block history retirement for every later block.
+	#retirePostToolAssistantComponents(): void {
+		for (const component of this.#postToolAssistantComponents.values()) component.markTranscriptBlockFinalized();
+		this.#postToolAssistantComponents.clear();
+	}
+
 	#upsertPostToolAssistantSegment(
 		toolCallId: string,
 		segment: AssistantMessage | undefined,
@@ -460,6 +483,8 @@ export class EventController {
 		if (!segment || !assistantHasVisibleContent(segment)) return undefined;
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
+			// A closed segment may already be committed to terminal history.
+			if (existing.isTranscriptBlockFinalized()) return existing;
 			existing.updateContent(segment);
 			if (!this.ctx.chatContainer.children.includes(existing)) {
 				if (!this.#insertAfterTranscriptComponent(this.#toolTimelineComponents.get(toolCallId), existing)) {
@@ -715,7 +740,7 @@ export class EventController {
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
-		this.#postToolAssistantComponents.clear();
+		this.#retirePostToolAssistantComponents();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
 		this.#resetReadGroup();
@@ -745,6 +770,11 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "assistant") this.#updateWorkingSpinnerFrames(event.message);
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
+			// An idle custom message delivered before the initial transcript render is already persisted; the
+			// initial replay paints it, and painting it live too would duplicate it.
+			if (event.message.role === "custom" && !this.ctx.initialChatRendered && !this.ctx.viewSession.isStreaming) {
+				return;
+			}
 			const signature = this.#customMessageSignature(event.message);
 			if (this.#renderedCustomMessages.has(signature)) {
 				return;
@@ -792,7 +822,6 @@ export class EventController {
 			const matchedLocalSubmission = this.ctx.locallySubmittedUserSignatures.delete(signature);
 			const replacesOptimistic =
 				this.ctx.optimisticUserMessageSignature !== undefined && !wasOptimistic && !matchedLocalSubmission;
-			const wasLocallySubmitted = matchedLocalSubmission || wasOptimistic || replacesOptimistic;
 			if (wasOptimistic) {
 				this.ctx.clearOptimisticUserMessage();
 			} else if (replacesOptimistic) {
@@ -801,10 +830,9 @@ export class EventController {
 				this.ctx.addMessageToChat(event.message);
 			}
 
+			// Never clear the editor here: local submissions cleared it at submit time, and an inbound prompt
+			// (an extension's sendUserMessage) can land while the user is composing the next one.
 			if (!event.message.synthetic) {
-				if (!wasLocallySubmitted) {
-					this.ctx.editor.setText("");
-				}
 				this.ctx.updatePendingMessagesDisplay();
 			}
 			this.ctx.ui.requestRender();
@@ -818,16 +846,21 @@ export class EventController {
 			for (const id of this.#toolTimelineComponents.keys()) {
 				if (!this.ctx.pendingTools.has(id)) this.#toolTimelineComponents.delete(id);
 			}
-			this.#postToolAssistantComponents.clear();
+			this.#retirePostToolAssistantComponents();
 			this.#resetStreamingAssistantState();
+			// An attempt that never saw its message_end must not stay live: one unfinalized
+			// block at the transcript frontier blocks history retirement forever.
+			const abandoned = this.ctx.streamingComponent;
+			if (abandoned) {
+				this.ctx.chatContainer.disposeAndRemoveChild(abandoned);
+				abandoned.markTranscriptBlockFinalized();
+			}
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
 			this.#updateWorkingSpinnerFrames(event.message);
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
-			this.#streamingReveal.begin(
-				this.ctx.streamingComponent,
-				splitAssistantMessageToolTimeline(this.ctx.streamingMessage).beforeTools,
-			);
+			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			this.#streamingReveal.begin(this.ctx.streamingComponent, timeline.beforeTools, timeline.hasToolCalls);
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -915,7 +948,7 @@ export class EventController {
 		if (
 			nextToolName === "fleet" &&
 			previous.isDisplaceableBlock() &&
-			this.ctx.chatContainer.canRemoveBlock(previous)
+			this.ctx.chatContainer.canDisplaceBlock(previous)
 		) {
 			this.ctx.chatContainer.disposeAndRemoveChild(previous);
 		}
@@ -994,15 +1027,18 @@ export class EventController {
 			this.#migrateStreamedToolCallId(priorId, content.id);
 		}
 		this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
-		this.#resolveDisplaceablePoll(content.name);
-		this.#resolveDisplaceableChecklist(content.name);
+		// Aliased spellings (`protolens://browser`, `mcp__srv__tool`) render under the canonical tool name;
+		// message history keeps the provider's wire name.
+		const tool = this.ctx.viewSession.getToolByName(content.name);
+		const toolName = tool?.name ?? content.name;
+		this.#resolveDisplaceablePoll(toolName);
+		this.#resolveDisplaceableChecklist(toolName);
 
 		let renderArgs: Record<string, unknown>;
 		let classificationArgs = content.arguments;
 		const partialJson = getStreamingPartialJson(content);
 		const rawInput = content.customWireName !== undefined;
-		const tool = this.ctx.viewSession.getToolByName(content.name);
-		const streamingStringKeys = streamingStringKeysForTool(content.name, rawInput);
+		const streamingStringKeys = streamingStringKeysForTool(toolName, rawInput);
 		if (partialJson !== undefined) {
 			const snapshot = decodeStreamedToolArgsSnapshot(
 				partialJson,
@@ -1019,7 +1055,7 @@ export class EventController {
 				partialJson,
 				{
 					rawInput,
-					exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
+					exposeRawPartialJson: exposesRawPartialJson(toolName, rawInput, tool),
 					streamingStringKeys,
 				},
 				snapshot,
@@ -1030,7 +1066,7 @@ export class EventController {
 		}
 
 		let replacementIndex: number | undefined;
-		if (content.name === "read") {
+		if (toolName === "read") {
 			if (!readArgsHaveTarget(classificationArgs)) return;
 			if (readArgsCollapseIntoGroup(classificationArgs)) {
 				let component = this.ctx.pendingTools.get(content.id);
@@ -1062,10 +1098,10 @@ export class EventController {
 		if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
 			this.#resetReadGroup();
 			const component = new ToolExecutionComponent(
-				content.name,
+				toolName,
 				renderArgs,
 				{
-					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
+					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(toolName),
 					showImages: settings.get("terminal.showImages"),
 				},
 				tool,
@@ -1162,6 +1198,11 @@ export class EventController {
 				segmentIndices ? this.#streamedTimelineSegment(message, segmentIndices) : undefined,
 			);
 		}
+		// A segment followed by a later tool call is complete; finalize it so history retirement is not pinned
+		// behind it until message_end.
+		for (const [toolCallId, component] of this.#postToolAssistantComponents) {
+			if (toolCallId !== this.#streamedTimelineLastToolCallId) component.markTranscriptBlockFinalized();
+		}
 	}
 
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
@@ -1197,12 +1238,12 @@ export class EventController {
 			this.#toolArgsReveal.flushAll();
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
-			const ttsrSilenced = aborted && this.ctx.viewSession.isTtsrAbortPending;
-			if (aborted && !ttsrSilenced) {
+			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
+			if (aborted && !silentlyAborted) {
 				errorMessage = resolveAbortLabel(this.ctx.streamingMessage, this.ctx.viewSession.retryAttempt);
 				this.ctx.streamingMessage.errorMessage = errorMessage;
 			}
-			const displayMessage: AssistantMessage = ttsrSilenced
+			const displayMessage: AssistantMessage = silentlyAborted
 				? {
 						...this.ctx.streamingMessage,
 						stopReason: "stop",
@@ -1331,17 +1372,19 @@ export class EventController {
 		if (this.#retractedToolCallIds.has(event.toolCallId)) return;
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
-		if (event.toolName === "ask") {
+		const tool = this.ctx.viewSession.getToolByName(event.toolName);
+		const toolName = tool?.name ?? event.toolName;
+		if (toolName === "ask") {
 			this.#attentionToolCallIds.add(event.toolCallId);
 			setTerminalTitleState("attention");
 		}
-		this.#resolveDisplaceablePoll(event.toolName);
-		this.#resolveDisplaceableChecklist(event.toolName);
+		this.#resolveDisplaceablePoll(toolName);
+		this.#resolveDisplaceableChecklist(toolName);
 		this.#toolArgsReveal.finish(event.toolCallId);
 
 		let replacementIndex: number | undefined;
 		const pending = this.ctx.pendingTools.get(event.toolCallId);
-		if (event.toolName === "read" && readArgsHaveTarget(event.args) && pending) {
+		if (toolName === "read" && readArgsHaveTarget(event.args) && pending) {
 			const shouldGroup = readArgsCollapseIntoGroup(event.args);
 			if (shouldGroup !== pending instanceof ReadToolGroupComponent) {
 				replacementIndex = this.#detachToolCardForRendererMigration(event.toolCallId, pending);
@@ -1349,7 +1392,7 @@ export class EventController {
 		}
 
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
-			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			if (toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const group = this.#getReadGroup();
 				group.updateArgs(event.args, event.toolCallId);
@@ -1362,12 +1405,11 @@ export class EventController {
 			}
 
 			this.#resetReadGroup();
-			const tool = this.ctx.viewSession.getToolByName(event.toolName);
 			const component = new ToolExecutionComponent(
-				event.toolName,
+				toolName,
 				event.args,
 				{
-					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(event.toolName),
+					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(toolName),
 					showImages: settings.get("terminal.showImages"),
 				},
 				tool,
@@ -1509,10 +1551,21 @@ export class EventController {
 		if (syntheticFailureCard) this.#syntheticFailureCards.set(event.toolCallId, syntheticFailureCard);
 
 		if (event.toolName === "checklist" && !event.isError) {
-			const details = event.result.details as { phases?: ChecklistPhase[] } | undefined;
-			if (details?.phases) {
+			const details = event.result.details as { op?: string; phases?: ChecklistPhase[] } | undefined;
+			// A read-only view must not resurrect a HUD the completed checklist already cleared.
+			if (details?.op !== "view" && details?.phases) {
 				this.ctx.setChecklist(details.phases);
 			}
+		} else if (
+			event.toolName === "bash" &&
+			isRecord(event.result.details) &&
+			Array.isArray(event.result.details.statusEvents) &&
+			event.result.details.statusEvents.some(
+				(status: unknown) => isRecord(status) && status.op === "checklist" && status.committed === true,
+			)
+		) {
+			// A cell's bridged checklist call updates session state without its own tool result event.
+			this.ctx.setChecklist(this.ctx.viewSession.getChecklistPhases());
 		} else if (event.toolName === "checklist" && event.isError) {
 			const textContent = event.result.content.find(
 				(content: { type: string; text?: string }) => content.type === "text",
@@ -1535,6 +1588,8 @@ export class EventController {
 		setTerminalTitleState("idle");
 
 		await this.#finishAgentEnd(event);
+		// The settled turn may be extension-started while the input loop sleeps; requestShutdown does not await idle.
+		if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
@@ -1549,6 +1604,8 @@ export class EventController {
 		}
 		if (this.ctx.streamingComponent) {
 			this.ctx.chatContainer.disposeAndRemoveChild(this.ctx.streamingComponent);
+			// Removal is refused once a block reached history; finalize so a kept block cannot jam retirement.
+			this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
 		}
@@ -1567,7 +1624,7 @@ export class EventController {
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
-		this.#postToolAssistantComponents.clear();
+		this.#retirePostToolAssistantComponents();
 		this.#resetReadGroup();
 
 		this.#resolveDisplaceablePoll();

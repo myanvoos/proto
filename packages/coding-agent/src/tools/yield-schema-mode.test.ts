@@ -50,3 +50,9 @@ test("permissive mode still promises the dropped constraint it honours", async (
 	expect(messages[3]).toContain("schema validation overridden");
 	for (const message of messages) expect(message).not.toContain("schema_violation");
 });
+
+test("an empty-string error beside valid data is accepted as success", async () => {
+	const tool = yieldTool("strict");
+	const result = await tool.execute("yield-call", { result: { data: { count: 3 }, error: "" } });
+	expect(result.details).toMatchObject({ status: "success", data: { count: 3 } });
+});

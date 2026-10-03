@@ -2,7 +2,7 @@
 
 {{#if tools.length}}
 {{#each tools}}
-- {{mcpToolName}} → `{{path}}`
+- {{mcpToolName}} → `{{path}}`{{#if summary}} — {{summary}}{{/if}}
 {{/each}}
 {{/if}}
 {{#if hasOmittedTools}}

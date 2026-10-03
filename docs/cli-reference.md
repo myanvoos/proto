@@ -201,6 +201,10 @@ runaway turn, a checkpoint left open — are written to stderr in text mode as
 condition the interactive UI would have shown. `--mode json` already carries the
 `notice` events.
 
+A session store that stops accepting writes is reported on stderr. If it is still failing
+when the run ends, stderr says the transcript was not saved and the exit code is `1`, even
+though the answer was printed.
+
 The [advisor / watchdog](./advisor-watchdog.md#headless-runs) doc describes
 print-mode disposal semantics when the advisor runtime is enabled.
 

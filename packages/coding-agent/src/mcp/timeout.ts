@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { MCPTransportError, type MCPTransportKind } from "./errors";
 
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
 const MCP_TIMEOUT_ENV = "PROTO_MCP_TIMEOUT_MS";
@@ -18,9 +19,9 @@ export function resolveMCPTimeoutMs(configTimeout?: number): number {
 }
 
 /** A request abandoned because its client-side MCP timeout elapsed, as opposed to a caller abort or server error. */
-export class MCPRequestTimeoutError extends Error {
-	constructor(message: string) {
-		super(message);
+export class MCPRequestTimeoutError extends MCPTransportError {
+	constructor(message: string, transport: MCPTransportKind = "unknown") {
+		super({ transport, stage: "receive", failure: "timeout", message, retryable: true });
 		this.name = "MCPRequestTimeoutError";
 	}
 }

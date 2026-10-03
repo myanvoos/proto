@@ -102,6 +102,7 @@ pub(crate) struct Host {
 
 
 	pub stderr: StreamWriter,
+	stdout_identity: Option<(u64, u64)>,
 
 	name:                  String,
 	cwd:                   PathBuf,
@@ -205,6 +206,22 @@ impl Drop for CancelOnDrop {
 }
 
 impl Host {
+	pub fn path_is_stdout(&self, path: &Path) -> bool {
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+			self.stdout_identity.is_some_and(|identity| {
+				std::fs::metadata(path)
+					.is_ok_and(|meta| meta.is_file() && (meta.dev(), meta.ino()) == identity)
+			})
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = path;
+			false
+		}
+	}
+
 
 
 	pub fn name(&self) -> &str {
@@ -1044,6 +1061,7 @@ fn build_host<SE: ShellExtensions>(
 	let cancel = Arc::new(AtomicBool::new(false));
 
 	let stdout = or_null(context.try_fd(OpenFiles::STDOUT_FD))?;
+	let stdout_identity = context.params.stdout_identity.or_else(|| stdout.regular_file_identity());
 	let stderr_file = or_null(context.try_fd(OpenFiles::STDERR_FD))?;
 	let sigpipe = Arc::new(Sigpipe::default());
 
@@ -1066,6 +1084,7 @@ fn build_host<SE: ShellExtensions>(
 		},
 		stdout,
 		stderr,
+		stdout_identity,
 		name: invoked,
 		cwd: context.shell.working_dir().to_path_buf(),
 		env,
@@ -1205,6 +1224,7 @@ mod tests {
 				fd: None,
 				cancel: Arc::clone(&cancel),
 			},
+			stdout_identity: stdout.regular_file_identity(),
 			stdout: SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe),
 			stderr: StreamWriter::new(SigpipeGuard::wrap(
 				stderr_file,

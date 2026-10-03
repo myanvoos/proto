@@ -1,12 +1,22 @@
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
+import { truncateMiddle } from "./streaming-output";
 
 export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
 
 export const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
 export const ASYNC_PREVIEW_MAX_CHARS = 4_000;
+
+export function asyncJobRawArtifactId(job: AsyncJob | undefined): string | undefined {
+	const result = job?.result;
+	if (!isRecord(result) || !isRecord(result.details)) return undefined;
+	const execution = result.details.execution;
+	if (!isRecord(execution) || !isRecord(execution.output)) return undefined;
+	const id = execution.output.rawArtifactId;
+	return typeof id === "string" && id.length > 0 ? id : undefined;
+}
 
 export type AsyncArtifactAllocator = (toolType: string) => Promise<{ id?: string; path?: string }>;
 
@@ -18,9 +28,17 @@ export type AsyncArtifactAllocator = (toolType: string) => Promise<{ id?: string
 export async function formatAsyncJobTextForContext(
 	text: string,
 	allocateArtifact?: AsyncArtifactAllocator,
+	rawArtifactId?: string,
 ): Promise<string> {
 	if (text.length <= ASYNC_INLINE_RESULT_MAX_CHARS) {
 		return text;
+	}
+	if (rawArtifactId) {
+		const preview = truncateMiddle(text, {
+			maxBytes: ASYNC_PREVIEW_MAX_CHARS,
+			maxHeadBytes: ASYNC_PREVIEW_MAX_CHARS - 1_000,
+		}).content;
+		return `${preview}\nFull output: artifact://${rawArtifactId}`;
 	}
 	const preview = `${text.slice(0, ASYNC_PREVIEW_MAX_CHARS)}\n\n[Output truncated. Showing first ${ASYNC_PREVIEW_MAX_CHARS.toLocaleString()} characters.]`;
 	try {

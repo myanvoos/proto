@@ -2,7 +2,12 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { type AuthAccountPolicy, AuthStorage, SqliteAuthCredentialStore } from "./auth-storage";
+import {
+	type AuthAccountPolicy,
+	AuthStorage,
+	type CredentialDisabledEvent,
+	SqliteAuthCredentialStore,
+} from "./auth-storage";
 import { ProviderHttpError } from "./error";
 import type { UsageProvider, UsageReport } from "./usage";
 
@@ -61,7 +66,7 @@ describe("AuthStorage quota reset deadlines", () => {
 				.listAuthCredentials("zai")
 				.find(entry => entry.credential.type === "api_key" && entry.credential.key === "zai-exhausted");
 			if (!blockedRow) throw new Error("exhausted credential missing");
-			expect(store.getCredentialBlock(blockedRow.id, "zai:api_key", "")).toBe(finalReset);
+			expect(store.getCredentialBlock(blockedRow.id, "zai:api_key", "credits")).toBe(finalReset);
 		} finally {
 			authStorage.close();
 		}
@@ -149,6 +154,67 @@ describe("AuthStorage usage block healing", () => {
 			expect(store.getCredentialBlock(row.id, "google-antigravity:oauth", "counter:anthropic")).toBe(weekAhead);
 		} finally {
 			authStorage.close();
+		}
+	});
+
+	it("a live Z.AI report lifts a stale credit-pool block only when the shared pool recovered", async () => {
+		const now = Date.now();
+		const credit = (id: string, usedFraction: number): UsageReport["limits"][number] => ({
+			id,
+			label: id,
+			scope: { provider: "zai", windowId: "1w", shared: true },
+			window: { id: "1w", label: "Weekly", resetsAt: now + 4 * 24 * HOUR_MS },
+			amount: { unit: "credits", usedFraction },
+			status: usedFraction >= 1 ? "exhausted" : "ok",
+		});
+		const cases: Array<{ limits: UsageReport["limits"]; healed: boolean }> = [
+			{ limits: [credit("zai:credits:5h", 0.03), credit("zai:credits:1w", 0.01)], healed: true },
+			{ limits: [credit("zai:credits:5h", 0.03), credit("zai:credits:1w", 1)], healed: false },
+			// A feature-only report cannot vouch for the shared credit pool.
+			{ limits: [credit("zai:features:zread:1w", 0.01)], healed: false },
+		];
+		for (const { limits, healed } of cases) {
+			const db = new Database(":memory:");
+			const store = new SqliteAuthCredentialStore(db);
+			const usageProvider: UsageProvider = {
+				id: "zai",
+				fetchUsage: async () => ({
+					provider: "zai",
+					fetchedAt: Date.now(),
+					limits,
+					metadata: { accountId: "zai-account" },
+				}),
+				supports: params => params.provider === "zai",
+			};
+			const authStorage = new AuthStorage(store, {
+				usageProviderResolver: provider => (provider === "zai" ? usageProvider : undefined),
+			});
+			try {
+				await authStorage.set("zai", {
+					type: "oauth",
+					access: "zai-access",
+					refresh: "r",
+					expires: now + HOUR_MS,
+					accountId: "zai-account",
+				});
+				const row = store.listAuthCredentials("zai")[0];
+				if (!row) throw new Error("credential row missing");
+				const blockedUntilMs = now + 4 * 24 * HOUR_MS;
+				store.upsertCredentialBlock({
+					credentialId: row.id,
+					providerKey: "zai:oauth",
+					blockScope: "credits",
+					blockedUntilMs,
+				});
+				db.prepare("UPDATE auth_credential_blocks SET updated_at = ?").run(Math.floor((now - 10 * 60_000) / 1000));
+				store.cleanExpiredCredentialBlocks(now + 10 * 60_000);
+
+				await authStorage.fetchUsageReports();
+
+				expect(store.getCredentialBlock(row.id, "zai:oauth", "credits")).toBe(healed ? undefined : blockedUntilMs);
+			} finally {
+				authStorage.close();
+			}
 		}
 	});
 });
@@ -427,6 +493,47 @@ describe("AuthStorage account routing policies", () => {
 			).rejects.toThrow("matches 2 stored OAuth accounts");
 		} finally {
 			ambiguous.authStorage.close();
+		}
+	});
+});
+
+describe("AuthStorage automatic credential disable", () => {
+	it("names the disabled row and account it was signed in as", async () => {
+		const store = new SqliteAuthCredentialStore(new Database(":memory:"));
+		const events: CredentialDisabledEvent[] = [];
+		const authStorage = new AuthStorage(store, {
+			usageProviderResolver: () => undefined,
+			refreshOAuthCredential: async () => {
+				throw new Error('HTTP 400 invalid_grant {"error":"invalid_grant"}');
+			},
+			onCredentialDisabled: event => {
+				events.push(event);
+			},
+		});
+		try {
+			const identity = { email: "alice@example.com", accountId: "acct-a", orgId: "org-a", orgName: "Org A" };
+			await authStorage.set("anthropic", {
+				type: "oauth",
+				access: "stale",
+				refresh: "revoked",
+				expires: Date.now() - 1,
+				...identity,
+			});
+			const row = store.listAuthCredentials("anthropic")[0];
+			if (!row) throw new Error("credential row missing");
+
+			await authStorage.getApiKey("anthropic", "session-disabled").catch(() => undefined);
+
+			expect(events).toEqual([
+				{
+					provider: "anthropic",
+					disabledCause: expect.stringContaining("invalid_grant"),
+					credentialId: row.id,
+					...identity,
+				},
+			]);
+		} finally {
+			authStorage.close();
 		}
 	});
 });

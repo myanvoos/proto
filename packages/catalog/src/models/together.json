@@ -321,7 +321,7 @@
 			"cacheRead": 0.03,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 1048576,
 		"maxTokens": 384000,
 		"thinking": {
 			"mode": "effort",
@@ -415,7 +415,6 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -465,7 +464,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"deepseek-ai/DeepSeek-V4-Pro-0813": {
 		"id": "deepseek-ai/DeepSeek-V4-Pro-0813",
@@ -567,7 +567,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -703,7 +703,7 @@
 	},
 	"google/gemma-4-31B-it": {
 		"id": "google/gemma-4-31B-it",
-		"name": "Gemma 4 31B Instruct",
+		"name": "Gemma 4 31B",
 		"api": "openai-completions",
 		"provider": "together",
 		"baseUrl": "https://api.together.xyz/v1",
@@ -727,11 +727,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -781,7 +781,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"meta-llama/Llama-3.3-70B-Instruct-Turbo": {
 		"id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -1017,7 +1018,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1096,10 +1097,10 @@
 			"cacheRead": 0.06,
 			"cacheWrite": 0
 		},
-		"contextWindow": 202752,
+		"contextWindow": 196608,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1182,7 +1183,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 250000,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1190,7 +1191,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1321,7 +1323,7 @@
 	},
 	"moonshotai/Kimi-K2.5": {
 		"id": "moonshotai/Kimi-K2.5",
-		"name": "Kimi K2.5",
+		"name": "Kimi-K2.5",
 		"api": "openai-completions",
 		"provider": "together",
 		"baseUrl": "https://api.together.xyz/v1",
@@ -1346,12 +1348,12 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -1402,7 +1404,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"moonshotai/Kimi-K2.6": {
 		"id": "moonshotai/Kimi-K2.6",
@@ -1432,12 +1435,12 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -1489,7 +1492,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"moonshotai/Kimi-K2.7-Code": {
 		"id": "moonshotai/Kimi-K2.7-Code",
@@ -1499,7 +1503,8 @@
 		"baseUrl": "https://api.together.xyz/v1",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0.95,
@@ -1518,12 +1523,12 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -1574,7 +1579,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"moonshotai/Kimi-K3": {
 		"id": "moonshotai/Kimi-K3",
@@ -1596,7 +1602,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1695,7 +1701,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1770,7 +1777,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 131072,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1834,7 +1841,7 @@
 	},
 	"openai/gpt-oss-20b": {
 		"id": "openai/gpt-oss-20b",
-		"name": "GPT OSS 20B",
+		"name": "gpt-oss-20b",
 		"api": "openai-completions",
 		"provider": "together",
 		"baseUrl": "https://api.together.xyz/v1",
@@ -1861,7 +1868,6 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -1911,7 +1917,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"Qwen/Qwen2.5-7B-Instruct-Turbo": {
 		"id": "Qwen/Qwen2.5-7B-Instruct-Turbo",
@@ -2217,7 +2224,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 130000,
 		"int": 18.4,
-		"tps": 85.7,
+		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2300,8 +2307,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 13.7,
-		"tps": 58,
+		"int": 11.2,
+		"tps": 52.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2384,7 +2391,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 500000,
 		"int": 27,
-		"tps": 55.1,
+		"tps": 55.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2467,7 +2474,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 500000,
 		"int": 29.5,
-		"tps": 197.1,
+		"tps": 203.1,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
 		"supportsComputerUse": false,
@@ -2542,7 +2549,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 131072,
 		"int": 25,
-		"tps": 110.6,
+		"tps": 169.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2550,7 +2557,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2631,7 +2639,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2708,7 +2717,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 27.9,
-		"tps": 67.1,
+		"tps": 78.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2716,7 +2725,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2792,7 +2802,7 @@
 		"contextWindow": 202752,
 		"maxTokens": 131072,
 		"int": 26.1,
-		"tps": 35.3,
+		"tps": 43.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2800,7 +2810,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2873,10 +2884,10 @@
 			"cacheRead": 0.26,
 			"cacheWrite": 0
 		},
-		"contextWindow": 512000,
+		"contextWindow": 1048575,
 		"maxTokens": 164000,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2960,7 +2971,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 262144,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3045,7 +3056,7 @@
 		"contextWindow": 1048575,
 		"maxTokens": 400000,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

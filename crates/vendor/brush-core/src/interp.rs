@@ -105,6 +105,8 @@ impl CommandObservation {
 
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
+	/// Regular stdout identity before command tracing replaces it with a pipe.
+	pub stdout_identity: Option<(u64, u64)>,
 
 	open_files:               openfiles::OpenFiles,
 
@@ -282,6 +284,9 @@ impl ExecutionParameters {
 
 
 	pub fn set_fd(&mut self, fd: ShellFd, file: openfiles::OpenFile) {
+		if fd == OpenFiles::STDOUT_FD {
+			self.stdout_identity = file.regular_file_identity();
+		}
 		self.open_files.set_fd(fd, file);
 	}
 
@@ -811,10 +816,10 @@ async fn spawn_pipeline_processes(
 
 
 		if let Some(Some(reader)) = pipe_readers.pop() {
-			cmd_params.open_files.set_fd(OpenFiles::STDIN_FD, reader);
+			cmd_params.set_fd(OpenFiles::STDIN_FD, reader);
 		}
 		if let Some(Some(writer)) = pipe_writers.pop() {
-			cmd_params.open_files.set_fd(OpenFiles::STDOUT_FD, writer);
+			cmd_params.set_fd(OpenFiles::STDOUT_FD, writer);
 		}
 
 		let pipeline_context = if !run_in_current_shell {
@@ -1137,12 +1142,8 @@ impl Execute for ast::CoprocessCommand {
 
 
 		let mut child_params = params.clone();
-		child_params
-			.open_files
-			.set_fd(OpenFiles::STDIN_FD, stdin_reader.into());
-		child_params
-			.open_files
-			.set_fd(OpenFiles::STDOUT_FD, stdout_writer.into());
+		child_params.set_fd(OpenFiles::STDIN_FD, stdin_reader.into());
+		child_params.set_fd(OpenFiles::STDOUT_FD, stdout_writer.into());
 
 		let body = self.body.clone();
 		let cancel_token = child_params.cancel_token();
@@ -1583,9 +1584,7 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 					let (installed_fd_num, substitution_file) =
 						setup_process_substitution(&context.shell, &params, kind, subshell_command)?;
 
-					params
-						.open_files
-						.set_fd(installed_fd_num, substitution_file);
+					params.set_fd(installed_fd_num, substitution_file);
 
 					args.push(CommandArg::String(std::format!("/dev/fd/{installed_fd_num}")));
 				},
@@ -1663,7 +1662,7 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
         if let Some(observation) = params.command_observation.clone() {
 			for fd in [OpenFiles::STDOUT_FD, OpenFiles::STDERR_FD] {
 				if let Some(output) = params.try_fd(&context.shell, fd) {
-					params.set_fd(fd, observation.observer.capture(observation.id, fd as u32, output));
+					params.open_files.set_fd(fd, observation.observer.capture(observation.id, fd as u32, output));
 				}
 			}
 		}
@@ -2114,7 +2113,7 @@ pub(crate) async fn setup_redirect(
 						_ => shell.fs_observations().commit_write(observation),
 					}
 
-					params.open_files.set_fd(fd_num, opened_file);
+					params.set_fd(fd_num, opened_file);
 				},
 
 				ast::IoFileRedirectTarget::Fd(fd) => {
@@ -2134,7 +2133,7 @@ pub(crate) async fn setup_redirect(
 					if let Some(f) = params.try_fd(shell, *fd) {
 						let target_file = f.try_clone()?;
 
-						params.open_files.set_fd(fd_num, target_file);
+						params.set_fd(fd_num, target_file);
 					} else {
 						return Err(error::ErrorKind::BadFileDescriptor(*fd).into());
 					}
@@ -2184,7 +2183,7 @@ pub(crate) async fn setup_redirect(
 							return Err(error::ErrorKind::BadFileDescriptor(source_fd_num).into());
 						};
 
-						params.open_files.set_fd(fd_num, target_file);
+						params.set_fd(fd_num, target_file);
 					} else if fd_num == 1 && !dash {
 
 
@@ -2212,12 +2211,12 @@ pub(crate) async fn setup_redirect(
 								setup_process_substitution(shell, params, substitution_kind, subshell_cmd)?;
 
 							let target_file = substitution_file.try_clone()?;
-							params.open_files.set_fd(substitution_fd, substitution_file);
+							params.set_fd(substitution_fd, substitution_file);
 
 							let fd_num =
 								specified_fd_num.unwrap_or_else(|| get_default_fd_for_redirect_kind(kind));
 
-							params.open_files.set_fd(fd_num, target_file);
+							params.set_fd(fd_num, target_file);
 						},
 						_ => {
 							return Err(error::ErrorKind::InternalError(format!(
@@ -2243,7 +2242,7 @@ pub(crate) async fn setup_redirect(
 
 			let f = setup_open_file_with_contents(io_here_doc.as_str())?;
 
-			params.open_files.set_fd(fd_num, f);
+			params.set_fd(fd_num, f);
 		},
 
 		ast::IoRedirect::HereString(fd_num, word) => {
@@ -2255,7 +2254,7 @@ pub(crate) async fn setup_redirect(
 
 			let f = setup_open_file_with_contents(expanded_word.as_str())?;
 
-			params.open_files.set_fd(fd_num, f);
+			params.set_fd(fd_num, f);
 		},
 	}
 
@@ -2307,8 +2306,8 @@ fn setup_redirect_output_and_error_to(
 	shell.fs_observations().commit_write(observation);
 	let stderr_file = stdout_file.try_clone()?;
 
-	params.open_files.set_fd(OpenFiles::STDOUT_FD, stdout_file);
-	params.open_files.set_fd(OpenFiles::STDERR_FD, stderr_file);
+	params.set_fd(OpenFiles::STDOUT_FD, stdout_file);
+	params.set_fd(OpenFiles::STDERR_FD, stderr_file);
 
 	Ok(())
 }
@@ -2355,11 +2354,11 @@ fn setup_process_substitution(
 
 	let target_file = match kind {
 		ast::ProcessSubstitutionKind::Read => {
-			child_params.open_files.set_fd(OpenFiles::STDOUT_FD, writer);
+			child_params.set_fd(OpenFiles::STDOUT_FD, writer);
 			reader
 		},
 		ast::ProcessSubstitutionKind::Write => {
-			child_params.open_files.set_fd(OpenFiles::STDIN_FD, reader);
+			child_params.set_fd(OpenFiles::STDIN_FD, reader);
 			writer
 		},
 	};

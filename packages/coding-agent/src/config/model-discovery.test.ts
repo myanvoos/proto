@@ -3,7 +3,7 @@ import type { Api, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
-import { applyLlamaCppQwenThinking } from "./model-discovery";
+import { applyLlamaCppQwenThinking, discoverModelsByProviderType } from "./model-discovery";
 
 function llamaCppModel(id: string): Model<Api> {
 	return buildModel({
@@ -30,4 +30,30 @@ test("PrismML Bonsai GGUFs route through the Qwen chat template of their lineage
 	// The original Bonsai 27B is Qwen3.6-based: template thinking toggle, no template effort.
 	const bonsai = applyLlamaCppQwenThinking(llamaCppModel("Ternary-Bonsai-27B.gguf"));
 	expect(bonsai.compat).toMatchObject({ thinkingFormat: "qwen-chat-template", qwenTemplateReasoningEffort: false });
+});
+
+test("OpenAI model-list discovery reads nested token limits", async () => {
+	const models = await discoverModelsByProviderType(
+		{
+			provider: "nested-limits-test",
+			api: "openai-completions",
+			baseUrl: "https://models.example.test/v1",
+			discovery: { type: "openai-models-list" },
+		},
+		{
+			fetch: async () =>
+				Response.json({
+					data: [
+						{
+							id: "nested-limits-model",
+							limits: { max_input_tokens: 196_000, max_output_tokens: 24_000 },
+						},
+					],
+				}),
+			getBearerApiKeyResolver: async () => undefined,
+		},
+	);
+
+	expect(models[0]?.contextWindow).toBe(220_000);
+	expect(models[0]?.maxTokens).toBe(24_000);
 });

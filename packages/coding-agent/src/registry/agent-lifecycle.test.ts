@@ -33,6 +33,40 @@ afterEach(() => {
 	AgentLifecycleManager.resetGlobalForTests();
 });
 
+describe("global", () => {
+	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
+	});
+
+	test("rebinds to the current registry after a lone registry reset so release still publishes aborted", async () => {
+		const stale = AgentLifecycleManager.global();
+		AgentRegistry.resetGlobalForTests();
+		const rebound = AgentLifecycleManager.global();
+		expect(rebound).not.toBe(stale);
+
+		const registry = AgentRegistry.global();
+		const ref = registry.register({
+			id: "remote-killed",
+			label: "remote kill",
+			kind: "sub",
+			session: { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession,
+			sessionFile: null,
+			status: "running",
+		});
+		const statuses: string[] = [];
+		const unsubscribe = registry.onChange(event => {
+			if (event.ref === ref && event.type === "status_changed") statuses.push(event.ref.status);
+		});
+		try {
+			await rebound.release("remote-killed", ref, { tombstone: true });
+			expect(statuses).toContain("aborted");
+			expect(registry.get("remote-killed")).toMatchObject({ status: "aborted", session: null });
+		} finally {
+			unsubscribe();
+		}
+	});
+});
+
 describe("revival failure", () => {
 	function fakeSession(disposed: { count: number }): AgentSession {
 		return {
@@ -450,4 +484,52 @@ test("old parked revival blueprints retire without losing durable agent identity
 	} finally {
 		await lifecycle.dispose();
 	}
+});
+
+describe("kill tombstone", () => {
+	function registerRunning(registry: AgentRegistry, sessionFile: string, dispose: () => Promise<void>): AgentRef {
+		return registry.register({
+			id: "worker",
+			label: "worker",
+			kind: "sub",
+			session: { hasActiveMonitors: () => false, dispose } as unknown as AgentSession,
+			sessionFile,
+			status: "running",
+		});
+	}
+
+	// Regression: the terminal transition waited for the sidecar write, and the dying session's own dispose path
+	// (which spares only aborted, detached refs) deleted the killed worker in that window.
+	test("the killed worker stays registered as a detached tombstone while its sidecar is written", async () => {
+		const dir = makeTempDir();
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const ref = registerRunning(registry, path.join(dir, "worker.jsonl"), async () => {});
+		const published: Array<{ status: string; session: unknown }> = [];
+		registry.onChange(event => {
+			if (event.type === "status_changed") published.push({ status: event.ref.status, session: event.ref.session });
+		});
+
+		const release = lifecycle.release("worker", ref, { tombstone: true });
+		if (!(ref.status === "aborted" && ref.session === null)) registry.unregister("worker", ref);
+		expect(await release).toBe(true);
+
+		expect(registry.get("worker")).toBe(ref);
+		expect(ref.status).toBe("aborted");
+		expect(published).toEqual([{ status: "aborted", session: null }]);
+	});
+
+	test("a failed sidecar write still disposes the killed worker's session", async () => {
+		const dir = makeTempDir();
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		let disposed = false;
+		const ref = registerRunning(registry, path.join(dir, "missing", "worker.jsonl"), async () => {
+			disposed = true;
+		});
+
+		await expect(lifecycle.release("worker", ref, { tombstone: true })).rejects.toThrow();
+		expect(disposed).toBe(true);
+		expect(ref.session).toBeNull();
+	});
 });

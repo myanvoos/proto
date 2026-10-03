@@ -331,6 +331,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 	query.set("tools", "web_search_exa");
 	const fetchImpl = params.fetch ?? fetch;
 	await waitForExaSearchSlot(params.signal);
+	const requestId = Math.random().toString(36).slice(2);
 	const response = await fetchImpl(`${EXA_MCP_URL}?${query.toString()}`, {
 		method: "POST",
 		headers: {
@@ -340,7 +341,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 		},
 		body: JSON.stringify({
 			jsonrpc: "2.0",
-			id: Math.random().toString(36).slice(2),
+			id: requestId,
 			method: "tools/call",
 			params: {
 				name: "web_search_exa",
@@ -366,7 +367,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 			response.status,
 		);
 	}
-	const mcpResponse = parseSSE(await readProviderResponseText(response, "exa")) as {
+	const mcpResponse = parseSSE(await readProviderResponseText(response, "exa"), requestId) as {
 		result?: {
 			content?: Array<{ type: string; text?: string }>;
 			isError?: boolean;

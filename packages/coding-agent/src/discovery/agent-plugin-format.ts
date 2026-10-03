@@ -440,6 +440,17 @@ export function classifyAgentPluginRoot(rootPath: string): Promise<AgentPluginRo
 	return cached;
 }
 
+/**
+ * Whether a plugin's task-agent `model:` frontmatter uses Claude Code aliases (`sonnet`, `opus`) rather than proto
+ * model selectors. Decided by the declared manifest, with the precedence MCP config resolution uses: a
+ * `.proto-plugin/plugin.json` or an Agent Plugins standard `plugin.json` wins over `.claude-plugin/plugin.json`.
+ */
+export async function pluginUsesClaudeModelDialect(rootPath: string): Promise<boolean> {
+	if ((await readFile(path.join(rootPath, ".proto-plugin", "plugin.json"))) !== null) return false;
+	if ((await classifyAgentPluginRoot(rootPath)).kind === "standard") return false;
+	return (await readFile(path.join(rootPath, ".claude-plugin", "plugin.json"))) !== null;
+}
+
 export async function legacyProviderAllowed(rootPath: string, surface: "skills" | "mcp" | "other"): Promise<boolean> {
 	const status = await classifyAgentPluginRoot(rootPath);
 	if (status.kind === "none") return true;

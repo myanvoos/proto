@@ -193,6 +193,24 @@ function sanitizeErrorLines(message: string | undefined): string[] {
 	return lines.length > 0 ? lines : ["Unknown error"];
 }
 
+/**
+ * Some models inject `\r` runs between words of tool-call strings; CommonMark reads a lone `\r` as a
+ * line ending, splattering prose one word per row. CRLF becomes LF; other CR runs collapse to a space.
+ */
+export function sanitizeCarriageReturns(text: string): string {
+	if (!text.includes("\r")) return text;
+	return text.replaceAll("\r\n", "\n").replace(/\r+/g, " ");
+}
+
+/**
+ * Split raw tool text (subprocess stderr, fetched pages) into framed-block-safe lines: CRLF/LF
+ * splits, a stray `\r` progress overwrite keeps only its final segment (as a terminal shows it),
+ * other control characters are stripped and tabs expanded.
+ */
+export function sanitizeDisplayLines(text: string): string[] {
+	return text.split(/\r?\n/).map(line => replaceTabs(sanitizeText(line.slice(line.lastIndexOf("\r") + 1))));
+}
+
 export function formatErrorMessage(message: string | undefined, theme: Theme): string {
 	const text = sanitizeErrorLines(message).join(" ");
 	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${truncateToWidth(text, TRUNCATE_LENGTHS.LINE)}`)}`;
@@ -310,6 +328,40 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 		}
 	}
 	return filePath;
+}
+
+/** Shorten home-prefixed paths inside free text, keeping surrounding punctuation so error strings stay readable. */
+export function shortenEmbeddedPaths(text: string, homeDir = os.homedir()): string {
+	// Replace the home prefix before tokenizing on spaces so homes containing spaces still shorten.
+	const homePattern =
+		homeDir.length > 1
+			? new RegExp(`(?<=^|[\\s("'\`\\[])${RegExp.escape(homeDir)}(?=$|[/\\s"'(),.;:\\[\\]])`, "g")
+			: undefined;
+	return (homePattern ? text.replace(homePattern, "~") : text)
+		.split(" ")
+		.map(segment => {
+			const leading = segment.match(/^[("'`[]*/)?.[0] ?? "";
+			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
+			const end = segment.length - trailing.length;
+			if (leading.length >= end) return segment;
+			return `${leading}${shortenPath(segment.slice(leading.length, end), homeDir)}${trailing}`;
+		})
+		.join(" ");
+}
+
+/** Sanitize one warning for a single TUI row, including embedded home paths. */
+export function sanitizeDisplayWarning(text: string): string {
+	return shortenEmbeddedPaths(sanitizeSingleLine(text).trim());
+}
+
+/** Sanitize warnings and bound their count and width for TUI display. */
+export function sanitizeDisplayWarnings(warnings: readonly string[]): string[] {
+	const visible = warnings
+		.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS)
+		.map(warning => truncateToWidth(sanitizeDisplayWarning(warning), TRUNCATE_LENGTHS.LONG));
+	const hidden = warnings.length - visible.length;
+	if (hidden > 0) visible.push(`… ${hidden} more ${pluralize("warning", hidden)}`);
+	return visible;
 }
 
 /**

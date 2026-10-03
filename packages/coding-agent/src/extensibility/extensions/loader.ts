@@ -52,6 +52,7 @@ import type {
 	ExtensionRuntime as IExtensionRuntime,
 	LoadExtensionsResult,
 	MessageRenderer,
+	PreparedExtension,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
@@ -163,7 +164,16 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		private readonly runtime: IExtensionRuntime,
 		private readonly cwd: string,
 		public readonly events: EventBus,
-	) {}
+	) {
+		// Extensions destructure `pi.on` or pass API methods as callbacks; bind every prototype method.
+		const prototype = ConcreteExtensionAPI.prototype;
+		for (const name of Object.getOwnPropertyNames(prototype)) {
+			if (name === "constructor") continue;
+			const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+			if (typeof descriptor?.value !== "function") continue;
+			Object.defineProperty(this, name, { value: descriptor.value.bind(this), writable: true, configurable: true });
+		}
+	}
 
 	on<F extends HandlerFn>(event: string, handler: F): void {
 		const list = this.extension.handlers.get(event) ?? [];
@@ -383,13 +393,7 @@ async function runExtensionFactory(
 	}
 }
 
-interface ImportedExtensionModule {
-	factory: ExtensionFactory | null;
-	resolvedPath: string;
-	error: string | null;
-}
-
-async function importExtensionModule(extensionPath: string, cwd: string): Promise<ImportedExtensionModule> {
+async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	const host = await getHostModuleCompat();
 	host.installHostModuleResolution();
@@ -398,22 +402,23 @@ async function importExtensionModule(extensionPath: string, cwd: string): Promis
 		const factory = getExtensionFactory(module);
 		if (typeof factory !== "function") {
 			return {
+				path: extensionPath,
 				factory: null,
 				resolvedPath,
 				error: `Extension does not export a valid factory function: ${extensionPath}`,
 			};
 		}
 
-		return { factory, resolvedPath, error: null };
+		return { path: extensionPath, factory, resolvedPath, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		return { factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
+		return { path: extensionPath, factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
 	}
 }
 
 async function bindExtension(
 	extensionPath: string,
-	imported: ImportedExtensionModule,
+	imported: PreparedExtension,
 	cwd: string,
 	eventBus: EventBus,
 	runtime: IExtensionRuntime,
@@ -462,17 +467,28 @@ export async function loadExtensionFromFactory(
 }
 
 export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
+	const prepared = await Promise.all(paths.map(extPath => importExtensionModule(extPath, cwd)));
+	return bindPreparedExtensions(prepared, cwd, eventBus);
+}
+
+/**
+ * Binds already-imported extension factories to a fresh runtime. Each module is evaluated with a unique import tag, so
+ * re-importing per session would grow the process module registry with every subagent.
+ */
+export async function bindPreparedExtensions(
+	preparedExtensions: readonly PreparedExtension[],
+	cwd: string,
+	eventBus?: EventBus,
+): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
 	const warnings: Array<{ path: string; warning: string }> = [];
 	const resolvedEventBus = eventBus ?? new EventBus();
 	const runtime = new ExtensionRuntime();
 
-	const imported = await Promise.all(paths.map(extPath => importExtensionModule(extPath, cwd)));
-
-	for (let i = 0; i < paths.length; i++) {
-		const extPath = paths[i]!;
-		const { extension, error, warning } = await bindExtension(extPath, imported[i]!, cwd, resolvedEventBus, runtime);
+	for (const prepared of preparedExtensions) {
+		const extPath = prepared.path;
+		const { extension, error, warning } = await bindExtension(extPath, prepared, cwd, resolvedEventBus, runtime);
 
 		if (error) {
 			errors.push({ path: extPath, error });
@@ -493,6 +509,7 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 		errors,
 		warnings,
 		runtime,
+		preparedExtensions: [...preparedExtensions],
 	};
 }
 
@@ -575,9 +592,8 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 				throw err;
 			}
 		}
-		if (entries.length > 0) {
-			return entries;
-		}
+		// A declared manifest is authoritative: never fall back to index/scan conventions.
+		return entries;
 	}
 
 	const indexTs = path.join(dir, "index.ts");

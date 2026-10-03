@@ -272,6 +272,8 @@ export interface SessionMaintenanceHost {
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
 	syncChecklistPhasesFromBranch(): void;
 	resetAdvisorRuntimes(reason?: string): void;
+	/** Re-aligns advisors after an in-place prune their own contexts already cover, without a re-prime. */
+	rebaseAdvisorPrefix(reason: string): void;
 	rebaseAfterCompaction(): void;
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
 	getContextBreakdown(options?: {
@@ -311,6 +313,12 @@ export class SessionMaintenance {
 	#midTurnDeadEndPendingPrePrompt = false;
 
 	#speculation: SpeculationRun | undefined;
+	/**
+	 * {@link #nativeSpeculationKey} of the session and model whose native speculative compaction failed for a reason a
+	 * retry would hit again (exhausted output budget, tool call, refusal). Until a compaction commits, speculation does
+	 * not re-send it and the threshold pass stops deferring to it.
+	 */
+	#failedNativeSpeculation: string | undefined;
 	#skipPostTurnMaintenanceAssistantTimestamp: number | undefined;
 	readonly #host: SessionMaintenanceHost;
 	readonly #modelContextEntries = new Map<string, SessionEntry>();
@@ -423,7 +431,7 @@ export class SessionMaintenance {
 			branchEntries.filter(entry => entry.type === "message" && "prunedAt" in entry.message),
 		);
 		this.#replaceModelContext(branchEntries);
-		this.#host.resetAdvisorRuntimes("prune-tool-outputs");
+		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
 		this.#host.syncChecklistPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
@@ -451,7 +459,7 @@ export class SessionMaintenance {
 			branchEntries.filter(entry => entry.type === "message" && "prunedAt" in entry.message),
 		);
 		this.#replaceModelContext(branchEntries);
-		this.#host.resetAdvisorRuntimes("prune-stale-tool-results");
+		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
 		this.#host.syncChecklistPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
@@ -660,8 +668,10 @@ export class SessionMaintenance {
 		try {
 			if (ownsCompactionController) {
 				// Manual compaction aborts the live turn, tool loop included; without a resume the agent would sit
-				// idle on the half-finished loop until the user typed "continue".
-				const interruptedActiveTurn = this.#host.isStreaming();
+				// idle on the half-finished loop until the user typed "continue". Only a turn the agent owns counts: the
+				// session busy flag also covers a prompt still in async setup, which the abort drops, so resuming for it
+				// would nudge the model on the previous transcript.
+				const interruptedActiveTurn = this.#host.agent.state.isStreaming;
 				this.#host.disconnectFromAgent();
 				await this.#host.abort({ goalReason: "internal", preserveCompaction: true });
 				resumeInterruptedTurn =
@@ -971,7 +981,7 @@ export class SessionMaintenance {
 		}
 		const model = this.#model;
 		if (!model) return;
-		const method = resolveSpeculationMethod(model, settings);
+		const method = resolveSpeculationMethod(model, settings, this.#nativeSpeculationFailed(model));
 		if (!method) return;
 		this.#startSpeculationRun(contextTokens, method);
 	}
@@ -979,6 +989,9 @@ export class SessionMaintenance {
 	#startSpeculationRun(contextTokens: number, method: CompactionMethod): void {
 		const controller = new AbortController();
 		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
+		const model = this.#model;
+		// Keyed now: the session can switch before the run settles.
+		const nativeKey = model && this.#nativeSpeculationKey(model);
 		this.#speculation = run;
 		run.promise = this.#runSpeculation(run, method, contextTokens).catch(error => {
 			logger.debug("Speculative compaction failed", {
@@ -986,7 +999,24 @@ export class SessionMaintenance {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			if (this.#speculation === run) this.#speculation = undefined;
+			if (
+				method === "remote" &&
+				model &&
+				!controller.signal.aborted &&
+				error instanceof NativeCompactionError &&
+				!AIError.retriable(AIError.classify(error.cause, model.api))
+			) {
+				this.#failedNativeSpeculation = nativeKey;
+			}
 		});
+	}
+
+	#nativeSpeculationKey(model: Model): string {
+		return `${this.#host.sessionManager.getSessionId()}/${model.provider}/${model.id}`;
+	}
+
+	#nativeSpeculationFailed(model: Model): boolean {
+		return this.#failedNativeSpeculation === this.#nativeSpeculationKey(model);
 	}
 
 	deferThresholdCompactionToSpeculation(contextTokens: number, contextWindow: number): boolean {
@@ -999,7 +1029,7 @@ export class SessionMaintenance {
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return false;
 		const model = this.#model;
 		if (!model) return false;
-		const method = resolveSpeculationMethod(model, settings);
+		const method = resolveSpeculationMethod(model, settings, this.#nativeSpeculationFailed(model));
 		if (!method) return false;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		const graceCapTokens = Math.min(
@@ -1093,7 +1123,11 @@ export class SessionMaintenance {
 	 * the snapshot leaf, applying it must still get under the recovery band and shrink the context; otherwise the
 	 * stale summary keeps the old tail alongside the new turns and trips the dead-end pause or a provider overflow.
 	 */
-	#armedSpeculationValid(armed: ArmedSpeculation, triggerContextTokens?: number): boolean {
+	#armedSpeculationValid(
+		armed: ArmedSpeculation,
+		triggerContextTokens?: number,
+		pendingContextTokens?: number,
+	): boolean {
 		const model = this.#model;
 		if (!model) return false;
 		const settings = this.#host.settings.getGroup("compaction");
@@ -1124,18 +1158,29 @@ export class SessionMaintenance {
 					? armed.snapshotLeafId
 					: undefined,
 			});
+			const pendingTokens = Math.max(0, pendingContextTokens ?? 0);
+			const projectedWithPending = projected + pendingTokens;
 			const contextWindow = model.contextWindow ?? 0;
 			if (contextWindow > 0) {
 				const recoveryBand = Math.floor(resolveThresholdTokens(contextWindow, settings) * COMPACTION_RECOVERY_BAND);
-				if (projected > recoveryBand) return false;
+				if (projectedWithPending > recoveryBand) return false;
 			}
-			const currentTokens = triggerContextTokens ?? this.#estimateStoredContextTokens();
-			if (currentTokens > 0 && projected >= currentTokens) return false;
+			// Net expansion is judged on the local stored count, the same basis as `projected`; provider-billed
+			// trigger tokens may run on a different basis, so they are an additional bound, not a replacement.
+			const storedTokens = this.#estimateStoredContextTokens();
+			if (storedTokens > 0 && projectedWithPending >= storedTokens + pendingTokens) return false;
+			if (
+				triggerContextTokens !== undefined &&
+				triggerContextTokens > 0 &&
+				projectedWithPending >= triggerContextTokens
+			) {
+				return false;
+			}
 		}
 		return true;
 	}
 
-	#claimArmedSpeculation(triggerContextTokens?: number): ArmedSpeculation | undefined {
+	#claimArmedSpeculation(triggerContextTokens?: number, pendingContextTokens?: number): ArmedSpeculation | undefined {
 		const run = this.#speculation;
 		if (!run) return undefined;
 		this.#speculation = undefined;
@@ -1146,7 +1191,7 @@ export class SessionMaintenance {
 		const settings = this.#host.settings.getGroup("compaction");
 		if (settings.asyncEnabled === false) return undefined;
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
-		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens)) {
+		if (!this.#armedSpeculationValid(run.armed, triggerContextTokens, pendingContextTokens)) {
 			logger.debug("Armed speculative compaction invalidated by branch growth or headroom check", {
 				method: run.armed.method,
 				snapshotLeafId: run.armed.snapshotLeafId,
@@ -1186,6 +1231,8 @@ export class SessionMaintenance {
 		);
 		this.#modelContextEntries.clear();
 		this.#modelContextPathIds = undefined;
+		// A committed compaction starts a new cycle; native compaction gets a fresh try.
+		this.#failedNativeSpeculation = undefined;
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
@@ -1287,6 +1334,7 @@ export class SessionMaintenance {
 		await this.runAutoCompaction("threshold", false, {
 			autoContinue: false,
 			triggerContextTokens: contextTokens,
+			pendingContextTokens: this.#host.countMessages(messages, { excludeEncryptedReasoning: true }),
 			phase: "pre_turn",
 		});
 	}
@@ -2090,6 +2138,7 @@ export class SessionMaintenance {
 		options: {
 			autoContinue?: boolean;
 			triggerContextTokens?: number;
+			pendingContextTokens?: number;
 			suppressContinuation?: boolean;
 			phase?: CodexCompactionContext["phase"];
 			terminalTextAnswer?: boolean;
@@ -2118,7 +2167,7 @@ export class SessionMaintenance {
 			: undefined;
 		if (!method && !hasCompactionHook) return COMPACTION_CHECK_NONE;
 
-		const claimedSpec = this.#claimArmedSpeculation(options.triggerContextTokens);
+		const claimedSpec = this.#claimArmedSpeculation(options.triggerContextTokens, options.pendingContextTokens);
 		const armedSpec = claimedSpec;
 		const effectiveSettings = resolveMethodSettings(compactionSettings, "remote");
 		const action: "context-full" | "remote" = armedSpec?.action ?? (method === "remote" ? "remote" : "context-full");

@@ -198,6 +198,16 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 
 	cmd.args(args);
 
+	#[cfg(unix)]
+	if !context.shell.resource_limits().is_empty() {
+		let limits = context.shell.resource_limits().clone();
+		// SAFETY: only the forked child runs this. Applying supported limits
+		// uses allocation-free, async-signal-safe setrlimit calls.
+		unsafe {
+			cmd.pre_exec(move || limits.apply_in_child());
+		}
+	}
+
 
 	cmd.current_dir(context.shell.working_dir());
 

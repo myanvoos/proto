@@ -2,7 +2,11 @@ import * as nodeCrypto from "node:crypto";
 import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
-import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import {
+	isAnthropicSigningProxyUrl,
+	isBedrockAnthropicMessagesRoute,
+	isOfficialAnthropicApiUrl,
+} from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { hostMatchesUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -14,11 +18,11 @@ import {
 	getInstallId,
 	isEnoent,
 	logger,
-	parseJsonWithRepair,
 	parseStreamingJsonThrottled,
 	readSseEvents,
 } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { NO_AUTH_SENTINEL } from "../auth-retry";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
@@ -84,6 +88,7 @@ import { getHeadersFromError, getRetryAfterMsFromHeaders } from "../utils/retry-
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { notifyRawSseEvent } from "../utils/sse-debug";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { isForcedToolChoice } from "../utils/tool-choice";
 import {
 	AnthropicConnectionTimeoutError,
@@ -111,10 +116,10 @@ import {
 	type TextBlockParam,
 	THINKING_BINDING_CONTROLS_BETA,
 } from "./anthropic-wire";
+import { isBedrockRequestMetadataValue } from "./bedrock-request-metadata";
 import { streamClaudeAgentSdk } from "./claude-agent-sdk";
 import {
 	adoptRequiredClaudeCodeVersion,
-	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
 	claudeCodeSdkVersion,
 	claudeCodeSystemInstruction,
 	claudeToolPrefix,
@@ -342,10 +347,13 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 		};
 		return allowAnthropicHeaderOverrides ? mergeHeaders(headers, anthropicHeaderOverrides) : headers;
 	} else if (!isOfficialAnthropicApiUrl(options.baseUrl)) {
+		// Keyless providers (`auth: none`) resolve to the `N/A` sentinel: send no bogus bearer; a model header still wins.
+		const bearer =
+			incomingAuthorization ?? (options.apiKey !== NO_AUTH_SENTINEL ? `Bearer ${options.apiKey}` : undefined);
 		return {
 			...modelHeaders,
 			Accept: acceptHeader,
-			Authorization: incomingAuthorization ?? `Bearer ${options.apiKey}`,
+			...(bearer ? { Authorization: bearer } : {}),
 			...sharedHeaders,
 			...(incomingUserAgent ? { "User-Agent": incomingUserAgent } : {}),
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
@@ -397,6 +405,8 @@ type AnthropicControlTransition = {
 	anchor: string;
 	content: ContentBlockParam[];
 	effort?: AnthropicOutputEffort;
+	// Already materialized into a request: its wire message is part of the cached prefix and must not change.
+	sent: boolean;
 };
 
 type AnthropicControlState = {
@@ -418,6 +428,7 @@ type AnthropicProviderSessionState = ProviderSessionState & {
 	thinkingReplayDisabled: boolean;
 	prefixDroppedThinkingBlocks: Set<string>;
 	controlStates: Map<string, AnthropicControlState>;
+	pendingControlStates: Map<string, AnthropicControlState>;
 };
 
 function createAnthropicControlState(): AnthropicControlState {
@@ -441,6 +452,7 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 		thinkingReplayDisabled: false,
 		prefixDroppedThinkingBlocks: new Set(),
 		controlStates: new Map(),
+		pendingControlStates: new Map(),
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
@@ -448,6 +460,7 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 			state.thinkingReplayDisabled = false;
 			state.prefixDroppedThinkingBlocks.clear();
 			state.controlStates.clear();
+			state.pendingControlStates.clear();
 		},
 	};
 	return state;
@@ -468,6 +481,7 @@ function getAnthropicProviderSessionState(
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
 		existing.controlStates ??= new Map();
+		existing.pendingControlStates ??= new Map();
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
@@ -510,6 +524,21 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 	for (const tool of params.tools) {
 		delete tool.strict;
 	}
+}
+
+// Bedrock's `/anthropic` routes reject tool `strict`, and runtime rejects metadata outside Bedrock's pattern.
+function fitBedrockAnthropicParams(params: MessageCreateParamsStreaming): void {
+	dropAnthropicStrictTools(params);
+	const userId = toBedrockMetadataUserId(params.metadata?.user_id ?? undefined);
+	if (userId) params.metadata = { user_id: userId };
+	else delete params.metadata;
+}
+
+// Fit a metadata user id to Bedrock's pattern, falling back to its embedded session id; drop it if neither fits.
+function toBedrockMetadataUserId(userId: string | undefined): string | undefined {
+	if (userId === undefined || isBedrockRequestMetadataValue(userId)) return userId;
+	const sessionId = extractClaudeMetadataSessionId(userId);
+	return sessionId !== undefined && isBedrockRequestMetadataValue(sessionId) ? sessionId : undefined;
 }
 
 function getCacheControl(
@@ -1908,8 +1937,13 @@ const streamAnthropicOnce = (
 				baseUrl,
 				model.id,
 			);
+			const isBedrockAnthropic = isBedrockAnthropicMessagesRoute(
+				(options?.client && injectedClientBaseUrl(options.client)) || baseUrl,
+			);
 			let disableStrictTools =
-				(providerSessionState?.strictToolsDisabled ?? false) || (model.compat?.disableStrictTools ?? false);
+				(providerSessionState?.strictToolsDisabled ?? false) ||
+				(model.compat?.disableStrictTools ?? false) ||
+				isBedrockAnthropic;
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
 			let forceDemoteUnsignedThinking = providerSessionState?.replayUnsignedThinkingDisabled ?? false;
 			let droppedAllThinkingForSignature = providerSessionState?.thinkingReplayDisabled ?? false;
@@ -2072,6 +2106,7 @@ const streamAnthropicOnce = (
 				if (replacementPayload !== undefined) {
 					nextParams = replacementPayload as typeof nextParams;
 				}
+				if (isBedrockAnthropic) fitBedrockAnthropicParams(nextParams);
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
 				rawRequestDump = {
 					provider: model.provider,
@@ -2192,7 +2227,7 @@ const streamAnthropicOnce = (
 					const partialJson = block[kStreamingPartialJson];
 					if (partialJson) {
 						try {
-							const input = parseJsonWithRepair(partialJson);
+							const input = parseToolCallArguments(partialJson);
 							if (isRecord(input)) {
 								block.block.input = input;
 							} else {
@@ -2216,7 +2251,7 @@ const streamAnthropicOnce = (
 						return false;
 					}
 					try {
-						block.arguments = parseJsonWithRepair(finalJson) as ToolCall["arguments"];
+						block.arguments = parseToolCallArguments(finalJson);
 					} catch (parseError) {
 						reportAnthropicEnvelopeAnomaly(
 							`tool_use ${block.id} arguments are not valid JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
@@ -3295,8 +3330,11 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	}
 
 	const authorizationHeader = getHeaderCaseInsensitive(defaultHeaders, "Authorization");
+	// The keyless `N/A` sentinel built no Authorization; the client would otherwise inject `X-Api-Key: N/A`.
 	const shouldSuppressClientApiKey =
-		!oauthToken && !model.compat.officialEndpoint && typeof authorizationHeader === "string";
+		!oauthToken &&
+		!model.compat.officialEndpoint &&
+		(typeof authorizationHeader === "string" || apiKey === NO_AUTH_SENTINEL);
 
 	return {
 		isOAuthToken: oauthToken,
@@ -3536,9 +3574,13 @@ function applyHeadCaching(
 	if (systemBlocks && systemBlocks.length > 0) {
 		const suffixStart = stableSystemSuffixStart(systemBlocks);
 		if (suffixStart === systemBlocks.length) {
-			if (!systemBlocks.some(block => block.cache_control != null)) {
-				const lastBlock = systemBlocks[systemBlocks.length - 1];
-				if (lastBlock) lastBlock.cache_control = cloneAnthropicCacheControl(cacheControl);
+			// An earlier breakpoint (the OAuth identity block) moves to the last block: left on the identity block it
+			// caches only tools + identity, so every message-prefix miss rewrites the whole system prompt.
+			const lastBlock = systemBlocks[systemBlocks.length - 1];
+			if (lastBlock && lastBlock.cache_control == null) {
+				const earlier = systemBlocks.find(block => block.cache_control != null);
+				if (earlier) delete earlier.cache_control;
+				lastBlock.cache_control = cloneAnthropicCacheControl(cacheControl);
 			}
 		} else {
 			const anchorIndex = suffixStart === 0 ? systemBlocks.length - 1 : suffixStart - 1;
@@ -3593,6 +3635,9 @@ function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): st
 
 const MAX_ANTHROPIC_CONTROL_STATES = 16;
 
+// `max_tokens` requested when the catalog has no output ceiling for the model.
+const UNKNOWN_MODEL_MAX_OUTPUT_TOKENS = 64_000;
+
 function resetAnthropicControlState(state: AnthropicControlState): void {
 	state.declaredTools = undefined;
 	state.activeToolNames.clear();
@@ -3612,6 +3657,9 @@ function anthropicControlMessageProjection(message: MessageParam): MessageParam 
 	};
 }
 
+// Baselines live in two LRUs: a new key enters `pendingControlStates` and moves to `controlStates` once a later
+// request resolves it. Side turns mint a fresh session id per call, so their one-shot keys only churn the pending
+// tier and cannot evict a live conversation's baseline (which would re-declare tools/system/effort: a full cache miss).
 function getAnthropicControlState(
 	state: AnthropicProviderSessionState | undefined,
 	sessionId: string | undefined,
@@ -3630,19 +3678,27 @@ function getAnthropicControlState(
 			]),
 		),
 	);
-	const existing = state.controlStates.get(fingerprint);
-	if (existing) {
-		state.controlStates.delete(fingerprint);
-		state.controlStates.set(fingerprint, existing);
-		return existing;
+	const continued = state.controlStates.get(fingerprint) ?? state.pendingControlStates.get(fingerprint);
+	if (continued) {
+		state.pendingControlStates.delete(fingerprint);
+		touchAnthropicControlState(state.controlStates, fingerprint, continued);
+		return continued;
 	}
 	const created = createAnthropicControlState();
-	state.controlStates.set(fingerprint, created);
-	if (state.controlStates.size > MAX_ANTHROPIC_CONTROL_STATES) {
-		const oldest = state.controlStates.keys().next().value;
-		if (oldest !== undefined) state.controlStates.delete(oldest);
-	}
+	touchAnthropicControlState(state.pendingControlStates, fingerprint, created);
 	return created;
+}
+
+function touchAnthropicControlState(
+	states: Map<string, AnthropicControlState>,
+	key: string,
+	value: AnthropicControlState,
+): void {
+	states.delete(key);
+	states.set(key, value);
+	if (states.size <= MAX_ANTHROPIC_CONTROL_STATES) return;
+	const oldest = states.keys().next().value;
+	if (oldest !== undefined) states.delete(oldest);
 }
 
 function anthropicControlAnchor(messages: readonly MessageParam[], messageCount: number): string {
@@ -3704,7 +3760,9 @@ function recordAnthropicControlTransition(
 	content: ContentBlockParam[],
 	effort?: AnthropicOutputEffort,
 ): void {
-	const existing = state.controlTransitions.findLast(transition => transition.messageCount === messageCount);
+	const existing = state.controlTransitions.findLast(
+		transition => transition.messageCount === messageCount && !transition.sent,
+	);
 	if (existing) {
 		existing.content.push(...content);
 		if (effort !== undefined) existing.effort = effort;
@@ -3715,6 +3773,7 @@ function recordAnthropicControlTransition(
 		anchor: anthropicControlAnchor(messages, messageCount),
 		content,
 		effort,
+		sent: false,
 	});
 }
 
@@ -3800,10 +3859,13 @@ function materializeAnthropicControlTransitions(
 	const result = messages.slice();
 	const ordered = state.controlTransitions.toSorted((a, b) => a.messageCount - b.messageCount);
 	let offset = 0;
+	// Fold only into a conversation system message, never into one an earlier transition rendered (already on the wire).
+	let renderedIndex = -1;
 	for (const transition of ordered) {
+		transition.sent = true;
 		const index = Math.min(transition.messageCount + offset, result.length);
 		const previous = result[index - 1];
-		if (previous?.role === "system" && previous.clear_at === undefined) {
+		if (index - 1 !== renderedIndex && previous?.role === "system" && previous.clear_at === undefined) {
 			const content: ContentBlockParam[] =
 				typeof previous.content === "string"
 					? [{ type: "text", text: previous.content }, ...transition.content]
@@ -3813,6 +3875,7 @@ function materializeAnthropicControlTransitions(
 				content,
 				...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
 			};
+			renderedIndex = index - 1;
 			continue;
 		}
 		result.splice(index, 0, {
@@ -3820,6 +3883,7 @@ function materializeAnthropicControlTransitions(
 			content: transition.content.map(block => ({ ...block })),
 			...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
 		});
+		renderedIndex = index;
 		offset++;
 	}
 	return result;
@@ -3981,8 +4045,8 @@ function buildParams(
 	if (options?.taskBudget) outputConfigEntries.task_budget = options.taskBudget;
 	const outputConfig = Object.keys(outputConfigEntries).length ? outputConfigEntries : undefined;
 
-	const modelMaxTokens = model.maxTokens ?? CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-	const maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, modelMaxTokens) : modelMaxTokens;
+	// OAuth and API-key requests alike get the full model ceiling; Claude Code itself requests 128k on Opus 5.5.
+	const maxOutputTokens = model.maxTokens ?? UNKNOWN_MODEL_MAX_OUTPUT_TOKENS;
 
 	const vertexRequestUrl =
 		(options?.client !== undefined ? injectedClientBaseUrl(options.client) : undefined) ??
@@ -4005,7 +4069,7 @@ function buildParams(
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
-		max_tokens: Math.min(maxOutputTokens, options?.maxTokens ?? modelMaxTokens),
+		max_tokens: Math.min(maxOutputTokens, options?.maxTokens ?? maxOutputTokens),
 		...(thinking && { thinking }),
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),

@@ -13,6 +13,7 @@ import { BUILTIN_MARKETPLACE_SLASH_COMMANDS, reloadTuiPluginState } from "./buil
 import { BUILTIN_MODE_SLASH_COMMANDS } from "./builtin-modes";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "./builtin-session";
 import { BUILTIN_TRAJECTORY_SLASH_COMMANDS } from "./builtin-trajectory";
+import { clearSubmittedText } from "./helpers/draft";
 import { parseSlashCommand } from "./helpers/parse";
 import type {
 	BuiltinSlashCommand,
@@ -129,7 +130,7 @@ export async function executeBuiltinSlashCommand(text: string, runtime: BuiltinS
 			reloadPlugins: () => reloadTuiPluginState(ctx),
 		};
 		await command.handle(parsed, adapted);
-		ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		return true;
 	}
 	return false;

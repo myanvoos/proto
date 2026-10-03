@@ -12,7 +12,7 @@
 		"cost": {
 			"input": 0.3,
 			"output": 0.9,
-			"cacheRead": 0,
+			"cacheRead": 0.03,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -594,7 +594,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -676,11 +677,11 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
@@ -730,7 +731,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"ministral-3b-latest": {
 		"id": "ministral-3b-latest",
@@ -959,7 +961,7 @@
 		"cost": {
 			"input": 0.5,
 			"output": 1.5,
-			"cacheRead": 0,
+			"cacheRead": 0.05,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1031,7 +1033,7 @@
 		"cost": {
 			"input": 0.5,
 			"output": 1.5,
-			"cacheRead": 0,
+			"cacheRead": 0.05,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1247,7 +1249,7 @@
 		"cost": {
 			"input": 1.5,
 			"output": 7.5,
-			"cacheRead": 0,
+			"cacheRead": 0.15,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1259,7 +1261,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1329,7 +1332,7 @@
 		"cost": {
 			"input": 1.5,
 			"output": 7.5,
-			"cacheRead": 0,
+			"cacheRead": 0.15,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -1341,7 +1344,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1554,7 +1558,7 @@
 		"cost": {
 			"input": 0.15,
 			"output": 0.6,
-			"cacheRead": 0,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -1566,7 +1570,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1636,7 +1641,7 @@
 		"cost": {
 			"input": 0.15,
 			"output": 0.6,
-			"cacheRead": 0,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -1648,7 +1653,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2228,7 +2234,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2310,7 +2317,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

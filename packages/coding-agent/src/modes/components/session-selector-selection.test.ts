@@ -204,6 +204,36 @@ describe("session selector shift-range selection", () => {
 		selector.dispose();
 	});
 
+	test("a row deleted in the all-projects scope stays gone after Tab back to the folder", async () => {
+		const sessions = [makeSession(1), makeSession(2)];
+		let deleted = 0;
+		const selector = new SessionSelectorComponent(
+			sessions,
+			() => {},
+			() => {},
+			() => {},
+			{
+				loadAllSessions: async () => [...sessions],
+				onDelete: async () => {
+					deleted++;
+					return true;
+				},
+			},
+		);
+
+		selector.handleInput("\t");
+		await waitFor(() => !renderPlain(selector).includes("Loading"), "the all-projects scope");
+		selector.handleInput(DELETE);
+		selector.handleInput(ENTER);
+		await waitFor(() => deleted === 1 && !renderPlain(selector).includes("Delete session?"), "the delete to settle");
+		selector.handleInput("\t");
+
+		const folder = renderPlain(selector);
+		expect(folder).not.toContain("Session 1");
+		expect(folder).toContain("Session 2");
+		selector.dispose();
+	});
+
 	test("plain cursor movement collapses the range back to a single-row delete", () => {
 		const sessions = [makeSession(1), makeSession(2), makeSession(3)];
 		const selector = new SessionSelectorComponent(
@@ -306,4 +336,59 @@ describe("session selector cache lifetime", () => {
 		expect(selector.render(90)).toEqual([]);
 		expect(selector.getSessionList().render(90).join("\n")).not.toContain("Session 2");
 	});
+});
+
+test("typing a new search query focuses its top hit instead of the old row index", () => {
+	const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index));
+	const selector = new SessionSelectorComponent(
+		sessions,
+		() => {},
+		() => {},
+		() => {},
+	);
+	for (let i = 0; i < 8; i++) selector.handleInput(DOWN);
+	for (const ch of "Session 1") selector.handleInput(ch);
+	const rows = renderPlain(selector)
+		.split("\n")
+		.filter(line => /Session \d+/.test(line) && !line.includes("> Session 1"));
+	expect(rows.length).toBeGreaterThan(1);
+	expect(rows[0]).toContain("›");
+});
+
+test("session search ranks exact then partial title matches ahead of newer content hits", () => {
+	const at = (id: string, title: string | undefined, firstMessage: string, modified: number): SessionInfo => ({
+		path: `/sessions/${id}.jsonl`,
+		id,
+		cwd: "/work",
+		title,
+		created: new Date(modified),
+		modified: new Date(modified),
+		messageCount: 1,
+		size: 1,
+		firstMessage,
+		allMessagesText: firstMessage,
+	});
+	const sessions = [
+		at("body", undefined, "dashboard", 5),
+		at("partial-new", "Dashboard notes", "hi", 4),
+		at("partial-old", "Old dashboard", "hi", 3),
+		at("exact", "  DASHBOARD  ", "hi", 2),
+	];
+	expect(rankSessionSearchMatches(sessions, "dashboard").map(session => session.id)).toEqual([
+		"exact",
+		"partial-new",
+		"partial-old",
+		"body",
+	]);
+
+	const selector = new SessionSelectorComponent(
+		sessions,
+		() => {},
+		() => {},
+		() => {},
+	);
+	for (const ch of "dashboard") selector.handleInput(ch);
+	const text = renderPlain(selector);
+	expect(text.indexOf("DASHBOARD")).toBeLessThan(text.indexOf("Dashboard notes"));
+	expect(text.indexOf("Old dashboard")).toBeGreaterThan(text.indexOf("Dashboard notes"));
 });

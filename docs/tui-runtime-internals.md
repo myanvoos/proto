@@ -66,6 +66,7 @@ A forced render (`requestRender(true)`) queues a viewport repaint or explicit se
 - Buffers fragmented escape sequences (CSI/OSC/DCS/APC/SS3).
 - Emits `data` only when a sequence is complete or timeout-flushed.
 - Detects bracketed paste and emits a `paste` event with raw pasted text.
+- Classifies an unbracketed multiline burst as one paste (terminals without bracketed paste, and IME/dictation commits). Once the terminal confirms bracketed paste (DECRQM 2004), a burst read while the TUI's event-loop watchdog reports a stall is replayed as keystrokes instead, so Enters a blocked loop batched into one read still submit.
 
 This prevents partial escape chunks from being misinterpreted as normal keypresses.
 

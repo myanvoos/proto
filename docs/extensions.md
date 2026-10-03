@@ -125,6 +125,8 @@ Core methods:
 - `registerProvider`
 - `events` (shared event bus)
 
+`ExtensionAPI` methods keep their extension binding when destructured or passed as callbacks.
+
 `getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
 
 ### Provider registration
@@ -179,7 +181,7 @@ RPC rejects secret prompts instead of forwarding them as ordinary input. SDK
 hosts implementing `onPrompt` must honor `secret` or reject the prompt. Masking
 does not provide encryption, memory erasure, or general log redaction.
 
-In interactive mode, `input` handlers run before the built-in first-message auto-title check. Extensions that call `await pi.setSessionName(...)` from `input` can set the persisted session name and prevent the default auto-generated title from running for that session.
+In interactive mode, `input` handlers run for both Enter and Ctrl+Enter (follow-up) submissions, before slash-command, skill, or prompt dispatch; returning `handled` consumes the submission. They run before the built-in first-message auto-title check. Extensions that call `await pi.setSessionName(...)` from `input` can set the persisted session name and prevent the default auto-generated title from running for that session.
 
 Also exposed:
 
@@ -198,6 +200,8 @@ Also exposed:
 - `deliverAs: "nextTurn"` — stored and injected on the next user prompt
 - `triggerTurn: true` — starts a turn when idle (also honored with `deliverAs: "nextTurn"`: idle prompts immediately; while streaming the queued message schedules an internal continuation)
 
+Idle custom messages with `display: true` appear immediately even without `triggerTurn`; no model turn starts. `deliverAs: "nextTurn"` retains its deferred-display behavior.
+
 `pi.sendUserMessage(content, { deliverAs })` always goes through prompt flow. Omit `deliverAs` to start a normal prompt when idle; while streaming, omitted `deliverAs` queues the message as a steer. Set `deliverAs: "followUp"` to wait until the current run finishes. The message is recorded with `attribution: "user"` unless you pass `attribution: "agent"`; pass `"agent"` for text the extension generated or relayed from another agent, so consumers can tell it apart from what the user typed.
 
 ## 2) Handler context (`ExtensionContext`)
@@ -215,7 +219,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(instructionsOrOptions?)` — accepts a string or `{ customInstructions, mode, onComplete, onError }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
-- `shutdown()`
+- `shutdown()` — in interactive mode, exits at the next settled boundary (after streaming, queued messages, pending submissions and async work finish), even when no terminal input arrives
 - `getSystemPrompt()`
 - `memory` (optional structured memory runtime — status/search/save across the configured backend)
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
@@ -304,6 +308,8 @@ Cancelable pre-events:
 - `session_stop` — main-session stop hook, awaited before settle; may continue with `{ continue: true, additionalContext }` or `{ decision: "block", reason }`; capped at 8 consecutive continuations and never fires for task/subagent sessions
 - `turn_start` / `turn_end`
 - `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached message snapshot, so use `tool_result` or `context` when an extension needs to change provider context. Session lifecycle notifications reach extensions in order, one at a time; while a handler is still running, queued `message_update`s collapse to the latest. The UI, RPC/SDK subscribers, and transcript persistence never wait for these handlers, so a slow handler delays only later extension notifications
+
+Provider hooks used by side requests receive that request's cancellation through `ctx.signal`. Cancelling the request releases a stalled hook without quarantining the extension; later requests may invoke it again.
 
 ### Tool lifecycle
 
@@ -526,6 +532,8 @@ Used by interactive rendering to add display-only supplemental UI below each vis
 ## Tool call/result renderer
 
 Provide `renderCall` / `renderResult` on `registerTool` definitions for custom tool visualization in TUI.
+
+`renderCall`'s `options` argument also answers the `Theme` API, so tool renderers ported from upstream pi — declared `renderCall(args, theme, context)` — style correctly without being rewritten.
 
 ## Constraints and pitfalls
 

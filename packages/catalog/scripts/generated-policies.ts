@@ -50,34 +50,52 @@ export function hasBillableCost(cost: ModelSpec["cost"]): boolean {
 	return cost.input !== 0 || cost.output !== 0 || cost.cacheRead !== 0 || cost.cacheWrite !== 0;
 }
 
-const ANTIGRAVITY_PRICING_PEERS = ["google", "google-vertex", "anthropic"] as const;
+interface PricingPeerRule {
+	// Priced providers searched in order; the first billable row wins.
+	peers: readonly string[];
+	// Row id → the peer id it mirrors, tried before the row's own id.
+	aliases?: Readonly<Record<string, string>>;
+}
 
-const ANTIGRAVITY_PRICING_ID_ALIASES: Readonly<Record<string, string>> = {
-	"gemini-3-flash": "gemini-3-flash-preview",
-	"gemini-3-pro": "gemini-3-pro-preview",
-	"gemini-3.1-pro": "gemini-3.1-pro-preview",
-	"claude-opus-4-5": "claude-opus-4-5@20251101",
-	"claude-opus-4-6": "claude-opus-4-6@default",
-	"claude-sonnet-4-5": "claude-sonnet-4-5@20250929",
-	"claude-sonnet-4-6": "claude-sonnet-4-6@default",
+// Zero-cost rows priced at a first-party equivalent. Antigravity: Gemini at Google API list prices, Claude at Vertex
+// (falling back to Anthropic). MiniMax Token Plan: quota and Credits are metered at each model's pay-as-you-go list
+// price, but the plan catalog reports zero cost; the plan-only M3.1 Flash Preview uses the M3 rate.
+const PRICING_PEER_RULES: Readonly<Record<string, PricingPeerRule>> = {
+	"google-antigravity": {
+		peers: ["google", "google-vertex", "anthropic"],
+		aliases: {
+			"gemini-3-flash": "gemini-3-flash-preview",
+			"gemini-3-pro": "gemini-3-pro-preview",
+			"gemini-3.1-pro": "gemini-3.1-pro-preview",
+			"claude-opus-4-5": "claude-opus-4-5@20251101",
+			"claude-opus-4-6": "claude-opus-4-6@default",
+			"claude-sonnet-4-5": "claude-sonnet-4-5@20250929",
+			"claude-sonnet-4-6": "claude-sonnet-4-6@default",
+		},
+	},
+	"minimax-code": { peers: ["minimax"], aliases: { "MiniMax-M3.1-Flash-Preview": "MiniMax-M3" } },
+	"minimax-code-cn": { peers: ["minimax-cn", "minimax"], aliases: { "MiniMax-M3.1-Flash-Preview": "MiniMax-M3" } },
 };
 
-export function applyAntigravityPricingFallback(models: readonly ModelSpec[]): ModelSpec[] {
-	const peerCosts = new Map<string, ModelSpec["cost"]>();
-	for (const peer of ANTIGRAVITY_PRICING_PEERS) {
-		for (const model of models) {
-			if (model.provider === peer && hasBillableCost(model.cost) && !peerCosts.has(model.id)) {
-				peerCosts.set(model.id, model.cost);
-			}
-		}
+/** Price zero-cost rows at their pricing-peer equivalents; billable rows and ids without a billable peer keep their cost. */
+export function applyPricingPeerFallback(models: readonly ModelSpec[]): ModelSpec[] {
+	const billable = new Map<string, ModelSpec["cost"]>();
+	for (const model of models) {
+		if (!hasBillableCost(model.cost)) continue;
+		const key = `${model.provider}\0${model.id}`;
+		if (!billable.has(key)) billable.set(key, model.cost);
 	}
 	return models.map(model => {
-		if (model.provider !== "google-antigravity" || hasBillableCost(model.cost)) {
-			return model;
+		const rule = PRICING_PEER_RULES[model.provider];
+		if (!rule || hasBillableCost(model.cost)) return model;
+		const alias = rule.aliases?.[model.id];
+		for (const candidateId of alias ? [alias, model.id] : [model.id]) {
+			for (const provider of rule.peers) {
+				const cost = billable.get(`${provider}\0${candidateId}`);
+				if (cost) return { ...model, cost: { ...cost } };
+			}
 		}
-		const alias = ANTIGRAVITY_PRICING_ID_ALIASES[model.id];
-		const cost = (alias ? peerCosts.get(alias) : undefined) ?? peerCosts.get(model.id);
-		return cost ? { ...model, cost: { ...cost } } : model;
+		return model;
 	});
 }
 

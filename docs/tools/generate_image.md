@@ -41,7 +41,7 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 5. Provider-specific aspect-ratio support is checked after provider selection.
 6. Provider dispatch:
    - OpenAI: hosted Responses image-generation on an active compatible GPT Responses model.
-   - OpenAI Codex: hosted Responses image-generation on a compatible connected ChatGPT/Codex subscription model, even when the active chat model is from another provider.
+   - OpenAI Codex: hosted Responses image-generation on a compatible connected ChatGPT/Codex subscription model, even when the active chat model is from another provider. The ChatGPT/Codex backend picks its own image model, size, and quality; the result reports the image model it echoes (`Model: <ran> (catalog entry <provider>/<id>)` when it differs) and each image's reported size/quality.
    - Antigravity: Google Antigravity SSE endpoint.
    - OpenRouter: image-capable chat completion endpoint.
    - xAI: Grok Imagine generation or edit endpoint.

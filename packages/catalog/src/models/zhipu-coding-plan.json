@@ -264,7 +264,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 32768,
 		"int": 8.4,
-		"tps": 71.8,
+		"tps": 87,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -951,7 +951,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1042,7 +1042,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,

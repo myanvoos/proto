@@ -714,11 +714,13 @@ export class TtsrCoordinator {
 					);
 					this.#markInjected(details.rules);
 				}
-				try {
-					await this.#host.agent.continue();
-				} catch {
-					this.resolveResume();
-				}
+				// The busy-aware scheduler waits out a run still settling from the interrupt instead of dropping the
+				// injected rule with the failed continuation.
+				this.#host.scheduleAgentContinue({
+					generation,
+					onSkip: () => this.resolveResume(),
+					onError: () => this.resolveResume(),
+				});
 			},
 			{ delayMs: 50 },
 		);

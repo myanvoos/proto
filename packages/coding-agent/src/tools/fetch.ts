@@ -20,7 +20,7 @@ import { MAX_BYTES, type RenderResult, readResponseText, type SpecialHandler } f
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
-import { formatBytes, formatExpandHint, getDomain, replaceTabs } from "./render-utils";
+import { formatBytes, formatExpandHint, getDomain, sanitizeDisplayLines } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -378,21 +378,24 @@ function getHtmlAttribute(tag: string, attribute: string): string | null {
 	return (match[1] ?? match[2] ?? match[3] ?? "").trim();
 }
 
+// Bounded case-insensitive scans: lowercasing the whole page first cost ~0.3ms/MB.
 function extractHeadHtml(html: string): string {
-	const lower = html.toLowerCase();
-	const headStart = lower.indexOf("<head");
+	const window = html.length > 256 * 1024 ? html.slice(0, 256 * 1024) : html;
+	const headStart = window.search(/<head[\s>]/i);
 	if (headStart === -1) {
 		return html.slice(0, 32 * 1024);
 	}
 
 	const headTagEnd = html.indexOf(">", headStart);
-	if (headTagEnd === -1) {
+	if (headTagEnd === -1 || headTagEnd - headStart > 4096) {
 		return html.slice(headStart, headStart + 32 * 1024);
 	}
 
-	const headEnd = lower.indexOf("</head>", headTagEnd + 1);
-	const fallbackEnd = Math.min(html.length, headTagEnd + 1 + 32 * 1024);
-	return html.slice(headStart, headEnd === -1 ? fallbackEnd : headEnd + 7);
+	const tail = html.slice(headTagEnd + 1, headTagEnd + 1 + 128 * 1024);
+	const relativeEnd = tail.search(/<\/head\s*>/i);
+	// No close tag in the scanned window: the head may run longer, so keep everything scanned.
+	if (relativeEnd === -1) return html.slice(headStart, headTagEnd + 1 + tail.length);
+	return html.slice(headStart, headTagEnd + 1 + relativeEnd + 7);
 }
 
 function parseAlternateLinks(html: string, pageUrl: string): string[] {
@@ -564,6 +567,18 @@ function parseJinaReaderContent(responseBody: string): string | null {
 	return content;
 }
 
+/**
+ * Markdown image whose destination is an inline `data:` URI (any case, bare or `<…>`-wrapped, optional title). The
+ * label allows backslash escapes; base64 payloads never contain `)` or whitespace.
+ */
+const DATA_URI_IMAGE_RE =
+	/!\[((?:\\.|[^\\\]])*)\]\(\s*(?:<data:[^>]*>|data:[^)\s]*)(?:\s+(?:"(?:\\.|[^\\"])*"|'(?:\\.|[^\\'])*'|\((?:\\.|[^\\)])*\)))?\s*\)/gi;
+
+/** Drops inline `data:` image payloads (SVG icons, base64 `<img>`) that dwarf article text; keeps alt text. */
+function stripDataUriImages(markdown: string): string {
+	return markdown.replace(DATA_URI_IMAGE_RE, (_match, alt: string) => (alt.trim() ? `![${alt}]` : ""));
+}
+
 type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "jina";
 
 const FETCH_PROVIDER_ORDER: readonly FetchProvider[] = ["native", "trafilatura", "lynx", "parallel", "jina"];
@@ -656,8 +671,10 @@ export async function renderHtmlToText(
 	for (const method of order) {
 		userSignal?.throwIfAborted();
 		try {
-			const content = await runners[method]();
-			if (!content || content.trim().length <= 100) continue;
+			const rendered = await runners[method]();
+			if (!rendered) continue;
+			const content = stripDataUriImages(rendered);
+			if (content.trim().length <= 100) continue;
 			if (!isLowQualityOutput(content)) {
 				return { content, ok: true, method };
 			}
@@ -1718,7 +1735,7 @@ export function renderReadUrlResult(
 		const urlText = details?.finalUrl ?? details?.url ?? "";
 		const description = urlText ? formatReadUrlDescription(urlText) : undefined;
 		const header = renderStatusLine({ icon: "error", title: "Read", description }, uiTheme);
-		const errorLines = errorText.split("\n").map(line => uiTheme.fg("error", replaceTabs(line)));
+		const errorLines = sanitizeDisplayLines(errorText).map(line => uiTheme.fg("error", line));
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
 			render: (width: number) =>
@@ -1781,7 +1798,7 @@ export function renderReadUrlResult(
 			if (contentPreviewLines === undefined || lastExpanded !== expanded) {
 				const previewLimit = expanded ? Number.POSITIVE_INFINITY : 3;
 				const previewList = applyListLimit(contentLines, { headLimit: previewLimit });
-				const previewLines = previewList.items.map(line => line.trimEnd());
+				const previewLines = previewList.items.flatMap(sanitizeDisplayLines).map(line => line.trimEnd());
 				const remaining = Math.max(0, contentLines.length - previewList.items.length);
 				contentPreviewLines =
 					previewLines.length > 0

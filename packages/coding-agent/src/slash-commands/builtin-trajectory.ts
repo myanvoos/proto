@@ -3,6 +3,7 @@ import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { trajectoryToOtlpJson } from "../session/trajectory/export-otel";
 import type { Trajectory } from "../session/trajectory/model";
 import { buildSessionTrajectory, defaultExportPath } from "../session/trajectory/session-source";
+import { clearSubmittedText } from "./helpers/draft";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type {
 	BuiltinSlashCommand,
@@ -100,7 +101,7 @@ const TRAJECTORY_SPEC: SlashCommandSpec = {
 	handle: handleText,
 	handleTui: async (command, runtime) => {
 		const ctx = runtime.ctx;
-		ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		const trajectory = buildSessionTrajectory(ctx.sessionManager);
 		const { verb, request } = resolveCommand(command.args);
 

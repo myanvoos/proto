@@ -23,6 +23,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { PythonDisplayOutput } from "../eval/py/display";
+import { PROTOLENS_URL_PREFIX } from "../internal-urls/protolens-protocol";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
@@ -392,8 +393,12 @@ export function isUserInterruptAbort(message: Pick<AssistantMessage, "errorId" |
 	return AIError.is(message.errorId, AIError.Flag.UserInterrupt) || message.errorMessage === USER_INTERRUPT_LABEL;
 }
 
+export function isSilentAbort(message: Pick<AssistantMessage, "errorId">): boolean {
+	return AIError.is(message.errorId, AIError.Flag.SilentAbort);
+}
+
 export function shouldRenderAbortReason(message: Pick<AssistantMessage, "errorId" | "errorMessage">): boolean {
-	return !isUserInterruptAbort(message);
+	return !isSilentAbort(message) && !isUserInterruptAbort(message);
 }
 
 export function isEmptyErrorTurn(message: Pick<AssistantMessage, "stopReason" | "content">): boolean {
@@ -1082,21 +1087,47 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			const userInterrupted = m.stopReason === "aborted" && isUserInterruptAbort(m);
 			const source = interruptedNext || userInterrupted ? stripDemotedThinkingForLlm(m) : m;
 			if (userInterrupted && !interruptedNext && source.content.length === 0) return [];
-			const converted = convertMessageToLlm(source);
+			const converted = convertMessageToLlm(canonicalizeDeviceToolCallNames(source));
 			return converted ? [converted] : [];
 		}
 		case "branchSummary":
 		case "compactionSummary":
 		case "user":
-		case "developer":
-		case "toolResult": {
+		case "developer": {
 			const converted = convertMessageToLlm(m);
+			return converted ? [converted] : [];
+		}
+		case "toolResult": {
+			// Same pre-canonicalization history as `canonicalizeDeviceToolCallNames`; Gemini replays results by name.
+			const toolName = stripProtolensPrefix(m.toolName);
+			const converted = convertMessageToLlm(toolName === m.toolName ? m : { ...m, toolName });
 			return converted ? [converted] : [];
 		}
 		default:
 			m satisfies never;
 			return [];
 	}
+}
+
+function stripProtolensPrefix(name: string): string {
+	return name.startsWith(PROTOLENS_URL_PREFIX) ? name.slice(PROTOLENS_URL_PREFIX.length) : name;
+}
+
+/**
+ * Sessions saved before the agent loop canonicalized fallback-resolved names persist `protolens://<device>` call names,
+ * which providers reject as function names. Replay them bare; call ids are kept, so call/result pairing holds.
+ */
+function canonicalizeDeviceToolCallNames(message: AssistantMessage): AssistantMessage {
+	let content: AssistantMessage["content"] | undefined;
+	for (let i = 0; i < message.content.length; i++) {
+		const block = message.content[i];
+		if (block.type !== "toolCall") continue;
+		const name = stripProtolensPrefix(block.name);
+		if (name === block.name) continue;
+		content ??= message.content.slice();
+		content[i] = { ...block, name };
+	}
+	return content ? { ...message, content } : message;
 }
 
 function convertOneCached(m: AgentMessage, interruptedNext: boolean): Message[] {

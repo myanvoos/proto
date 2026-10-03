@@ -20,6 +20,7 @@ import type {
 	ThinkingContent,
 	Tool,
 	ToolCall,
+	Usage,
 	VideoContent,
 } from "../types";
 import { shouldSendServiceTier } from "../types";
@@ -43,6 +44,7 @@ import type {
 	Part,
 	ThinkingConfig,
 	ThinkingLevel,
+	UsageMetadata,
 } from "./google-types";
 import { transformMessages } from "./transform-messages";
 import { mediaOmissionNote, mediaSupportForModel, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
@@ -492,6 +494,26 @@ export function startTextOrThinkingBlock(
 	return block;
 }
 
+// `promptTokenCount` includes `cachedContentTokenCount` (input + cacheRead = prompt). Upstream sometimes omits the
+// prompt count or reports more cached tokens than prompt (Antigravity): fall back to total − candidates − thoughts and
+// clamp the cache so input is never negative.
+export function mapGoogleUsage(metadata: UsageMetadata): Usage {
+	const candidates = metadata.candidatesTokenCount || 0;
+	const thinking = metadata.thoughtsTokenCount || 0;
+	const total = metadata.totalTokenCount || 0;
+	const prompt = metadata.promptTokenCount || Math.max(0, total - candidates - thinking);
+	const cacheRead = Math.min(metadata.cachedContentTokenCount || 0, prompt);
+	return {
+		input: prompt - cacheRead,
+		output: candidates + thinking,
+		cacheRead,
+		cacheWrite: 0,
+		totalTokens: total,
+		...(thinking > 0 ? { reasoningTokens: thinking } : {}),
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
 export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	googleStream: AsyncIterable<GenerateContentResponse>;
 	output: AssistantMessage;
@@ -532,7 +554,11 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 			onFirstEvent?.();
 		}
 		if (chunk.error) {
-			const detail = chunk.error.message || chunk.error.status || "unknown error";
+			// Keep the RPC status: RESOURCE_EXHAUSTED is the only account-exhaustion signal some in-band chunks carry.
+			const detail =
+				chunk.error.message && chunk.error.status
+					? `${chunk.error.message} (${chunk.error.status})`
+					: chunk.error.message || chunk.error.status || "unknown error";
 			const message = `Google API stream error: ${detail}`;
 			throw typeof chunk.error.code === "number" && chunk.error.code >= 400
 				? new AIError.GoogleApiError(message, chunk.error.code)
@@ -646,23 +672,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		}
 
 		if (chunk.usageMetadata) {
-			const cachedTokens = chunk.usageMetadata.cachedContentTokenCount || 0;
-			const thinkingTokens = chunk.usageMetadata.thoughtsTokenCount || 0;
-			output.usage = {
-				input: (chunk.usageMetadata.promptTokenCount || 0) - cachedTokens,
-				output: (chunk.usageMetadata.candidatesTokenCount || 0) + thinkingTokens,
-				cacheRead: cachedTokens,
-				cacheWrite: 0,
-				totalTokens: chunk.usageMetadata.totalTokenCount || 0,
-				...(thinkingTokens > 0 ? { reasoningTokens: thinkingTokens } : {}),
-				cost: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					total: 0,
-				},
-			};
+			output.usage = mapGoogleUsage(chunk.usageMetadata);
 			calculateCost(model, output.usage, output.timestamp);
 		}
 	}
@@ -715,11 +725,7 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	// streamGoogleVertex), so only emit the body field for the direct API.
 	const serviceTier = options.serviceTier;
 	// `!== "ultrafast"` narrows to the Gemini wire type; `shouldSendServiceTier` already rejects it for Google.
-	if (
-		model.provider === "google" &&
-		serviceTier !== "ultrafast" &&
-		shouldSendServiceTier(serviceTier, model.provider)
-	) {
+	if (model.provider === "google" && serviceTier !== "ultrafast" && shouldSendServiceTier(serviceTier, model)) {
 		config.serviceTier = serviceTier;
 	}
 
@@ -869,7 +875,7 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 					if (!response.ok) {
 						const errorText = await response.text().catch(() => "");
 						throw new AIError.GoogleApiError(
-							`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText)}`,
+							`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText, response.status)}`,
 							response.status,
 							{ headers: response.headers },
 						);
@@ -1019,11 +1025,20 @@ function paramsToWireBody(params: GenerateContentParameters): Record<string, unk
 	return body;
 }
 
-function extractGoogleErrorMessage(errorText: string): string {
+// On usage-limit statuses keep the RPC `status`/`details` residue: parseGoogleRpcRateLimitReason needs
+// RESOURCE_EXHAUSTED plus the ErrorInfo reason to tell a billing cap (terminal) from a per-minute throttle.
+function extractGoogleErrorMessage(errorText: string, status: number): string {
 	if (!errorText) return "Unknown error";
 	try {
-		const parsed = JSON.parse(errorText) as { error?: { message?: string } };
-		if (parsed.error?.message) return parsed.error.message;
-	} catch {}
-	return errorText;
+		const parsed = JSON.parse(errorText) as {
+			error?: { message?: string; status?: string; details?: unknown[] };
+		};
+		const error = parsed.error;
+		if (!error?.message) return errorText;
+		if (!AIError.isUsageLimitStatus(status)) return error.message;
+		if (error.status === undefined && error.details === undefined) return error.message;
+		return `${error.message} ${JSON.stringify({ error: { status: error.status, details: error.details } })}`;
+	} catch {
+		return errorText;
+	}
 }

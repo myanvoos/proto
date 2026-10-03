@@ -16,6 +16,7 @@ import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { ty
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import userAppendPromptTemplate from "./prompts/system/user-append.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -314,7 +315,7 @@ export function discoverTitleSystemPromptFile(cwd?: string): string | undefined 
 
 export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
 	if (!input) {
-		return undefined;
+		return input;
 	} else if (input.includes("\n")) {
 		return input;
 	}
@@ -331,6 +332,7 @@ export async function resolvePromptInput(input: string | undefined, description:
 
 interface LoadContextFilesOptions {
 	cwd?: string;
+	agentDir?: string;
 
 	disabledExtensions?: string[];
 }
@@ -360,6 +362,7 @@ export async function loadProjectContextFiles(
 
 	const result = await loadCapability(contextFileCapability.id, {
 		cwd: resolvedCwd,
+		agentDir: options.agentDir,
 		disabledExtensions: options.disabledExtensions,
 	});
 
@@ -535,6 +538,22 @@ export interface BuildSystemPromptResult {
 	xdevCatalogNames?: readonly string[];
 }
 
+/**
+ * Joins generated append blocks (auto-learn, `xd://` routes, MCP server instructions) with the user's
+ * append prompt, keeping the user text in its own section so it is not read as part of the
+ * server-controlled MCP instructions that end the generated blocks.
+ */
+export function composeAppendPrompt(appendParts: readonly string[], appendSystemPrompt?: string): string | undefined {
+	const generated = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	if (!appendSystemPrompt?.trim()) return generated;
+	if (!generated) return appendSystemPrompt;
+	// compile, not render: user-authored Markdown must not be reformatted.
+	return prompt.compile(userAppendPromptTemplate.trimEnd())({
+		generatedAppend: generated,
+		userAppend: appendSystemPrompt,
+	});
+}
+
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	if ($env.NULL_PROMPT === "true") {
 		return { systemPrompt: [] };
@@ -624,9 +643,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		return result.value;
 	}
 
-	const callerControlsCustomPrompt =
-		(typeof providedResolvedCustomPrompt === "string" && providedResolvedCustomPrompt.length > 0) ||
-		(typeof customPrompt === "string" && customPrompt.length > 0);
+	// Any explicit custom prompt, even an empty one, replaces discovered SYSTEM.md.
+	const callerControlsCustomPrompt = providedResolvedCustomPrompt !== undefined || customPrompt !== undefined;
 	const systemPromptCustomizationPromise: Promise<string | null> = callerControlsCustomPrompt
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
@@ -778,6 +796,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// file reads dispatch through `protolens read`), so count them for the skills gate.
 	const hasRead = toolNames.includes("read") || xdevToolNames.has("read");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
+	const hasSkillUriAccess = hasRead && skills.length > 0;
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
@@ -806,6 +825,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		agentsMdSearch: { files: agentsMdFiles },
 		workspaceTree,
 		skills: filteredSkills,
+		hasSkillUriAccess,
 		rules: rules ?? [],
 		alwaysApplyRules: injectedAlwaysApplyRules,
 		cwd: promptCwd,

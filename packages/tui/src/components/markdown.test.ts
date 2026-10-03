@@ -85,6 +85,28 @@ describe("Markdown nested blockquotes", () => {
 		expect(output.join("\n")).toContain("quoted text");
 		expect(output.filter(line => line.startsWith("> ")).length).toBeGreaterThan(0);
 	});
+
+	test("quote color resumes after inline code spans", () => {
+		const quoteFg = "\x1b[38;2;119;125;136m";
+		const codeFg = "\x1b[38;2;229;193;255m";
+		const styled: MarkdownTheme = {
+			...theme,
+			quote: text => `${quoteFg}${text}\x1b[39m`,
+			code: text => `${codeFg}${text}\x1b[39m`,
+		};
+
+		const [line] = new Markdown("> before `code` after", 0, 0, styled).render(80);
+		expect(line).toContain(`${codeFg}code\x1b[39m${quoteFg}`);
+
+		const [multiLine] = new Markdown("> start `first` middle `second` end", 0, 0, styled).render(80);
+		expect(multiLine).toContain(`${codeFg}first\x1b[39m${quoteFg}`);
+		expect(multiLine).toContain(`${codeFg}second\x1b[39m${quoteFg}`);
+
+		const [htmlLine] = new Markdown("<blockquote>before <code>code</code> after</blockquote>", 0, 0, styled).render(
+			80,
+		);
+		expect(htmlLine).toContain(`${codeFg}code\x1b[39m${quoteFg}`);
+	});
 });
 
 test("invalidated Markdown uses changed link resolvers without reusing stale targets or injecting controls", () => {
@@ -787,6 +809,13 @@ describe("Markdown code block wrapping", () => {
 describe("Markdown GFM fidelity", () => {
 	const rows = (rendered: readonly string[]): string[] =>
 		rendered.map(row => row.replace(/\x1b\[[0-9;]*m/g, "").trimEnd()).filter(row => row.trim().length > 0);
+	// Plain-text expectations: keep an ambient hyperlink-capable host (e.g. a Herdr pane) from adding OSC 8.
+	let hyperlinks = TERMINAL.hyperlinks;
+	beforeEach(() => {
+		hyperlinks = TERMINAL.hyperlinks;
+		setTerminalHyperlinks(false);
+	});
+	afterEach(() => setTerminalHyperlinks(hyperlinks));
 
 	test("task list items render their checkbox state", () => {
 		const rendered = rows(

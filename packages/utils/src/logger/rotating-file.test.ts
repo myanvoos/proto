@@ -54,3 +54,28 @@ describe("RotatingFileSink size limits", () => {
 		expect(await readLogFiles(directory)).toEqual([oversizedRecord]);
 	});
 });
+
+describe("RotatingFileSink rotation observer", () => {
+	it("reports every active file it switches to", () => {
+		const temp = TempDir.createSync("@proto-rotating-file-");
+		tempDirs.push(temp);
+		const reported: string[] = [];
+		const sink = new RotatingFileSink({
+			directory: temp.path(),
+			filenamePrefix: "proto",
+			filenameSuffix: "test",
+			auditFile: temp.join("audit.json"),
+			maxBytes: Buffer.byteLength(`first${os.EOL}`),
+			maxFiles: 10,
+			onRotate: filePath => reported.push(path.basename(filePath)),
+		});
+
+		sink.write("first");
+		sink.write("second");
+		sink.close();
+
+		expect(reported).toHaveLength(2);
+		expect(reported[0]).toMatch(/^proto\.\d{4}-\d{2}-\d{2}\.test\.log$/);
+		expect(reported[1]).toBe(`${reported[0]}.1`);
+	});
+});

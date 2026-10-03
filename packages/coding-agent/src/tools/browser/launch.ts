@@ -57,7 +57,6 @@ const STEALTH_ACCEPT_LANGUAGE = "en-US,en";
 
 const USER_AGENT_TARGET_TIMEOUT_MS = 5_000;
 const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
-const PUPPETEER_SOURCE_URL_SUFFIX = "//# sourceURL=__puppeteer_evaluation_script__";
 
 let puppeteerModule: typeof Puppeteer | undefined;
 /**
@@ -186,9 +185,8 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 		}
 		const cacheDir = getPuppeteerDir();
 		const { PUPPETEER_REVISIONS } = await import("puppeteer-core/internal/revisions.js");
-		const buildId = await browsers.resolveBuildId(browsers.Browser.CHROME, platform, PUPPETEER_REVISIONS.chrome);
+		const buildId = PUPPETEER_REVISIONS.chrome;
 		const executablePath = browsers.computeExecutablePath({
-			browser: browsers.Browser.CHROME,
 			buildId,
 			cacheDir,
 			platform,
@@ -202,7 +200,6 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 		});
 		let lastReportedPercent = -1;
 		await browsers.install({
-			browser: browsers.Browser.CHROME,
 			buildId,
 			cacheDir,
 			platform,
@@ -218,7 +215,21 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 			},
 		});
 		return executablePath;
-	})().catch(err => {
+	})().catch(async err => {
+		// Cache the fallback too: open preflight and launch both resolve the executable, and an uncached
+		// failure would retry the unavailable download inside the open deadline.
+		if (preferManagedChromium) {
+			const sysChrome = await resolveSystemChromium();
+			if (sysChrome) {
+				logger.warn(
+					"Chrome for Testing unavailable; falling back to the system Chrome bundle. On macOS this can let the " +
+						"headless browser daemon capture your link clicks (#8673). Set PUPPETEER_EXECUTABLE_PATH to a " +
+						"dedicated Chromium to avoid this.",
+					{ path: sysChrome, error: (err as Error).message },
+				);
+				return sysChrome;
+			}
+		}
 		chromiumExecutablePromise = undefined;
 		throw new ToolError(
 			`Failed to install Chromium for puppeteer: ${(err as Error).message}. ` +
@@ -226,21 +237,7 @@ export async function ensureChromiumExecutable(): Promise<string | undefined> {
 		);
 	});
 
-	try {
-		return await chromiumExecutablePromise;
-	} catch (err) {
-		if (!preferManagedChromium) throw err;
-
-		const sysChrome = await resolveSystemChromium();
-		if (!sysChrome) throw err;
-		logger.warn(
-			"Chrome for Testing unavailable; falling back to the system Chrome bundle. On macOS this can let the " +
-				"headless browser daemon capture your link clicks (#8673). Set PUPPETEER_EXECUTABLE_PATH to a " +
-				"dedicated Chromium to avoid this.",
-			{ path: sysChrome, error: (err as Error).message },
-		);
-		return sysChrome;
-	}
+	return await chromiumExecutablePromise;
 }
 
 let resolvedChromium: string | null | undefined;
@@ -514,52 +511,6 @@ function resolvePageClient(page: Page): PuppeteerCdpClient | null {
 	};
 	if (!pageWithClient._client) return null;
 	return typeof pageWithClient._client === "function" ? pageWithClient._client() : pageWithClient._client;
-}
-
-const patchedClients = new WeakSet<object>();
-
-function patchSourceUrl(page: Page): void {
-	const client = resolvePageClient(page);
-	if (!client) return;
-	const clientKey = client as object;
-	if (patchedClients.has(clientKey)) return;
-	patchedClients.add(clientKey);
-	const originalSend = client.send.bind(client);
-	client.send = async (method: string, params?: Record<string, unknown>) => {
-		const next = async (payload?: Record<string, unknown>) => {
-			try {
-				return await originalSend(method, payload);
-			} catch (error) {
-				if (
-					error instanceof Error &&
-					error.message.includes(
-						"Protocol error (Network.getResponseBody): No resource with given identifier found",
-					)
-				) {
-					return undefined;
-				}
-				throw error;
-			}
-		};
-		if (!method || !params) {
-			return next(params);
-		}
-		const key =
-			method === "Runtime.evaluate"
-				? "expression"
-				: method === "Runtime.callFunctionOn"
-					? "functionDeclaration"
-					: null;
-		if (!key) {
-			return next(params);
-		}
-		const value = params[key];
-		if (typeof value !== "string" || !value.includes(PUPPETEER_SOURCE_URL_SUFFIX)) {
-			return next(params);
-		}
-		const patchedParams = { ...params, [key]: value.replace(PUPPETEER_SOURCE_URL_SUFFIX, "") };
-		return next(patchedParams);
-	};
 }
 
 async function resolveMacOsProductVersion(): Promise<string> {
@@ -879,7 +830,6 @@ export async function applyStealthPatches(
 	page: Page,
 	state: { browserSession: CDPSession | null; override: UserAgentOverride | null },
 ): Promise<void> {
-	patchSourceUrl(page);
 	if (!state.override) {
 		state.override = await resolveUserAgentOverride(page);
 	}

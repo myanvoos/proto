@@ -52,9 +52,17 @@ impl From<()> for CancelToken {
 impl CancelToken {
 	pub fn new(timeout_ms: Option<u32>, signal: Option<Unknown>) -> Self {
 		let mut result = Self { core: core_cancel::CancelToken::new(timeout_ms) };
-		if let Some(signal) = signal.and_then(|value| AbortSignal::from_unknown(value).ok()) {
-			let abort_token = result.emplace_abort_token();
-			signal.on_abort(move || abort_token.abort(AbortReason::Signal));
+		if let Some(raw_signal) = signal {
+			let aborted = raw_signal
+				.coerce_to_object()
+				.and_then(|object| object.get_named_property::<bool>("aborted"))
+				.unwrap_or(false);
+			if aborted {
+				result.emplace_abort_token().abort(AbortReason::Signal);
+			} else if let Ok(signal) = AbortSignal::from_unknown(raw_signal) {
+				let abort_token = result.emplace_abort_token();
+				signal.on_abort(move || abort_token.abort(AbortReason::Signal));
+			}
 		}
 		result
 	}
@@ -136,7 +144,16 @@ where
 		}
 	}
 
-	fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+	fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+		if let Some(reason) = self.cancel_token.core.abort_reason() {
+			let message = format!("Aborted: {reason:?}");
+			let built: Result<Error> = (|| {
+				let mut error = env.create_error(Error::new(Status::Cancelled, message.clone()))?;
+				error.set_named_property("name", "AbortError")?;
+				Ok(Error::from(error.to_unknown()))
+			})();
+			return Err(built.unwrap_or_else(|_| Error::new(Status::Cancelled, message)));
+		}
 		Ok(output)
 	}
 }

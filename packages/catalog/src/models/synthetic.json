@@ -19,7 +19,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -102,7 +102,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -110,7 +110,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -186,7 +187,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -194,7 +195,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -272,7 +274,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -371,7 +373,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -446,7 +449,7 @@
 		"contextWindow": 131072,
 		"maxTokens": 32768,
 		"int": 11.6,
-		"tps": 196.3,
+		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -528,7 +531,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 65536,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -693,7 +696,7 @@
 		"contextWindow": 196608,
 		"maxTokens": 65536,
 		"int": 14.9,
-		"tps": 82.5,
+		"tps": 65.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -701,7 +704,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -776,7 +780,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -786,6 +790,90 @@
 				"high",
 				"max"
 			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"hf:zai-org/GLM-5.3": {
+		"id": "hf:zai-org/GLM-5.3",
+		"name": "GLM-5.3",
+		"api": "openai-completions",
+		"provider": "synthetic",
+		"baseUrl": "https://api.synthetic.new/openai/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
+			"cacheWrite": 0
+		},
+		"contextWindow": 524288,
+		"maxTokens": 65536,
+		"int": 44.8,
+		"tps": 74.1,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
@@ -861,7 +949,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -951,7 +1039,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1034,7 +1123,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1116,7 +1206,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1199,7 +1290,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

@@ -5,7 +5,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { $env, $flag, getAutoQaDbPath, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { $env, $flag, getAutoQaDbPath, getInstallId, logger, truncateHeadBytes, VERSION } from "@oh-my-pi/pi-utils";
 import type { Settings } from "..";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine } from "../tui/status-line";
@@ -35,6 +35,18 @@ export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): C
 	return new Text(text, 0, 0);
 }
 
+/**
+ * Collector limit for `tool`, in UTF-8 bytes. One oversized entry makes it reject the whole batch with HTTP 400, so
+ * grievances are clamped at record time and again at send time (older rows still sit in users' databases).
+ */
+const MAX_TOOL_BYTES = 128;
+
+/** An over-long `tool` is prose put on line 1: keep it at the head of the report and truncate only the name. */
+function clampGrievance(tool: string, report: string): { tool: string; report: string } {
+	if (Buffer.byteLength(tool, "utf8") <= MAX_TOOL_BYTES) return { tool, report };
+	return { tool: truncateHeadBytes(tool, MAX_TOOL_BYTES).text, report: `${tool}\n${report}` };
+}
+
 function parseReportIssueBody(text: string): { tool: string; report: string } {
 	const body = text.trim();
 	if (!body) {
@@ -44,13 +56,13 @@ function parseReportIssueBody(text: string): { tool: string; report: string } {
 	if (firstNewline >= 0) {
 		const tool = body.slice(0, firstNewline).trim();
 		const report = body.slice(firstNewline + 1).trim();
-		if (tool && report) return { tool, report };
+		if (tool && report) return clampGrievance(tool, report);
 	}
 	const colon = body.indexOf(":");
 	if (colon > 0) {
 		const tool = body.slice(0, colon).trim();
 		const report = body.slice(colon + 1).trim();
-		if (tool && report) return { tool, report };
+		if (tool && report) return clampGrievance(tool, report);
 	}
 	throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 }
@@ -152,6 +164,7 @@ export function openAutoQaDb(): Database | null {
 		const db = new Database(dbPath, { create: true });
 
 		db.run("PRAGMA busy_timeout = 5000");
+		// `pushed`: 0 = queued, 1 = accepted, -1 = permanently refused (`push_error` holds the collector's reason).
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS grievances (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +173,8 @@ export function openAutoQaDb(): Database | null {
 				tool TEXT NOT NULL,
 				report TEXT NOT NULL,
 				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-				pushed INTEGER NOT NULL DEFAULT 0
+				pushed INTEGER NOT NULL DEFAULT 0,
+				push_error TEXT
 			);
 		`);
 
@@ -171,6 +185,8 @@ export function openAutoQaDb(): Database | null {
 				UPDATE grievances SET created_at = CURRENT_TIMESTAMP WHERE created_at = '';
 			`);
 		}
+		const hasPushError = db.prepare("SELECT 1 FROM pragma_table_info('grievances') WHERE name = 'push_error'").get();
+		if (!hasPushError) db.exec("ALTER TABLE grievances ADD COLUMN push_error TEXT;");
 		db.exec(`
 			CREATE INDEX IF NOT EXISTS grievances_pushed_created_at_idx
 			ON grievances (pushed, created_at, id);
@@ -187,6 +203,10 @@ export interface FlushResult {
 	pushed: number;
 	ok: boolean;
 	skipped?: boolean;
+	/** Rows the collector permanently refused, parked as `pushed = -1`; present only when non-zero. */
+	rejected?: number;
+	/** Last collector error (`HTTP <status>: <body>`). */
+	error?: string;
 }
 
 interface FlushOptions {
@@ -208,6 +228,7 @@ const FLUSH_TIMEOUT_MS = 5_000;
 const FAILURE_COOLDOWN_MS = 30_000;
 
 const FLUSH_BATCH_SIZE = 50;
+const MAX_PUSH_ERROR_CHARS = 300;
 
 let inFlightFlush: Promise<FlushResult> | null = null;
 let lastFailureAt = 0;
@@ -242,6 +263,17 @@ interface GrievanceRow {
 	report: string;
 }
 
+async function describeErrorResponse(response: Response): Promise<string> {
+	let detail = "";
+	try {
+		detail = (await response.text()).trim();
+	} catch {}
+	if (detail.length > MAX_PUSH_ERROR_CHARS) detail = `${detail.slice(0, MAX_PUSH_ERROR_CHARS)}…`;
+	return detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`;
+}
+
+type BatchOutcome = { kind: "sent" } | { kind: "rejected"; error: string } | { kind: "retry"; error: string };
+
 async function performFlush(db: Database, config: PushConfig, options: FlushOptions = {}): Promise<FlushResult> {
 	const selectStmt = db.prepare(
 		"SELECT id, model, version, tool, report FROM grievances WHERE pushed = 0 ORDER BY id ASC LIMIT ?",
@@ -253,17 +285,17 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 	}
 	const fetchImpl = options.fetch ?? fetch;
 	let totalPushed = 0;
-	for (;;) {
-		const rows = selectStmt.all(FLUSH_BATCH_SIZE) as GrievanceRow[];
-		if (rows.length === 0) return { pushed: totalPushed, ok: true };
+	let totalRejected = 0;
+	let lastError: string | undefined;
 
+	const postBatch = async (batch: GrievanceRow[]): Promise<BatchOutcome> => {
 		const body = JSON.stringify({
 			agent: { name: "proto", version: VERSION },
 			installId: getInstallId(),
 
 			platform: process.platform,
 			arch: process.arch,
-			entries: rows,
+			entries: batch.map(row => ({ ...row, ...clampGrievance(row.tool, row.report) })),
 		});
 		const headers: Record<string, string> = { "content-type": "application/json" };
 		if (config.token) headers.authorization = `Bearer ${config.token}`;
@@ -277,33 +309,67 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 				signal: AbortSignal.timeout(FLUSH_TIMEOUT_MS),
 			});
 		} catch (error) {
+			return { kind: "retry", error: String(error) };
+		}
+		if (response.ok) return { kind: "sent" };
+		const error = await describeErrorResponse(response);
+		// 400/413/422 refuse the payload itself, so resending the same bytes can only fail again; 5xx, 408, 429 and
+		// auth failures say nothing about the rows and stay retryable.
+		const permanent = response.status === 400 || response.status === 413 || response.status === 422;
+		return permanent ? { kind: "rejected", error } : { kind: "retry", error };
+	};
+
+	// Bisects refused batches until the offending rows are isolated and parked; false = transient failure.
+	const shipBatch = async (batch: GrievanceRow[]): Promise<boolean> => {
+		const outcome = await postBatch(batch);
+		if (outcome.kind === "sent") {
+			const ids = batch.map(r => r.id);
+			const placeholders = ids.map(() => "?").join(",");
+			db.prepare(`UPDATE grievances SET pushed = 1 WHERE id IN (${placeholders})`).run(...ids);
+			totalPushed += batch.length;
+			options.onProgress?.(totalPushed);
+			return true;
+		}
+		lastError = outcome.error;
+		if (outcome.kind === "retry") return false;
+		if (batch.length === 1) {
+			const row = batch[0]!;
+			db.prepare("UPDATE grievances SET pushed = -1, push_error = ? WHERE id = ?").run(outcome.error, row.id);
+			totalRejected += 1;
+			logger.warn("autoqa grievance rejected", {
+				endpoint: config.endpoint,
+				id: row.id,
+				tool: row.tool,
+				error: outcome.error,
+			});
+			return true;
+		}
+		const mid = Math.floor(batch.length / 2);
+		return (await shipBatch(batch.slice(0, mid))) && (await shipBatch(batch.slice(mid)));
+	};
+
+	let ok = true;
+	for (;;) {
+		const rows = selectStmt.all(FLUSH_BATCH_SIZE) as GrievanceRow[];
+		if (rows.length === 0) break;
+		if (!(await shipBatch(rows))) {
 			lastFailureAt = Date.now();
 			logger.warn("autoqa push failed", {
 				endpoint: config.endpoint,
-				error: String(error),
+				error: lastError,
 				batchSize: rows.length,
 				pushedSoFar: totalPushed,
 			});
-			return { pushed: totalPushed, ok: false };
+			ok = false;
+			break;
 		}
-
-		if (!response.ok) {
-			lastFailureAt = Date.now();
-			logger.warn("autoqa push failed", {
-				endpoint: config.endpoint,
-				status: response.status,
-				batchSize: rows.length,
-				pushedSoFar: totalPushed,
-			});
-			return { pushed: totalPushed, ok: false };
-		}
-
-		const ids = rows.map(r => r.id);
-		const placeholders = ids.map(() => "?").join(",");
-		db.prepare(`UPDATE grievances SET pushed = 1 WHERE id IN (${placeholders})`).run(...ids);
-		totalPushed += rows.length;
-		options.onProgress?.(totalPushed);
 	}
+	return {
+		pushed: totalPushed,
+		ok,
+		...(totalRejected > 0 ? { rejected: totalRejected } : {}),
+		...(lastError ? { error: lastError } : {}),
+	};
 }
 
 export async function flushGrievances(

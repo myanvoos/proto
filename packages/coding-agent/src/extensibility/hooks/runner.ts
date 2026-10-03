@@ -267,8 +267,15 @@ export class HookRunner {
 					result = handlerResult as SessionBeforeCompactResult | SessionBeforeTreeResult;
 					if (result.cancel) return result;
 				}
+				// Merge tool_result overrides per field: a later handler's defined field wins, and a partial
+				// patch never erases an earlier handler's content redaction.
 				if (event.type === "tool_result" && handlerResult) {
-					result = handlerResult as ToolResultEventResult;
+					const toolResult = handlerResult as ToolResultEventResult;
+					const patch: ToolResultEventResult = { ...(result as ToolResultEventResult | undefined) };
+					if (toolResult.content !== undefined) patch.content = toolResult.content;
+					if (toolResult.details !== undefined) patch.details = toolResult.details;
+					if (toolResult.isError !== undefined) patch.isError = toolResult.isError;
+					if (Object.keys(patch).length > 0) result = patch;
 				}
 				if (event.type === "session.compacting" && handlerResult) {
 					result = handlerResult as SessionCompactingResult;

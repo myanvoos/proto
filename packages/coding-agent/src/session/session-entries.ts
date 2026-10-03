@@ -2,6 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent, Usage } from "@oh-my-pi/pi-ai";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { CompactionMethod } from "./compaction-methods";
+import type { RetryFallbackRole } from "./retry-fallback-chains";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -176,6 +177,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	modelOverride?: string;
 
 	resolvedModel?: string;
+	/** The subagent's `subagent:<id>` retry fallback role as installed at spawn; cold revival reinstalls it. */
+	retryFallback?: RetryFallbackRole;
 
 	readOnly?: boolean;
 

@@ -131,7 +131,7 @@ export function withProxyInit(
 	init: RequestInit | undefined,
 	proxyUrl: string,
 ): RequestInit | undefined {
-	if ((init as { proxy?: unknown } | undefined)?.proxy) return init;
+	if (init && (("unix" in init && init.unix) || ("proxy" in init && init.proxy))) return init;
 	const urlStr = input instanceof Request ? input.url : input.toString();
 	let urlObj: URL;
 	try {

@@ -1,3 +1,5 @@
+import { shortenPath } from "../tools/render-utils";
+import type { DiscoveryResult } from "./discovery";
 import { type AgentDefinition, canSpawnAtDepth } from "./types";
 
 const DEFAULT_SPAWN_AGENT = "worker";
@@ -102,9 +104,13 @@ export function resolveSpawnPreflight(args: SpawnPreflightArgs): SpawnPreflight 
 	return { agentName };
 }
 
-export function describeUnknownAgent(agentName: string, agents: readonly AgentDefinition[]): string {
-	const available = agents.map(agent => agent.name).join(", ") || "none";
-	return `Unknown agent "${agentName}". Available: ${available}`;
+export function describeUnknownAgent(
+	agentName: string,
+	discovery: Pick<DiscoveryResult, "agents" | "searchedDirs">,
+): string {
+	const available = discovery.agents.map(agent => agent.name).join(", ") || "none";
+	const searched = discovery.searchedDirs.map(dir => shortenPath(dir)).join(", ") || "none";
+	return `Unknown agent "${agentName}". Available: ${available}. Searched: ${searched}`;
 }
 
 export function describeDisabledAgent(

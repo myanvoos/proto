@@ -3,8 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { deserialize, serialize } from "node:v8";
 import { gunzipSync, gzipSync } from "node:zlib";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
 import type {
+	AssistantMessage,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -43,6 +44,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
+import type { RetryFallbackRole } from "./retry-fallback-chains";
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
 	type BranchSummaryEntry,
@@ -346,6 +348,14 @@ function entryUsage(entry: SessionEntry): Usage | undefined {
 	if (entry.type !== "message") return undefined;
 	const message = entry.message;
 	return message.role === "assistant" ? message.usage : undefined;
+}
+
+/** Zero one record's billing attribution in place; token counts stay for compaction and context math. */
+function resetUsageCost(usage: Usage | undefined): void {
+	if (!usage) return;
+	usage.cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	usage.credits = undefined;
+	usage.premiumRequests = undefined;
 }
 
 function addSubagentUsage(target: UsageStatistics, entry: SubagentUsageEntryData, agents: Set<string>): void {
@@ -756,7 +766,9 @@ export class SessionManager {
 	#rememberBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
 		if (!this.#persist) return;
 		this.#breadcrumbFresh = fresh;
-		if (!this.#suppressBreadcrumb) writeTerminalBreadcrumb(cwd, sessionFile, fresh);
+		if (!this.#suppressBreadcrumb) {
+			writeTerminalBreadcrumb(cwd, sessionFile, fresh, this.#storage instanceof FileSessionStorage);
+		}
 	}
 
 	#materializeBreadcrumb(): void {
@@ -787,18 +799,24 @@ export class SessionManager {
 				error: error.message,
 				stack: error.stack,
 			});
-			for (const callback of this.#persistenceErrorCallbacks) {
-				try {
-					callback(error);
-				} catch (callbackError) {
-					logger.warn("Session persistence error observer failed", {
-						error: toError(callbackError).message,
-					});
-				}
-			}
+			this.#notifyPersistenceError(error);
 		}
 
 		return this.#diskFailure;
+	}
+
+	/** A throwing host observer must not corrupt session teardown. */
+	#notifyPersistenceError(
+		error: Error,
+		callbacks: Iterable<(error: Error) => void> = this.#persistenceErrorCallbacks,
+	): void {
+		for (const callback of callbacks) {
+			try {
+				callback(error);
+			} catch (callbackError) {
+				logger.warn("Session persistence error observer failed", { error: toError(callbackError).message });
+			}
+		}
 	}
 
 	#scheduleDiskWork(work: () => Promise<void>, options: DiskQueueOptions = {}): Promise<void> {
@@ -866,6 +884,7 @@ export class SessionManager {
 				sessionFile: this.#sessionFile,
 				error: error.message,
 			});
+			this.#notifyPersistenceError(error);
 		}
 		return error;
 	}
@@ -1039,6 +1058,19 @@ export class SessionManager {
 	}
 
 	#retainEntry(entry: SessionEntry): SessionEntry {
+		// Older and imported transcripts can carry assistant turns without usage; renderers and totals dereference it.
+		// Repaired in memory only, so loading such a session never forces a rewrite.
+		if (entry.type === "message" && entry.message.role === "assistant" && !entry.message.usage) {
+			entry.message.usage = {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			logger.debug("Assistant message without usage treated as zero usage", { id: entry.id });
+		}
 		// Configuration/identity rows are already lightweight. Every payload-bearing row lives on disk,
 		// including ordinary messages below the persistence truncation threshold.
 		if (
@@ -1274,13 +1306,7 @@ export class SessionManager {
 				: `session file is locked by another proto process (pid ${ownerPid})`,
 			{ cause: error },
 		);
-		for (const callback of this.#persistenceErrorCallbacks) {
-			try {
-				callback(reported);
-			} catch (callbackError) {
-				logger.warn("Session persistence error observer failed", { error: toError(callbackError).message });
-			}
-		}
+		this.#notifyPersistenceError(reported);
 	}
 
 	#historyContainsAssistantMessage(): boolean {
@@ -2647,9 +2673,14 @@ export class SessionManager {
 		return this.#titleSource;
 	}
 
-	/** Changes synchronously on every accepted rename, including reassertions of the same title. */
+	/** Changes synchronously when a generated rename starts or any rename is accepted, including reassertions. */
 	get titleRevision(): number {
 		return this.#titleRevision;
+	}
+
+	/** Invalidate older generated renames before starting a new one. */
+	reserveTitleRevision(): number {
+		return ++this.#titleRevision;
 	}
 
 	getSessionName(): string | undefined {
@@ -2676,8 +2707,10 @@ export class SessionManager {
 		};
 	}
 
+	/** A failure latched before the host subscribed (a store that failed on its first write) is replayed to it. */
 	onPersistenceError(cb: (error: Error) => void): () => void {
 		this.#persistenceErrorCallbacks.add(cb);
+		if (this.#diskFailure) this.#notifyPersistenceError(this.#diskFailure, [cb]);
 		return () => {
 			this.#persistenceErrorCallbacks.delete(cb);
 		};
@@ -2807,6 +2840,7 @@ export class SessionManager {
 		modelRole?: string;
 		modelOverride?: string;
 		resolvedModel?: string;
+		retryFallback?: RetryFallbackRole;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -3401,7 +3435,16 @@ export class SessionManager {
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
-		options?: { copyArtifacts?: boolean; suppressBreadcrumb?: boolean; sessionFile?: string; copyTitle?: boolean },
+		options?: {
+			copyArtifacts?: boolean;
+			suppressBreadcrumb?: boolean;
+			sessionFile?: string;
+			copyTitle?: boolean;
+			/** Zero inherited turns' cost so a derived agent's spend reflects only its own work. */
+			resetInheritedCost?: boolean;
+			/** Pair tool calls a live, mid-turn source left unresolved with synthetic aborted results. */
+			repairInterruptedTail?: boolean;
+		},
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
@@ -3431,6 +3474,9 @@ export class SessionManager {
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
+		if (options?.resetInheritedCost) {
+			for (const entry of history) resetUsageCost(entryUsage(entry));
+		}
 		manager.#resetToNewSession(
 			{
 				parentSession: sourceHeader?.id,
@@ -3453,12 +3499,52 @@ export class SessionManager {
 		manager.#hasTitleSlot = true;
 		manager.#replaceEntries(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
+		if (options?.repairInterruptedTail) manager.#repairInterruptedTail();
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		if (options?.copyArtifacts !== false) {
 			await copySessionArtifacts(sourcePath, manager.#sessionFile!);
 		}
 		return manager;
+	}
+
+	/**
+	 * A fork of a live parent can land mid-turn: the active branch's last assistant turn holds tool calls whose
+	 * results only the parent will receive. Close them with the agent loop's aborted synthetic results so the
+	 * derived transcript is terminal, instead of showing the parent's in-flight calls as its own pending work and
+	 * replaying orphan tool calls to the model. Only the root-to-leaf path counts; sibling branches are ignored.
+	 */
+	#repairInterruptedTail(): void {
+		const branch = this.#index.pathTo();
+		const leaf = branch.at(-1);
+		if (!leaf) return;
+		let assistant: AssistantMessage | undefined;
+		const pairedResultIds = new Set<string>();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "toolResult") pairedResultIds.add(entry.message.toolCallId);
+			else if (entry.message.role === "assistant") {
+				assistant = entry.message;
+				break;
+			}
+		}
+		if (!assistant) return;
+		let parentId = leaf.id;
+		for (const block of assistant.content) {
+			if (block.type !== "toolCall" || pairedResultIds.has(block.id)) continue;
+			const entry: SessionMessageEntry = {
+				type: "message",
+				id: generateId(this.#index),
+				parentId,
+				timestamp: nowIso(),
+				message: createSyntheticToolResultMessage(block, "aborted"),
+			};
+			const retained = this.#retainEntry(entry);
+			this.#entries.push(retained);
+			this.#index.insert(retained);
+			parentId = entry.id;
+		}
 	}
 
 	static async open(
@@ -3713,6 +3799,7 @@ export interface PersistedSessionInit {
 	modelRole?: string;
 	modelOverride?: string;
 	resolvedModel?: string;
+	retryFallback?: RetryFallbackRole;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
 	restrictToolNames?: boolean;
@@ -3734,6 +3821,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			modelRole: entry.modelRole,
 			modelOverride: entry.modelOverride,
 			resolvedModel: entry.resolvedModel,
+			retryFallback: entry.retryFallback,
 			outputSchema: entry.outputSchema,
 			outputSchemaMode: entry.outputSchemaMode,
 			restrictToolNames: entry.restrictToolNames,

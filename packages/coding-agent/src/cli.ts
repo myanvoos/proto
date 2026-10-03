@@ -17,7 +17,12 @@ import {
 	VERSION,
 	validateAgentDirEnv,
 } from "@oh-my-pi/pi-utils/dirs";
-import { fatal, interceptUnhandledRejections, registerStdioDisconnectHandling } from "@oh-my-pi/pi-utils/postmortem";
+import {
+	fatal,
+	interceptUnhandledRejections,
+	registerStdioDisconnectHandling,
+	reportUnsettledEntry,
+} from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
@@ -122,6 +127,9 @@ async function runIpcSubprocessWorker<In, Out>(
 	type IpcSend = (this: NodeJS.Process, message: unknown, callback?: (error: Error | null) => void) => boolean;
 
 	const ipcSend = (): IpcSend | undefined => (process as NodeJS.Process & { send?: IpcSend }).send;
+	// Launched without an IPC channel (or the parent is already gone): nobody can reach this worker, so
+	// exit through the shutdown tail instead of idling on the keepalive forever.
+	if (!ipcSend()) shutdown();
 	const send = (message: Out): void => {
 		const sender = ipcSend();
 		if (!sender) {
@@ -178,6 +186,9 @@ async function runTinyWorker(): Promise<void> {
 	await runIpcSubprocessWorker(startTinyTitleWorker);
 }
 
+/** Resolved top-level command name (never its arguments), for the unsettled-entry report. */
+let runningCommand: string | undefined;
+
 export async function runCli(argv: string[]): Promise<void> {
 	let resolvedArgv = argv;
 	try {
@@ -221,6 +232,10 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 	}
 
+	// Before selector dispatch: worker subprocesses (daemon broker, session host) spawn their own workers
+	// and must resolve this entry instead of the source-tree fallback.
+	if (isProcessEntry) declareWorkerHostEntry();
+
 	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
@@ -229,8 +244,6 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 		return;
 	}
-
-	if (isProcessEntry) declareWorkerHostEntry();
 
 	if (resolvedArgv[0] === "--license") {
 		// Keep these large assets out of normal startup; they are only needed for --license.
@@ -281,6 +294,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			const carried = resolved.configFiles.join(nodePath.delimiter);
 			process.env.PI_CONFIG_FILES = existing ? `${existing}${nodePath.delimiter}${carried}` : carried;
 		}
+		runningCommand = resolved.argv[0];
 		await run({
 			bin: BINARY_NAME,
 			version: VERSION,
@@ -298,7 +312,10 @@ if (isProcessEntry || !Bun.isMainThread) {
 	// A one-shot run (`proto --help | head`) whose stdout consumer closes early is an ordinary Unix disconnect, not a
 	// fatal error. The registration lives for the process; interactive launches own their terminal lifetime on top.
 	if (isProcessEntry) registerStdioDisconnectHandling();
-	runCli(process.argv.slice(2)).catch(async (err: unknown) => {
+	const entry = runCli(process.argv.slice(2));
+	// A floating entry still pending when the event loop drains (an await that can never settle) must not exit 0.
+	if (isProcessEntry) reportUnsettledEntry(entry, () => runningCommand);
+	entry.catch(async (err: unknown) => {
 		// Keep the CLI module off the fast path: it is only needed once something has already failed.
 		const { formatCliError } = await import("@oh-my-pi/pi-utils/cli").catch(() => ({
 			formatCliError: (error: unknown) => `error: ${error instanceof Error ? error.message : String(error)}\n`,

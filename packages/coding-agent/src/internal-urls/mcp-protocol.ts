@@ -115,6 +115,8 @@ export class McpProtocolHandler implements ProtocolHandler {
 		const uri = extractResourceUri(url);
 		let targetServer = resolveTargetServer(mcpManager, uri);
 		if (!targetServer) {
+			// A configured server may still be handshaking past the startup window.
+			await mcpManager.waitForPendingConnections();
 			await Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name)));
 			targetServer = resolveTargetServer(mcpManager, uri);
 		}

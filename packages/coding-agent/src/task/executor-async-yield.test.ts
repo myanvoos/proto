@@ -83,6 +83,7 @@ function asyncJobSession(
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => ({ role: "assistant", content: [], stopReason: "stop" }),
+		getToolByName: () => undefined,
 		abort: async () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
@@ -164,4 +165,16 @@ test("monitor events arriving after a yield invalidate the stale report", async 
 	expect(result.exitCode).not.toBe(0);
 	expect(result.error).toContain("Background job results arrived after the subagent's last yield");
 	expect(result.output).toContain("before monitor");
+});
+
+// Regression: a worker that ended its turn waiting on its own background job was charged yield reminders (and
+// failed once they ran out) while the job was still running; the run now settles the job first.
+test("a worker waiting on its background job is not reminded before the job settles", async () => {
+	const { session, prompts } = asyncJobSession([proseTurn, yieldTurn({ report: "job-1 delivered its result" })]);
+
+	const result = await run(session, "async-wait-before-yield");
+
+	expect(result.exitCode).toBe(0);
+	expect(result.output).toContain("job-1 delivered its result");
+	expect(prompts()).toBe(1);
 });

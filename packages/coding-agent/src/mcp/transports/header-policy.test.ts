@@ -85,3 +85,15 @@ test("redirect errors do not expose configured secrets or URL query values", asy
 	expect((error as Error).message).not.toContain("query-secret");
 	expect((error as Error).message).not.toContain("header-secret");
 });
+
+test("MCP requests opt out of the runtime's socket idle timeout", async () => {
+	const timeouts: unknown[] = [];
+	const fetchImpl: MCPFetchImpl = async (_input, init) => {
+		timeouts.push(init?.timeout);
+		return new Response("ok");
+	};
+
+	await mcpFetch("https://mcp.example.test/rpc", { method: "POST", body: "{}" }, { generated: {} }, false, fetchImpl);
+
+	expect(timeouts).toEqual([false]);
+});

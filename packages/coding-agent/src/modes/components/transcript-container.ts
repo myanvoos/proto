@@ -2,6 +2,7 @@ import { type Component, Container, type HistoryBatch, wrapTextWithAnsi } from "
 import { logger } from "@oh-my-pi/pi-utils";
 import { estimateTranscriptBytes, TRANSCRIPT_WINDOW_BYTES } from "../utils/transcript-window";
 import { isToolActivityComponent } from "./tool-activity";
+import { isUsageRowBlock } from "./usage-row";
 
 /** Shared animation time supplied by the constrained transcript root. */
 export interface AnimationFrame {
@@ -348,6 +349,13 @@ export class TranscriptContainer extends Container {
 		)
 			return false;
 		return true;
+	}
+
+	/** Whether a superseded snapshot (a repeated poll) may be replaced; one directly above its turn's usage row stays. */
+	canDisplaceBlock(component: Component): boolean {
+		if (!this.canRemoveBlock(component)) return false;
+		const next = this.children[this.children.indexOf(component) + 1];
+		return next === undefined || !isUsageRowBlock(next);
 	}
 
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */

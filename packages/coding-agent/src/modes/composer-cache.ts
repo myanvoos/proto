@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import "@oh-my-pi/pi-utils/env";
 import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
 import type { RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
@@ -29,12 +30,23 @@ function projectCacheDir(cwd: string): string {
 	return path.join(getComposerCacheDir(), key);
 }
 
+// Content this process last read or wrote per cache file: startup and model events re-send identical payloads.
+const knownContent = new Map<string, string>();
+
 function readFile(file: string): string | undefined {
 	try {
-		return fs.readFileSync(file, "utf8");
+		const content = fs.readFileSync(file, "utf8");
+		knownContent.set(file, content);
+		return content;
 	} catch {
 		return undefined;
 	}
+}
+
+async function writeIfChanged(file: string, content: string): Promise<void> {
+	if (knownContent.get(file) === content) return;
+	await Bun.write(file, content);
+	knownContent.set(file, content);
 }
 
 function field(value: object, key: string): unknown {
@@ -162,14 +174,14 @@ export async function writeComposerUiCache(
 	preferences: ComposerPreferences,
 	theme: ComposerThemePreferences,
 ): Promise<void> {
-	await Bun.write(
+	await writeIfChanged(
 		path.join(projectCacheDir(cwd), "ui.json"),
 		JSON.stringify({ version: CACHE_VERSION, preferences, theme }),
 	);
 }
 
 export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWelcomeCache): Promise<void> {
-	await Bun.write(
+	await writeIfChanged(
 		path.join(projectCacheDir(cwd), "welcome.json"),
 		JSON.stringify({ version: CACHE_VERSION, ...welcome }),
 	);
@@ -180,5 +192,5 @@ export async function writeComposerRecentSessionsCache(cwd: string, sessions: re
 		.slice(0, 4)
 		.map(session => JSON.stringify(session))
 		.join("\n");
-	await Bun.write(path.join(projectCacheDir(cwd), "recent-sessions.jsonl"), content ? `${content}\n` : "");
+	await writeIfChanged(path.join(projectCacheDir(cwd), "recent-sessions.jsonl"), content ? `${content}\n` : "");
 }

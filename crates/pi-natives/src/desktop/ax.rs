@@ -236,17 +236,13 @@ fn filter_node(mut node: WalkNode, all: bool) -> Option<WalkNode> {
 		.into_iter()
 		.filter_map(|child| filter_node(child, all))
 		.collect();
-	if all {
+	if all || interactable(&node.props) || named(&node.props) {
 		return Some(node);
 	}
-	let keep_self = interactable(&node.props) || named(&node.props);
-	if !keep_self && node.props.role == "group" && node.children.len() == 1 {
-		return node.children.pop();
-	}
-	if keep_self || (structural(&node.props.role) && !node.children.is_empty()) {
-		Some(node)
-	} else {
-		None
+	match node.children.len() {
+		0 => None,
+		1 if node.props.role == "group" || !structural(&node.props.role) => node.children.pop(),
+		_ => Some(node),
 	}
 }
 
@@ -471,5 +467,47 @@ pub fn normalize_role_atspi(native: &str, multiline: bool) -> String {
 		"tree item" => "outlineitem".into(),
 		"frame" | "dialog" => "window".into(),
 		other => other.replace(' ', ""),
+	}
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+	use super::*;
+
+	fn node(role: &str, title: Option<&str>, children: Vec<WalkNode>) -> WalkNode {
+		WalkNode {
+			handle: AxHandle::AtSpi(atspi::ObjectRefOwned::from_static_str_unchecked(
+				":1.7",
+				"/org/a11y/atspi/null",
+			)),
+			props: AxProps {
+				role:        role.into(),
+				native_role: role.into(),
+				title:       title.map(str::to_owned),
+				value:       None,
+				description: None,
+				enabled:     true,
+				focused:     false,
+				bounds:      None,
+				actions:     Vec::new(),
+				child_count: children.len() as u32,
+			},
+			children,
+		}
+	}
+
+	#[test]
+	fn unnamed_containers_preserve_controls_and_drop_empty_wrappers() {
+		let tree = node("splitgroup", None, vec![
+			node("scrollarea", None, vec![node("button", Some("Groceries"), vec![])]),
+			node("layoutarea", None, vec![node("textfield", Some("Notes"), vec![])]),
+			node("group", None, vec![]),
+		]);
+		let filtered = filter_node(tree, false).unwrap();
+		assert_eq!(filtered.props.role, "splitgroup");
+		assert_eq!(filtered.children.len(), 2);
+		assert_eq!(filtered.children[0].props.role, "scrollarea");
+		assert_eq!(filtered.children[0].children[0].props.title.as_deref(), Some("Groceries"));
+		assert_eq!(filtered.children[1].props.title.as_deref(), Some("Notes"));
 	}
 }

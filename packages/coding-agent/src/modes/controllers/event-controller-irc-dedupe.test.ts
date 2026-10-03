@@ -35,6 +35,7 @@ function makeContext(cardLog: unknown[]) {
 	};
 	const context = {
 		isInitialized: true,
+		initialChatRendered: true,
 		ui: UI,
 		chatContainer,
 		settings: { get: () => false },
@@ -103,6 +104,33 @@ test("non-IRC custom records sharing a details.id are distinct messages", async 
 		await controller.handleEvent({ type: "message_start", message: progress("job-1", "20%") } as never);
 		// Extension ids are not delivery identities: both records render.
 		expect(cardLog).toHaveLength(2);
+	} finally {
+		controller.dispose();
+	}
+});
+
+test("an idle custom message delivered before the initial transcript render is left to the replay", async () => {
+	const cardLog: unknown[] = [];
+	const context = makeContext(cardLog);
+	context.initialChatRendered = false;
+	const controller = new EventController(context as unknown as ConstructorParameters<typeof EventController>[0]);
+	const message = (body: string, timestamp: number) =>
+		({
+			role: "custom",
+			customType: "extension:startup",
+			content: body,
+			display: true,
+			attribution: "agent",
+			timestamp,
+		}) as const;
+	try {
+		await controller.handleEvent({ type: "message_start", message: message("startup", 1) } as never);
+		expect(cardLog).toEqual([]);
+
+		context.viewSession.isStreaming = true;
+		const live = message("mid-turn", 2);
+		await controller.handleEvent({ type: "message_start", message: live } as never);
+		expect(cardLog).toEqual([live]);
 	} finally {
 		controller.dispose();
 	}

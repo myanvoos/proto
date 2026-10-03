@@ -33,6 +33,7 @@ function createMockSession(onPrompt: (emit: (event: AgentSessionEvent) => void) 
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => undefined,
+		getToolByName: () => undefined,
 		abort: async () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,

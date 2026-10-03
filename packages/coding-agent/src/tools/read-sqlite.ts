@@ -5,7 +5,7 @@ import { DEFAULT_MAX_LINES, truncateHead } from "../session/streaming-output";
 import { applyListLimit } from "./list-limit";
 import { resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";
-import { prependSuffixResolutionNotice } from "./read-format";
+import { prependSuffixResolutionNotice, toReadTruncationStats } from "./read-format";
 import {
 	findSuffixMatchCached,
 	isNotFoundError,
@@ -52,7 +52,9 @@ export async function resolveSqliteReadPath(
 
 		try {
 			const stat = await Bun.file(absolutePath).stat();
-			if (stat.isDirectory()) continue;
+			// Sniffing a FIFO or device can block; leave it to the read tool's special-file rejection.
+			// Sniffing a FIFO or device can block; leave it to the read tool's special-file rejection.
+			if (!stat.isFile()) continue;
 			if (!(await isSqliteFile(absolutePath))) continue;
 
 			return {
@@ -69,7 +71,7 @@ export async function resolveSqliteReadPath(
 
 			try {
 				const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
-				if (retryStat.isDirectory()) continue;
+				if (!retryStat.isFile()) continue;
 				if (!(await isSqliteFile(suffixMatch.absolutePath))) continue;
 
 				absolutePath = suffixMatch.absolutePath;
@@ -119,7 +121,7 @@ export async function readSqlite(
 					resolvedSqlitePath.suffixResolution,
 				);
 				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
-				details.truncation = truncation.truncated ? truncation : undefined;
+				details.truncation = truncation.truncated ? toReadTruncationStats(truncation) : undefined;
 				const resultBuilder = toolResult<ReadToolDetails>(details)
 					.text(truncation.content)
 					.sourcePath(resolvedSqlitePath.absolutePath)

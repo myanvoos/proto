@@ -1,17 +1,18 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getDaemonRuntimeDir, isEisdir, isEnoent } from "@oh-my-pi/pi-utils";
+import { getDaemonRuntimeDir, hasFsCode, isEacces, isEisdir, isEnoent } from "@oh-my-pi/pi-utils";
 
 export { getDaemonRuntimeDir as daemonRuntimeDir };
 
 const SCOPE_FILE = "scope.json";
 
+/** Missing paths and permission-denied lookups (protected parent directories) resolve without realpath. */
 export async function canonicalProjectDir(projectDir: string): Promise<string> {
 	const resolved = path.resolve(projectDir);
 	try {
 		return await fs.realpath(resolved);
 	} catch (error) {
-		if (isEnoent(error) || isEisdir(error)) return resolved;
+		if (isEnoent(error) || isEisdir(error) || isEacces(error) || hasFsCode(error, "EPERM")) return resolved;
 		throw error;
 	}
 }

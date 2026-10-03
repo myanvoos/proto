@@ -93,6 +93,7 @@ export async function renderPdfPageScreenshot(
 		import("./browser/registry"),
 		import("./browser/tab-supervisor"),
 	]);
+	const deadlineStart = performance.now();
 	const timeoutSignal = AbortSignal.timeout(PDF_RENDER_TIMEOUT_MS);
 	const renderSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const tabName = `read-pdf-${Bun.randomUUIDv7()}`;
@@ -114,6 +115,7 @@ export async function renderPdfPageScreenshot(
 				url: pdfUrl.href,
 				waitUntil: "load",
 				timeoutMs: PDF_RENDER_TIMEOUT_MS,
+				deadlineStartMs: deadlineStart,
 				signal: renderSignal,
 				ownerSessionId: session.getSessionId?.() ?? undefined,
 			}),

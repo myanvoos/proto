@@ -133,7 +133,8 @@ describe("advisor delivery at the primary's terminal boundary", () => {
 		await session.prompt("yield the final result");
 		expect(await session.waitForAdvisorCatchup(1000)).toBe(true);
 
-		expect(advisorMock.calls).toHaveLength(2);
+		// The advise-only review ends there; the model is not re-invoked just to say "done".
+		expect(advisorMock.calls).toHaveLength(1);
 		expect(mock.calls).toHaveLength(1);
 		const advisorCards = session.agent.state.messages.filter(isAdvisorCard);
 		expect(advisorCards).toHaveLength(1);
@@ -251,7 +252,7 @@ describe("advisor delivery at the primary's terminal boundary", () => {
 			advise.execute = async (...args) => {
 				const result = await originalExecute(...args);
 				const feedback = contentText(result.content);
-				if (/Recorded\.|Deferred|Accepted|queued|preserved|urgent/i.test(feedback)) {
+				if (/Delivered\.|queued/i.test(feedback)) {
 					adviceAccepted.resolve({ feedback, streaming: agent.state.isStreaming });
 				}
 				return result;
@@ -286,7 +287,7 @@ describe("advisor delivery at the primary's terminal boundary", () => {
 				note: "live next-turn concern",
 				severity: "concern",
 			});
-			expect(contentText(liveResult.content)).toMatch(/Recorded\.|Deferred/);
+			expect(contentText(liveResult.content)).toMatch(/Delivered\.|Queued/);
 			releaseNextProvider.resolve();
 			await nextRun;
 			await session.waitForIdle();

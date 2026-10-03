@@ -1,14 +1,20 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import { formatConfigIssue } from "../config/settings-normalize";
 import { formatSkillWarning } from "../extensibility/skills";
 import { MCPManager } from "../mcp/manager";
 import { formatMcpConfigError, formatMcpServerFailure } from "../mcp/startup-events";
+import { resolveMCPTimeoutMs } from "../mcp/timeout";
 import { OrchestratorRuntime } from "../orchestrator/runtime";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { flushTelemetryExport } from "../telemetry-export";
+import {
+	formatPersistenceDurabilityFailure,
+	formatPersistenceFailure,
+	writeStderrLineFlushed,
+} from "./persistence-failure";
 import { initializeExtensions } from "./runtime-init";
 
 export interface PrintModeOptions {
@@ -84,6 +90,26 @@ export function printableEvent(event: AgentSessionEvent): unknown {
 }
 
 export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<void> {
+	// A signal landing mid-turn must still dispose the session (finalizing the interrupted turn into the
+	// journal), and postmortem owns the signal exit code (130/143/129) — the aborted turn must not race it
+	// with an ordinary failure exit.
+	let signalReason: postmortem.Reason | undefined;
+	const cancelSignalTeardown = postmortem.register("print-mode-session", reason => {
+		signalReason = reason;
+		return session.dispose({ reason });
+	});
+	try {
+		await runPrintModeCore(session, options, () => signalReason !== undefined);
+	} finally {
+		cancelSignalTeardown();
+	}
+}
+
+async function runPrintModeCore(
+	session: AgentSession,
+	options: PrintModeOptions,
+	signalTeardownActive: () => boolean,
+): Promise<void> {
 	const { mode, messages = [], initialMessage, initialImages, printThoughts } = options;
 
 	let stdoutTail: Promise<void> = Promise.resolve();
@@ -102,6 +128,19 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		const header = session.sessionManager.getHeader();
 		if (header) {
 			writeStdoutLine(`${JSON.stringify(header)}\n`);
+		}
+	}
+
+	// Headless turns must not start before configured MCP servers finish loading their tools.
+	const mcpManager = MCPManager.instance();
+	if (mcpManager) {
+		const timeoutMs = resolveMCPTimeoutMs();
+		const pending = await mcpManager.waitForStartup(timeoutMs);
+		await session.refreshMCPTools(mcpManager.getTools());
+		for (const name of pending) {
+			process.stderr.write(
+				`Warning: MCP server "${sanitizeText(name)}" not ready after ${timeoutMs}ms; its tools are unavailable for this run.\n`,
+			);
 		}
 	}
 
@@ -138,6 +177,27 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 			);
 		}
 	});
+
+	// Scripted runs have no banner: a store that stops accepting writes must reach stderr, and a failure still
+	// latched at dispose (which rethrows it) is lost durability, not a fatal crash dump.
+	let persistenceFailure: Error | undefined;
+	let persistenceNotice: Promise<void> = Promise.resolve();
+	session.sessionManager.onPersistenceError(error => {
+		persistenceFailure = error;
+		persistenceNotice = persistenceNotice.then(() => writeStderrLineFlushed(formatPersistenceFailure(error.message)));
+	});
+	const disposeSession = async (): Promise<boolean> => {
+		try {
+			await session.dispose();
+			await persistenceNotice;
+			return true;
+		} catch (error) {
+			if (!persistenceFailure || error !== persistenceFailure) throw error;
+			await persistenceNotice;
+			await writeStderrLineFlushed(formatPersistenceDurabilityFailure(persistenceFailure.message));
+			return false;
+		}
+	};
 
 	let wroteTextWorkingIndicator = false;
 	const writeTextWorkingIndicator = (): void => {
@@ -183,19 +243,20 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	};
 
 	const failRun = async (errorLine: string): Promise<never> => {
-		await session.waitForAdvisorCatchup(PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS);
+		await session.waitForAdvisorCatchup(PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS, { waitThroughRecovery: true });
 		await flushTelemetryExport();
 		await stdoutTail;
 		reportAbandonedWorkers();
-		await session.dispose();
-		const flushed = process.stderr.write(`${errorLine}\n`);
-		if (!flushed) await new Promise<void>(resolve => process.stderr.once("drain", () => resolve()));
+		await disposeSession();
+		await writeStderrLineFlushed(errorLine);
 		process.exit(1);
 	};
 
 	const assistantMsg = session.getLastAssistantMessage();
 	const turnFailed =
-		assistantMsg !== undefined && (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted");
+		assistantMsg !== undefined &&
+		(assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") &&
+		!signalTeardownActive();
 
 	if (mode === "text") {
 		if (assistantMsg) {
@@ -229,9 +290,10 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		await failRun(sanitizeText(assistantMsg?.errorMessage || `Request ${assistantMsg?.stopReason}`));
 	}
 
-	await session.waitForAdvisorCatchup(PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS);
+	// A headless advisor run exists for the reviewer's verdict, so the drain waits through a fallback-chain switch.
+	await session.waitForAdvisorCatchup(PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS, { waitThroughRecovery: true });
 
 	await stdoutTail;
 	reportAbandonedWorkers();
-	await session.dispose();
+	if (!(await disposeSession())) process.exit(1);
 }

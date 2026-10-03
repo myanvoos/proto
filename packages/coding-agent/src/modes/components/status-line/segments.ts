@@ -607,7 +607,7 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
-		if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
+		if (!u || (!u.fiveHour && !u.daily && !u.sevenDay && !u.monthly)) {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
@@ -623,6 +623,15 @@ const usageSegment: StatusLineSegment = {
 					? theme.fg("muted", ` (${formatUsageReset(u.fiveHour.resetMinutes, "m")})`)
 					: "";
 			parts.push(`5h ${pctText}${reset}`);
+		}
+		if (u.daily) {
+			const pct = u.daily.percent;
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
+			const reset =
+				u.daily.resetMinutes !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.daily.resetMinutes, "m")})`)
+					: "";
+			parts.push(`1d ${pctText}${reset}`);
 		}
 		if (u.sevenDay) {
 			const pct = u.sevenDay.percent;

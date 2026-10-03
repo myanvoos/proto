@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+
+### Fixed
+
+- Terminal progress indicator no longer restarts its animation every second on terminals that keep OSC 9;4 state (keepalive is sent only to Ghostty)
+- Blockquotes keep their quote color and italics after inline code, bold, links and HTML `<code>` spans
+- Clickable OSC 8 links are enabled inside Herdr panes (unless screen or tmux runs inside the pane)
+- Typing in fullscreen overlays repaints only the changed rows instead of rewriting the whole screen on every keystroke
+- A terminal that stops reading output for a few seconds during a large repaint (busy tmux, container attach, XOFF) no longer ends the session; proto now waits 60 s before treating it as disconnected
+- Multiline IME and dictation commits arrive as one paste again in terminals with bracketed paste, instead of submitting each line; keystrokes batched by a stalled UI still submit on Enter
+- Pressing Enter on a fully typed slash-command argument (e.g. `/mcp list`) submits it on the first press; subcommands that still need a required argument keep completing
+
 ## [19.1.2] - 2026-09-28
 
 ### Added

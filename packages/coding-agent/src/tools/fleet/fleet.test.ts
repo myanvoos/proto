@@ -202,6 +202,20 @@ test("an unresolvable model or role is refused at spawn time and allocates no wo
 	expect(session.asyncJobManager!.getAllJobs()).toHaveLength(0);
 });
 
+// A requested model is the caller's contract: it is marked so spawn never swaps it for the parent's model when it has
+// no credentials, and an unmatched request tells the caller to stop rather than pick another model.
+test("a caller-requested model is marked requested and never invites substitution", () => {
+	const settings = Settings.isolated({ modelRoles: { worker: "localprov/local-stream" } });
+	const modelRegistry = { getAvailable: () => AVAILABLE };
+	expect(
+		resolveAgentSpawnModelSelection({ requestModel: "localprov/local-fast", settings, modelRegistry }).requested,
+	).toBe(true);
+	expect(resolveAgentSpawnModelSelection({ agentModel: "@worker", settings, modelRegistry }).requested).toBe(false);
+	expect(
+		resolveAgentSpawnModelSelection({ requestModel: "nonexistent/model-xyz", settings, modelRegistry }).requestError,
+	).toContain("stop and report that the requested model is unavailable");
+});
+
 test("a resolvable request, an inherited default and a registry-less session all stay accepted", () => {
 	const settings = Settings.isolated({ modelRoles: { worker: "localprov/local-stream" } });
 	const modelRegistry = { getAvailable: () => AVAILABLE };

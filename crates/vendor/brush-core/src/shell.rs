@@ -157,6 +157,9 @@ pub struct Shell<SE: extensions::ShellExtensions = extensions::DefaultShellExten
 
 
 	history: Option<crate::history::History>,
+
+	#[cfg_attr(feature = "serde", serde(skip))]
+	resource_limits: crate::rlimits::ResourceLimits,
 }
 
 impl<SE: extensions::ShellExtensions> Clone for Shell<SE> {
@@ -197,6 +200,7 @@ impl<SE: extensions::ShellExtensions> Clone for Shell<SE> {
 			key_bindings: self.key_bindings.clone(),
 			fs_observations: self.fs_observations.clone(),
 			history: self.history.clone(),
+			resource_limits: self.resource_limits.clone(),
 			depth: self.depth + 1,
 		}
 	}
@@ -234,7 +238,7 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 			args: options.shell_args.unwrap_or_default(),
 			version: options.shell_version,
 			product_display_str: options.shell_product_display_str,
-			working_dir: options.working_dir.map_or_else(std::env::current_dir, Ok)?,
+			working_dir: initial_working_dir(options.working_dir, std::env::current_dir())?,
 			builtins: options.builtins,
 			parser_impl: options.parser,
 			key_bindings: options.key_bindings,
@@ -281,6 +285,14 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 
 
 
+
+	pub const fn resource_limits(&self) -> &crate::rlimits::ResourceLimits {
+		&self.resource_limits
+	}
+
+	pub const fn resource_limits_mut(&mut self) -> &mut crate::rlimits::ResourceLimits {
+		&mut self.resource_limits
+	}
 
 	pub fn increment_interactive_line_offset(&mut self, delta: usize) {
 		self.call_stack.increment_current_line_offset(delta);
@@ -585,4 +597,56 @@ impl<SE: extensions::ShellExtensions> ShellState for Shell<SE> {
 #[cfg(feature = "serde")]
 fn default_error_formatter<EF: extensions::ErrorFormatter>() -> EF {
 	EF::default()
+}
+
+fn initial_working_dir(
+	explicit: Option<PathBuf>,
+	process_cwd: std::io::Result<PathBuf>,
+) -> std::io::Result<PathBuf> {
+	match explicit {
+		Some(path) => Ok(path),
+		None => match process_cwd {
+			Ok(path) => Ok(path),
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(std::env::var_os("HOME")
+				.map(PathBuf::from)
+				.unwrap_or_else(|| PathBuf::from("/"))),
+			Err(err) => Err(err),
+		},
+	}
+}
+
+#[cfg(test)]
+mod initial_working_dir_tests {
+	use std::path::PathBuf;
+
+	use super::initial_working_dir;
+
+	#[test]
+	fn explicit_path_wins() {
+		let p = PathBuf::from("/explicit/cwd");
+		assert_eq!(
+			initial_working_dir(Some(p.clone()), Ok(PathBuf::from("/process"))).expect("explicit cwd"),
+			p
+		);
+	}
+
+	#[test]
+	fn deleted_process_cwd_falls_back_to_home() {
+		let home = std::env::var_os("HOME")
+			.map(PathBuf::from)
+			.unwrap_or_else(|| PathBuf::from("/"));
+		let err = std::io::Error::from_raw_os_error(2); // ENOENT: cwd deleted
+		assert_eq!(
+			initial_working_dir(None, Err(err)).expect("deleted cwd fallback"),
+			home,
+			"shell creation must survive a deleted process cwd"
+		);
+	}
+
+	#[test]
+	fn non_not_found_process_cwd_errors_propagate() {
+		let err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+		let error = initial_working_dir(None, Err(err)).expect_err("permission error must propagate");
+		assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+	}
 }

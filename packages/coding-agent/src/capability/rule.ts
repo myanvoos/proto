@@ -5,6 +5,7 @@ import type { SourceMeta } from "./types";
 export const BUILTIN_DEFAULTS_PROVIDER_ID = "builtin-defaults";
 
 export interface RuleFrontmatter {
+	enabled?: boolean;
 	description?: string;
 	globs?: string[];
 	alwaysApply?: boolean;

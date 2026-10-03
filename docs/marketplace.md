@@ -15,7 +15,7 @@ In the TUI, `/marketplace` with no arguments opens the interactive plugin browse
 
 A **marketplace** is a Git repository (or local directory) containing a catalog file at `.proto-plugin/marketplace.json` (preferred) or `.claude-plugin/marketplace.json` (Claude Code-compatible fallback). The catalog lists available plugins with their sources, descriptions, and metadata.
 
-A **plugin** is a directory containing Claude/PROTO plugin content such as skills, commands, agents, hooks, tools, MCP servers. Marketplace installs also load extension modules declared by `package.json` `proto.extensions`: installation symlinks the cached plugin into the scope's `node_modules` tree and records it in `proto-plugins.lock.json`, the same runtime surfaces used by npm-installed and `proto plugin link`ed plugins. Plugins are identified by `name@marketplace` (e.g. `code-review@claude-plugins-official`).
+A **plugin** is a directory containing Claude/PROTO plugin content such as skills, commands, agents, rules, hooks, tools, MCP servers. Marketplace installs also load extension modules declared by `package.json` `proto.extensions`: installation symlinks the cached plugin into the scope's `node_modules` tree and records it in `proto-plugins.lock.json`, the same runtime surfaces used by npm-installed and `proto plugin link`ed plugins. Plugins are identified by `name@marketplace` (e.g. `code-review@claude-plugins-official`).
 
 **Scopes**: marketplace plugins can be installed at two scopes:
 
@@ -212,7 +212,7 @@ Invalid catalog JSON or invalid required top-level fields reject the catalog. An
 ## Updates, removal, and scope
 
 - `/marketplace update [name]` refreshes catalogs only; it does not reinstall plugins.
-- `proto plugin upgrade name@marketplace` reinstalls every installed scope when `--scope` is omitted. `/marketplace upgrade name@marketplace`, uninstall, and enable/disable require `--scope user|project` when the plugin exists in both scopes.
+- `proto plugin upgrade name@marketplace` reinstalls every installed scope when `--scope` is omitted. A bare `name` resolves to the single marketplace plugin with that name (ambiguous names must be qualified); otherwise it upgrades the npm- or git-installed plugin of that name from its recorded source, keeping its enabled state and features. `/marketplace upgrade name@marketplace`, uninstall, and enable/disable require `--scope user|project` when the plugin exists in both scopes.
 - Upgrading all plugins compares only catalog entries that declare `version`. Semver versions must be newer; non-semver versions are treated as changed when unequal. Per-plugin failures are skipped, so an all-plugin upgrade can partially succeed.
 - `marketplace.autoUpdate` controls startup checks: `off`, `notify` (default), or `auto`. Catalogs older than 24 hours are refreshed best-effort before version checks. Despite its name, current `notify` mode writes update availability only to the debug log; it does not show a user-facing notification.
 - Removing a marketplace removes its registry entry and catalog cache; it does not uninstall plugins already cached and registered.
@@ -241,11 +241,13 @@ Invalid catalog JSON or invalid required top-level fields reject the catalog. An
 
 Marketplace and plugin names must:
 
-- Start and end with a lowercase letter or digit
-- Contain only lowercase letters, digits, hyphens, and dots
+- Start and end with a letter or digit
+- Contain only letters, digits, hyphens, and dots
 - Be at most 64 characters
 
 Plugin IDs (`name@marketplace`) must be at most 128 characters total.
 
-Valid examples: `my-plugin`, `code-review`, `wordpress.com`, `ai-firstify`
-Invalid examples: `-bad`, `bad-`, `.bad`, `Bad`, `under_score`
+Names that differ only by case would share cache paths and `node_modules` links on case-insensitive filesystems, so they are rejected: a marketplace whose name case-folds to an existing one, a duplicate plugin in one catalog (the first entry wins), and a plugin whose runtime package name or cache path case-collides with another installed plugin or package.
+
+Valid examples: `my-plugin`, `code-review`, `wordpress.com`, `ai-firstify`, `HexRaysSA`
+Invalid examples: `-bad`, `bad-`, `.bad`, `under_score`

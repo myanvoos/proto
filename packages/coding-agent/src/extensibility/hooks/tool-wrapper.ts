@@ -67,13 +67,15 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 					input: effectiveParams as Record<string, unknown>,
 					content: result.content,
 					details: result.details,
-					isError: false,
+					isError: result.isError === true,
 				})) as ToolResultEventResult | undefined;
 
 				if (resultResult) {
 					return {
 						content: resultResult.content ?? result.content,
 						details: (resultResult.details ?? result.details) as TDetails,
+						// A patch rewrites what the model sees; it never turns a failed call into a success.
+						...(result.isError === true ? { isError: true } : {}),
 					};
 				}
 			}

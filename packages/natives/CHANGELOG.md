@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+
+### Fixed
+
+- Shell `ulimit` changes now affect only that shell’s external commands, without limiting Proto itself or leaking out of subshells and pipelines.
+- Background shell runs recover when an output callback stops responding.
+- Native operations honor already-aborted signals and reject cancellation before results settle without treating delayed settlement as a timeout.
+- Accessibility snapshots preserve controls beneath unnamed containers.
+- Linux focus lookup skips null accessibility references instead of failing before reaching focused controls.
+- macOS background pointer input no longer posts duplicate events when system APIs share an implementation.
+- macOS window listings mark only the key window focused.
+- Shell command -v and -V now report every requested command.
+- Ripgrep skips its redirected output file and hardlinks, including inside shell functions.
+- Ripgrep --crlf now matches end-of-line anchors without configuration errors.
+- CUDA headers are recognized as C++ for native syntax operations.
+- Embedded shells recover when the host working directory has been deleted, while preserving other initialization errors.
+- ps reports 0% CPU rather than an unknown value for processes with no elapsed time.
+
+### Changed
+
+- Limited ranked filesystem scans retain only their best candidates, reducing memory use.
+- Syntax highlighting uses the lower-memory Oniguruma regex backend.
+
 ## [19.1.2] - 2026-09-28
 
 ### Fixed

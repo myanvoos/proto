@@ -7,15 +7,19 @@ interface VisualTruncateResult {
 	skippedCount: number;
 }
 
-const textCache = new Map<number, Text>();
+const textCache = new Map<string, Text>();
+const TEXT_CACHE_MAX = 8;
 
-function getCachedText(paddingX: number): Text {
-	let text = textCache.get(paddingX);
-	if (!text) {
-		text = new Text("", paddingX, 0);
-		textCache.set(paddingX, text);
+// Keyed by (padding, width, text): one slot per padding thrashed Text's render cache with 2+ live cards.
+function getCachedText(text: string, width: number, paddingX: number): Text {
+	const key = `${paddingX} ${width} ${text.length} ${Bun.hash(text).toString(36)}`;
+	let cached = textCache.get(key);
+	if (!cached) {
+		cached = new Text("", paddingX, 0);
+		if (textCache.size >= TEXT_CACHE_MAX) textCache.clear();
+		textCache.set(key, cached);
 	}
-	return text;
+	return cached;
 }
 
 export function truncateToVisualLines(
@@ -30,7 +34,7 @@ export function truncateToVisualLines(
 		return { visualLines: [], skippedCount: 0 };
 	}
 
-	const tempText = getCachedText(paddingX);
+	const tempText = getCachedText(text, width, paddingX);
 	if (tempText.getText() !== text) {
 		tempText.setText(text);
 	}

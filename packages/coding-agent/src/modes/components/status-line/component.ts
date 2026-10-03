@@ -332,6 +332,7 @@ export class StatusLineComponent implements Component {
 	#cachedUsage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
+		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 		monthly?: { percent: number; resetHours?: number };
 	} | null = null;
@@ -920,16 +921,19 @@ export class StatusLineComponent implements Component {
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
+		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 		monthly?: { percent: number; resetHours?: number };
 	} | null {
 		if (!Array.isArray(reports)) return null;
 		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
+		let daily: { percent: number; resetMinutes?: number } | undefined;
 		let sevenDay: { percent: number; resetHours?: number } | undefined;
 		let monthly: { percent: number; resetHours?: number } | undefined;
 		let fiveHourTier: string | undefined;
 		let sevenDayTier: string | undefined;
 		let fiveHourLabel: string | undefined;
+		let dailyLabel: string | undefined;
 		let sevenDayLabel: string | undefined;
 		let monthlyLabel: string | undefined;
 		let monthlyPriority = Number.POSITIVE_INFINITY;
@@ -969,13 +973,17 @@ export class StatusLineComponent implements Component {
 				const windowClass =
 					windowId === "5h" || windowId === "7d"
 						? windowId
-						: typeof durationMs === "number" && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
-							? "5h"
-							: typeof durationMs === "number" && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
-								? "7d"
-								: monthlyProvider && (windowId === "monthly" || windowId === "30d")
-									? "monthly"
-									: undefined;
+						: windowId === "daily" || windowId === "24h" || windowId === "1d"
+							? "daily"
+							: typeof durationMs === "number" && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
+								? "5h"
+								: typeof durationMs === "number" && Math.abs(durationMs - 86_400_000) <= 60_000
+									? "daily"
+									: typeof durationMs === "number" && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
+										? "7d"
+										: monthlyProvider && (windowId === "monthly" || windowId === "30d")
+											? "monthly"
+											: undefined;
 				const tier = l.scope?.tier;
 				// Scoped tiers win; the plan-wide tier labels otherwise-untiered windows.
 				const label = tier || planType;
@@ -989,6 +997,14 @@ export class StatusLineComponent implements Component {
 					};
 					fiveHourTier = tier || undefined;
 					fiveHourLabel = label;
+				}
+				if (windowClass === "daily" && !daily) {
+					daily = {
+						percent: fraction * 100,
+						resetMinutes:
+							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
+					};
+					dailyLabel = label;
 				}
 				if (windowClass === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
 					sevenDay = {
@@ -1015,9 +1031,9 @@ export class StatusLineComponent implements Component {
 				}
 			}
 		}
-		if (!fiveHour && !sevenDay && !monthly) return null;
-		const effectiveTier = fiveHourLabel ?? sevenDayLabel ?? monthlyLabel;
-		return { tier: effectiveTier, fiveHour, sevenDay, monthly };
+		if (!fiveHour && !daily && !sevenDay && !monthly) return null;
+		const effectiveTier = fiveHourLabel ?? dailyLabel ?? sevenDayLabel ?? monthlyLabel;
+		return { tier: effectiveTier, fiveHour, daily, sevenDay, monthly };
 	}
 
 	getCachedContextBreakdown(): { usedTokens: number | null; contextWindow: number } {

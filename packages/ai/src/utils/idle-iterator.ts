@@ -1,5 +1,6 @@
 import { $env } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
+import type { LocalWorkSource } from "./event-stream";
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 const DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_MS = 300_000;
@@ -68,7 +69,7 @@ export interface IdleTimeoutIteratorOptions {
 
 	isProgressItem?: (item: unknown) => boolean;
 
-	hasPendingLocalWork?: () => boolean;
+	localWork?: LocalWorkSource;
 
 	abortSignal?: AbortSignal;
 }
@@ -118,14 +119,8 @@ export async function* iterateWithIdleTimeout<T>(
 	};
 	let lastProgressAt = Date.now();
 
-	const hasPendingLocalWork = (): boolean => {
-		if (!options.hasPendingLocalWork) return false;
-		try {
-			return options.hasPendingLocalWork();
-		} catch {
-			return false;
-		}
-	};
+	const hasPendingLocalWork = (): boolean => options.localWork?.hasPendingLocalWork ?? false;
+	const localWorkSettledAt = (): number => options.localWork?.localWorkSettledAt ?? 0;
 
 	const extendDeadlineForLocalWork = (): void => {
 		if (awaitingFirstItem) {
@@ -135,6 +130,13 @@ export async function* iterateWithIdleTimeout<T>(
 		} else {
 			lastProgressAt = Date.now();
 		}
+	};
+
+	// Deadlines as the provider sees them: never earlier than a full budget after the last local result.
+	const firstItemDeadline = (): number | undefined => {
+		if (firstItemDeadlineMs === undefined || firstItemTimeoutMs === undefined) return firstItemDeadlineMs;
+		const settledAt = localWorkSettledAt();
+		return settledAt > 0 ? Math.max(firstItemDeadlineMs, settledAt + firstItemTimeoutMs) : firstItemDeadlineMs;
 	};
 
 	const noTimeoutEnforced =
@@ -159,9 +161,9 @@ export async function* iterateWithIdleTimeout<T>(
 	let timerFireAtMs = Infinity;
 
 	const currentDeadlineMs = (): number | undefined => {
-		if (awaitingFirstItem) return firstItemDeadlineMs;
+		if (awaitingFirstItem) return firstItemDeadline();
 		if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
-			return lastProgressAt + options.idleTimeoutMs;
+			return Math.max(lastProgressAt, localWorkSettledAt()) + options.idleTimeoutMs;
 		}
 		return undefined;
 	};
@@ -214,8 +216,9 @@ export async function* iterateWithIdleTimeout<T>(
 			}
 			let activeTimeoutMs: number | undefined;
 			if (awaitingFirstItem) {
-				if (firstItemDeadlineMs !== undefined) {
-					activeTimeoutMs = firstItemDeadlineMs - Date.now();
+				const deadlineMs = firstItemDeadline();
+				if (deadlineMs !== undefined) {
+					activeTimeoutMs = deadlineMs - Date.now();
 					if (activeTimeoutMs <= 0) {
 						if (!hasPendingLocalWork()) {
 							options.onFirstItemTimeout?.();
@@ -223,11 +226,11 @@ export async function* iterateWithIdleTimeout<T>(
 							throw new AIError.StreamTimeoutError(options.firstItemErrorMessage ?? options.errorMessage);
 						}
 						extendDeadlineForLocalWork();
-						activeTimeoutMs = firstItemDeadlineMs! - Date.now();
+						activeTimeoutMs = firstItemDeadline()! - Date.now();
 					}
 				}
 			} else if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
-				activeTimeoutMs = options.idleTimeoutMs - (Date.now() - lastProgressAt);
+				activeTimeoutMs = options.idleTimeoutMs - (Date.now() - Math.max(lastProgressAt, localWorkSettledAt()));
 				if (activeTimeoutMs <= 0) {
 					if (!hasPendingLocalWork()) {
 						options.onIdle?.();

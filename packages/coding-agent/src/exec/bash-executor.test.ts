@@ -257,3 +257,30 @@ test("an ephemeral lane leaves no shell behind once its command finishes", async
 		await disposeBashSessions(sessionKey);
 	}
 });
+
+test("watchdog timeout flags output as possibly incomplete when the native shell never returns", async () => {
+	const sessionKey = `bash-executor-wedged-${crypto.randomUUID()}`;
+	const wedged = Promise.withResolvers<ShellRunResult>();
+	spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, _options, onChunk) {
+		onChunk?.(null, "streamed-before-timeout\n");
+		return wedged.promise;
+	});
+	try {
+		const result = await executeBash("sleep 30", { sessionKey, timeout: 1_000 });
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("streamed-before-timeout");
+		expect(result.output).toContain("Command timed out after 1 seconds; the shell backend did not respond");
+	} finally {
+		wedged.resolve({
+			exitCode: undefined,
+			cancelled: true,
+			timedOut: true,
+			workingDir: process.cwd(),
+			fsObservations: [],
+			protolensDispatches: [],
+			stageRecords: [],
+			sessionEnded: false,
+		});
+		await disposeBashSessions(sessionKey);
+	}
+}, 15_000);

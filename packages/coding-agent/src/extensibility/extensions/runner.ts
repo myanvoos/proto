@@ -535,6 +535,8 @@ export class ExtensionRunner {
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
+		this.#getContextUsageFn = contextActions.getContextUsage;
+		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 
 		if (commandContextActions) {
@@ -1326,7 +1328,11 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown, model?: Model): Promise<BeforeProviderRequestEventResult> {
+	async emitBeforeProviderRequest(
+		payload: unknown,
+		model?: Model,
+		signal?: AbortSignal,
+	): Promise<BeforeProviderRequestEventResult> {
 		const ctx = this.createContext(model);
 		let currentPayload = payload;
 
@@ -1345,6 +1351,8 @@ export class ExtensionRunner {
 					ctx,
 					ext,
 					extensionHandlerTimeoutMs,
+					undefined,
+					signal,
 				);
 				if (handlerResult !== undefined) {
 					currentPayload = handlerResult;
@@ -1355,7 +1363,11 @@ export class ExtensionRunner {
 		return currentPayload;
 	}
 
-	async emitAfterProviderResponse(response: ProviderResponseMetadata, model?: Model): Promise<void> {
+	async emitAfterProviderResponse(
+		response: ProviderResponseMetadata,
+		model?: Model,
+		signal?: AbortSignal,
+	): Promise<void> {
 		const ctx = this.createContext(model);
 
 		for (const ext of this.extensions) {
@@ -1370,7 +1382,7 @@ export class ExtensionRunner {
 					requestId: response.requestId,
 					metadata: response.metadata,
 				};
-				await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs);
+				await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs, undefined, signal);
 			}
 		}
 	}

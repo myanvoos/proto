@@ -103,7 +103,9 @@ function streamedReadPairMessage(firstPartialJson: string, secondPartialJson: st
 	} as AssistantMessage;
 }
 
-function createContext() {
+function createContext(
+	getToolByName: (name: string) => { name: string; label?: string } | undefined = () => undefined,
+) {
 	const chatContainer = new TranscriptContainer();
 	const pendingTools = new Map<string, ToolExecutionHandle>();
 	const context = {
@@ -119,7 +121,7 @@ function createContext() {
 			isTtsrAbortPending: false,
 			extensionRunner: undefined,
 			hasBuiltInTool: () => true,
-			getToolByName: () => undefined,
+			getToolByName,
 			retryAttempt: undefined,
 		},
 		session: { isAborting: false },
@@ -332,5 +334,64 @@ test("an autonomous run splits a full read group so completed source can retire 
 	} finally {
 		controller.dispose();
 		harness.chatContainer.dispose();
+	}
+});
+
+test("device calls spelled as protolens:// URLs render as the canonical tool live, at execution start, and on rebuild", async () => {
+	const browserTool = { name: "browser", label: "Browser" };
+	const getToolByName = (name: string) =>
+		name === "browser" || name === "protolens://browser" ? browserTool : undefined;
+	const args = { action: "open", url: "https://example.com" };
+	const call = { type: "toolCall" as const, id: "device-call", name: "protolens://browser", arguments: args };
+	const message = {
+		role: "assistant",
+		content: [call],
+		stopReason: "toolUse",
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		usage: USAGE,
+		timestamp: 1,
+	} as AssistantMessage;
+	const canonical = new ToolExecutionComponent("browser", args, {}, browserTool as never, UI);
+	const expected = Bun.stripANSI(canonical.render(100).join("\n"));
+	canonical.dispose();
+	const rendered = (component: ToolExecutionHandle | undefined) =>
+		Bun.stripANSI((component as Component | undefined)?.render(100).join("\n") ?? "");
+
+	const live = createContext(getToolByName);
+	const liveController = new EventController(live.context);
+	const started = createContext(getToolByName);
+	const startedController = new EventController(started.context);
+	const rebuilt = createContext(getToolByName);
+	try {
+		await liveController.handleEvent({
+			type: "message_start",
+			message: { ...message, content: [] },
+		} as unknown as AgentSessionEvent);
+		await liveController.handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: call, partial: message },
+		} as unknown as AgentSessionEvent);
+		expect(rendered(live.pendingTools.get(call.id))).toBe(expected);
+
+		await startedController.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: call.id,
+			toolName: call.name,
+			args,
+		});
+		expect(rendered(started.pendingTools.get(call.id))).toBe(expected);
+
+		new UiHelpers(rebuilt.context).renderSessionContext({ messages: [message] } as unknown as SessionContext);
+		expect(rendered(rebuilt.pendingTools.get(call.id))).toBe(expected);
+		expect(call.name).toBe("protolens://browser");
+	} finally {
+		liveController.dispose();
+		startedController.dispose();
+		live.chatContainer.dispose();
+		started.chatContainer.dispose();
+		rebuilt.chatContainer.dispose();
 	}
 });

@@ -28,10 +28,40 @@ export async function resolvePluginSource(
 	return resolveObjectSource(source, context);
 }
 
-async function resolveRelativeSource(
+/** Checks source constraints that need no clone or filesystem writes; returns the local dir when known. */
+export async function validatePluginSource(
+	entry: MarketplacePluginEntry,
+	context: Pick<ResolveContext, "marketplaceClonePath" | "catalogMetadata">,
+): Promise<string | undefined> {
+	const { source } = entry;
+	if (typeof source === "string") {
+		const resolved = resolveRelativeSourcePath(source, context);
+		await verifyDirExists(resolved, `Plugin source directory does not exist: "${resolved}"`);
+		return resolved;
+	}
+
+	switch (source.source) {
+		case "url":
+		case "github":
+			return undefined;
+		case "git-subdir": {
+			const syntheticRoot = path.join(path.parse(process.cwd()).root, "proto-marketplace-validation");
+			if (!pathIsWithin(syntheticRoot, path.resolve(syntheticRoot, source.path))) {
+				throw new Error(`git-subdir path "${source.path}" escapes the cloned repository`);
+			}
+			return undefined;
+		}
+		case "npm":
+			throw new Error("npm plugin sources are not yet supported. Use git-based sources instead.");
+		default:
+			throw new Error(`Unknown plugin source type: "${(source as { source: string }).source}"`);
+	}
+}
+
+function resolveRelativeSourcePath(
 	source: string,
-	context: ResolveContext,
-): Promise<{ dir: string; tempCloneRoot?: string }> {
+	context: Pick<ResolveContext, "marketplaceClonePath" | "catalogMetadata">,
+): string {
 	if (!source.startsWith("./")) {
 		throw new Error(`Relative plugin source paths must start with "./" — got: "${source}"`);
 	}
@@ -50,7 +80,14 @@ async function resolveRelativeSource(
 			`Plugin source "${source}" resolves outside marketplace root ("${context.marketplaceClonePath}")`,
 		);
 	}
+	return resolved;
+}
 
+async function resolveRelativeSource(
+	source: string,
+	context: ResolveContext,
+): Promise<{ dir: string; tempCloneRoot?: string }> {
+	const resolved = resolveRelativeSourcePath(source, context);
 	await verifyDirExists(resolved, `Plugin source directory does not exist: "${resolved}"`);
 	return { dir: resolved };
 }

@@ -10,9 +10,9 @@ import { type Skill, skillCapability } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 
 import {
-	buildRuleFromMarkdown,
 	calculateDepth,
 	createSourceMeta,
+	discoverRuleFromMarkdown,
 	getProjectPath,
 	loadFilesFromDir,
 	parseCSV,
@@ -166,9 +166,10 @@ function transformInstructionRule(
 		warnings.push(`Missing applyTo in ${filePath}; loaded without GitHub glob scoping.`);
 	}
 
-	const rule = buildRuleFromMarkdown(name, content, filePath, source, {
+	const rule = discoverRuleFromMarkdown(name, content, filePath, source, {
 		stripNamePattern: /\.instructions\.md$/,
 	});
+	if (!rule) return null;
 	if (applyToGlobs?.some(isAlwaysApplyGlob)) {
 		return { ...rule, alwaysApply: true, globs: undefined };
 	}

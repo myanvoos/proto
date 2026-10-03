@@ -163,29 +163,22 @@ export class SessionProviderBoundary {
 		}
 
 		if (sessionOnPayload) {
-			if (!options.onPayload) {
-				preparedOptions.onPayload = sessionOnPayload;
-			} else {
-				const requestOnPayload = options.onPayload;
-				preparedOptions.onPayload = async (payload, model) => {
-					const sessionPayload = await sessionOnPayload(payload, model);
-					const sessionResolvedPayload = sessionPayload ?? payload;
-					const requestPayload = await requestOnPayload(sessionResolvedPayload, model);
-					return requestPayload ?? sessionResolvedPayload;
-				};
-			}
+			const requestOnPayload = options.onPayload;
+			preparedOptions.onPayload = async (payload, model) => {
+				const sessionPayload = await sessionOnPayload(payload, model, options.signal);
+				const sessionResolvedPayload = sessionPayload ?? payload;
+				if (!requestOnPayload) return sessionResolvedPayload;
+				const requestPayload = await requestOnPayload(sessionResolvedPayload, model, options.signal);
+				return requestPayload ?? sessionResolvedPayload;
+			};
 		}
 
 		if (sessionOnResponse) {
-			if (!options.onResponse) {
-				preparedOptions.onResponse = sessionOnResponse;
-			} else {
-				const requestOnResponse = options.onResponse;
-				preparedOptions.onResponse = async (response, model) => {
-					await sessionOnResponse(response, model);
-					await requestOnResponse(response, model);
-				};
-			}
+			const requestOnResponse = options.onResponse;
+			preparedOptions.onResponse = async (response, model) => {
+				await sessionOnResponse(response, model, options.signal);
+				await requestOnResponse?.(response, model, options.signal);
+			};
 		}
 
 		if (sessionOnSseEvent) {

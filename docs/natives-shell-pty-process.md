@@ -71,6 +71,7 @@ One-shot shell (`executeShell`) always creates and drops a fresh session per cal
 
 - Stdout/stderr are routed into a shared pipe and read concurrently.
 - Reader decodes UTF-8 incrementally; invalid byte sequences emit `U+FFFD` replacement chunks.
+- The bounded native-to-JS bridge waits for each output callback, with a 30-second per-callback stall deadline. A wedged callback disconnects the bridge so output readers and background commands can finish; progressing callbacks reset the deadline each batch.
 - The command runs with `ProcessGroupPolicy::NewProcessGroup`.
 - After the foreground command completes, the reader drains until EOF, 250ms of idle output, or 2s maximum; reader shutdown then gets a 250ms timeout.
 - Optional minimizer configuration can capture and rewrite output. When minimization occurs, the result includes `minimized` with filter name, replacement/original text, and byte counts.

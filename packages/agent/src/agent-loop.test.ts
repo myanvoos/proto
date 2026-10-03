@@ -20,6 +20,7 @@ import {
 	type AgentMessage,
 	type AgentTool,
 	type AgentToolResult,
+	ASIDE_MESSAGE_COMMIT,
 	ASIDE_MESSAGE_DISCARD,
 	type StreamFn,
 } from "./types";
@@ -761,6 +762,150 @@ test("a tool-name miss names the advertised tool sharing its most distinctive tr
 	expect(errorText("unrelated")).not.toContain("Did you mean");
 });
 
+test("a tool-name miss suggests routable device names and fallback resolution sees the request snapshot", async () => {
+	const noop = async () => okToolResult();
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [basicTool("read", noop)] };
+	const advertisedSeen: string[][] = [];
+	const config: AgentLoopConfig = {
+		...loopConfig(context),
+		resolveFallbackTool: (_name, advertised) => {
+			advertisedSeen.push(advertised.map(tool => tool.name));
+			return undefined;
+		},
+		suggestFallbackToolNames: () => ["github"],
+	};
+	let responses = 0;
+	const messages = await agentLoop([userMessage("go")], context, config, undefined, targetModel => {
+		const response = createAssistantMessageEventStream();
+		response.end(
+			responses++ === 0
+				? toolMessage(targetModel, [{ id: "device", name: "mcp__abc__xyz_github" }])
+				: assistantMessage(targetModel, "done"),
+		);
+		return response;
+	}).result();
+	const result = messages.find(message => message.role === "toolResult" && message.toolCallId === "device");
+	if (result?.role !== "toolResult") throw new Error("missing device result");
+	const text = result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+
+	expect(text).toContain("Did you mean github?");
+	expect(advertisedSeen.length).toBeGreaterThan(0);
+	for (const names of advertisedSeen) expect(names).toEqual(["read"]);
+});
+
+test("intent tracing rejects a payload-sized intent instead of running the tool with the leftover args", async () => {
+	const ran: string[] = [];
+	const writeTool = basicTool("write", async id => {
+		ran.push(id);
+		return okToolResult();
+	});
+	const ownedTool: AgentTool = {
+		...basicTool("owned", async id => {
+			ran.push(id);
+			return okToolResult();
+		}),
+		parameters: {
+			type: "object",
+			properties: { value: { type: "string" }, i: { type: "string" } },
+		} as unknown as AgentTool["parameters"],
+	};
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [writeTool, ownedTool] };
+	const body = "Explains how the query pipeline is reconstructed. ".repeat(10);
+	const calls: Array<[string, string, Record<string, unknown>]> = [
+		["swapped", "write", { i: body, content: "Writing guide" }],
+		["normal", "write", { i: "Writing notes", content: "hello" }],
+		["at-limit", "write", { i: "x".repeat(200), content: "a" }],
+		["over-limit", "write", { i: "x".repeat(201), content: "b" }],
+		["owned", "owned", { value: "kept", i: body }],
+		["unknown", "nope", { i: body }],
+	];
+	let responses = 0;
+	const messages = await agentLoop(
+		[userMessage("go")],
+		context,
+		loopConfig(context, { intentTracing: true }),
+		undefined,
+		targetModel => {
+			const response = createAssistantMessageEventStream();
+			if (responses++ > 0) {
+				response.end(assistantMessage(targetModel, "done"));
+				return response;
+			}
+			const message = toolMessage(targetModel, []);
+			message.content = calls.map(([id, name, args]) => ({ type: "toolCall" as const, id, name, arguments: args }));
+			response.end(message);
+			return response;
+		},
+	).result();
+	const resultText = (id: string): string => {
+		const result = messages.find(message => message.role === "toolResult" && message.toolCallId === id);
+		if (result?.role !== "toolResult") throw new Error(`missing result for ${id}`);
+		return result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+	};
+
+	expect(ran.sort()).toEqual(["at-limit", "normal", "owned"]);
+	expect(resultText("swapped")).toContain("short intent label");
+	expect(resultText("over-limit")).toContain("201 chars");
+	expect(resultText("unknown")).toContain("Tool nope not found");
+});
+
+test("malformed tool JSON is reported to the model instead of running a lenient tool with empty args", async () => {
+	const executed: string[] = [];
+	const tool: AgentTool = {
+		...basicTool("echo", async id => {
+			executed.push(id);
+			return okToolResult();
+		}),
+		lenientArgValidation: true,
+	};
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
+	let responses = 0;
+	const messages = await agentLoop([userMessage("go")], context, loopConfig(context), undefined, targetModel => {
+		const response = createAssistantMessageEventStream();
+		if (responses++ > 0) {
+			response.end(assistantMessage(targetModel, "done"));
+			return response;
+		}
+		const message = toolMessage(targetModel, []);
+		message.content = [
+			{
+				type: "toolCall",
+				id: "malformed",
+				name: "echo",
+				arguments: { __parseError: "Expected ',' or '}' in object", __rawJson: '{"value":"ok" nope}' },
+			},
+		];
+		response.end(message);
+		return response;
+	}).result();
+	const result = messages.find(message => message.role === "toolResult" && message.toolCallId === "malformed");
+	if (result?.role !== "toolResult") throw new Error("missing tool result");
+	const text = result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+
+	expect(executed).toEqual([]);
+	expect(result.isError).toBe(true);
+	expect(text).toContain("Expected ',' or '}' in object");
+});
+
+test("a throwing initial aside commit hook fails the stream instead of hanging it", async () => {
+	const prompt = userMessage("boom");
+	Object.defineProperty(prompt, ASIDE_MESSAGE_COMMIT, {
+		value: () => {
+			throw new Error("commit hook boom");
+		},
+	});
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [] };
+	const stream = agentLoop(
+		[prompt],
+		context,
+		loopConfig(context),
+		undefined,
+		responseFor(targetModel => assistantMessage(targetModel, "done")),
+	);
+
+	await expect(stream.result()).rejects.toThrow("commit hook boom");
+});
+
 test("a throwing aside discard hook neither skips later hooks nor replaces the loop error", async () => {
 	const throwingAside = userMessage("throwing completion");
 	Object.defineProperty(throwingAside, ASIDE_MESSAGE_DISCARD, {
@@ -847,4 +992,36 @@ test("a terminal-yield turn still reaches onTurnEnd, without the spent abort sig
 	// Per-turn bookkeeping (advisor review of the yield) must see the final turn as a plain completed turn.
 	expect(calls).toBe(1);
 	expect(turnEndCalls).toEqual([{ willContinue: false, signalAborted: false }]);
+});
+
+test("records fallback-resolved alias calls under the resolved tool's name", async () => {
+	// Providers reject `protolens://recall` as a replayed function-call name, so the alias must not reach history.
+	const deviceTool = basicTool("recall", async () => okToolResult("remembered"));
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [] };
+	const config: AgentLoopConfig = {
+		...loopConfig(context),
+		resolveFallbackTool: name => (name === "protolens://recall" ? deviceTool : undefined),
+	};
+	const requests: Message[][] = [];
+	const messages = await agentLoop([userMessage("go")], context, config, undefined, (targetModel, llmContext) => {
+		requests.push(structuredClone(llmContext.messages));
+		const response = createAssistantMessageEventStream();
+		response.end(
+			requests.length === 1
+				? toolMessage(targetModel, [{ id: "tool-1", name: "protolens://recall" }])
+				: assistantMessage(targetModel, "done"),
+		);
+		return response;
+	}).result();
+
+	const call = messages.flatMap(message =>
+		message.role === "assistant" ? message.content.filter(block => block.type === "toolCall") : [],
+	)[0];
+	expect(call?.name).toBe("recall");
+	const result = messages.find(message => message.role === "toolResult");
+	expect(result).toMatchObject({ toolCallId: "tool-1", toolName: "recall", isError: false });
+	const replayed = requests[1]?.find(message => message.role === "assistant");
+	expect(replayed?.role === "assistant" ? replayed.content : []).toContainEqual(
+		expect.objectContaining({ type: "toolCall", name: "recall" }),
+	);
 });

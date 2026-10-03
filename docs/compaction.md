@@ -71,7 +71,7 @@ Primary-session compaction/context maintenance can run in six ways:
 2. **Automatic overflow recovery**: after a same-model assistant error that matches context overflow.
 3. **Automatic incomplete-output recovery**: after a same-model assistant message ends with `stopReason === "length"`; OpenAI/Codex Responses providers surface this as `response.incomplete`.
 4. **Automatic threshold maintenance**: after a successful turn or before a pending provider request when context exceeds the resolved threshold.
-5. **Mid-turn threshold maintenance**: before the next provider request when a tool-loop turn crosses the threshold and `compaction.midTurnEnabled !== false`.
+5. **Mid-turn threshold maintenance**: before the next provider request when a tool-loop turn crosses the threshold and `compaction.midTurnEnabled !== false`. Subagent sessions always run this check: `createSubagentSettings` pins `compaction.midTurnEnabled` on for the child because a whole assignment is one turn, so post-turn maintenance would only fire after the run already ended.
 6. **Idle maintenance**: `runIdleCompaction()` can invoke the same auto-maintenance path with reason `"idle"`.
 
 Advisor runtimes use a separate threshold path in `ReviewerTransport.maintainContext(...)`.
@@ -453,7 +453,7 @@ From `settings-schema.ts`:
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.selfSummary` = `true`
 - `compaction.autoContinue` = `true`
-- `compaction.midTurnEnabled` = `true`
+- `compaction.midTurnEnabled` = `true`; a `false` value applies to the session that configured it, not to spawned subagents — each subagent keeps mid-run checks so its single-turn assignment still compacts at the configured threshold.
 - `compaction.remoteEndpoint` = `undefined`
 - `compaction.remoteStreamingV2Enabled` = `true`
 - `compaction.v2RetainedMessageBudget` = `64000`

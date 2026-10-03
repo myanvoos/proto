@@ -26,7 +26,7 @@
 			]
 		},
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,

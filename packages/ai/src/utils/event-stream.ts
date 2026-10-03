@@ -3,6 +3,8 @@ import type { AssistantMessage, AssistantMessageEvent } from "../types";
 
 export interface LocalWorkSource {
 	readonly hasPendingLocalWork: boolean;
+	/** Epoch ms at which tracked local work last drained to zero (0 if none completed). */
+	readonly localWorkSettledAt: number;
 }
 
 type EventWaiter<T> = {
@@ -24,6 +26,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	#error: unknown = undefined;
 
 	#pendingLocalWork = 0;
+	#localWorkSettledAt = 0;
 
 	#localWorkDelegate: LocalWorkSource | undefined;
 	finalResultPromise: Promise<R>;
@@ -176,6 +179,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		return this.#pendingLocalWork > 0 || (this.#localWorkDelegate?.hasPendingLocalWork ?? false);
 	}
 
+	get localWorkSettledAt(): number {
+		return Math.max(this.#localWorkSettledAt, this.#localWorkDelegate?.localWorkSettledAt ?? 0);
+	}
+
 	forwardLocalWorkFrom(source: LocalWorkSource | undefined): void {
 		this.#localWorkDelegate = source;
 	}
@@ -186,6 +193,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			return await work;
 		} finally {
 			this.#pendingLocalWork--;
+			if (this.#pendingLocalWork === 0) this.#localWorkSettledAt = Date.now();
 		}
 	}
 }

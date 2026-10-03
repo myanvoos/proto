@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyGeneratedModelPolicies } from "../scripts/generated-policies";
+import { applyGeneratedModelPolicies, applyPricingPeerFallback } from "../scripts/generated-policies";
 import { buildModel } from "./build";
 import { resolveProviderModels } from "./model-manager";
 import {
@@ -277,5 +277,31 @@ describe("scheduled pricing through discovery and cache", () => {
 		]) {
 			expect(isTimeBasedCost(invalid)).toBe(false);
 		}
+	});
+});
+
+describe("applyPricingPeerFallback", () => {
+	it("prices MiniMax Token Plan rows at pay-as-you-go peers, M3.1 Flash Preview at the M3 rate", () => {
+		const m3Cost = { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 };
+		const m27Cost = { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 };
+		const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		const row = (id: string, provider: string, cost: ModelCost = zeroCost): ModelSpec<"openai-completions"> => ({
+			...spec(id, provider),
+			cost,
+		});
+		const result = applyPricingPeerFallback([
+			row("MiniMax-M3", "minimax", m3Cost),
+			row("MiniMax-M2.7", "minimax", m27Cost),
+			row("MiniMax-M3.1-Flash-Preview", "minimax-code"),
+			row("MiniMax-M2.7", "minimax-code"),
+			row("MiniMax-M2.1-lightning", "minimax-code"),
+			// No minimax-cn row: the China plan falls back to the international peer.
+			row("MiniMax-M3.1-Flash-Preview", "minimax-code-cn"),
+		]);
+
+		expect(result[2]?.cost).toEqual(m3Cost);
+		expect(result[3]?.cost).toEqual(m27Cost);
+		expect(result[4]?.cost).toEqual(zeroCost);
+		expect(result[5]?.cost).toEqual(m3Cost);
 	});
 });

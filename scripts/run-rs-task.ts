@@ -15,7 +15,12 @@ const RUST_AFFECTING_FILE_NAMES = [
 	".rustfmt.toml",
 ] as const satisfies readonly string[];
 
-const VENDORED_FORK_EXCLUDES = ["--exclude", "brush-core"] as const satisfies readonly string[];
+const VENDORED_FORK_EXCLUDES = [
+	"--exclude",
+	"brush-core",
+	"--exclude",
+	"brush-parser",
+] as const satisfies readonly string[];
 const TASK_COMMANDS = {
 	"check:rs": [
 		["cargo", "fmt", "--all", "--", "--check"],

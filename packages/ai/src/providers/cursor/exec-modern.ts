@@ -56,7 +56,7 @@ import { create } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import type { ToolResultMessage } from "../../types";
 
 export {
-	cursorEditOwnedReadPath,
+	cursorExecReadPath,
 	cursorRawReadPath,
 	omitUndefinedArgs,
 	piEscapeRegexLiteral,
@@ -68,6 +68,7 @@ export {
 	piReadPath,
 	piReadPathHasRange,
 	piTimeout,
+	shellTimeoutSeconds,
 } from "../cursor-pi-args";
 
 export function piOutputText(toolResult: ToolResultMessage): string {

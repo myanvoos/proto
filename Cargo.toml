@@ -11,6 +11,7 @@ members = [
    "crates/pi-shell",
    "crates/pi-walker",
    "crates/vendor/brush-core",
+   "crates/vendor/brush-parser",
 ]
 resolver = "3"
 
@@ -24,6 +25,7 @@ repository = "https://github.com/myanvoos/proto"
 
 [patch.crates-io]
 brush-core = { path = "crates/vendor/brush-core" }
+brush-parser = { path = "crates/vendor/brush-parser" }
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -311,7 +313,7 @@ inferno = { version = "0.12", default-features = false }
 syntect = { version = "5.3", default-features = false, features = [
    "default-syntaxes",
    "default-themes",
-   "regex-fancy",
+   "regex-onig",
    "yaml-load",
 ] }
 
@@ -331,7 +333,7 @@ tiktoken-rs = "0.11"
 
 
 
-brush-parser = "0.3"
+brush-parser = { path = "crates/vendor/brush-parser" }
 
 
 

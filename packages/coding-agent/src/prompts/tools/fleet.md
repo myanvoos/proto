@@ -9,7 +9,7 @@ Tracked worker control — every accepted input returns a turn receipt `{workerI
     - `{{name}}`: {{description}}
 {{/each}}
 {{/if}}
-  - `model`: role alias (`@worker`) or concrete model id; MUST resolve at spawn time — unknown role or unmatched id is rejected and no worker is allocated. Effective role with a configured model bank → selection MUST be in-bank. The selection persists across park/revive.
+  - `model`: role alias (`@worker`) or concrete model id; MUST resolve at spawn time — unknown role or unmatched id is rejected and no worker is allocated; requested model unavailable → stop and report, NEVER substitute another. Effective role with a configured model bank → selection MUST be in-bank. The selection persists across park/revive.
   - `isolated:true`: runs once in an isolated workspace copy, applies successful changes back, blocks until done, and the worker is terminal afterward.
 - `send`: `id` (owned worker) + `message`, optional `model`. Streaming worker → steered into its running turn (`accepted`, same job). Idle/parked worker → new turn (`accepted`, new job; parked workers revive). Busy non-streaming worker → distinct queued turn (`queued`, its own job starts after the current turn). Full steering/turn queue → `rejected` with retry guidance, nothing enqueued. `model` switches this and all later turns; validated like spawn.
 - `terminate`: `id`. Tombstones the worker, cancels its in-flight turn, discards queued inputs; the id is no longer addressable. To stop only one turn, cancel its job with `jobs` op `cancel`: the worker stays addressable for another `send`.

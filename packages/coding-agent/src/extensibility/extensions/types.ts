@@ -563,6 +563,13 @@ export interface CredentialDisabledEvent {
 	provider: string;
 
 	disabledCause: string;
+
+	credentialId?: number;
+	/** Account identity recorded on the disabled OAuth credential, when the provider supplied one. */
+	email?: string;
+	accountId?: string;
+	orgId?: string;
+	orgName?: string;
 }
 
 export interface McpNotificationEvent {
@@ -920,6 +927,7 @@ export interface ExtensionAPI {
 export interface ProviderConfig {
 	baseUrl?: string;
 
+	// Without `oauth` this overrides stored `/login` credentials; with `oauth` it is only a fallback behind them.
 	apiKey?: string;
 
 	api?: Api;
@@ -969,6 +977,8 @@ interface ProviderModelConfig {
 	contextWindow: number;
 
 	maxTokens: number;
+
+	preferWebsockets?: boolean;
 
 	headers?: Record<string, string>;
 
@@ -1104,12 +1114,21 @@ export interface Extension {
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 }
 
+/** An imported extension factory, not bound to any session; child sessions rebind it to their own runtime. */
+export interface PreparedExtension {
+	path: string;
+	resolvedPath: string;
+	factory: ExtensionFactory | null;
+	error: string | null;
+}
+
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
 	/** Extensions that loaded, but not without something the user should know (e.g. a slow factory). */
 	warnings: Array<{ path: string; warning: string }>;
 	runtime: ExtensionRuntime;
+	preparedExtensions?: PreparedExtension[];
 }
 
 export interface ExtensionError {

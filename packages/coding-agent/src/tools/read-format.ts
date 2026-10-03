@@ -12,9 +12,15 @@ import {
 import { buildLineEntriesWithBlockContext, type LineEntry } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { type LineRange, shouldExpandRangeContext } from "./path-utils";
-import type { ReadToolDetails } from "./read";
+import type { ReadToolDetails, ReadTruncationStats } from "./read";
 import { formatBytes } from "./render-utils";
 import { toolResult } from "./tool-result";
+
+/** Read details keep truncation statistics, not a second copy of the body. */
+export function toReadTruncationStats(result: TruncationResult): ReadTruncationStats {
+	const { content: _content, ...stats } = result;
+	return stats;
+}
 
 export function splitAddressableFileLines(text: string): string[] {
 	if (text.length === 0) return [];
@@ -239,9 +245,15 @@ export function buildInMemoryTextResult(
 			)}, exceeds ${formatBytes(DEFAULT_MAX_BYTES)} limit. Unable to display a valid UTF-8 snippet.]`;
 		}
 
-		details.truncation = truncation;
+		const previewTruncation: TruncationResult = {
+			...truncation,
+			totalBytes: firstLineBytes,
+			outputLines: snippet.bytes > 0 ? 1 : 0,
+			outputBytes: snippet.bytes,
+		};
+		details.truncation = toReadTruncationStats(previewTruncation);
 		truncationInfo = {
-			result: truncation,
+			result: previewTruncation,
 			options: { direction: "head", startLine: startLineDisplay, totalFileLines: totalLines },
 		};
 	} else if (truncation.truncated) {
@@ -252,7 +264,7 @@ export function buildInMemoryTextResult(
 		} else {
 			outputText = formatLineEntries(buildLineEntries(endLineDisplay), startLineDisplay);
 		}
-		details.truncation = truncation;
+		details.truncation = toReadTruncationStats(truncation);
 		truncationInfo = {
 			result: truncation,
 			options: { direction: "head", startLine: startLineDisplay, totalFileLines: totalLines },

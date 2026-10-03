@@ -1,7 +1,7 @@
 import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
+import { visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -183,7 +183,12 @@ function formatAgentStats(event: EvalStatusEvent, theme: Theme): string {
 	return line;
 }
 
-function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spinnerFrame?: number): string[] {
+function renderAgentProgressEvents(
+	events: EvalStatusEvent[],
+	theme: Theme,
+	width: number,
+	spinnerFrame?: number,
+): string[] {
 	const lines: string[] = [];
 	for (let i = 0; i < events.length; i++) {
 		const event = events[i];
@@ -209,12 +214,14 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 				? theme.styledSymbol("tool.eval", "accent")
 				: theme.fg(iconColor, formatStatusIcon(iconStatus, theme, status === "running" ? spinnerFrame : undefined));
 
-		const id = eventString(event.id) ?? "agent";
-		let line = `${prefix} ${icon} ${theme.fg("accent", theme.bold(id))}`;
-
-		if (status === "failed" || status === "aborted") {
-			line += ` ${formatBadge(status, iconColor, theme)}`;
-		}
+		const lead = `${prefix} ${icon} `;
+		const statusSuffix =
+			status === "failed" || status === "aborted" ? ` ${formatBadge(status, iconColor, theme)}` : "";
+		const id = truncateToWidth(
+			sanitizeText(eventString(event.id) ?? "agent").replace(/\s+/g, " "),
+			Math.max(0, width - visibleWidth(lead) - visibleWidth(statusSuffix)),
+		);
+		let line = `${lead}${theme.fg("accent", theme.bold(id))}${statusSuffix}`;
 
 		const currentTool = eventString(event.currentTool);
 		const lastIntent = eventString(event.lastIntent);
@@ -228,16 +235,22 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 			const durationMs = eventNumber(event.durationMs);
 			if (durationMs > 0) line += `${theme.sep.dot}${theme.fg("dim", formatDuration(durationMs))}`;
 		}
-		lines.push(line);
+		// Optional stats are cut without an ellipsis so the reserved failure badge stays readable.
+		lines.push(truncateToWidth(line, width, ""));
 
 		if (status === "running") {
 			if (currentTool) {
 				let toolLine = `${cont}${theme.tree.hook} ${theme.fg("muted", currentTool)}`;
 				const detail = lastIntent ?? eventString(event.currentToolArgs);
 				if (detail) toolLine += `: ${theme.fg("dim", truncateToWidth(replaceTabs(detail), 48))}`;
-				lines.push(toolLine);
+				lines.push(truncateToWidth(toolLine, width));
 			} else if (lastIntent) {
-				lines.push(`${cont}${theme.tree.hook} ${theme.fg("dim", truncateToWidth(replaceTabs(lastIntent), 48))}`);
+				lines.push(
+					truncateToWidth(
+						`${cont}${theme.tree.hook} ${theme.fg("dim", truncateToWidth(replaceTabs(lastIntent), 48))}`,
+						width,
+					),
+				);
 			}
 		}
 	}
@@ -781,7 +794,7 @@ export function renderKernelCellLines(
 	const allEvents = cell.statusEvents ?? [];
 	const agentEvents = allEvents.filter(e => e.op === "agent");
 	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
-	const agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, spinnerFrame) : [];
+	const agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, width, spinnerFrame) : [];
 
 	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;

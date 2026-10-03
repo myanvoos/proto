@@ -1,18 +1,24 @@
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createGunzip, gunzipSync, gzipSync } from "node:zlib";
+import { createGunzip, createGzip } from "node:zlib";
 import {
 	formatBytes,
 	getAgentDir,
 	getBlobsDir,
+	getCustomSessionFilesDir,
 	getHistoryDbPath,
 	getModelDbPath,
 	getSessionsDir,
+	getTerminalSessionsDir,
+	normalizePathForComparison,
+	readLines,
 } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
+import { BLOB_STAGING_RE, blobStagingPath } from "../session/blob-store";
 import { listSessionsReadOnly, type SessionInfo, type SessionStatus } from "../session/session-listing";
 import { readSessionLiveState } from "../session/session-liveness";
 import { FileSessionStorage } from "../session/session-storage";
@@ -97,6 +103,12 @@ interface GcResult {
 interface BlobCandidate {
 	hash: string;
 	paths: string[];
+	bytes: number;
+	mtimeMs: number;
+}
+
+interface BlobStagingFile {
+	path: string;
 	bytes: number;
 	mtimeMs: number;
 }
@@ -233,9 +245,6 @@ async function statIfPresent(target: string) {
 
 async function readTextIfPresent(file: string): Promise<string> {
 	try {
-		if (file.endsWith(COMPRESSED_SESSION_SUFFIX)) {
-			return new TextDecoder().decode(gunzipSync(await Bun.file(file).bytes()));
-		}
 		return await Bun.file(file).text();
 	} catch (error) {
 		if (codeOf(error) === "ENOENT") return "";
@@ -276,87 +285,168 @@ async function collectBackupJsonlFiles(root: string): Promise<string[]> {
 	}
 }
 
-async function collectReferencedBlobHashes(sessionRoots: string[]): Promise<Set<string>> {
-	const hashes = new Set<string>();
+async function scanBlobRefs(file: string, hashes: Set<string>): Promise<void> {
+	const scan = async (source: AsyncIterable<Uint8Array>): Promise<void> => {
+		const decoder = new TextDecoder();
+		let tail = "";
+		let atFileStart = true;
+		const scanChunk = (chunk: string, atEof: boolean): void => {
+			const text = tail + chunk;
+			for (const match of text.matchAll(BLOB_REF_RE)) {
+				// A cropped tail has no trustworthy boundary before its first character.
+				if (!atFileStart && match.index === 0) continue;
+				// A token ending at a chunk edge still needs its following word boundary.
+				if (!atEof && match.index + match[0].length === text.length) continue;
+				hashes.add(match[1]!.toLowerCase());
+			}
+			if (text.length > BLOB_REF_OVERLAP) atFileStart = false;
+			// Keep a full token and its leading boundary, independent of JSONL line size.
+			tail = text.slice(-BLOB_REF_OVERLAP);
+		};
+		for await (const chunk of source) scanChunk(decoder.decode(chunk, { stream: true }), false);
+		scanChunk(decoder.decode(), true);
+	};
+	try {
+		const handle = await fs.open(file, "r");
+		try {
+			const source = handle.createReadStream({ highWaterMark: BLOB_SCAN_CHUNK_BYTES, autoClose: false });
+			if (file.endsWith(COMPRESSED_SESSION_SUFFIX)) {
+				// pipeline propagates read/decompression failures before any blob can be deleted.
+				await pipeline(source, createGunzip(), scan);
+			} else {
+				await scan(source);
+			}
+		} finally {
+			await handle.close();
+		}
+	} catch (error) {
+		if (codeOf(error) !== "ENOENT") throw error;
+	}
+}
+
+async function collectReferencedBlobHashes(sessionRoots: string[], exactSessionFiles: string[]): Promise<Set<string>> {
+	const files = new Map<string, string>();
 	for (const root of sessionRoots) {
-		const files = [
+		for (const file of [
 			...(await collectJsonlFiles(root)),
 			...(await collectCompressedJsonlFiles(root)),
 			...(await collectBackupJsonlFiles(root)),
-		];
-		for (const file of files) {
-			const scan = async (source: AsyncIterable<Uint8Array>): Promise<void> => {
-				const decoder = new TextDecoder();
-				let tail = "";
-				let atFileStart = true;
-				const scanChunk = (chunk: string, atEof: boolean): void => {
-					const text = tail + chunk;
-					for (const match of text.matchAll(BLOB_REF_RE)) {
-						// A cropped tail has no trustworthy boundary before its first character.
-						if (!atFileStart && match.index === 0) continue;
-						// A token ending at a chunk edge still needs its following word boundary.
-						if (!atEof && match.index + match[0].length === text.length) continue;
-						hashes.add(match[1]!.toLowerCase());
-					}
-					if (text.length > BLOB_REF_OVERLAP) atFileStart = false;
-					// Keep a full token and its leading boundary, independent of JSONL line size.
-					tail = text.slice(-BLOB_REF_OVERLAP);
-				};
-				for await (const chunk of source) scanChunk(decoder.decode(chunk, { stream: true }), false);
-				scanChunk(decoder.decode(), true);
-			};
-			try {
-				const handle = await fs.open(file, "r");
-				try {
-					const source = handle.createReadStream({ highWaterMark: BLOB_SCAN_CHUNK_BYTES, autoClose: false });
-					if (file.endsWith(COMPRESSED_SESSION_SUFFIX)) {
-						// pipeline propagates read/decompression failures before any blob can be deleted.
-						await pipeline(source, createGunzip(), scan);
-					} else {
-						await scan(source);
-					}
-				} finally {
-					await handle.close();
-				}
-			} catch (error) {
-				if (codeOf(error) !== "ENOENT") throw error;
-			}
+		]) {
+			files.set(normalizePathForComparison(file), file);
 		}
 	}
+	for (const file of exactSessionFiles) files.set(normalizePathForComparison(file), file);
+	const hashes = new Set<string>();
+	for (const file of files.values()) await scanBlobRefs(file, hashes);
 	return hashes;
 }
 
-async function collectBlobCandidates(blobDir: string): Promise<BlobCandidate[]> {
-	let entries: string[];
+/**
+ * Transcripts outside the managed roots share the agent blob store, so their references must count. The registry
+ * (`custom-session-files/*`, one absolute path each) keeps every one; terminal breadcrumbs (`cwd\nsessionFile`) also
+ * catch the current transcript if its marker write failed.
+ */
+async function collectCustomSessionFiles(agentDir: string): Promise<string[]> {
+	const files = new Map<string, string>();
+	const registryDir = getCustomSessionFilesDir(agentDir);
+	for (const entry of await readdirIfPresent(registryDir)) {
+		const recorded = (await readTextIfPresent(path.join(registryDir, entry))).trim();
+		if (!recorded) continue;
+		const sessionFile = path.resolve(recorded);
+		if (!(await statIfPresent(sessionFile))?.isFile()) continue;
+		files.set(normalizePathForComparison(sessionFile), sessionFile);
+	}
+	const breadcrumbDir = getTerminalSessionsDir(agentDir);
+	for (const entry of await readdirIfPresent(breadcrumbDir)) {
+		const [breadcrumbCwd, recordedSessionFile] = (await readTextIfPresent(path.join(breadcrumbDir, entry)))
+			.split("\n")
+			.map(line => line.trim());
+		if (!breadcrumbCwd || !recordedSessionFile) continue;
+		// A relative crumb path belongs to the cwd that wrote it, not to gc's.
+		const sessionFile = path.resolve(breadcrumbCwd, recordedSessionFile);
+		files.set(normalizePathForComparison(sessionFile), sessionFile);
+	}
+	return [...files.values()];
+}
+
+async function readdirIfPresent(dir: string): Promise<string[]> {
 	try {
-		entries = await fs.readdir(blobDir);
+		return await fs.readdir(dir);
 	} catch (error) {
 		if (codeOf(error) === "ENOENT") return [];
 		throw error;
 	}
+}
 
+async function collectBlobCandidates(
+	blobDir: string,
+): Promise<{ candidates: BlobCandidate[]; staging: BlobStagingFile[] }> {
+	let entries: string[];
+	try {
+		entries = await fs.readdir(blobDir);
+	} catch (error) {
+		if (codeOf(error) === "ENOENT") return { candidates: [], staging: [] };
+		throw error;
+	}
 	const byHash = new Map<string, BlobCandidate>();
+	const staging: BlobStagingFile[] = [];
 	for (const entry of entries) {
-		const match = entry.match(BLOB_FILE_RE);
-		const hash = match?.[1];
-		if (!hash) continue;
+		const isStaging = BLOB_STAGING_RE.test(entry);
+		const hash = isStaging ? undefined : entry.match(BLOB_FILE_RE)?.[1];
+		if (!isStaging && !hash) continue;
 		const file = path.join(blobDir, entry);
 		const stat = await statIfPresent(file);
-		if (!stat) continue;
-		if (!stat.isFile()) continue;
+		if (!stat?.isFile()) continue;
+		if (!hash) {
+			staging.push({ path: file, bytes: stat.size, mtimeMs: stat.mtimeMs });
+			continue;
+		}
 		const candidate = byHash.get(hash) ?? { hash, paths: [], bytes: 0, mtimeMs: stat.mtimeMs };
 		candidate.paths.push(file);
 		candidate.bytes += stat.size;
 		candidate.mtimeMs = Math.max(candidate.mtimeMs, stat.mtimeMs);
 		byHash.set(hash, candidate);
 	}
-	return [...byHash.values()].sort((a, b) => a.hash.localeCompare(b.hash));
+	return { candidates: [...byHash.values()].sort((a, b) => a.hash.localeCompare(b.hash)), staging };
+}
+
+async function unlinkBlobFile(file: string, result: BlobGcResult): Promise<void> {
+	try {
+		await fs.unlink(file);
+		result.deleted++;
+	} catch (error) {
+		if (codeOf(error) !== "ENOENT") result.errors.push(`${file}: ${errorMessage(error)}`);
+	}
+}
+
+async function deleteBlobCandidate(candidate: BlobCandidate, cutoff: number, result: BlobGcResult): Promise<boolean> {
+	const canonical = candidate.paths.find(file => path.basename(file) === candidate.hash);
+	const other = candidate.paths.filter(file => file !== canonical);
+	if (canonical) {
+		const moved = blobStagingPath(canonical);
+		try {
+			await fs.rename(canonical, moved);
+		} catch (error) {
+			if (codeOf(error) !== "ENOENT") result.errors.push(`${canonical}: ${errorMessage(error)}`);
+			return false;
+		}
+		const stat = await statIfPresent(moved);
+		if (stat && stat.mtimeMs > cutoff) {
+			try {
+				await fs.rename(moved, canonical);
+			} catch {}
+			return false;
+		}
+		if (stat) other.unshift(moved);
+	}
+	for (const file of other) await unlinkBlobFile(file, result);
+	return true;
 }
 
 async function runBlobGc(options: ResolvedGcOptions, archiveSessionsRoot: string): Promise<BlobGcResult> {
 	const blobDir = getBlobsDir(options.agentDir);
 	const sessionsRoot = getSessionsDir(options.agentDir);
-	const candidates = await collectBlobCandidates(blobDir);
+	const { candidates, staging } = await collectBlobCandidates(blobDir);
 	const result: BlobGcResult = {
 		referenced: 0,
 		candidates: candidates.length,
@@ -367,25 +457,24 @@ async function runBlobGc(options: ResolvedGcOptions, archiveSessionsRoot: string
 	};
 	if (!candidates.length) return result;
 
-	const referenced = await collectReferencedBlobHashes([sessionsRoot, archiveSessionsRoot]);
+	const referenced = await collectReferencedBlobHashes(
+		[sessionsRoot, archiveSessionsRoot],
+		await collectCustomSessionFiles(options.agentDir),
+	);
 	result.referenced = referenced.size;
 
 	const deleteBeforeMs = Date.now() - GC_WRITE_GRACE_MS;
 	for (const candidate of candidates) {
-		if (referenced.has(candidate.hash)) continue;
-		if (candidate.mtimeMs > deleteBeforeMs) continue;
+		if (referenced.has(candidate.hash) || candidate.mtimeMs > deleteBeforeMs) continue;
+		if (options.apply && !(await deleteBlobCandidate(candidate, deleteBeforeMs, result))) continue;
 		result.wouldDelete += candidate.paths.length;
 		result.bytes += candidate.bytes;
-		if (!options.apply) continue;
-		for (const file of candidate.paths) {
-			try {
-				await fs.unlink(file);
-				result.deleted += 1;
-			} catch (error) {
-				if (codeOf(error) === "ENOENT") continue;
-				result.errors.push(`${file}: ${errorMessage(error)}`);
-			}
-		}
+	}
+	for (const file of staging) {
+		if (file.mtimeMs > deleteBeforeMs) continue;
+		result.wouldDelete++;
+		result.bytes += file.bytes;
+		if (options.apply) await unlinkBlobFile(file.path, result);
 	}
 	return result;
 }
@@ -481,38 +570,58 @@ interface SessionLineageHeader {
 	previousSessionFiles: string[];
 }
 
-function sessionLineageHeaderFromText(text: string): SessionLineageHeader | undefined {
+/**
+ * Streams an archive for its lineage header without holding the decompressed journal in memory. The rest is
+ * drained so a late gzip error still rejects the archive.
+ */
+async function readArchivedSessionHeader(file: string): Promise<SessionLineageHeader | undefined> {
+	const decoder = new TextDecoder();
+	let header: SessionLineageHeader | undefined;
+	let decided = false;
 	let sawTitleSlot = false;
-	for (const rawLine of text.split(/\r?\n/)) {
-		const line = rawLine.trim();
-		if (!line) continue;
-		try {
-			const record = JSON.parse(line) as {
-				type?: unknown;
-				id?: unknown;
-				parentSession?: unknown;
-				previousSessionFiles?: unknown;
-			};
-			if (!sawTitleSlot && record.type === "title") {
+	const gunzip = createGunzip();
+	await pipeline(Bun.file(file).stream(), gunzip, async () => {
+		// Byte-bounded queue: the default counts each, possibly large, chunk as size 1.
+		const strategy = new ByteLengthQueuingStrategy({ highWaterMark: gunzip.readableHighWaterMark });
+		for await (const bytes of readLines(Readable.toWeb(gunzip, { strategy }))) {
+			if (decided) continue;
+			const line = decoder.decode(bytes).trim();
+			if (!line) continue;
+			const parsed = sessionLineageHeaderFromLine(line, sawTitleSlot);
+			if (parsed === "title") {
 				sawTitleSlot = true;
 				continue;
 			}
-			if (record.type !== "session" || typeof record.id !== "string" || record.id.length === 0) return undefined;
-			return {
-				id: record.id,
-				parentSession: typeof record.parentSession === "string" ? record.parentSession : undefined,
-				previousSessionFiles: Array.isArray(record.previousSessionFiles)
-					? record.previousSessionFiles.filter(
-							(previousSessionFile): previousSessionFile is string =>
-								typeof previousSessionFile === "string" && previousSessionFile.length > 0,
-						)
-					: [],
-			};
-		} catch {
-			return undefined;
+			decided = true;
+			header = parsed;
 		}
+	});
+	return header;
+}
+
+function sessionLineageHeaderFromLine(line: string, sawTitleSlot: boolean): SessionLineageHeader | "title" | undefined {
+	try {
+		const record = JSON.parse(line) as {
+			type?: unknown;
+			id?: unknown;
+			parentSession?: unknown;
+			previousSessionFiles?: unknown;
+		};
+		if (!sawTitleSlot && record.type === "title") return "title";
+		if (record.type !== "session" || typeof record.id !== "string" || record.id.length === 0) return undefined;
+		return {
+			id: record.id,
+			parentSession: typeof record.parentSession === "string" ? record.parentSession : undefined,
+			previousSessionFiles: Array.isArray(record.previousSessionFiles)
+				? record.previousSessionFiles.filter(
+						(previousSessionFile): previousSessionFile is string =>
+							typeof previousSessionFile === "string" && previousSessionFile.length > 0,
+					)
+				: [],
+		};
+	} catch {
+		return undefined;
 	}
-	return undefined;
 }
 
 async function gzipSessionFile(candidate: ArchiveCandidate, archiveBeforeMs: number): Promise<boolean> {
@@ -534,8 +643,11 @@ async function gzipSessionFile(candidate: ArchiveCandidate, archiveBeforeMs: num
 	const tempPath = `${destination}.${process.pid}.${Date.now()}.tmp`;
 	let renamed = false;
 	try {
-		const compressed = gzipSync(await Bun.file(source).bytes(), { level: 9 });
-		await Bun.write(tempPath, compressed);
+		await pipeline(
+			Bun.file(source).stream(),
+			createGzip({ level: 9 }),
+			(await fs.open(tempPath, "w")).createWriteStream(),
+		);
 		// Staging can outlast enumeration: leave writers and replaced transcripts untouched.
 		const nestedLive = await hasLiveNestedSessions(candidate.session, archiveBeforeMs);
 		const currentStat = await statIfPresent(source);
@@ -565,9 +677,15 @@ async function gzipSessionFile(candidate: ArchiveCandidate, archiveBeforeMs: num
 
 async function restoreGzipSessionFile(source: string, destination: string): Promise<void> {
 	await fs.mkdir(path.dirname(destination), { recursive: true });
-	const decompressed = gunzipSync(await Bun.file(source).bytes());
-	await Bun.write(destination, decompressed);
-	await fs.unlink(source);
+	const tempPath = `${destination}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		await pipeline(Bun.file(source).stream(), createGunzip(), (await fs.open(tempPath, "w")).createWriteStream());
+		await fs.rename(tempPath, destination);
+		await fs.unlink(source);
+	} catch (error) {
+		await fs.rm(tempPath, { force: true });
+		throw error;
+	}
 }
 
 async function moveSessionWithArtifacts(candidate: ArchiveCandidate, archiveBeforeMs: number): Promise<boolean> {
@@ -612,14 +730,14 @@ function sqliteNumber(value: number | bigint | null | undefined): number {
 }
 
 function tableExists(db: Database, table: string): boolean {
-	const row = db
-		.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?")
-		.get(table) as { present?: number } | null;
+	using stmt = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?");
+	const row = stmt.get(table) as { present?: number } | null;
 	return row?.present === 1;
 }
 
 function historyHasSessionId(db: Database): boolean {
-	const rows = db.prepare("PRAGMA table_info(history)").all() as Array<{ name?: string | null }>;
+	using stmt = db.prepare("PRAGMA table_info(history)");
+	const rows = stmt.all() as Array<{ name?: string | null }>;
 	return rows.some(row => row.name === "session_id");
 }
 
@@ -631,7 +749,7 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 		if (!tableExists(db, "history")) return { deleted: 0, ftsRebuilt: false };
 		if (!historyHasSessionId(db)) return { deleted: 0, ftsRebuilt: false };
 		const hasFts = tableExists(db, "history_fts");
-		const deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
+		using deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
 		let deleted = 0;
 		const tx = db.transaction((ids: string[]) => {
 			for (const id of ids) {
@@ -650,7 +768,12 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 async function collectArchivedSessionIds(archiveRoot: string): Promise<string[]> {
 	const ids = new Set<string>();
 	for (const file of await collectCompressedJsonlFiles(archiveRoot)) {
-		const id = sessionLineageHeaderFromText(await readTextIfPresent(file))?.id;
+		let id: string | undefined;
+		try {
+			id = (await readArchivedSessionHeader(file))?.id;
+		} catch (error) {
+			if (codeOf(error) !== "ENOENT") throw error;
+		}
 		if (id) ids.add(id);
 	}
 	return [...ids].sort();
@@ -779,7 +902,8 @@ async function checkpointWal(dbPath: string, apply: boolean): Promise<WalCheckpo
 	let checkpointAttempted = false;
 	try {
 		db.run("PRAGMA busy_timeout = 5000");
-		const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as WalCheckpointRow | null;
+		using stmt = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)");
+		const row = stmt.get() as WalCheckpointRow | null;
 		checkpointAttempted = true;
 		result.busy = sqliteNumber(row?.busy);
 		result.log = sqliteNumber(row?.log);

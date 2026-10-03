@@ -153,9 +153,7 @@ export class ExtensionUiController {
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
-			shutdown: () => {
-				this.ctx.shutdownRequested = true;
-			},
+			shutdown: () => this.ctx.requestShutdown(),
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
@@ -172,7 +170,7 @@ export class ExtensionUiController {
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 
-				this.clearExtensionTerminalInputListeners();
+				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
 				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
 				if (!success) {
@@ -199,6 +197,7 @@ export class ExtensionUiController {
 				return { cancelled: false };
 			},
 			branch: async entryId => {
+				this.ctx.prepareSessionSwitch();
 				const result = await this.ctx.session.branch(entryId);
 				if (result.cancelled) {
 					return { cancelled: true };
@@ -229,6 +228,7 @@ export class ExtensionUiController {
 			compact: async (instructionsOrOptions, advisory) =>
 				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
+				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath, {
 					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
@@ -372,9 +372,7 @@ export class ExtensionUiController {
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
-			shutdown: () => {
-				this.ctx.shutdownRequested = true;
-			},
+			shutdown: () => this.ctx.requestShutdown(),
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
@@ -391,7 +389,7 @@ export class ExtensionUiController {
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 
-				this.clearExtensionTerminalInputListeners();
+				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
 				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
 				if (!success) {
@@ -415,6 +413,7 @@ export class ExtensionUiController {
 				return { cancelled: false };
 			},
 			branch: async entryId => {
+				this.ctx.prepareSessionSwitch();
 				const result = await this.ctx.session.branch(entryId);
 				if (result.cancelled) {
 					return { cancelled: true };
@@ -445,6 +444,7 @@ export class ExtensionUiController {
 			compact: async (instructionsOrOptions, advisory) =>
 				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
+				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath, {
 					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
@@ -537,9 +537,12 @@ export class ExtensionUiController {
 			const finishPrompt = (value: string | undefined): void => {
 				const resolvePrompt = promptResolve;
 				promptResolve = undefined;
+				promptEditor?.dispose();
 				promptEditor = undefined;
-				restoreAskDialog();
 				resolvePrompt?.(value);
+				// AskDialog applies the answer and clears its prompt latch in the resume after its single
+				// `await onPrompt(...)`; restoring one microtask later keeps keys from reaching a latched dialog.
+				queueMicrotask(restoreAskDialog);
 			};
 
 			const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
@@ -585,6 +588,7 @@ export class ExtensionUiController {
 			return () => {
 				closed = true;
 				askDialog?.dispose();
+				promptEditor?.dispose();
 				promptResolve?.(undefined);
 				promptResolve = undefined;
 				promptEditor = undefined;
@@ -719,6 +723,7 @@ export class ExtensionUiController {
 	}
 
 	hideHookEditor(): void {
+		this.ctx.hookEditor?.dispose();
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(this.ctx.editor);
 		this.ctx.hookEditor = undefined;

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { EDITOR_LIMITS, visibleWidth } from "@oh-my-pi/pi-tui";
+import type { SessionTreeNode } from "../../session/session-entries";
 import { SessionManager } from "../../session/session-manager";
 import { initThemeSync, theme } from "../theme/theme";
 import { TreeSelectorComponent } from "./tree-selector";
@@ -340,4 +341,139 @@ test("agent section focuses side agents and subagents while branch selection sti
 	} finally {
 		selector.dispose();
 	}
+});
+
+function customMessageSelector(customType: string, content: string, details?: unknown): TreeSelectorComponent {
+	const tree: SessionTreeNode[] = [
+		{
+			entry: {
+				type: "custom_message",
+				id: "custom-entry",
+				parentId: null,
+				timestamp: "2026-08-25T00:00:00.000Z",
+				customType,
+				content,
+				details,
+				display: true,
+			},
+			children: [],
+		},
+	];
+	return new TreeSelectorComponent(
+		tree,
+		"custom-entry",
+		60,
+		() => {},
+		() => {},
+	);
+}
+
+function renderCustom(customType: string, content: string, details?: unknown): string {
+	return plain(customMessageSelector(customType, content, details).render(120));
+}
+
+test("advisor rows show the note tagged with advisor name and severity, not the advisory XML", () => {
+	const advisory = (note: string) => `<advisory severity="concern">\n${note}\n</advisory>`;
+	const named = renderCustom("advisor", advisory("Nitpick."), {
+		notes: [{ note: "Nitpick.", severity: "nit", advisor: "sec\tteam\nlead" }],
+	});
+	expect(named).toContain("advisor (sec team lead, nit): Nitpick.");
+	expect(named).not.toContain("<advisory");
+
+	const plainDefault = renderCustom("advisor", advisory("Continue."), {
+		notes: [{ note: "Continue.", advisor: "default" }],
+	});
+	expect(plainDefault).toContain("advisor: Continue.");
+	expect(plainDefault).not.toContain("advisor (");
+});
+
+test("custom-message rows drop one outer system wrapper and keep nested payload tags", () => {
+	expect(renderCustom("checklist-reminder", "<system-reminder>\n2 items still open.\n</system-reminder>")).toContain(
+		"[checklist-reminder]: 2 items still open.",
+	);
+	const quoted = renderCustom(
+		"ttsr-interrupt",
+		'<system-interrupt rule="coverage > 80%" path="rules/watch>dog.md">\nOutput interrupted.\n</system-interrupt>',
+	);
+	expect(quoted).toContain("[ttsr-interrupt]: Output interrupted.");
+	expect(quoted).not.toContain("coverage > 80%");
+	expect(
+		renderCustom(
+			"async-result",
+			"<system-notice>\nResult: <system-reminder>literal</system-reminder>\n</system-notice>",
+		),
+	).toContain("[async-result]: Result: <system-reminder>literal</system-reminder>");
+	expect(renderCustom("async-result", `<system-notice>${" ".repeat(5_000)}`)).toContain(
+		"[async-result]: <system-notice>",
+	);
+});
+
+test("tree search ignores the outer system wrapper of a custom message", () => {
+	const search = (query: string) => {
+		const selector = customMessageSelector(
+			"async-result",
+			`<system-notice>\nBackground job completed. ${"detail ".repeat(60)}\n</system-notice>`,
+		);
+		for (const ch of query) selector.handleInput(ch);
+		return plain(selector.render(120));
+	};
+	expect(search("system-notice")).not.toContain("Background job");
+	expect(search("Background")).toContain("Background job");
+});
+
+test("rows past the indent cap share one horizontal offset so connectors keep the tree's shape", () => {
+	let counter = 0;
+	const node = (role: "user" | "assistant", text: string, parent: SessionTreeNode | null): SessionTreeNode => {
+		const id = `e${counter++}`;
+		const message =
+			role === "user"
+				? { role: "user" as const, content: text, timestamp: counter }
+				: {
+						role: "assistant" as const,
+						content: [{ type: "text" as const, text }],
+						api: "openai-completions" as const,
+						provider: "fixture",
+						model: "fixture",
+						stopReason: "stop" as const,
+						timestamp: counter,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					};
+		const created: SessionTreeNode = {
+			entry: {
+				type: "message",
+				id,
+				parentId: parent?.entry.id ?? null,
+				timestamp: "2026-09-03T00:00:00.000Z",
+				message,
+			},
+			children: [],
+		};
+		parent?.children.push(created);
+		return created;
+	};
+	// 25 abandoned forks off one spine: at 120 columns the prefix caps well below that depth.
+	const root = node("user", "root question", null);
+	let leaf = root;
+	for (let fork = 0; fork < 25; fork++) {
+		node("assistant", `abandoned ${fork}`, leaf);
+		leaf = node("user", `follow-up ${fork}`, leaf);
+	}
+	const selector = new TreeSelectorComponent(
+		[root],
+		leaf.entry.id,
+		30,
+		() => {},
+		() => {},
+	);
+	const rows = selector.render(120).map(line => Bun.stripANSI(line));
+	const closing = rows.filter(row => row.includes(theme.tree.last)).map(row => row.indexOf(theme.tree.last));
+	expect(closing.length).toBeGreaterThan(2);
+	for (let i = 1; i < closing.length; i++) expect(closing[i]).toBeLessThan(closing[i - 1]!);
 });

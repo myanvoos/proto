@@ -174,6 +174,7 @@ Do not edit generated files.
 - It is loaded as an **always-apply rule**, not as a context file, so it is re-attached near the current turn and keeps its hold across long sessions.
 - It is **always sticky**: frontmatter cannot make it non-sticky. If you want conditional or opt-in behavior, write a normal rule file instead (see [Skills](./skills.md)).
 - Both top-level candidates are synthesized with the rule name `RULES`, and rule deduplication is name-based. In the usual case, a user `RULES.md` shadows the project `RULES.md`; they are not concatenated. Avoid naming a regular file under `.proto/rules/` or the user `rules/` directory `RULES.md`, because native regular rules load earlier and can shadow both sticky candidates.
+- Edits take effect on `/clear` and `/new`: rules (like context files) are re-read from disk when the session's system prompt is rebuilt, so a `RULES.md` or rule file created, edited, renamed, or deleted mid-session applies without a restart.
 
 Keep `RULES.md` short. Long background belongs in `AGENTS.md`, where it costs context budget only once.
 

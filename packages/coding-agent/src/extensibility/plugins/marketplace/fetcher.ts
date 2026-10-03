@@ -5,7 +5,7 @@ import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import * as git from "../../../utils/git";
 
 import type { MarketplaceCatalog, MarketplaceSourceType } from "./types";
-import { isValidNameSegment } from "./types";
+import { isValidNameSegment, nameSegmentCollisionKey } from "./types";
 
 export interface FetchResult {
 	catalog: MarketplaceCatalog;
@@ -46,7 +46,7 @@ export function classifySource(source: string): MarketplaceSourceType {
 	throw new Error(`Unrecognized source format. Did you mean './${source}' (local) or 'owner/repo' (GitHub)?`);
 }
 
-function assertField(condition: boolean, field: string, filePath: string): void {
+function assertField(condition: boolean, field: string, filePath: string): asserts condition {
 	if (!condition) {
 		throw new Error(`Missing or invalid field "${field}" in catalog: ${filePath}`);
 	}
@@ -76,6 +76,7 @@ export function parseMarketplaceCatalog(content: string, filePath: string): Mark
 
 	const plugins = obj.plugins as unknown[];
 	const validPlugins: unknown[] = [];
+	const pluginNameKeys = new Set<string>();
 	for (let i = 0; i < plugins.length; i++) {
 		try {
 			const entry = plugins[i];
@@ -121,6 +122,9 @@ export function parseMarketplaceCatalog(content: string, filePath: string): Mark
 					assertField(false, `plugins[${i}].source.source (unknown variant: "${variant}")`, filePath);
 				}
 			}
+			const pluginNameKey = nameSegmentCollisionKey(p.name);
+			assertField(!pluginNameKeys.has(pluginNameKey), `plugins[${i}].name (case-equivalent duplicate)`, filePath);
+			pluginNameKeys.add(pluginNameKey);
 			validPlugins.push(entry);
 		} catch (err) {
 			const name =
@@ -194,12 +198,8 @@ export async function fetchMarketplace(source: string, cacheDir: string): Promis
 		);
 	}
 	const text = await response.text();
-	const catalog = parseMarketplaceCatalog(text, source);
-
-	const catalogDir = path.join(cacheDir, catalog.name);
-	await Bun.write(path.join(catalogDir, "marketplace.json"), text);
-
-	return { catalog };
+	// The manager writes the catalog only after its name-collision checks pass.
+	return { catalog: parseMarketplaceCatalog(text, source) };
 }
 
 async function cloneAndReadCatalog(url: string, source: string, cacheDir: string): Promise<FetchResult> {

@@ -207,7 +207,10 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 `);
 
-		const settingsInfo = this.#db.prepare("PRAGMA table_info(settings)").all() as Array<{ name?: string }>;
+		// One-off statements are scoped with `using`: an unfinalized statement keeps the connection (and agent.db)
+		// open after close() until GC collects it.
+		using settingsInfoStmt = this.#db.prepare("PRAGMA table_info(settings)");
+		const settingsInfo = settingsInfoStmt.all() as Array<{ name?: string }>;
 		const hasSettingsTable = settingsInfo.length > 0;
 		const hasKey = settingsInfo.some(column => column.name === "key");
 		const hasValue = settingsInfo.some(column => column.name === "value");
@@ -222,7 +225,8 @@ CREATE TABLE settings (
 `);
 		} else if (!hasKey || !hasValue) {
 			let legacySettings: Record<string, unknown> | null = null;
-			const row = this.#db.prepare("SELECT data FROM settings WHERE id = 1").get() as { data?: string } | undefined;
+			using legacyRowStmt = this.#db.prepare("SELECT data FROM settings WHERE id = 1");
+			const row = legacyRowStmt.get() as { data?: string } | undefined;
 			if (row?.data) {
 				try {
 					const parsed = JSON.parse(row.data);
@@ -246,7 +250,7 @@ CREATE TABLE settings (
 );
 `);
 				if (settings) {
-					const insert = this.#db.prepare(
+					using insert = this.#db.prepare(
 						`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ${SQLITE_NOW_EPOCH})`,
 					);
 					for (const [key, value] of Object.entries(settings)) {
@@ -261,9 +265,8 @@ CREATE TABLE settings (
 			migrate(legacySettings);
 		}
 
-		const versionRow = this.#db.prepare("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").get() as
-			| { version?: number }
-			| undefined;
+		using versionStmt = this.#db.prepare("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1");
+		const versionRow = versionStmt.get() as { version?: number } | undefined;
 		const schemaVersion = typeof versionRow?.version === "number" ? versionRow.version : 0;
 		if (versionRow?.version !== undefined && versionRow.version !== SCHEMA_VERSION) {
 			logger.warn("AgentStorage schema version mismatch", {
@@ -274,7 +277,8 @@ CREATE TABLE settings (
 		if (schemaVersion < SCHEMA_VERSION) {
 			this.#migrateSchema(schemaVersion);
 		}
-		this.#db.prepare("INSERT OR REPLACE INTO schema_version(version) VALUES (?)").run(SCHEMA_VERSION);
+		using recordVersionStmt = this.#db.prepare("INSERT OR REPLACE INTO schema_version(version) VALUES (?)");
+		recordVersionStmt.run(SCHEMA_VERSION);
 	}
 
 	#migrateSchema(fromVersion: number): void {
@@ -393,6 +397,11 @@ FROM model_usage_legacy
 		return settings as Settings;
 	}
 
+	/** Drop legacy settings rows once config.yml holds them. */
+	clearMigratedSettings(): void {
+		this.#db.run("DELETE FROM settings");
+	}
+
 	recordModelUsage(modelKey: string): void {
 		try {
 			this.#upsertModelUsageStmt.run(modelKey);
@@ -485,7 +494,7 @@ FROM model_usage_legacy
 		const credentials = this.#authStore.listAuthCredentials(provider);
 		if (!includeDisabled) return credentials;
 
-		const stmt = this.#db.prepare(
+		using stmt = this.#db.prepare(
 			provider
 				? "SELECT id, provider, credential_type, data, disabled_cause FROM auth_credentials WHERE provider = ? ORDER BY id ASC"
 				: "SELECT id, provider, credential_type, data, disabled_cause FROM auth_credentials ORDER BY id ASC",

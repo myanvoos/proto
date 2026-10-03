@@ -1,9 +1,14 @@
-const NAME_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+const NAME_RE = /^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$/;
 const MAX_NAME_LENGTH = 64;
 const MAX_ID_LENGTH = 128;
 
 export function isValidNameSegment(s: string): boolean {
 	return s.length > 0 && s.length <= MAX_NAME_LENGTH && NAME_RE.test(s);
+}
+
+/** Case-insensitive key: names differing only by case share a cache path on case-insensitive filesystems. */
+export function nameSegmentCollisionKey(s: string): string {
+	return s.toLowerCase();
 }
 
 export function buildPluginId(name: string, marketplace: string): string {

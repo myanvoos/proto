@@ -64,6 +64,8 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => message,
+		getToolByName: () => undefined,
+		hasPendingAsyncWork: () => false,
 		abort: async () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
@@ -161,10 +163,20 @@ test("an aborted turn keeps its cancellation reason instead of a failure notice"
 	}
 });
 
-// Regression: a worker answered, a fleet message then woke it, and `fleet terminate` cancelled that turn before it
-// produced anything. The empty turn overwrote `<id>.md`, so `agent://<id>` came back empty.
-test("a killed turn that produced nothing keeps the previous answer at agent://<id>", async () => {
-	const id = "killed-wake-turn";
+// Regressions: a worker answered and a fleet message then woke it. A wake turn that `fleet terminate` cancelled
+// before it produced anything left `agent://<id>` empty; one that replied without yielding replaced the answer.
+test.each([
+	{
+		name: "a killed turn that produced nothing",
+		id: "killed-wake-turn",
+		reply: assistantMessage({ stopReason: "aborted", errorMessage: "Request was aborted" }),
+	},
+	{
+		name: "a turn that replied without yielding",
+		id: "chatty-wake-turn",
+		reply: assistantMessage({ content: [{ type: "text", text: "Sure, ping received." }] }),
+	},
+])("$name keeps the previous answer at agent://<id>", async ({ id, reply }) => {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const emit = (event: AgentSessionEvent): void => {
 		for (const listener of [...listeners]) listener(event);
@@ -206,6 +218,7 @@ test("a killed turn that produced nothing keeps the previous answer at agent://<
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => lastAssistant,
+		getToolByName: () => undefined,
 		abort: async () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
@@ -245,23 +258,23 @@ test("a killed turn that produced nothing keeps the previous answer at agent://<
 			{ role: "custom", customType: "irc:incoming", content: "ping", display: true, timestamp: 2 },
 		] as CustomMessage[]);
 		expect(finishWakeTurn).toBeDefined();
-		const killed = assistantMessage({ stopReason: "aborted", errorMessage: "Request was aborted" });
-		lastAssistant = killed;
-		emit({ type: "message_end", message: killed } as AgentSessionEvent);
-		emit({ type: "agent_end", messages: [killed] } as AgentSessionEvent);
+		lastAssistant = reply;
+		emit({ type: "message_end", message: reply } as AgentSessionEvent);
+		emit({ type: "agent_end", messages: [reply] } as AgentSessionEvent);
 		await finishWakeTurn?.();
-		const killedTurn = await wakeTurn.promise;
+		const wakeResult = await wakeTurn.promise;
 
 		const url = Object.assign(new URL(`agent://${id}`), { rawHost: id }) satisfies InternalUrl;
 		const resource = await new AgentProtocolHandler().resolve(url);
 		expect(resource.content).toBe("PONG-1");
 		expect(resource.sourcePath).toBe(answered.outputPath);
-		// The killed turn reports itself truthfully: aborted, no output of its own, no counts for a write that
-		// did not happen, and a path to the output that was kept.
-		expect(killedTurn.aborted).toBe(true);
-		expect(killedTurn.output).toBe("");
-		expect(killedTurn.outputPath).toBe(answered.outputPath);
-		expect(killedTurn.outputMeta).toBeUndefined();
+		// The turn reports a path to the output that was kept and no counts for a write that did not happen.
+		expect(wakeResult.outputPath).toBe(answered.outputPath);
+		expect(wakeResult.outputMeta).toBeUndefined();
+		if (reply.stopReason === "aborted") {
+			expect(wakeResult.aborted).toBe(true);
+			expect(wakeResult.output).toBe("");
+		}
 	} finally {
 		unregister();
 		await fs.rm(dir, { recursive: true, force: true });
@@ -304,4 +317,107 @@ test("history renders a provider failure that produced no assistant content", ()
 	expect(markdown).toContain("## user");
 	expect(markdown).toContain(PROVIDER_FAILURE);
 	expect(markdown.match(/## assistant/g)).toHaveLength(1);
+});
+
+// Regression: teardown that drained past the cleanup deadline turned an already-yielded result into
+// "cleanup exceeded 0 ms", discarding a valid answer.
+test("a successful yield survives a session disposal that outlives the cleanup deadline", async () => {
+	const listeners: Array<(event: AgentSessionEvent) => void> = [];
+	const disposal = Promise.withResolvers<void>();
+	const yieldCall = assistantMessage({
+		content: [{ type: "toolCall", id: "yield-1", name: "yield", arguments: { result: { data: "DONE" } } }],
+		stopReason: "toolUse",
+	});
+	const session = {
+		state: { messages: [] },
+		agent: { state: { systemPrompt: ["test"] } },
+		model: undefined,
+		extensionRunner: undefined,
+		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
+		getActiveToolNames: () => ["yield"],
+		getEnabledToolNames: () => ["yield"],
+		setActiveToolsByName: async () => {},
+		subscribe: (listener: (event: AgentSessionEvent) => void) => {
+			listeners.push(listener);
+			return () => listeners.splice(listeners.indexOf(listener), 1);
+		},
+		prompt: async () => {
+			for (const event of [
+				{ type: "message_end", message: yieldCall },
+				{
+					type: "tool_execution_end",
+					toolCallId: "yield-1",
+					toolName: "yield",
+					result: {
+						content: [{ type: "text", text: "Result submitted." }],
+						details: { status: "success", data: "DONE" },
+					},
+					isError: false,
+				},
+				{ type: "agent_end", messages: [yieldCall] },
+			] as AgentSessionEvent[]) {
+				for (const listener of [...listeners]) listener(event);
+			}
+		},
+		waitForIdle: async () => {},
+		getLastAssistantMessage: () => yieldCall,
+		getToolByName: () => undefined,
+		abort: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
+		dispose: () => disposal.promise,
+		setWakeTurnObserver: () => {},
+		getAsyncJobOwnerId: () => undefined,
+		subscribeRunState: () => () => {},
+	} as unknown as AgentSession;
+	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(sessionResult(session));
+	let deferred: Promise<void> | undefined;
+	const result = await runSubprocess({
+		cwd: "/tmp",
+		agent,
+		task: "finish",
+		index: 0,
+		id: "slow-disposal",
+		settings: Settings.isolated(),
+		modelRegistry: { refresh: async () => {} } as never,
+		eventBus: new EventBus(),
+		keepAlive: false,
+		cleanupGraceMs: 0,
+		onCleanupDeferred: completion => {
+			deferred = completion;
+		},
+	});
+
+	expect(deferred).toBeDefined();
+	expect(result.exitCode).toBe(0);
+	expect(result.aborted).toBe(false);
+	expect(result.abortReason).toBeUndefined();
+	expect(result.output).toBe("DONE");
+	disposal.resolve();
+	await deferred;
+});
+
+// Regression: the read-only scout was handed `jobs`, whose `start` op launches arbitrary processes.
+test("a read-only agent gets fleet messaging but no process-launching jobs tool", async () => {
+	const spy = vi
+		.spyOn(sdkModule, "createAgentSession")
+		.mockResolvedValue(sessionResult(failingSession({ errorMessage: PROVIDER_FAILURE })));
+	for (const tools of [
+		["read", "web_search"],
+		["read", "bash"],
+	]) {
+		await runSubprocess({
+			cwd: "/tmp",
+			agent: { ...agent, tools },
+			task: "look around",
+			index: 0,
+			id: `child-${tools.join("-")}`,
+			settings: Settings.isolated(),
+			modelRegistry: { refresh: async () => {} } as never,
+			eventBus: new EventBus(),
+		});
+	}
+
+	expect(spy.mock.calls[0]?.[0]?.toolNames).toEqual(["read", "web_search", "fleet"]);
+	expect(spy.mock.calls[1]?.[0]?.toolNames).toEqual(["read", "bash", "fleet", "jobs"]);
 });

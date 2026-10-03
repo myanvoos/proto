@@ -1,8 +1,14 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as natives from "@oh-my-pi/pi-natives";
 import { getWorktreesDir, isEnoent } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE } from "../task/isolation-ownership";
+import {
+	hasLiveIsolationOwner,
+	ISOLATION_OWNER_FILE,
+	needsNativeTeardown,
+	readRetainedBackend,
+} from "../task/isolation-ownership";
 import * as git from "../utils/git";
 
 type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
@@ -55,6 +61,24 @@ export async function listWorktrees(options: ListWorktreesOptions): Promise<void
 	console.log(chalk.dim(`\n${live} live · ${orphaned} orphaned · ${entries.length} total`));
 }
 
+async function stopRetainedWorkspace(dir: string): Promise<void> {
+	const backend = await readRetainedBackend(dir);
+	if (backend === undefined) return;
+	// ZFS teardown resolves datasets by their original mountpoint, not the retained path.
+	if (backend === natives.IsoBackendKind.Zfs) {
+		throw new Error(`Retained ZFS workspace at ${dir} needs manual dataset teardown before removal.`);
+	}
+	if (!needsNativeTeardown(backend)) return;
+	for (const name of WORKER_ISOLATION_MOUNT_DIRS) {
+		const candidate = path.join(dir, name);
+		const stat = await fs.stat(candidate).catch(error => {
+			if (!isEnoent(error)) throw error;
+			return undefined;
+		});
+		if (stat?.isDirectory()) await natives.isoStop(backend, candidate);
+	}
+}
+
 export async function clearWorktrees(options: ClearWorktreesOptions): Promise<void> {
 	const entries = await scanWorktrees();
 	const targets = options.all ? entries : entries.filter(entry => entry.orphanReason !== undefined);
@@ -91,6 +115,9 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 					parentsToPrune.add(target.parentRepo);
 				}
 			} else {
+				if (target.kind === "task-isolation" || path.basename(target.path).includes(".retained-")) {
+					await stopRetainedWorkspace(target.path);
+				}
 				await fs.rm(target.path, { recursive: true, force: true });
 				if (target.parentRepo) parentsToPrune.add(target.parentRepo);
 			}

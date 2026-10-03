@@ -496,6 +496,58 @@ test("focus reporting is disabled and forgotten when the terminal stops", () => 
 	expect(isTerminalFocused()).toBeUndefined();
 });
 
+describe("terminal progress", () => {
+	const ACTIVE = "\x1b]9;4;3\x07";
+	const CLEAR = "\x1b]9;4;0;\x07";
+	const idDescriptor = Object.getOwnPropertyDescriptor(TERMINAL, "id");
+	let wasTTY: boolean | undefined;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		wasTTY = process.stdout.isTTY;
+		(process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		(process.stdout as unknown as { isTTY: boolean | undefined }).isTTY = wasTTY;
+		if (idDescriptor) Object.defineProperty(TERMINAL, "id", idDescriptor);
+	});
+
+	function progressWrites(sequence: string): number {
+		return (stdoutWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
+			call => call[0] === sequence,
+		).length;
+	}
+
+	test("writes the active state once on hosts that restart the animation on every write", () => {
+		Object.defineProperty(TERMINAL, "id", { value: "base", configurable: true });
+		const terminal = new ProcessTerminal();
+		terminal.setProgress(true);
+		terminal.setProgress(true);
+		vi.advanceTimersByTime(5_000);
+		terminal.stop();
+
+		expect(progressWrites(ACTIVE)).toBe(1);
+		expect(progressWrites(CLEAR)).toBe(1);
+	});
+
+	test("keeps Ghostty progress alive while work remains active", () => {
+		Object.defineProperty(TERMINAL, "id", { value: "ghostty", configurable: true });
+		const terminal = new ProcessTerminal();
+		try {
+			terminal.setProgress(true);
+			vi.advanceTimersByTime(1_000);
+			expect(progressWrites(ACTIVE)).toBe(2);
+			terminal.setProgress(false);
+			expect(progressWrites(CLEAR)).toBe(1);
+		} finally {
+			terminal.stop();
+		}
+		expect(progressWrites(CLEAR)).toBe(1);
+	});
+});
+
 describe("StdoutStallWatchdog", () => {
 	const ARM = 1000;
 	const CLEAR = 100;
@@ -530,12 +582,26 @@ describe("StdoutStallWatchdog", () => {
 		expect(watchdog.sample(ARM - 100, 200 + STALL_MS - 1)).toBe(false);
 		expect(watchdog.sample(ARM - 100, 200 + STALL_MS)).toBe(true);
 	});
+
+	test("the production window rides out a terminal that pauses for seconds", () => {
+		const watchdog = new StdoutStallWatchdog();
+		const oversized = 64 * 1024 * 1024 + 1;
+		expect(watchdog.sample(oversized, 0)).toBe(false);
+		expect(watchdog.sample(oversized, 10_000)).toBe(false);
+		expect(watchdog.sample(oversized, 300_000)).toBe(true);
+	});
 });
 
-test("confirmed bracketed paste keeps a stall-batched multiline read as typed keys", () => {
-	const deliver = (confirm2004: boolean): string[] => {
+test("confirmed bracketed paste asks the loop stall probe how to deliver an unmarked multiline burst", () => {
+	const deliver = (confirm2004: boolean, stalled: boolean): string[] => {
 		const input: string[] = [];
-		const terminal = startTerminal(data => input.push(data));
+		const terminal = new ProcessTerminal();
+		terminal.start(
+			data => input.push(data),
+			() => {},
+			undefined,
+			{ isLoopStalled: () => stalled },
+		);
 		try {
 			if (confirm2004) feed("\x1b[?2004;2$y");
 			input.length = 0;
@@ -545,7 +611,10 @@ test("confirmed bracketed paste keeps a stall-batched multiline read as typed ke
 			terminal.stop();
 		}
 	};
-	// Without confirmation the unbracketed heuristic still coalesces the burst.
-	expect(deliver(false).filter(data => data === "\r")).toEqual([]);
-	expect(deliver(true).filter(data => data === "\r")).toEqual(["\r", "\r"]);
+	// Without confirmation the unbracketed heuristic coalesces the burst.
+	expect(deliver(false, true).filter(data => data === "\r")).toEqual([]);
+	// Confirmed: a stall-batched read stays typed keys so every Enter submits...
+	expect(deliver(true, true).filter(data => data === "\r")).toEqual(["\r", "\r"]);
+	// ...while an input-method commit on a responsive loop lands as one paste.
+	expect(deliver(true, false).filter(data => data === "\r")).toEqual([]);
 });

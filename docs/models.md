@@ -397,11 +397,12 @@ Extensions can register providers at runtime (`pi.registerProvider(...)`), inclu
 When requesting a key for a provider, effective order is:
 
 1. Runtime override (CLI `--api-key`)
-2. Config override (`models.yml` `providers.<name>.apiKey`)
+2. Config override (`models.yml` `providers.<name>.apiKey`, or an extension `registerProvider` `apiKey` without `oauth`)
 3. Stored OAuth credential (with refresh)
 4. Login-sourced stored API key
-5. Environment variable mapping (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
-6. Other stored API key, such as a broker-migrated copy
+5. Config fallback: the `apiKey` of an extension provider that also registers `oauth`, so a `/login` key wins over its default key reference
+6. Environment variable mapping (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+7. Other stored API key, such as a broker-migrated copy
 
 `models.yml` `apiKey` behavior:
 

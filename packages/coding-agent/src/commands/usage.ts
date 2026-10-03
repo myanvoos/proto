@@ -19,6 +19,8 @@ export default class Usage extends Command {
 			redact: flags.redact,
 			history: flags.history,
 			days: flags.days,
+			extensions: flags.extension,
+			noExtensions: flags["no-extensions"],
 		});
 	}
 }

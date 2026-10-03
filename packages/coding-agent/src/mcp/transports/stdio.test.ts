@@ -286,3 +286,21 @@ test("a timed-out request kills the wedged child process", async () => {
 		await transport.close();
 	}
 });
+
+test.each([
+	["EOF", "process.exit(23)", "eof", true],
+	["malformed JSON", "console.log('{not-json')", "malformed_response", false],
+] as const)("subprocess %s preserves actionable failure classification", async (_label, action, failure, retryable) => {
+	const transport = new StdioTransport({
+		type: "stdio",
+		command: process.execPath,
+		args: ["-e", `process.stdin.once('data', () => { ${action}; }); process.stdin.resume()`],
+		timeout: 1000,
+	});
+	await transport.connect();
+	try {
+		await expect(transport.request("tools/list")).rejects.toMatchObject({ transport: "stdio", failure, retryable });
+	} finally {
+		await transport.close();
+	}
+});

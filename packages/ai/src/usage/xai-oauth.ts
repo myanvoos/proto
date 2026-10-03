@@ -6,6 +6,7 @@ import {
 	getXAICliBillingHeaders,
 } from "../registry/oauth/xai-oauth";
 import type {
+	CredentialRankingStrategy,
 	UsageAmount,
 	UsageFetchContext,
 	UsageFetchParams,
@@ -15,7 +16,7 @@ import type {
 	UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
-import { DAY_MS, parseIsoTimestamp, usageStatus, WEEK_MS } from "./shared";
+import { DAY_MS, HOUR_MS, isUsageLimitExhausted, parseIsoTimestamp, usageStatus, WEEK_MS } from "./shared";
 
 const PROVIDER_ID = "xai-oauth";
 const BILLING_SOURCE = "cli-chat-proxy.grok.com/v1/billing";
@@ -365,11 +366,24 @@ export const xaiOauthUsageProvider: UsageProvider = {
 				}
 			}
 		}
+		// An over-limit monthly counter next to active inferred weekly credits cannot establish which one
+		// gates requests: keep it visible but out of dispatch.
+		const monthlyQuotaAdvisory =
+			weekly?.inferredPercent === true && creditsLooksUnified && monthly !== null && monthly.used >= monthly.limit;
 		if (!effectiveWeekly && !monthly) return null;
 
 		const limits: UsageLimit[] = [];
 		if (effectiveWeekly) limits.push(...buildLimits(effectiveWeekly, accountId));
-		if (monthly) limits.push(...buildLimits(monthly, accountId));
+		if (monthly) {
+			const monthlyLimits = buildLimits(monthly, accountId);
+			if (monthlyQuotaAdvisory && monthlyLimits[0]) {
+				monthlyLimits[0].status = "unknown";
+				monthlyLimits[0].notes = [
+					"Monthly counter exceeds its limit, but active weekly credits leave enforcement uncertain.",
+				];
+			}
+			limits.push(...monthlyLimits);
+		}
 
 		const seen = new Set<string>();
 		const deduped = limits.filter(limit => {
@@ -397,10 +411,34 @@ export const xaiOauthUsageProvider: UsageProvider = {
 				endpoint,
 				source: BILLING_SOURCE,
 				billingKind,
+				...(monthlyQuotaAdvisory ? { monthlyQuotaAdvisory: true } : {}),
 				...(accountId ? { accountId } : {}),
 				...(email ? { email } : {}),
 			},
 			raw,
 		};
 	},
+};
+
+/**
+ * Ranks SuperGrok accounts by weekly credits (or unified monthly included quota). xAI reports no short
+ * window, so the meter maps to `secondary`, which drives drain ranking.
+ */
+export const xaiOauthRankingStrategy: CredentialRankingStrategy = {
+	scopeLimits(report) {
+		if (report.metadata?.monthlyQuotaAdvisory === true) return [];
+		// Spent credits keep serving on the on-demand cap; only gate once no on-demand headroom remains.
+		const onDemand = report.limits.find(limit => limit.id === `${PROVIDER_ID}:on-demand`);
+		if (onDemand && !isUsageLimitExhausted(onDemand)) return [];
+		return report.limits.filter(
+			limit => limit.id === `${PROVIDER_ID}:credits:1w` || limit.id === `${PROVIDER_ID}:included:1mo`,
+		);
+	},
+	findWindowLimits(report) {
+		if (report.metadata?.monthlyQuotaAdvisory === true) return {};
+		const credits = report.limits.find(limit => limit.id === `${PROVIDER_ID}:credits:1w`);
+		const included = report.limits.find(limit => limit.id === `${PROVIDER_ID}:included:1mo`);
+		return { secondary: credits ?? included };
+	},
+	windowDefaults: { primaryMs: 5 * HOUR_MS, secondaryMs: WEEK_MS },
 };

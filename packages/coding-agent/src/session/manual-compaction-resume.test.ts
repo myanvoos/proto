@@ -20,6 +20,8 @@ interface CompactorControl {
 	cancel?: boolean;
 	/** Extension slash commands handled locally, by name. */
 	commands?: Record<string, () => void | Promise<void>>;
+	/** Parks a prompt inside its awaited `before_agent_start` hook, before its message reaches the agent. */
+	agentStart?: { entered: PromiseWithResolvers<void>; release: Promise<void> };
 }
 
 describe("manual compaction resumes the turn it interrupted", () => {
@@ -58,7 +60,12 @@ describe("manual compaction resumes the turn it interrupted", () => {
 					},
 				};
 			},
-			emitBeforeAgentStart: async () => undefined,
+			emitBeforeAgentStart: async () => {
+				if (!control.agentStart) return undefined;
+				control.agentStart.entered.resolve();
+				await control.agentStart.release;
+				return undefined;
+			},
 			getCommand: (name: string) => {
 				const handler = control.commands?.[name];
 				return handler ? { handler: async () => handler() } : undefined;
@@ -217,5 +224,28 @@ describe("manual compaction resumes the turn it interrupted", () => {
 		expect(ran).toEqual(["local"]);
 		expect(userPrompts()).toEqual([]);
 		expect(resumeNudges()).toHaveLength(1);
+	});
+
+	it("does not resume when compaction lands while a prompt is still in setup", async () => {
+		// The session reports busy while a prompt is in async setup, but the agent owns no turn yet. The
+		// compaction abort drops that prompt; resuming would run the model on the previous transcript.
+		const release = Promise.withResolvers<void>();
+		const control: CompactorControl = {
+			agentStart: { entered: Promise.withResolvers<void>(), release: release.promise },
+		};
+		createSession(control);
+
+		const pending = session.prompt("new request");
+		await control.agentStart?.entered.promise;
+		expect(session.isStreaming).toBe(true);
+		expect(session.agent.state.isStreaming).toBe(false);
+
+		const compaction = session.compact();
+		release.resolve();
+		await compaction;
+		await pending;
+		await session.waitForIdle();
+
+		expect(resumeNudges()).toEqual([]);
 	});
 });

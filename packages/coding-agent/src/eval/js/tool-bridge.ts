@@ -1,6 +1,6 @@
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
-import { INTENT_FIELD, nearestNames } from "@oh-my-pi/pi-utils";
+import { type Tool as AiTool, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
+import { INTENT_FIELD, isRecord, nearestNames } from "@oh-my-pi/pi-utils";
 import { type ExecutionOrigin, withExecutionOrigin } from "../../jobs/origin";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
@@ -129,6 +129,26 @@ function normalizeArgs(tool: AgentTool, args: unknown): unknown {
 	return { ...record, [INTENT_FIELD]: "js prelude" };
 }
 
+/** Bridged calls skip the agent loop, so they get its argument validation and lenient fallback here. */
+function validateArgs(tool: AgentTool, toolCallId: string, args: unknown, options: ToolBridgeOptions): unknown {
+	try {
+		return validateToolArguments(tool as AiTool, {
+			type: "toolCall",
+			id: toolCallId,
+			name: tool.name,
+			arguments: args as Record<string, unknown>,
+		});
+	} catch (error) {
+		if (!tool.lenientArgValidation) {
+			options.emitStatus?.({ op: tool.name, error: error instanceof Error ? error.message : String(error) });
+			throw error;
+		}
+		if (!isRecord(args)) return args;
+		const { __parseError: _parseError, __rawJson: _rawJson, ...fallback } = args;
+		return fallback;
+	}
+}
+
 function summarizeToolResult(
 	name: string,
 	args: unknown,
@@ -161,6 +181,12 @@ function summarizeToolResult(
 				cmd: record.command,
 				code: typeof details.exitCode === "number" ? details.exitCode : undefined,
 				output: text.slice(0, 500),
+			});
+		case "checklist":
+			return withError({
+				op: "checklist",
+				chars: text.length,
+				committed: !hasError && details.op !== "view" && Array.isArray(details.phases),
 			});
 		default:
 			return withError({ op: name, chars: text.length });
@@ -195,7 +221,8 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const tool = getTool(options.session, name);
-	let normalizedArgs = normalizeArgs(tool, args);
+	const toolCallId = options.toolCallId ?? `js-${name}-${crypto.randomUUID()}`;
+	let normalizedArgs = validateArgs(tool, toolCallId, normalizeArgs(tool, args), options);
 	let lease: { lane: string; release(): void } | undefined;
 	// Nested shell calls cannot wait for the lane held by their calling cell.
 	if (name === "bash" && normalizedArgs && typeof normalizedArgs === "object" && !Array.isArray(normalizedArgs)) {
@@ -205,7 +232,6 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 			normalizedArgs = { ...record, lane: lease.lane };
 		}
 	}
-	const toolCallId = options.toolCallId ?? `js-${name}-${crypto.randomUUID()}`;
 	try {
 		options.signal?.throwIfAborted();
 		const result = await tool.execute(

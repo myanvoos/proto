@@ -4,7 +4,7 @@ import { Settings } from "../config/settings";
 import type { Tool } from ".";
 import { BUILTIN_TOOL_NAMES } from "./builtin-names";
 import { defaultLoadModeForToolName, ESSENTIAL_BUILTIN_TOOL_NAMES } from "./essential-tools";
-import { isMountableUnderXdev, xdevDocsAll } from "./xdev";
+import { isMountableUnderXdev, planXdevPromptDocs, renderXdevPromptDocs, xdevDocsAll } from "./xdev";
 
 // Contract: only these built-ins ship their schemas as native tools on every request. Everything
 // else mounts under protolens:// and is dispatched from bash. If this set drifts, every session silently
@@ -80,5 +80,30 @@ describe("xdevDocsAll", () => {
 		expect(docs).toContain("## Additional devices (docs on demand)");
 		expect(docs).toContain("- protolens://probe — Returns the supplied value.");
 		expect(docs).not.toContain("type Args =");
+	});
+
+	test("devices listed elsewhere (MCP route lines) get no catalog line", () => {
+		const tools = ["probe", "mcp__srv__lookup"].map(
+			name =>
+				({
+					name,
+					label: name,
+					description: `${name} summary.`,
+					parameters: type({ value: "string" }),
+				}) as unknown as Tool,
+		);
+		const state = {
+			tools: new Map(tools.map(tool => [tool.name, tool])),
+			mountedNames: new Set(tools.map(tool => tool.name)),
+			builtInNames: new Set<string>(),
+			isActive: () => false,
+		};
+
+		const plan = planXdevPromptDocs(state);
+		expect(plan.catalog.get("mcp__srv__lookup")).toBe("mcp__srv__lookup summary.");
+		const docs = renderXdevPromptDocs(plan, new Set(["mcp__srv__lookup"]));
+		expect(docs).toContain("- protolens://probe — probe summary.");
+		expect(docs).not.toContain("mcp__srv__lookup");
+		expect(renderXdevPromptDocs(plan, new Set(["probe", "mcp__srv__lookup"]))).toBe("");
 	});
 });

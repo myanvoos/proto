@@ -10,7 +10,7 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { LocalProtocolHandler, type LocalProtocolOptions, resolveLocalRoot } from "../../internal-urls";
 import { resolveLocalHyperlink } from "../../tui/hyperlink";
 import { resolveMermaidAscii } from "./mermaid-cache";
-import { theme } from "./theme";
+import { ensureThemeSync, theme } from "./theme";
 import type { Theme } from "./theme-class";
 
 let cachedHighlightColorsFor: Theme | undefined;
@@ -136,6 +136,7 @@ export function setMarkdownMermaidRendering(enabled: boolean): void {
 export function getMarkdownTheme(
 	currentLocalOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ?? null,
 ): MarkdownTheme {
+	ensureThemeSync();
 	const artifactsDir = currentLocalOptions?.getArtifactsDir?.() ?? null;
 	const sessionId = currentLocalOptions?.getSessionId?.() ?? null;
 	// A transcript's links belong to its session, even after the active session changes.

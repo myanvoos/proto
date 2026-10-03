@@ -25,7 +25,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -80,7 +81,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -135,7 +137,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -190,7 +193,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -246,7 +250,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -303,7 +308,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -359,7 +365,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -414,7 +421,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -469,7 +477,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -706,7 +715,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -855,7 +865,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -912,7 +923,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -956,7 +968,7 @@
 		],
 		"cost": {
 			"input": 0.39999999999999997,
-			"output": 2.5,
+			"output": 2.4,
 			"cacheRead": 0.04,
 			"cacheWrite": 0.5
 		},
@@ -969,7 +981,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1027,7 +1040,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -1083,7 +1097,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1140,7 +1155,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1196,7 +1212,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1255,7 +1272,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1314,7 +1332,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1371,7 +1390,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1429,7 +1449,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -1485,7 +1506,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "qwen3",
@@ -1545,7 +1567,66 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"alibaba/qwen3.8-max-prime": {
+		"id": "alibaba/qwen3.8-max-prime",
+		"name": "Qwen 3.8 Max Prime",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 12,
+			"cacheRead": 0.5,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -1602,7 +1683,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -1658,7 +1740,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -2255,11 +2338,11 @@
 	"anthropic/claude-opus-4": {
 		"id": "anthropic/claude-opus-4",
 		"requiresGlyphTokenization": true,
-		"name": "Claude 4 Opus",
+		"name": "Claude Opus 4",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
 			"text",
 			"image"
@@ -2274,6 +2357,16 @@
 		"maxTokens": 32000,
 		"tokenizer": "claude-v3",
 		"supportsAssistantPrefill": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -2294,7 +2387,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": false,
+			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -2879,13 +2972,14 @@
 			"supportsMidConversationToolChanges": false,
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
+		"tps": 93,
 		"supportsComputerUse": false
 	},
 	"anthropic/claude-opus-5.5-fast": {
@@ -2937,7 +3031,7 @@
 			"supportsMidConversationToolChanges": false,
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
@@ -3177,6 +3271,66 @@
 		},
 		"supportsComputerUse": false
 	},
+	"anthropic/claude-sonnet-5.5": {
+		"id": "anthropic/claude-sonnet-5.5",
+		"name": "Claude Sonnet 5.5",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.19999999999999998,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"int": 56,
+		"tps": 139.6,
+		"supportsComputerUse": false
+	},
 	"arcee-ai/trinity-large-preview": {
 		"id": "arcee-ai/trinity-large-preview",
 		"requiresGlyphTokenization": false,
@@ -3249,7 +3403,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -3307,7 +3462,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -3363,7 +3519,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -3419,7 +3576,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -3475,7 +3633,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -3575,7 +3734,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -3678,7 +3838,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -3734,7 +3895,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -3772,7 +3934,7 @@
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text"
 		],
@@ -3784,24 +3946,6 @@
 		},
 		"contextWindow": 128000,
 		"maxTokens": 8000,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh"
-			],
-			"effortRouting": {
-				"off": "deepseek/deepseek-v3.2",
-				"minimal": "deepseek/deepseek-v3.2-thinking",
-				"low": "deepseek/deepseek-v3.2-thinking",
-				"medium": "deepseek/deepseek-v3.2-thinking",
-				"high": "deepseek/deepseek-v3.2-thinking",
-				"xhigh": "deepseek/deepseek-v3.2-thinking"
-			}
-		},
 		"tokenizer": "deepseek-v3",
 		"supportsAssistantPrefill": false,
 		"int": 16,
@@ -3825,7 +3969,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": true,
+			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -3857,7 +4001,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -3914,7 +4059,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -3972,7 +4118,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -4014,9 +4161,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.22,
-			"output": 0.66,
-			"cacheRead": 0.007,
+			"input": 0.21559999999999999,
+			"output": 0.6468,
+			"cacheRead": 0.0068,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -4030,7 +4177,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -4085,7 +4233,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -4143,7 +4292,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "deepseek-v3",
@@ -4201,12 +4351,128 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
 		"int": 39.5,
 		"tps": 226.6,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"deepseek/deepseek-v4.1-flash-fast": {
+		"id": "deepseek/deepseek-v4.1-flash-fast",
+		"name": "DeepSeek V4.1 Flash Fast",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.3,
+			"output": 1.2,
+			"cacheRead": 0.006,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 1000000,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"fireworks/ember-1": {
+		"id": "fireworks/ember-1",
+		"name": "Ember-1",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 1048576,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": false,
@@ -5199,7 +5465,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5255,7 +5522,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5310,7 +5578,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5367,7 +5636,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5394,6 +5664,8 @@
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
+		"int": 12.3,
+		"tps": 762.9,
 		"supportsComputerUse": false
 	},
 	"inception/mercury-coder-small": {
@@ -5467,7 +5739,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5509,9 +5782,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.075,
+			"output": 0.22,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -5524,7 +5797,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5581,7 +5855,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5636,7 +5911,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5692,7 +5968,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5747,7 +6024,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5788,9 +6066,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.075,
+			"output": 0.22,
+			"cacheRead": 0.015,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -5803,7 +6081,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5861,7 +6140,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5916,7 +6196,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5946,6 +6227,118 @@
 		},
 		"supportsComputerUseConfig": false
 	},
+	"inclusionai/ling-3.1-flash": {
+		"id": "inclusionai/ling-3.1-flash",
+		"name": "Ling 3.1 Flash (new)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"inclusionai/ling-3.1-flash-free": {
+		"id": "inclusionai/ling-3.1-flash-free",
+		"name": "Ling 3.1 Flash (Free)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"interfaze/interfaze-beta": {
 		"id": "interfaze/interfaze-beta",
 		"requiresGlyphTokenization": false,
@@ -5973,7 +6366,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6182,6 +6576,63 @@
 		},
 		"supportsComputerUse": false
 	},
+	"meituan/longcat-2.5-preview": {
+		"id": "meituan/longcat-2.5-preview",
+		"name": "LongCat 2.5 Preview",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.3,
+			"output": 1.2,
+			"cacheRead": 0.006,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"meituan/longcat-flash-chat": {
 		"id": "meituan/longcat-flash-chat",
 		"requiresGlyphTokenization": false,
@@ -6254,7 +6705,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -6311,7 +6763,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -6690,7 +7143,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6746,7 +7200,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6774,6 +7229,7 @@
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
+		"tps": 120.8,
 		"supportsComputerUse": false
 	},
 	"meta/muse-spark-1.2": {
@@ -6803,7 +7259,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6861,7 +7318,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6917,7 +7375,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6975,7 +7434,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -7007,7 +7467,7 @@
 	"minimax/minimax-m2": {
 		"id": "minimax/minimax-m2",
 		"requiresGlyphTokenization": false,
-		"name": "MiniMax-M2",
+		"name": "MiniMax M2",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
@@ -7309,7 +7769,7 @@
 	"minimax/minimax-m2.7": {
 		"id": "minimax/minimax-m2.7",
 		"requiresGlyphTokenization": false,
-		"name": "MiniMax-M2.7",
+		"name": "MiniMax M2.7",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -7696,7 +8156,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -7752,7 +8213,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -8038,7 +8500,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -8420,7 +8883,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -8545,7 +9009,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -8603,7 +9068,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -8650,7 +9116,7 @@
 		"cost": {
 			"input": 0.95,
 			"output": 4,
-			"cacheRead": 0.16,
+			"cacheRead": 0.19,
 			"cacheWrite": 0
 		},
 		"contextWindow": 256000,
@@ -8662,7 +9128,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -8697,7 +9164,7 @@
 	"moonshotai/kimi-k2.7-code-highspeed": {
 		"id": "moonshotai/kimi-k2.7-code-highspeed",
 		"requiresGlyphTokenization": false,
-		"name": "Kimi K2.7 Code High-Speed",
+		"name": "Kimi K2.7 Code HighSpeed",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -8721,7 +9188,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "kimi-k2",
@@ -8893,7 +9361,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -8948,7 +9417,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -9003,7 +9473,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -9058,7 +9529,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -9116,7 +9588,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -9171,7 +9644,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -9227,7 +9701,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -12219,6 +12694,120 @@
 		},
 		"supportsComputerUse": false
 	},
+	"openai/gpt-6.1-sol": {
+		"id": "openai/gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.09999999999999999,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"int": 51.8,
+		"tps": 61.3,
+		"supportsComputerUse": false
+	},
+	"openai/gpt-6.1-sol-fast": {
+		"id": "openai/gpt-6.1-sol-fast",
+		"name": "GPT-6.1 Sol (Fast)",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.19999999999999998,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"openai/gpt-oss-120b": {
 		"id": "openai/gpt-oss-120b",
 		"requiresGlyphTokenization": false,
@@ -12245,7 +12834,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -12279,7 +12869,7 @@
 	"openai/gpt-oss-20b": {
 		"id": "openai/gpt-oss-20b",
 		"requiresGlyphTokenization": false,
-		"name": "GPT OSS 20B",
+		"name": "gpt-oss-20b",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
@@ -12302,7 +12892,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -12359,7 +12950,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -12414,7 +13006,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -12470,7 +13063,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12528,7 +13122,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12587,7 +13182,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12644,7 +13240,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12700,7 +13297,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12759,7 +13357,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12817,7 +13416,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -12876,7 +13476,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -13026,7 +13627,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13081,7 +13683,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13136,7 +13739,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13193,7 +13797,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13249,7 +13854,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13305,7 +13911,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13361,7 +13968,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13417,7 +14025,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13473,7 +14082,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13575,7 +14185,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -13632,7 +14243,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13688,7 +14300,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -13836,7 +14449,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -13893,7 +14507,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -13950,7 +14565,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14006,7 +14622,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14062,7 +14679,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14103,9 +14721,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 1.2,
-			"output": 3.5999999999999996,
-			"cacheRead": 0.3,
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
 			"cacheWrite": 0
 		},
 		"contextWindow": 500000,
@@ -14118,7 +14736,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14174,7 +14793,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14229,7 +14849,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14287,7 +14908,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14344,7 +14966,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14401,7 +15024,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14457,7 +15081,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14501,7 +15126,7 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.5,
+			"input": 0.44999999999999996,
 			"output": 1.2,
 			"cacheRead": 0.09999999999999999,
 			"cacheWrite": 0
@@ -14515,7 +15140,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -14898,7 +15524,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15002,7 +15629,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -15106,7 +15734,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -15163,7 +15792,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15219,7 +15849,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15369,7 +16000,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -15428,7 +16060,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -15485,7 +16118,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"int": 24.9,
@@ -15543,7 +16177,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"int": 38.8,
@@ -15601,7 +16236,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"int": 44.3,
@@ -15659,7 +16295,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15714,7 +16351,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15770,7 +16408,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"int": 16,
@@ -15827,7 +16466,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"int": 28.6,
@@ -15885,7 +16525,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15940,7 +16581,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -15983,9 +16625,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.14,
-			"output": 0.28,
-			"cacheRead": 0.0028,
+			"input": 0.04,
+			"output": 1.28,
+			"cacheRead": 0.04,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -15998,7 +16640,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16025,6 +16668,8 @@
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
+		"int": 37.9,
+		"tps": 52.4,
 		"supportsComputerUse": false
 	},
 	"xiaomi/mimo-v2.6-pro": {
@@ -16054,7 +16699,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16112,7 +16758,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16167,7 +16814,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16222,7 +16870,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16278,7 +16927,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16333,7 +16983,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16389,7 +17040,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16446,7 +17098,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16490,7 +17143,7 @@
 		"cost": {
 			"input": 0.6,
 			"output": 2.2,
-			"cacheRead": 0.12,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,
@@ -16502,7 +17155,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16557,7 +17211,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16612,7 +17267,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16667,7 +17323,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -16723,7 +17380,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -16780,7 +17438,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -16836,7 +17495,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -16878,9 +17538,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 2.0999999999999996,
-			"output": 6.6000000000000005,
-			"cacheRead": 0.21,
+			"input": 2.8,
+			"output": 8.8,
+			"cacheRead": 0.56,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
@@ -16892,7 +17552,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",
@@ -17119,7 +17780,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -17175,7 +17837,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "glm5",

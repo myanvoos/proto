@@ -4,7 +4,7 @@ import * as AIError from "../error";
 import type { Context, FetchImpl, Model, ModelSpec, ToolCall, Usage } from "../types";
 import { streamGoogle } from "./google";
 import { buildRequest } from "./google-gemini-cli";
-import { convertMessages } from "./google-shared";
+import { convertMessages, mapGoogleUsage } from "./google-shared";
 
 const model = buildModel({
 	id: "gemini-test",
@@ -85,6 +85,94 @@ describe("Google shared streaming", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
 		expect(result.usage).toMatchObject({ input: 3, output: 2, totalTokens: 5 });
+	});
+});
+
+describe("mapGoogleUsage", () => {
+	it("never reports negative input when promptTokenCount is missing or below the cache count", () => {
+		// Antigravity: no promptTokenCount and a cache count above the prompt implied by the total.
+		const usage = mapGoogleUsage({
+			cachedContentTokenCount: 303_104,
+			candidatesTokenCount: 35,
+			thoughtsTokenCount: 12,
+			totalTokenCount: 297_578,
+		});
+		expect(usage).toMatchObject({ input: 0, cacheRead: 297_531, output: 47, reasoningTokens: 12 });
+
+		const partial = mapGoogleUsage({
+			cachedContentTokenCount: 80_000,
+			candidatesTokenCount: 10,
+			totalTokenCount: 100_010,
+		});
+		expect(partial).toMatchObject({ input: 20_000, cacheRead: 80_000 });
+	});
+});
+
+describe("Google error body classification", () => {
+	async function failedTurn(status: number, body: unknown) {
+		const fetchImpl = Object.assign(
+			async (): Promise<Response> =>
+				new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }),
+			{ preconnect: fetch.preconnect },
+		);
+		const result = await streamGoogle(model, context, { apiKey: "test-key", fetch: fetchImpl }).result();
+		const errorMessage = result.errorMessage ?? "";
+		return { errorMessage, error: new AIError.ProviderHttpError(errorMessage, result.errorStatus ?? status) };
+	}
+
+	it("keeps a billing-cap 429 terminal instead of retrying it as a transient throttle", async () => {
+		const { error } = await failedTurn(429, {
+			error: {
+				code: 429,
+				message: "Your project has exceeded its monthly spending cap.",
+				status: "RESOURCE_EXHAUSTED",
+				details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "QUOTA_EXHAUSTED" }],
+			},
+		});
+
+		expect(AIError.isUsageLimit(error)).toBe(true);
+		expect(AIError.isProviderRetryableError(error)).toBe(false);
+	});
+
+	it("keeps a per-minute 429 retryable", async () => {
+		const { error } = await failedTurn(429, {
+			error: {
+				code: 429,
+				message: "Quota exceeded for aiplatform.googleapis.com/generate_content_requests_per_minute.",
+				status: "RESOURCE_EXHAUSTED",
+				details: [
+					{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "RATE_LIMIT_EXCEEDED" },
+					{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "27s" },
+				],
+			},
+		});
+
+		expect(AIError.isUsageLimit(error)).toBe(false);
+		expect(AIError.isProviderRetryableError(error)).toBe(true);
+	});
+
+	it("leaves a validation 400 as the plain Google message", async () => {
+		const { errorMessage } = await failedTurn(400, {
+			error: {
+				code: 400,
+				message: "* GenerateContentRequest.contents[2].parts[0].function_response.name: Name cannot be empty.",
+				status: "INVALID_ARGUMENT",
+				details: [{ "@type": "type.googleapis.com/google.rpc.BadRequest", fieldViolations: [] }],
+			},
+		});
+
+		expect(errorMessage).toBe(
+			"Google API error (400): * GenerateContentRequest.contents[2].parts[0].function_response.name: Name cannot be empty.",
+		);
+	});
+
+	it("classifies spending-cap prose as a usage limit but not 'spending capacity' throttles", () => {
+		expect(AIError.isUsageLimit("Google API error (429): Your project has exceeded its monthly spending cap.")).toBe(
+			true,
+		);
+		expect(AIError.parseRateLimitReason("429 model spending capacity reached, slow down")).toBe(
+			"MODEL_CAPACITY_EXHAUSTED",
+		);
 	});
 });
 

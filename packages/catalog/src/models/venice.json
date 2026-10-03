@@ -1,4 +1,86 @@
 {
+	"abliteration-abliterated-model-large-v2": {
+		"id": "abliteration-abliterated-model-large-v2",
+		"name": "Abliterated Large V2",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 3,
+			"output": 5,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"aion-labs-aion-2-0": {
 		"id": "aion-labs-aion-2-0",
 		"name": "aion-labs-aion-2-0",
@@ -96,7 +178,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -177,7 +260,172 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"aion-labs-aion-3-5": {
+		"id": "aion-labs-aion-3-5",
+		"name": "Aion 3.5",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 3.75,
+			"output": 7.5,
+			"cacheRead": 0.9375,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"aion-labs-aion-3-5-mini": {
+		"id": "aion-labs-aion-3-5-mini",
+		"name": "Aion 3.5 Mini",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.875,
+			"output": 1.75,
+			"cacheRead": 0.225,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -330,7 +578,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -408,7 +657,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 49.6,
-		"tps": 66.7,
+		"tps": 65.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -416,7 +665,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -493,7 +743,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 53.4,
-		"tps": 64.7,
+		"tps": 68.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -501,7 +751,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"prefixBinding": true
 		},
@@ -579,7 +830,7 @@
 		"contextWindow": 198000,
 		"maxTokens": 32768,
 		"int": 23.7,
-		"tps": 45.7,
+		"tps": 47.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -587,7 +838,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -664,7 +916,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 26.4,
-		"tps": 38.7,
+		"tps": 38.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -672,7 +924,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -755,7 +1008,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v3",
@@ -833,7 +1087,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -841,7 +1095,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -924,7 +1179,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v47",
@@ -1002,7 +1258,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1010,7 +1266,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1093,7 +1350,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1176,7 +1434,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v5",
@@ -1254,7 +1513,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 50.8,
-		"tps": 53.6,
+		"tps": 57.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1262,7 +1521,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1339,6 +1599,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 57.6,
+		"tps": 93,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1346,7 +1607,92 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"claude-opus-5-5-fast": {
+		"id": "claude-opus-5-5-fast",
+		"name": "Claude Opus 5.5 Fast",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 9.6,
+			"output": 48,
+			"cacheRead": 0.48,
+			"cacheWrite": 12
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1429,7 +1775,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1512,7 +1859,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1589,7 +1937,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1597,7 +1945,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1680,7 +2029,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"tokenizer": "claude-v5-sonnet",
@@ -1750,15 +2100,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 2.5,
+			"output": 12.5,
+			"cacheRead": 0.25,
+			"cacheWrite": 3.125
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 38.2,
-		"tps": 78.1,
+		"tps": 85.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1766,7 +2116,94 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"claude-sonnet-5-5": {
+		"id": "claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.5,
+			"output": 12.5,
+			"cacheRead": 0.25,
+			"cacheWrite": 3.125
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"int": 56,
+		"tps": 139.6,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": true,
@@ -1923,7 +2360,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 39.5,
-		"tps": 226.6,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2005,7 +2442,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 32768,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2247,7 +2684,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 32768,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4195,7 +4632,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 32768,
 		"int": 29.7,
-		"tps": 118.4,
+		"tps": 116.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4277,7 +4714,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4361,7 +4798,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 22.2,
-		"tps": 357.4,
+		"tps": 360,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4445,7 +4882,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 34,
-		"tps": 180.2,
+		"tps": 198.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4529,7 +4966,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 39.1,
-		"tps": 278.3,
+		"tps": 302.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4613,7 +5050,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 40.9,
-		"tps": 275.9,
+		"tps": 242.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5010,7 +5447,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5092,7 +5530,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5312,7 +5751,7 @@
 		"contextWindow": 2000000,
 		"maxTokens": 128000,
 		"int": 25.7,
-		"tps": 106.2,
+		"tps": 124.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5320,7 +5759,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5615,7 +6055,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 32000,
 		"int": 24.9,
-		"tps": 104.2,
+		"tps": 143.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5623,7 +6063,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5699,7 +6140,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 32000,
 		"int": 38.8,
-		"tps": 55.1,
+		"tps": 56.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5707,7 +6148,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5783,7 +6225,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 200000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5791,7 +6233,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5867,7 +6310,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 200000,
 		"int": 46.4,
-		"tps": 39.3,
+		"tps": 79,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5875,7 +6318,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5957,7 +6401,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6040,7 +6485,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6121,7 +6567,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6273,7 +6720,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 65536,
 		"int": 25,
-		"tps": 110.6,
+		"tps": 169.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6281,7 +6728,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6364,7 +6812,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6442,7 +6891,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 65536,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6450,7 +6899,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6528,7 +6978,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 32768,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6536,7 +6986,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6619,7 +7070,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -6699,7 +7151,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -7026,7 +7478,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 50000,
 		"int": 13.8,
-		"tps": 749.5,
+		"tps": 871.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -7034,7 +7486,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7101,13 +7554,15 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.04999999999999999,
-			"output": 0.18749999999999994,
-			"cacheRead": 0.004999999999999999,
+			"input": 0.25,
+			"output": 0.9375,
+			"cacheRead": 0.025,
 			"cacheWrite": 0
 		},
 		"contextWindow": 260000,
 		"maxTokens": 65536,
+		"int": 12.3,
+		"tps": 762.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -7115,7 +7570,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7438,7 +7894,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7523,7 +7980,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7678,7 +8136,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7831,7 +8290,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7906,7 +8366,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 6.8,
-		"tps": 177.1,
+		"tps": 236.4,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -7979,7 +8439,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 32768,
 		"int": 22.9,
-		"tps": 156.1,
+		"tps": 164.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -7987,7 +8447,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8068,7 +8529,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8150,7 +8612,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -11019,6 +11482,88 @@
 			"dropThinkingWhenReasoningEffort": false
 		}
 	},
+	"openai-gpt-61-sol": {
+		"id": "openai-gpt-61-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.5,
+			"output": 12.5,
+			"cacheRead": 0.125,
+			"cacheWrite": 3.125
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"openai-gpt-oss-120b": {
 		"id": "openai-gpt-oss-120b",
 		"name": "OpenAI GPT OSS 120B",
@@ -11044,7 +11589,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -11685,7 +12231,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 12,
-		"tps": 57.2,
+		"tps": 60.5,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -11921,7 +12467,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 16384,
 		"int": 19.3,
-		"tps": 146.1,
+		"tps": 148.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12004,7 +12550,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 32768,
 		"int": 18.4,
-		"tps": 85.7,
+		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12086,8 +12632,8 @@
 		},
 		"contextWindow": 256000,
 		"maxTokens": 32768,
-		"int": 13.7,
-		"tps": 58,
+		"int": 11.2,
+		"tps": 52.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12170,7 +12716,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 65536,
 		"int": 21.4,
-		"tps": 57.5,
+		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12253,7 +12799,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 65536,
 		"int": 18.2,
-		"tps": 119.3,
+		"tps": 128.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12550,7 +13096,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"int": 13.4,
-		"tps": 57.7,
+		"tps": 55.3,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -12630,7 +13176,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12712,7 +13259,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -12793,7 +13341,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13149,6 +13698,89 @@
 			"dropThinkingWhenReasoningEffort": false
 		}
 	},
+	"xiaomi-mimo-v2-6-flash": {
+		"id": "xiaomi-mimo-v2-6-flash",
+		"name": "MiMo-V2.6-Flash",
+		"api": "openai-completions",
+		"provider": "venice",
+		"baseUrl": "https://api.venice.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.175,
+			"output": 0.35,
+			"cacheRead": 0.00375,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"xhigh": "high"
+			},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "venice-disable-thinking",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"z-ai-glm-5-3": {
 		"id": "z-ai-glm-5-3",
 		"name": "GLM 5.3",
@@ -13174,7 +13806,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13257,7 +13890,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13339,7 +13973,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13422,7 +14057,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13504,7 +14140,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13585,7 +14222,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13666,7 +14304,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13747,7 +14386,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13829,7 +14469,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -13911,7 +14552,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

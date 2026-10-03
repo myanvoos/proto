@@ -37,6 +37,7 @@ export interface SlashCommandRuntime {
 	sessionManager: SessionManager;
 	settings: Settings;
 	cwd: string;
+	signal?: AbortSignal;
 
 	output: (text: string) => Promise<void> | void;
 

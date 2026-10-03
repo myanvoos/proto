@@ -154,7 +154,7 @@ function unknownProtoKeys(args: Record<string, unknown>, schema: Record<string, 
 import { suggestKnownKey } from "./xdev-cli";
 
 function validateProtoArgs(
-	device: AiTool,
+	device: Tool,
 	rawArgs: Record<string, unknown>,
 	toolCallId: string,
 	schema: Record<string, unknown>,
@@ -181,19 +181,27 @@ function validateProtoArgs(
 		);
 	}
 	try {
-		return validateToolArguments(device, {
+		return validateToolArguments(device as AiTool, {
 			type: "toolCall",
 			id: toolCallId,
 			name: device.name,
 			arguments: args,
 		});
 	} catch (error) {
+		// Same contract as the agent loop: a lenient tool owns its refusal/repair of mismatched args (malformed JSON
+		// and unknown keys still throw above). The sentinels are stripped so a payload cannot forge a parse failure.
+		if (device.lenientArgValidation) {
+			const fallback = { ...args };
+			delete fallback.__parseError;
+			delete fallback.__rawJson;
+			return fallback;
+		}
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Invalid args for ${PROTOLENS_URL_PREFIX}${device.name}: ${message}\n\n${validationDocs()}`);
 	}
 }
 
-function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): Record<string, unknown> {
+function parseDeviceArgs(device: Tool, content: string, toolCallId: string): Record<string, unknown> {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content);
@@ -209,8 +217,8 @@ function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): R
 	}
 
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
-	const schema = toolWireSchema(device);
-	return validateProtoArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
+	const schema = toolWireSchema(device as AiTool);
+	return validateProtoArgs(device, args, toolCallId, schema, () => renderDocsParts(device).schema);
 }
 
 function toolSummary(inst: Tool): string {
@@ -327,41 +335,54 @@ export function xdevDocs(state: XdevState, name: string): string {
 	return renderDocs(resolveRequiredXdevTool(state, name), "#", undefined, "reference");
 }
 
+/** Mounted-device placement in the system prompt: inlined docs sections, then one-line catalog entries. */
+export interface XdevPromptDocs {
+	readonly sections: readonly string[];
+	/** Catalog summary per device listed as a one-line entry, in presentation order. */
+	readonly catalog: ReadonlyMap<string, string>;
+}
+
+/** Places mounted devices under the prompt-doc policy and budgets; a device not inlined (or over a cap) is a catalog entry. */
+export function planXdevPromptDocs(
+	state: XdevState,
+	mode: XdevDocsMode = "catalog",
+	inlinePatterns: readonly string[] = [],
+): XdevPromptDocs {
+	const sections: string[] = [];
+	const catalog = new Map<string, string>();
+	const inlineGlobs = compileInlineGlobs(inlinePatterns);
+	let used = 0;
+	for (const tool of listXdevTools(state)) {
+		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
+		if (shouldInlineXdevTool(state, tool, mode, inlineGlobs)) {
+			const docs = renderDocs(tool, "##", descriptionCap);
+			if (docs.length <= XDEV_DOCS_PER_DEVICE_CAP && used + docs.length <= XDEV_DOCS_TOTAL_BUDGET) {
+				used += docs.length;
+				sections.push(docs);
+				continue;
+			}
+		}
+		catalog.set(tool.name, promptCatalogSummary(tool, descriptionCap));
+	}
+	return { sections, catalog };
+}
+
+/** Renders planned prompt docs; devices in `listedElsewhere` get no catalog line (the caller lists them with their summary). */
+export function renderXdevPromptDocs(docs: XdevPromptDocs, listedElsewhere?: ReadonlySet<string>): string {
+	const lines: string[] = [];
+	for (const [name, summary] of docs.catalog) {
+		if (!listedElsewhere?.has(name)) lines.push(`- ${PROTOLENS_URL_PREFIX}${name} — ${summary}`);
+	}
+	if (lines.length === 0) return docs.sections.join("\n\n");
+	return [...docs.sections, ["## Additional devices (docs on demand)", ...lines].join("\n")].join("\n\n");
+}
+
 export function xdevDocsAll(
 	state: XdevState,
 	mode: XdevDocsMode = "catalog",
 	inlinePatterns: readonly string[] = [],
 ): string {
-	const sections: string[] = [];
-	const overflow: Tool[] = [];
-	const inlineGlobs = compileInlineGlobs(inlinePatterns);
-	let used = 0;
-	for (const tool of listXdevTools(state)) {
-		if (!shouldInlineXdevTool(state, tool, mode, inlineGlobs)) {
-			overflow.push(tool);
-			continue;
-		}
-		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
-		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) {
-			overflow.push(tool);
-			continue;
-		}
-		used += docs.length;
-		sections.push(docs);
-	}
-	if (overflow.length > 0) {
-		sections.push(
-			[
-				"## Additional devices (docs on demand)",
-				...overflow.map(tool => {
-					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-					return `- ${PROTOLENS_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
-				}),
-			].join("\n"),
-		);
-	}
-	return sections.join("\n\n");
+	return renderXdevPromptDocs(planXdevPromptDocs(state, mode, inlinePatterns));
 }
 
 export function xdevDocsFor(
@@ -439,7 +460,7 @@ async function executeResolvedXdev(
 	try {
 		throwIfAborted(signal);
 		const validated = validateProtoArgs(
-			canonical as AiTool,
+			canonical,
 			args,
 			toolCallId,
 			toolWireSchema(canonical as AiTool),
@@ -491,7 +512,7 @@ export async function dispatchXdevTool(
 			xdev: { tool: name, mode: "help" },
 		};
 	}
-	const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
+	const validated = parseDeviceArgs(canonical, content, toolCallId);
 	return executeResolvedXdev(name, canonical, validated, { toolCallId, signal, onUpdate, context });
 }
 

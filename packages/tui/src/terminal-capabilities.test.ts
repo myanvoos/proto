@@ -136,6 +136,16 @@ describe("TERM_PROGRAM-only terminal identities", () => {
 		expect(shouldEnableHyperlinksByDefault({ ...env, TMUX: "1" }, id)).toBe(false);
 	});
 
+	it("enables Herdr pane links unless screen or tmux is nested in the pane", () => {
+		expect(shouldEnableHyperlinksByDefault({ HERDR_ENV: "1", TERM: "xterm-256color" }, "base")).toBe(true);
+		expect(shouldEnableHyperlinksByDefault({ HERDR_PANE_ID: "w1:p1", TERM: "xterm-256color" }, "base")).toBe(true);
+		expect(shouldEnableHyperlinksByDefault({ HERDR_ENV: "1", STY: "1234.pts-0.host" }, "base")).toBe(false);
+		expect(shouldEnableHyperlinksByDefault({ HERDR_ENV: "1", TMUX: "/tmp/tmux-1000/default,1,0" }, "base")).toBe(
+			false,
+		);
+		expect(shouldEnableHyperlinksByDefault({ HERDR_ENV: "1", PI_NO_HYPERLINKS: "1" }, "base")).toBe(false);
+	});
+
 	it("measures Hangul Compatibility Jamo at two cells in Orca", () => {
 		const id = detectTerminalId({ TERM_PROGRAM: "Orca", TERM: "xterm-256color", COLORTERM: "truecolor" });
 		expect(id).toBe("orca");

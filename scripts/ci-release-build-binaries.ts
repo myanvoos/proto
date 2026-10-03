@@ -143,7 +143,18 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	});
 
 	if (shouldAdhocSignDarwinBinary(target)) {
-		await runCommand(["codesign", "--force", "--sign", "-", path.join(repoRoot, target.outfile)], repoRoot);
+		await runCommand(
+			[
+				"codesign",
+				"--force",
+				"--sign",
+				"-",
+				"--entitlements",
+				path.join(repoRoot, "scripts", "macos-entitlements.plist"),
+				path.join(repoRoot, target.outfile),
+			],
+			repoRoot,
+		);
 	}
 }
 

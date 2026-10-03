@@ -2,8 +2,23 @@ import { describe, expect, it } from "bun:test";
 import { rewriteClinePassError, rewriteCopilotError } from "../utils/http-inspector";
 import { isAuthRetryableError } from "./auth-classify";
 import { AnthropicApiError, AnthropicStreamEnvelopeError, ProviderHttpError } from "./classes";
-import { classify, classifyMessage, create, Flag, is, isGitHubCopilotPolicyDenial, retriable } from "./flags";
-import { matchesUsageLimitText, parseRateLimitReason } from "./rate-limit";
+import {
+	classify,
+	classifyMessage,
+	create,
+	Flag,
+	is,
+	isContextOverflow,
+	isGitHubCopilotPolicyDenial,
+	isUsageLimit,
+	retriable,
+} from "./flags";
+import {
+	calculateRateLimitBackoffMs,
+	isUsageLimitOutcome,
+	matchesUsageLimitText,
+	parseRateLimitReason,
+} from "./rate-limit";
 
 function errorWithStatus(status: number): Error & { status: number } {
 	return Object.assign(new Error(`${status} ${status === 403 ? "Forbidden" : "Unauthorized"}`), { status });
@@ -158,6 +173,67 @@ describe("Anthropic credits_required entitlement wall", () => {
 			),
 		).toBe(true);
 		expect(matchesUsageLimitText("Failed to fetch usage credits from billing service")).toBe(false);
+	});
+});
+
+describe("billing-cap rotation", () => {
+	it("rotates on 402 account-funds exhaustion worded in the body or the error code", () => {
+		expect(
+			isUsageLimit(
+				new ProviderHttpError("Upstream request failed: Insufficient account funds", 402, { code: "server_error" }),
+			),
+		).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError('{"error":{"code":"insufficient_account_funds"}}', 402))).toBe(true);
+		expect(
+			isUsageLimit(new ProviderHttpError("Upstream request failed", 402, { code: "insufficient-account-funds" })),
+		).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("A subscription is required for this endpoint", 402))).toBe(false);
+	});
+
+	it("rotates on Cursor prepaid-balance exhaustion but not on the changeable pricing gate", () => {
+		const prepaid =
+			"Cursor USAGE_PRICING_REQUIRED: Your prepaid balance is used up: Add funds or enable auto top-up in your billing settings to keep going.";
+		expect(parseRateLimitReason(prepaid)).toBe("QUOTA_EXHAUSTED");
+		expect(isUsageLimitOutcome(429, prepaid)).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError(prepaid, 429))).toBe(true);
+		expect(matchesUsageLimitText("Cursor USAGE_PRICING_REQUIRED_CHANGEABLE: Switch to a different model")).toBe(
+			false,
+		);
+	});
+
+	it("keeps rolling-window TPM/RPM throttles in the transient lane", () => {
+		const tpmExhausted =
+			"429 tpm exhausted\ntpm exhausted (type=quota_exceeded_error param=8)\ntpm exhausted (type=quota_exceeded_error param=8) (type=quota_exceeded_error)";
+		expect(parseRateLimitReason(tpmExhausted)).toBe("RATE_LIMIT_EXCEEDED");
+		expect(calculateRateLimitBackoffMs(parseRateLimitReason(tpmExhausted))).toBeLessThanOrEqual(60_000);
+		expect(matchesUsageLimitText(tpmExhausted)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(tpmExhausted, 429, { code: "quota_exceeded_error" }))).toBe(false);
+		expect(isUsageLimitOutcome(429, tpmExhausted)).toBe(false);
+		expect(parseRateLimitReason("429 inference exceeds tpm/rpm limit")).toBe("RATE_LIMIT_EXCEEDED");
+		expect(parseRateLimitReason("429 (code=RateLimitExceeded.EndpointTPMExceeded)")).toBe("RATE_LIMIT_EXCEEDED");
+
+		const planQuota = "429 Your plan quota is exhausted; the plan TPM is 1000 (type=quota_exceeded_error)";
+		expect(parseRateLimitReason(planQuota)).toBe("QUOTA_EXHAUSTED");
+		expect(isUsageLimitOutcome(429, planQuota)).toBe(true);
+	});
+});
+
+describe("Strata context overflow", () => {
+	it.each([
+		"prompt (105522 tokens) + max tokens (25571) exceeds the context (131072); requests are never truncated",
+		"prompt (131072 tokens) leaves no room to answer in the context (131072); requests are never truncated",
+		"PROMPT ( 105522  TOKENS )+MAX  TOKENS( 25571 ) EXCEEDS  THE CONTEXT( 131072 )",
+	])("recognizes token-context evidence without usage: %s", detail => {
+		const errorMessage = `400 ${detail}\n${detail} (type=invalid_request_error)`;
+		expect(isContextOverflow({ stopReason: "error", errorMessage })).toBe(true);
+		const id = classifyMessage({ errorMessage, errorStatus: 400 });
+		expect(is(id, Flag.ContextOverflow)).toBe(true);
+		expect(is(id, Flag.PayloadRejected)).toBe(false);
+	});
+
+	it("does not treat an output-token cap as context overflow", () => {
+		const errorMessage = "400 max tokens (25571) exceeds the output limit (16384)";
+		expect(isContextOverflow({ stopReason: "error", errorMessage })).toBe(false);
 	});
 });
 

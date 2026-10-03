@@ -135,3 +135,47 @@ describe("OAuth discovery recursion bounds", () => {
 		expect(fetchCount).toBeLessThanOrEqual(64);
 	});
 });
+
+describe("OAuth discovery for path-scoped resources", () => {
+	test("follows the resource's RFC 9728 metadata to its own issuer before origin-root metadata", async () => {
+		const documents: Record<string, unknown> = {
+			"https://gw.example.test/.well-known/oauth-protected-resource/tenant/mcp": {
+				resource: "https://gw.example.test/tenant/mcp",
+				authorization_servers: ["https://login.example.test/realms/tenant"],
+			},
+			"https://gw.example.test/.well-known/oauth-authorization-server": {
+				issuer: "https://gw.example.test",
+				authorization_endpoint: "https://gw.example.test/shared/authorize",
+				token_endpoint: "https://gw.example.test/shared/token",
+			},
+			"https://login.example.test/realms/tenant/.well-known/openid-configuration": {
+				issuer: "https://login.example.test/realms/tenant",
+				authorization_endpoint: "https://login.example.test/realms/tenant/protocol/openid-connect/auth",
+				token_endpoint: "https://login.example.test/realms/tenant/protocol/openid-connect/token",
+			},
+		};
+		const endpoints = await discoverOAuthEndpoints("https://gw.example.test/tenant/mcp", undefined, undefined, {
+			fetch: async input => {
+				const document = documents[inputUrl(input)];
+				return document ? Response.json(document) : new Response("not found", { status: 404 });
+			},
+		});
+
+		expect(endpoints).toMatchObject({
+			authorizationUrl: "https://login.example.test/realms/tenant/protocol/openid-connect/auth",
+			issuerUrl: "https://login.example.test/realms/tenant",
+			resource: "https://gw.example.test/tenant/mcp",
+		});
+	});
+
+	test("a challenge without resource_metadata still points at the RFC 9728 document", () => {
+		const challenge = analyzeAuthError(
+			new Error("HTTP 401 Unauthorized: WWW-Authenticate: Bearer"),
+			"https://mcp.example.test/tenant/mcp/",
+		);
+
+		expect(challenge.resourceMetadataUrl).toBe(
+			"https://mcp.example.test/.well-known/oauth-protected-resource/tenant/mcp",
+		);
+	});
+});

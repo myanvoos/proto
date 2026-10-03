@@ -720,6 +720,16 @@ async function callPerplexityAsk(
 		}
 	}
 
+	// Exhausted anonymous quota answers HTTP 200 with a (localized) signup-wall text and no sources; grounded
+	// anonymous asks always return sources, so treat an unsourced one as a failure and let the fallback chain advance.
+	if (auth.type === "anonymous" && sourcesByUrl.size === 0) {
+		throw new SearchProviderError(
+			"perplexity",
+			"Perplexity anonymous ask returned no sources (likely signup wall or exhausted anonymous quota); sign in with `/login perplexity` or configure another provider.",
+			429,
+		);
+	}
+
 	return {
 		answer,
 		sources: [...sourcesByUrl.values()],

@@ -3,11 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getTerminalId } from "@oh-my-pi/pi-tui/ttyid";
 import {
+	getCustomSessionFilesDir,
 	getSessionsDir,
 	getTerminalSessionsDir,
 	isEnoent,
 	isFsError,
 	logger,
+	pathIsWithin,
 	resolveEquivalentPath,
 } from "@oh-my-pi/pi-utils";
 import type { SessionStorage } from "./session-storage";
@@ -289,17 +291,46 @@ function parseBreadcrumbExtras(lines: string[]): { fresh: boolean; cwdIdentity: 
 	return { fresh, cwdIdentity };
 }
 
+/** Re-recording an unchanged pointer (resume, cwd re-adoption) costs a read instead of a disk write. */
+function writeIfChangedSync(file: string, content: string): void {
+	try {
+		if (fs.readFileSync(file, "utf8") === content) return;
+	} catch {
+		// Missing or unreadable: write it below.
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, content);
+}
+
+/**
+ * Record a transcript the managed-root glob in `proto gc` cannot see (outside the sessions root, or not `*.jsonl`).
+ * Its blobs live in the shared agent store, so gc must still scan it after this terminal's breadcrumb moves on.
+ * Best-effort: never breaks session creation.
+ */
+function recordCustomSessionFile(cwd: string, sessionFile: string): void {
+	try {
+		const resolvedSessionFile = path.resolve(cwd, sessionFile);
+		if (resolvedSessionFile.endsWith(".jsonl") && pathIsWithin(getSessionsDir(), resolvedSessionFile)) return;
+		// Full 64-bit key: a colliding marker would silently drop another transcript from gc's scan.
+		const marker = Bun.hash(resolvedSessionFile).toString(16).padStart(16, "0");
+		writeIfChangedSync(path.join(getCustomSessionFilesDir(), marker), resolvedSessionFile);
+	} catch (err) {
+		if (!isEnoent(err)) logger.debug("Custom session file record failed", { err });
+	}
+}
+
 /**
  * Link this terminal to its latest session for `--continue`. When `cwd` exists the crumb
  * also records its device+inode so a later continue can tell a rename/move from a deleted
- * or unmounted project path.
+ * or unmounted project path. `localFile` is false for non-filesystem storage, whose paths gc cannot read.
  */
-export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
+export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh = false, localFile = true): void {
+	if (localFile) recordCustomSessionFile(cwd, sessionFile);
+
 	const terminalId = getTerminalId();
 	if (!terminalId) return;
 
-	const breadcrumbDir = getTerminalSessionsDir();
-	const breadcrumbFile = path.join(breadcrumbDir, terminalId);
+	const breadcrumbFile = path.join(getTerminalSessionsDir(), terminalId);
 	const extras: string[] = [];
 	if (fresh) extras.push("fresh");
 	const identity = readCwdIdentity(cwd);
@@ -307,8 +338,7 @@ export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh 
 	const content = `${cwd}\n${sessionFile}\n${extras.map(extra => `${extra}\n`).join("")}`;
 
 	try {
-		fs.mkdirSync(breadcrumbDir, { recursive: true });
-		fs.writeFileSync(breadcrumbFile, content);
+		writeIfChangedSync(breadcrumbFile, content);
 	} catch (err) {
 		if (!isEnoent(err)) logger.debug("Terminal breadcrumb write failed", { err });
 	}

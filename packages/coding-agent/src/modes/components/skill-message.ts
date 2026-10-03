@@ -10,6 +10,8 @@ export class SkillMessageComponent extends Container {
 	#box: Box;
 	#contentComponent?: Component;
 	#expanded = false;
+	// Only an optimistic `/skill:` row stays live (removable) until its canonical message reconciles it.
+	#transcriptBlockFinalized = true;
 
 	constructor(private readonly message: CustomMessage<SkillPromptDetails>) {
 		super();
@@ -24,6 +26,18 @@ export class SkillMessageComponent extends Container {
 			this.#expanded = expanded;
 			this.#rebuild();
 		}
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#transcriptBlockFinalized;
+	}
+
+	markTranscriptBlockPending(): void {
+		this.#transcriptBlockFinalized = false;
+	}
+
+	markTranscriptBlockFinalized(): void {
+		this.#transcriptBlockFinalized = true;
 	}
 
 	override invalidate(): void {

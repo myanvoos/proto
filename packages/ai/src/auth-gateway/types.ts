@@ -107,6 +107,9 @@ export interface AuthGatewayServerOptions {
 	bearerTokens: string[];
 
 	version?: string;
+
+	/** Honor forwarded peer headers (`x-forwarded-for`, `x-real-ip`) only behind a trusted reverse proxy. Default false. */
+	trustProxyHeaders?: boolean;
 }
 
 export interface AuthGatewayServerHandle {

@@ -191,6 +191,60 @@ test("does not coalesce an incomplete colon extended-color SGR", () => {
 	}
 });
 
+test("coalesces SGR in place while keeping incomplete extended-color boundaries", () => {
+	for (const introducer of ["38", "48", "58"]) {
+		for (const params of [
+			introducer,
+			`${introducer};2`,
+			`${introducer};2;255`,
+			`${introducer};2;255;0`,
+			`${introducer};5`,
+			`${introducer};48;5`,
+		]) {
+			const input = `\x1b[${params}m\x1b[31mX`;
+			expect(coalesceAdjacentSgr(input)).toBe(input);
+		}
+	}
+	for (const params of ["38;2;48;58;38", "48;5;38", "58:2::38:48:58"]) {
+		expect(coalesceAdjacentSgr(`\x1b[${params}m\x1b[31mX`)).toBe(`\x1b[${params};31mX`);
+	}
+	expect(coalesceAdjacentSgr("\x1b[m\x1b[1m\x1b[mX\x1b[2KY")).toBe("\x1b[0;1;0mX\x1b[2KY");
+	const capped = "\x1b[38:2::1:2:3m\x1b[1;3;4;5;6;7;8;9;10;11m\x1b[31mX";
+	expect(coalesceAdjacentSgr(capped)).toBe("\x1b[38:2::1:2:3;1;3;4;5;6;7;8;9;10;11m\x1b[31mX");
+});
+
+test("a moved cursor-marker row places the cursor and never leaks the marker", () => {
+	const terminal = new FakeTerminal(20, 4);
+	const scheduler = new TestScheduler();
+	const provider = new FrameFixture();
+	provider.viewport = ["alpha", `ed${CURSOR_MARKER}it`, "status"];
+	const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+	tui.setFrameProvider(provider);
+	try {
+		tui.start({ deferInput: true });
+		scheduler.flush();
+		// Every row moved, so each is reused by content rather than position.
+		provider.viewport = [`ed${CURSOR_MARKER}it`, "status", "alpha"];
+		tui.requestRender(true);
+		scheduler.flush();
+		expect(terminal.writes.join("")).not.toContain(CURSOR_MARKER);
+		const rows = terminal.screenRows();
+		const top = rows.indexOf("edit");
+		expect(rows.slice(top, top + 3)).toEqual(["edit", "status", "alpha"]);
+		expect(terminal.vt.buffer.active.cursorY).toBe(top);
+		expect(terminal.vt.buffer.active.cursorX).toBe(2);
+
+		// The marker-free row now matches the stripped row painted last frame.
+		provider.viewport = ["status", "alpha", "edit"];
+		tui.requestRender(true);
+		scheduler.flush();
+		expect(terminal.writes.join("")).not.toContain(CURSOR_MARKER);
+		expect(terminal.screenRows().slice(top, top + 3)).toEqual(["status", "alpha", "edit"]);
+	} finally {
+		tui.stop();
+	}
+});
+
 test("child fallback paints only the bounded viewport and never infers history", () => {
 	const terminal = new FakeTerminal(12, 3);
 	const scheduler = new TestScheduler();

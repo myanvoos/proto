@@ -18,7 +18,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 18.6,
-		"tps": 91.9,
+		"tps": 97.6,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -79,7 +79,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 20.9,
-		"tps": 80.8,
+		"tps": 102.8,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -140,7 +140,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -319,7 +319,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -440,7 +440,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [

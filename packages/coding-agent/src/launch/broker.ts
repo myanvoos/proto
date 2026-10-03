@@ -181,6 +181,8 @@ interface ManagedDaemon {
 	pendingCompletions: DaemonCompletionNotification[];
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
+	/** Serialized metadata last written (or recovered); unchanged metadata is not rewritten. */
+	persistedMeta?: string;
 }
 
 interface BrokerLease {
@@ -667,6 +669,9 @@ class DaemonBroker {
 		for (const record of this.#records.values()) {
 			const detached = record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
 			if (!detached && !terminalState(record.snapshot.state)) await this.#stopRecord(record, 2_000);
+			// The next broker recovers a detached daemon from metadata; retire this generation so a late exit or
+			// readiness callback cannot settle the stale record over the new owner's metadata.
+			if (detached) record.generation++;
 			clearTimeout(record.restartTimer);
 			await record.log?.close();
 			await record.persistQueue;
@@ -1381,6 +1386,11 @@ class DaemonBroker {
 
 	async #wait(operation: Extract<DaemonOperation, { op: "wait" }>): Promise<DaemonRpcResult> {
 		const record = this.#record(operation.name, operation.expectedId);
+		// A wait observes one launch generation: an automatic relaunch reuses the record, and polling past it would
+		// hang beyond the exit or match the replacement's output.
+		const boundGeneration = record.generation;
+		const generationEnded = (): boolean =>
+			record.generation !== boundGeneration || record.snapshot.state === "restarting";
 		await this.#refreshDetached(record);
 		let matched: string | undefined;
 		let pattern: RegExp | undefined;
@@ -1398,6 +1408,7 @@ class DaemonBroker {
 			(record.snapshot.state === "running" && !record.spec.ready);
 		let terminalOutput: { generation: number; text: string } | undefined;
 		const condition = async (): Promise<boolean> => {
+			if (generationEnded()) return true;
 			if (pattern) {
 				let text = sanitizeText(record.readinessBuffer);
 				if (terminalState(record.snapshot.state)) {
@@ -1416,7 +1427,8 @@ class DaemonBroker {
 					text = terminalOutput.text;
 				}
 				const match = pattern.exec(text);
-				if (!match) return false;
+				// No further output can arrive once the process is gone; waiting out the window would only hide the exit.
+				if (!match) return terminalState(record.snapshot.state);
 				matched = match[0].slice(0, 500);
 				return true;
 			}
@@ -1425,8 +1437,17 @@ class DaemonBroker {
 			return readyObserved() || terminalState(record.snapshot.state);
 		};
 		const woke = (await condition()) || (await this.#waitUntil(record, condition, operation.timeoutMs));
-
-		const timedOut = operation.for === "ready" && !pattern ? !readyObserved() : !woke;
+		if (operation.expectedId !== undefined && record.snapshot.id !== operation.expectedId) {
+			throw staleReference(record.snapshot.name, operation.expectedId, record.snapshot.id);
+		}
+		// The bound generation exiting answers an exit wait; it never satisfies a ready or pattern wait.
+		const ended = generationEnded();
+		const timedOut =
+			operation.for === "exit" && !pattern
+				? !woke
+				: pattern
+					? !woke || matched === undefined
+					: ended || !readyObserved();
 		return { op: "wait", daemon: record.snapshot, matched, timedOut };
 	}
 
@@ -1535,6 +1556,9 @@ class DaemonBroker {
 			this.#assertAcceptingRequests();
 		}
 		record.stopRequested = false;
+		const owner = record.snapshot.owner;
+		record.completionCapable = owner !== undefined && this.#completionSubscriptions.has(owner);
+		record.completionSubscriptionId = owner === undefined ? undefined : this.#completionSubscriptions.get(owner);
 		await this.#launch(record);
 		const readyTimedOut = await this.#readinessTimedOut(record);
 		await record.persistQueue;
@@ -1569,7 +1593,7 @@ class DaemonBroker {
 	#persist(record: ManagedDaemon): void {
 		const metaPath = path.join(record.dir, META_FILE);
 		const tempPath = `${metaPath}.${process.pid}.tmp`;
-		const metadata = {
+		const metadata = JSON.stringify({
 			daemon: { ...record.snapshot },
 			spec: record.spec,
 			outputOffset: record.outputOffset,
@@ -1581,13 +1605,17 @@ class DaemonBroker {
 				...completion,
 				daemon: { ...completion.daemon },
 			})),
-		};
+		});
+		if (metadata === record.persistedMeta) return;
+		record.persistedMeta = metadata;
 		record.persistQueue = record.persistQueue
 			.then(async () => {
-				await Bun.write(tempPath, JSON.stringify(metadata));
+				await Bun.write(tempPath, metadata);
 				await fs.rename(tempPath, metaPath);
 			})
 			.catch(error => {
+				// Unknown on-disk state: the next persist must write.
+				record.persistedMeta = undefined;
 				logger.warn("Failed to persist daemon metadata", {
 					name: record.snapshot.name,
 					error: error instanceof Error ? error.message : String(error),
@@ -1599,6 +1627,9 @@ class DaemonBroker {
 		const subscriptionId = capable ? this.#completionSubscriptions.get(owner) : undefined;
 		const persistence: Promise<void>[] = [];
 		for (const record of this.#records.values()) {
+			// A settled record with no pending completion has nothing left to deliver; rebinding its owner must not
+			// rewrite its history. A restart refreshes the capability for the new generation.
+			if (terminalState(record.snapshot.state) && record.pendingCompletions.length === 0) continue;
 			const clearPendingCompletions = !capable && record.pendingCompletions.length > 0;
 			if (
 				record.snapshot.owner !== owner ||
@@ -1667,6 +1698,7 @@ class DaemonBroker {
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
+					persistedMeta: JSON.stringify(decoded),
 					completionCapable: "completionEvents" in decoded && decoded.completionEvents === true,
 					completionSubscriptionId:
 						"completionSubscriptionId" in decoded && typeof decoded.completionSubscriptionId === "string"

@@ -147,6 +147,18 @@ test("a corrupt image attachment is rejected while a decodable one loads", async
 	expect(loaded?.data).toBe(VALID_PNG_BASE64);
 });
 
+test("a middle-elided PNG with an intact header and trailer is rejected instead of loaded", async () => {
+	const whole = noisePng(32);
+	const elided = Buffer.concat([whole.subarray(0, 200), whole.subarray(whole.length - 200)]);
+	await withTempDir(async directory => {
+		const file = path.join(directory, "elided.png");
+		await Bun.write(file, elided);
+		await expect(loadImageInput({ path: file, cwd: directory, autoResize: false })).rejects.toBeInstanceOf(
+			ImageDecodeError,
+		);
+	});
+});
+
 afterEach(() => vi.restoreAllMocks());
 
 test("file mentions and CLI skip over-limit image files before native decoding", async () => {

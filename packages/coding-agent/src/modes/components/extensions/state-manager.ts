@@ -32,7 +32,9 @@ import { makeExtensionId, sourceFromMeta } from "./types";
 
 export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): Promise<Extension[]> {
 	const extensions: Extension[] = [];
-	const disabledExtensions = new Set<string>(disabledIds ?? []);
+	// One snapshot drives both displayed state and capability dedupe, never the process-global setting.
+	const effectiveDisabledIds = disabledIds ?? [];
+	const disabledExtensions = new Set<string>(effectiveDisabledIds);
 
 	function addItems<T extends { name: string; path: string; _source: SourceMeta }>(
 		items: T[],
@@ -82,7 +84,9 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 		}
 	}
 
-	const loadOpts = cwd ? { cwd, includeDisabled: true } : { includeDisabled: true };
+	const loadOpts = cwd
+		? { cwd, includeDisabled: true, disabledExtensions: effectiveDisabledIds }
+		: { includeDisabled: true, disabledExtensions: effectiveDisabledIds };
 
 	try {
 		const skills = await loadCapability<Skill>("skills", loadOpts);
@@ -385,8 +389,9 @@ export function filterByProvider(extensions: Extension[], providerId: string): E
 	return extensions.filter(ext => ext.source.provider === providerId);
 }
 
-function isShadowedExtension(ext: Extension): boolean {
-	if (ext.shadowedBy) return true;
+/** Lower-precedence same-name copies share the winner's id; disablement can mask their `shadowed` state. */
+export function isShadowedExtension(ext: Extension): boolean {
+	if (ext.state === "shadowed" || ext.shadowedBy) return true;
 	return Boolean((ext.raw as { _shadowed?: boolean } | null | undefined)?._shadowed);
 }
 

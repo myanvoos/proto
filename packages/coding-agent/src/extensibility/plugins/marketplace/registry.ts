@@ -11,6 +11,7 @@ import type {
 	MarketplaceRegistryEntry,
 	MarketplacesRegistry,
 } from "./types";
+import { nameSegmentCollisionKey } from "./types";
 
 export function getInstalledPluginsRegistryPath(): string {
 	return path.join(getPluginsDir(), "installed_plugins.json");
@@ -122,10 +123,18 @@ export async function writeInstalledPluginsRegistry(filePath: string, reg: Insta
 }
 
 export function addMarketplaceEntry(reg: MarketplacesRegistry, entry: MarketplaceRegistryEntry): MarketplacesRegistry {
-	if (reg.marketplaces.some(m => m.name === entry.name)) {
-		throw new Error(`Marketplace "${entry.name}" already exists`);
-	}
+	assertMarketplaceNameAvailable(reg, entry.name);
 	return { ...reg, marketplaces: [...reg.marketplaces, entry] };
+}
+
+export function assertMarketplaceNameAvailable(reg: MarketplacesRegistry, name: string): void {
+	const key = nameSegmentCollisionKey(name);
+	const existing = reg.marketplaces.find(m => nameSegmentCollisionKey(m.name) === key);
+	if (!existing) return;
+	if (existing.name === name) throw new Error(`Marketplace "${name}" already exists`);
+	throw new Error(
+		`Marketplace "${name}" conflicts with existing marketplace "${existing.name}" on case-insensitive filesystems`,
+	);
 }
 
 export function removeMarketplaceEntry(reg: MarketplacesRegistry, name: string): MarketplacesRegistry {

@@ -1,14 +1,7 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { mapEffortToAnthropicAdaptiveEffort, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import {
-	$flag,
-	fetchWithRetry,
-	logger,
-	parseStreamingJson,
-	parseStreamingJsonThrottled,
-	USER_AGENT,
-} from "@oh-my-pi/pi-utils";
+import { $flag, fetchWithRetry, logger, parseStreamingJsonThrottled, USER_AGENT } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { resolveAwsBearerToken } from "../registry/aws";
@@ -45,10 +38,12 @@ import {
 	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
 import { toolWireSchema } from "../utils/schema/wire";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { parseAnthropicInputTransformations, THINKING_BINDING_CONTROLS_BETA } from "./anthropic-wire";
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
 import { signRequest } from "./aws-sigv4";
+import { isBedrockRequestMetadataValue } from "./bedrock-request-metadata";
 import { transformMessages } from "./transform-messages";
 import { mediaOmissionNote } from "./vision-guard";
 
@@ -291,9 +286,7 @@ interface MetadataEvent {
 	};
 }
 
-const REQUEST_METADATA_PATTERN = /^[a-zA-Z0-9\s:_@$#=/+,\-.]*$/;
 const REQUEST_METADATA_MAX_ENTRIES = 16;
-const REQUEST_METADATA_MAX_LENGTH = 256;
 
 // Bedrock rejects the whole invocation on one malformed `requestMetadata` entry; attribution tags must
 // never cost a turn, so invalid and excess entries are dropped with a warning. Empty → field omitted.
@@ -306,10 +299,8 @@ function sanitizeRequestMetadata(raw: unknown): Record<string, string> | undefin
 		if (
 			typeof value !== "string" ||
 			key.length < 1 ||
-			key.length > REQUEST_METADATA_MAX_LENGTH ||
-			!REQUEST_METADATA_PATTERN.test(key) ||
-			value.length > REQUEST_METADATA_MAX_LENGTH ||
-			!REQUEST_METADATA_PATTERN.test(value) ||
+			!isBedrockRequestMetadataValue(key) ||
+			!isBedrockRequestMetadataValue(value) ||
 			kept >= REQUEST_METADATA_MAX_ENTRIES
 		) {
 			dropped.push(key);
@@ -372,14 +363,15 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 				? (options.anthropicPrefixMismatchBehavior ?? "drop_block")
 				: undefined;
 
-			// Bedrock rejects thinking + forced tool_choice. Prefix-bound (Fable) adaptive thinking cannot be
-			// disabled, so its forced choice is downgraded to auto instead.
-			if (toolConfig?.toolChoice && additionalModelRequestFields) {
-				const tc = toolConfig.toolChoice;
-				if (tc.any || tc.tool) {
-					if (prefixMismatchBehavior) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
-					else additionalModelRequestFields = undefined;
-				}
+			const forcedChoice = toolConfig?.toolChoice?.any || toolConfig?.toolChoice?.tool;
+			if (toolConfig && forcedChoice && model.compat.supportsForcedToolChoice === false) {
+				// Some models (Opus/Sonnet 5.5) reject forced tool use outright; keep the tools offered under `auto`.
+				toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
+			} else if (toolConfig && forcedChoice && additionalModelRequestFields) {
+				// Bedrock rejects thinking + forced tool_choice. Prefix-bound (Fable) adaptive thinking cannot be
+				// disabled, so its forced choice is downgraded to auto instead.
+				if (prefixMismatchBehavior) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
+				else additionalModelRequestFields = undefined;
 			}
 			if (prefixMismatchBehavior) {
 				additionalModelRequestFields = applyBedrockThinkingBinding(
@@ -827,7 +819,7 @@ function handleContentBlockStop(
 			stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 			break;
 		case "toolCall":
-			block.arguments = parseStreamingJson(block[kStreamingPartialJson]);
+			block.arguments = parseToolCallArguments(block[kStreamingPartialJson]);
 			clearStreamingPartialJson(block);
 			stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 			break;

@@ -19,6 +19,8 @@ export interface MCPServer {
 
 	envPolicy?: "literal";
 
+	envLiteralKeys?: string[];
+
 	cwd?: string;
 
 	url?: string;
@@ -39,6 +41,7 @@ export interface MCPServer {
 	oauth?: {
 		clientId?: string;
 		clientSecret?: string;
+		scope?: string;
 		redirectUri?: string;
 		callbackPort?: number;
 		callbackPath?: string;
@@ -48,6 +51,14 @@ export interface MCPServer {
 	transport?: "stdio" | "sse" | "http";
 
 	_source: SourceMeta;
+}
+
+// Literal env keys reach the subprocess verbatim while the rest are resolved at
+// connect time, so they change what the server receives. `envPolicy: "literal"`
+// covers every key; order is irrelevant.
+function effectiveEnvLiteralKeys(server: MCPServer): string[] {
+	if (server.envPolicy === "literal") return Object.keys(server.env ?? {}).sort();
+	return [...(server.envLiteralKeys ?? [])].sort();
 }
 
 function isSameMCPConnection(left: MCPServer, right: MCPServer): boolean {
@@ -64,6 +75,7 @@ function isSameMCPConnection(left: MCPServer, right: MCPServer): boolean {
 			left.command === right.command &&
 			Bun.deepEquals(left.args, right.args) &&
 			Bun.deepEquals(left.env, right.env) &&
+			Bun.deepEquals(effectiveEnvLiteralKeys(left), effectiveEnvLiteralKeys(right)) &&
 			left.cwd === right.cwd
 		);
 	}

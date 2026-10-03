@@ -260,6 +260,23 @@ describe("StatusLineComponent usage segment", () => {
 		expect(content).toContain("7d 5%");
 	});
 
+	test("renders daily windows with a minute-precision reset", async () => {
+		const content = await renderUsage("google-antigravity", [
+			{
+				provider: "google-antigravity",
+				limits: [
+					{
+						scope: { windowId: "daily" },
+						window: { id: "daily", durationMs: 86_400_000, resetsAt: Date.now() + 11 * 60_000 + 10_000 },
+						amount: { usedFraction: 0.054 },
+					},
+				],
+			},
+		]);
+
+		expect(content).toContain("1d 5% (11m)");
+	});
+
 	test("shows the monthly bucket only for monthly-subscription providers", async () => {
 		const monthlyOnly = (provider: string) => [
 			{

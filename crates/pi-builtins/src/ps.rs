@@ -279,7 +279,7 @@ impl PsProcessRow {
 	fn cpu_percent(&self) -> Option<f64> {
 		let age = self.age?.as_secs_f64();
 		let cpu_time = self.cpu_time?.as_secs_f64();
-		(age > 0.0).then_some(100.0 * cpu_time / age)
+		Some(if age > 0.0 { 100.0 * cpu_time / age } else { 0.0 })
 	}
 
 	fn memory_percent(&self, total_memory: Option<u64>) -> Option<f64> {
@@ -1399,3 +1399,24 @@ fn write_ps_help(mut output: impl Write) -> io::Result<()> {
 }
 
 
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn zero_elapsed_time_reports_zero_cpu_instead_of_unknown() {
+		let process = crate::proc_snapshot::ProcInfo::all()
+			.into_iter()
+			.find(|process| process.pid() == std::process::id() as i32)
+			.unwrap();
+		let mut row = PsProcessRow::from_process(process, SystemTime::now(), false);
+		row.age = Some(Duration::ZERO);
+		row.cpu_time = Some(Duration::from_secs(1));
+		assert_eq!(row.cpu_percent(), Some(0.0));
+		row.age = Some(Duration::from_secs(2));
+		assert_eq!(row.cpu_percent(), Some(50.0));
+		row.age = None;
+		assert_eq!(row.cpu_percent(), None);
+	}
+}

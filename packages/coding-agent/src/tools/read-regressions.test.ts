@@ -210,7 +210,7 @@ test("CRLF line endings are normalized before non-raw content reaches the model"
 	});
 });
 
-test("oversized first lines retain the real byte limit in truncation metadata", async () => {
+test("oversized first lines report the delivered partial preview against the full line", async () => {
 	await withReadSession(async (read, root) => {
 		await Bun.write(path.join(root, "long-line.txt"), `${"x".repeat(DEFAULT_MAX_BYTES + 1)}\nnext\n`);
 		const result = await read.execute("long-first-line", { path: "long-line.txt:1-2" });
@@ -218,11 +218,14 @@ test("oversized first lines retain the real byte limit in truncation metadata", 
 		const text = textOf(result);
 
 		expect(text.length).toBe(DEFAULT_MAX_BYTES);
-		expect(result.details?.truncation?.outputBytes).toBe(0);
+		expect(result.details?.truncation?.outputBytes).toBe(DEFAULT_MAX_BYTES);
 		expect(result.details?.truncation?.totalBytes).toBe(DEFAULT_MAX_BYTES + 1);
-		expect(notice).toContain("50.0KB limit");
-		expect(notice).not.toContain("0B limit");
+		expect(result.details?.meta?.truncation?.partialLine).toBe(true);
+		expect(result.details?.meta?.truncation?.nextOffset).toBeUndefined();
+		expect(notice).toContain("Showing line 1 (partial, 50.0KB of 50.0KB) of 2");
+		expect(notice).not.toContain("0B");
 		expect(notice).not.toContain("lines 1-0");
+		expect(result.details?.truncation && "content" in result.details.truncation).toBe(false);
 
 		const multi = await read.execute("long-first-line-multi", { path: "long-line.txt:1-2,2-2" });
 		expect(multi.details?.truncation?.firstLineExceedsLimit).toBe(true);
@@ -345,3 +348,24 @@ for (const source of ["buffered", "bridge"] as const) {
 		});
 	});
 }
+
+test("bounded reads of large files do not report partial scans as line totals", async () => {
+	await withReadSession(async (read, root) => {
+		const lines = Array.from({ length: 80_000 }, (_, i) => `line ${i} ${"z".repeat(60)}`);
+		await Bun.write(path.join(root, "big.txt"), lines.join("\n"));
+		const result = await read.execute("big", { path: "big.txt:100-150" });
+		const text = textOf(result);
+		expect(text).toContain("line 149 ");
+		expect(text).toContain("not scanned to EOF). Use :151 to continue]");
+		expect(result.details?.meta?.truncation).toBeUndefined();
+		expect(result.details?.totalLines).toBeUndefined();
+	});
+});
+
+test("a FIFO with a SQLite name is refused instead of blocking the SQLite sniff", async () => {
+	await withReadSession(async (read, root) => {
+		const fifoPath = path.join(root, "pipe.db");
+		expect((await Bun.$`mkfifo ${fifoPath}`.nothrow()).exitCode).toBe(0);
+		await expect(read.execute("read-fifo-db", { path: fifoPath })).rejects.toThrow(/FIFO/);
+	});
+}, 5000);

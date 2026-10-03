@@ -1,10 +1,10 @@
 import { type Component, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { isProviderEnabled } from "../../../discovery";
 import { theme } from "../../../modes/theme/theme";
+import { sanitizeSingleLine } from "../../../tools/render-utils";
 import { matchesSelectDown, matchesSelectUp } from "../../utils/keybinding-matchers";
 import { clampSelection, contentRowWidth, renderScrollableList, searchableChar } from "../selector-helpers";
-import { applyFilter } from "./state-manager";
+import { applyFilter, isShadowedExtension } from "./state-manager";
 import type { Extension, ExtensionKind, ExtensionState } from "./types";
 
 interface ExtensionListCallbacks {
@@ -163,7 +163,7 @@ export class ExtensionList implements Component {
 			? theme.fg("success", theme.checkbox.checked)
 			: theme.fg("dim", theme.checkbox.unchecked);
 		const icon = theme.icon.package;
-		const label = `Enable ${sanitizeText(item.providerName)}`;
+		const label = `Enable ${sanitizeSingleLine(item.providerName)}`;
 		const badge = theme.fg("warning", "(Master Switch)");
 
 		let line = `${checkbox} ${icon} ${label}  ${badge}`;
@@ -199,7 +199,7 @@ export class ExtensionList implements Component {
 
 		// Extension metadata is config/plugin-controlled: strip controls
 		// before the row is measured and truncated.
-		let name = sanitizeText(ext.displayName);
+		let name = sanitizeSingleLine(ext.displayName);
 		// Identification outranks the trigger column once the row runs out of space.
 		const nameWidth = width - 16 >= 8 ? Math.min(24, width - 16) : Math.max(1, width - 5);
 
@@ -220,7 +220,7 @@ export class ExtensionList implements Component {
 			const triggerStyle = effectivelyDisabled ? "dim" : "muted";
 			const remainingWidth = width - visibleWidth(line) - 2;
 			if (remainingWidth > 5) {
-				line += `  ${truncateToWidth(theme.fg(triggerStyle as "dim" | "muted", sanitizeText(ext.trigger)), remainingWidth)}`;
+				line += `  ${truncateToWidth(theme.fg(triggerStyle as "dim" | "muted", sanitizeSingleLine(ext.trigger)), remainingWidth)}`;
 			}
 		}
 
@@ -385,6 +385,8 @@ export class ExtensionList implements Component {
 		if (item?.type === "master") {
 			this.callbacks.onMasterToggle?.(item.providerId);
 		} else if (item?.type === "extension") {
+			// Shadowed rows share the winner's id, so toggling one would flip the winner.
+			if (isShadowedExtension(item.item)) return;
 			const masterDisabled = this.#masterSwitchProvider !== null && !isProviderEnabled(this.#masterSwitchProvider);
 			if (!masterDisabled) {
 				const newEnabled = item.item.state === "disabled";
@@ -421,12 +423,13 @@ export class ExtensionList implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesSelectUp(data) || matchesKey(data, "k")) {
+		// Bare j/k are search text: the filter is always live.
+		if (matchesSelectUp(data)) {
 			this.#moveSelectionUp();
 			return;
 		}
 
-		if (matchesSelectDown(data) || matchesKey(data, "j")) {
+		if (matchesSelectDown(data)) {
 			this.#moveSelectionDown();
 			return;
 		}

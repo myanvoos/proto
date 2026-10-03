@@ -239,7 +239,8 @@ export class ModelRegistry {
 	#runtimeDiscoveredModels: Model<Api>[] = [];
 	#runtimeAuthoritativeProviders: Set<string> = new Set();
 	#runtimeModelOverlays: CustomModelOverlay[] = [];
-	#runtimeProviderApiKeys: Map<string, string> = new Map();
+	// `fallback` ranks the key below stored login credentials (see registerProvider).
+	#runtimeProviderApiKeys: Map<string, { keyConfig: string; fallback: boolean }> = new Map();
 	#runtimeProviderOverrides: Map<string, ProviderOverride> = new Map();
 	// registerProvider/fetchDynamicModels command values; survives static reloads, unlike #commandConfigsByProvider.
 	#runtimeCommandConfigsByProvider: Map<string, Set<string>> = new Map();
@@ -255,9 +256,9 @@ export class ModelRegistry {
 	#settings: Settings | undefined;
 
 	// The raw config (literal, env name, or `!command`) is resolved by AuthStorage per request, never at load.
-	#installProviderApiKey(provider: string, keyConfig: string): void {
+	#installProviderApiKey(provider: string, keyConfig: string, options?: { fallback?: boolean }): void {
 		this.#customProviderApiKeys.set(provider, keyConfig);
-		this.authStorage.setConfigApiKey(provider, keyConfig);
+		this.authStorage.setConfigApiKey(provider, keyConfig, options);
 	}
 
 	#collectCommandConfigValues(
@@ -572,8 +573,8 @@ export class ModelRegistry {
 
 		this.authStorage.clearConfigApiKeys();
 
-		for (const [k, v] of this.#runtimeProviderApiKeys) {
-			this.#installProviderApiKey(k, v);
+		for (const [provider, { keyConfig, fallback }] of this.#runtimeProviderApiKeys) {
+			this.#installProviderApiKey(provider, keyConfig, { fallback });
 		}
 		this.#providerOverrides.clear();
 		this.#modelOverrides.clear();
@@ -2134,7 +2135,8 @@ export class ModelRegistry {
 		return (
 			keyConfig !== undefined ||
 			this.#keylessProviders.has(model.provider) ||
-			this.authStorage.hasResolvableAuth(model.provider)
+			this.authStorage.hasResolvableAuth(model.provider) ||
+			this.authStorage.hasKeylessPlaceholder(model.provider)
 		);
 	}
 
@@ -2142,7 +2144,10 @@ export class ModelRegistry {
 	hasConcreteAuth(provider: string): boolean {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
 		return (
-			keyConfig !== undefined || this.#keylessProviders.has(provider) || this.authStorage.hasConcreteAuth(provider)
+			keyConfig !== undefined ||
+			this.#keylessProviders.has(provider) ||
+			this.authStorage.hasConcreteAuth(provider) ||
+			this.authStorage.hasKeylessPlaceholder(provider)
 		);
 	}
 
@@ -2178,8 +2183,15 @@ export class ModelRegistry {
 		return this.#providerDiscoveryStates.get(provider)?.status === "idle";
 	}
 
+	// A disabled provider has no models to find: literal fallback lookups (retry chains, advisors, restored and CLI
+	// models) would otherwise reach it after availability-filtered resolution missed.
 	find(provider: string, modelId: string): Model<Api> | undefined {
+		if (this.#isProviderDisabled(provider)) return undefined;
 		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+	}
+
+	#isProviderDisabled(provider: string): boolean {
+		return getDisabledProviderIdsFromSettings(this.#settings).has(provider);
 	}
 
 	getProviderBaseUrl(provider: string): string | undefined {
@@ -2216,12 +2228,22 @@ export class ModelRegistry {
 		return modelHeaders ?? (await this.getProviderHeaders(provider, signal));
 	}
 
+	// Keyless endpoints and placeholder-only logins (empty paste at an optional-key prompt) send no bearer.
+	#isKeylessProvider(provider: string): boolean {
+		return (
+			(this.#keylessProviders.has(provider) || this.authStorage.hasKeylessPlaceholder(provider)) &&
+			!this.authStorage.hasAuth(provider)
+		);
+	}
+
 	async getApiKey(
 		model: Model<Api>,
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
-		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
+		// A disabled provider gets no credential, so no request reaches it however its model was obtained.
+		if (this.#isProviderDisabled(model.provider)) return undefined;
+		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
 		return this.authStorage.getApiKey(model.provider, sessionId, {
@@ -2249,8 +2271,9 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
 	): Promise<string | undefined> {
+		if (this.#isProviderDisabled(provider)) return undefined;
 		if (options?.forceRefresh) this.#invalidateProviderCommandConfigs(provider);
-		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
+		if (this.#isKeylessProvider(provider)) {
 			return kNoAuth;
 		}
 		return this.authStorage.getApiKey(provider, sessionId, {
@@ -2414,9 +2437,11 @@ export class ModelRegistry {
 			this.authStorage.setRuntimeUsageProvider(providerName, config.usage, config.apiKey);
 		}
 		if (config.apiKey) {
-			this.#installProviderApiKey(providerName, config.apiKey);
-
-			this.#runtimeProviderApiKeys.set(providerName, config.apiKey);
+			// A provider with its own /login flow must not let its default key reference (typically an env-var name that
+			// resolves to its literal text when unset) shadow the credential that login stores.
+			const fallback = config.oauth !== undefined;
+			this.#installProviderApiKey(providerName, config.apiKey, { fallback });
+			this.#runtimeProviderApiKeys.set(providerName, { keyConfig: config.apiKey, fallback });
 		}
 		this.#recordRuntimeCommandConfigs(providerName, config.apiKey, config.headers, config.models ?? []);
 

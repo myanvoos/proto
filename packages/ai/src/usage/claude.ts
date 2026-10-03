@@ -714,6 +714,10 @@ async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext
 		const { orgId, baseUrl: _baseUrl, ...usageResetCredits } = resetCreditList;
 		resetCredits = usageResetCredits;
 		reportOrgId ??= orgId;
+	} else {
+		// `null` means the reset probe failed (timeout, 429, malformed body), not that the account has no saved
+		// resets: keep the inventory this credential last reported.
+		resetCredits = ctx.previousReport?.resetCredits;
 	}
 
 	const report: UsageReport = {

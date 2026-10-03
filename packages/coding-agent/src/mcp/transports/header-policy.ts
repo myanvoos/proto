@@ -61,7 +61,7 @@ function withoutCredentialHeaders(headers: Record<string, string>): Record<strin
 	return result;
 }
 
-export type MCPFetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type MCPFetchImpl = (input: string | URL | Request, init?: BunFetchRequestInit) => Promise<Response>;
 
 export interface MCPFetchInit {
 	method: "GET" | "POST" | "DELETE";
@@ -81,7 +81,9 @@ export async function mcpFetch(
 	for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
 		const attachConfigured = new URL(currentUrl).origin === configuredOrigin;
 		const headers = attachConfigured ? mergeMCPHeaders(sources) : withoutCredentialHeaders(sources.generated);
-		const response = await fetchImpl(currentUrl, { ...init, headers, redirect: "manual" });
+		// MCP calls are long-poll shaped; deadlines live only in `init.signal`, so Bun's socket idle timer must not end
+		// a silent wait (even with MCP timeouts disabled).
+		const response = await fetchImpl(currentUrl, { ...init, headers, redirect: "manual", timeout: false });
 		if (!REDIRECT_STATUSES[response.status]) return response;
 
 		const location = response.headers.get("Location");

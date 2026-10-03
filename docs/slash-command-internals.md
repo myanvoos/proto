@@ -265,6 +265,8 @@ TUI and ACP/RPC dispatch the shared built-in registry before `session.prompt(...
 
 ## 11) Built-in command note: `/queue`
 
+Ctrl+Enter removes the submitted text and attachments from the editor before awaiting input hooks or command dispatch. A second press cannot resubmit the same draft, and typing or pasting while a builtin, skill, or prompt runs starts a new draft. Failed submissions are restored before that newer draft, with image markers renumbered to keep both sets of attachments intact. Builtin cleanup uses `clearSubmittedText(runtime)` so a detached submission never clears later input.
+
 `/queue` has two delivery triggers behind one command:
 
 - `/queue <message>` — hands the message to the session immediately when the agent is idle and nothing is queued, otherwise onto the follow-up queue.

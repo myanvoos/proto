@@ -8,7 +8,9 @@ import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { buildReplanTitleContext, USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import type { SessionManagerStateSnapshot } from "../session/session-manager";
+import { isLowSignalTitleInput } from "../tiny/text";
 import { resolveToCwd } from "../tools/path-utils";
+import { clearSubmittedText } from "./helpers/draft";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
 import type {
@@ -23,7 +25,7 @@ export const shutdownHandlerTui = (
 	_command: ParsedSlashCommand,
 	runtime: TuiSlashCommandRuntime,
 ): SlashCommandResult => {
-	runtime.ctx.editor.setText("");
+	clearSubmittedText(runtime);
 	void runtime.ctx.shutdown();
 	return commandConsumed();
 };
@@ -74,15 +76,28 @@ function formatWorkspaceDirectories(runtime: SlashCommandRuntime, note?: string)
 	return note ? `${note}\n${lines.join("\n")}` : lines.join("\n");
 }
 
-/** Generates a title from the conversation; null when there is no context or the session/title moved on meanwhile. */
-async function generateRenameTitle(session: AgentSession): Promise<string | null> {
-	const context = buildReplanTitleContext(session.messages);
-	if (!context) return null;
+/**
+ * Generates a title from the conversation. Null: no usable title. Undefined: the request was interrupted or
+ * superseded (session switch, newer rename) and must be dropped silently.
+ */
+async function generateRenameTitle(session: AgentSession, signal?: AbortSignal): Promise<string | null | undefined> {
 	const { sessionManager } = session;
+	const context = buildReplanTitleContext(session.messages);
+	if (!context || isLowSignalTitleInput(context)) return null;
+	const revision = sessionManager.reserveTitleRevision();
 	const sessionId = sessionManager.getSessionId();
-	const revision = sessionManager.titleRevision;
-	const title = await session.generateTitle(context);
-	return sessionManager.getSessionId() === sessionId && sessionManager.titleRevision === revision ? title : null;
+	const titleSignal = session.titleGenerationSignal;
+	const cleanupProgress = session.notifyTitleGenerationStart();
+	try {
+		const title = await session.generateTitle(context, undefined, signal);
+		return !titleSignal.aborted &&
+			sessionManager.getSessionId() === sessionId &&
+			sessionManager.titleRevision === revision
+			? title
+			: undefined;
+	} finally {
+		cleanupProgress?.();
+	}
 }
 
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -104,7 +119,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handle: handleSshAcp,
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleSSHCommand(command.text);
 		},
 	},
@@ -112,7 +127,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		name: "new",
 		description: "Start a new session",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleClearCommand();
 		},
 	},
@@ -122,7 +137,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		getTuiAutocompleteDescription: runtime =>
 			runtime.ctx.session.isStreaming ? "Clear: unavailable while streaming" : "Clear: drop context, keep session",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleResetContextCommand();
 		},
 	},
@@ -174,7 +189,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 		handleTui: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			if ("error" in parsed) {
 				runtime.ctx.showWarning(parsed.error);
 				return;
@@ -189,7 +204,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const sessionArg = command.args.trim();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const foreignSource = sessionArg === "@claude" ? "claude" : sessionArg === "@codex" ? "codex" : undefined;
 			if (foreignSource) {
 				runtime.ctx.showSessionSelector(foreignSource);
@@ -220,7 +235,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const text = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			if (!text) {
 				runtime.ctx.showStatus("Usage: /side <question> | /side --agent <work>");
 				return;
@@ -239,35 +254,70 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const session = runtime.session;
+			const sessionManager = runtime.sessionManager;
 			const runRename = async (): Promise<void> => {
-				const title = command.args || (await generateRenameTitle(session));
-				if (runtime.session !== session) return;
-				if (!title) {
-					await runtime.output("Could not generate a session title. Use /rename <title> to set one.");
-					return;
+				const sessionId = sessionManager.getSessionId();
+				const titleSignal = session.titleGenerationSignal;
+				let titleRevision = sessionManager.titleRevision;
+				// Every await below can be overtaken by a session switch, an interrupt, or a newer rename.
+				const isCurrent = (): boolean =>
+					runtime.session === session &&
+					runtime.sessionManager === sessionManager &&
+					!runtime.signal?.aborted &&
+					!titleSignal.aborted &&
+					sessionManager.getSessionId() === sessionId &&
+					sessionManager.titleRevision === titleRevision;
+				try {
+					const generation = command.args || generateRenameTitle(session, runtime.signal);
+					titleRevision = sessionManager.titleRevision;
+					const title = typeof generation === "string" ? generation : await generation;
+					if (!isCurrent() || title === undefined) return;
+					if (!title) {
+						await runtime.output("Could not generate a session title. Use /rename <title> to set one.");
+						return;
+					}
+					const persistence = sessionManager.setSessionName(title, "user");
+					titleRevision = sessionManager.titleRevision;
+					const ok = await persistence;
+					if (!isCurrent()) return;
+					if (!ok) {
+						await runtime.output("Session name not changed (a user-set name takes precedence).");
+						return;
+					}
+					await runtime.notifyTitleChanged?.();
+					if (!isCurrent()) return;
+					await runtime.output(`Session renamed to ${title}.`);
+				} catch (err) {
+					if (!isCurrent()) return;
+					if (command.args || !runtime.runCommandInBackground) throw err;
+					await runtime.output(`Rename failed: ${errorMessage(err)}`);
 				}
-				const ok = await runtime.sessionManager.setSessionName(title, "user");
-				if (!ok) {
-					await runtime.output("Session name not changed (a user-set name takes precedence).");
-					return;
-				}
-				await runtime.notifyTitleChanged?.();
-				await runtime.output(`Session renamed to ${title}.`);
 			};
 			if (!command.args && runtime.runCommandInBackground) {
-				runtime.runCommandInBackground(() =>
-					runRename().catch(err => runtime.output(`Rename failed: ${errorMessage(err)}`)),
-				);
+				runtime.runCommandInBackground(runRename);
 				return commandConsumed();
 			}
 			await runRename();
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const session = runtime.ctx.session;
-			const title = command.args.trim() || (await generateRenameTitle(session));
-			if (runtime.ctx.session !== session) return;
+			const sessionManager = runtime.ctx.sessionManager;
+			const sessionId = sessionManager.getSessionId();
+			const titleSignal = session.titleGenerationSignal;
+			const generation = command.args.trim() || generateRenameTitle(session);
+			const titleRevision = sessionManager.titleRevision;
+			const title = typeof generation === "string" ? generation : await generation;
+			if (
+				runtime.ctx.session !== session ||
+				runtime.ctx.sessionManager !== sessionManager ||
+				titleSignal.aborted ||
+				sessionManager.getSessionId() !== sessionId ||
+				sessionManager.titleRevision !== titleRevision ||
+				title === undefined
+			)
+				return;
 			if (!title) {
 				runtime.ctx.showError("Could not generate a session title. Use /rename <title> to set one.");
 				return;
@@ -316,7 +366,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.addToHistory(command.text);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleMoveCommand(command.args || undefined);
 		},
 	},

@@ -8,7 +8,7 @@ import type { JobRef, WatchRef } from "../../jobs/contracts";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import type { MonitorDetails } from "../../monitor/types";
-import { formatAsyncJobTextForContext } from "../../session/async-job-delivery";
+import { asyncJobRawArtifactId, formatAsyncJobTextForContext } from "../../session/async-job-delivery";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
 import {
@@ -76,6 +76,7 @@ export function snapshotJob(manager: AsyncJobManager, job: AsyncJob, events?: As
 		...(job.monitor ? { watch: { ...job.monitor } } : {}),
 		...(events?.length ? { events } : {}),
 		...(job.resultText ? { resultText: job.resultText } : {}),
+		rawArtifactId: asyncJobRawArtifactId(job),
 		...(job.errorText ? { errorText: job.errorText } : {}),
 	};
 }
@@ -93,14 +94,19 @@ async function forContext(
 	jobId: string,
 	kind: "result" | "error",
 	text: string,
+	rawArtifactId?: string,
 ): Promise<string> {
 	const key = `${jobId}:${kind}:${text.length}`;
 	const cached = cappedJobText.get(key);
 	if (cached !== undefined) return cached;
-	const formatted = await formatAsyncJobTextForContext(text, toolType => {
-		const allocate = session.allocateOutputArtifact;
-		return allocate ? allocate(toolType) : Promise.resolve({});
-	});
+	const formatted = await formatAsyncJobTextForContext(
+		text,
+		toolType => {
+			const allocate = session.allocateOutputArtifact;
+			return allocate ? allocate(toolType) : Promise.resolve({});
+		},
+		rawArtifactId,
+	);
 	if (formatted !== text) cappedJobText.set(key, formatted);
 	return formatted;
 }
@@ -137,7 +143,12 @@ export async function describeJobs(session: ToolSession, jobs: JobSnapshot[]): P
 			lines.push(`### ${job.ref.id} [${job.type}] — ${job.status}${teardown}`);
 			lines.push(`Ref: ${refText(job)}`, `Label: ${job.label}`);
 			if (job.watch) lines.push(describeWatch(job.watch));
-			if (job.resultText) lines.push("```", await forContext(session, job.ref.id, "result", job.resultText), "```");
+			if (job.resultText)
+				lines.push(
+					"```",
+					await forContext(session, job.ref.id, "result", job.resultText, job.rawArtifactId),
+					"```",
+				);
 			if (job.errorText) lines.push(`Error: ${await forContext(session, job.ref.id, "error", job.errorText)}`);
 			lines.push("");
 		}

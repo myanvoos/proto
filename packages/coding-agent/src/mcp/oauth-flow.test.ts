@@ -137,3 +137,102 @@ describe("MCP OAuth refresh token response validation", () => {
 		expect(credentials.expires).toBeGreaterThanOrEqual(before + 60_000);
 	});
 });
+
+describe("MCP OAuth client id normalization", () => {
+	test("removes a whitespace-only embedded client id before authorization", async () => {
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://provider.example/authorize?client_id=%20%09",
+				tokenUrl: "https://provider.example/token",
+				fetch: async () => new Response("not found", { status: 404 }),
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("test-state", "http://127.0.0.1:53174/callback");
+
+		expect(new URL(url).searchParams.get("client_id")).toBeNull();
+	});
+
+	test("omits a whitespace-only client id from token refresh", async () => {
+		let body = "";
+		await refreshMCPOAuthToken("https://provider.example/token", "refresh-token", " \t ", undefined, {
+			fetch: async (_input, init) => {
+				body = String(init?.body ?? "");
+				return Response.json({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
+			},
+		});
+
+		expect(new URLSearchParams(body).has("client_id")).toBe(false);
+	});
+});
+
+describe("MCP OAuth issuer and resource handling", () => {
+	test("dynamic registration probes the issuer's metadata, not the authorization endpoint's path", async () => {
+		const requested: string[] = [];
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://login.example.test/realms/tenant/protocol/openid-connect/auth",
+				tokenUrl: "https://login.example.test/realms/tenant/protocol/openid-connect/token",
+				issuerUrl: "https://login.example.test/realms/tenant",
+				fetch: async (input, init) => {
+					const url = String(input);
+					requested.push(url);
+					if (url === "https://login.example.test/realms/tenant/.well-known/oauth-authorization-server") {
+						return Response.json({ registration_endpoint: "https://login.example.test/realms/tenant/register" });
+					}
+					if (url === "https://login.example.test/realms/tenant/register" && init?.method === "POST") {
+						return Response.json({ client_id: "registered-client" });
+					}
+					return new Response("not found", { status: 404 });
+				},
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("state", "http://127.0.0.1:53174/callback");
+
+		expect(new URL(url).searchParams.get("client_id")).toBe("registered-client");
+		expect(requested[0]).toBe("https://login.example.test/.well-known/oauth-authorization-server/realms/tenant");
+	});
+
+	test("an advertised resource wins over a resource embedded in the authorization URL", async () => {
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl:
+					"https://auth.example.test/authorize?client_id=client&resource=https%3A%2F%2Fother.example.test%2Fmcp",
+				tokenUrl: "https://auth.example.test/token",
+				resource: "https://mcp.example.test/mcp",
+				fetch: async () => new Response("not found", { status: 404 }),
+			},
+			{},
+		);
+
+		const { url } = await flow.generateAuthUrl("state", "http://127.0.0.1:53174/callback");
+
+		expect(new URL(url).searchParams.get("resource")).toBe("https://mcp.example.test/mcp");
+		expect(flow.resource).toBe("https://mcp.example.test/mcp");
+	});
+});
+
+describe("MCP OAuth offline access", () => {
+	async function authParams(authorizationUrl: string): Promise<URLSearchParams> {
+		const flow = new MCPOAuthFlow(
+			{ authorizationUrl, tokenUrl: "https://oauth2.example.test/token", clientId: "client" },
+			{},
+		);
+		const { url } = await flow.generateAuthUrl("state", "http://127.0.0.1:53174/callback");
+		return new URL(url).searchParams;
+	}
+
+	test("Google issuers are asked for offline access so a refresh token is minted", async () => {
+		expect((await authParams("https://accounts.google.com/o/oauth2/v2/auth")).get("access_type")).toBe("offline");
+	});
+
+	test("an explicit access_type and non-Google issuers are left alone", async () => {
+		expect(
+			(await authParams("https://accounts.google.com/o/oauth2/v2/auth?access_type=online")).get("access_type"),
+		).toBe("online");
+		expect((await authParams("https://auth.example.test/authorize")).has("access_type")).toBe(false);
+	});
+});

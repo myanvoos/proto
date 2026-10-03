@@ -240,3 +240,25 @@ describe("Responses composite tool-call id pairing", () => {
 		});
 	});
 });
+
+describe("malformed tool-call invocation names", () => {
+	it("drops names containing whitespace or exceeding the Responses limit with paired results", () => {
+		const malformed: AssistantMessage = assistantWithCall({
+			content: [{ type: "toolCall", id: "bad", name: "bash run this command", arguments: {} }],
+		});
+		const result = transformMessages(
+			[
+				{ role: "user", content: "run", timestamp: 0 },
+				malformed,
+				{ ...toolResult(), toolCallId: "bad", toolName: "bash run this command" },
+			],
+			makeModel(),
+		);
+		expect(
+			result.some(
+				message => message.role === "assistant" && message.content.some(block => block.type === "toolCall"),
+			),
+		).toBe(false);
+		expect(result.some(message => message.role === "toolResult")).toBe(false);
+	});
+});

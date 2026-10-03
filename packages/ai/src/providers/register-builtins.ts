@@ -229,7 +229,7 @@ function forwardStream<TApi extends Api>(
 				abortSignal: options.signal,
 
 				isProgressItem: event => (event as AssistantMessageEvent).type !== "start",
-				hasPendingLocalWork: localWorkSource ? () => localWorkSource.hasPendingLocalWork : undefined,
+				localWork: localWorkSource,
 			});
 
 			for await (const event of watchedSource) {

@@ -205,6 +205,7 @@ export class StreamingRevealController {
 	#component: StreamingRevealComponent | undefined;
 	#timer: NodeJS.Timeout | undefined;
 	#revealed = 0;
+	#targetDirty = false;
 	#hideThinkingBlock = false;
 	#proseOnlyThinking = true;
 	#smoothStreaming = true;
@@ -230,7 +231,7 @@ export class StreamingRevealController {
 		);
 	}
 
-	begin(component: StreamingRevealComponent, message: AssistantMessage): void {
+	begin(component: StreamingRevealComponent, message: AssistantMessage, hasToolCalls: boolean): void {
 		this.stop();
 		this.#component = component;
 		this.#target = message;
@@ -244,7 +245,7 @@ export class StreamingRevealController {
 			return;
 		}
 		const total = this.#visibleUnits(message);
-		if (message.content.some(block => block.type === "toolCall")) {
+		if (hasToolCalls) {
 			this.#revealed = total;
 			component.updateContent(this.#build(message, this.#revealed), {
 				transient: true,
@@ -255,7 +256,7 @@ export class StreamingRevealController {
 		this.#syncTimer(total);
 	}
 
-	setTarget(message: AssistantMessage, revealAll = false): void {
+	setTarget(message: AssistantMessage, hasToolCalls: boolean): void {
 		this.#target = message;
 		this.#hideThinkingBlock = this.#getHideThinkingBlock();
 		this.#proseOnlyThinking = this.#getProseOnlyThinking();
@@ -268,12 +269,16 @@ export class StreamingRevealController {
 		}
 		if (!this.#smoothStreaming) {
 			const total = this.#visibleUnits(message);
+			this.#revealed = total;
+			this.#targetDirty = false;
+			this.#stopTimer();
 			component.updateContent(this.#build(message, total), { transient: true });
 			return;
 		}
 		const total = this.#visibleUnits(message);
-		if (revealAll || message.content.some(block => block.type === "toolCall")) {
+		if (hasToolCalls) {
 			this.#revealed = total;
+			this.#targetDirty = false;
 			this.#stopTimer();
 			component.updateContent(this.#build(message, this.#revealed), {
 				transient: true,
@@ -283,8 +288,15 @@ export class StreamingRevealController {
 		if (this.#revealed > total) {
 			this.#revealed = total;
 		}
-		this.#renderCurrent();
-		this.#syncTimer(total);
+		if (this.#revealed < total) {
+			// Behind: the running tick renders the newest target at the reveal cadence.
+			this.#targetDirty = false;
+			this.#syncTimer(total);
+			return;
+		}
+		// Caught up: defer to the next tick so a burst of deltas coalesces into one render.
+		this.#targetDirty = true;
+		this.#startTimer();
 	}
 
 	stop(): void {
@@ -292,6 +304,7 @@ export class StreamingRevealController {
 		this.#target = undefined;
 		this.#component = undefined;
 		this.#revealed = 0;
+		this.#targetDirty = false;
 		this.#unitCounter.reset();
 	}
 
@@ -371,6 +384,12 @@ export class StreamingRevealController {
 		}
 		const total = this.#visibleUnits(target);
 		if (this.#revealed >= total) {
+			if (this.#targetDirty) {
+				this.#targetDirty = false;
+				this.#revealed = total;
+				this.#renderCurrent();
+				this.#requestRender(component);
+			}
 			this.#stopTimer();
 			return;
 		}

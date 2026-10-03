@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { EventLoopKeepalive, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import {
 	$env,
 	BINARY_NAME,
@@ -34,6 +35,7 @@ import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import {
 	DEFAULT_PREWALK_TARGET,
+	disabledProviderIds,
 	expandRoleAlias,
 	formatModelSelectorValue,
 	getModelMatchPreferences,
@@ -71,6 +73,7 @@ import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
 import type * as SetupWizardModule from "./modes/setup-wizard";
 import type { SetupScene } from "./modes/setup-wizard";
+import { buildSkillCommandPrompt } from "./modes/skill-command";
 import {
 	applyStartupComposerPreferences,
 	type ComposerLease,
@@ -111,6 +114,7 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prom
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { parseThinkingLevel } from "./thinking";
+import { sanitizeDisplayWarnings } from "./tools/render-utils";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
@@ -272,7 +276,11 @@ export function buildModelScopeNotification(
 export async function submitInteractiveInput(
 	mode: Pick<
 		InteractiveMode,
-		"markPendingSubmissionStarted" | "finishPendingSubmission" | "showError" | "checkShutdownRequested"
+		| "markPendingSubmissionStarted"
+		| "finishPendingSubmission"
+		| "showError"
+		| "checkShutdownRequested"
+		| "skillCommands"
 	>,
 	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming">,
 	input: SubmittedUserInput,
@@ -304,7 +312,14 @@ export async function submitInteractiveInput(
 				userInitiated: input.userInitiated,
 			});
 		} else {
-			await session.prompt(input.text, { images: input.images, streamingBehavior });
+			// Text that reaches here without the editor's skill dispatch (e.g. a `/goal` objective)
+			// must still expand a `/skill:` invocation instead of sending the literal token.
+			const skillPrompt = await buildSkillCommandPrompt(mode, input.text, streamingBehavior, input.images);
+			if (skillPrompt) {
+				await session.promptCustomMessage(skillPrompt.message, skillPrompt.options);
+			} else {
+				await session.prompt(input.text, { images: input.images, streamingBehavior });
+			}
 		}
 	} catch (error: unknown) {
 		const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -487,7 +502,8 @@ async function runInteractiveMode(
 	// Surfaced after the initial render so the notice is not wiped by the scrollback clear.
 	if (setupCancelledNotice) mode.showWarning(setupCancelledNotice);
 	const advisorConfigWarnings = session.getAdvisorConfigWarnings();
-	if (advisorConfigWarnings.length > 0) mode.showWarning(`WATCHDOG.yml: ${advisorConfigWarnings.join("; ")}`);
+	if (advisorConfigWarnings.length > 0)
+		mode.showWarning(`WATCHDOG.yml: ${sanitizeDisplayWarnings(advisorConfigWarnings).join("; ")}`);
 
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {
@@ -515,7 +531,8 @@ async function runInteractiveMode(
 		session.maybeStartTitleGeneration(initialMessage);
 		try {
 			using _keepalive = new EventLoopKeepalive();
-			await session.prompt(initialMessage, { images: initialImages });
+			// A user submission may start a turn first now that the composer accepts input after init.
+			await session.prompt(initialMessage, { images: initialImages, streamingBehavior: "steer" });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -526,7 +543,7 @@ async function runInteractiveMode(
 		session.maybeStartTitleGeneration(message);
 		try {
 			using _keepalive = new EventLoopKeepalive();
-			await session.prompt(message);
+			await session.prompt(message, { streamingBehavior: "steer" });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -999,7 +1016,7 @@ export function applyResolvedSystemPromptInputs(
 	resolvedSystemPrompt: string | undefined,
 	resolvedAppendPrompt: string | undefined,
 ): void {
-	if (resolvedSystemPrompt) {
+	if (resolvedSystemPrompt !== undefined) {
 		options.customSystemPrompt = resolvedSystemPrompt;
 	}
 	if (resolvedAppendPrompt) {
@@ -1066,6 +1083,7 @@ export async function buildSessionOptions(
 	}
 
 	const modelMatchPreferences = getModelMatchPreferences(activeSettings);
+	const disabledProviders = disabledProviderIds(activeSettings);
 	// `--model` rewrites the session `default` role below; explicit prewalk role targets resolve against the
 	// value configured when the CLI was invoked.
 	const preModelOverrideDefaultRole = activeSettings.getModelRole("default");
@@ -1082,6 +1100,13 @@ export async function buildSessionOptions(
 		});
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+		}
+		if (resolved.disabledProvider !== undefined) {
+			// Deferring a disabled pin to post-extension resolution would let it through.
+			process.stderr.write(
+				`${chalk.red(resolved.error ?? `Provider "${resolved.disabledProvider}" is disabled.`)}\n`,
+			);
+			process.exit(1);
 		}
 		const matchedAfterMissingRolePattern = (resolved.configuredPatternIndex ?? 0) > 0;
 		if (matchedAfterMissingRolePattern) {
@@ -1187,6 +1212,8 @@ export async function buildSessionOptions(
 		for (const pattern of targetPatterns) {
 			let candidate = resolveCandidate(pattern);
 			lastResolution = candidate;
+			// A disabled provider is unreachable; try the next fallback pattern.
+			if (candidate.model && disabledProviders.has(candidate.model.provider)) continue;
 			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
 				authenticatedResolution = candidate;
 				break;
@@ -1205,6 +1232,7 @@ export async function buildSessionOptions(
 
 			candidate = resolveCandidate(pattern);
 			lastResolution = candidate;
+			if (candidate.model && disabledProviders.has(candidate.model.provider)) continue;
 			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
 				authenticatedResolution = candidate;
 				break;
@@ -1223,6 +1251,10 @@ export async function buildSessionOptions(
 		if (resolved.error || !resolved.model) {
 			process.stderr.write(
 				`${chalk.yellow(`Warning: prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`)}\n`,
+			);
+		} else if (disabledProviders.has(resolved.model.provider)) {
+			process.stderr.write(
+				`${chalk.yellow(`Warning: prewalk disabled — provider "${resolved.model.provider}" is disabled`)}\n`,
 			);
 		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
 			process.stderr.write(
@@ -1815,6 +1847,8 @@ export async function runRootCommand(
 
 			const runAcpMode = deps.runAcpMode ?? (await import("./modes/acp/acp-mode")).runAcpMode;
 			stopStartupWatchdog();
+			// Startup is over: stop recording spans, or every later session appends to the timing tree for the server's life.
+			logger.endTiming();
 			await runAcpMode(createAcpSession);
 		} else {
 			if (isInteractive && !parsedArgs.trustedExtensions?.length) {
@@ -1934,6 +1968,23 @@ export async function runRootCommand(
 				} else {
 					process.stderr.write(`${chalk.red("No models available.")}\n`);
 				}
+				const availableModels = modelRegistry.getAvailable();
+				if (parsedArgs.model && availableModels.length > 0) {
+					// Credentials work; the requested selector is what failed, so point at the nearest usable models.
+					const suggestions = fuzzyFilter(
+						availableModels.map(model => `${model.provider}/${model.id}`),
+						parsedArgs.model,
+						selector => selector,
+					).slice(0, 5);
+					if (suggestions.length > 0) {
+						process.stderr.write(`${chalk.yellow("\nDid you mean:")}\n`);
+						for (const selector of suggestions) process.stderr.write(`  ${selector}\n`);
+					}
+					process.stderr.write(
+						`\nRun \`${BINARY_NAME} models find <pattern>\` to search, or \`${BINARY_NAME} models\` to list all.\n`,
+					);
+					process.exit(1);
+				}
 				process.stderr.write(`${chalk.yellow("\nSet an API key environment variable:")}\n`);
 				process.stderr.write("  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.\n");
 				process.stderr.write(`${chalk.yellow(`\nOr create ${ModelsConfigFile.path()}`)}\n`);
@@ -1943,6 +1994,7 @@ export async function runRootCommand(
 			if (mode === "rpc" || mode === "rpc-ui") {
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
+				logger.endTiming();
 				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput);
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
@@ -1987,6 +2039,8 @@ export async function runRootCommand(
 				}
 			} else {
 				stopStartupWatchdog();
+				// PI_TIMING prints the tree after the run; otherwise stop recording so a long run's subagents don't grow it.
+				if (!$env.PI_TIMING) logger.endTiming();
 				const runPrintMode: RunPrintMode = (await import("./modes/print-mode")).runPrintMode;
 				await runPrintMode(session, {
 					mode,

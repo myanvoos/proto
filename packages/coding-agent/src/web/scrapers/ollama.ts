@@ -27,6 +27,7 @@ interface OllamaTagsResponse {
 
 const VALID_HOSTNAMES = new Set(["ollama.com", "www.ollama.com"]);
 const RESERVED_ROOTS = new Set([
+	"library",
 	"models",
 	"blog",
 	"docs",
@@ -40,6 +41,8 @@ const RESERVED_ROOTS = new Set([
 	"privacy",
 	"license",
 	"settings",
+	"pricing",
+	"account",
 ]);
 
 function extractMetaDescription(html: string): string | null {
@@ -96,7 +99,9 @@ function buildModelPath(parts: string[]): string {
 	return parts.map(part => encodeURIComponent(part)).join("/");
 }
 
-function parseOllamaUrl(url: string): { modelRef: string; baseRef: string; pageUrl: string } | null {
+function parseOllamaUrl(
+	url: string,
+): { modelRef: string; baseRef: string; pageUrl: string; shorthand: boolean } | null {
 	try {
 		const parsed = new URL(url);
 		if (!VALID_HOSTNAMES.has(parsed.hostname)) return null;
@@ -108,17 +113,25 @@ function parseOllamaUrl(url: string): { modelRef: string; baseRef: string; pageU
 			const modelRef = decodeURIComponent(parts[1]);
 			const baseRef = modelRef.split(":")[0] ?? modelRef;
 			const pageUrl = `${parsed.origin}/${buildModelPath(["library", baseRef])}`;
-			return { modelRef, baseRef, pageUrl };
+			return { modelRef, baseRef, pageUrl, shorthand: false };
 		}
 
-		if (parts.length >= 2 && !RESERVED_ROOTS.has(parts[0])) {
+		const baseRoot = parts[0].split(":")[0];
+		if (parts.length === 1 && !RESERVED_ROOTS.has(baseRoot)) {
+			const modelRef = decodeURIComponent(parts[0]);
+			const baseRef = modelRef.split(":")[0] ?? modelRef;
+			const pageUrl = `${parsed.origin}/${buildModelPath(["library", baseRef])}`;
+			return { modelRef, baseRef, pageUrl, shorthand: true };
+		}
+
+		if (parts.length >= 2 && !RESERVED_ROOTS.has(baseRoot)) {
 			const namespace = decodeURIComponent(parts[0]);
 			const model = decodeURIComponent(parts[1]);
 			const modelBase = model.split(":")[0] ?? model;
 			const modelRef = `${namespace}/${model}`;
 			const baseRef = `${namespace}/${modelBase}`;
 			const pageUrl = `${parsed.origin}/${buildModelPath([namespace, modelBase])}`;
-			return { modelRef, baseRef, pageUrl };
+			return { modelRef, baseRef, pageUrl, shorthand: false };
 		}
 	} catch {}
 
@@ -156,6 +169,78 @@ function collectParameterSizes(models: OllamaTagModel[], htmlSizes: string[]): s
 	return Array.from(sizes);
 }
 
+function matchTagsModels(baseRef: string, tagsIndex: OllamaTagModel[] | null): OllamaTagModel[] {
+	const baseLower = baseRef.toLowerCase();
+	return (tagsIndex ?? []).filter(model => {
+		const name = (model.model ?? model.name ?? "").toLowerCase();
+		return name === baseLower || name.startsWith(`${baseLower}:`);
+	});
+}
+
+function renderOllamaModel(args: {
+	url: string;
+	modelRef: string;
+	baseRef: string;
+	fetchedAt: string;
+	tagsResult: { ok: boolean };
+	matchingModels: OllamaTagModel[];
+	pageResult: { ok: boolean; content: string; finalUrl: string };
+}) {
+	const { url, modelRef, baseRef, fetchedAt, tagsResult, matchingModels, pageResult } = args;
+	const html = pageResult.ok ? pageResult.content : "";
+	const description = html ? extractMetaDescription(html) : null;
+	const htmlParameterSizes = html ? extractParameterSizes(html) : [];
+	const htmlTags = html ? extractTagsFromHtml(html, baseRef) : [];
+
+	if (!pageResult.ok && (!tagsResult.ok || matchingModels.length === 0)) {
+		return null;
+	}
+
+	const tagRef = modelRef.includes(":") ? modelRef : null;
+	const selectedTag = tagRef ? matchingModels.find(model => (model.model ?? model.name ?? "") === tagRef) : null;
+
+	const availableTagsRaw = matchingModels.map(model => model.model ?? model.name ?? "").filter(tag => tag.length > 0);
+	const availableTags = sortTags(Array.from(new Set(availableTagsRaw)));
+
+	const fallbackTags = sortTags(Array.from(new Set(htmlTags)));
+	const tagsToUse = availableTags.length > 0 ? availableTags : fallbackTags;
+
+	const parameterSizes = collectParameterSizes(selectedTag ? [selectedTag] : matchingModels, htmlParameterSizes);
+
+	const sizes = matchingModels.map(model => model.size).filter((size): size is number => typeof size === "number");
+	let sizeLine: string | null = null;
+
+	if (selectedTag?.size) {
+		sizeLine = formatBytes(selectedTag.size);
+	} else if (sizes.length > 0) {
+		const minSize = Math.min(...sizes);
+		const maxSize = Math.max(...sizes);
+		sizeLine = minSize === maxSize ? formatBytes(minSize) : `${formatBytes(minSize)} - ${formatBytes(maxSize)}`;
+	}
+
+	let md = `# ${baseRef}\n\n`;
+	if (description) md += `${description}\n\n`;
+
+	md += `**Model:** ${baseRef}\n`;
+	if (tagRef) md += `**Tag:** ${tagRef}\n`;
+	if (parameterSizes.length > 0) md += `**Parameters:** ${parameterSizes.join(", ")}\n`;
+	if (sizeLine) {
+		const label = sizeLine.includes(" - ") ? "Size Range" : "Size";
+		md += `**${label}:** ${sizeLine}\n`;
+	}
+	if (tagsToUse.length > 0) {
+		md += `**Available Tags:** ${formatTagList(tagsToUse, 40)}\n`;
+	}
+
+	return buildResult(md, {
+		url,
+		finalUrl: pageResult.ok ? pageResult.finalUrl : url,
+		method: "ollama",
+		fetchedAt,
+		notes: ["Fetched via Ollama API"],
+	});
+}
+
 export const handleOllama: SpecialHandler = async (
 	url: string,
 	timeout: number,
@@ -164,75 +249,38 @@ export const handleOllama: SpecialHandler = async (
 	try {
 		const parsed = parseOllamaUrl(url);
 		if (!parsed) return null;
-
-		const { modelRef, baseRef, pageUrl } = parsed;
+		const { modelRef, baseRef, pageUrl, shorthand } = parsed;
 		const fetchedAt = new Date().toISOString();
 
+		// Shorthands (ollama.com/<model>) share the root namespace with marketing routes: confirm them
+		// against the tags index before fetching the page. Only a parsed index can reject. Other URLs fetch
+		// tags and page in parallel so the timeout budget is not doubled.
 		const tagsUrl = "https://ollama.com/api/tags";
+		const tagsOptions = { timeout, signal, headers: { Accept: "application/json" } };
+		const parseTagsIndex = (tagsResult: { ok: boolean; content: string }) => {
+			const tagsData = tagsResult.ok ? tryParseJson<OllamaTagsResponse>(tagsResult.content) : null;
+			return Array.isArray(tagsData?.models) ? tagsData.models : null;
+		};
+
+		if (shorthand) {
+			const tagsResult = await loadPage(tagsUrl, tagsOptions);
+			const tagsIndex = parseTagsIndex(tagsResult);
+			const matchingModels = matchTagsModels(baseRef, tagsIndex);
+			if (tagsIndex && matchingModels.length === 0) return null;
+			const tagRef = modelRef.includes(":") ? modelRef.toLowerCase() : null;
+			const tagKnown =
+				!tagRef || matchingModels.some(model => (model.model ?? model.name ?? "").toLowerCase() === tagRef);
+			if (tagsIndex && !tagKnown) return null;
+			const pageResult = await loadPage(pageUrl, { timeout, signal });
+			return renderOllamaModel({ url, modelRef, baseRef, fetchedAt, tagsResult, matchingModels, pageResult });
+		}
+
 		const [tagsResult, pageResult] = await Promise.all([
-			loadPage(tagsUrl, { timeout, signal, headers: { Accept: "application/json" } }),
+			loadPage(tagsUrl, tagsOptions),
 			loadPage(pageUrl, { timeout, signal }),
 		]);
-
-		const tagsData = tagsResult.ok ? tryParseJson<OllamaTagsResponse>(tagsResult.content) : null;
-
-		const html = pageResult.ok ? pageResult.content : "";
-		const description = html ? extractMetaDescription(html) : null;
-		const htmlParameterSizes = html ? extractParameterSizes(html) : [];
-		const htmlTags = html ? extractTagsFromHtml(html, baseRef) : [];
-
-		const baseLower = baseRef.toLowerCase();
-		const models = tagsData?.models ?? [];
-		const matchingModels = models.filter(model => {
-			const name = (model.model ?? model.name ?? "").toLowerCase();
-			return name === baseLower || name.startsWith(`${baseLower}:`);
-		});
-
-		const tagRef = modelRef.includes(":") ? modelRef : null;
-		const selectedTag = tagRef ? matchingModels.find(model => (model.model ?? model.name ?? "") === tagRef) : null;
-
-		const availableTagsRaw = matchingModels
-			.map(model => model.model ?? model.name ?? "")
-			.filter(tag => tag.length > 0);
-		const availableTags = sortTags(Array.from(new Set(availableTagsRaw)));
-
-		const fallbackTags = sortTags(Array.from(new Set(htmlTags)));
-		const tagsToUse = availableTags.length > 0 ? availableTags : fallbackTags;
-
-		const parameterSizes = collectParameterSizes(selectedTag ? [selectedTag] : matchingModels, htmlParameterSizes);
-
-		const sizes = matchingModels.map(model => model.size).filter((size): size is number => typeof size === "number");
-		let sizeLine: string | null = null;
-
-		if (selectedTag?.size) {
-			sizeLine = formatBytes(selectedTag.size);
-		} else if (sizes.length > 0) {
-			const minSize = Math.min(...sizes);
-			const maxSize = Math.max(...sizes);
-			sizeLine = minSize === maxSize ? formatBytes(minSize) : `${formatBytes(minSize)} - ${formatBytes(maxSize)}`;
-		}
-
-		let md = `# ${baseRef}\n\n`;
-		if (description) md += `${description}\n\n`;
-
-		md += `**Model:** ${baseRef}\n`;
-		if (tagRef) md += `**Tag:** ${tagRef}\n`;
-		if (parameterSizes.length > 0) md += `**Parameters:** ${parameterSizes.join(", ")}\n`;
-		if (sizeLine) {
-			const label = sizeLine.includes(" - ") ? "Size Range" : "Size";
-			md += `**${label}:** ${sizeLine}\n`;
-		}
-		if (tagsToUse.length > 0) {
-			md += `**Available Tags:** ${formatTagList(tagsToUse, 40)}\n`;
-		}
-
-		return buildResult(md, {
-			url,
-			finalUrl: pageResult.ok ? pageResult.finalUrl : url,
-			method: "ollama",
-			fetchedAt,
-			notes: ["Fetched via Ollama API"],
-		});
+		const matchingModels = matchTagsModels(baseRef, parseTagsIndex(tagsResult));
+		return renderOllamaModel({ url, modelRef, baseRef, fetchedAt, tagsResult, matchingModels, pageResult });
 	} catch {}
 
 	return null;

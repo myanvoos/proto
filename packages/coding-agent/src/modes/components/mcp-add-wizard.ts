@@ -42,7 +42,9 @@ interface MCPAddWizardOAuthResult {
 interface MCPAddWizardOAuthOptions {
 	serverUrl?: string;
 	resource?: string;
+	stripSameOriginResource?: boolean;
 	registrationUrl?: string;
+	issuerUrl?: string;
 
 	abortSignal?: AbortSignal;
 }
@@ -57,10 +59,12 @@ interface WizardState {
 	oauthAuthUrl: string;
 	oauthTokenUrl: string;
 	oauthRegistrationUrl: string;
+	oauthIssuerUrl: string;
 	oauthClientId: string;
 	oauthClientSecret: string;
 	oauthScopes: string;
 	oauthResource: string;
+	oauthResourceIsFallback: boolean;
 	oauthCredentialId: string | null;
 	apiKey: string;
 	authLocation: AuthLocation | null;
@@ -87,10 +91,12 @@ export class MCPAddWizard extends OverlayPanel {
 		oauthAuthUrl: "",
 		oauthTokenUrl: "",
 		oauthRegistrationUrl: "",
+		oauthIssuerUrl: "",
 		oauthClientId: "",
 		oauthClientSecret: "",
 		oauthScopes: "",
 		oauthResource: "",
+		oauthResourceIsFallback: false,
 		oauthCredentialId: null,
 		apiKey: "",
 		authLocation: null,
@@ -944,9 +950,11 @@ export class MCPAddWizard extends OverlayPanel {
 					this.#state.oauthAuthUrl = oauth.authorizationUrl;
 					this.#state.oauthTokenUrl = oauth.tokenUrl;
 					this.#state.oauthRegistrationUrl = oauth.registrationUrl || "";
+					this.#state.oauthIssuerUrl = oauth.issuerUrl || "";
 					this.#state.oauthClientId = oauth.clientId || "";
 					this.#state.oauthScopes = oauth.scopes || "";
 					this.#state.oauthResource = oauth.resource || (this.#state.transport === "stdio" ? "" : this.#state.url);
+					this.#state.oauthResourceIsFallback = !oauth.resource && this.#state.transport !== "stdio";
 					this.#state.authMethod = "oauth";
 
 					this.#contentContainer.clear();
@@ -1095,6 +1103,9 @@ export class MCPAddWizard extends OverlayPanel {
 
 		this.#oauthAbort = new AbortController();
 		try {
+			const oauthResourceIsFallback =
+				this.#state.oauthResourceIsFallback || (!this.#state.oauthResource && this.#state.transport !== "stdio");
+			this.#state.oauthResourceIsFallback = oauthResourceIsFallback;
 			const oauthResource = this.#state.oauthResource || (this.#state.transport === "stdio" ? "" : this.#state.url);
 			const oauthResult = await this.#onOAuthCallback(
 				this.#state.oauthAuthUrl,
@@ -1105,7 +1116,9 @@ export class MCPAddWizard extends OverlayPanel {
 				{
 					serverUrl: this.#state.url || undefined,
 					registrationUrl: this.#state.oauthRegistrationUrl || undefined,
+					issuerUrl: this.#state.oauthIssuerUrl || undefined,
 					resource: oauthResource || undefined,
+					stripSameOriginResource: oauthResourceIsFallback,
 					abortSignal: this.#oauthAbort.signal,
 				},
 			);

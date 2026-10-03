@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { Settings } from "../../config/settings";
 import { initThemeSync } from "../theme/theme";
 import { ReadToolGroupComponent } from "./read-tool-group";
 
@@ -57,4 +58,30 @@ test("clearing a read's images drops its block and hiding tool activity hides bo
 	group.setToolResultImages("call-1", []);
 	expect(rows(group).some(row => row.includes("[Image: image/png]"))).toBe(false);
 	expect(rows(group).some(row => row.includes("shot.png"))).toBe(true);
+});
+
+test("grouped delimited read rows hyperlink to the per-target paths the read reported", async () => {
+	(await Settings.init({ inMemory: true })).override("tui.hyperlinks", "always");
+	const component = new ReadToolGroupComponent();
+	try {
+		component.updateArgs({ path: "src/one.ts:1-5, src/two.ts:9-12" }, "read-grouped-link");
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "combined" }],
+				details: {
+					displayReadTargets: ["src/one.ts:1-5", "src/two.ts:9-12"],
+					displayReadTargetLinks: ["/workspace/src/one.ts", "/workspace/src/two.ts"],
+				},
+			},
+			false,
+			"read-grouped-link",
+		);
+		const rendered = component.render(120).join("\n");
+		expect(Bun.stripANSI(rendered)).toContain("Read (2)");
+		const linkTargets = [...rendered.matchAll(/\x1b\]8;[^;]*;([^\x07\x1b]+)/g)].map(match => match[1]!);
+		expect(linkTargets.some(uri => uri.includes("/workspace/src/one.ts"))).toBe(true);
+		expect(linkTargets.some(uri => uri.includes("/workspace/src/two.ts"))).toBe(true);
+	} finally {
+		component.dispose();
+	}
 });

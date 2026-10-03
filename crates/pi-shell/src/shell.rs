@@ -2341,9 +2341,8 @@ mod tests {
 		.into_iter()
 		.map(|(key, value)| (key.to_string(), value.to_string()))
 		.collect();
-		let command_env = [("GIT_INDEX_FILE".to_string(), "/explicit/index".to_string())]
-			.into_iter()
-			.collect();
+		let command_env =
+			std::iter::once(("GIT_INDEX_FILE".to_string(), "/explicit/index".to_string())).collect();
 		let (chunks_tx, chunks_rx) = flume::unbounded();
 		let result = execute_shell(
 			ShellExecuteOptions {

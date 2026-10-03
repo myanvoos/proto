@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import { callTool, connectToServer, disconnectServer, listTools } from "../client";
+import { isRetriableConnectionError } from "../tool-bridge";
 import { HttpTransport } from "./http";
 
 const URL = "https://mcp.example.test/rpc";
@@ -382,6 +383,30 @@ test("an SSE request shares one deadline between the response headers and the st
 	await expect(transport.request("tools/list")).rejects.toThrow("timeout after 200ms");
 });
 
+test("caller cancellation before the SSE reply rejects with the caller's reason", async () => {
+	const reading = Promise.withResolvers<void>();
+	mockGlobalFetch(
+		async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull() {
+						reading.resolve();
+						return Promise.withResolvers<void>().promise;
+					},
+				}),
+				{ headers: { "Content-Type": "text/event-stream" } },
+			),
+	);
+	const transport = new HttpTransport({ type: "http", url: URL, timeout: 1_000 });
+	await transport.connect();
+	const caller = new AbortController();
+	const request = transport.request("tools/call", {}, { signal: caller.signal });
+	await reading.promise;
+	caller.abort(new Error("caller cancelled"));
+
+	await expect(request).rejects.toThrow("caller cancelled");
+});
+
 test("caller cancellation after the reply leaves the SSE stream delivering server messages", async () => {
 	mockGlobalFetch(async (_input, init) => {
 		const request = JSON.parse(String(init?.body)) as { id: string | number };
@@ -420,4 +445,55 @@ test("an accepted notification's SSE body keeps draining past the request timeou
 	await transport.notify("notifications/initialized");
 
 	expect(await Promise.race([notified.promise, Bun.sleep(600).then(() => "lost")])).toBe("notifications/progress");
+});
+
+test("a failed resume connection is non-retryable and strips runtime fetch advice", async () => {
+	let posts = 0;
+	mockGlobalFetch(async (_input, init) => {
+		if (init?.method === "POST") {
+			posts++;
+			return new Response("id: resume-1\nretry: 1\ndata:\n\n", { headers: { "Content-Type": "text/event-stream" } });
+		}
+		throw Object.assign(
+			new Error("Connection reset. For more information, pass `verbose: true` in the second argument to fetch()."),
+			{ code: "ECONNRESET" },
+		);
+	});
+	const transport = new HttpTransport({ type: "http", url: URL });
+	await transport.connect();
+	try {
+		const error: unknown = await transport.request("tools/call").catch(reason => reason);
+		expect(error).toMatchObject({
+			transport: "http",
+			failure: "reset",
+			retryable: false,
+			requestAccepted: true,
+			code: "ECONNRESET",
+		});
+		expect(isRetriableConnectionError(error)).toBe(false);
+		if (!(error instanceof Error)) throw new Error("Expected transport failure");
+		expect(error.message).not.toContain("verbose");
+		expect(posts).toBe(1);
+	} finally {
+		await transport.close();
+	}
+});
+
+test("a request deadline before response acceptance remains retryable once", async () => {
+	mockGlobalFetch(async (_input, init) => {
+		const signal = init?.signal;
+		if (!signal) throw new Error("Expected timeout signal");
+		const pending = Promise.withResolvers<Response>();
+		signal.addEventListener("abort", () => pending.reject(signal.reason), { once: true });
+		return pending.promise;
+	});
+	const transport = new HttpTransport({ type: "http", url: URL, timeout: 20 });
+	await transport.connect();
+	try {
+		const error: unknown = await transport.request("tools/call").catch(reason => reason);
+		expect(error).toMatchObject({ transport: "http", failure: "timeout", retryable: true, requestAccepted: false });
+		expect(isRetriableConnectionError(error)).toBe(true);
+	} finally {
+		await transport.close();
+	}
 });

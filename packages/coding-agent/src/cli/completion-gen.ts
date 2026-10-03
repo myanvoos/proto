@@ -326,7 +326,9 @@ function generateZsh(spec: CompletionSpec): string {
 	parts.push("");
 
 	parts.push(`_proto_call() {
-	local kind=$1
+	# _arguments prepends the compadd options it computed (e.g. -J group) to the action's
+	# arguments, so the kind is the final argument, not $1.
+	local kind=\${argv[-1]}
 	local -a items
 	local line
 	for line in "\${(@f)$(command ${bin} __complete $kind -- "$PREFIX" 2>/dev/null)}"; do

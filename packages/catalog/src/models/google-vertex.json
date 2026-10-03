@@ -452,7 +452,7 @@
 			"supportsMidConversationToolChanges": true,
 			"supportsPerMessageEffort": true,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
@@ -630,6 +630,64 @@
 			"escapeBuiltinToolNames": false
 		}
 	},
+	"claude-sonnet-5-5@default": {
+		"id": "claude-sonnet-5-5@default",
+		"name": "Claude Sonnet 5.5",
+		"api": "anthropic-messages",
+		"provider": "google-vertex",
+		"baseUrl": "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/claude-sonnet-5-5@default:streamRawPredict",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
 	"claude-sonnet-5@default": {
 		"id": "claude-sonnet-5@default",
 		"name": "Claude Sonnet 5",
@@ -708,7 +766,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 9.9,
-		"tps": 188.6,
+		"tps": 202.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -742,7 +800,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65535,
 		"int": 6.7,
-		"tps": 265.8,
+		"tps": 293.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -776,7 +834,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 16.1,
-		"tps": 125.8,
+		"tps": 124.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -877,7 +935,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 29.7,
-		"tps": 118.4,
+		"tps": 116.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -941,7 +999,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -976,7 +1034,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 22.2,
-		"tps": 357.4,
+		"tps": 360,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1011,7 +1069,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 34,
-		"tps": 180.2,
+		"tps": 198.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1046,7 +1104,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 39.1,
-		"tps": 278.3,
+		"tps": 302.6,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1080,7 +1138,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 40.9,
-		"tps": 275.9,
+		"tps": 242.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1247,7 +1305,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 131072,
-		"maxTokens": 32768,
+		"maxTokens": 131072,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1329,7 +1387,7 @@
 		"contextWindow": 2000000,
 		"maxTokens": 30000,
 		"int": 25.7,
-		"tps": 106.2,
+		"tps": 124.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -1403,7 +1461,7 @@
 		"contextWindow": 2000000,
 		"maxTokens": 30000,
 		"int": 25.7,
-		"tps": 106.2,
+		"tps": 124.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1411,7 +1469,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -1488,7 +1547,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 30000,
 		"int": 24.9,
-		"tps": 104.2,
+		"tps": 143.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1496,7 +1555,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1572,7 +1632,7 @@
 		"contextWindow": 524288,
 		"maxTokens": 500000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1580,7 +1640,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

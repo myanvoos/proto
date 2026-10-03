@@ -114,6 +114,8 @@ export interface BenchModelRegistry {
 	getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined>;
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;
 	hasConfiguredAuth?(model: Model<Api>): boolean;
+	getDiscoverableProviders?(): string[];
+	refresh?(): Promise<void>;
 }
 
 interface BenchRuntime {
@@ -805,7 +807,7 @@ async function createDefaultRuntime(): Promise<BenchRuntime> {
 	}
 }
 
-interface BenchTarget {
+export interface BenchTarget {
 	selector: string;
 	model: Model<Api>;
 	thinking: ResolvedThinkingLevel | undefined;
@@ -847,16 +849,21 @@ function resolveAuthenticatedAlternative(
 	return pickHighestPriorityProvider(authenticated, providerOrder);
 }
 
-function resolveBenchModels(
+/**
+ * Resolve every selector to a concrete model. Discovery-backed providers (models.yml `discovery:`, ollama,
+ * llama.cpp, lm-studio) ship no static models, so when any selector misses, one cache-aware discovery pass
+ * runs and every selector is re-resolved against the refreshed catalog before failing. Warnings come from
+ * the final pass only.
+ */
+export async function resolveBenchModels(
 	selectors: string[],
 	modelRegistry: BenchModelRegistry,
 	settings: Settings | undefined,
 	writeStderr: (text: string) => void,
-): BenchTarget[] {
+): Promise<BenchTarget[]> {
 	const preferences = getModelMatchPreferences(settings);
-	const resolved: BenchTarget[] = [];
-	const errors: string[] = [];
-	for (const selector of selectors) {
+	let warnings: string[] = [];
+	const resolveOne = (selector: string): BenchTarget | string => {
 		const result = resolveCliModel({
 			cliModel: selector,
 			modelRegistry,
@@ -864,15 +871,9 @@ function resolveBenchModels(
 			settings,
 			preferences,
 		});
-		if (result.error) {
-			errors.push(`${selector}: ${result.error}`);
-			continue;
-		}
-		if (!result.model) {
-			errors.push(`${selector}: model not found`);
-			continue;
-		}
-		if (result.warning) writeStderr(`${chalk.yellow(`Warning: ${result.warning}`)}\n`);
+		if (result.error) return `${selector}: ${result.error}`;
+		if (!result.model) return `${selector}: model not found`;
+		if (result.warning) warnings.push(result.warning);
 		let model = result.model;
 		const authSelector = result.configuredPatterns?.[result.configuredPatternIndex ?? 0] ?? selector;
 		const authenticated = resolveAuthenticatedAlternative(
@@ -882,18 +883,33 @@ function resolveBenchModels(
 			preferences.providerOrder,
 		);
 		if (authenticated) {
-			writeStderr(
-				`${chalk.yellow(
-					`Warning: no credentials for "${model.provider}"; benchmarking ${formatModelString(authenticated)} instead. Pin "${formatModelString(model)}" to force it.`,
-				)}\n`,
+			warnings.push(
+				`no credentials for "${model.provider}"; benchmarking ${formatModelString(authenticated)} instead. Pin "${formatModelString(model)}" to force it.`,
 			);
 			model = authenticated;
 		}
-		resolved.push({
-			selector,
-			model,
-			thinking: resolveThinkingLevelForModel(model, result.thinkingLevel),
-		});
+		return { selector, model, thinking: resolveThinkingLevelForModel(model, result.thinkingLevel) };
+	};
+	const resolvePass = (): Array<BenchTarget | string> => {
+		warnings = [];
+		return selectors.map(resolveOne);
+	};
+
+	let outcomes = resolvePass();
+	if (
+		outcomes.some(outcome => typeof outcome === "string") &&
+		modelRegistry.refresh &&
+		(modelRegistry.getDiscoverableProviders?.().length ?? 0) > 0
+	) {
+		await modelRegistry.refresh();
+		outcomes = resolvePass();
+	}
+	for (const warning of warnings) writeStderr(`${chalk.yellow(`Warning: ${warning}`)}\n`);
+	const resolved: BenchTarget[] = [];
+	const errors: string[] = [];
+	for (const outcome of outcomes) {
+		if (typeof outcome === "string") errors.push(outcome);
+		else resolved.push(outcome);
 	}
 	if (errors.length > 0) {
 		throw new Error(`Could not resolve ${errors.length === 1 ? "model" : "models"}:\n${errors.join("\n")}`);
@@ -1001,7 +1017,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 
 	const runtime = await (deps.createRuntime ?? createDefaultRuntime)();
 	try {
-		const targets = resolveBenchModels(command.models, runtime.modelRegistry, runtime.settings, writeStderr);
+		const targets = await resolveBenchModels(command.models, runtime.modelRegistry, runtime.settings, writeStderr);
 		if (cacheMode) assertCacheModeSupported(targets);
 
 		const flagTier = command.flags.serviceTier ? serviceTierSettingToTier(command.flags.serviceTier) : undefined;

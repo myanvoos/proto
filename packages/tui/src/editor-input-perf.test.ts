@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -610,4 +610,69 @@ test("right arrow accepts an inline word completion only at end of line", () => 
 	for (let i = 0; i < 10; i++) midLine.handleInput("\x1b[C");
 	expect(midLine.getText()).toBe("The weath end");
 	expect(midLine.getCursor()).toEqual({ line: 0, col: 10 });
+});
+
+describe("Enter on a slash-command argument completion", () => {
+	const subcommands = [
+		{ name: "list" },
+		{ name: "login" },
+		{ name: "test", usage: "<name>" },
+		{ name: "export", usage: "[<path>]" },
+	];
+	const mcpCommands: SlashCommand[] = [
+		{
+			name: "mcp",
+			description: "Manage MCP servers",
+			getArgumentCompletions: (prefix: string) =>
+				prefix.includes(" ")
+					? null
+					: subcommands
+							.filter(s => s.name.startsWith(prefix))
+							.map(s => ({ value: `${s.name} `, label: s.name, hint: s.usage })),
+		},
+	];
+
+	async function typeArgument(text: string, last: string): Promise<{ editor: Editor; submitted: string[] }> {
+		const editor = editorWith();
+		const submitted: string[] = [];
+		editor.onSubmit = value => {
+			submitted.push(value);
+		};
+		editor.setAutocompleteProvider(new CombinedAutocompleteProvider(mcpCommands, "/tmp"));
+		editor.setText(text);
+		const shown = Promise.withResolvers<void>();
+		editor.onAutocompleteUpdate = () => {
+			if (editor.isShowingAutocomplete()) shown.resolve();
+		};
+		editor.handleInput(last);
+		await shown.promise;
+		return { editor, submitted };
+	}
+
+	test("submits when the typed argument already equals the selection", async () => {
+		const { editor, submitted } = await typeArgument("/mcp lis", "t");
+		editor.handleInput("\r");
+		expect(submitted).toEqual(["/mcp list"]);
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
+	test("accepts a partial argument without submitting", async () => {
+		const { editor, submitted } = await typeArgument("/mcp l", "i");
+		editor.handleInput("\r");
+		expect(submitted).toEqual([]);
+		expect(editor.getText()).toBe("/mcp list ");
+	});
+
+	test("accepts a fully typed subcommand that still requires an argument", async () => {
+		const { editor, submitted } = await typeArgument("/mcp tes", "t");
+		editor.handleInput("\r");
+		expect(submitted).toEqual([]);
+		expect(editor.getText()).toBe("/mcp test ");
+	});
+
+	test("submits a fully typed subcommand whose argument is optional", async () => {
+		const { editor, submitted } = await typeArgument("/mcp expor", "t");
+		editor.handleInput("\r");
+		expect(submitted).toEqual(["/mcp export"]);
+	});
 });

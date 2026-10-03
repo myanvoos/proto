@@ -26,7 +26,8 @@ Behavior notes:
 - RPC/ACP host defaults cover worker isolation/execution, memory, advisor, tier, async-job, and bash auto-background settings. They are applied only when a path is not explicitly configured; project/global config, `--config`, and isolated settings remain authoritative. Checklist settings are not host-defaulted.
 - The process claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
-- When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, and the process exits with code `0`.
+- When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and the process exits with code `0`. Clients must keep reading stdout after closing stdin.
+- A session store that stops accepting writes is reported as a `notice` event (`level: "error"`, `source: "session-persistence"`) and mirrored on stderr. If the failure is still latched at shutdown, the transcript is not durable: the process writes that to stderr and exits with code `1`.
 - Responses/events are written as one JSON object per line.
 
 ## Transport and Framing

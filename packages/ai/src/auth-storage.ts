@@ -49,7 +49,7 @@ import { charmHyperUsageProvider } from "./usage/charm-hyper";
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
 import { consumeClaudeResetCredit, listClaudeResetCredits } from "./usage/claude-reset";
 import { clinePassUsageProvider } from "./usage/cline-pass";
-import { cursorUsageProvider } from "./usage/cursor";
+import { cursorRankingStrategy, cursorUsageProvider } from "./usage/cursor";
 import { devinUsageProvider } from "./usage/devin";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
 import { githubCopilotUsageProvider } from "./usage/github-copilot";
@@ -61,9 +61,10 @@ import { ollamaCloudUsageProvider, ollamaUsageProvider } from "./usage/ollama";
 import { codexRankingStrategy, openaiCodexUsageProvider } from "./usage/openai-codex";
 import { consumeCodexResetCredit, listCodexResetCredits, pickSoonestExpiringCredit } from "./usage/openai-codex-reset";
 import { opencodeGoRankingStrategy, opencodeGoUsageProvider } from "./usage/opencode-go";
+import { isUsageLimitExhausted } from "./usage/shared";
 import { syntheticUsageProvider } from "./usage/synthetic";
 import { umansUsageProvider } from "./usage/umans";
-import { xaiOauthUsageProvider } from "./usage/xai-oauth";
+import { xaiOauthRankingStrategy, xaiOauthUsageProvider } from "./usage/xai-oauth";
 import { zaiRankingStrategy, zaiUsageProvider } from "./usage/zai";
 import { raceWithSignal } from "./utils/abort";
 import { extractProviderRetryHint } from "./utils/retry-after";
@@ -346,6 +347,28 @@ export interface AuthCredentialStore {
 export interface CredentialDisabledEvent {
 	provider: string;
 	disabledCause: string;
+	credentialId?: number;
+	/** Account identity recorded on the disabled OAuth credential, when the provider supplied one. */
+	email?: string;
+	accountId?: string;
+	orgId?: string;
+	orgName?: string;
+}
+
+function credentialDisabledEvent(
+	provider: string,
+	row: { id: number; credential: AuthCredential },
+	disabledCause: string,
+): CredentialDisabledEvent {
+	const event: CredentialDisabledEvent = { provider, disabledCause, credentialId: row.id };
+	const { credential } = row;
+	if (credential.type === "oauth") {
+		if (credential.email) event.email = credential.email;
+		if (credential.accountId) event.accountId = credential.accountId;
+		if (credential.orgId) event.orgId = credential.orgId;
+		if (credential.orgName) event.orgName = credential.orgName;
+	}
+	return event;
 }
 
 export type AuthStorageOptions = {
@@ -775,10 +798,12 @@ const DEFAULT_RANKING_STRATEGIES = new Map<Provider, CredentialRankingStrategy>(
 	["alibaba-token-plan", alibabaTokenPlanRankingStrategy],
 	["openai-codex", codexRankingStrategy],
 	["anthropic", claudeRankingStrategy],
+	["cursor", cursorRankingStrategy],
 	["google-antigravity", antigravityRankingStrategy],
 	["kimi-code", kimiRankingStrategy],
 	["zai", zaiRankingStrategy],
 	["opencode-go", opencodeGoRankingStrategy],
+	["xai-oauth", xaiOauthRankingStrategy],
 ]);
 
 function resolveDefaultRankingStrategy(provider: Provider): CredentialRankingStrategy | undefined {
@@ -917,6 +942,8 @@ export class AuthStorage {
 	#data: Map<string, StoredCredential[]> = new Map();
 	#runtimeOverrides: Map<string, string> = new Map();
 	#configOverrides: Map<string, string> = new Map();
+	// Config keys ranked below stored OAuth and `/login` credentials (at the env-var tier).
+	#configFallbacks: Map<string, string> = new Map();
 
 	#providerRoundRobinIndex: Map<string, number> = new Map();
 
@@ -1098,17 +1125,29 @@ export class AuthStorage {
 		return this.#runtimeUsageProviderOverrides.get(provider)?.provider ?? this.#usageProviderResolver?.(provider);
 	}
 
-	/** Config-sourced key (`models.yml` apiKey): a literal, env name, or `!command`, resolved per request. */
-	setConfigApiKey(provider: string, apiKeyConfig: string): void {
-		this.#configOverrides.set(provider, apiKeyConfig);
+	/**
+	 * Config-sourced key (`models.yml` apiKey): a literal, env name, or `!command`, resolved per request. It overrides
+	 * stored credentials unless `fallback` is set; then a key saved by `/login` (or OAuth) wins, so a provider's default
+	 * key reference (e.g. an unset env-var name, which resolves to its literal text) cannot shadow it.
+	 */
+	setConfigApiKey(provider: string, apiKeyConfig: string, options?: { fallback?: boolean }): void {
+		if (options?.fallback) {
+			this.#configOverrides.delete(provider);
+			this.#configFallbacks.set(provider, apiKeyConfig);
+		} else {
+			this.#configFallbacks.delete(provider);
+			this.#configOverrides.set(provider, apiKeyConfig);
+		}
 	}
 
 	removeConfigApiKey(provider: string): void {
 		this.#configOverrides.delete(provider);
+		this.#configFallbacks.delete(provider);
 	}
 
 	clearConfigApiKeys(): void {
 		this.#configOverrides.clear();
+		this.#configFallbacks.clear();
 	}
 
 	/**
@@ -1862,7 +1901,7 @@ export class AuthStorage {
 		const updated = entries.filter((_value, idx) => idx !== index);
 		this.#setStoredCredentials(provider, updated);
 		this.#resetProviderAssignments(provider);
-		this.#emitCredentialDisabled({ provider, disabledCause });
+		this.#emitCredentialDisabled(credentialDisabledEvent(provider, target, disabledCause));
 		return true;
 	}
 
@@ -1905,6 +1944,8 @@ export class AuthStorage {
 	}
 
 	#emitCredentialDisabled(event: CredentialDisabledEvent): void {
+		// Logged with or without subscribers: once a session moves on to a sibling account nothing else records it.
+		logger.warn("Auth credential disabled", { ...event });
 		if (this.#credentialDisabledListeners.size === 0) {
 			if (this.#pendingDisabledEvents.length >= MAX_PENDING_DISABLED_EVENTS) {
 				this.#pendingDisabledEvents.shift();
@@ -2129,7 +2170,7 @@ export class AuthStorage {
 									.map(entry => ({ id: entry.id, credential: entry.credential })),
 							);
 							this.#resetProviderAssignments(provider);
-							this.#emitCredentialDisabled({ provider, disabledCause });
+							this.#emitCredentialDisabled(credentialDisabledEvent(provider, row, disabledCause));
 							return { credential: undefined, refreshed: false, removed: true };
 						}
 						await this.reload();
@@ -2293,6 +2334,7 @@ export class AuthStorage {
 		if (this.#runtimeOverrides.has(provider)) return true;
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getAuthBearingCredentials(provider).length > 0) return true;
+		if (this.#configFallbacks.has(provider)) return true;
 		return this.#hasDedicatedEnvAuth(provider);
 	}
 
@@ -2303,7 +2345,7 @@ export class AuthStorage {
 
 	hasNonEnvCredential(provider: string): boolean {
 		if (this.#runtimeOverrides.has(provider)) return true;
-		if (this.#configOverrides.has(provider)) return true;
+		if (this.#configOverrides.has(provider) || this.#configFallbacks.has(provider)) return true;
 		return this.#getAuthBearingCredentials(provider).length > 0;
 	}
 
@@ -2316,6 +2358,7 @@ export class AuthStorage {
 		if (this.#runtimeOverrides.has(provider)) return true;
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getAuthBearingCredentials(provider).length > 0) return true;
+		if (this.#configFallbacks.has(provider)) return true;
 		if ((provider === "amazon-bedrock" || provider === "bedrock-mantle") && $env.AWS_BEARER_TOKEN_BEDROCK?.trim()) {
 			return true;
 		}
@@ -2343,6 +2386,7 @@ export class AuthStorage {
 		if (stored.some(credential => credential.type === "api_key" && credential.source === "login")) {
 			return { kind: "api_key" };
 		}
+		if (this.#configFallbacks.has(provider)) return { kind: "config" };
 		if (this.#hasDedicatedEnvAuth(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
 		if (stored.some(credential => credential.type === "api_key")) return { kind: "api_key" };
 		return undefined;
@@ -2771,9 +2815,13 @@ export class AuthStorage {
 		if (providerImpl.supports && !providerImpl.supports(params)) return null;
 
 		try {
+			const previousReport = this.#usageCache.getStale<UsageReport | null>(
+				this.#buildUsageReportCacheKey(request),
+			)?.value;
 			const report = await providerImpl.fetchUsage(params, {
 				fetch: this.#usageFetch,
 				logger: this.#usageLogger,
+				...(previousReport ? { previousReport } : {}),
 			});
 
 			if (report && params.credential.orgId !== undefined) {
@@ -2951,7 +2999,7 @@ export class AuthStorage {
 		const parsedReport = parseHeaders(headers, now, { responseStatus: options?.responseStatus });
 		if (!parsedReport) return false;
 
-		const exhausted = parsedReport.limits.some(limit => this.#isUsageLimitExhausted(limit));
+		const exhausted = parsedReport.limits.some(isUsageLimitExhausted);
 		const last = this.#usageHeaderIngestAt.get(cacheKey);
 		if (!exhausted && last !== undefined && now - last < USAGE_HEADER_INGEST_INTERVAL_MS) return false;
 		const metadata: Record<string, unknown> = { ...(parsedReport.metadata ?? {}) };
@@ -3007,15 +3055,18 @@ export class AuthStorage {
 		return true;
 	}
 
-	async #collectUsageRequests(options?: {
-		baseUrlResolver?: (provider: Provider) => string | undefined;
-	}): Promise<UsageRequestDescriptor[]> {
+	async #collectUsageRequests(
+		options?: { baseUrlResolver?: (provider: Provider) => string | undefined },
+		providerFilter?: ReadonlySet<Provider>,
+	): Promise<UsageRequestDescriptor[]> {
 		const requests: UsageRequestDescriptor[] = [];
-		const providers = new Set<string>([
-			...this.#data.keys(),
-			...this.#runtimeUsageProviderOverrides.keys(),
-			...DEFAULT_USAGE_PROVIDERS.map(provider => provider.id),
-		]);
+		const providers =
+			providerFilter ??
+			new Set<string>([
+				...this.#data.keys(),
+				...this.#runtimeUsageProviderOverrides.keys(),
+				...DEFAULT_USAGE_PROVIDERS.map(provider => provider.id),
+			]);
 
 		for (const providerId of providers) {
 			const provider = providerId as Provider;
@@ -3216,17 +3267,6 @@ export class AuthStorage {
 		return deduped;
 	}
 
-	#isUsageLimitExhausted(limit: UsageLimit): boolean {
-		if (limit.status !== undefined && limit.status !== "unknown") return limit.status === "exhausted";
-		const amount = limit.amount;
-		if (amount.usedFraction !== undefined && amount.usedFraction >= 1) return true;
-		if (amount.remainingFraction !== undefined && amount.remainingFraction <= 0) return true;
-		if (amount.used !== undefined && amount.limit !== undefined && amount.used >= amount.limit) return true;
-		if (amount.remaining !== undefined && amount.remaining <= 0) return true;
-		if (amount.unit === "percent" && amount.used !== undefined && amount.used >= 100) return true;
-		return false;
-	}
-
 	#getScopedUsageLimits(
 		strategy: CredentialRankingStrategy,
 		report: UsageReport,
@@ -3236,14 +3276,14 @@ export class AuthStorage {
 	}
 
 	#isUsageLimitReached(limits: UsageLimit[]): boolean {
-		return limits.some(limit => this.#isUsageLimitExhausted(limit));
+		return limits.some(isUsageLimitExhausted);
 	}
 
 	/** Extracts when every currently exhausted window has reset (in ms). */
 	#getUsageResetAtMs(limits: UsageLimit[], nowMs: number): number | undefined {
 		const candidates: number[] = [];
 		for (const limit of limits) {
-			if (!this.#isUsageLimitExhausted(limit)) continue;
+			if (!isUsageLimitExhausted(limit)) continue;
 			const window = limit.window;
 			if (window?.resetsAt && window.resetsAt > nowMs) {
 				candidates.push(window.resetsAt);
@@ -3304,7 +3344,7 @@ export class AuthStorage {
 				const limits = strategy
 					? this.#getScopedUsageLimits(strategy, report, context)
 					: report.limits.filter(limit => limit.scope.shared === true || limit.scope.modelId === modelId);
-				return limits.some(limit => this.#isUsageLimitExhausted(limit) || resolveUsedFraction(limit) !== undefined);
+				return limits.some(limit => isUsageLimitExhausted(limit) || resolveUsedFraction(limit) !== undefined);
 			});
 			if (hasUsage) reporting.push(modelId);
 		}
@@ -3412,7 +3452,7 @@ export class AuthStorage {
 				if (currentLimits.length === 0) {
 					return { credentialId: entry.id, credentialType, state: "unknown" };
 				}
-				const activeExhausted = currentLimits.filter(limit => this.#isUsageLimitExhausted(limit));
+				const activeExhausted = currentLimits.filter(limit => isUsageLimitExhausted(limit));
 				if (activeExhausted.length > 0) {
 					const futureResets = activeExhausted
 						.map(limit => limit.window?.resetsAt)
@@ -3511,11 +3551,29 @@ export class AuthStorage {
 				() => new AIError.AbortError("usage fetch aborted"),
 			);
 			if (shouldReconcileStoreHookReports && reports) this.#reconcileUsageBlocksFromReports(reports);
-			return reports;
+			if (!reports || this.#runtimeUsageProviderOverrides.size === 0) return reports;
+
+			// The store owns the providers it reports; extension usage providers registered only in this
+			// process are absent from it and need a local probe with local credentials.
+			const reportedProviders = new Set(reports.map(report => report.provider));
+			const localProviders = new Set<Provider>();
+			for (const provider of this.#runtimeUsageProviderOverrides.keys()) {
+				if (!reportedProviders.has(provider)) localProviders.add(provider);
+			}
+			if (localProviders.size === 0) return reports;
+			const localReports = await this.#fetchLocalUsageReports(options, localProviders);
+			return localReports?.length ? [...reports, ...localReports] : reports;
 		}
 		if (!this.#usageProviderResolver && this.#runtimeUsageProviderOverrides.size === 0) return null;
+		return this.#fetchLocalUsageReports(options);
+	}
 
-		const requests = await this.#collectUsageRequests(options);
+	/** Probe usage per stored credential, optionally restricted to `providerFilter`, sharing concurrent polls. */
+	async #fetchLocalUsageReports(
+		options?: { baseUrlResolver?: (provider: Provider) => string | undefined },
+		providerFilter?: ReadonlySet<Provider>,
+	): Promise<UsageReport[] | null> {
+		const requests = await this.#collectUsageRequests(options, providerFilter);
 		if (requests.length === 0) return [];
 
 		this.#usageLogger?.debug("Usage fetch requested", {
@@ -3898,7 +3956,7 @@ export class AuthStorage {
 					}
 					// Only a report whose every exhausted window resets in the future may authorize a wait:
 					// a permanent cap next to a timed window never clears by sleeping.
-					const exhaustedLimits = scopedLimits.filter(limit => this.#isUsageLimitExhausted(limit));
+					const exhaustedLimits = scopedLimits.filter(limit => isUsageLimitExhausted(limit));
 					const futureResets = exhaustedLimits
 						.map(limit => this.#resolveWindowResetAt(limit.window))
 						.filter((reset): reset is number => reset !== undefined && reset > nowMs);
@@ -4935,6 +4993,9 @@ export class AuthStorage {
 			return this.#configValueResolver(loginApiKeySelection.credential.key);
 		}
 
+		const fallbackKey = this.#configFallbacks.get(provider);
+		if (fallbackKey !== undefined) return this.#configValueResolver(fallbackKey);
+
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
 
@@ -4973,6 +5034,9 @@ export class AuthStorage {
 		}
 
 		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
+
+		const fallbackKey = this.#configFallbacks.get(provider);
+		if (fallbackKey !== undefined) return this.#configValueResolver(fallbackKey);
 
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
@@ -5308,7 +5372,7 @@ export class AuthStorage {
 					selected.remainingCount < pending.remainingCount
 				) {
 					this.#pendingClaudeResets.delete(accountKey);
-					this.#invalidateUsageReportCache(provider, options.baseUrl);
+					this.#invalidateUsageReportCache(provider, options.baseUrl, access.credentialId);
 					return { ...identity, ok: false, code: "already_redeemed", creditId };
 				}
 				if (pending.program === "juniper_tide") {
@@ -5371,7 +5435,7 @@ export class AuthStorage {
 			result = { ...identity, ok: consumed.ok, code: consumed.code, creditId };
 		}
 		if (result.ok) {
-			this.#invalidateUsageReportCache(provider, options.baseUrl);
+			this.#invalidateUsageReportCache(provider, options.baseUrl, access.credentialId);
 			if (this.#store.invalidateUsageCache) {
 				await this.#store.invalidateUsageCache(options.signal).catch(err => {
 					logger.debug("Failed to notify store of stale usage", { err });
@@ -5414,7 +5478,12 @@ export class AuthStorage {
 		}
 	}
 
-	#invalidateUsageReportCache(provider: string, baseUrl?: string): void {
+	/**
+	 * Expire every cached report for `provider` so the next fetch is fresh. `resetSpentCredentialId` also drops
+	 * that credential's cached saved-reset inventory, so a failed follow-up reset probe cannot carry the
+	 * pre-redemption inventory forward.
+	 */
+	#invalidateUsageReportCache(provider: string, baseUrl?: string, resetSpentCredentialId?: number): void {
 		this.#usageCacheEpoch += 1;
 		const expired = Date.now() - 1;
 		for (const entry of this.#getStoredCredentials(provider)) {
@@ -5422,8 +5491,12 @@ export class AuthStorage {
 			const cacheKey = this.#buildUsageReportCacheKey(
 				this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl),
 			);
-			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
-			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+			let value = this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value ?? null;
+			if (value?.resetCredits && entry.id === resetSpentCredentialId) {
+				const { resetCredits: _spent, ...rest } = value;
+				value = rest;
+			}
+			this.#usageCache.set(cacheKey, { value, expiresAt: expired });
 		}
 	}
 
@@ -6167,6 +6240,7 @@ export class AuthStorage {
 				!this.#isKeylessFallbackCredential(provider, credential),
 		);
 		if (loginApiKeySource) return loginApiKeySource;
+		if (this.#configFallbacks.has(provider)) return "provider config (fallback)";
 		if (getEnvApiKey(provider)) return `env (over ${baseLabel})`;
 		const apiKeySource = describeStored(
 			"api_key",

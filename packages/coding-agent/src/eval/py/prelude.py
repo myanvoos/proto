@@ -1211,6 +1211,7 @@ if "__proto_prelude_loaded__" not in globals():
             ("patchPath", "patch_path"),
             ("branchName", "branch_name"),
             ("nestedPatches", "nested_patches"),
+            ("nestedPatchPaths", "nested_patch_paths"),
             ("changesApplied", "changes_applied"),
             ("isolationSummary", "isolation_summary"),
         ):

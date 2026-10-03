@@ -26,7 +26,12 @@ const CREDITS_EXHAUSTED_PATTERN =
 // Anthropic subscription entitlement wall ("Usage credits are required for this model",
 // `credits_required`): the account cannot serve the model, so rotate instead of backing off.
 const ANTHROPIC_CREDITS_REQUIRED_PATTERN = /\busage credits are required\b|\bcredits_required\b/i;
-const SPEND_LIMIT_PATTERN = /spend.?limit/i;
+// Cursor ERROR_USAGE_PRICING_REQUIRED (429) "Your prepaid balance is used up": account-local until
+// topped up, so rotate. The `\b` after the code keeps USAGE_PRICING_REQUIRED_CHANGEABLE out.
+const PREPAID_BALANCE_EXHAUSTED_PATTERN =
+	/\busage_pricing_required\b|\bprepaid balance\b[^\n]{0,40}\b(?:used up|exhausted|depleted)\b/i;
+// Anthropic "monthly spend limit", Google "monthly spending cap"; the `\b` keeps "spending capacity" (a throttle) out.
+const SPEND_LIMIT_PATTERN = /spend(?:ing)?[\s_-]?(?:limit|cap)\b/i;
 const SUBSCRIPTION_CAP_PATTERN =
 	/\b(?:subscription|plan|membership)\b[^\n]{0,80}\b(?:rate.?limits?|quota|cap)\b|\b(?:rate.?limits?|quota|cap)\b[^\n]{0,80}\b(?:subscription|plan|membership)\b/i;
 const TRANSIENT_INTERVAL_RATE_LIMIT_PATTERN = /\bper\s+(?:second|minute)\b/i;
@@ -60,6 +65,13 @@ export function isDashScopeTokenLimitText(errorMessage: string): boolean {
 		DASHSCOPE_TOKEN_LIMIT_DOC_PATTERN.test(errorMessage) && DASHSCOPE_TOKEN_LIMIT_MESSAGE_PATTERN.test(errorMessage)
 	);
 }
+
+// Rolling per-minute token/request throttles ("tpm exhausted (type=quota_exceeded_error)",
+// "RateLimitExceeded.EndpointTPMExceeded") carry quota wording but self-heal within the minute:
+// transient backoff, not credential blocking. Account-scoped arms of parseRateLimitReason run
+// first, so a plan/spend cap that merely quotes a TPM number keeps its quota verdict.
+const TPM_RPM_THROTTLE_PATTERN =
+	/\b(?:tpm|rpm)\b[^\n]{0,40}\b(?:exhaust\w*|exceed\w*|limit\w*|throttl\w*|reach\w*)\b|\b(?:exhaust\w*|exceed\w*|limit\w*|throttl\w*|reach\w*)\b[^\n]{0,40}\b(?:tpm|rpm)\b|\bRateLimitExceeded\.(?:Endpoint)?(?:TPM|RPM)\w*/i;
 
 const GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
 const ANTIGRAVITY_MODEL_QUOTA_PATTERN = /\bexhausted your capacity on this model\b/i;
@@ -170,11 +182,16 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		return "QUOTA_EXHAUSTED";
 	}
 
+	if (PREPAID_BALANCE_EXHAUSTED_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
 	if (
 		lower.includes("per minute") ||
 		lower.includes("rate limit") ||
 		lower.includes("too many requests") ||
-		lower.includes("presque")
+		lower.includes("presque") ||
+		TPM_RPM_THROTTLE_PATTERN.test(errorMessage)
 	) {
 		return "RATE_LIMIT_EXCEEDED";
 	}
@@ -231,10 +248,10 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
 }
 
 const STATUS_402_QUOTA_PATTERN =
-	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?balance)\b/i;
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|account.?funds))\b/i;
 
 /**
- * Whether a 402 body describes an account-billing cap: opaque, payment/deactivation/balance
+ * Whether a 402 body describes an account-billing cap: opaque, payment/deactivation/balance/funds
  * worded, or quota/concurrency exhausted. Informative non-quota 402s (e.g. "A subscription is
  * required for this endpoint") stay non-usage-limits so they don't burn sibling credentials.
  */
@@ -276,9 +293,13 @@ export function matchesUsageLimitText(errorMessage: string): boolean {
 	const structuredReason = parseGoogleRpcRateLimitReason(errorMessage);
 	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
 	if (isDashScopeTokenLimitText(errorMessage)) return false;
+	if (TPM_RPM_THROTTLE_PATTERN.test(errorMessage) && parseRateLimitReason(errorMessage) === "RATE_LIMIT_EXCEEDED") {
+		return false;
+	}
 	return (
 		USAGE_LIMIT_PATTERN.test(errorMessage) ||
 		ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(errorMessage) ||
+		PREPAID_BALANCE_EXHAUSTED_PATTERN.test(errorMessage) ||
 		CREDITS_EXHAUSTED_PATTERN.test(errorMessage) ||
 		(CN_QUOTA_EXHAUSTED_PATTERN.test(errorMessage) && !CN_TRANSIENT_CAP_PATTERN.test(errorMessage)) ||
 		SPEND_LIMIT_PATTERN.test(errorMessage) ||

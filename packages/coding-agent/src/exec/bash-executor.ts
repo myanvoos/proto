@@ -7,7 +7,11 @@ import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import type { ExecutionMetadata } from "../session/execution-metadata";
 import { type ExecutionTimeoutMetadata, executionMetadataForResult } from "../session/execution-metadata";
 import { OutputSink } from "../session/streaming-output";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
+import {
+	resolveOutputArtifactMaxBytes,
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+} from "../tools/output-meta";
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
@@ -245,6 +249,16 @@ const RETAIN_PROBE_TIMEOUT_MS = 1_000;
 const SHELL_CLOSE_TIMEOUT_MS = 3_000;
 
 const NATIVE_TIMEOUT_FALLBACK_GRACE_MS = 5_000;
+// A wedged native run (e.g. a grandchild holding the stdout pipe) can leave runPromise pending
+// forever; bound quarantine so the session key and shell are still released.
+const QUARANTINE_CLEANUP_TIMEOUT_MS = 30_000;
+
+function quarantineCleanupDeadline(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const timer = setTimeout(resolve, QUARANTINE_CLEANUP_TIMEOUT_MS);
+	timer.unref?.();
+	return promise;
+}
 
 function makeCommandTimeoutMetadata(timeoutMs: number | undefined): ExecutionTimeoutMetadata {
 	return {
@@ -407,9 +421,10 @@ function quarantineShellSession(
 	sessionOwner: BashSessionOwner | undefined,
 ): void {
 	brokenShellSessions.add(sessionKey);
-	const cleanup = abortCleanupPromise
+	const settled = abortCleanupPromise
 		? Promise.allSettled([runPromise, abortCleanupPromise])
 		: Promise.allSettled([runPromise]);
+	const cleanup = Promise.race([settled, quarantineCleanupDeadline()]);
 	if (isDisposedSessionKey(sessionKey, sessionOwner)) {
 		void cleanup.catch(() => undefined);
 		return;
@@ -979,6 +994,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		artifactId: options?.artifactId,
 		headBytes: resolveOutputSinkHeadBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
+		artifactMaxBytes: resolveOutputArtifactMaxBytes(settings),
 		chunkThrottleMs: options?.onChunk ? (options.chunkThrottleMs ?? 50) : 0,
 	});
 
@@ -1119,6 +1135,15 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
 			}
+			let annotation = cancelledAnnotation(options?.signal);
+			if (winner.kind === "timeout" && deadlineTimeoutMs !== undefined) {
+				annotation = `Command timed out after ${Math.round(deadlineTimeoutMs / 1000)} seconds`;
+				// With an explicit timeout the native shell enforces it; this JS timer only wins when the
+				// native run never returned, so buffered output may still be stuck in the pipe.
+				if (nativeOwnsTimeout) {
+					annotation += "; the shell backend did not respond, so any output above may be incomplete";
+				}
+			}
 			const interrupted = await withTimeout(runPromise, 250, "Timed out collecting interrupted shell records").catch(
 				() => undefined,
 			);
@@ -1129,11 +1154,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 				stageRecords: interrupted?.stageRecords,
 				protolensDispatches: interrupted?.protolensDispatches,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
-				...(await sink.dump(
-					winner.kind === "timeout" && deadlineTimeoutMs !== undefined
-						? `Command timed out after ${Math.round(deadlineTimeoutMs / 1000)} seconds`
-						: cancelledAnnotation(options?.signal),
-				)),
+				...(await sink.dump(annotation)),
 			});
 		}
 		if (timeoutTimer) {

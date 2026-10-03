@@ -129,6 +129,55 @@ const jtdOnlyPrimitiveTypes: Record<string, true> = {
 	uint32: true,
 };
 
+const jtdKeywords: Record<string, true> = {
+	definitions: true,
+	metadata: true,
+	nullable: true,
+	ref: true,
+	type: true,
+	enum: true,
+	elements: true,
+	properties: true,
+	optionalProperties: true,
+	additionalProperties: true,
+	values: true,
+	discriminator: true,
+	mapping: true,
+};
+
+const jtdSchemaMaps = ["properties", "optionalProperties", "definitions", "mapping"] as const;
+
+/**
+ * True when `schema` and every sub-schema stay inside the RFC 8927 grammar: known keywords only, JTD primitive
+ * `type`s, declared scalar value types. One JSON-Schema-only node (`items`, `required`, `type: "array"`, …) rules
+ * the whole document out. `metadata` stays opaque.
+ */
+function isJTDDocument(schema: unknown): boolean {
+	if (!isRecord(schema)) return false;
+	for (const key in schema) {
+		if (Object.hasOwn(schema, key) && !Object.hasOwn(jtdKeywords, key)) return false;
+	}
+	if ("type" in schema && !(typeof schema.type === "string" && Object.hasOwn(primitiveMap, schema.type))) return false;
+	if ("enum" in schema && !(Array.isArray(schema.enum) && schema.enum.every(value => typeof value === "string"))) {
+		return false;
+	}
+	if ("ref" in schema && typeof schema.ref !== "string") return false;
+	if ("discriminator" in schema && typeof schema.discriminator !== "string") return false;
+	if ("nullable" in schema && typeof schema.nullable !== "boolean") return false;
+	if ("additionalProperties" in schema && typeof schema.additionalProperties !== "boolean") return false;
+	if ("elements" in schema && !isJTDDocument(schema.elements)) return false;
+	if ("values" in schema && !isJTDDocument(schema.values)) return false;
+	for (const mapKeyword of jtdSchemaMaps) {
+		const map = schema[mapKeyword];
+		if (map === undefined) continue;
+		if (!isRecord(map)) return false;
+		for (const name in map) {
+			if (Object.hasOwn(map, name) && !isJTDDocument(map[name])) return false;
+		}
+	}
+	return true;
+}
+
 export function isJTDSchema(schema: unknown): boolean {
 	if (schema === null || typeof schema !== "object") {
 		return false;
@@ -146,8 +195,10 @@ export function isJTDSchema(schema: unknown): boolean {
 		return true;
 	}
 
+	// `properties` without `type` parses as both; the JTD reading is destructive (convertSchema keeps JTD keywords
+	// only, dropping `items`/`required`), so only a document that is JTD throughout converts.
 	if ("properties" in obj && !("type" in obj)) {
-		return true;
+		return isJTDDocument(obj);
 	}
 
 	return false;

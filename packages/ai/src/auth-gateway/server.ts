@@ -19,6 +19,7 @@ import {
 	captureRequestHeaders,
 	corsHeaders,
 	gatewayResponseHeaders,
+	hasMisplacedBearer,
 	isAuthorized,
 	json,
 	resolveClientIdentity,
@@ -743,6 +744,18 @@ function handleModelsList(opts: AuthGatewayBootOptions): Response {
 	return json(200, { object: "list", data });
 }
 
+// Only static routes reach logs verbatim; dynamic or unknown paths may carry caller-supplied secrets.
+const LOGGABLE_PATHS: Record<string, true> = {
+	"/v1/usage": true,
+	"/v1/credentials/check": true,
+	"/v1/pi/stream": true,
+	"/v1/models": true,
+};
+
+function loggablePath(pathname: string): string {
+	return Object.hasOwn(FORMAT_ROUTES, pathname) || Object.hasOwn(LOGGABLE_PATHS, pathname) ? pathname : "<unrouted>";
+}
+
 export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServerHandle {
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_GATEWAY_BIND);
 	const tokens = new Set<string>(opts.bearerTokens);
@@ -754,10 +767,11 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 	const server = Bun.serve({
 		hostname: bind.hostname,
 		port: bind.port,
-		fetch: async (req): Promise<Response> => {
+		fetch: async (req, server): Promise<Response> => {
 			const url = new URL(req.url);
 			const pathname = url.pathname;
-			const peer = resolvePeer(req);
+			const socketPeer = server.requestIP(req)?.address ?? "unknown";
+			let peer = socketPeer;
 
 			if (req.method === "OPTIONS") {
 				return new Response(null, { status: 204, headers: corsHeaders(req) });
@@ -767,9 +781,18 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 					return withCors(json(200, { ok: true, version }), req);
 				}
 				if (!isAuthorized(req, tokens)) {
-					logger.info("auth-gateway request unauthorized", { method: req.method, path: pathname, peer });
+					logger.info("auth-gateway request unauthorized", {
+						method: req.method,
+						path: loggablePath(pathname),
+						peer: socketPeer,
+					});
 					return withCors(json(401, { error: "unauthorized" }), req);
 				}
+				// Checked after authentication so an unauthenticated probe cannot test token guesses via 400 vs 401.
+				if (hasMisplacedBearer(req, url, tokens)) {
+					return withCors(json(400, { error: "gateway bearer token outside Authorization" }), req);
+				}
+				peer = resolvePeer(req, socketPeer, opts.trustProxyHeaders);
 
 				if (req.method === "GET" && pathname === "/v1/usage") {
 					return withCors(await handleUsage(opts.storage, req.signal), req);
@@ -796,7 +819,7 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 			} catch (error) {
 				logger.error("auth-gateway handler crashed", {
 					method: req.method,
-					path: pathname,
+					path: loggablePath(pathname),
 					peer,
 					error: String(error),
 				});

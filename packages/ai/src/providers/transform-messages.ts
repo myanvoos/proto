@@ -154,8 +154,16 @@ function deduplicateToolCallIds(
 	});
 }
 
-function isMalformedToolCallName(name: string | undefined): boolean {
-	return !name || name.trim().length === 0;
+const MAX_TOOL_CALL_NAME_LENGTH = 128;
+const TOOL_CALL_NAME_SEPARATOR_RE = /[\s\p{Cc}]/u;
+
+export function isMalformedToolCallName(name: unknown): boolean {
+	return (
+		typeof name !== "string" ||
+		name.length === 0 ||
+		name.length > MAX_TOOL_CALL_NAME_LENGTH ||
+		TOOL_CALL_NAME_SEPARATOR_RE.test(name)
+	);
 }
 
 function isMalformedToolCallId(id: string | undefined): boolean {

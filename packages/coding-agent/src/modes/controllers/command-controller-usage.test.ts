@@ -112,3 +112,24 @@ test("usage report shows one row for a quota shared by several model-family coun
 	expect(text).toContain("account 1");
 	expect(text).not.toContain("account 2");
 });
+
+test("usage report labels Codex accounts with the live plan, not the login-time plan", () => {
+	const codex: UsageReport = {
+		provider: "openai-codex",
+		fetchedAt: 1_000,
+		metadata: { email: "user@example.test", orgId: "workspace-id", orgName: "free", planType: "prolite" },
+		limits: [
+			{
+				id: "weekly",
+				label: "Weekly",
+				scope: { provider: "openai-codex", windowId: "7d" },
+				window: { id: "7d", label: "7d" },
+				amount: { unit: "percent", usedFraction: 0.2 },
+			},
+		],
+	};
+	const output = strip(renderUsageReports([codex], theme, 2_000, 120));
+	expect(output).toContain("user@example.test (prolite)");
+	expect(output).not.toContain("(free)");
+	expect(output).not.toContain("workspace-id");
+});

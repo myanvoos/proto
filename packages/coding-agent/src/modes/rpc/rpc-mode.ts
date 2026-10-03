@@ -22,6 +22,11 @@ import { buildAvailableSlashCommands } from "../../slash-commands/available-comm
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import type { EventBus } from "../../utils/event-bus";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
+import {
+	formatPersistenceDurabilityFailure,
+	formatPersistenceFailure,
+	writeStderrLineFlushed,
+} from "../persistence-failure";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
@@ -101,27 +106,43 @@ export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchS
 type RpcSkillCommandSession = Pick<AgentSession, "promptCustomMessage" | "skills" | "skillsSettings">;
 type RpcSkillCommandResult = { agentInvoked: true };
 
-export async function tryRunRpcSkillCommand(
-	session: RpcSkillCommandSession,
-	text: string,
-	streamingBehavior: "steer" | "followUp" = "steer",
-): Promise<RpcSkillCommandResult | false> {
-	if (!session.skillsSettings?.enableSkillCommands) return false;
-	const parsed = parseSkillInvocation(text);
-	if (!parsed) return false;
+async function dispatchRpcSkillPrompt(input: {
+	id: string | undefined;
+	session: RpcSkillCommandSession;
+	message: string;
+	streamingBehavior: "steer" | "followUp" | undefined;
+	output: (obj: object) => void;
+	onError: (error: Error) => void;
+	extensionUserMessageTracker: RpcExtensionUserMessageTracker;
+}): Promise<RpcSkillCommandResult | null> {
+	const { session } = input;
+	if (!session.skillsSettings?.enableSkillCommands) return null;
+	const parsed = parseSkillInvocation(input.message);
+	if (!parsed) return null;
 	const skill = session.skills.find(candidate => candidate.name === parsed.name);
-	if (!skill) return false;
+	if (!skill) return null;
+	// An unreadable SKILL.md still fails the command; the prompt pipeline (usage preflight, compaction, provider
+	// calls) runs behind the acknowledgement like a plain prompt, so it cannot outlast the client's prompt timeout.
 	const built = await buildSkillPromptMessage(skill, parsed.args, "user");
-	await session.promptCustomMessage(
-		{
-			customType: SKILL_PROMPT_MESSAGE_TYPE,
-			content: built.message,
-			display: true,
-			details: built.details,
-			attribution: "user",
+	watchAndReportLocalOnlyPromptResult({
+		id: input.id,
+		startPrompt: async () => {
+			await session.promptCustomMessage(
+				{
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					content: built.message,
+					display: true,
+					details: built.details,
+					attribution: "user",
+				},
+				{ streamingBehavior: input.streamingBehavior ?? "steer" },
+			);
+			return true;
 		},
-		{ streamingBehavior },
-	);
+		output: input.output,
+		onError: input.onError,
+		extensionUserMessageTracker: input.extensionUserMessageTracker,
+	});
 	return { agentInvoked: true };
 }
 
@@ -896,6 +917,31 @@ export async function runRpcMode(
 		output(event);
 	});
 
+	// Written through `output`, not session.emitNotice: dispose drops the session listeners before it closes the
+	// store, so a failure latched during close() would otherwise reach no client.
+	let persistenceFailure: Error | undefined;
+	session.sessionManager.onPersistenceError(failure => {
+		persistenceFailure = failure;
+		const message = formatPersistenceFailure(failure.message);
+		output({ type: "notice", level: "error", message, source: "session-persistence" });
+		void writeStderrLineFlushed(message);
+	});
+
+	// Accepted output must reach the client before exit; a store failure still latched at dispose (dispose rethrows
+	// it) means the transcript is lost, which exits nonzero instead of crashing with a raw fatal dump.
+	const disposeAndExit = async (): Promise<never> => {
+		try {
+			await session.dispose();
+		} catch (disposeError) {
+			if (!persistenceFailure || disposeError !== persistenceFailure) throw disposeError;
+			await stdoutQueue;
+			await writeStderrLineFlushed(formatPersistenceDurabilityFailure(persistenceFailure.message));
+			process.exit(1);
+		}
+		await stdoutQueue;
+		process.exit(0);
+	};
+
 	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
 	const reloadPluginState = async () => {
 		const cwd = session.sessionManager.getCwd();
@@ -925,7 +971,15 @@ export async function runRpcMode(
 			}
 
 			case "prompt": {
-				const skillResult = await tryRunRpcSkillCommand(session, command.message, command.streamingBehavior);
+				const skillResult = await dispatchRpcSkillPrompt({
+					id,
+					session,
+					message: command.message,
+					streamingBehavior: command.streamingBehavior,
+					output,
+					onError: promptError => output(error(id, "prompt", promptError.message)),
+					extensionUserMessageTracker,
+				});
 				if (skillResult) {
 					return success(id, "prompt", skillResult);
 				}
@@ -1314,10 +1368,7 @@ export async function runRpcMode(
 
 	const shutdownCoordinator = new RpcShutdownCoordinator({
 		isShutdownRequested: () => shutdownState.requested,
-		performShutdown: async () => {
-			await session.dispose();
-			process.exit(0);
-		},
+		performShutdown: disposeAndExit,
 	});
 
 	const dispatchFrameDeps: RpcInputFrameDeps = {
@@ -1349,6 +1400,5 @@ export async function runRpcMode(
 	await shutdownCoordinator.drain();
 	subagentRegistry?.dispose();
 
-	await session.dispose();
-	process.exit(0);
+	return disposeAndExit();
 }

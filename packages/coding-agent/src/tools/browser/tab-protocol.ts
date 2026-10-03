@@ -48,6 +48,7 @@ export type WorkerInitPayload =
 			mode: "headless";
 			browserWSEndpoint: string;
 			safeDir: string;
+			emulateViewport?: boolean;
 			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			url?: string;
@@ -65,6 +66,8 @@ export type WorkerInitPayload =
 			timeoutMs: number;
 
 			recover?: boolean;
+			/** Restore focus emulation when recycling a proto-owned tab, never a borrowed user tab. */
+			emulateFocus?: boolean;
 
 			activateForScreenshot?: boolean;
 	  };
@@ -102,6 +105,8 @@ export interface RunErrorPayload {
 }
 
 export type WorkerOutbound =
+	| { type: "setup" }
+	| { type: "page-created"; targetId: string }
 	| { type: "ready"; info: ReadyInfo }
 	| { type: "init-failed"; error: RunErrorPayload }
 	| { type: "result"; id: string; ok: true; payload: RunResultOk }

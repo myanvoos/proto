@@ -2,11 +2,24 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 
 const BLOB_PREFIX = "blob:sha256:";
 
 export const BLOB_HASH_RE = /^[a-f0-9]{64}$/;
+
+/** A reused blob older than this gets its mtime refreshed so gc's write grace covers its not-yet-persisted reference. */
+const BLOB_REUSE_TOUCH_MS = 60_000;
+
+/**
+ * Staging file a blob or display-copy write renames into place (`.<hash>[.<ext>].<snowflake>.tmp`). Only a killed
+ * writer leaves one behind; `proto gc` removes those older than its write grace.
+ */
+export const BLOB_STAGING_RE = /^\.[a-f0-9]{64}(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,31})?\.[0-9a-f]{16}\.tmp$/;
+
+export function blobStagingPath(target: string): string {
+	return path.join(path.dirname(target), `.${path.basename(target)}.${Snowflake.next()}.tmp`);
+}
 
 export interface BlobPutOptions {
 	extension?: string;
@@ -351,10 +364,16 @@ function ensureDisplayPathWithIo(
 	displayPath: string,
 	link: () => void | Promise<void>,
 	copy: () => void | Promise<void>,
+	data: Buffer,
 ): void | Promise<void> {
 	if (displayPath === blobPath) return;
 	const handleLinkError = (err: unknown): void | Promise<void> => {
-		if (typeof err === "object" && err !== null && "code" in err && err.code === "EEXIST") return;
+		if (typeof err === "object" && err !== null && "code" in err && err.code === "EEXIST") {
+			return fsp
+				.stat(displayPath)
+				.then(stat => (stat.size === data.length ? undefined : copy()))
+				.catch(() => copy());
+		}
 		logger.debug("Blob display hardlink failed; falling back to copy", {
 			blobPath,
 			displayPath,
@@ -371,7 +390,7 @@ function ensureDisplayPathWithIo(
 }
 
 async function writeBlobAtomically(blobPath: string, data: Buffer): Promise<void> {
-	const temporaryPath = `${blobPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	const temporaryPath = blobStagingPath(blobPath);
 	try {
 		await Bun.write(temporaryPath, data);
 		await fsp.rename(temporaryPath, blobPath);
@@ -381,7 +400,7 @@ async function writeBlobAtomically(blobPath: string, data: Buffer): Promise<void
 }
 
 function writeBlobAtomicallySync(blobPath: string, data: Buffer): void {
-	const temporaryPath = `${blobPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	const temporaryPath = blobStagingPath(blobPath);
 	try {
 		fs.writeFileSync(temporaryPath, data);
 		fs.renameSync(temporaryPath, blobPath);
@@ -392,12 +411,49 @@ function writeBlobAtomicallySync(blobPath: string, data: Buffer): void {
 	}
 }
 
+/**
+ * Content-addressed, so a same-length file already holds these bytes and re-externalizing a session's images need not
+ * rewrite them. An old one gets a fresh mtime so gc's write grace covers the reference about to be persisted; false
+ * (missing, torn, or collected before the touch) means the caller writes it.
+ */
+async function reuseStoredBlob(blobPath: string, size: number): Promise<boolean> {
+	let stored: fs.Stats;
+	try {
+		stored = await fsp.stat(blobPath);
+	} catch {
+		return false;
+	}
+	if (stored.size !== size) return false;
+	const now = new Date();
+	if (now.getTime() - stored.mtimeMs < BLOB_REUSE_TOUCH_MS) return true;
+	try {
+		await fsp.utimes(blobPath, now, now);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function reuseStoredBlobSync(blobPath: string, size: number): boolean {
+	const stored = fs.statSync(blobPath, { throwIfNoEntry: false });
+	if (stored?.size !== size) return false;
+	const now = new Date();
+	if (now.getTime() - stored.mtimeMs < BLOB_REUSE_TOUCH_MS) return true;
+	try {
+		fs.utimesSync(blobPath, now, now);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function ensureDisplayPath(blobPath: string, displayPath: string, data: Buffer): Promise<void> {
 	await ensureDisplayPathWithIo(
 		blobPath,
 		displayPath,
 		() => fsp.link(blobPath, displayPath),
-		() => Bun.write(displayPath, data).then(() => undefined),
+		() => writeBlobAtomically(displayPath, data),
+		data,
 	);
 }
 
@@ -406,7 +462,8 @@ function ensureDisplayPathSync(blobPath: string, displayPath: string, data: Buff
 		blobPath,
 		displayPath,
 		() => fs.linkSync(blobPath, displayPath),
-		() => fs.writeFileSync(displayPath, data),
+		() => writeBlobAtomicallySync(displayPath, data),
+		data,
 	);
 }
 
@@ -428,7 +485,7 @@ export class BlobStore {
 		const release = await claimBlob(result.path);
 		inFlightBlobWrites.add(result.path);
 		try {
-			await writeBlobAtomically(result.path, data);
+			if (!(await reuseStoredBlob(result.path, data.length))) await writeBlobAtomically(result.path, data);
 			await ensureDisplayPath(result.path, result.displayPath, data);
 			return result;
 		} finally {
@@ -441,8 +498,10 @@ export class BlobStore {
 		const result = createBlobPutResult(this.dir, data, options);
 		inFlightBlobWrites.add(result.path);
 		try {
-			fs.mkdirSync(this.dir, { recursive: true });
-			writeBlobAtomicallySync(result.path, data);
+			if (!reuseStoredBlobSync(result.path, data.length)) {
+				fs.mkdirSync(this.dir, { recursive: true });
+				writeBlobAtomicallySync(result.path, data);
+			}
 			ensureDisplayPathSync(result.path, result.displayPath, data);
 			return result;
 		} finally {

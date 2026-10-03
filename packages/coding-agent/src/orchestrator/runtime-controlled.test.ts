@@ -1571,7 +1571,7 @@ test("a cold revived worker restores its own grandchildren and can continue thei
 				hasUI: false,
 				enableMCP: false,
 				enableIrc: false,
-				preloadedExtensionPaths: [],
+				preloadedPreparedExtensions: [],
 				preloadedCustomToolPaths: [],
 			});
 			return revived;

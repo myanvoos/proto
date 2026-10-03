@@ -3,7 +3,7 @@ import { Markdown } from "@oh-my-pi/pi-tui";
 import { setTerminalHyperlinks, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Settings } from "../config/settings";
 import { getMarkdownTheme, initThemeSync } from "../modes/theme/theme";
-import { safeHyperlinkUri, urlHyperlinkAlways } from "./hyperlink";
+import { fileUriForTerminal, safeHyperlinkUri, urlHyperlinkAlways } from "./hyperlink";
 
 await Settings.init();
 initThemeSync();
@@ -34,4 +34,13 @@ test("the tui.hyperlinks setting gates OSC 8 on rendered Markdown links", () => 
 	} finally {
 		setTerminalHyperlinks(detected);
 	}
+});
+
+test("file hyperlink targets keep the location out of file: URIs", () => {
+	expect(fileUriForTerminal("/src/a b#c.ts", { line: 3, col: 4 }, "vscode")).toBe(
+		"vscode://file/src/a%20b%23c.ts:3:4",
+	);
+	expect(fileUriForTerminal("/src/a.ts", { line: 3 }, "vscode")).toBe("vscode://file/src/a.ts:3");
+	expect(fileUriForTerminal("/src/a.ts", { line: 3, col: 4 }, "kitty")).toBe("file:///src/a.ts");
+	expect(fileUriForTerminal("/src/a.ts", { line: 3, col: 4 }, "orca")).toBe("file:///src/a.ts#L3C4");
 });

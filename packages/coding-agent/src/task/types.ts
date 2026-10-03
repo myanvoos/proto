@@ -260,11 +260,17 @@ export interface SingleResult {
 
 	patchPath?: string;
 
+	/** False when `patchPath` holds no root-repository changes (the work lives only in nested repositories). */
+	hasRootChanges?: boolean;
+
 	branchName?: string;
 
 	branchBaseSha?: string;
 
 	nestedPatches?: NestedRepoPatch[];
+
+	/** On-disk copies of `nestedPatches`, written before the isolation workspace is torn down. */
+	nestedPatchPaths?: string[];
 
 	extractedToolData?: Record<string, unknown[]>;
 

@@ -256,6 +256,18 @@ export const isAnthropicFableOrMythosModel = memo((modelId: string): boolean => 
 	return parsed !== null && isFableOrMythos(parsed.kind);
 });
 
+// Opus/Sonnet 5.5 reject a forced `tool_choice` (`tool`/`any`) with a 400 on every route. Upper-bounded: a later
+// generation must be re-verified, and separator-collapsed ids (`claude-opus-45`) parse as whole-number revisions.
+export const isClaude55ForcedToolChoiceRestricted = memo((modelId: string): boolean => {
+	const parsed = parseAnthropicModel(bareModelId(modelId));
+	return (
+		parsed !== null &&
+		(parsed.kind === "opus" || parsed.kind === "sonnet") &&
+		semverGte(parsed.version, "5.5") &&
+		!semverGte(parsed.version, "6")
+	);
+});
+
 export interface ThinkingVariantToken {
 	index: number;
 	length: number;

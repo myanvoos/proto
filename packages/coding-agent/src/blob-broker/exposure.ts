@@ -149,10 +149,11 @@ export async function probeExposureHealth(
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		healthUrl.searchParams.set("nonce", `${Date.now().toString(36)}-${attempt.toString(36)}`);
 		try {
-			const response = await fetchFn(healthUrl, {
+			const init: RequestInit & { cache?: "no-store" } = {
 				cache: "no-store",
 				signal: AbortSignal.timeout(timeoutMs),
-			});
+			};
+			const response = await fetchFn(healthUrl, init);
 			if (response.status === 204) return;
 			finalStatus = `HTTP ${response.status}`;
 			try {

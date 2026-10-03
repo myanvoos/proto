@@ -57,9 +57,12 @@ export const STDOUT_BACKLOG_CLEAR_BYTES = 256 * 1024;
 /**
  * How long an armed backlog may go without drain progress before the consumer
  * is declared gone. A slow-but-alive terminal keeps reaching new low-water
- * marks; a wedged one that flushes nothing is torn down within this window.
+ * marks, but a live one can also stop reading for seconds (a busy tmux server
+ * holding a slow client, a container attach stream, XOFF). Frames are deferred
+ * while the backlog is up, so waiting costs no memory; a reader that never
+ * comes back is still torn down within this window.
  */
-const STDOUT_STALL_TIMEOUT_MS = 2_000;
+const STDOUT_STALL_TIMEOUT_MS = 60_000;
 
 /** Cadence at which {@link ProcessTerminal} re-samples the backlog while an episode is armed. */
 const STDOUT_STALL_POLL_MS = 250;
@@ -237,6 +240,15 @@ export type TerminalAppearance = "dark" | "light";
 
 export interface TerminalStartOptions {
 	deferInput?: boolean;
+	/**
+	 * Reports whether the event loop is stalled or just recovered from a stall.
+	 * Once the terminal confirms bracketed paste, an unmarked multiline burst is
+	 * an input-method commit (IME, dictation) delivered as one paste on a
+	 * responsive loop, but keystrokes a stall batched into one read (replayed as
+	 * keys so Enter submits) while this returns true. Without a probe every such
+	 * burst is treated as an input-method commit.
+	 */
+	isLoopStalled?: () => boolean;
 }
 
 export type TerminalAppearanceRequestToken = number;
@@ -365,6 +377,7 @@ export class ProcessTerminal implements Terminal {
 	#resizeHandler?: () => void;
 
 	#inputDeferred = false;
+	#isLoopStalled?: () => boolean;
 	#stdoutResizeListener?: () => void;
 	#kittyProtocolActive = false;
 	#kittyEnableSeq: string | null = null;
@@ -400,6 +413,10 @@ export class ProcessTerminal implements Terminal {
 	#stdoutStallTimer?: Timer;
 
 	#outputPump?: TtyWriter;
+	// Upper bound on the pump backlog: what its last enqueue or read reported.
+	// Only #safeWrite enqueues and the pump thread only drains, so the live
+	// backlog cannot exceed it until the next enqueue refreshes it.
+	#pumpBacklogBound = 0;
 
 	#xtermScrollToBottomRestoreModes = new Set<number>();
 	#appearanceCallbacks: Array<
@@ -434,6 +451,10 @@ export class ProcessTerminal implements Terminal {
 	#reportedColumns?: number;
 	#reportedRows?: number;
 	#mode2031DebounceTimer?: Timer;
+	#progressActive = false;
+	// Ghostty expires OSC 9;4 state without a heartbeat; persistent hosts restart
+	// their indeterminate animation on every write.
+	readonly #keepProgressAlive = TERMINAL.id === "ghostty";
 	#progressTimer?: Timer;
 
 	get kittyProtocolActive(): boolean {
@@ -505,6 +526,7 @@ export class ProcessTerminal implements Terminal {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
 		this.#disconnectHandler = onDisconnect;
+		this.#isLoopStalled = options?.isLoopStalled;
 
 		this.#cursorVisible = undefined;
 
@@ -520,6 +542,7 @@ export class ProcessTerminal implements Terminal {
 		if (process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
 			try {
 				this.#outputPump = new TtyWriter(1);
+				this.#pumpBacklogBound = 0;
 			} catch (err) {
 				logger.debug("tty output pump unavailable; using direct stdout writes", { err: String(err) });
 			}
@@ -1205,10 +1228,13 @@ export class ProcessTerminal implements Terminal {
 			} catch {}
 		}
 		if (mode === 2048 && supported) this.#enableInBandResize();
-		// `supported` is true only after an explicit DECRPM reply (the DA1 sentinel
-		// fallback resolves unsupported), so terminals ignoring DECRQM keep the
-		// raw-paste heuristic.
-		if (mode === 2004 && supported) this.#stdinBuffer?.setRawPasteClassification(false);
+		// Confirmed bracketed paste means a genuine paste arrives wrapped, so an
+		// unmarked multiline burst is an input-method commit unless an event-loop
+		// stall batched typed keys into one read; the host's stall probe decides
+		// per burst. `supported` is true only after an explicit DECRPM reply (the
+		// DA1 sentinel fallback resolves unsupported), so terminals ignoring DECRQM
+		// keep unconditional classification.
+		if (mode === 2004 && supported) this.#stdinBuffer?.setRawPasteStallProbe(this.#isLoopStalled);
 	}
 
 	#disableXtermScrollToBottomMode(mode: number): void {
@@ -1323,7 +1349,9 @@ export class ProcessTerminal implements Terminal {
 		this.#active = false;
 		this.#inputDeferred = false;
 		const restoreOsTerminal = !this.#headless;
-		const clearProgress = this.#clearProgressTimer();
+		this.#clearProgressTimer();
+		const clearProgress = this.#progressActive;
+		this.#progressActive = false;
 
 		try {
 			if (restoreOsTerminal) this.#restoreOsTerminal(clearProgress);
@@ -1491,15 +1519,23 @@ export class ProcessTerminal implements Terminal {
 		this.#trackCursorVisibility(data);
 		const pump = this.#outputPump;
 		if (pump) {
-			if (pump.dead) {
+			let pending: number;
+			try {
+				pending = pump.write(data);
+			} catch (err) {
+				this.#markTerminalDisconnected("stdout failed", err);
+				return;
+			}
+			// A live enqueue reports at least this chunk's UTF-8 size (never below its
+			// UTF-16 length); a dead pump enqueues nothing and reports only what it is
+			// dropping. Only a report that small can come from a dead pump, so the
+			// native `dead` read is skipped otherwise.
+			if ((pending < data.length || data.length === 0) && pump.dead) {
 				this.#markTerminalDisconnected("stdout failed; output pump died");
 				return;
 			}
-			try {
-				this.#trackStdoutBacklog(pump.write(data));
-			} catch (err) {
-				this.#markTerminalDisconnected("stdout failed", err);
-			}
+			this.#pumpBacklogBound = pending;
+			this.#trackStdoutBacklog(pending);
 			return;
 		}
 		try {
@@ -1516,8 +1552,18 @@ export class ProcessTerminal implements Terminal {
 		if (this.#inBandResizeActive && this.#reportedColumns) return this.#reportedColumns;
 		return process.stdout.columns || Number(Bun.env.COLUMNS) || 80;
 	}
+	/**
+	 * With the output pump, a backlog bound at or below
+	 * {@link STDOUT_BACKLOG_CLEAR_BYTES} is reported as-is instead of re-read:
+	 * the render gate and the stall watchdog act only above that level, so the
+	 * bound already decides them and spares a native read every frame.
+	 */
 	get pendingOutputBytes(): number {
-		if (this.#outputPump) return this.#outputPump.pending();
+		const pump = this.#outputPump;
+		if (pump) {
+			if (this.#pumpBacklogBound > STDOUT_BACKLOG_CLEAR_BYTES) this.#pumpBacklogBound = pump.pending();
+			return this.#pumpBacklogBound;
+		}
 
 		return process.stdout.writableLength ?? 0;
 	}
@@ -1601,7 +1647,7 @@ export class ProcessTerminal implements Terminal {
 			if (final === 0x68 || final === 0x6c) break;
 			idx = idx === 0 ? -1 : data.lastIndexOf("\x1b[?25", idx - 1);
 		}
-		if (data.lastIndexOf("\x1b[?1049") > idx) {
+		if (data.indexOf("\x1b[?1049", idx + 1) !== -1) {
 			this.#cursorVisible = undefined;
 			return;
 		}
@@ -1629,23 +1675,25 @@ export class ProcessTerminal implements Terminal {
 	setProgress(active: boolean): void {
 		if (this.#headless) return;
 		if (active) {
+			if (this.#progressActive) return;
+			this.#progressActive = true;
 			this.#safeWrite(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
-			if (!this.#progressTimer) {
+			if (this.#keepProgressAlive && !this.#progressTimer) {
 				this.#progressTimer = setInterval(() => {
 					this.#safeWrite(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 				}, TERMINAL_PROGRESS_KEEPALIVE_MS);
 				this.#progressTimer.unref?.();
 			}
 		} else {
+			this.#progressActive = false;
 			this.#clearProgressTimer();
 			this.#safeWrite(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 	}
 
-	#clearProgressTimer(): boolean {
-		if (!this.#progressTimer) return false;
+	#clearProgressTimer(): void {
+		if (!this.#progressTimer) return;
 		clearInterval(this.#progressTimer);
 		this.#progressTimer = undefined;
-		return true;
 	}
 }

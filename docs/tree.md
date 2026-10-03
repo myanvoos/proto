@@ -28,7 +28,6 @@ Any of the following opens the same selector:
 - `/tree`
 - configured keybinding for the `app.session.tree` action
 - double-escape on empty editor when `doubleEscapeAction = "tree"` (default)
-- `/branch` when `doubleEscapeAction = "tree"` (routes to tree selector instead of user-only branch picker)
 
 ## Tree UI model
 
@@ -216,7 +215,7 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 | Operation | Scope                                            | Result                                                                                                                                                   |
 | --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Usually current session file -> new session file | By default branches from selected **user** message into a new session file; if `doubleEscapeAction = "tree"`, `/branch` opens tree navigation UI instead |
+| `/branch` | Usually current session file -> new session file | Branches from selected **user** message into a new session file (independent of `doubleEscapeAction`)                                                   |
 | `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
 | `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
 

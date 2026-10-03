@@ -6,6 +6,7 @@ import type { DaemonSnapshot } from "../../launch/protocol";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
+	isSilentAbort,
 	isUserInterruptAbort,
 	resolveAbortLabel,
 	shouldRenderAbortReason,
@@ -314,6 +315,7 @@ export function resolveAssistantErrorPresentation(
 		};
 	}
 	if (message.stopReason === "aborted") {
+		if (isSilentAbort(message)) return { kind: "none" };
 		if (isUserInterruptAbort(message)) return { kind: "interrupted", text: "Interrupted", isError: false };
 		return { kind: "full", text: resolveAbortLabel(message, retryAttempt), isError: true };
 	}

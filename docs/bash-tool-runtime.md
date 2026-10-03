@@ -198,6 +198,8 @@ print(answer)
 
 The active/selected model must support every input modality. Explicit media parts are `{type:"image"|"audio"|"video", data:<base64>, mimeType}` or `{type:..., artifact:ref}`; ordinary text is `{type:"text", text}`. MIME/byte consistency, content bounds, provider wire support, and image-detail options are validated before sending. Unsupported modalities fail rather than silently degrading to a text-only request. `system`, model selection, and schema-return behavior remain unchanged.
 
+A tier selector (`tiny`, `smol`, `default`, `slow`) follows the same `retry.fallbackChains` as session recovery: when the tier's model fails or has no credentials, `completion()` tries the chain's fallbacks in order (including a fallback's own chain, honoring `:level` effort suffixes) until one answers, spending at most `retry.maxRetries` attempts; `retry.enabled: false` or `retry.modelFallback: false` keeps it on the tier model. An explicit model id is never substituted. At most 32 `completion()` requests run at once per process; extra calls queue.
+
 ## Scoped access from ordinary scripts
 
 External interpreters do not automatically receive prelude objects or `protolens`. Use explicit delegation rather than relying on private kernel transport credentials: it supplies thin Python/JavaScript clients with a revocable, expiring capability.

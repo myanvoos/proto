@@ -317,7 +317,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 49.6,
-		"tps": 66.7,
+		"tps": 65.7,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -431,12 +431,12 @@
 			"input": 10,
 			"output": 50,
 			"cacheRead": 0.25,
-			"cacheWrite": 20
+			"cacheWrite": 12.5
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"requiresGlyphTokenization": true,
-		"tokenizer": "claude-v5-sonnet",
+		"int": 53.4,
+		"tps": 68.2,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -449,9 +449,10 @@
 			"supportsDisplay": true,
 			"prefixBinding": true
 		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
-		"int": 53.4,
-		"tps": 64.7,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
@@ -474,8 +475,7 @@
 			"requiresThinkingEnabled": false,
 			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"anthropic/claude-haiku-4.5": {
 		"id": "anthropic/claude-haiku-4.5",
@@ -658,7 +658,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"int": 23.7,
-		"tps": 45.7,
+		"tps": 47.7,
 		"thinking": {
 			"mode": "anthropic-budget-effort",
 			"efforts": [
@@ -717,7 +717,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 26.4,
-		"tps": 38.7,
+		"tps": 38.4,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -775,7 +775,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -835,7 +835,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -950,12 +950,12 @@
 			"input": 4,
 			"output": 20,
 			"cacheRead": 0.2,
-			"cacheWrite": 8
+			"cacheWrite": 5
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"requiresGlyphTokenization": true,
-		"tokenizer": "claude-v5",
+		"int": 57.6,
+		"tps": 93,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -967,8 +967,10 @@
 			],
 			"supportsDisplay": true
 		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
-		"int": 57.6,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
@@ -985,14 +987,13 @@
 			"supportsMidConversationToolChanges": false,
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
 			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"anthropic/claude-sonnet-4": {
 		"id": "anthropic/claude-sonnet-4",
@@ -1128,7 +1129,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1185,7 +1186,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 38.2,
-		"tps": 78.1,
+		"tps": 85.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1282,6 +1283,66 @@
 			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
 		}
+	},
+	"anthropic/claude-sonnet-5.5": {
+		"id": "anthropic/claude-sonnet-5.5",
+		"name": "Claude Sonnet 5.5",
+		"api": "anthropic-messages",
+		"provider": "zenmux",
+		"baseUrl": "https://zenmux.ai/api/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 4
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"int": 56,
+		"tps": 139.6,
+		"supportsComputerUse": false
 	},
 	"atria-asi/atria-dawn-preview": {
 		"id": "atria-asi/atria-dawn-preview",
@@ -1381,7 +1442,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -1463,7 +1525,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1544,7 +1607,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1627,7 +1691,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -1708,7 +1773,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1790,7 +1856,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1872,7 +1939,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1954,7 +2022,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2036,7 +2105,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2118,7 +2188,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2200,7 +2271,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2353,7 +2425,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2435,7 +2508,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2517,7 +2591,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2801,12 +2876,12 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.28,
-			"output": 1.11,
-			"cacheRead": 0.056,
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
+		"contextWindow": 163840,
 		"maxTokens": 32768,
 		"thinking": {
 			"mode": "effort",
@@ -2880,12 +2955,12 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.56,
-			"output": 2.23,
-			"cacheRead": 0.112,
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 64000,
+		"contextWindow": 163840,
 		"maxTokens": 32768,
 		"thinking": {
 			"mode": "effort",
@@ -3207,7 +3282,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 384000,
 		"int": 34.3,
-		"tps": 221.1,
+		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3532,7 +3607,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 384000,
 		"int": 36,
-		"tps": 67.1,
+		"tps": 109.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3688,15 +3763,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.075,
-			"output": 0.3,
-			"cacheRead": 0.0015,
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.003,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 384000,
-		"requiresGlyphTokenization": false,
-		"tokenizer": "deepseek-v3",
+		"int": 39.5,
+		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3705,9 +3780,10 @@
 				"max"
 			]
 		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
-		"int": 39.5,
-		"tps": 226.6,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -3756,8 +3832,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"dots-studio/dots3-note-prev": {
 		"id": "dots-studio/dots3-note-prev",
@@ -3785,7 +3860,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -4007,7 +4083,7 @@
 		"contextWindow": 1048000,
 		"maxTokens": 64000,
 		"int": 9.9,
-		"tps": 188.6,
+		"tps": 202.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4090,7 +4166,7 @@
 		"contextWindow": 1048000,
 		"maxTokens": 64000,
 		"int": 6.7,
-		"tps": 265.8,
+		"tps": 293.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -4164,7 +4240,7 @@
 		"contextWindow": 1048000,
 		"maxTokens": 64000,
 		"int": 16.1,
-		"tps": 125.8,
+		"tps": 124.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4574,7 +4650,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 65530,
 		"int": 15.6,
-		"tps": 292.5,
+		"tps": 316.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -4719,7 +4795,7 @@
 		"contextWindow": 1048000,
 		"maxTokens": 64000,
 		"int": 29.7,
-		"tps": 118.4,
+		"tps": 116.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4801,7 +4877,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
 		"int": 32.6,
-		"tps": 207.7,
+		"tps": 216,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5455,7 +5531,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5538,7 +5615,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5832,7 +5910,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -5901,9 +5980,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.06,
+			"output": 0.18,
+			"cacheRead": 0.012,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -5916,7 +5995,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -5984,9 +6064,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.06,
+			"output": 0.18,
+			"cacheRead": 0.012,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -5999,7 +6079,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6066,9 +6147,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.06,
+			"output": 0.18,
+			"cacheRead": 0.012,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -6081,7 +6162,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -6163,7 +6245,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6722,6 +6805,78 @@
 		},
 		"supportsComputerUse": false
 	},
+	"inclusionai/ming-image-0.1-design-layer": {
+		"id": "inclusionai/ming-image-0.1-design-layer",
+		"name": "Ming Image 0.1 Design Layer",
+		"api": "openai-completions",
+		"provider": "zenmux",
+		"baseUrl": "https://zenmux.ai/api/v1",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 8000,
+		"maxTokens": null,
+		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": true,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		},
+		"supportsComputerUse": false
+	},
 	"inclusionai/ring-1t": {
 		"id": "inclusionai/ring-1t",
 		"name": "Ring-1T",
@@ -6747,7 +6902,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6823,7 +6979,7 @@
 		"contextWindow": 262000,
 		"maxTokens": 65000,
 		"int": 16.6,
-		"tps": 117.6,
+		"tps": 120.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6831,7 +6987,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6912,7 +7069,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -6994,7 +7152,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7650,7 +7809,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -7948,7 +8108,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8003,6 +8164,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
+		"tps": 120.8,
 		"supportsComputerUse": false
 	},
 	"meta/muse-spark-1.2": {
@@ -8031,7 +8193,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8116,7 +8279,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -8200,7 +8364,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -8280,7 +8445,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8361,7 +8527,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -8580,7 +8747,7 @@
 		"contextWindow": 204000,
 		"maxTokens": 64000,
 		"int": 18.6,
-		"tps": 91.9,
+		"tps": 97.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8733,7 +8900,7 @@
 		"contextWindow": 204000,
 		"maxTokens": 64000,
 		"int": 20.9,
-		"tps": 80.8,
+		"tps": 102.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8815,7 +8982,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131072,
 		"int": 22.8,
-		"tps": 82.5,
+		"tps": 103.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -8977,7 +9144,7 @@
 		"contextWindow": 204800,
 		"maxTokens": 131070,
 		"int": 22.8,
-		"tps": 63.1,
+		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9140,7 +9307,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 512000,
 		"int": 29.2,
-		"tps": 101.6,
+		"tps": 87.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9148,7 +9315,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9451,7 +9619,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -9538,7 +9707,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -9625,7 +9795,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9703,7 +9874,7 @@
 		"contextWindow": 262140,
 		"maxTokens": 262140,
 		"int": 27,
-		"tps": 35.7,
+		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9711,7 +9882,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9790,7 +9962,7 @@
 		"contextWindow": 262144,
 		"maxTokens": 262144,
 		"int": 25.8,
-		"tps": 59.9,
+		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -9798,7 +9970,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9882,7 +10055,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -9942,7 +10116,7 @@
 	},
 	"moonshotai/kimi-k2.7-code-highspeed": {
 		"id": "moonshotai/kimi-k2.7-code-highspeed",
-		"name": "Kimi K2.7 Code High-Speed",
+		"name": "Kimi K2.7 Code HighSpeed",
 		"api": "openai-completions",
 		"provider": "zenmux",
 		"baseUrl": "https://zenmux.ai/api/v1",
@@ -9966,11 +10140,13 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
-		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
@@ -10021,8 +10197,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"moonshotai/kimi-k2.8-preview": {
 		"id": "moonshotai/kimi-k2.8-preview",
@@ -10052,7 +10227,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -10128,7 +10304,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 43.6,
-		"tps": 36.7,
+		"tps": 35.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -10321,7 +10497,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -10838,7 +11015,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 64000,
 		"int": 23,
-		"tps": 98.4,
+		"tps": 80.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11322,7 +11499,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 64000,
 		"int": 24.7,
-		"tps": 112.6,
+		"tps": 112.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -11639,7 +11816,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 64000,
 		"int": 30.4,
-		"tps": 79.5,
+		"tps": 80,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12027,7 +12204,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"int": 32.5,
-		"tps": 146.4,
+		"tps": 95.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12110,7 +12287,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 39,
-		"tps": 135.8,
+		"tps": 89.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12192,7 +12369,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 24.1,
-		"tps": 224.5,
+		"tps": 213,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -12265,7 +12442,7 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"int": 20.7,
-		"tps": 173.6,
+		"tps": 160.8,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -12420,7 +12597,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 38.4,
-		"tps": 94.4,
+		"tps": 85,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12668,7 +12845,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 37.3,
-		"tps": 142.3,
+		"tps": 125.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12752,7 +12929,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 47,
-		"tps": 80.3,
+		"tps": 79.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12836,7 +13013,7 @@
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"int": 42.1,
-		"tps": 82.4,
+		"tps": 101.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12919,7 +13096,8 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"requiresGlyphTokenization": false,
+		"int": 52.7,
+		"tps": 53.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -12930,9 +13108,9 @@
 				"max"
 			]
 		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
-		"int": 52.7,
-		"tps": 52.7,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -12981,8 +13159,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"openai/gpt-6-luna": {
 		"id": "openai/gpt-6-luna",
@@ -13087,6 +13264,90 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 47.6,
+		"tps": 93.3,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": true,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"openai/gpt-6.1-sol": {
+		"id": "openai/gpt-6.1-sol",
+		"name": "GPT-6.1 Sol",
+		"api": "openai-completions",
+		"provider": "zenmux",
+		"baseUrl": "https://zenmux.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
 		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "effort",
@@ -13099,8 +13360,6 @@
 			]
 		},
 		"supportsAssistantPrefill": false,
-		"int": 47.5,
-		"tps": 125.5,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -13150,6 +13409,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
+		"int": 51.8,
+		"tps": 61.3,
 		"supportsComputerUse": false
 	},
 	"openai/gpt-image-1.5": {
@@ -13537,7 +13798,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -14417,7 +14679,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 64000,
 		"int": 15.6,
-		"tps": 52.5,
+		"tps": 63.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -15194,7 +15456,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 27,
-		"tps": 55.1,
+		"tps": 55.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -15359,7 +15621,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 65536,
 		"int": 29.5,
-		"tps": 197.1,
+		"tps": 203.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -15443,7 +15705,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"int": 25.2,
-		"tps": 63.5,
+		"tps": 55.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -15913,6 +16175,88 @@
 		},
 		"supportsComputerUse": false
 	},
+	"qwen/qwen3.8-omni-flash": {
+		"id": "qwen/qwen3.8-omni-flash",
+		"name": "Qwen3.8 Omni Flash",
+		"api": "openai-completions",
+		"provider": "zenmux",
+		"baseUrl": "https://zenmux.ai/api/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.47,
+			"cacheRead": 0.016,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 131072,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "qwen3",
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "qwen",
+			"reasoningDisableMode": "qwen-enable-thinking-false",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": true,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		},
+		"supportsComputerUse": false
+	},
 	"sakana/fugu-ultra-v2": {
 		"id": "sakana/fugu-ultra-v2",
 		"name": "Fugu Ultra v2",
@@ -15940,7 +16284,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16021,7 +16366,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16175,7 +16521,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16257,7 +16604,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16339,7 +16687,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16421,7 +16770,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16503,7 +16853,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16579,7 +16930,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 64000,
 		"int": 17,
-		"tps": 126.9,
+		"tps": 131.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -16658,7 +17009,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16735,7 +17087,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 256000,
 		"int": 19.5,
-		"tps": 197.1,
+		"tps": 207,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -16743,7 +17095,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16825,7 +17178,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -16908,7 +17262,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -16988,7 +17343,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			],
 			"requiresEffort": true
 		},
@@ -17071,7 +17427,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17155,7 +17512,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17237,7 +17595,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -17318,7 +17677,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17401,7 +17761,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17554,7 +17915,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17636,7 +17998,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17718,7 +18081,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17800,7 +18164,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17883,7 +18248,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -17966,7 +18332,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18122,7 +18489,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18416,7 +18784,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 1000000,
 		"int": 24.9,
-		"tps": 104.2,
+		"tps": 143.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18424,7 +18792,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18500,7 +18869,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"int": 38.8,
-		"tps": 55.1,
+		"tps": 56.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18508,7 +18877,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18590,7 +18960,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18667,7 +19038,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"int": 44.3,
-		"tps": 59.1,
+		"tps": 75.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -18675,7 +19046,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -18758,7 +19130,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"supportsAssistantPrefill": false,
@@ -18912,7 +19285,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -19692,7 +20066,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 26,
-		"tps": 47.7,
+		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -19838,6 +20212,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
 		},
+		"int": 37.9,
+		"tps": 52.4,
 		"supportsComputerUse": false
 	},
 	"xiaomi/mimo-v2.6-pro": {
@@ -19859,7 +20235,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"requiresGlyphTokenization": false,
+		"int": 46.3,
+		"tps": 45.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -19868,9 +20245,9 @@
 				"high"
 			]
 		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
-		"int": 46.3,
-		"tps": 54.2,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -19922,8 +20299,7 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"xiaomi/mimo-v2.6-pro-ultraspeed": {
 		"id": "xiaomi/mimo-v2.6-pro-ultraspeed",
@@ -20034,7 +20410,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20109,7 +20486,7 @@
 		"contextWindow": 128000,
 		"maxTokens": 96000,
 		"int": 11.1,
-		"tps": 84.5,
+		"tps": 85.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20117,7 +20494,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20192,7 +20570,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 14.9,
-		"tps": 34.2,
+		"tps": 36.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20200,7 +20578,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20276,7 +20655,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 8.4,
-		"tps": 71.8,
+		"tps": 87,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20284,7 +20663,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20366,7 +20746,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20448,7 +20829,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20523,7 +20905,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 22.2,
-		"tps": 102.1,
+		"tps": 68.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20531,7 +20913,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20612,7 +20995,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20693,7 +21077,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20768,7 +21153,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 27.9,
-		"tps": 67.1,
+		"tps": 78.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20776,7 +21161,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20859,7 +21245,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -20935,7 +21322,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 128000,
 		"int": 26.1,
-		"tps": 35.3,
+		"tps": 43.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -20943,7 +21330,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -21019,7 +21407,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 33.7,
-		"tps": 69.1,
+		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21185,7 +21573,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 44.8,
-		"tps": 58.8,
+		"tps": 74.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21270,7 +21658,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 58.9,
+		"tps": 54.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -21361,7 +21749,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -21527,7 +21916,8 @@
 				"low",
 				"medium",
 				"high",
-				"xhigh"
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,

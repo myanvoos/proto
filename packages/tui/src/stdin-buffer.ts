@@ -328,9 +328,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#rawPasteTimer?: NodeJS.Timeout;
 	// Unbracketed raw-paste classification is a fallback for terminals that do
 	// not wrap pastes in DECSET 2004 markers. Once the terminal confirms mode
-	// 2004, a genuine paste always arrives bracketed, so the heuristic can only
-	// misfire on keystrokes an event-loop stall batched into one read.
-	#rawPasteClassificationEnabled = true;
+	// 2004 it installs this probe: an unmarked multiline burst is then an
+	// input-method commit unless an event-loop stall batched the keystrokes
+	// into one read. See `setRawPasteStallProbe`.
+	#rawPasteStallProbe?: () => boolean;
 	#stringDiscardActive = false;
 	#stringDiscardKind: StringSequenceKind = "osc";
 	#stringDiscardBytes = 0;
@@ -401,7 +402,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.#rawPasteCandidate += str;
 				this.#countRawBreaks(str);
 				if (this.#rawPasteBurst) {
-					this.#emitRawPasteCandidate();
+					this.#classifyRawPasteCandidate();
 				} else {
 					this.#armRawPasteTimer();
 				}
@@ -410,7 +411,6 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (
-			this.#rawPasteClassificationEnabled &&
 			this.#buffer.length === 0 &&
 			str.indexOf(ESC) === -1 &&
 			(str.indexOf("\r") !== -1 || str.indexOf("\n") !== -1)
@@ -419,7 +419,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#resetRawBreaks();
 			this.#countRawBreaks(str);
 			if (this.#rawPasteBurst) {
-				this.#emitRawPasteCandidate();
+				this.#classifyRawPasteCandidate();
 			} else {
 				this.#armRawPasteTimer();
 			}
@@ -801,17 +801,18 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	/**
-	 * Enable or disable unbracketed raw-paste classification. The terminal
-	 * disables it once DECRQM confirms bracketed paste (mode 2004): stall-batched
-	 * keystrokes must then never be misread as a paste, which would turn every
-	 * typed Enter into a literal newline. Disabling flushes any candidate already
-	 * held by the classification window as ordinary key events.
+	 * Gate unbracketed raw-paste classification on event-loop responsiveness.
+	 * The terminal installs a probe once DECRQM confirms bracketed paste (mode
+	 * 2004): a genuine paste then always arrives wrapped, so an unmarked
+	 * multiline burst is either an input-method commit (IME, dictation and emoji
+	 * commits are typed input, never bracketed) or keystrokes an event-loop
+	 * stall batched into one read. A burst classified while `stalled()` reports
+	 * a stall is replayed as the original keys so every Enter submits; otherwise
+	 * it is delivered as one paste. `undefined` restores unconditional
+	 * classification.
 	 */
-	setRawPasteClassification(enabled: boolean): void {
-		this.#rawPasteClassificationEnabled = enabled;
-		if (!enabled && this.#rawPasteCandidate.length > 0) {
-			this.#flushRawPasteCandidate();
-		}
+	setRawPasteStallProbe(stalled: (() => boolean) | undefined): void {
+		this.#rawPasteStallProbe = stalled;
 	}
 
 	#armRawPasteTimer(): void {
@@ -840,7 +841,15 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		return content;
 	}
 
-	#emitRawPasteCandidate(): void {
+	/**
+	 * Deliver a classified raw multiline burst: one paste, or the original keys
+	 * when the stall probe says a blocked loop batched typed input.
+	 */
+	#classifyRawPasteCandidate(): void {
+		if (this.#rawPasteStallProbe?.()) {
+			this.#flushRawPasteCandidate();
+			return;
+		}
 		const content = this.#takeRawPasteCandidate();
 		this.#pendingKittyPrintableCodepoint = undefined;
 		this.emit("paste", content);

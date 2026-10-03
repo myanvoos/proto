@@ -21,10 +21,6 @@ const EVENT_RECORD_KIND: u8 = 0x0d;
 const WINDOW_ID_OFFSET: usize = 0x3c;
 const FOCUS_MARKER_OFFSET: usize = 0x8a;
 
-unsafe extern "C" {
-	fn CGEventPostToPid(pid: pid_t, event: core_graphics::sys::CGEventRef);
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct ProcessSerialNumber {
@@ -70,6 +66,7 @@ impl PsnLookup {
 #[derive(Clone, Copy)]
 struct RequiredSpi {
 	post_to_pid:         SLEventPostToPidFn,
+	public_post_to_pid:  Option<SLEventPostToPidFn>,
 	set_integer:         SLEventSetIntegerValueFieldFn,
 	post_record:         SLPSPostEventRecordToFn,
 	get_front:           SLPSGetFrontProcessFn,
@@ -121,8 +118,11 @@ fn resolve_required() -> Option<RequiredSpi> {
 	if !psn.can_resolve() {
 		return None;
 	}
+	let post_to_pid: SLEventPostToPidFn = symbol(c"SLEventPostToPid")?;
 	Some(RequiredSpi {
-		post_to_pid: symbol(c"SLEventPostToPid")?,
+		post_to_pid,
+		public_post_to_pid: symbol::<SLEventPostToPidFn>(c"CGEventPostToPid")
+			.filter(|public| *public as usize != post_to_pid as usize),
 		set_integer: symbol(c"SLEventSetIntegerValueField")?,
 		post_record: symbol(c"SLPSPostEventRecordTo")?,
 		get_front: symbol(c"_SLPSGetFrontProcess")?,
@@ -204,7 +204,9 @@ pub(super) fn post_dual(pid: pid_t, event: &CGEvent) -> CoreResult<()> {
 
 	unsafe { (spi.post_to_pid)(pid, event_ptr(event)) };
 
-	unsafe { CGEventPostToPid(pid, event.as_ptr()) };
+	if let Some(public_post_to_pid) = spi.public_post_to_pid {
+		unsafe { public_post_to_pid(pid, event_ptr(event)) };
+	}
 	Ok(())
 }
 

@@ -26,6 +26,7 @@ export default class AuthGateway extends Command {
 				regenerate: flags.regenerate,
 				noAuth: flags["no-auth"],
 				strict: flags.strict,
+				trustProxyHeaders: flags["trust-proxy-headers"],
 			},
 		};
 		await initTheme();

@@ -1,5 +1,5 @@
 import * as url from "node:url";
-import { resolveHyperlinkPolicy, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { resolveHyperlinkPolicy, TERMINAL, type TerminalId } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { LocalProtocolHandler, type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { selectorLineRanges, splitPathAndSel } from "../tools/path-utils";
@@ -16,15 +16,31 @@ function buildLinkId(uri: string): string {
 	return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-function buildFileUri(filePath: string, opts?: { line?: number; col?: number }): string {
+/**
+ * OSC 8 target for a file path. Editors and JVM language servers reject `file:` URIs carrying a query, and
+ * VS Code treats one as a distinct blank resource, so the location goes only where the terminal navigates it:
+ * `vscode://file/<path>:<line>:<col>` for VS Code, `#L<line>C<col>` for Orca, plain `file:` elsewhere.
+ */
+export function fileUriForTerminal(
+	filePath: string,
+	opts: { line?: number; col?: number } | undefined,
+	terminalId: TerminalId,
+): string {
+	if (terminalId === "vscode") {
+		const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+		const position =
+			opts?.line === undefined ? "" : opts.col === undefined ? `:${opts.line}` : `:${opts.line}:${opts.col}`;
+		return `vscode://file${encodedPath}${position}`;
+	}
 	const uri = url.pathToFileURL(filePath);
-	if (TERMINAL.id === "orca") {
-		if (opts?.line !== undefined) uri.hash = `L${opts.line}${opts.col !== undefined ? `C${opts.col}` : ""}`;
-	} else {
-		if (opts?.line !== undefined) uri.searchParams.set("line", String(opts.line));
-		if (opts?.col !== undefined) uri.searchParams.set("col", String(opts.col));
+	if (terminalId === "orca" && opts?.line !== undefined) {
+		uri.hash = `L${opts.line}${opts.col !== undefined ? `C${opts.col}` : ""}`;
 	}
 	return uri.href;
+}
+
+function buildFileUri(filePath: string, opts?: { line?: number; col?: number }): string {
+	return fileUriForTerminal(filePath, opts, TERMINAL.id);
 }
 
 export function isHyperlinkEnabled(): boolean {

@@ -60,8 +60,8 @@ export function validateServerName(name: string): string | undefined {
 		return "Server name is too long (max 100 characters)";
 	}
 
-	if (!/^[a-zA-Z0-9_.: -]+$/.test(name)) {
-		return "Server name can only contain letters, numbers, dash, underscore, dot, colon, and space";
+	if (!/^[a-zA-Z0-9_.:-]+(?: [a-zA-Z0-9_.:-]+)*$/.test(name)) {
+		return "Server name can only contain letters, numbers, dash, underscore, dot, colon, and single spaces";
 	}
 	return undefined;
 }

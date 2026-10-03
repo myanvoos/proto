@@ -40,10 +40,6 @@ type ConfigurableEditorAction = Extract<
 	| "app.model.cycleBackward"
 	| "app.model.select"
 	| "app.model.selectTemporary"
-	| "app.tools.toggleVisibility"
-	| "app.thinking.toggle"
-	| "app.editor.external"
-	| "app.history.search"
 	| "app.message.dequeue"
 	| "app.retry"
 	| "app.clipboard.pasteImage"
@@ -62,10 +58,6 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.model.cycleBackward": ["shift+ctrl+p"],
 	"app.model.select": ["alt+m"],
 	"app.model.selectTemporary": ["alt+p"],
-	"app.tools.toggleVisibility": ["ctrl+shift+o"],
-	"app.thinking.toggle": ["ctrl+t"],
-	"app.editor.external": ["ctrl+g"],
-	"app.history.search": ["ctrl+r"],
 	"app.message.dequeue": ["alt+up"],
 	"app.retry": ["alt+r"],
 	"app.clipboard.pasteImage": ["ctrl+v"],
@@ -121,10 +113,11 @@ function normalizePastedPath(path: string): string {
 	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
 }
 
+/** Only anchored paths count; `api/file/x.png` is ambiguous URL-ish text and stays text. */
 function isExplicitPastedPath(path: string): boolean {
-	if (FILE_URI_REGEX.test(path)) return true;
+	if (ABSOLUTE_PATH_PREFIX_REGEX.test(path) || /^\.\.?[\\/]/.test(path)) return true;
 	if (URI_SCHEME_REGEX.test(path)) return false;
-	return path.includes("/") || path.includes("\\");
+	return path.includes("\\");
 }
 
 function isImagePath(path: string): boolean {
@@ -549,10 +542,6 @@ export class CustomEditor extends Editor {
 	onCycleModelForward?: () => void;
 	onCycleModelBackward?: () => void;
 	onSelectModel?: () => void;
-	onToggleToolActivity?: () => void;
-	onToggleThinking?: () => void;
-	onExternalEditor?: () => void;
-	onHistorySearch?: () => void;
 	onSuspend?: () => void;
 	onSelectModelTemporary?: () => void;
 
@@ -738,11 +727,6 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
-			if (this.#matchesAction(canonical, "app.editor.external") && this.onExternalEditor) {
-				this.onExternalEditor();
-				return;
-			}
-
 			if (this.#matchesAction(canonical, "app.model.selectTemporary") && this.onSelectModelTemporary) {
 				this.onSelectModelTemporary();
 				return;
@@ -758,23 +742,8 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
-			if (this.#matchesAction(canonical, "app.thinking.toggle") && this.onToggleThinking) {
-				this.onToggleThinking();
-				return;
-			}
-
 			if (this.#matchesAction(canonical, "app.model.select") && this.onSelectModel) {
 				this.onSelectModel();
-				return;
-			}
-
-			if (this.#matchesAction(canonical, "app.history.search") && this.onHistorySearch) {
-				this.onHistorySearch();
-				return;
-			}
-
-			if (this.#matchesAction(canonical, "app.tools.toggleVisibility") && this.onToggleToolActivity) {
-				this.onToggleToolActivity();
 				return;
 			}
 
@@ -816,6 +785,7 @@ export class CustomEditor extends Editor {
 					canonical !== undefined && getKeybindings().matchesCanonical(canonical, "tui.editor.deleteCharForward");
 				if (doublesAsForwardDelete && !this.textEquals("")) {
 					this.deleteCharForward();
+					this.#normalizeQueuePrefix(hadBareQueuePrefix);
 					return;
 				}
 				this.onExit?.();
@@ -850,11 +820,15 @@ export class CustomEditor extends Editor {
 		}
 
 		super.handleInput(data);
-		if (!hadBareQueuePrefix && (this.textEquals("->") || this.textEquals("=>"))) {
-			const cursor = this.getCursor();
-			if (cursor.line === 0 && cursor.col === 2) {
-				this.insertText("\n");
-			}
+		this.#normalizeQueuePrefix(hadBareQueuePrefix);
+	}
+
+	/** An edit that newly leaves a bare `->`/`=>` opens the queue body below it, so typing lands in the body. */
+	#normalizeQueuePrefix(hadBareQueuePrefix: boolean): void {
+		if (hadBareQueuePrefix || !(this.textEquals("->") || this.textEquals("=>"))) return;
+		const cursor = this.getCursor();
+		if (cursor.line === 0 && cursor.col === 2) {
+			this.insertText("\n");
 		}
 	}
 

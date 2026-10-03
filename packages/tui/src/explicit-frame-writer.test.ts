@@ -73,6 +73,22 @@ class FakeTerminal {
 			(_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
 		);
 	}
+	activeRows(): string[] {
+		const buffer = this.vt.buffer.active;
+		return Array.from(
+			{ length: this.rows },
+			(_, row) =>
+				buffer
+					.getLine(buffer.baseY + row)
+					?.translateToString(true)
+					.trimEnd() ?? "",
+		);
+	}
+	takeWrites(): string {
+		const out = this.writes.join("");
+		this.writes.length = 0;
+		return out;
+	}
 	allNormalRows(): string[] {
 		const buffer = this.vt.buffer.normal;
 		return Array.from({ length: buffer.length }, (_, row) => buffer.getLine(row)?.translateToString(true) ?? "");
@@ -333,6 +349,101 @@ test("fullscreen overlays defer provider history and restore the normal buffer",
 	expect(terminal.screenRows().at(-1)).toBe("normal-2");
 	expect(countRow(terminal.allNormalRows(), "retired")).toBe(1);
 	tui.stop();
+});
+
+function openFullscreen(lines: string[], onPaint?: (paint: TuiPaint) => void) {
+	const made = makeTui(lines.length, onPaint);
+	made.provider.plan = { viewport: ["normal"], viewportAnchor: "bottom" };
+	made.tui.start({ deferInput: true });
+	made.scheduler.flush();
+	const overlay = { lines, render: () => overlay.lines };
+	made.tui.showOverlay(overlay, { fullscreen: true, width: "100%", maxHeight: "100%" });
+	made.scheduler.flush();
+	made.terminal.takeWrites();
+	return { ...made, overlay };
+}
+
+/** 1-based screen rows a paint addressed with an absolute row move. */
+function rewrittenRows(frame: string): number[] {
+	return [...frame.matchAll(/\x1b\[(\d+);1H/g)].map(match => Number(match[1]));
+}
+
+test("fullscreen overlays rewrite only the rows that changed", () => {
+	const lines = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+	const { terminal, scheduler, tui, overlay } = openFullscreen(lines);
+	try {
+		overlay.lines = ["alpha", "bravo", "CHARLIE CHANGED", "delta", "echo", "foxtrot"];
+		tui.requestRender();
+		scheduler.flush();
+		const grown = terminal.takeWrites();
+		expect(rewrittenRows(grown)).toEqual([3]);
+		for (const unchanged of ["alpha", "bravo", "delta", "echo", "foxtrot"]) expect(grown).not.toContain(unchanged);
+		expect(terminal.activeRows()).toEqual(overlay.lines);
+
+		// Returning a row to text an earlier paint replaced must repaint it.
+		overlay.lines = lines;
+		tui.requestRender();
+		scheduler.flush();
+		expect(rewrittenRows(terminal.takeWrites())).toEqual([3]);
+		expect(terminal.activeRows()).toEqual(lines);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("a forced repaint rewrites every fullscreen overlay row", () => {
+	const lines = ["alpha", "bravo", "charlie", "delta"];
+	const { terminal, scheduler, tui } = openFullscreen(lines);
+	try {
+		terminal.vt.write("\x1b[2;1HGARBAGE\x1b[4;1H\x1b[2K");
+		expect(terminal.activeRows()).toEqual(["alpha", "GARBAGE", "charlie", ""]);
+		tui.requestRender(true);
+		scheduler.flush();
+		expect(terminal.activeRows()).toEqual(lines);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("a fullscreen frame with a scaled heading repaints whole when it changes and not at all otherwise", () => {
+	// An s=2 glyph covers the row below its own and the terminal drops it when
+	// that row is written, so the heading must be resent once the row clears.
+	const heading = "\x1b]66;s=2;Hi\x1b\\";
+	const spaced = ["top", heading, "", "bottom"];
+	const { terminal, scheduler, tui, overlay } = openFullscreen(spaced);
+	try {
+		overlay.lines = ["top", heading, "grown", "bottom"];
+		tui.requestRender();
+		scheduler.flush();
+		terminal.takeWrites();
+
+		overlay.lines = spaced;
+		tui.requestRender();
+		scheduler.flush();
+		expect(terminal.takeWrites()).toContain("\x1b]66;s=2;Hi");
+
+		tui.requestRender();
+		scheduler.flush();
+		expect(terminal.takeWrites()).toBe("");
+	} finally {
+		tui.stop();
+	}
+});
+
+test("a partial fullscreen paint reports the complete overlay to paint listeners", () => {
+	const paints: TuiPaint[] = [];
+	const { scheduler, tui, overlay } = openFullscreen(["alpha", "bravo", "charlie"], paint => paints.push(paint));
+	try {
+		paints.length = 0;
+		overlay.lines = ["alpha", "BRAVO", "charlie"];
+		tui.requestRender();
+		scheduler.flush();
+		expect(paints).toHaveLength(1);
+		expect(paints[0]).toMatchObject({ alt: true, reset: false, rows: 3 });
+		expect(paints[0]!.viewport.map(row => Bun.stripANSI(row).trimEnd())).toEqual(overlay.lines);
+	} finally {
+		tui.stop();
+	}
 });
 
 test("a height-only resize reanchors and repaints only the mutable viewport without replaying history", () => {

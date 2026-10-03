@@ -31,7 +31,13 @@ import { AgentStorage } from "../session/agent-storage";
 import type { CompactionMethod } from "../session/compaction-method-config";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
-import { type ConfigIssue, normalizeSettingsLayer } from "./settings-normalize";
+import { stringifyYamlConfig } from "./config-file";
+import {
+	type ConfigIssue,
+	formatUnknownStatusLineSegments,
+	normalizeSettingsLayer,
+	unknownStatusLineSegments,
+} from "./settings-normalize";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -52,9 +58,43 @@ export interface RawSettings {
 
 type YamlLoadResult =
 	| { kind: "missing" }
-	| { kind: "loaded"; settings: RawSettings }
-	| { kind: "invalid"; error: unknown; backupPath?: string }
+	| { kind: "loaded"; settings: RawSettings; source: string }
+	| { kind: "invalid"; error: unknown; source: string; backupPath?: string }
 	| { kind: "unreadable"; error: unknown };
+
+/** The config.yml content a pending global change was made against; an unreadable file matches nothing. */
+type YamlSnapshot = { kind: "missing" } | { kind: "content"; source: string } | { kind: "unreadable" };
+
+type PendingYamlMutation = {
+	snapshot: YamlSnapshot;
+	baseValue: unknown;
+};
+
+function yamlSnapshotFromLoadResult(result: YamlLoadResult): YamlSnapshot {
+	switch (result.kind) {
+		case "missing":
+		case "unreadable":
+			return { kind: result.kind };
+		case "loaded":
+		case "invalid":
+			return { kind: "content", source: result.source };
+	}
+}
+
+function yamlSnapshotsMatch(left: YamlSnapshot, right: YamlSnapshot): boolean {
+	if (left.kind === "unreadable" || left.kind !== right.kind) return false;
+	return left.kind === "missing" || (right.kind === "content" && left.source === right.source);
+}
+
+/** A pending change applies unless the file changed since it was made and now holds a different value there. */
+function pendingChangeApplies(
+	mutation: PendingYamlMutation | undefined,
+	onDisk: YamlSnapshot,
+	onDiskValue: unknown,
+): boolean {
+	if (mutation === undefined || mutation.snapshot.kind === "unreadable") return false;
+	return yamlSnapshotsMatch(mutation.snapshot, onDisk) || Bun.deepEquals(onDiskValue, mutation.baseValue);
+}
 
 type MainYamlReadResult = {
 	settings: RawSettings | null;
@@ -141,6 +181,91 @@ export function validateProviderMaxInFlightRequests(value: unknown): Record<stri
 }
 
 const QUARANTINED_CONFIG_PATTERN = /^config\.ya?ml\.broken-/;
+
+/** Linux MAXSYMLINKS: bounds a chain that turns cyclic after realpath() reported it dangling. */
+const MAX_SYMLINK_HOPS = 40;
+
+function fsError(code: string, message: string): Error {
+	return Object.assign(new Error(`${code}: ${message}`), { code });
+}
+
+async function requireDirectory(dir: string, filePath: string): Promise<void> {
+	let stat: fs.Stats;
+	try {
+		stat = await fs.promises.stat(dir);
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+		throw fsError("ENOTDIR", `symlink target requires a directory but ${dir} is gone for ${filePath}`);
+	}
+	if (!stat.isDirectory()) {
+		throw fsError("ENOTDIR", `symlink target requires a directory but ${dir} is not one for ${filePath}`);
+	}
+}
+
+/**
+ * Where writing through the dangling symlink `filePath` lands, so recreating the config keeps every user-managed
+ * link in the chain. Each target is followed one physical component at a time like the kernel does: an existing
+ * directory link is entered before a later `..` pops its real parent. Past the first missing component the rest is
+ * joined lexically, and anything that would need to enter that component (`..`, a trailing `/`) fails with ENOTDIR
+ * instead of landing a file somewhere the link never reads.
+ */
+async function resolveDanglingSymlinkTarget(filePath: string): Promise<string> {
+	let current = filePath;
+	for (let hops = 0; hops < MAX_SYMLINK_HOPS; hops++) {
+		let target: string;
+		try {
+			target = await fs.promises.readlink(current);
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+			// An intermediate link vanished mid-walk: land on the deepest resolved hop, never the chain head.
+			return current === filePath ? path.resolve(filePath) : current;
+		}
+		let acc = path.parse(target).root;
+		if (!path.isAbsolute(target)) {
+			acc = path.dirname(current);
+			try {
+				acc = await fs.promises.realpath(acc);
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+			}
+		}
+		let frozen = false;
+		for (const segment of target.slice(path.parse(target).root.length).split(/\/+/)) {
+			if (segment === "" || segment === "." || segment === "..") {
+				if (frozen) {
+					throw fsError(
+						"ENOTDIR",
+						`symlink target needs an unresolved component to be a directory for ${filePath}`,
+					);
+				}
+				await requireDirectory(acc, filePath);
+				if (segment === "..") acc = path.dirname(acc);
+				continue;
+			}
+			const candidate = path.join(acc, segment);
+			if (frozen) {
+				acc = candidate;
+				continue;
+			}
+			try {
+				acc = await fs.promises.realpath(candidate);
+			} catch (error) {
+				if (!isEnoent(error)) throw error;
+				acc = candidate;
+				frozen = true;
+			}
+		}
+		let isLink = false;
+		try {
+			isLink = (await fs.promises.lstat(acc)).isSymbolicLink();
+		} catch (error) {
+			if (!isEnoent(error)) throw error;
+		}
+		if (!isLink) return acc;
+		current = acc;
+	}
+	throw fsError("ELOOP", `symlink chain for ${filePath} exceeds ${MAX_SYMLINK_HOPS} hops (possible cycle)`);
+}
 
 const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders"]);
 type PathScopedStringArrayEntry = {
@@ -323,6 +448,12 @@ export class Settings {
 
 	#modifiedGlobalModelRoles = new Set<string>();
 
+	#modifiedPathMutations = new Map<string, PendingYamlMutation>();
+
+	#projectSettingsWarningsSeen = new Set<string>();
+
+	#modifiedGlobalModelRoleMutations = new Map<string, PendingYamlMutation>();
+
 	#persistedMutationGeneration = 0;
 
 	#savedRuntimeModelRoleOverrides = new Map<string, string | undefined>();
@@ -427,20 +558,37 @@ export class Settings {
 	}
 
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		const unknownSegments = unknownStatusLineSegments(path, value);
+		if (unknownSegments.length > 0) throw new Error(`${path}: ${formatUnknownStatusLineSegments(unknownSegments)}`);
 		const prev = this.get(path);
 		const segments = path.split(".");
-		setByPath(this.#global, segments, value);
-		this.#persistedMutationGeneration++;
-		this.#modified.add(path);
-		this.#rebuildMerged();
+		if (!this.#globalWriteIsNoop(segments, value)) {
+			this.#captureGlobalMutation(path, this.#modifiedPathMutations, getByPath(this.#global, segments));
+			setByPath(this.#global, segments, value);
+			this.#persistedMutationGeneration++;
+			this.#modified.add(path);
+			this.#rebuildMerged();
+			this.#queueSave();
+		}
 		const next = this.get(path);
-		this.#queueSave();
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) {
 			hook(next, prev);
 		}
 		this.#fireEffectiveSettingChanged(path, next, prev);
+	}
+
+	/**
+	 * Writes one entry of a record setting to config.yml (undefined deletes it). Built from the global layer alone so
+	 * entries supplied by the project file, a --config overlay, or runtime overrides are not copied into config.yml.
+	 */
+	setRecordEntry<P extends SettingPath>(path: P, key: string, value: unknown): void {
+		const current = getByPath(this.#global, SETTING_PATH_SEGMENTS[path]);
+		const next: Record<string, unknown> = isRecord(current) ? { ...current } : {};
+		if (value === undefined) delete next[key];
+		else next[key] = value;
+		this.set(path, next as SettingValue<P>);
 	}
 
 	override<P extends SettingPath>(path: P, value: SettingValue<P>): void {
@@ -770,18 +918,21 @@ export class Settings {
 
 	setModelRole(role: ModelRole | string, modelId: string | undefined): void {
 		const prev = this.get("modelRoles");
-		const current = this.#modelRolesFromLayer(this.#global);
-		if (modelId === undefined) {
-			delete current[role];
-		} else {
-			current[role] = modelId;
-		}
+		if (!this.#globalWriteIsNoop(["modelRoles", role], modelId)) {
+			const current = this.#modelRolesFromLayer(this.#global);
+			this.#captureGlobalMutation(role, this.#modifiedGlobalModelRoleMutations, current[role]);
+			if (modelId === undefined) {
+				delete current[role];
+			} else {
+				current[role] = modelId;
+			}
 
-		setByPath(this.#global, ["modelRoles"], current);
-		this.#modifiedGlobalModelRoles.add(role);
-		this.#persistedMutationGeneration++;
-		this.#rebuildMerged();
-		this.#queueSave();
+			setByPath(this.#global, ["modelRoles"], current);
+			this.#modifiedGlobalModelRoles.add(role);
+			this.#persistedMutationGeneration++;
+			this.#rebuildMerged();
+			this.#queueSave();
+		}
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prev);
 		if (this.isProjectModelRoleRuntimeOverrideActive(role)) {
 			return;
@@ -942,20 +1093,22 @@ export class Settings {
 		try {
 			parsed = YAML.parse(content);
 		} catch (error) {
-			return { kind: "invalid", error };
+			return { kind: "invalid", error, source: content };
 		}
 		if (parsed === null || parsed === undefined) {
-			return { kind: "loaded", settings: {} };
+			return { kind: "loaded", settings: {}, source: content };
 		}
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
 			return {
 				kind: "invalid",
 				error: new Error("Settings YAML must contain a mapping at the document root"),
+				source: content,
 			};
 		}
 		return {
 			kind: "loaded",
 			settings: this.#migrateRawSettings(parsed as RawSettings, captureLegacyChangelogVersion),
+			source: content,
 		};
 	}
 
@@ -969,11 +1122,7 @@ export class Settings {
 		}
 
 		try {
-			const stat = await fs.promises.lstat(filePath);
-			if (stat.isSymbolicLink()) {
-				const target = await fs.promises.readlink(filePath);
-				return path.resolve(path.dirname(filePath), target);
-			}
+			if ((await fs.promises.lstat(filePath)).isSymbolicLink()) return await resolveDanglingSymlinkTarget(filePath);
 		} catch (error) {
 			if (!isEnoent(error)) throw error;
 		}
@@ -1046,13 +1195,45 @@ export class Settings {
 		}
 	}
 
-	async #loadYamlIfPresentForWriteLocked(filePath: string, writePath: string): Promise<RawSettings | null> {
+	async #loadYamlIfPresentForWriteLocked(
+		filePath: string,
+		writePath: string,
+	): Promise<{ settings: RawSettings | null; snapshot: YamlSnapshot }> {
 		let result = await this.#loadYamlIfPresent(writePath);
+		const snapshot = yamlSnapshotFromLoadResult(result);
 		if (result.kind === "invalid") {
 			result = await this.#quarantineInvalidYamlLocked(writePath, result);
 			this.#quarantinedYamlTargets.set(filePath, writePath);
 		}
-		return this.#unwrapYamlLoadResult(filePath, result);
+		return { settings: this.#unwrapYamlLoadResult(filePath, result), snapshot };
+	}
+
+	#readYamlSnapshot(filePath: string): YamlSnapshot {
+		try {
+			return { kind: "content", source: fs.readFileSync(filePath, "utf8") };
+		} catch (error) {
+			return isEnoent(error) ? { kind: "missing" } : { kind: "unreadable" };
+		}
+	}
+
+	#captureGlobalMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
+		if (!this.#persist || !this.#configPath) return;
+		mutations.set(key, { snapshot: this.#readYamlSnapshot(this.#configPath), baseValue: structuredClone(baseValue) });
+	}
+
+	/** Whether writing `value` at `segments` would leave config.yml as is: both the global layer and the file hold it. */
+	#globalWriteIsNoop(segments: readonly string[], value: unknown): boolean {
+		if (!Bun.deepEquals(getByPath(this.#global, segments), value)) return false;
+		if (!this.#persist || !this.#configPath) return true;
+		const snapshot = this.#readYamlSnapshot(this.#configPath);
+		if (snapshot.kind !== "content") return snapshot.kind === "missing" && value === undefined;
+		let onDisk: unknown;
+		try {
+			onDisk = YAML.parse(snapshot.source);
+		} catch {
+			return false;
+		}
+		return Bun.deepEquals(isRecord(onDisk) ? getByPath(onDisk, segments) : undefined, value);
 	}
 
 	async #quarantineInvalidYamlLocked(
@@ -1113,10 +1294,24 @@ export class Settings {
 	}
 
 	async #readProjectSettings(quarantineInvalid: boolean): Promise<ProjectSettingsReadResult> {
+		const projectConfigPath = path.join(this.#cwd, ".proto", "config.yml");
+		// Discovery caches file and directory reads process-wide; a reload must see project config edits.
+		invalidateCapabilityFsCache(projectConfigPath);
+		invalidateCapabilityFsCache(path.join(this.#cwd, ".proto", "settings.json"));
+		const discoveryCwd = path.resolve(this.#cwd);
+		invalidateCapabilityFsCache(path.join(discoveryCwd, ".claude", "settings.json"));
 		let shellPathSource: string | undefined;
 		let merged: RawSettings = {};
 		try {
-			const result = await loadCapability(settingsCapability.id, { cwd: this.#cwd });
+			const result = await loadCapability(settingsCapability.id, { cwd: discoveryCwd });
+			// Warnings span every level but embed their file's absolute path: surface only project ones (under the
+			// cwd), once per distinct warning so reloads stay quiet.
+			const cwdRoot = discoveryCwd.endsWith(path.sep) ? discoveryCwd : discoveryCwd + path.sep;
+			const projectWarnings = result.warnings.filter(warning => warning.includes(cwdRoot));
+			for (const warning of projectWarnings) {
+				if (!this.#projectSettingsWarningsSeen.has(warning)) logger.warn(`Settings: ${warning}`);
+			}
+			this.#projectSettingsWarningsSeen = new Set(projectWarnings);
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level === "project") {
 					merged = this.#deepMerge(merged, item.data as RawSettings);
@@ -1126,7 +1321,6 @@ export class Settings {
 		} catch {
 			shellPathSource = undefined;
 		}
-		const projectConfigPath = path.join(this.#cwd, ".proto", "config.yml");
 		const nativeProject = quarantineInvalid
 			? await this.#loadYaml(projectConfigPath)
 			: (this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false)) ??
@@ -1201,6 +1395,7 @@ export class Settings {
 
 		let settings: RawSettings = {};
 		let migrated = false;
+		let migratedSettingsJson = false;
 
 		const settingsJsonPath = path.join(this.#agentDir, "settings.json");
 		let legacyContent: string | undefined;
@@ -1236,9 +1431,7 @@ export class Settings {
 					this.#normalizeLayer(this.#migrateRawSettings(parsed as RawSettings), settingsJsonPath, true),
 				);
 				migrated = true;
-				try {
-					fs.renameSync(settingsJsonPath, `${settingsJsonPath}.bak`);
-				} catch {}
+				migratedSettingsJson = true;
 			} else if (parsed !== undefined) {
 				this.#recordConfigIssues([
 					{
@@ -1256,13 +1449,33 @@ export class Settings {
 				settings = this.#deepMerge(settings, this.#migrateRawSettings(dbSettings as RawSettings));
 				migrated = true;
 			}
-		} catch {}
+		} catch (error) {
+			logger.warn("Settings: failed to read legacy agent.db settings", { error: String(error) });
+		}
 
-		if (migrated && Object.keys(settings).length > 0) {
-			try {
-				await this.#writeYamlAtomically(this.#configPath, settings);
-				logger.debug("Settings: migrated to config.yml", { path: this.#configPath });
-			} catch {}
+		if (!migrated || Object.keys(settings).length === 0) return;
+		try {
+			await this.#writeYamlAtomically(this.#configPath, stringifyYamlConfig(settings));
+			logger.debug("Settings: migrated to config.yml", { path: this.#configPath });
+		} catch (error) {
+			logger.warn("Settings: failed to write migrated config.yml", { path: this.#configPath, error: String(error) });
+			return;
+		}
+		// The rows were only a migration source: left behind, they would resurrect if config.yml is later deleted.
+		try {
+			this.#storage?.clearMigratedSettings();
+		} catch (error) {
+			logger.warn("Settings: failed to clear migrated agent.db settings", { error: String(error) });
+		}
+		// Archive the legacy file only once its settings are durable in config.yml.
+		if (!migratedSettingsJson) return;
+		try {
+			await fs.promises.rename(settingsJsonPath, `${settingsJsonPath}.bak`);
+		} catch (error) {
+			logger.warn("Settings: failed to archive settings.json after migration", {
+				path: settingsJsonPath,
+				error: String(error),
+			});
 		}
 	}
 
@@ -1297,13 +1510,6 @@ export class Settings {
 		}
 		delete raw.collapseChangelog;
 		delete raw["startup.changelogMode"];
-
-		if (raw.ask && typeof (raw.ask as Record<string, unknown>).timeout === "number") {
-			const oldValue = (raw.ask as Record<string, unknown>).timeout as number;
-			if (oldValue > 1000) {
-				(raw.ask as Record<string, unknown>).timeout = Math.round(oldValue / 1000);
-			}
-		}
 
 		if (typeof raw.theme === "string") {
 			const oldTheme = raw.theme;
@@ -1646,14 +1852,14 @@ export class Settings {
 		}
 	}
 
-	async #writeYamlAtomically(filePath: string, settings: RawSettings): Promise<void> {
+	async #writeYamlAtomically(filePath: string, content: string): Promise<void> {
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		let removeTemp = false;
 		try {
 			const handle = await fs.promises.open(tempPath, "wx", 0o600);
 			removeTemp = true;
 			try {
-				await handle.writeFile(YAML.stringify(settings, null, 2), "utf8");
+				await handle.writeFile(content, "utf8");
 				await handle.sync();
 			} finally {
 				await handle.close();
@@ -1740,20 +1946,42 @@ export class Settings {
 		const configPath = this.#configPath;
 		const modifiedPaths = [...this.#modified];
 		const modifiedModelRoles = [...this.#modifiedGlobalModelRoles];
+		const modifiedPathMutations = new Map(this.#modifiedPathMutations);
+		const modifiedModelRoleMutations = new Map(this.#modifiedGlobalModelRoleMutations);
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
+		const previousModelRoles = this.get("modelRoles");
+		const previousHookValues = new Map<SettingPath, unknown>();
+		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
+			previousHookValues.set(key, this.get(key));
+		}
 		this.#modified.clear();
 		this.#modifiedGlobalModelRoles.clear();
+		this.#modifiedPathMutations.clear();
+		this.#modifiedGlobalModelRoleMutations.clear();
 
 		try {
 			await this.#withYamlWriteLock(configPath, async writePath => {
 				const loaded = await this.#loadYamlIfPresentForWriteLocked(configPath, writePath);
 				const current =
-					loaded ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+					loaded.settings ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+				// Compare against the file as the runtime reads it, so a hand-written spelling of the captured value
+				// (e.g. `on` for true) does not read as an external edit.
+				const currentNormalized = this.#normalizeLayer(current, configPath, false);
+				let shouldWrite = false;
 
+				// A pending change loses to a later external edit of the same setting; disjoint edits still merge.
 				for (const modPath of modifiedPaths) {
 					const segments = modPath.split(".");
-					const value = getByPath(this.#global, segments);
-					setByPath(current, segments, value);
+					const onDiskValue = getByPath(currentNormalized, segments);
+					if (!pendingChangeApplies(modifiedPathMutations.get(modPath), loaded.snapshot, onDiskValue)) {
+						logger.warn("Settings: skipped stale change after external config edit", {
+							path: configPath,
+							setting: modPath,
+						});
+						continue;
+					}
+					setByPath(current, segments, getByPath(this.#global, segments));
+					shouldWrite = true;
 				}
 
 				const latestGlobalRoles = this.#modelRolesFromLayer(this.#global);
@@ -1768,10 +1996,21 @@ export class Settings {
 						rolesToPreserve.add(role);
 					}
 				}
-				if (modifiedModelRoles.length > 0 || rolesToPreserve.size > 0) {
-					const currentRoles = getByPath(current, ["modelRoles"]);
-					const mergedRoles: Record<string, unknown> = isRecord(currentRoles) ? { ...currentRoles } : {};
-					for (const role of modifiedModelRoles) {
+				const currentRoles = getByPath(current, ["modelRoles"]);
+				const currentRoleValues: Record<string, unknown> = isRecord(currentRoles) ? currentRoles : {};
+				const rolesToApply = modifiedModelRoles.filter(role => {
+					const onDiskValue = getByPath(currentNormalized, ["modelRoles", role]);
+					if (pendingChangeApplies(modifiedModelRoleMutations.get(role), loaded.snapshot, onDiskValue))
+						return true;
+					logger.warn("Settings: skipped stale change after external config edit", {
+						path: configPath,
+						setting: `modelRoles.${role}`,
+					});
+					return false;
+				});
+				if (rolesToApply.length > 0 || rolesToPreserve.size > 0) {
+					const mergedRoles: Record<string, unknown> = { ...currentRoleValues };
+					for (const role of rolesToApply) {
 						if (Object.hasOwn(globalRolesAtStart, role)) {
 							mergedRoles[role] = globalRolesAtStart[role];
 						} else {
@@ -1786,9 +2025,22 @@ export class Settings {
 						}
 					}
 					setByPath(current, ["modelRoles"], mergedRoles);
+					shouldWrite = true;
 				}
 
-				await this.#writeYamlAtomically(writePath, current);
+				if (shouldWrite) {
+					// The merge can reproduce the file exactly (a change reverted before the debounce fired, or an
+					// external edit that already holds the value): leave it untouched.
+					const content = stringifyYamlConfig(current);
+					if (loaded.snapshot.kind !== "content" || loaded.snapshot.source !== content) {
+						await this.#writeYamlAtomically(writePath, content);
+					}
+				}
+				// Paths changed while this save was in flight keep their live value until their own save.
+				for (const modPath of this.#modified) {
+					const segments = modPath.split(".");
+					setByPath(current, segments, getByPath(this.#global, segments));
+				}
 				this.#global = this.#normalizeLayer(current, configPath, false);
 				this.#quarantinedYamlTargets.delete(configPath);
 
@@ -1796,23 +2048,49 @@ export class Settings {
 				for (const role of rolesToPreserve) {
 					if (latestGlobalRoles[role] === globalRolesAfterWrite[role]) {
 						this.#modifiedGlobalModelRoles.delete(role);
+						this.#modifiedGlobalModelRoleMutations.delete(role);
 					}
 				}
 			});
 		} catch (error) {
 			logger.warn("Settings: save failed", { error: String(error) });
-
+			// A config this save moved aside is missing by our own action, not superseded: retry against that state.
+			const retrySnapshot = this.#quarantinedYamlTargets.has(configPath)
+				? this.#readYamlSnapshot(configPath)
+				: undefined;
+			const requeue = (
+				key: string,
+				pending: Map<string, PendingYamlMutation>,
+				failed: PendingYamlMutation | undefined,
+			) => {
+				if (pending.has(key)) return;
+				const mutation = failed ?? { snapshot: { kind: "unreadable" }, baseValue: undefined };
+				pending.set(key, retrySnapshot ? { ...mutation, snapshot: retrySnapshot } : mutation);
+			};
 			for (const p of modifiedPaths) {
 				this.#modified.add(p);
+				requeue(p, this.#modifiedPathMutations, modifiedPathMutations.get(p));
 			}
 			for (const role of modifiedModelRoles) {
 				this.#modifiedGlobalModelRoles.add(role);
+				requeue(role, this.#modifiedGlobalModelRoleMutations, modifiedModelRoleMutations.get(role));
 			}
 			this.#rebuildMerged();
 			throw error;
 		}
 
 		this.#rebuildMerged();
+		// A skipped stale change leaves the external value in effect: notify whatever applied the local one.
+		const nextModelRoles = this.get("modelRoles");
+		if (!Bun.deepEquals(nextModelRoles, previousModelRoles)) {
+			this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousModelRoles);
+		}
+		for (const [key, previous] of previousHookValues) {
+			const next = this.get(key);
+			if (!Bun.deepEquals(next, previous)) {
+				SETTING_HOOKS[key]?.(next, previous);
+			}
+		}
 	}
 	#queueProjectSave(): void {
 		if (!this.#persist) return;
@@ -1846,7 +2124,7 @@ export class Settings {
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
 				const loaded = await this.#loadYamlIfPresentForWriteLocked(projectConfigPath, writePath);
 				const projectSettings =
-					loaded ??
+					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(this.#projectFileSettings) : {});
 
 				const projectRoles = getByPath(this.#project, ["modelRoles"]);
@@ -1855,7 +2133,7 @@ export class Settings {
 					setByPath(projectSettings, ["modelRoles", role], value);
 				}
 
-				await this.#writeYamlAtomically(writePath, projectSettings);
+				await this.#writeYamlAtomically(writePath, stringifyYamlConfig(projectSettings));
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#quarantinedYamlTargets.delete(projectConfigPath);
 			});

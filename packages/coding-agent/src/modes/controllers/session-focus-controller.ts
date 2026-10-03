@@ -8,7 +8,11 @@ export class SessionFocusController {
 	#focusedAgentId: string | undefined;
 
 	#attachedSession: AgentSession | undefined;
+	#focusAttachment: Promise<boolean> | undefined;
 	#registryUnsubscribe: (() => void) | undefined;
+	#attachGeneration = 0;
+	// A focus request that resolves after a newer request (or an explicit leave) drops instead of replacing the view.
+	#focusRequestSeq = 0;
 
 	constructor(
 		private ctx: InteractiveModeContext,
@@ -26,15 +30,41 @@ export class SessionFocusController {
 
 	async focusAgent(id: string): Promise<void> {
 		if (id === MAIN_AGENT_ID) return this.unfocus();
-		const session = await this.lifecycle().ensureLive(id);
+		const request = ++this.#focusRequestSeq;
+		let session: AgentSession;
+		try {
+			session = await this.lifecycle().ensureLive(id);
+		} catch (error) {
+			if (request !== this.#focusRequestSeq) return;
+			throw error;
+		}
+		if (request !== this.#focusRequestSeq) return;
 		// After ensureLive, because reviving a parked agent re-arms its idle timer on the way out.
 		this.lifecycle().holdForFocus(id);
-		if (id === this.#focusedAgentId && session === this.#attachedSession) return;
-		this.#focusedAgentId = id;
-		this.#attachedSession = session;
-		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
-		await this.#attach(session);
-		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent, →→ opens its subagents`);
+		let attachment = this.#focusAttachment;
+		if (id !== this.#focusedAgentId || session !== this.#attachedSession) {
+			this.#focusedAgentId = id;
+			this.#attachedSession = session;
+			this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
+			attachment = this.#attach(session);
+			this.#focusAttachment = attachment;
+		} else if (!attachment) {
+			// Rebuilding the same live view would discard tool cards whose results are not persisted yet.
+			return;
+		}
+		let attached: boolean;
+		try {
+			attached = await attachment;
+		} catch (error) {
+			if (request !== this.#focusRequestSeq) return;
+			throw error;
+		} finally {
+			if (this.#focusAttachment === attachment) this.#focusAttachment = undefined;
+		}
+		if (!attached || request !== this.#focusRequestSeq) return;
+		if (this.#focusedAgentId === id && this.#attachedSession === session) {
+			this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent, →→ opens its subagents`);
+		}
 	}
 
 	async focusParent(): Promise<void> {
@@ -47,15 +77,23 @@ export class SessionFocusController {
 	}
 
 	async unfocus(): Promise<void> {
+		// An explicit leave also cancels a focus request still waiting on a revive.
+		this.#focusRequestSeq++;
+		return this.#detachToMain();
+	}
+
+	// Reactive teardown (the focused agent died) must not cancel a newer explicit focus request.
+	async #detachToMain(): Promise<void> {
 		if (!this.#focusedAgentId) return;
 		this.lifecycle().holdForFocus(undefined);
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
-		await this.#attach(this.ctx.session);
-		this.ctx.showStatus("Returned to main session");
+		const attached = await this.#attach(this.ctx.session);
+		if (attached && this.#focusedAgentId === undefined) this.ctx.showStatus("Returned to main session");
 	}
 
 	async attachSwappedMain(target: AgentSession): Promise<void> {
+		this.#focusRequestSeq++;
 		this.lifecycle().holdForFocus(undefined);
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = target;
@@ -63,6 +101,8 @@ export class SessionFocusController {
 	}
 
 	dispose(): void {
+		this.#focusRequestSeq++;
+		this.#attachGeneration++;
 		if (this.#focusedAgentId) this.lifecycle().holdForFocus(undefined);
 		this.#registryUnsubscribe?.();
 		this.#registryUnsubscribe = undefined;
@@ -73,7 +113,7 @@ export class SessionFocusController {
 		const gone = event.type === "removed";
 		const dead = event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
 		if (!gone && !dead) return;
-		void this.unfocus()
+		void this.#detachToMain()
 			.then(() => {
 				this.ctx.showStatus(
 					`Agent ${event.ref.id} is ${gone ? "gone" : event.ref.status}; returned to main session`,
@@ -103,32 +143,71 @@ export class SessionFocusController {
 		return error instanceof Error ? error.message : String(error);
 	}
 
-	async #attach(target: AgentSession): Promise<void> {
-		this.ctx.unsubscribe?.();
-		this.ctx.unsubscribe = undefined;
-		this.ctx.clearTransientSessionUi();
-		const transcriptAnchor = this.ctx.eventController.resetTranscriptAnchors();
+	async #attach(target: AgentSession): Promise<boolean> {
+		const generation = ++this.#attachGeneration;
+		const current = () => generation === this.#attachGeneration;
+		try {
+			this.ctx.unsubscribe?.();
+			this.ctx.unsubscribe = undefined;
+			this.ctx.clearTransientSessionUi();
+			const transcriptAnchor = this.ctx.eventController.resetTranscriptAnchors();
 
-		let assistantStreamSynced = false;
-		this.ctx.unsubscribe = target.subscribe(async event => {
-			if (event.type === "message_start" && event.message.role === "assistant") {
-				assistantStreamSynced = true;
-			} else if (event.type === "message_update" && event.message.role === "assistant" && !assistantStreamSynced) {
-				assistantStreamSynced = true;
-				await this.ctx.eventController.dispatchEvent(
-					{ type: "message_start", message: event.message },
-					transcriptAnchor,
-				);
+			let assistantStreamSynced = false;
+			this.ctx.unsubscribe = target.subscribe(async event => {
+				if (event.type === "message_start" && event.message.role === "assistant") {
+					assistantStreamSynced = true;
+				} else if (
+					event.type === "message_update" &&
+					event.message.role === "assistant" &&
+					!assistantStreamSynced
+				) {
+					assistantStreamSynced = true;
+					await this.ctx.eventController.dispatchEvent(
+						{ type: "message_start", message: event.message },
+						transcriptAnchor,
+					);
+				}
+				await this.ctx.eventController.dispatchEvent(event, transcriptAnchor);
+			});
+			// Events emitted while no view listened still persist asynchronously: settle that persistence so the
+			// rebuild cannot resurrect a result-less tool call whose completion fired unobserved.
+			await target.settleInFlightMessagePersistence();
+			if (!current()) return false;
+			this.ctx.statusLine.setSession(target, this.#focusedAgentId);
+			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+			if (!current()) return false;
+			// The checklist HUD follows live events of the attached session only; reload the target's own plan.
+			await this.ctx.reloadChecklist(target);
+			if (!current()) return false;
+			this.ctx.updatePendingMessagesDisplay();
+
+			if (target.isStreaming) {
+				await this.ctx.eventController.dispatchEvent({ type: "agent_start" }, transcriptAnchor);
+			} else setTerminalTitleState("idle");
+			// Partial tool results are display-only events: replay each running tool's latest one over the rebuild.
+			for (const event of target.activeToolExecutionUpdates()) {
+				if (!current()) return false;
+				await this.ctx.eventController.dispatchEvent(event, transcriptAnchor);
 			}
-			await this.ctx.eventController.dispatchEvent(event, transcriptAnchor);
-		});
-		this.ctx.statusLine.setSession(target, this.#focusedAgentId);
-		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-
-		if (target.isStreaming) {
-			await this.ctx.eventController.dispatchEvent({ type: "agent_start" }, transcriptAnchor);
-		} else setTerminalTitleState("idle");
-		this.ctx.updateEditorBorderColor();
-		this.ctx.ui.requestRender();
+			if (!current()) return false;
+			this.ctx.updateEditorBorderColor();
+			this.ctx.ui.requestRender();
+			return true;
+		} catch (error) {
+			if (current() && this.#focusedAgentId !== undefined) {
+				this.lifecycle().holdForFocus(undefined);
+				this.#focusedAgentId = undefined;
+				this.#attachedSession = undefined;
+				try {
+					await this.#attach(this.ctx.session);
+				} catch (recoveryError) {
+					throw new AggregateError(
+						[error, recoveryError],
+						"Focus attachment and main-session recovery both failed",
+					);
+				}
+			}
+			throw error;
+		}
 	}
 }

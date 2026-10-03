@@ -317,7 +317,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 49.6,
-		"tps": 66.7,
+		"tps": 65.7,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -377,7 +377,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 53.4,
-		"tps": 64.7,
+		"tps": 68.2,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -823,7 +823,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"int": 23.7,
-		"tps": 45.7,
+		"tps": 47.7,
 		"thinking": {
 			"mode": "anthropic-budget-effort",
 			"efforts": [
@@ -939,7 +939,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 26.4,
-		"tps": 38.7,
+		"tps": 38.4,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -997,7 +997,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 40.7,
-		"tps": 48.1,
+		"tps": 51,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1057,7 +1057,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 41.8,
-		"tps": 57.8,
+		"tps": 61.4,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1117,7 +1117,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 50.8,
-		"tps": 53.6,
+		"tps": 57.2,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1177,6 +1177,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 57.6,
+		"tps": 93,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1208,7 +1209,7 @@
 			"supportsMidConversationToolChanges": true,
 			"supportsPerMessageEffort": true,
 			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
@@ -1456,7 +1457,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 24.7,
-		"tps": 42,
+		"tps": 45.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1513,7 +1514,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
 		"int": 38.2,
-		"tps": 78.1,
+		"tps": 85.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1546,6 +1547,66 @@
 			"supportsPerMessageEffort": false,
 			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-sonnet-5-5": {
+		"id": "claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5",
+		"api": "anthropic-messages",
+		"provider": "anthropic",
+		"baseUrl": "https://api.anthropic.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"int": 56,
+		"tps": 139.6,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": true,
+			"signingEndpoint": true,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": true,
+			"supportsLongCacheRetention": true,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,

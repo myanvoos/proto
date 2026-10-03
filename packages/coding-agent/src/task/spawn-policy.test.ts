@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { resolveSpawnPreflight } from "./spawn-policy";
+import * as os from "node:os";
+import * as path from "node:path";
+import { describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
 import { canSpawnAtDepth } from "./types";
 
 // `orchestrator.maxRecursionDepth` counts levels of worker-spawned workers, which is what its
@@ -32,4 +34,15 @@ test("a worker inside the cap is not refused on depth", () => {
 	expect(
 		resolveSpawnPreflight({ requestedAgent: "worker", parentSpawns: "*", taskDepth: 2, maxRecursionDepth: 2 }).error,
 	).toBeUndefined();
+});
+
+// A misplaced agent file used to get only the list of agents found, with no hint of where discovery looked.
+test("an unknown agent names the directories discovery searched", () => {
+	const message = describeUnknownAgent("reviewr", {
+		agents: [{ name: "worker", description: "", systemPrompt: "", source: "bundled" }],
+		searchedDirs: [path.join(os.homedir(), ".proto", "agent", "agents"), "/repo/.proto/agents"],
+	});
+	expect(message).toBe(
+		'Unknown agent "reviewr". Available: worker. Searched: ~/.proto/agent/agents, /repo/.proto/agents',
+	);
 });

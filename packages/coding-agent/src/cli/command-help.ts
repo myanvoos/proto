@@ -146,6 +146,9 @@ export const authGatewayHelp = {
 			description:
 				"For `check`: additionally probe each credential against its provider's chat-completion endpoint. Slower; consumes a tiny amount of quota per credential.",
 		}),
+		"trust-proxy-headers": Flags.boolean({
+			description: "Trust forwarded client IP headers from a reverse proxy (serve); off by default.",
+		}),
 	},
 	examples: [
 		"# Boot the gateway against the configured broker\n  proto auth-gateway serve",
@@ -153,6 +156,7 @@ export const authGatewayHelp = {
 		"# Print the gateway bearer token (creates one on first run)\n  proto auth-gateway token",
 		"# Rotate the gateway bearer token\n  proto auth-gateway token --regenerate",
 		"# Run on loopback without any bearer (anyone on this host can call)\n  proto auth-gateway serve --no-auth",
+		"# Trust client IP headers from a reverse proxy in front of the gateway\n  proto auth-gateway serve --trust-proxy-headers",
 		"# Show local gateway + broker config status\n  proto auth-gateway status",
 		"# Probe each broker credential to see which one is producing 401s\n  proto auth-gateway check",
 		"# Same, machine-readable for scripts\n  proto auth-gateway check --json",
@@ -873,6 +877,14 @@ export const usageHelp = {
 			default: false,
 		}),
 		days: Flags.integer({ char: "d", description: "History window in days (with --history or clients)", default: 7 }),
+		extension: Flags.string({
+			char: "e",
+			description: "Load an extension file before fetching usage (repeatable)",
+			multiple: true,
+		}),
+		"no-extensions": Flags.boolean({
+			description: "Disable extension discovery (explicit -e paths still work)",
+		}),
 	},
 	examples: [
 		"# Detailed per-account usage breakdown across all providers\n  proto usage",

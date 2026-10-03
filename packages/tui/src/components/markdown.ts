@@ -3222,7 +3222,7 @@ export class Markdown implements Component {
 			case "blockquote": {
 				const quoteInlineStyleContext: InlineStyleContext = {
 					applyText: (text: string) => text,
-					stylePrefix: "",
+					stylePrefix: this.#getQuoteStylePrefix(),
 				};
 				// Re-wrapping child rows that are already at their own content width multiplies the row
 				// count per nesting level once widths collapse, so nested quotes stop shrinking instead.
@@ -3295,15 +3295,22 @@ export class Markdown implements Component {
 		return this.#theme.hr(fillChar.repeat(Math.min(width, 80)));
 	}
 
+	#quoteStyle(text: string): string {
+		return this.#theme.quote(this.#theme.italic(text));
+	}
+
+	#getQuoteStylePrefix(): string {
+		return this.#getStylePrefix(text => this.#quoteStyle(text));
+	}
+
 	#applyQuoteBorder(renderedLines: RenderedLine[], width: number): RenderedLine[] {
-		const quoteStyle = (text: string) => this.#theme.quote(this.#theme.italic(text));
-		const quoteStylePrefix = this.#getStylePrefix(quoteStyle);
+		const quoteStylePrefix = this.#getQuoteStylePrefix();
 		const applyQuoteStyle = (line: string): string => {
 			if (!quoteStylePrefix) {
-				return quoteStyle(line);
+				return this.#quoteStyle(line);
 			}
 			const lineWithReappliedStyle = line.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`);
-			return quoteStyle(lineWithReappliedStyle);
+			return this.#quoteStyle(lineWithReappliedStyle);
 		};
 		const quoteContentWidth = Math.max(1, width - 2);
 		const lines: RenderedLine[] = [];
@@ -3360,7 +3367,12 @@ export class Markdown implements Component {
 	}
 
 	#renderHtmlBlockquote(inner: string, width: number): RenderedLine[] {
-		const cleaned = normalizeHtmlForTerminal(inner, createHtmlNormalizationState(), text => this.#theme.code(text));
+		const quoteStylePrefix = this.#getQuoteStylePrefix();
+		const cleaned = normalizeHtmlForTerminal(
+			inner,
+			createHtmlNormalizationState(),
+			text => this.#theme.code(text) + quoteStylePrefix,
+		);
 		const innerLines = splitTerminalLines(cleaned).map(line => renderedLine(line.trimEnd()));
 		while (innerLines.length > 0 && innerLines[innerLines.length - 1].text === "") innerLines.pop();
 		return this.#applyQuoteBorder(innerLines, width);

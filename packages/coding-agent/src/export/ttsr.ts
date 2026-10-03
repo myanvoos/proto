@@ -740,6 +740,25 @@ export class TtsrManager {
 		return Array.from(this.#rules.values(), entry => entry.rule);
 	}
 
+	/**
+	 * Replaces every monitored rule with a fresh snapshot, keeping injection state only for names that stay
+	 * registered. Returns the names accepted for monitoring.
+	 */
+	replaceRules(rules: readonly Rule[]): Set<string> {
+		const replacement = new TtsrManager(this.#settings);
+		for (const rule of rules) replacement.addRule(rule);
+		this.#rules.clear();
+		for (const [name, entry] of replacement.#rules) this.#rules.set(name, entry);
+		this.#canMatchText = replacement.#canMatchText;
+		this.#canMatchThinking = replacement.#canMatchThinking;
+		this.#candidateRevision++;
+		this.resetBuffer();
+		for (const name of this.#injectionRecords.keys()) {
+			if (!this.#rules.has(name)) this.#injectionRecords.delete(name);
+		}
+		return new Set(this.#rules.keys());
+	}
+
 	/** Registered rules with their compiled conditions, for `proto ttsr list`/`scan`. */
 	getEntries(): TtsrRuleEntry[] {
 		return Array.from(this.#rules.values(), entry => ({ rule: entry.rule, program: entry.program }));

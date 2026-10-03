@@ -317,8 +317,9 @@ const { session } = await createAgentSession({
   inline factories still load
 - `preloadedExtensions`: reuse an extension set loaded early by the same
   session-owning process. Never pass loaded extension instances from a parent
-  to another session; use `preloadedExtensionPaths` so each session gets its
-  own `ExtensionAPI` binding.
+  to another session; use `preloadedPreparedExtensions` (the imported factories
+  in `LoadExtensionsResult.preparedExtensions`) so each session gets its own
+  `ExtensionAPI` binding without re-evaluating the extension modules.
 
 ### Runtime tool set changes
 

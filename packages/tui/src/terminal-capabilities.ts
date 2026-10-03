@@ -375,6 +375,9 @@ export function shouldEnableHyperlinksByDefault(
 	const override = hyperlinksUserOverride(env);
 	if (override !== null) return override;
 
+	// Herdr hides the outer terminal but renders OSC 8 in its own grid and opens links itself.
+	if (isInsideHerdr(env) && !env.STY && !env.TMUX) return true;
+
 	if (!getTerminalInfo(terminalId).hyperlinks) return false;
 
 	if (env.STY) return false;

@@ -227,3 +227,22 @@ test("the nested picker leaves the hint to the dialog footer", () => {
 	expect(body).not.toContain("Enter to select");
 	expect(body).toContain("Esc back · Enter change");
 });
+
+test("clicking a settings sidebar section twice navigates without toggling its first setting", () => {
+	Object.defineProperty(process.stdout, "rows", { configurable: true, value: 40 });
+	const selector = shortSettings();
+	const before = Settings.instance.get("terminal.showProgress");
+	const click = (label: string) => {
+		const lines = selector.render(140).map(line => Bun.stripANSI(line));
+		const row = lines.findIndex(line => line.startsWith(`${theme.boxRound.vertical}   ${label} `));
+		expect(row).toBeGreaterThan(0);
+		selector.handleInput(`\x1b[<0;5;${row + 1}M`);
+		selector.handleInput(`\x1b[<0;5;${row + 1}m`);
+	};
+	click("Display");
+	expect(
+		selector.render(140).some(line => Bun.stripANSI(line).includes(`${theme.nav.cursor} Native Terminal Progress`)),
+	).toBe(true);
+	click("Display");
+	expect(Settings.instance.get("terminal.showProgress")).toBe(before);
+});

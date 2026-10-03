@@ -1,4 +1,6 @@
 import * as path from "node:path";
+import { IsoBackendKind } from "@oh-my-pi/pi-natives";
+import { atomicWriteJson, isEnoent } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 
 export const ISOLATION_OWNER_FILE = ".proto-isolation-owner.json";
@@ -58,4 +60,41 @@ export async function hasLiveIsolationOwner(baseDir: string): Promise<boolean> {
 		if (current !== null && current !== decoded.startToken) return false;
 	}
 	return true;
+}
+
+export const RETAINED_BACKEND_FILE = ".proto-retained-backend.json";
+
+export function needsNativeTeardown(backend: IsoBackendKind): boolean {
+	return backend === IsoBackendKind.Overlayfs || backend === IsoBackendKind.Btrfs;
+}
+
+export async function writeRetainedBackend(baseDir: string, backend: IsoBackendKind): Promise<void> {
+	await atomicWriteJson(path.join(baseDir, RETAINED_BACKEND_FILE), {
+		backend,
+		retainedAt: new Date().toISOString(),
+	});
+}
+
+export async function readRetainedBackend(baseDir: string): Promise<IsoBackendKind | undefined> {
+	const sidecar = path.join(baseDir, RETAINED_BACKEND_FILE);
+	let decoded: unknown;
+	try {
+		decoded = await Bun.file(sidecar).json();
+	} catch (error) {
+		if (isEnoent(error) && !path.basename(baseDir).includes(".retained-")) return undefined;
+		throw new Error(
+			`Cannot read retained workspace metadata at ${sidecar}; recover the workspace before manual cleanup.`,
+			{ cause: error },
+		);
+	}
+	if (
+		typeof decoded !== "object" ||
+		decoded === null ||
+		!("backend" in decoded) ||
+		typeof decoded.backend !== "number" ||
+		!Object.values(IsoBackendKind).includes(decoded.backend as IsoBackendKind)
+	) {
+		throw new Error(`Malformed retained workspace metadata at ${sidecar}; refusing to remove the workspace.`);
+	}
+	return decoded.backend as IsoBackendKind;
 }

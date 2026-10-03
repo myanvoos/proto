@@ -56,7 +56,7 @@ CustomTool.execute(toolCallId, params, onUpdate, ctx, signal)
 
 - Duplicate resolved paths are deduplicated.
 - Tool name conflicts are rejected against built-ins and already-loaded custom tools.
-- `.md` and `.json` files are discovered as tool metadata by some providers, but the executable module loader rejects them as runnable tools.
+- Automatic discovery loads only `.ts`, `.js`, `.mjs`, and `.cjs` modules (excluding `.d.ts`), filtered before tool-name deduplication. Declarative metadata such as `.md` and `.json` stays available to capability consumers but is never loaded as an executable tool; an explicitly configured `.md` or `.json` path produces a load error.
 - Relative configured paths are resolved from `cwd`; `~` is expanded.
 
 ## Module contract
@@ -164,6 +164,8 @@ Optional rendering hooks:
 
 - `renderCall(args, options, theme)`
 - `renderResult(result, options, theme)`
+
+On the normal SDK and filesystem-discovery paths, `renderCall`'s `options` argument also answers the `Theme` API, so a renderer written in upstream pi's `renderCall(args, theme, context)` order styles correctly.
 
 The normal SDK and filesystem-discovery paths wrap custom tools as extensions. On those paths, `renderResult` receives only the three arguments above; the bridge does not forward the original tool arguments. The public `CustomTool` type retains an optional fourth `args` parameter for direct `CustomToolAdapter` consumers.
 

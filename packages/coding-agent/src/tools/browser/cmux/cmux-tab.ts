@@ -23,6 +23,7 @@ import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript
 import { DEFAULT_VIEWPORT } from "../launch";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
 import { RunOutput } from "../run-output";
+import { assertTabPressArgs } from "../tab-arguments";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
 import {
 	type CmuxEvalResult,
@@ -482,6 +483,7 @@ export class CmuxTab {
 	}
 
 	async press(key: string, opts?: { selector?: string }): Promise<void> {
+		assertTabPressArgs(key, opts);
 		if (opts?.selector) {
 			await this.focus(opts.selector);
 		}

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { CURRENT_SESSION_VERSION } from "../session/session-entries";
@@ -119,7 +119,7 @@ test.each(["Orca", "kitty"])(
 		if (terminal === "Orca") {
 			expect(targets.map(target => target.hash)).toEqual(["#L12", "#L12", "", ""]);
 		} else {
-			expect(targets.map(target => target.search)).toEqual(["?line=12", "?line=12", "", ""]);
+			expect(targets.map(target => target.href)).toEqual(Array(4).fill(pathToFileURL(artifactPath).href));
 		}
 		expect(Bun.stripANSI(result.text())).toContain("local://report.md");
 		expect(await Bun.file(artifactPath).text()).toBe("# Report\n");

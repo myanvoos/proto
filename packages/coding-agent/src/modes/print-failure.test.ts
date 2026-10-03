@@ -14,10 +14,14 @@ const htmlServer = Bun.serve({
 	fetch: () => new Response("<html>not json at all</html>", { headers: { "content-type": "text/html" } }),
 });
 
+let onHangRequest: (() => void) | undefined;
 const hangServer = Bun.serve({
 	port: 0,
 	hostname: "127.0.0.1",
-	fetch: () => new Promise<Response>(() => {}),
+	fetch: () => {
+		onHangRequest?.();
+		return new Promise<Response>(() => {});
+	},
 });
 
 const errorServer = Bun.serve({
@@ -106,10 +110,9 @@ interface RunResult {
 	elapsedMs: number;
 }
 
-async function runPrint(args: string[], timeoutMs = 60_000): Promise<RunResult> {
-	const started = Date.now();
-	const child = Bun.spawn({
-		cmd: [process.execPath, cliEntry, "--cwd", cwd, "--no-session", "--no-title", "--no-tools", ...args],
+function spawnCli(args: string[]) {
+	return Bun.spawn({
+		cmd: [process.execPath, cliEntry, "--cwd", cwd, "--no-title", "--no-tools", ...args],
 		cwd,
 		stdin: "ignore",
 		stdout: "pipe",
@@ -126,6 +129,11 @@ async function runPrint(args: string[], timeoutMs = 60_000): Promise<RunResult> 
 			NO_COLOR: "1",
 		},
 	});
+}
+
+async function runPrint(args: string[], timeoutMs = 60_000): Promise<RunResult> {
+	const started = Date.now();
+	const child = spawnCli(["--no-session", ...args]);
 	const stdout = new Response(child.stdout).text();
 	const stderr = new Response(child.stderr).text();
 	const exitCode = await Promise.race([child.exited, Bun.sleep(timeoutMs).then(() => -1)]);
@@ -200,3 +208,23 @@ test("a healthy provider still prints its answer and exits 0", async () => {
 	expect(result.exitCode).toBe(0);
 	expect(result.stdout).toContain("PRINTED ANSWER");
 }, 60_000);
+
+test("SIGTERM mid-turn records the interrupted turn and keeps the signal exit code", async () => {
+	const sessionDir = path.join(root, "signal-sessions");
+	const requested = Promise.withResolvers<void>();
+	onHangRequest = requested.resolve;
+	const child = spawnCli(["--session-dir", sessionDir, "-p", "hi", "--model", "faulthang/faulthang-model"]);
+	const stderr = new Response(child.stderr).text();
+	try {
+		await requested.promise;
+		child.kill("SIGTERM");
+		expect({ exitCode: await child.exited, stderr: await stderr }).toMatchObject({ exitCode: 143 });
+	} finally {
+		onHangRequest = undefined;
+		child.kill("SIGKILL");
+	}
+
+	const journals = (await fs.readdir(sessionDir, { recursive: true })).filter(file => file.endsWith(".jsonl"));
+	const contents = await Promise.all(journals.map(file => fs.readFile(path.join(sessionDir, file), "utf8")));
+	expect(contents.join("\n")).toContain('"stopReason":"aborted"');
+}, 90_000);

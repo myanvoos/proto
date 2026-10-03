@@ -1,7 +1,9 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import type { ToolSession } from "../index";
 import { ToolAbortError } from "../tool-errors";
-import { getTabsMapForTest, type PendingRun, runInTab } from "./tab-supervisor";
+import { CmuxSocketClient } from "./cmux/socket-client";
+import { acquireBrowser } from "./registry";
+import { acquireTab, getTabsMapForTest, type PendingRun, releaseTab, runInTab } from "./tab-supervisor";
 import { collectReadyInfo, formatSelectorMatchHint, normalizeSelector, resolveWaitTimeout } from "./tab-worker";
 
 test("aborting after tab worker termination does not escape as an uncaught exception", async () => {
@@ -99,4 +101,34 @@ test("browser metadata refresh cannot outlive the originating run deadline", asy
 	expect((await collectReadyInfo({ ...page, title: async () => "Recovered" }, "owned-target")).title).toBe(
 		"Recovered",
 	);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+test("two releases racing the same tab tear it down once", async () => {
+	let clientCloses = 0;
+	const closedSurfaces: string[] = [];
+	spyOn(CmuxSocketClient.prototype, "connect").mockResolvedValue(undefined);
+	spyOn(CmuxSocketClient.prototype, "close").mockImplementation(() => {
+		clientCloses++;
+	});
+	spyOn(CmuxSocketClient.prototype, "request").mockImplementation(
+		async (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> => {
+			if (method === "browser.open_split") return { surface_id: "surface-join", url: "about:blank" };
+			if (method === "surface.close") closedSurfaces.push(String(params.surface_id ?? ""));
+			return {};
+		},
+	);
+	const name = `release-join-${crypto.randomUUID()}`;
+	const browser = await acquireBrowser({ kind: "cmux", socketPath: `/tmp/proto-test-${name}.sock` }, { cwd: "/tmp" });
+	await acquireTab(name, browser, { timeoutMs: 1_000 });
+
+	const [first, second] = await Promise.all([releaseTab(name, { kill: false }), releaseTab(name, { kill: false })]);
+	expect(first).toBe(true);
+	expect(second).toBe(true);
+	expect(closedSurfaces).toEqual(["surface-join"]);
+	expect(clientCloses).toBe(1);
+	expect(getTabsMapForTest().has(name)).toBe(false);
 });

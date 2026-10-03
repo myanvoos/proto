@@ -66,7 +66,7 @@ function transportErrorAfterToolCall(model: Model, toolCall: ToolCall, thinkingS
 		stream.push({
 			type: "error",
 			reason: "error",
-			error: { ...partial, stopReason: "error", errorMessage: "The socket connection was closed unexpectedly." },
+			error: { ...partial, stopReason: "error", errorMessage: "503 service unavailable: overloaded_error" },
 		});
 	});
 	return stream;

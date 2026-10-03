@@ -17,11 +17,23 @@ import type {
 	CursorExecHandlers as ICursorExecHandlers,
 	ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
-import { omitUndefinedArgs, piLsPath, piReadPath, piTimeout } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
+import {
+	cursorRawReadPath,
+	omitUndefinedArgs,
+	piLsPath,
+	piReadPath,
+	piTimeout,
+	shellTimeoutSeconds,
+} from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { MCPResourceReadResult } from "./mcp/types";
 import type { ChecklistPhase, ChecklistStatus } from "./tools/checklist";
-import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
+import {
+	confineToWorkspace,
+	resolveReadPathAsync,
+	resolveToCwd,
+	splitPathAndSelPreferringLiteral,
+} from "./tools/path-utils";
 
 const CURPH = "Tasks";
 
@@ -195,7 +207,7 @@ async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, 
 
 		const sizeText = fileStat.size ? ` (${fileStat.size} bytes)` : "";
 		const message = `Deleted ${pathArg}${sizeText}`;
-		result = { content: [{ type: "text", text: message }], details: {} };
+		result = { content: [{ type: "text", text: message }], details: { fileSize: fileStat.size } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		result = buildToolErrorResult(message);
@@ -204,6 +216,43 @@ async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, 
 
 	options.emitEvent?.({ type: "tool_execution_end", toolCallId, toolName, result, isError });
 	return createToolResultMessage(toolCallId, toolName, result, isError);
+}
+
+// Cursor's negative read offset counts from the end of the file; `read` selectors need the absolute line.
+async function resolveCursorReadOffset(
+	options: CursorExecBridgeOptions,
+	readPath: string,
+	offset?: number,
+): Promise<number | undefined> {
+	if (offset === undefined || offset >= 0) return offset;
+	try {
+		const cwd = options.getCwd?.() ?? options.cwd;
+		const { path: filePath } = await splitPathAndSelPreferringLiteral(readPath, cwd);
+		const handle = await fs.promises.open(await resolveReadPathAsync(filePath, cwd), "r");
+		try {
+			const stat = await handle.stat();
+			if (!stat.isFile()) return offset;
+			const chunk = Buffer.allocUnsafe(Math.min(stat.size, 64 * 1024));
+			let lines = stat.size > 0 ? 1 : 0;
+			let position = 0;
+			let endsWithNewline = false;
+			while (position < stat.size) {
+				const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stat.size - position), position);
+				if (bytesRead === 0) break;
+				for (let i = 0; i < bytesRead; i++) {
+					if (chunk[i] === 10) lines++;
+				}
+				endsWithNewline = chunk[bytesRead - 1] === 10;
+				position += bytesRead;
+			}
+			if (endsWithNewline) lines--;
+			return Math.max(1, lines + Math.floor(offset) + 1);
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return offset;
+	}
 }
 
 function decodeToolCallId(toolCallId?: string): string {
@@ -261,7 +310,11 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async read(args: Parameters<NonNullable<ICursorExecHandlers["read"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		const composed = piReadPath(args.path, args.offset, args.limit);
+		const composed = piReadPath(
+			args.path,
+			await resolveCursorReadOffset(this.options, args.path, args.offset),
+			args.limit,
+		);
 
 		if (composed === null) {
 			return createToolResultMessage(toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
@@ -284,7 +337,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async shell(args: Parameters<NonNullable<ICursorExecHandlers["shell"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		const timeoutSeconds = args.timeout && args.timeout > 0 ? args.timeout : undefined;
+		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
 		const toolResultMessage = await executeTool(this.options, "bash", toolCallId, {
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -305,7 +358,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			return createToolResultMessage(toolCallId, toolName, result, true);
 		}
 
-		const timeoutSeconds = args.timeout && args.timeout > 0 ? args.timeout : undefined;
+		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
 		const toolArgs = omitUndefinedArgs({
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -392,12 +445,12 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async piRead(call: Parameters<NonNullable<ICursorExecHandlers["piRead"]>>[0]) {
 		const { path: readPath, offset, limit } = call.args;
-		const composed = piReadPath(readPath, offset, limit);
+		const composed = piReadPath(readPath, await resolveCursorReadOffset(this.options, readPath, offset), limit);
 
 		if (composed === null) {
 			return createToolResultMessage(call.toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
 		}
-		return await executeTool(this.options, "read", call.toolCallId, { path: composed });
+		return await executeTool(this.options, "read", call.toolCallId, { path: cursorRawReadPath(composed) });
 	}
 
 	async piBash(call: Parameters<NonNullable<ICursorExecHandlers["piBash"]>>[0]) {

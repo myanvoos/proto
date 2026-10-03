@@ -96,6 +96,7 @@ import {
 	McpToolResultSchema,
 	ModelDetailsSchema,
 	ReadErrorSchema,
+	ReadFileNotFoundSchema,
 	ReadMcpResourceErrorSchema,
 	type ReadMcpResourceExecResult,
 	ReadMcpResourceExecResultSchema,
@@ -136,6 +137,7 @@ import {
 	SubagentResultSchema,
 	ThinkingMessageSchema,
 	ToolCallSchema,
+	type TurnEndedUpdate,
 	UserMessageActionSchema,
 	UserMessageSchema,
 	WebFetchAllowlistPrecheckResultSchema,
@@ -158,15 +160,8 @@ import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { bareModelId, isKimiK3ModelId, parseAnthropicModel, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { isCursorMaxModeWireId, splitCursorEffortSuffix } from "@oh-my-pi/pi-catalog/variant-collapse";
-import {
-	$env,
-	isRecord,
-	logger,
-	parseJsonWithRepair,
-	parseStreamingJson,
-	parseStreamingJsonThrottled,
-	sanitizeText,
-} from "@oh-my-pi/pi-utils";
+import { $env, isRecord, logger, parseStreamingJsonThrottled, sanitizeText } from "@oh-my-pi/pi-utils";
+import { classifyJsonPrefix } from "@oh-my-pi/pi-utils/json-parse";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -192,6 +187,7 @@ import type {
 	Tool,
 	ToolCall,
 	ToolResultMessage,
+	Usage,
 	VideoContent,
 } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId } from "../utils";
@@ -210,6 +206,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { connectProxiedSocket, getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
 import { sanitizeSchemaForCursor, toolWireSchema } from "../utils/schema";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { formatConnectEndStreamError } from "./connect-error-detail";
 import {
 	buildMcpStateResult,
@@ -230,7 +227,8 @@ import {
 	buildPiWriteError,
 	buildPiWriteRejected,
 	buildPiWriteResult,
-	cursorEditOwnedReadPath,
+	cursorExecReadPath,
+	cursorRawReadPath,
 	omitUndefinedArgs,
 	piEscapeRegexLiteral,
 	piGrepSkip,
@@ -240,6 +238,7 @@ import {
 	piReadDisplayPath,
 	piReadPathHasRange,
 	piTimeout,
+	shellTimeoutSeconds,
 } from "./cursor/exec-modern";
 import { handleInteractionQuery } from "./cursor/interaction-query";
 import mcpExternalHandoffMessage from "./cursor-external-tool-handoff.md" with { type: "text" };
@@ -360,7 +359,7 @@ interface CursorRequestState {
 	conversationId: string;
 	blobStore: Map<string, Uint8Array>;
 	conversationState?: ConversationStateStructure;
-	rotatedFresh?: boolean;
+	resume?: boolean;
 }
 
 interface CursorGrpcRequest {
@@ -406,6 +405,10 @@ function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
 	frame.writeUInt32BE(data.length, 1);
 	frame.set(data, 5);
 	return frame;
+}
+
+function writeClientMessage(h2Request: http2.ClientHttp2Stream, data: Uint8Array): void {
+	if (!h2Request.writableEnded) h2Request.write(frameConnectMessage(data));
 }
 
 class ConnectEndStreamError extends AIError.ProviderResponseError {
@@ -682,7 +685,6 @@ function streamCursorWithWireMode(
 					conversationId,
 					blobStore,
 					conversationState: cachedState,
-					rotatedFresh,
 				},
 				wireMode,
 			);
@@ -817,6 +819,8 @@ function streamCursorWithWireMode(
 						if (endError) {
 							endStreamError = endError;
 							h2Request?.close();
+						} else {
+							h2Request?.end();
 						}
 						continue;
 					}
@@ -868,7 +872,7 @@ function streamCursorWithWireMode(
 					message: { case: "clientHeartbeat", value: create(ClientHeartbeatSchema, {}) },
 				});
 				const heartbeatBytes = toBinary(AgentClientMessageSchema, heartbeatMessage);
-				h2Request.write(frameConnectMessage(heartbeatBytes));
+				writeClientMessage(h2Request, heartbeatBytes);
 			};
 
 			const closeDebugLog = async (): Promise<void> => {
@@ -908,7 +912,7 @@ function streamCursorWithWireMode(
 				options.signal.addEventListener("abort", onRequestAbort);
 			}
 
-			h2Request.write(frameConnectMessage(requestBytes));
+			writeClientMessage(h2Request, requestBytes);
 			heartbeatTimer = setInterval(sendHeartbeat, 5000);
 			await h2Completion.promise;
 			if (conversationId !== baseConversationId) {
@@ -1121,7 +1125,7 @@ export async function handleServerMessage(
 	} else if (msgCase === "interactionQuery") {
 		handleInteractionQuery(msg.message.value, h2Request);
 	} else if (msgCase === "conversationCheckpointUpdate") {
-		handleConversationCheckpointUpdate(msg.message.value, output, usageState, onConversationCheckpoint);
+		handleConversationCheckpointUpdate(msg.message.value, output, onConversationCheckpoint);
 	}
 }
 
@@ -1199,7 +1203,7 @@ function handleKvServerMessage(
 		});
 
 		const responseBytes = toBinary(AgentClientMessageSchema, kvClientMessage);
-		h2Request.write(frameConnectMessage(responseBytes));
+		writeClientMessage(h2Request, responseBytes);
 
 		log("kvClient", "getBlobResult", { blobId: blobIdKey.slice(0, 40) });
 	} else if (kvCase === "setBlobArgs") {
@@ -1220,7 +1224,7 @@ function handleKvServerMessage(
 		});
 
 		const responseBytes = toBinary(AgentClientMessageSchema, kvClientMessage);
-		h2Request.write(frameConnectMessage(responseBytes));
+		writeClientMessage(h2Request, responseBytes);
 
 		log("kvClient", "setBlobResult", { blobId: blobIdKey.slice(0, 40) });
 	}
@@ -1561,31 +1565,81 @@ async function handleExecServerMessage(
 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
 			const editOwned = isEditOwnedToolCallId(state, output, args.toolCallId);
 
-			const composed = editOwned ? cursorEditOwnedReadPath(args.path, args.offset, args.limit) : args.path;
-			const handlerArgs = editOwned
-				? composed === null
+			// Cursor numbers raw content itself and StrReplace writes it back: no hashline gutters or summarized
+			// bodies. A negative offset is resolved by the handler against the file length; positive windows are
+			// composed here.
+			const negativeOffset = args.offset !== undefined && args.offset < 0;
+			const composed = negativeOffset
+				? cursorRawReadPath(args.path)
+				: cursorExecReadPath(args.path, args.offset, args.limit);
+			const handlerArgs =
+				composed === null
 					? args
-					: { ...args, path: composed, offset: undefined, limit: undefined }
-				: args;
+					: {
+							...args,
+							path: composed,
+							offset: negativeOffset ? args.offset : undefined,
+							limit: negativeOffset ? args.limit : undefined,
+						};
 			if (!editOwned) {
-				synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "read", {
-					path: piReadDisplayPath(args.path, args.offset, args.limit),
-				});
+				synthesizeCursorExecToolCall(
+					output,
+					stream,
+					state,
+					args.toolCallId,
+					"read",
+					negativeOffset
+						? { path: composed, offset: args.offset, limit: args.limit }
+						: { path: piReadDisplayPath(args.path, args.offset, args.limit) },
+				);
 			}
-			const { execResult } = await resolveExecHandler(
+			const { execResult: readResult, toolResult } = await resolveExecHandler(
 				handlerArgs,
 				execHandlers?.read?.bind(execHandlers),
 				editOwned ? undefined : onToolResult,
-				toolResult =>
+				result =>
 					buildReadResultFromToolResult(
 						args.path,
-						toolResult,
+						result,
 						args.offset !== undefined || args.limit !== undefined || piReadPathHasRange(args.path),
 					),
 				reason => buildReadRejectedResult(args.path, reason),
 				error => buildReadErrorResult(args.path, error),
 				editOwned ? null : { toolCallId: args.toolCallId, toolName: "read" },
 			);
+			let execResult = readResult;
+			// StrReplace writes the returned bytes back: a truncated read would hide every replacement below the limit.
+			if (
+				editOwned &&
+				args.offset === undefined &&
+				args.limit === undefined &&
+				!piReadPathHasRange(args.path) &&
+				toolResult &&
+				!toolResult.isError &&
+				toolResultWasTruncated(toolResult)
+			) {
+				const sourcePath = readSourcePathFromDetails(toolResult);
+				if (sourcePath === undefined) {
+					execResult = buildReadErrorResult(args.path, "Unable to read the complete file for StrReplace");
+				} else {
+					try {
+						const content = await readEditMaterialization(sourcePath);
+						execResult =
+							content === null
+								? buildReadErrorResult(
+										args.path,
+										`File exceeds ${EDIT_MATERIALIZATION_MAX_BYTES} bytes; StrReplace cannot load it whole. Use a line-range read and a targeted edit instead.`,
+									)
+								: buildReadResultFromToolResult(args.path, {
+										...toolResult,
+										content: [{ type: "text", text: content }],
+										details: { fileSize: Buffer.byteLength(content, "utf8") },
+									});
+					} catch (error) {
+						execResult = buildReadErrorResult(args.path, error instanceof Error ? error.message : String(error));
+					}
+				}
+			}
 			sendExecClientMessage(h2Request, execMsg, "readResult", execResult);
 			return;
 		}
@@ -1697,11 +1751,10 @@ async function handleExecServerMessage(
 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
 			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
 
-			const shellTimeout = args.timeout && args.timeout > 0 ? args.timeout : undefined;
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeout,
+				timeout: shellTimeoutSeconds(args.timeout),
 			});
 			const { execResult } = await resolveExecHandler(
 				args,
@@ -1719,11 +1772,10 @@ async function handleExecServerMessage(
 		case "shellStreamArgs": {
 			const args = execMsg.message.value;
 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
-			const shellStreamTimeout = args.timeout && args.timeout > 0 ? args.timeout : undefined;
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellStreamTimeout,
+				timeout: shellTimeoutSeconds(args.timeout),
 			});
 			await handleShellStreamArgs(args, execMsg, h2Request, execHandlers, onToolResult);
 			return;
@@ -1803,12 +1855,16 @@ async function handleExecServerMessage(
 				);
 				return;
 			}
-			if (execHandlers?.mcp) {
+			// Without a local MCP handler the external executor (an auth-gateway client) runs the call, so its block
+			// must reach that client without kCursorExecResolved — the marker consumers read to tell a handoff from a
+			// call Cursor already ran.
+			const externalHandoff = externalToolExecutor && !execHandlers?.mcp;
+			if (execHandlers?.mcp || externalHandoff) {
 				const existingBlock = output.content.find(
 					block => block.type === "toolCall" && block.id === mcpCall.toolCallId,
 				);
 				if (existingBlock) {
-					markCursorExecResolved(existingBlock);
+					if (!externalHandoff) markCursorExecResolved(existingBlock);
 				} else {
 					synthesizeCursorExecToolCall(
 						output,
@@ -1817,8 +1873,9 @@ async function handleExecServerMessage(
 						mcpCall.toolCallId,
 						mcpCall.toolName || mcpCall.name,
 						mcpCall.args,
+						{ executed: !externalHandoff },
 					);
-					state.resolvedMcpToolCallIds.add(mcpCall.toolCallId);
+					if (!externalHandoff) state.resolvedMcpToolCallIds.add(mcpCall.toolCallId);
 				}
 			}
 			const { execResult } = await resolveExecHandler(
@@ -1826,10 +1883,7 @@ async function handleExecServerMessage(
 				execHandlers?.mcp?.bind(execHandlers),
 				onToolResult,
 				toolResult => buildMcpResultFromToolResult(mcpCall, toolResult),
-				_reason =>
-					externalToolExecutor && !execHandlers?.mcp
-						? buildMcpExternalHandoffResult()
-						: buildMcpToolNotFoundResult(mcpCall),
+				_reason => (externalHandoff ? buildMcpExternalHandoffResult() : buildMcpToolNotFoundResult(mcpCall)),
 				error => buildMcpErrorResult(error),
 				execHandlers?.mcp ? { toolCallId: mcpCall.toolCallId, toolName: mcpCall.toolName } : null,
 			);
@@ -2139,7 +2193,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: args.timeout && args.timeout > 0 ? args.timeout : undefined,
+				timeout: shellTimeoutSeconds(args.timeout),
 			});
 			const { execResult } = await resolveExecHandler(
 				normalizedArgs,
@@ -2338,7 +2392,7 @@ function sendExecClientMessage<TCase extends NonNullable<ExecClientMessage["mess
 	});
 
 	const responseBytes = toBinary(AgentClientMessageSchema, clientMessage);
-	h2Request.write(frameConnectMessage(responseBytes));
+	writeClientMessage(h2Request, responseBytes);
 
 	log("execClientMessage", messageCase, value);
 }
@@ -2358,7 +2412,7 @@ function sendExecClientThrow(
 	const clientMessage = create(AgentClientMessageSchema, {
 		message: { case: "execClientControlMessage", value: controlMessage },
 	});
-	h2Request.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+	writeClientMessage(h2Request, toBinary(AgentClientMessageSchema, clientMessage));
 	log("execClientControl", "throw", { id: execMsg.id, execId: execMsg.execId, error, errorCode });
 	sendExecClientStreamClose(h2Request, execMsg);
 }
@@ -2376,7 +2430,7 @@ function sendExecClientStreamClose(h2Request: http2.ClientHttp2Stream, execMsg: 
 		message: { case: "execClientControlMessage", value: closeMessage },
 	});
 	const responseBytes = toBinary(AgentClientMessageSchema, clientMessage);
-	h2Request.write(frameConnectMessage(responseBytes));
+	writeClientMessage(h2Request, responseBytes);
 	log("execClientControl", "streamClose", { id: execMsg.id, execId: execMsg.execId });
 }
 
@@ -2561,9 +2615,49 @@ function readFileSizeFromDetails(toolResult: ToolResultMessage): number | undefi
 	return typeof fileSize === "number" && Number.isSafeInteger(fileSize) && fileSize >= 0 ? fileSize : undefined;
 }
 
+function readSourcePathFromDetails(toolResult: ToolResultMessage): string | undefined {
+	const details = toolResult.details;
+	const meta = details && typeof details === "object" && "meta" in details ? details.meta : undefined;
+	const source = meta && typeof meta === "object" && "source" in meta ? meta.source : undefined;
+	if (!source || typeof source !== "object" || !("type" in source) || source.type !== "path") return undefined;
+	return "value" in source && typeof source.value === "string" ? source.value : undefined;
+}
+
+// Matches the local `read` tool's whole-file snapshot cap.
+const EDIT_MATERIALIZATION_MAX_BYTES = 4 * 1024 * 1024;
+
+// Whole-file read for native StrReplace, or null past the cap. The buffer is sized from the open handle's stat and
+// reading stops one byte past it, so a growing file cannot exhaust memory; growth under the cap throws.
+async function readEditMaterialization(filePath: string): Promise<string | null> {
+	const handle = await fs.open(filePath, "r");
+	try {
+		const { size } = await handle.stat();
+		if (size > EDIT_MATERIALIZATION_MAX_BYTES) return null;
+		const buffer = Buffer.allocUnsafe(size + 1);
+		let length = 0;
+		while (length < buffer.length) {
+			const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+			if (bytesRead === 0) break;
+			length += bytesRead;
+		}
+		if (length > size) {
+			if (size === EDIT_MATERIALIZATION_MAX_BYTES) return null;
+			throw new Error(`File changed while reading: ${filePath}`);
+		}
+		return buffer.toString("utf8", 0, length);
+	} finally {
+		await handle.close();
+	}
+}
+
 function buildReadResultFromToolResult(path: string, toolResult: ToolResultMessage, rangeApplied = false) {
 	const text = toolResultToText(toolResult);
 	if (toolResult.isError) {
+		if (/^Path '.*' not found$/.test(text)) {
+			return create(ReadResultSchema, {
+				result: { case: "fileNotFound", value: create(ReadFileNotFoundSchema, { path }) },
+			});
+		}
 		return buildReadErrorResult(path, text || "Read failed");
 	}
 
@@ -2655,7 +2749,7 @@ function buildDeleteResultFromToolResult(path: string, toolResult: ToolResultMes
 			value: create(DeleteSuccessSchema, {
 				path,
 				deletedFile: path,
-				fileSize: BigInt(0),
+				fileSize: BigInt(readFileSizeFromDetails(toolResult) ?? 0),
 				prevContent: "",
 			}),
 		},
@@ -2686,7 +2780,14 @@ function buildShellResultFromToolResult(
 ) {
 	const output = toolResultToText(toolResult);
 	if (toolResult.isError) {
-		return buildShellFailureResult(args.command, args.workingDirectory, output || "Shell failed");
+		const details = toolResult.details;
+		const code = details && typeof details === "object" && "exitCode" in details ? details.exitCode : undefined;
+		return buildShellFailureResult(
+			args.command,
+			args.workingDirectory,
+			output || "Shell failed",
+			typeof code === "number" && Number.isInteger(code) ? code : 1,
+		);
 	}
 	return create(ShellResultSchema, {
 		result: {
@@ -2704,14 +2805,14 @@ function buildShellResultFromToolResult(
 	});
 }
 
-function buildShellFailureResult(command: string, workingDirectory: string, error: string) {
+function buildShellFailureResult(command: string, workingDirectory: string, error: string, exitCode = 1) {
 	return create(ShellResultSchema, {
 		result: {
 			case: "failure",
 			value: create(ShellFailureSchema, {
 				command,
 				workingDirectory,
-				exitCode: 1,
+				exitCode,
 				signal: "",
 				stdout: "",
 				stderr: error,
@@ -2955,7 +3056,7 @@ function parseToolArgsJson(text: string): unknown {
 		return text;
 	}
 	try {
-		return parseJsonWithRepair<unknown>(trimmed);
+		return parseToolCallArguments(trimmed);
 	} catch {
 		return text;
 	}
@@ -3276,7 +3377,7 @@ export function flushOpenToolCalls(
 		const idx = output.content.indexOf(block);
 		const partialJson = block[kStreamingPartialJson];
 		if (partialJson !== undefined) {
-			block.arguments = parseStreamingJson(partialJson);
+			block.arguments = parseToolCallArguments(partialJson);
 			clearStreamingPartialJson(block);
 		}
 		const kind = block[kStreamingBlockKind];
@@ -3578,6 +3679,7 @@ export function synthesizeCursorExecToolCall(
 	toolCallId: string,
 	toolName: string,
 	args: Record<string, unknown>,
+	{ executed = true }: { executed?: boolean } = {},
 ): void {
 	endCurrentTextBlock(output, stream, state);
 	endCurrentThinkingBlock(output, stream, state);
@@ -3589,7 +3691,7 @@ export function synthesizeCursorExecToolCall(
 		arguments: omitUndefinedArgs(args),
 		[kStreamingBlockIndex]: output.content.length,
 		[kStreamingBlockKind]: "cursor-exec",
-		[kCursorExecResolved]: true,
+		...(executed ? { [kCursorExecResolved]: true as const } : {}),
 	};
 	output.content.push(block);
 	const idx = output.content.length - 1;
@@ -3694,8 +3796,9 @@ export function processInteractionUpdate(
 			if (mcpCall) {
 				const args = mcpCall.args || {};
 				const id = args.toolCallId || crypto.randomUUID();
-				const resolvedByExec = state.resolvedMcpToolCallIds.delete(id);
-				if (resolvedByExec && output.content.some(block => block.type === "toolCall" && block.id === id)) {
+				state.resolvedMcpToolCallIds.delete(id);
+				// The exec channel may have emitted this block first (executed, or handed off unmarked): never duplicate it.
+				if (output.content.some(block => block.type === "toolCall" && block.id === id)) {
 					return;
 				}
 				const block: ToolCallState = {
@@ -3708,9 +3811,6 @@ export function processInteractionUpdate(
 					[kStreamingBlockKind]: "mcp",
 					[kStreamingEnvelopeId]: update.message.value.callId || undefined,
 				};
-				if (resolvedByExec) {
-					markCursorExecResolved(block);
-				}
 				output.content.push(block);
 				retainStreamedCall(state, block, update.message.value.callId);
 				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
@@ -3802,13 +3902,18 @@ export function processInteractionUpdate(
 			if (settled[kStreamingBlockKind] === "mcp") {
 				const partial = settled[kStreamingPartialJson];
 				if (partial) {
-					settled.arguments = parseStreamingJson(partial);
+					settled.arguments = parseToolCallArguments(partial);
 				}
 				const decodedArgs = decodeMcpArgsMap(selectMcpCall(toolCall)?.args?.args);
-				settled.arguments = mergeCursorMcpToolCallArgs(
-					settled.arguments as Record<string, unknown> | undefined,
-					decodedArgs,
-				);
+				if (!isRecord(settled.arguments) || !("__parseError" in settled.arguments)) {
+					settled.arguments = mergeCursorMcpToolCallArgs(settled.arguments, decodedArgs);
+				} else if (
+					decodedArgs &&
+					Object.keys(decodedArgs).length > 0 &&
+					classifyJsonPrefix(partial ?? "") !== "prefix"
+				) {
+					settled.arguments = decodedArgs;
+				}
 			} else if (settled[kStreamingBlockKind] === "connect-scm") {
 				const scmCall = selectConnectScmCall(toolCall);
 				const repository = selectConnectScmRepository(scmCall);
@@ -3887,6 +3992,7 @@ export function processInteractionUpdate(
 		}
 	} else if (updateCase === "turnEnded") {
 		output.stopReason = "stop";
+		applyTurnEndedUsage(output.usage, update.message.value);
 		if (
 			isKimiK3ModelId(output.model) &&
 			!output.content.some(item => item.type === "thinking" && item.thinking.length > 0)
@@ -3904,23 +4010,35 @@ export function processInteractionUpdate(
 	}
 }
 
+// TurnEnded carries the authoritative per-turn counters; tokenDelta frames are only a running output estimate.
+// `inputTokens` counts the whole prompt, cache reads and writes included. A frame reporting nothing keeps the estimate.
+function applyTurnEndedUsage(usage: Usage, update: TurnEndedUpdate): void {
+	const input = Number(update.inputTokens ?? 0n);
+	const output = Number(update.outputTokens ?? 0n);
+	const cacheRead = Number(update.cacheReadTokens ?? 0n);
+	const cacheWrite = Number(update.cacheWriteTokens ?? 0n);
+	const reasoning = Number(update.reasoningTokens ?? 0n);
+	if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0) return;
+	if (input > 0) usage.input = Math.max(input - cacheRead - cacheWrite, 0);
+	if (output > 0) usage.output = output;
+	if (cacheRead > 0) usage.cacheRead = cacheRead;
+	if (cacheWrite > 0) usage.cacheWrite = cacheWrite;
+	if (reasoning > 0) usage.reasoningTokens = reasoning;
+	usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+}
+
+// `tokenDetails.usedTokens` is whole-conversation occupancy, independent of the tokenDelta output estimate.
 function handleConversationCheckpointUpdate(
 	checkpoint: ConversationStateStructure,
 	output: AssistantMessage,
-	usageState: UsageState,
 	onConversationCheckpoint?: (checkpoint: ConversationStateStructure) => void,
 ): void {
 	onConversationCheckpoint?.(checkpoint);
-	if (usageState.sawTokenDelta) {
-		return;
-	}
 	const usedTokens = checkpoint.tokenDetails?.usedTokens ?? 0;
 	if (usedTokens <= 0) {
 		return;
 	}
-	if (output.usage.contextTokens !== usedTokens) {
-		output.usage.contextTokens = usedTokens;
-	}
+	output.usage.contextTokens = usedTokens;
 }
 
 function createBlobId(data: Uint8Array): Uint8Array {
@@ -4557,20 +4675,10 @@ async function buildGrpcRequestForWireMode(
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),
 	);
 
-	let activeUserMessageIndex = context.messages.length - 1;
-	const activeMessage = context.messages[activeUserMessageIndex];
-	let activeUserMessage =
-		activeMessage?.role === "user" || activeMessage?.role === "developer" ? activeMessage : undefined;
-	// A rotated conversation id is unknown to the server, so a resume turn
-	// (trailing tool results) replays the last user message as a fresh action.
-	if (state.rotatedFresh && !activeUserMessage) {
-		const lastUserMessageIndex = findLastUserMessageIndex(context.messages);
-		const lastUser = context.messages[lastUserMessageIndex];
-		if (lastUser?.role === "user" || lastUser?.role === "developer") {
-			activeUserMessageIndex = lastUserMessageIndex;
-			activeUserMessage = lastUser;
-		}
-	}
+	const lastMessage = context.messages.at(-1);
+	const activeUserMessage =
+		!state.resume && (lastMessage?.role === "user" || lastMessage?.role === "developer") ? lastMessage : undefined;
+	const activeUserMessageIndex = activeUserMessage ? context.messages.length - 1 : -1;
 	let userContent: string | (AudioContent | ImageContent | TextContent | VideoContent)[] | undefined;
 	let userText = "";
 	let hasUserImages = false;

@@ -10,7 +10,7 @@ import { Settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
+import { resolveOutputArtifactMaxBytes, resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
 import { readTerminalRows, styleTerminalRow } from "./terminal-output";
 
@@ -319,6 +319,7 @@ export async function runInteractiveBashPty(
 		artifactId: options.artifactId,
 		headBytes: resolveOutputSinkHeadBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
+		artifactMaxBytes: resolveOutputArtifactMaxBytes(settings),
 	});
 	try {
 		const result = await ui.custom<BashInteractiveResult>(

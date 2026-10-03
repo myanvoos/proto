@@ -58,6 +58,8 @@ interface EvalAgentResult {
 		patchPath?: string;
 		branchName?: string;
 		nestedPatches?: NestedRepoPatch[];
+		/** On-disk copies of `nestedPatches`, written before the isolation workspace was removed. */
+		nestedPatchPaths?: string[];
 		changesApplied?: boolean | null;
 		isolationSummary?: string;
 	};
@@ -204,6 +206,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 				...(result.patchPath !== undefined ? { patchPath: result.patchPath } : {}),
 				...(result.branchName !== undefined ? { branchName: result.branchName } : {}),
 				...(nestedPatches !== undefined ? { nestedPatches } : {}),
+				...(result.nestedPatchPaths?.length ? { nestedPatchPaths: result.nestedPatchPaths } : {}),
 				...(isolationSummary !== undefined ? { isolationSummary } : {}),
 			},
 		};

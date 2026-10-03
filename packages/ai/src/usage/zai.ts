@@ -400,6 +400,17 @@ export const zaiRankingStrategy: CredentialRankingStrategy = {
 		const limits = getZaiCredentialLimits(report);
 		return limits;
 	},
+	// All GLM requests share the account's quota pool; keep its reactive blocks apart from unscoped failures a
+	// usage report cannot vouch for, so a healthy live report can lift them.
+	blockScope() {
+		return "credits";
+	},
+	healableBlockScopes(report) {
+		const limits = getZaiCredentialLimits(report);
+		// A feature-only report cannot prove the shared credit/token pool recovered.
+		if (!limits.some(limit => limit.id.startsWith("zai:credits:") || limit.id.startsWith("zai:tokens:"))) return [];
+		return [{ blockScope: "credits", limits }];
+	},
 	windowDefaults: {
 		primaryMs: 5 * HOUR_MS,
 		secondaryMs: WEEK_MS,

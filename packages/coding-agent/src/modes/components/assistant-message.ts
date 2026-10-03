@@ -15,7 +15,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "../../internal-urls/local-protocol";
-import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { ensureThemeSync, getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { convertImageToPng } from "../../utils/image-loading";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
@@ -132,6 +132,7 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
+	#emergencyText?: Markdown;
 	#convertedKittyImages?: Map<string, ImageContent>;
 	#showImages = true;
 	#kittyConversionsInFlight?: Set<string>;
@@ -190,6 +191,7 @@ export class AssistantMessageComponent extends Container {
 			null,
 	) {
 		super();
+		ensureThemeSync();
 		this.#transcriptBlockFinalized = message !== undefined;
 
 		if (message) {
@@ -539,6 +541,12 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	/** Render completed prose rather than an earlier thinking row under emergency viewport pressure. */
+	renderTranscriptBlockEmergencyRow(width: number): string | undefined {
+		if (!this.#transcriptBlockFinalized) return undefined;
+		return this.#emergencyText?.render(width)[0];
+	}
+
 	markTranscriptBlockFinalized(): void {
 		if (this.#transcriptBlockFinalized) return;
 		this.#transcriptBlockFinalized = true;
@@ -588,12 +596,15 @@ export class AssistantMessageComponent extends Container {
 		if (blocks === undefined) return;
 		this.#clearContent();
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-		for (const text of blocks)
-			this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2));
+		for (const text of blocks) {
+			this.#emergencyText = new Markdown(text, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2);
+			this.addChild(this.#emergencyText);
+		}
 		super.invalidate();
 	}
 
 	#clearContent(): void {
+		this.#emergencyText = undefined;
 		this.disposeChildren();
 	}
 
@@ -720,10 +731,12 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text") {
 				parts.push(canonicalizeMessage(content.text) ? "T1" : "T0");
 			} else if (content.type === "thinking") {
-				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
-				if (!display.visible) parts.push("K0");
-				else if (this.hideThinkingBlock) parts.push("KH");
-				else parts.push("KV");
+				if (this.hideThinkingBlock) {
+					// Hidden thinking is never formatted; only its empty/non-empty transition matters.
+					parts.push(canonicalizeMessage(content.thinking) ? "KH" : "K0");
+				} else {
+					parts.push(resolveThinkingDisplay(content, this.proseOnlyThinking).visible ? "KV" : "K0");
+				}
 			} else {
 				parts.push(`O:${content.type}`);
 			}
@@ -744,7 +757,7 @@ export class AssistantMessageComponent extends Container {
 			return false;
 		}
 
-		if (this.thinkingRenderers.length > 0 && this.#fastPathItems) {
+		if (!this.hideThinkingBlock && this.thinkingRenderers.length > 0 && this.#fastPathItems) {
 			for (const item of this.#fastPathItems) {
 				if (item.blockType === "thinking") {
 					const content = message.content[item.contentIndex];
@@ -876,14 +889,17 @@ export class AssistantMessageComponent extends Container {
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2);
 				this.addChild(md);
+				this.#emergencyText = md;
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
-			} else if (content.type === "thinking" && resolveThinkingDisplay(content, this.proseOnlyThinking).visible) {
-				const thinkingText = resolveThinkingDisplay(content, this.proseOnlyThinking).text;
+			} else if (content.type === "thinking") {
 				if (this.hideThinkingBlock) {
 					thinkingIndex += 1;
 					continue;
 				}
+				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
+				if (!display.visible) continue;
+				const thinkingText = display.text;
 
 				const hasVisibleContentAfter = message.content
 					.slice(i + 1)

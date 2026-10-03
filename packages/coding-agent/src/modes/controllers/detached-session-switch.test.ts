@@ -162,6 +162,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 			actions.push("attach");
 		},
 		clearTransientSessionUi: () => actions.push("clear"),
+		prepareSessionSwitch: () => actions.push("prepare"),
 		resetObserverRegistry: () => {},
 		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
@@ -185,7 +186,8 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 		expect(registry.get(MAIN_AGENT_ID)?.fleetRoot).toBe(fleetA);
 		expect(registry.listVisibleTo(MAIN_AGENT_ID).map(ref => ref.id)).toContain("worker-a");
 		expect(registry.listVisibleTo(MAIN_AGENT_ID).map(ref => ref.id)).not.toContain("worker-b");
-		expect(actions).toEqual(["clear", "attach"]);
+		// Side requests settle before the foreground session is replaced.
+		expect(actions).toEqual(["prepare", "clear", "attach"]);
 	} finally {
 		a.release();
 		b.release();
@@ -240,6 +242,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 		getToolUIContext: () => undefined,
 		attachSessionView: async () => {},
 		clearTransientSessionUi: () => {},
+		prepareSessionSwitch: () => {},
 		resetObserverRegistry: () => {},
 		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
@@ -309,7 +312,9 @@ test("starting a new session keeps a streaming turn running in the background un
 		getToolUIContext: () => undefined,
 		attachSessionView: async () => {},
 		clearTransientSessionUi: () => {},
+		prepareSessionSwitch: () => {},
 		resetObserverRegistry: () => {},
+		eventController: { resetTranscriptAnchors: () => 0 },
 		resetTranscript: () => {},
 		present: () => {},
 		applyCwdChange: async () => true,

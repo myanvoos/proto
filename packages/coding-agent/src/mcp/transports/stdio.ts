@@ -1,4 +1,4 @@
-import { getProjectDir, readJsonl, toError } from "@oh-my-pi/pi-utils";
+import { getProjectDir, readJsonl } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type {
 	JsonRpcError,
@@ -10,6 +10,7 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { createMCPJsonRpcError, MCPTransportError, normalizeMCPTransportError } from "../errors";
 import { RequestIdAllocator } from "../request-id";
 import { isMCPTimeoutEnabled, MCPRequestTimeoutError, resolveMCPTimeoutMs } from "../timeout";
 
@@ -272,16 +273,21 @@ export class StdioTransport implements MCPTransport {
 
 		const env = buildStdioChildEnv(this.config.env);
 		const cwd = this.config.cwd ?? getProjectDir();
-		const spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
-
-		const proc = Bun.spawn(spawnCommand.cmd, {
-			cwd,
-			env,
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-			detached: spawnCommand.detached,
-		});
+		let spawnCommand: StdioSpawnCommand;
+		let proc: Subprocess<"pipe", "pipe", "pipe">;
+		try {
+			spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
+			proc = Bun.spawn(spawnCommand.cmd, {
+				cwd,
+				env,
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+				detached: spawnCommand.detached,
+			});
+		} catch (error) {
+			throw normalizeMCPTransportError(error, { transport: "stdio", stage: "connect" });
+		}
 		if (options?.signal?.aborted) {
 			await terminateStdioProcess(proc, spawnCommand.detached);
 			throw abortReason(options.signal);
@@ -307,9 +313,25 @@ export class StdioTransport implements MCPTransport {
 				} catch {}
 			}
 		} catch (error) {
-			if (this.#connected) await this.#handleTransportFailure(error, proc);
+			if (this.#connected)
+				await this.#handleTransportFailure(
+					normalizeMCPTransportError(error, { transport: "stdio", stage: "receive" }),
+					proc,
+				);
 		} finally {
-			this.#handleClose();
+			this.#handleClose(
+				new MCPTransportError({
+					transport: "stdio",
+					stage: "receive",
+					failure: "eof",
+					retryable: true,
+					message:
+						proc.exitCode == null
+							? "MCP subprocess closed stdout before responding"
+							: `MCP subprocess exited with code ${proc.exitCode} before responding`,
+					code: proc.exitCode ?? undefined,
+				}),
+			);
 		}
 	}
 
@@ -351,7 +373,7 @@ export class StdioTransport implements MCPTransport {
 			if (pending) {
 				this.#pendingRequests.delete(response.id);
 				if (response.error) {
-					pending.reject(new Error(`MCP error ${response.error.code}: ${response.error.message}`));
+					pending.reject(createMCPJsonRpcError("stdio", response.error));
 				} else {
 					pending.resolve(response.result);
 				}
@@ -391,12 +413,15 @@ export class StdioTransport implements MCPTransport {
 		}
 	}
 
-	#handleClose(): void {
+	#handleClose(error?: Error): void {
 		if (!this.#connected) return;
 		this.#connected = false;
 
 		for (const [, pending] of this.#pendingRequests) {
-			pending.reject(new Error("Transport closed"));
+			pending.reject(
+				error ??
+					normalizeMCPTransportError(new Error("Transport closed"), { transport: "stdio", stage: "receive" }),
+			);
 		}
 		this.#pendingRequests.clear();
 
@@ -411,7 +436,10 @@ export class StdioTransport implements MCPTransport {
 		options?: MCPRequestOptions,
 	): Promise<T> {
 		if (!this.#connected || !this.#process?.stdin) {
-			throw new Error("Transport not connected");
+			throw normalizeMCPTransportError(new Error("Transport not connected"), {
+				transport: "stdio",
+				stage: "connect",
+			});
 		}
 
 		const id = this.#requestIds.next(this.config.requestIdFormat);
@@ -470,7 +498,7 @@ export class StdioTransport implements MCPTransport {
 
 		if (isMCPTimeoutEnabled(timeout)) {
 			timer = setTimeout(() => {
-				const timeoutError = new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
+				const timeoutError = new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`, "stdio");
 				cleanup();
 				reject(timeoutError);
 				// A request that outlives its timeout means the server stopped
@@ -486,7 +514,7 @@ export class StdioTransport implements MCPTransport {
 		const failFromSend = (error: unknown) => {
 			if (settled) return;
 			cleanup();
-			reject(toError(error));
+			reject(normalizeMCPTransportError(error, { transport: "stdio", stage: "send" }));
 		};
 		const send = writeFrame(stdin, message).catch(async error => {
 			failFromSend(error);
@@ -499,7 +527,10 @@ export class StdioTransport implements MCPTransport {
 
 	async notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected || !this.#process?.stdin) {
-			throw new Error("Transport not connected");
+			throw normalizeMCPTransportError(new Error("Transport not connected"), {
+				transport: "stdio",
+				stage: "connect",
+			});
 		}
 
 		if (options?.signal?.aborted) throw abortReason(options.signal);
@@ -512,7 +543,7 @@ export class StdioTransport implements MCPTransport {
 		try {
 			await writeFrame(this.#process.stdin, `${JSON.stringify(notification)}\n`);
 		} catch (error) {
-			const failure = toError(error);
+			const failure = normalizeMCPTransportError(error, { transport: "stdio", stage: "send" });
 			await this.#handleTransportFailure(failure);
 			throw failure;
 		}
@@ -522,14 +553,14 @@ export class StdioTransport implements MCPTransport {
 		error: unknown,
 		proc: Subprocess<"pipe", "pipe", "pipe"> | null = this.#process,
 	): Promise<Error> {
-		const failure = toError(error);
+		const failure = normalizeMCPTransportError(error, { transport: "stdio", stage: "receive" });
 		if (this.#connected) {
 			try {
 				this.onError?.(failure);
 			} catch {}
 		}
 		try {
-			this.#handleClose();
+			this.#handleClose(failure);
 		} catch {}
 		try {
 			await this.#terminateProcess(proc);

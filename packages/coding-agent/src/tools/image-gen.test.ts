@@ -97,6 +97,48 @@ test("uses opaque Codex proxy credentials for image generation when the active m
 	expect(result.details?.provider).toBe("openai-codex");
 });
 
+test("reports the image model and per-image size the hosted backend actually ran", async () => {
+	const sse = [
+		`data: ${JSON.stringify({
+			type: "response.output_item.done",
+			item: {
+				type: "image_generation_call",
+				result: Buffer.from("fake-codex-webp").toString("base64"),
+				size: "1536x1024",
+				quality: "medium",
+			},
+		})}`,
+		"",
+		`data: ${JSON.stringify({
+			type: "response.completed",
+			response: { output: [], tools: [{ type: "image_generation", model: "gpt-image-2" }] },
+		})}`,
+		"",
+	].join("\n");
+	const fetchMock = (async () =>
+		new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })) as unknown as typeof fetch;
+	const codexModel = {
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		id: "gpt-5.5",
+		name: "GPT-5.5",
+		baseUrl: "https://example-proxy.invalid/backend-api",
+	} as Model;
+
+	const result = await imageGenTool.execute(
+		"call-codex-model",
+		{ subject: "a cat" },
+		undefined,
+		codexContext(codexModel, fetchMock, provider => (provider === "openai-codex" ? "opaque-proxy-key" : undefined)),
+	);
+	generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+
+	expect(result.details?.model).toBe("gpt-image-2");
+	const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+	expect(text).toContain("Model: gpt-image-2 (catalog entry openai-codex/gpt-5.5)");
+	expect(text).toContain("(1536x1024, quality medium)");
+});
+
 test("materializes config-backed model headers for the hosted image request", async () => {
 	let requestHeaders: Headers | undefined;
 	const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -158,4 +200,46 @@ test("skips opaque Codex keys for the official ChatGPT backend regardless of URL
 
 	expect(requestUrls.some(url => url.includes("chatgpt.com"))).toBe(false);
 	expect(result.details?.provider).toBe("antigravity");
+});
+
+test("Antigravity generation still fails over to the next endpoint after model discovery", async () => {
+	const antigravityCredentials = JSON.stringify({ token: "test-antigravity-token", projectId: "test-project" });
+	const requestUrls: string[] = [];
+	let discoveredEndpoint: string | undefined;
+	const fetchMock = (async (input: string | URL | Request) => {
+		const url = input.toString();
+		requestUrls.push(url);
+		if (url.includes(":fetchAvailableModels")) {
+			discoveredEndpoint ??= new URL(url).origin;
+			return Response.json({ imageGenerationModelIds: ["gemini-3.1-flash-image"] });
+		}
+		if (url.startsWith(`${discoveredEndpoint}/`)) {
+			return Response.json({ error: { message: "backend unavailable" } }, { status: 503 });
+		}
+		return new Response(antigravityImageSse(), { status: 200, headers: { "content-type": "text/event-stream" } });
+	}) as unknown as typeof fetch;
+	const officialModel = {
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		id: "gpt-5.5",
+		name: "GPT-5.5",
+		baseUrl: "https://chatgpt.com/backend-api",
+	} as Model;
+
+	const result = await imageGenTool.execute(
+		"call-antigravity-failover",
+		{ subject: "a cat" },
+		undefined,
+		codexContext(officialModel, fetchMock, provider =>
+			provider === "google-antigravity" ? antigravityCredentials : undefined,
+		),
+	);
+	generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+
+	const generationUrls = requestUrls.filter(url => url.includes("streamGenerateContent"));
+	expect(generationUrls).toHaveLength(2);
+	expect(generationUrls[0]?.startsWith(`${discoveredEndpoint}/`)).toBe(true);
+	expect(generationUrls[1]?.startsWith(`${discoveredEndpoint}/`)).toBe(false);
+	expect(result.details?.provider).toBe("antigravity");
+	expect(result.details?.model).toBe("gemini-3.1-flash-image");
 });

@@ -131,18 +131,18 @@ So the advisor can steer and resume a run the agent ended on its own **while it 
 
 `advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns are routed as non-interrupting asides until the configured number of primary turns has completed; `blocker` notes still interrupt. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
 
-While an advisor update is reviewing work still in progress, `AdviseTool` withholds `nit` and `concern` calls; only a `blocker` may interrupt partial work. The primary's terminal turn boundary flushes the withheld notes, even when the advisor is quota-paused or halted before its next update; continuing tool turns keep them withheld. The tool also suppresses the same whitespace-normalized note at an equal or lower severity while allowing a real escalation (`nit` → `concern` → `blocker`).
+While an advisor update is reviewing work still in progress, `AdviseTool` defers `nit` and `concern` calls; only a `blocker` may interrupt partial work. Deferred notes pass the emission guard when raised, so a later flush delivers every one of them. A higher-severity note may displace a pending lower-severity note from the same update, but never a note from an earlier update or one already routed; re-raising a pending note at higher severity escalates it in place, and a `blocker` re-raise interrupts immediately. The primary's terminal turn boundary flushes the deferred notes without opening a new update budget, even when the advisor is quota-paused or halted before its next update; continuing tool turns keep them deferred.
 
 ### Emission guard
 
-Each advisor has its own `AdvisorEmissionGuard` (`src/advisor/emission-guard.ts`) on the route from `AdviseTool` to the YieldQueue/steer channel. It enforces the system prompt's "at most one accepted note per update" and no-repeat rules:
+Each advisor's `AdviseTool` owns an `AdvisorEmissionGuard` (`src/advisor/emission-guard.ts`), the single admission authority for its notes. It enforces the system prompt's "at most one accepted note per update" and no-repeat rules:
 
 1. **Normalization.** Lowercase, NFKC, collapse every run of non-alphanumeric characters to one space, then trim. `"Stop."`, `"*Stop*"`, and `"  stop  "` all key to `stop`.
 2. **Content-free phrase filter.** Short phrases with no concrete reason — `stop`, `done`, `complete`, `no issue continue`, `lgtm`, `nothing to add`, and similar — are suppressed.
-3. **Exact-text dedupe.** Any normalized note already accepted by this advisor in this session is dropped. The FIFO history holds at most 4096 entries.
-4. **Per-update rate limit.** At most one note per advisor model `prompt()` cycle is accepted. Suppressed noise never consumes the budget.
+3. **Severity-aware dedupe.** A normalized note already accepted in this session is dropped at an equal or lower severity; a real escalation (`nit` → `concern` → `blocker`) is accepted. The FIFO history holds at most 4096 entries.
+4. **Per-update rate limit.** At most one non-blocker note per advisor model `prompt()` cycle is accepted; blockers are exempt. Suppressed noise never consumes the budget.
 
-Guard-level suppression is invisible to the model because `AdviseTool` has already returned `Recorded.`. The tool's earlier equal-or-lower-severity duplicate check is intentionally visible as `Duplicate advice ignored.`; in-progress non-blockers return a `Deferred — primary is mid-turn...` result without routing.
+Each `advise` call gets a one-line acknowledgment matching what happened: `Delivered.`, `Queued for the end of the turn. Do not re-raise.`, or `Dropped: …` with the reason (empty, nothing actionable, already raised, or this update's budget spent).
 
 The per-update gate clears at each advisor update. Dedupe history clears when advisor session state resets (session switch/resume, branch/fork, or `/new`) or the runtime is rebuilt; a context-maintenance runtime reset alone preserves it.
 
@@ -172,13 +172,14 @@ Practical interpretation:
 - `1` is the closest mode to synchronous review: after each queued advisor delta, the primary waits up to 30 seconds for backlog to return to zero.
 - `3` and `5` allow more advisor lag before the primary pauses.
 
-Advisor failures do not permanently stall the primary. The host first attempts its credential/fallback recovery. Retriable failures are attempted up to three times before that backlog is dropped; three dropped-backlog cycles halt the runtime until an explicit reset, and a permanent request rejection can halt it after one cycle. A quota/usage-limit failure pauses the advisor with its batch retained until `/advisor` rebuilds it, configuration is reloaded, a new session starts, or the process restarts. Catch-up waiters are released as soon as an advisor is failing.
+Advisor failures do not permanently stall the primary. The host first attempts its credential/fallback recovery. Retriable failures are attempted up to three times before that backlog is dropped; three dropped-backlog cycles halt the runtime until an explicit reset, and a permanent request rejection can halt it after one cycle. A quota/usage-limit failure pauses the advisor with its batch retained until `/advisor` rebuilds it, configuration is reloaded, a new session starts, or the process restarts. Catch-up waiters are released as soon as an advisor is failing; print mode's final drain is the exception and waits through the advisor's retry and fallback-chain recovery, so a configured backup reviewer still finishes before the session is disposed.
 
 Unsafe Advisor output follows a separate quarantine path rather than that
-three-attempt request-retry policy. Before tool dispatch, the runtime
-quarantines a turn that requests non-bridge tools unavailable to the Advisor.
-It also quarantines generated text/advice when an output-only destructive-shell
-directive is detected, or when at least three output-only hazard classes match
+three-attempt request-retry policy. A call to a tool the Advisor was not
+granted is not quarantined: the agent loop answers it in-band with a
+`Tool <name> not found` result, so an `advise` call in the same turn still
+lands. Before tool dispatch, the runtime quarantines generated text/advice when
+an output-only destructive-shell directive is detected, or when at least three output-only hazard classes match
 among destructive shell, instruction override, denial instruction, and
 account-deletion claim. A new instruction override paired with a destructive
 command quoted in the input also qualifies. The entire Advisor turn, including

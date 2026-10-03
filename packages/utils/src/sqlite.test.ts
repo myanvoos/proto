@@ -145,3 +145,36 @@ test("opted-in corruption recovery quarantines a private backup and recreates th
 		reopened.close();
 	}
 });
+
+test("a non-corruption init failure on a store that fails quick_check is preserved as corruption", async () => {
+	using dir = TempDir.createSync("@proto-sqlite-hidden-corrupt-");
+	const dbPath = dir.join("store.db");
+	const seed = new Database(dbPath);
+	seed.run("CREATE TABLE existing (value TEXT)");
+	seed.close();
+	// Point the freelist trunk at a page past EOF: reads still work, but quick_check reports the damage.
+	const damaged = fs.readFileSync(dbPath);
+	damaged.writeUInt32BE(0x0d000000, 32);
+	damaged.writeUInt32BE(1, 36);
+	fs.writeFileSync(dbPath, damaged);
+	const initFailure = new Error("no such table: hint_usage");
+	let attempts = 0;
+	let preserved: unknown;
+
+	const db = await openSqliteDatabase(
+		dbPath,
+		handle => {
+			if (attempts++ === 0) throw initFailure;
+			return handle;
+		},
+		{ recoverCorruption: true, onCorruptionPreserved: (_backupPath, error) => (preserved = error) },
+	);
+	db.close();
+
+	expect(attempts).toBe(2);
+	expect(isSqliteCorruptionError(preserved)).toBe(true);
+	expect((preserved as Error | undefined)?.cause).toBe(initFailure);
+	const backups = backupNames(dir).filter(name => !/-wal$|-shm$|-journal$/.test(name));
+	expect(backups).toHaveLength(1);
+	expect(fs.readFileSync(dir.join(backups[0]!))).toEqual(damaged);
+});

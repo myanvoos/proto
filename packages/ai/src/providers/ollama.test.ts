@@ -66,6 +66,26 @@ describe("Ollama usage accounting", () => {
 
 		expect(result.usage).toMatchObject({ input: 200, cacheRead: 800, output: 50, totalTokens: 1050 });
 	});
+
+	it("prices terminal usage from the model cost card", async () => {
+		const pricedModel = buildModel({
+			...model,
+			cost: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0 },
+		} satisfies ModelSpec<"ollama-chat">);
+		const result = await streamOllama(pricedModel, context, {
+			apiKey: "test-key",
+			fetch: fetchForChunks([
+				{ message: { content: "391" } },
+				{ done: true, done_reason: "stop", prompt_eval_count: 1000, prompt_eval_cached_count: 800, eval_count: 50 },
+			]),
+		}).result();
+
+		// Per 1M tokens: 200 uncached input at 0.66, 50 output at 1.98, 800 cached at 0.022.
+		expect(result.usage.cost.input).toBeCloseTo(0.000132, 12);
+		expect(result.usage.cost.output).toBeCloseTo(0.000099, 12);
+		expect(result.usage.cost.cacheRead).toBeCloseTo(0.0000176, 12);
+		expect(result.usage.cost.total).toBeCloseTo(0.0002486, 12);
+	});
 });
 
 describe("Ollama streamed tool calls", () => {

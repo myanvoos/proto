@@ -7,6 +7,11 @@ const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
+/**
+ * A settled row whose result was consumed (delivered to its sink or taken by a foreground wait) has served its
+ * purpose; the short grace still covers a follow-up read. Unconsumed rows keep the full retention window.
+ */
+const CONSUMED_RESULT_EVICTION_MS = 30_000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
 
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
@@ -120,6 +125,8 @@ export interface AsyncJobManagerOptions {
 	maxDeliveryCalls?: number;
 	deliveryRetentionMs?: number;
 	deliveryTimeoutMs?: number;
+	/** Delay before a settled row whose result was consumed is evicted; clamped to `retentionMs`. */
+	consumedResultEvictionMs?: number;
 }
 
 export interface AsyncJobAdmission {
@@ -265,6 +272,7 @@ export class AsyncJobManager {
 	readonly #maxDeliveryCalls: number;
 	readonly #deliveryRetentionMs: number;
 	readonly #deliveryTimeoutMs: number;
+	readonly #consumedResultEvictionMs: number;
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
@@ -294,6 +302,10 @@ export class AsyncJobManager {
 		this.#maxDeliveryCalls = Math.max(1, Math.floor(options.maxDeliveryCalls ?? 8));
 		this.#deliveryRetentionMs = Math.max(1, Math.floor(options.deliveryRetentionMs ?? DEFAULT_RETENTION_MS));
 		this.#deliveryTimeoutMs = Math.max(1, Math.floor(options.deliveryTimeoutMs ?? 30_000));
+		this.#consumedResultEvictionMs = Math.max(
+			0,
+			Math.floor(options.consumedResultEvictionMs ?? CONSUMED_RESULT_EVICTION_MS),
+		);
 	}
 
 	#checkAdmission(bytes: number, ownerId: string | undefined, exclude?: AsyncJobAdmission): void {
@@ -679,6 +691,9 @@ export class AsyncJobManager {
 		for (const delivery of [...this.#deliveries]) {
 			if (this.#isDeliverySuppressed(delivery)) this.#releaseDelivery(delivery);
 		}
+		for (const jobId of uniqueJobIds) {
+			if (this.#suppressedDeliveries.has(jobId)) this.#consumeJobResult(jobId);
+		}
 		this.#notifyDeliveryQueueChanged();
 		return before - this.#deliveries.length;
 	}
@@ -914,7 +929,7 @@ export class AsyncJobManager {
 		return deleted;
 	}
 
-	#scheduleEviction(jobId: string): void {
+	#scheduleEviction(jobId: string, delayMs: number = this.#retentionMs): void {
 		const job = this.#jobs.get(jobId);
 		if (this.#disposed || !job || this.#unsettledJobs.has(jobId) || job.events?.length) return;
 		if (!this.#retainedJobs.has(jobId)) {
@@ -962,11 +977,29 @@ export class AsyncJobManager {
 		if (existing) {
 			clearTimeout(existing);
 		}
-		const timer = setTimeout(() => {
-			this.#evictJob(jobId);
-		}, this.#retentionMs);
+		const timer = setTimeout(
+			() => {
+				this.#evictJob(jobId);
+			},
+			Math.min(this.#retentionMs, delayMs),
+		);
 		timer.unref();
 		this.#evictionTimers.set(jobId, timer);
+	}
+
+	/**
+	 * The settled result reached its consumer: shorten the row's eviction. A still-queued or in-flight delivery keeps
+	 * the full window — evicting would drop the suppression marker its parked yield-queue entry is checked against.
+	 */
+	#consumeJobResult(jobId: string): void {
+		const job = this.#jobs.get(jobId);
+		if (!job || (job.status !== "completed" && job.status !== "failed")) return;
+		if (
+			this.#deliveries.some(delivery => delivery.jobId === jobId) ||
+			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId)
+		)
+			return;
+		this.#scheduleEviction(jobId, this.#consumedResultEvictionMs);
 	}
 
 	#clearEvictionTimers(): void {
@@ -1257,13 +1290,21 @@ export class AsyncJobManager {
 		delivery.timer.unref();
 		// Keep the call charged until real settlement; timing out must not create another call slot.
 		// Per-call timers are removable: racing a manager-lifetime promise would retain one reaction per call.
+		let delivered = false;
 		void Promise.resolve()
-			.then(() => {
+			.then(async () => {
 				if (this.#deliveryClosed || delivery.expired || this.#isDeliverySuppressed(delivery)) return;
-				return sink(delivery.jobId, delivery.text, this.#jobs.get(delivery.jobId), delivery.event);
+				await sink(delivery.jobId, delivery.text, this.#jobs.get(delivery.jobId), delivery.event);
+				delivered = true;
 			})
 			.catch(error => {
-				if (this.#deliveryClosed || delivery.expired || this.#isDeliverySuppressed(delivery)) return;
+				if (
+					this.#deliveryClosed ||
+					delivery.expired ||
+					this.#isDeliverySuppressed(delivery) ||
+					!this.#jobs.has(delivery.jobId)
+				)
+					return;
 				delivery.attempt++;
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
 				if (delivery.nextAttemptAt >= delivery.expiresAt)
@@ -1281,6 +1322,9 @@ export class AsyncJobManager {
 				delivery.timer = undefined;
 				const index = this.#inFlightDeliveries.indexOf(delivery);
 				if (index >= 0) this.#inFlightDeliveries.splice(index, 1);
+				// Only once out of flight: a pending delivery for the job keeps the full retention window.
+				if (!delivery.event && (delivered || this.#suppressedDeliveries.has(delivery.jobId)))
+					this.#consumeJobResult(delivery.jobId);
 				if (
 					delivery.expired ||
 					this.#isDeliverySuppressed(delivery) ||

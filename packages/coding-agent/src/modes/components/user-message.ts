@@ -1,7 +1,7 @@
 import { type Component, Container, getWidthConfigEpoch, Markdown } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "../../internal-urls/local-protocol";
-import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { ensureThemeSync, getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { attachmentSgr, collapseImageMarkers, renderPlaceholders } from "../composer-attachments";
 import { imageReferenceHyperlink } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
@@ -31,6 +31,7 @@ export class UserMessageComponent extends Container {
 		localProtocolOptions: LocalProtocolOptions | null = LocalProtocolHandler.resolveOptions() ?? null,
 	) {
 		super();
+		ensureThemeSync();
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
 		const keywordReset = theme.getFgAnsi("userMessageText") || "\x1b[39m";
 		const baseText = synthetic

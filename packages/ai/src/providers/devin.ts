@@ -19,6 +19,7 @@ import {
 	GetUserJwtResponseSchema,
 	type ImageData,
 	ImageDataSchema,
+	type Metadata,
 	MetadataSchema,
 	type ModelAssignment,
 	PromptCacheOptionsSchema,
@@ -27,9 +28,9 @@ import {
 import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import { isGeminiModelId } from "@oh-my-pi/pi-catalog/identity/family";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
+import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata, devinWireMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
 import { decodeDevinUnaryMessage } from "@oh-my-pi/pi-catalog/wire/devin-proto";
-import { isRecord, logger, parseStreamingJson, parseStreamingJsonThrottled, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, parseStreamingJsonThrottled, sanitizeText } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -51,6 +52,7 @@ import { isDemotedThinking } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
+import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { transformMessages } from "./transform-messages";
 import { mediaOmissionNote } from "./vision-guard";
 
@@ -294,7 +296,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			const auth = await fetchDevinAuthMetadata(options?.apiKey, baseUrl, fetchImpl, options?.signal);
 			const chatBaseUrl = auth.baseUrl ?? baseUrl;
 			const turn: DevinTurn = {
-				apiKey: options?.apiKey,
+				apiKey: auth.apiKey,
 				userJwt: auth.userJwt,
 				cascadeId: options?.conversationId ?? options?.sessionId ?? crypto.randomUUID(),
 				messages: transformMessages(context.messages, model),
@@ -572,7 +574,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			endTextBlock();
 			endThinkingBlock();
 			for (const [id, block] of toolBlocks) {
-				block.arguments = parseStreamingJson(toolPartialJson.get(id));
+				block.arguments = parseToolCallArguments(toolPartialJson.get(id));
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: output.content.indexOf(block),
@@ -605,20 +607,21 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 };
 
 interface DevinTurn {
-	apiKey: string | undefined;
+	// Credential exactly as GetUserJwt accepted it (session-token prefixed or raw legacy Windsurf key).
+	apiKey: string;
 	userJwt: string;
 	// Assignment and chat must agree on the cascade id or the assignment JWT is rejected.
 	cascadeId: string;
 	messages: Message[];
 }
 
-async function fetchDevinAuthMetadata(
-	apiKey: string | undefined,
+async function requestDevinAuth(
+	metadata: Metadata,
 	baseUrl: string,
 	fetchImpl: NonNullable<StreamOptions["fetch"]>,
 	signal: AbortSignal | undefined,
-): Promise<{ userJwt: string; baseUrl?: string }> {
-	const request = create(GetUserJwtRequestSchema, { metadata: create(MetadataSchema, devinCliMetadata(apiKey)) });
+): Promise<{ response: Response; payload: Uint8Array }> {
+	const request = create(GetUserJwtRequestSchema, { metadata });
 	const response = await fetchImpl(`${baseUrl}${DEVIN_AUTH_PATH}`, {
 		method: "POST",
 		headers: {
@@ -629,7 +632,27 @@ async function fetchDevinAuthMetadata(
 		body: toBinary(GetUserJwtRequestSchema, request),
 		signal,
 	});
-	const payload = new Uint8Array(await response.arrayBuffer());
+	return { response, payload: new Uint8Array(await response.arrayBuffer()) };
+}
+
+async function fetchDevinAuthMetadata(
+	apiKey: string | undefined,
+	baseUrl: string,
+	fetchImpl: NonNullable<StreamOptions["fetch"]>,
+	signal: AbortSignal | undefined,
+): Promise<{ userJwt: string; apiKey: string; baseUrl?: string }> {
+	const sessionMetadata = create(MetadataSchema, devinCliMetadata(apiKey));
+	let wireApiKey = sessionMetadata.apiKey;
+	let attempt = await requestDevinAuth(sessionMetadata, baseUrl, fetchImpl, signal);
+	// Legacy Windsurf API keys are rejected with the session-token prefix; retry them raw.
+	if (attempt.response.status === 401) {
+		const rawMetadata = create(MetadataSchema, devinWireMetadata(apiKey));
+		if (rawMetadata.apiKey && rawMetadata.apiKey !== sessionMetadata.apiKey) {
+			attempt = await requestDevinAuth(rawMetadata, baseUrl, fetchImpl, signal);
+			wireApiKey = rawMetadata.apiKey;
+		}
+	}
+	const { response, payload } = attempt;
 	if (!response.ok) throw createDevinHttpError("auth", response, payload);
 	const decoded = decodeDevinUnaryMessage(GetUserJwtResponseSchema, payload);
 	if (!decoded?.userJwt) {
@@ -639,7 +662,11 @@ async function fetchDevinAuthMetadata(
 		});
 	}
 	const customBaseUrl = decoded.customApiServerUrl.trim();
-	return { userJwt: decoded.userJwt, ...(customBaseUrl ? { baseUrl: customBaseUrl.replace(/\/+$/, "") } : undefined) };
+	return {
+		userJwt: decoded.userJwt,
+		apiKey: wireApiKey,
+		...(customBaseUrl ? { baseUrl: customBaseUrl.replace(/\/+$/, "") } : undefined),
+	};
 }
 
 // The router uid is never a legal `chatModelUid`, so a failed assignment fails the turn instead of
@@ -652,7 +679,7 @@ async function assignDevinModel(
 	signal: AbortSignal | undefined,
 ): Promise<ModelAssignment> {
 	const request = create(AssignModelRequestSchema, {
-		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey)),
+		metadata: create(MetadataSchema, devinWireMetadata(turn.apiKey)),
 		modelRouterUid: model.requestModelId ?? model.id,
 		cascadeId: turn.cascadeId,
 		chatMessagePrompt: buildRouterPrompt(turn.messages),
@@ -711,7 +738,7 @@ function buildDevinChatRequest(
 	const googleToolSchema =
 		isGeminiModelId(model.id) || isGeminiModelId(chatModelUid) || chatModelUid.startsWith("MODEL_GOOGLE_GEMINI_");
 	return create(GetChatMessageRequestSchema, {
-		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey, turn.userJwt)),
+		metadata: create(MetadataSchema, devinWireMetadata(turn.apiKey, turn.userJwt)),
 		prompt: normalizeSystemPrompts(context.systemPrompt).join("\n\n"),
 		chatMessagePrompts: buildChatMessagePrompts(turn.messages, turn.cascadeId, model),
 		chatModelUid,

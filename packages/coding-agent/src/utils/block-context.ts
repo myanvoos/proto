@@ -14,6 +14,9 @@ const CLOSE_TO_OPEN: Record<string, string> = {
 	"}": "{",
 };
 
+// In code mode, lines without brackets, quotes, or comment markers can neither add boundaries nor change scanner state.
+const LINE_SCAN_PATTERN = /[()[\]{}'"`/#]/;
+
 export interface LineSpan {
 	startLine: number;
 	endLine: number;
@@ -159,10 +162,11 @@ function lexicalBracketContext(fullLines: readonly string[], visible: ReadonlySe
 	const stack: StackEntry[] = [];
 	let mode: ScannerMode = "code";
 	let escaped = false;
-
+	let sawBracket = false;
 	for (let lineIndex = 0; lineIndex < fullLines.length; lineIndex++) {
-		const lineNumber = lineIndex + 1;
 		const line = fullLines[lineIndex] ?? "";
+		if (mode === "code" && !LINE_SCAN_PATTERN.test(line)) continue;
+		const lineNumber = lineIndex + 1;
 		const lineVisible = visible.has(lineNumber);
 		let index = 0;
 		while (index < line.length) {
@@ -228,6 +232,7 @@ function lexicalBracketContext(fullLines: readonly string[], visible: ReadonlySe
 			}
 
 			if (OPEN_TO_CLOSE[ch]) {
+				sawBracket = true;
 				stack.push({ opener: ch, lineNumber, text: line, visible: lineVisible });
 				index++;
 				continue;
@@ -254,7 +259,7 @@ function lexicalBracketContext(fullLines: readonly string[], visible: ReadonlySe
 		}
 	}
 
-	for (const lineNumber of visible) context.delete(lineNumber);
+	if (sawBracket) for (const lineNumber of visible) context.delete(lineNumber);
 	return context;
 }
 

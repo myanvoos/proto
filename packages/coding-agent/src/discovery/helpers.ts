@@ -147,17 +147,44 @@ function parseArrayOrCSV(value: unknown): string[] | undefined {
 	return undefined;
 }
 
+interface RuleMarkdownOptions {
+	ruleName?: string;
+	stripNamePattern?: RegExp;
+}
+
+/** Build a rule from Markdown, including files whose frontmatter disables them (explicit loads). */
 export function buildRuleFromMarkdown(
 	name: string,
 	content: string,
 	filePath: string,
 	source: SourceMeta,
-	options?: {
-		ruleName?: string;
-		stripNamePattern?: RegExp;
-	},
+	options?: RuleMarkdownOptions,
 ): Rule {
 	const { frontmatter, body } = parseFrontmatter(content, { source: filePath });
+	return buildRule(name, body, frontmatter, filePath, source, options);
+}
+
+/** Build a discovered rule from Markdown; `enabled: false` frontmatter omits it. */
+export function discoverRuleFromMarkdown(
+	name: string,
+	content: string,
+	filePath: string,
+	source: SourceMeta,
+	options?: RuleMarkdownOptions,
+): Rule | null {
+	const { frontmatter, body } = parseFrontmatter(content, { source: filePath });
+	if (frontmatter.enabled === false) return null;
+	return buildRule(name, body, frontmatter, filePath, source, options);
+}
+
+function buildRule(
+	name: string,
+	body: string,
+	frontmatter: Record<string, unknown>,
+	filePath: string,
+	source: SourceMeta,
+	options?: RuleMarkdownOptions,
+): Rule {
 	const { condition, astCondition, match, scope } = parseRuleConditionAndScope(frontmatter as RuleFrontmatter);
 
 	let globs: string[] | undefined;
@@ -220,7 +247,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	let tools = parseArrayOrCSV(frontmatter.tools);
+	let tools =
+		Array.isArray(frontmatter.tools) && frontmatter.tools.length === 0 ? [] : parseArrayOrCSV(frontmatter.tools);
 	if (tools) tools = normalizeToolNames(tools);
 
 	if (tools && !tools.includes("yield")) {
@@ -429,7 +457,8 @@ function lookupEnvValue(varName: string, extraEnv?: Record<string, string>): str
 function expandEnvVars(value: string, extraEnv?: Record<string, string>): string {
 	return value.replace(/\$\{([^}:]+)(?::-([^}]*))?\}/g, (_, varName: string, defaultValue?: string) => {
 		const envValue = lookupEnvValue(varName, extraEnv);
-		if (envValue !== undefined) return envValue;
+		// `${VAR:-default}` follows POSIX `:-`: the default also replaces an empty value.
+		if (envValue !== undefined && (defaultValue === undefined || envValue !== "")) return envValue;
 		if (defaultValue !== undefined) return defaultValue;
 		return `\${${varName}}`;
 	});

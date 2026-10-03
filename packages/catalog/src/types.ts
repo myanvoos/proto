@@ -309,6 +309,9 @@ export interface BedrockCompat {
 	promptCacheMaximumCheckpoints?: number;
 
 	streamIdleTimeoutMs?: number;
+
+	/** Whether a forced `toolChoice` (`any`/`tool`) is accepted; when false the request downgrades it to `auto`. */
+	supportsForcedToolChoice?: boolean;
 }
 
 export interface ResolvedBedrockCompat {
@@ -316,6 +319,7 @@ export interface ResolvedBedrockCompat {
 	supportsLongPromptCacheRetention: boolean;
 	promptCacheMinimumTokens: number;
 	promptCacheMaximumCheckpoints: number;
+	supportsForcedToolChoice: boolean;
 
 	streamIdleTimeoutMs?: number;
 

@@ -211,6 +211,7 @@ class DirResolver {
 
 	readonly #rootDirs: Record<ProtogCategory, string>;
 	readonly #agentDirs: Record<ProtogCategory, string>;
+	readonly #baseRootDirs: Record<ProtogCategory, string>;
 
 	readonly #rootCache = new Map<string, string>();
 	readonly #agentCache = new Map<string, string>();
@@ -227,7 +228,8 @@ class DirResolver {
 		let xdgData: string | undefined;
 		let xdgState: string | undefined;
 		let xdgCache: string | undefined;
-		if ((process.platform === "linux" || process.platform === "darwin") && isDefault) {
+		const xdgPlatform = process.platform === "linux" || process.platform === "darwin";
+		if (xdgPlatform && isDefault) {
 			const resolveIf = (envVar: string) => {
 				const value = process.env[envVar];
 				if (!value) return undefined;
@@ -262,6 +264,30 @@ class DirResolver {
 			state: xdgState ?? this.agentDir,
 			cache: xdgCache ?? this.agentDir,
 		};
+
+		// Machine-global paths (daemon scopes shared by every process) key XDG only on the base app root, independent of
+		// profile and agent-dir override, so every process agrees on one location.
+		const resolveBase = (envVar: string) => {
+			if (!xdgPlatform) return undefined;
+			const value = process.env[envVar];
+			if (!value) return undefined;
+			try {
+				const appRoot = path.join(value, APP_NAME);
+				return fs.existsSync(appRoot) ? appRoot : undefined;
+			} catch {}
+			return undefined;
+		};
+		const baseRoot = getBaseConfigRoot();
+		this.#baseRootDirs = {
+			data: resolveBase("XDG_DATA_HOME") ?? baseRoot,
+			state: resolveBase("XDG_STATE_HOME") ?? baseRoot,
+			cache: resolveBase("XDG_CACHE_HOME") ?? baseRoot,
+		};
+	}
+
+	/** Profile-independent config-root subdirectory, with optional XDG override. Shared across profiles. */
+	baseRootSubdir(subdir: string, xdg?: ProtogCategory): string {
+		return path.join(xdg ? this.#baseRootDirs[xdg] : getBaseConfigRoot(), subdir);
 	}
 
 	rootSubdir(subdir: string, xdg?: ProtogCategory): string {
@@ -438,8 +464,13 @@ export function getLogsDir(): string {
 	return dirs.rootSubdir("logs", "state");
 }
 
+/** Local-timezone `YYYY-MM-DD` key every dated log filename carries; a UTC key names files the rotating sink never writes. */
+export function localDay(date: Date): string {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 export function getLogPath(date = new Date(), pid = process.pid): string {
-	return path.join(getLogsDir(), `${APP_NAME}.${date.toISOString().slice(0, 10)}.${pid}.log`);
+	return path.join(getLogsDir(), `${APP_NAME}.${localDay(date)}.${pid}.log`);
 }
 
 export function getPluginsDir(home?: string): string {
@@ -517,6 +548,11 @@ export function getPuppeteerDir(): string {
 
 export function getBrowserRelayDir(): string {
 	return dirs.rootSubdir("browser-relay", "data");
+}
+
+/** Profile root for Chromium browsers the browser tool spawns via `app.path`. */
+export function getBrowserProfilesDir(): string {
+	return dirs.rootSubdir("browser-profiles", "state");
 }
 
 export function getDocsRsCacheDir(): string {
@@ -613,6 +649,15 @@ export function getTerminalSessionsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "terminal-sessions", "state");
 }
 
+/**
+ * Registry of session files outside the managed sessions glob (`--session-dir`/`--session`), one marker per
+ * transcript holding its absolute path, so `proto gc` still scans their blob references after the terminal
+ * breadcrumb moves on.
+ */
+export function getCustomSessionFilesDir(agentDir?: string): string {
+	return dirs.agentSubdir(agentDir, "custom-session-files", "state");
+}
+
 export function getDebugLogPath(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, `${APP_NAME}-debug.log`, "state");
 }
@@ -642,7 +687,7 @@ export function getDaemonRuntimeDir(projectDir: string): string {
 }
 
 export function getGlobalDaemonRuntimeRoot(): string {
-	return path.join(getBaseConfigRoot(), "run", "daemons", "global");
+	return dirs.baseRootSubdir(path.join("run", "daemons", "global"), "state");
 }
 
 export function getGlobalDaemonRuntimeDir(service: string): string {

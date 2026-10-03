@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { YAML } from "bun";
 import { MCPManager } from "../mcp/manager";
 import type { McpConnectionStatusEvent } from "../mcp/startup-events";
 import { resolveAllowedModels } from "./model-resolver";
@@ -124,6 +125,42 @@ test("saving a setting keeps the hand-edited entries the runtime rejected", asyn
 	expect(written).toContain("yes-please");
 	expect(written).toContain("notARealKey");
 	expect(written).toContain("nord");
+});
+
+test("saved config.yml has no trailing spaces after mapping headers and round-trips multiline values", async () => {
+	const multiline = ["first line", "scalar line ending in colon: ", "third line "].join("\n");
+	const custom = {
+		"quoted:key": { nested: [{ value: multiline }] },
+		emptyObject: {},
+		emptyArray: [],
+		emptyString: "",
+	};
+	const fixture = await makeFixture({ "profile/config.yml": YAML.stringify({ custom, theme: { dark: "nord" } }) });
+	const settings = await loadSettings(fixture);
+
+	settings.set("theme.dark", "gruvbox");
+	await settings.flush();
+
+	const written = await fs.readFile(path.join(fixture.agentDir, "config.yml"), "utf8");
+	expect(written).not.toMatch(/: +$/m);
+	expect(YAML.parse(written)).toEqual({ custom, theme: { dark: "gruvbox" } });
+});
+
+test("unknown status line segments are reported and dropped, and setting them is rejected", async () => {
+	const fixture = await makeFixture({
+		"profile/config.yml": "statusLine:\n  leftSegments: [model, bogus, path]\n",
+	});
+	const settings = await loadSettings(fixture);
+
+	expect(settings.get("statusLine.leftSegments")).toEqual(["model", "path"]);
+	const issue = settings.getConfigIssues().find(candidate => candidate.key === "statusLine.leftSegments");
+	expect(issue?.kind).toBe("invalid-value");
+	expect(issue?.message).toContain('unknown status line segment "bogus"');
+
+	expect(() => settings.set("statusLine.rightSegments", ["cost", "nope" as "cost"])).toThrow(
+		'unknown status line segment "nope"',
+	);
+	expect(settings.get("statusLine.rightSegments")).toEqual(["session_name"]);
 });
 
 test("a broken .mcp.json reaches the MCP startup diagnostics", async () => {

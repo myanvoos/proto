@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { hasFsCode, isEnoent, logger, peekFileEnds, Snowflake, toError } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEnoent, logger, openCloexecSync, peekFileEnds, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import { type FileLockHandle, tryAcquireFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 import { overlayTitleSlotContent, type SessionTitleUpdate } from "./session-title-slot";
 
@@ -128,7 +128,12 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 
 		let fd: number;
 		try {
-			fd = fs.openSync(fpath, flags === "w" ? "w" : "a");
+			fd = openCloexecSync(
+				fpath,
+				fs.constants.O_WRONLY |
+					fs.constants.O_CREAT |
+					(flags === "w" ? fs.constants.O_TRUNC : fs.constants.O_APPEND),
+			);
 		} catch (error) {
 			lock.release();
 			throw error;

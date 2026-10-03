@@ -4,6 +4,8 @@ export interface LoadContext {
 	home: string;
 
 	repoRoot: string | null;
+
+	agentDir?: string;
 }
 
 export interface LoadResult<T> {
@@ -30,6 +32,8 @@ export interface LoadOptions<T = unknown> {
 	excludeProviders?: string[];
 
 	cwd?: string;
+
+	agentDir?: string;
 
 	includeInvalid?: boolean;
 

@@ -265,7 +265,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 26,
-		"tps": 47.7,
+		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -348,6 +348,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 37.9,
+		"tps": 52.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -431,7 +433,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 46.3,
-		"tps": 54.2,
+		"tps": 45.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

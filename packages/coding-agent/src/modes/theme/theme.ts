@@ -126,6 +126,11 @@ export function initThemeSync(colorBlindMode?: boolean, darkTheme?: string, ligh
 	}
 }
 
+/** Initializes this module graph's theme before synchronous rendering; extensions may load a duplicate graph. */
+export function ensureThemeSync(): void {
+	if (typeof theme === "undefined") initThemeSync();
+}
+
 export async function ensureTheme(): Promise<void> {
 	if (typeof theme !== "undefined") return;
 	await initTheme();

@@ -1,7 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDir, isEnoent, logger, tryParseJson } from "@oh-my-pi/pi-utils";
+import { getAgentDir, isEnoent, logger, MAIN_CONFIG_FILENAMES, tryParseJson } from "@oh-my-pi/pi-utils";
+import { YAML } from "bun";
 import { readDirEntries, readFile } from "../capability/fs";
 import type { LoadContext } from "../capability/types";
 import { getEnabledPlugins } from "../extensibility/plugins/loader";
@@ -90,13 +91,57 @@ function scopeDirs(ctx: LoadContext): ScopeDirs {
 	};
 }
 
-async function readSettingsExtensions(settingsPath: string): Promise<string[]> {
-	const content = await readFile(settingsPath);
-	if (!content) return [];
-	const parsed = tryParseJson<{ extensions?: unknown }>(content);
-	const raw = parsed?.extensions;
-	if (!Array.isArray(raw)) return [];
+function readExtensionsArray(raw: unknown): string[] | null {
+	if (!Array.isArray(raw)) return null;
 	return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+async function readSettingsExtensions(settingsPath: string): Promise<string[] | null> {
+	const content = await readFile(settingsPath);
+	if (!content) return null;
+	return readExtensionsArray(tryParseJson<{ extensions?: unknown }>(content)?.extensions);
+}
+
+interface YamlExtensions {
+	exists: boolean;
+	entries: string[] | null;
+}
+
+/** The first present filename wins, as in the settings loader. */
+async function readYamlExtensions(scopeDir: string, filenames: readonly string[]): Promise<YamlExtensions> {
+	for (const filename of filenames) {
+		const content = await readFile(path.join(scopeDir, filename));
+		if (content === null) continue;
+		let parsed: unknown;
+		try {
+			parsed = YAML.parse(content);
+		} catch {
+			return { exists: true, entries: null };
+		}
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+			return { exists: true, entries: null };
+		return { exists: true, entries: readExtensionsArray(Reflect.get(parsed, "extensions")) };
+	}
+	return { exists: false, entries: null };
+}
+
+/**
+ * The persisted `extensions` array with the settings loader's precedence: arrays replace rather than merge, project
+ * `config.yml` beats project `settings.json` beats user `config.yml`, and a user `config.yml` supersedes the legacy
+ * user `settings.json` it was migrated from even when it omits `extensions`.
+ */
+async function readConfiguredExtensions(ctx: LoadContext): Promise<InjectedRoot[]> {
+	const { project, user } = scopeDirs(ctx);
+	const [projectYaml, projectSettings, userYaml, userSettings] = await Promise.all([
+		readYamlExtensions(project, ["config.yml"]),
+		readSettingsExtensions(path.join(project, "settings.json")),
+		readYamlExtensions(user, MAIN_CONFIG_FILENAMES),
+		readSettingsExtensions(path.join(user, "settings.json")),
+	]);
+	const projectEntries = projectYaml.entries ?? projectSettings;
+	const level = projectEntries ? "project" : "user";
+	const entries = projectEntries ?? (userYaml.exists ? userYaml.entries : userSettings) ?? [];
+	return entries.map(raw => ({ path: resolveAgainst(raw, ctx), level }));
 }
 
 function resolveAgainst(raw: string, ctx: LoadContext): string {
@@ -126,18 +171,11 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
 				root.relativePath ? { ...root, path: path.resolve(ctx.cwd, root.relativePath) } : root,
 			);
 	if (rootMode === "merge") {
-		const { project, user } = scopeDirs(ctx);
-		const [projectExtensions, userExtensions, installedPlugins] = await Promise.all([
-			readSettingsExtensions(path.join(project, "settings.json")),
-			readSettingsExtensions(path.join(user, "settings.json")),
+		const [configured, installedPlugins] = await Promise.all([
+			readConfiguredExtensions(ctx),
 			listInstalledPluginRoots(ctx),
 		]);
-		candidates = [
-			...candidates,
-			...projectExtensions.map((raw): InjectedRoot => ({ path: resolveAgainst(raw, ctx), level: "project" })),
-			...userExtensions.map((raw): InjectedRoot => ({ path: resolveAgainst(raw, ctx), level: "user" })),
-			...installedPlugins,
-		];
+		candidates = [...candidates, ...configured, ...installedPlugins];
 	}
 
 	const seen = new Set<string>();

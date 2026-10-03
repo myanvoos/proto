@@ -131,3 +131,111 @@ test("a legitimate marketplace plugin installs, links, loads, and uninstalls", a
 	expect(await Bun.file(linkPath).exists()).toBe(false);
 	expect(await getEnabledPlugins(cwd, { home })).toEqual([]);
 });
+
+interface CasePluginSpec {
+	name: string;
+	packageName: string;
+}
+
+async function setUpCaseMarketplace(plugins: CasePluginSpec[]) {
+	const tempDir = await makeTempDir("proto-marketplace-case-");
+	const pluginRoot = path.join(tempDir, "plugins");
+	const marketplaceRoot = path.join(tempDir, "marketplace");
+	const catalogPath = path.join(marketplaceRoot, "marketplace.json");
+	const writeCatalog = async (specs: CasePluginSpec[]) => {
+		for (const spec of specs) {
+			await Bun.write(
+				path.join(marketplaceRoot, spec.name, "package.json"),
+				JSON.stringify({ name: spec.packageName, version: "1.0.0", proto: { version: "1.0.0" } }),
+			);
+		}
+		await Bun.write(
+			catalogPath,
+			JSON.stringify({
+				name: "Market",
+				owner: { name: "test" },
+				plugins: specs.map(spec => ({ name: spec.name, source: `./${spec.name}`, version: "1.0.0" })),
+			}),
+		);
+	};
+	await writeCatalog(plugins);
+	const marketplacesRegistryPath = path.join(pluginRoot, "marketplaces.json");
+	await Bun.write(
+		marketplacesRegistryPath,
+		JSON.stringify({
+			version: 1,
+			marketplaces: [
+				{
+					name: "Market",
+					sourceType: "local",
+					sourceUri: marketplaceRoot,
+					catalogPath,
+					addedAt: "2026-01-01T00:00:00.000Z",
+					updatedAt: "2026-01-01T00:00:00.000Z",
+				},
+			],
+		}),
+	);
+	const manager = new MarketplaceManager({
+		marketplacesRegistryPath,
+		installedRegistryPath: path.join(pluginRoot, "installed_plugins.json"),
+		marketplacesCacheDir: path.join(pluginRoot, "cache", "marketplaces"),
+		pluginsCacheDir: path.join(pluginRoot, "cache", "plugins"),
+	});
+	const lockPath = path.join(pluginRoot, "proto-plugins.lock.json");
+	return { manager, writeCatalog, lockPath };
+}
+
+test("mixed-case marketplace and plugin names install", async () => {
+	const { manager } = await setUpCaseMarketplace([{ name: "HexPlugin", packageName: "HexPlugin" }]);
+
+	const installed = await manager.installPlugin("HexPlugin", "Market");
+
+	expect(installed.installPath).toContain("Market");
+	expect((await manager.listInstalledPlugins()).map(plugin => plugin.id)).toEqual(["HexPlugin@Market"]);
+	await manager.uninstallPlugin("HexPlugin@Market", "user");
+});
+
+test("case-equivalent runtime package names are rejected before linking", async () => {
+	const { manager } = await setUpCaseMarketplace([
+		{ name: "first", packageName: "Shared" },
+		{ name: "second", packageName: "shared" },
+	]);
+	await manager.installPlugin("first", "Market");
+
+	await expect(manager.installPlugin("second", "Market")).rejects.toThrow(
+		/conflicts with installed plugin "first@Market"/,
+	);
+	await manager.uninstallPlugin("first@Market", "user");
+});
+
+test("a case-only runtime rename keeps feature selection and settings", async () => {
+	const { manager, writeCatalog, lockPath } = await setUpCaseMarketplace([{ name: "plug", packageName: "Foo" }]);
+	await manager.installPlugin("plug", "Market");
+	const lock = await Bun.file(lockPath).json();
+	lock.plugins.Foo.enabledFeatures = ["extra"];
+	lock.settings.Foo = { mode: "fast" };
+	await Bun.write(lockPath, JSON.stringify(lock));
+
+	await writeCatalog([{ name: "plug", packageName: "foo" }]);
+	await manager.installPlugin("plug", "Market", { force: true });
+
+	const renamed = await Bun.file(lockPath).json();
+	expect(Object.keys(renamed.plugins)).toEqual(["foo"]);
+	expect(renamed.plugins.foo.enabledFeatures).toEqual(["extra"]);
+	expect(renamed.settings).toEqual({ foo: { mode: "fast" } });
+	await manager.uninstallPlugin("plug@Market", "user");
+});
+
+test("install validation checks the catalog entry without caching or linking", async () => {
+	const { manager, writeCatalog, lockPath } = await setUpCaseMarketplace([{ name: "plug", packageName: "plug" }]);
+
+	await manager.validateInstallPlugin("plug", "Market");
+	expect(await manager.listInstalledPlugins()).toEqual([]);
+	expect(await Bun.file(lockPath).exists()).toBe(false);
+
+	await writeCatalog([{ name: "gone", packageName: "gone" }]);
+	await fs.rm(path.join(path.dirname(lockPath), "..", "marketplace", "gone"), { recursive: true });
+	await expect(manager.validateInstallPlugin("gone", "Market")).rejects.toThrow(/source directory does not exist/);
+	await expect(manager.validateInstallPlugin("plug", "Market")).rejects.toThrow(/not found in marketplace/);
+});
