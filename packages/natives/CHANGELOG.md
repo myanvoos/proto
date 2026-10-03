@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [19.2.0] - 2026-10-03
+
+### Changed
+
+- Limited ranked filesystem scans retain only their best candidates, reducing memory use.
+- Syntax highlighting uses the lower-memory Oniguruma regex backend.
 
 ### Fixed
 
@@ -18,11 +24,6 @@
 - CUDA headers are recognized as C++ for native syntax operations.
 - Embedded shells recover when the host working directory has been deleted, while preserving other initialization errors.
 - ps reports 0% CPU rather than an unknown value for processes with no elapsed time.
-
-### Changed
-
-- Limited ranked filesystem scans retain only their best candidates, reducing memory use.
-- Syntax highlighting uses the lower-memory Oniguruma regex backend.
 
 ## [19.1.2] - 2026-09-28
 

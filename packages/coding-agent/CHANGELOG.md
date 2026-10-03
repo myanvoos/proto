@@ -2,12 +2,13 @@
 
 ## [Unreleased]
 
+## [19.2.0] - 2026-10-03
+
 ### Added
 
 - `proto auth-gateway serve --trust-proxy-headers` to attribute requests by `X-Forwarded-For`/`X-Real-IP` behind a trusted reverse proxy
 - PgUp/PgDn scroll an overflowing `/extensions` inspector pane
 - Extension `registerProvider` model configs accept `preferWebsockets`
-
 - The double-esc session tree lists the session's subagents and side agents in an Agents section; Enter focuses that agent, where the model picker now retargets it
 
 ### Changed
@@ -24,19 +25,14 @@
 - The unknown-agent error now lists the agent directories that were searched
 - An unavailable requested worker model now tells the agent to stop and report rather than pick a substitute
 - Read results no longer store a second copy of the returned text in their truncation details, shrinking session files
-
 - Usage-limit errors with a provider-stated reset (retry-after hint or a complete usage-report window, e.g. Claude Pro/Max 5-hour windows) now wait out the reset by default instead of failing fast; these waits no longer consume the retry budget, so unattended runs survive consecutive usage windows. Opt out with `retry.waitForUsageReset: false`
 
 ### Fixed
 
 - Node.js kernel cells remain usable when log rotation is enabled; Bun-only stderr redirection loads only when requested
-
 - MCP failures now report actionable transport diagnostics with bounded, credential-redacted server details and safe trace IDs instead of runtime-only fetch advice.
-
 - MCP tool calls are no longer replayed after an accepted HTTP response loses its stream, times out, or fails authentication while resuming.
-
 - Ctrl+Enter now clears submitted drafts immediately, preventing duplicate submissions and preserving new typing and pasted images while commands run. Failed prompts, skills, goals, and queued messages return beside the newer draft with their attachments intact.
-
 - MCP tool calls spelled the Claude Code way (`mcp__<server>__<tool>`, raw server name) now run the registered tool instead of failing with "not found"; ambiguous spellings still fail safely
 - `jobs` process waits with an output pattern now return as soon as the process exits without printing it, reporting the exit instead of a misleading timeout
 - Commands run from the bash tool no longer inherit an open handle to the session transcript
@@ -328,7 +324,6 @@
 - Worktree cleanup safely tears down retained overlays and Btrfs snapshots, and leaves work intact when recovery metadata or teardown fails.
 - Binary installation now extracts the correct release tag from minified GitHub responses.
 - Signed macOS builds can request Automation permission for Xcode MCP.
-
 - Esc while focused on a subagent or side agent now stops that agent's streaming/retry/compaction before unfocusing
 - Pressing Esc during a running bash command now keeps the output it printed so far in the transcript and the model's context, instead of reporting the command as never executed
 - Opening the double-esc session tree while an agent is focused now lands on the main session; `/model <id>` now switches the focused agent's model when one is focused

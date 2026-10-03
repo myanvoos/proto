@@ -204,7 +204,7 @@ export const TtyWriter = lazyNativeExport("TtyWriter", undefined, true);
 
 // functions
 export const __ompInstallTokioRuntime = lazyNativeExport("__ompInstallTokioRuntime");
-export const __piNativesV19_1_4 = lazyNativeExport("__piNativesV19_1_4");
+export const __piNativesV19_2_0 = lazyNativeExport("__piNativesV19_2_0");
 export const astEdit = lazyNativeExport("astEdit");
 export const astGrep = lazyNativeExport("astGrep");
 export const astMatch = lazyNativeExport("astMatch");

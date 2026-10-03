@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-ai",
-  "version": "19.1.4",
+  "version": "19.2.0",
   "description": "Unified LLM API with automatic model discovery and provider configuration",
   "homepage": "https://github.com/myanvoos/proto",
   "author": "Stencil Labs, Inc.",

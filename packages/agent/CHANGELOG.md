@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [19.2.0] - 2026-10-03
+
 ### Added
 
 - Added `PruneResult.undo()` to restore the tool results a `pruneToolOutputs()` / `pruneSupersededToolResults()` pass blanked, for callers whose persistence of the pruned history fails
@@ -12,7 +14,6 @@
 - A tool call that puts its payload in the short intent field is now rejected with an explanatory error instead of running the tool with the remaining arguments
 - OpenAI native compaction no longer sends a request known to exceed the model window (it falls back to the next method), and a stream error event is reported instead of being retried as a dropped connection
 - Tools with lenient argument validation (checklist, yield) now get the JSON parse error reported back to the model instead of running with empty arguments when the call JSON is malformed
-
 - Aborting the run while a tool executes now records `Tool execution was aborted` followed by what the tool reported (e.g. a command's partial output), instead of claiming the tool was never executed
 
 ## [19.1.3] - 2026-09-28
