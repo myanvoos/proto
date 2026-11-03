@@ -109,6 +109,28 @@ test("a rule matched by both the regex and the ast pass notifies and injects onc
 	expect(persisted).toEqual([["no-any"]]);
 });
 
+test("built-in pattern matches ask for a rule check while project rules remain mandatory", async () => {
+	const builtin: Rule = {
+		...RULE,
+		name: "builtin-no-any",
+		_source: createSourceMeta("builtin-defaults", "builtin-no-any.md", "user"),
+	};
+	const { coordinator } = harness([RULE, builtin]);
+	await coordinator.checkMessageUpdate(toolDelta());
+	const result = coordinator.afterToolCall({
+		toolCall: { id: "call-1", name: "bash", arguments: {} },
+		result: { content: [] },
+	} as unknown as AfterToolCallContext);
+	const block = result?.content?.[0];
+	const reminders = (block?.type === "text" ? block.text : "").split("</system-reminder>");
+	const builtinReminder = reminders.find(text => text.includes('rule="builtin-no-any"'));
+	const projectReminder = reminders.find(text => text.includes('rule="no-any"'));
+	expect(builtinReminder).toContain("A match is not a violation");
+	expect(builtinReminder).toContain("exceptions included");
+	expect(builtinReminder).not.toContain("MUST comply");
+	expect(projectReminder).toContain("MUST comply");
+});
+
 test("the tool reminder quotes the line that tripped the rule", async () => {
 	const { coordinator } = harness();
 	await coordinator.checkMessageUpdate(toolDelta());

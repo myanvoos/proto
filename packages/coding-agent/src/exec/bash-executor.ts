@@ -7,6 +7,7 @@ import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import type { ExecutionMetadata } from "../session/execution-metadata";
 import { type ExecutionTimeoutMetadata, executionMetadataForResult } from "../session/execution-metadata";
 import { OutputSink } from "../session/streaming-output";
+import type { MinimizedMeta } from "../tools/output-meta";
 import {
 	resolveOutputArtifactMaxBytes,
 	resolveOutputMaxColumns,
@@ -53,6 +54,7 @@ interface BashExecutorOptions {
 }
 
 export interface BashResult {
+	minimized?: MinimizedMeta;
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
@@ -966,20 +968,22 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 		options?.useUserShell === true ? resolveUserShellConfig(settings, baseShellConfig) : baseShellConfig;
 	const { shell, args, env: shellEnv, prefix } = shellConfig;
 	const bashShell = isBashShell(shell);
-	const snapshotPath = bashShell ? await getOrCreateSnapshot(shell, shellEnv) : null;
 
 	const minimizer = buildMinimizerOptions(settings.getGroup("shellMinimizer"));
 
 	const commandCwd = resolveShellCwd(options?.cwd);
 
-	const preflight = await applyDirenvPreflight(command, commandCwd ?? process.cwd(), {
-		callerEnv: options?.env,
-		signal: options?.signal,
-		timeoutMs: settings.get("bash.direnvLoadTimeoutMs"),
-		callerTimeoutMs: options?.timeout,
-		direnvSetting: settings.get("bash.direnv"),
-		commandPrefix: prefix,
-	});
+	const [snapshotPath, preflight] = await Promise.all([
+		bashShell ? getOrCreateSnapshot(shell, shellEnv) : null,
+		applyDirenvPreflight(command, commandCwd ?? process.cwd(), {
+			callerEnv: options?.env,
+			signal: options?.signal,
+			timeoutMs: settings.get("bash.direnvLoadTimeoutMs"),
+			callerTimeoutMs: options?.timeout,
+			direnvSetting: settings.get("bash.direnv"),
+			commandPrefix: prefix,
+		}),
+	]);
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 
@@ -1198,6 +1202,7 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			});
 		}
 
+		let minimizedMeta: MinimizedMeta | undefined;
 		const minimized = winner.result.minimized;
 		if (minimized && minimized.text !== minimized.originalText) {
 			const artifactId = options?.onMinimizedSave
@@ -1208,19 +1213,26 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 					})
 				: undefined;
 			if (artifactId) {
+				minimizedMeta = {
+					filter: minimized.filter,
+					inputBytes: minimized.inputBytes,
+					outputBytes: minimized.outputBytes,
+					artifactId,
+				};
 				sink.replace(minimized.text, { summarized: true });
 				const sep = minimized.text.endsWith("\n") ? "" : "\n";
 				sink.push(`${sep}[raw output: artifact://${artifactId}]\n`);
 			}
 		}
 
-		// `exit` ends the native session; the Shell handle starts a fresh one on its next run.
+		// Report actual native session loss, not an ordinary `exit` that preserves lane state.
 		if (winner.result.sessionEnded) lostShell = `shell exited with code ${winner.result.exitCode ?? "unknown"}`;
 		return withExecutionMetadata({
 			exitCode: winner.result.exitCode,
 			cancelled: false,
 			shellStateLost,
 			workingDir: winner.result.workingDir,
+			...(minimizedMeta ? { minimized: minimizedMeta } : {}),
 			fsObservations: winner.result.fsObservations,
 			protolensDispatches: winner.result.protolensDispatches,
 			stageRecords: winner.result.stageRecords,

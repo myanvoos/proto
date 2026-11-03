@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { AssistantMessage, Context, Model, ModelSpec, ToolResultMessage } from "../types";
+import type {
+	AssistantMessage,
+	Context,
+	FetchImpl,
+	Model,
+	ModelSpec,
+	ProviderSessionState,
+	ToolResultMessage,
+} from "../types";
 import { createOpenAIResponsesHistoryPayload } from "../utils";
 import { streamAzureOpenAIResponses } from "./azure-openai-responses";
-import { buildParams } from "./openai-responses";
+import { buildParams, streamOpenAIResponses } from "./openai-responses";
 import {
 	buildResponsesInput,
 	hoistInterleavedResponsesToolBatchMessages,
@@ -68,7 +76,7 @@ describe("Responses synthesized reasoning replay", () => {
 	const deepseek = responsesModel({
 		id: "deepseek-v4-flash",
 		provider: "opencode-go",
-		baseUrl: "https://opencode.ai/zen/go/v1",
+		baseUrl: "https://opencode.ai/inference/go/v1",
 	});
 
 	it("sends a non-empty, id-less reasoning item when a DeepSeek turn lost its reasoning", () => {
@@ -117,7 +125,7 @@ describe("Responses orphan repair ordering", () => {
 		const model = responsesModel({
 			id: "deepseek-v4-flash",
 			provider: "opencode-go",
-			baseUrl: "https://opencode.ai/zen/go/v1",
+			baseUrl: "https://opencode.ai/inference/go/v1",
 		});
 		const prior: AssistantMessage = {
 			...assistant(model, [
@@ -161,7 +169,7 @@ describe("Responses orphan repair ordering", () => {
 });
 
 describe("Azure Responses malformed replay", () => {
-	it("keeps the result of a dropped malformed function call as an orphan note", async () => {
+	it("keeps a malformed function call diagnostic paired with its durable result", async () => {
 		const model: Model<"azure-openai-responses"> = buildModel({
 			id: "gpt-5-mini",
 			name: "GPT-5 Mini",
@@ -203,7 +211,9 @@ describe("Azure Responses malformed replay", () => {
 			},
 		);
 		const { input } = await promise;
-		expect(input).not.toContainEqual(expect.objectContaining({ call_id: "call_bad" }));
+		expect(input).toContainEqual(expect.objectContaining({ type: "function_call", call_id: "call_bad" }));
+		expect(input).toContainEqual(expect.objectContaining({ type: "function_call_output", call_id: "call_bad" }));
+		expect(JSON.stringify(input)).toContain("__parseError");
 		expect(JSON.stringify(input)).toContain("durable result");
 	});
 });
@@ -229,5 +239,137 @@ describe("Responses interrupted tool batch hoisting", () => {
 		]);
 		expect(result[0]?.content).toBe("first note");
 		expect(result[3]?.content).toBe("second note");
+	});
+});
+
+describe("Responses plaintext reasoning replay", () => {
+	const model = responsesModel({ id: "plain-reasoning", provider: "custom", baseUrl: "https://reasoning.test/v1" });
+	function replay(reasoning: Record<string, unknown>, warm: boolean, required = false): WireItem[] {
+		const prior = assistant(model, [{ type: "text", text: "answer" }]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, [
+			reasoning,
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "answer", annotations: [] }] },
+		]);
+		return buildResponsesInput({
+			model,
+			context: { messages: [prior, { role: "user", content: "continue", timestamp: 2 }] },
+			strictResponsesPairing: false,
+			supportsImageDetailOriginal: false,
+			nativeHistory: { replay: warm, filterReasoning: false },
+			requiresReasoningReplayForAllTurns: required,
+		}) as WireItem[];
+	}
+
+	it("preserves unbound plaintext reasoning while a resumed provider session is cold", () => {
+		const items = replay(
+			{ type: "reasoning", summary: [], content: [{ type: "reasoning_text", text: "full reasoning" }] },
+			false,
+		);
+		expect(reasoningItems(items)).toMatchObject([{ content: [{ type: "reasoning_text", text: "full reasoning" }] }]);
+	});
+
+	it("does not cold-replay summary-only or encrypted server-owned reasoning", () => {
+		expect(
+			reasoningItems(replay({ type: "reasoning", summary: [{ type: "summary_text", text: "summary" }] }, false)),
+		).toEqual([]);
+		expect(
+			reasoningItems(
+				replay(
+					{
+						type: "reasoning",
+						summary: [],
+						encrypted_content: "opaque",
+						content: [{ type: "reasoning_text", text: "plain" }],
+					},
+					false,
+				),
+			),
+		).toEqual([]);
+	});
+
+	it("fills required warm reasoning from summaries but leaves encrypted reasoning opaque", () => {
+		const summary = [{ type: "summary_text", text: "recoverable reasoning" }];
+		expect(reasoningItems(replay({ type: "reasoning", summary }, true, true))).toMatchObject([
+			{ content: [{ type: "reasoning_text", text: "recoverable reasoning" }] },
+		]);
+		const encrypted = reasoningItems(replay({ type: "reasoning", summary, encrypted_content: "opaque" }, true, true));
+		expect(encrypted[0]).not.toHaveProperty("content");
+	});
+});
+
+describe("Responses long prompt cache retention", () => {
+	it("uses the 12h cache policy instead of the ignored legacy retention field on breakpoint-capable models", () => {
+		const model = responsesModel({
+			id: "gpt-5.6",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			compat: { supportsPromptCacheBreakpoints: true, supportsLongPromptCacheRetention: true },
+		});
+		const { params } = buildParams(
+			model,
+			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			{ sessionId: "cache", cacheRetention: "long" },
+			undefined,
+		);
+		expect(params.prompt_cache_options).toMatchObject({ mode: "implicit", ttl: "12h" });
+		expect(params.prompt_cache_retention).toBeUndefined();
+	});
+});
+
+describe("Responses provider state disposal", () => {
+	it("keeps a session cold when an earlier in-flight request completes after close", async () => {
+		const model = responsesModel({ id: "closed-session", provider: "custom", baseUrl: "https://responses.test/v1" });
+		const states = new Map<string, ProviderSessionState>();
+		const started = Promise.withResolvers<void>();
+		const response = Promise.withResolvers<Response>();
+		const bodies: Record<string, unknown>[] = [];
+		const frames = [
+			{ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } },
+			{
+				type: "response.output_item.done",
+				item: { type: "reasoning", id: "rs_1", encrypted_content: "connection-owned", summary: [] },
+			},
+			{ type: "response.output_item.added", item: { type: "message", id: "msg_1", role: "assistant", content: [] } },
+			{ type: "response.output_text.delta", delta: "answer" },
+			{
+				type: "response.output_item.done",
+				item: {
+					type: "message",
+					id: "msg_1",
+					role: "assistant",
+					content: [{ type: "output_text", text: "answer", annotations: [] }],
+				},
+			},
+			{ type: "response.completed", response: { id: "resp_1", status: "completed" } },
+		];
+		const sse = () =>
+			new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+				headers: { "content-type": "text/event-stream" },
+			});
+		const fetchImpl: FetchImpl = Object.assign(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				bodies.push(JSON.parse(String(init?.body)));
+				if (bodies.length === 1) {
+					started.resolve();
+					return response.promise;
+				}
+				return sse();
+			},
+			{ preconnect: fetch.preconnect },
+		);
+		const options = { apiKey: "test-key", sessionId: "closed", providerSessionState: states, fetch: fetchImpl };
+		const initial: Context = { messages: [{ role: "user", content: "first", timestamp: 1 }] };
+		const first = streamOpenAIResponses(model, initial, options).result();
+		await started.promise;
+		for (const state of states.values()) state.close();
+		response.resolve(sse());
+		const completed = await first;
+		await streamOpenAIResponses(
+			model,
+			{ messages: [...initial.messages, completed, { role: "user", content: "next", timestamp: 2 }] },
+			options,
+		).result();
+		expect(JSON.stringify(bodies[1]?.input)).not.toContain("connection-owned");
+		expect(JSON.stringify(bodies[1]?.input)).toContain("answer");
 	});
 });

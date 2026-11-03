@@ -134,6 +134,8 @@ const napiBin = path.join(path.dirname(napiManifestPath), napiBinEntry);
 
 const cargoProfile = Bun.env.PROTO_NATIVE_CARGO_PROFILE?.trim() || "local";
 
+const extraFeatures = Bun.env.PROTO_NATIVE_FEATURES?.trim();
+
 const napiArgs = [
 	"build",
 	"--manifest-path",
@@ -142,6 +144,7 @@ const napiArgs = [
 	packageJsonPath,
 	"--platform",
 	"--no-js",
+	...(extraFeatures ? ["--features", extraFeatures] : []),
 	"--dts",
 	"index.d.ts",
 	"-o",

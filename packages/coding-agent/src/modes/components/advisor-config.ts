@@ -351,7 +351,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 			!advisor.model?.trim() &&
 			advisor.tools === undefined &&
 			!advisor.instructions?.trim() &&
-			advisor.enabled !== false
+			advisor.enabled !== false &&
+			advisor.scope === undefined &&
+			advisor.includeReasoning === undefined
 		);
 	}
 

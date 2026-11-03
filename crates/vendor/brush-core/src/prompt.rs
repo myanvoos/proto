@@ -15,9 +15,7 @@ pub(crate) async fn expand_prompt(
 	params: &ExecutionParameters,
 	spec: String,
 ) -> Result<String, error::Error> {
-
 	let prompt_pieces = parse_prompt(spec)?;
-
 
 	let mut formatted_prompt = String::new();
 	for piece in prompt_pieces {
@@ -37,7 +35,6 @@ pub(crate) async fn expand_prompt(
 	}
 
 	if shell.options().expand_prompt_strings {
-
 		let options = expansion::ExpanderOptions { tilde_expand: false, ..Default::default() };
 		formatted_prompt =
 			expansion::basic_expand_word_with_options(shell, params, &formatted_prompt, &options)
@@ -87,10 +84,6 @@ fn format_prompt_piece(
 				"$".to_owned()
 			}
 		},
-
-
-
-
 
 		brush_parser::prompt::PromptPiece::EndNonPrintingSequence => {
 			if shell.options().interactive {
@@ -168,10 +161,10 @@ fn format_current_working_directory(
 }
 
 fn format_current_history_number(shell: &Shell<impl extensions::ShellExtensions>) -> String {
-
-
-
-	shell.history().map_or(1, |history| history.count() + 1).to_string()
+	shell
+		.history()
+		.map_or(1, |history| history.count() + 1)
+		.to_string()
 }
 
 fn format_time<Tz: chrono::TimeZone>(
@@ -208,5 +201,3 @@ where
 		},
 	}
 }
-
-

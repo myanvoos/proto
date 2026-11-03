@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	ffi::OsString,
 	fs,
@@ -31,7 +27,6 @@ const OPT_ZERO: &str = "zero";
 
 const ARG_FILES: &str = "files";
 
-
 pub(crate) struct Readlink {
 	matches: ArgMatches,
 }
@@ -45,8 +40,6 @@ impl Utility for Readlink {
 		let mut no_trailing_delimiter = self.matches.get_flag(OPT_NO_NEWLINE);
 		let use_zero = self.matches.get_flag(OPT_ZERO);
 		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var("POSIXLY_CORRECT").is_some();
-
-
 
 		let resolve_mode = if self.matches.get_flag(OPT_CANONICALIZE)
 			|| self.matches.get_flag(OPT_CANONICALIZE_EXISTING)
@@ -77,10 +70,7 @@ impl Utility for Readlink {
 		}
 
 		if no_trailing_delimiter && files.len() > 1 {
-			let _ = writeln!(
-				host.stderr,
-				"readlink: ignoring --no-newline with multiple arguments"
-			);
+			let _ = writeln!(host.stderr, "readlink: ignoring --no-newline with multiple arguments");
 			no_trailing_delimiter = false;
 		}
 
@@ -120,7 +110,6 @@ impl Utility for Readlink {
 		0
 	}
 }
-
 
 fn app() -> Command {
 	Command::new(Readlink::NAME)
@@ -204,7 +193,6 @@ fn app() -> Command {
 		)
 }
 
-
 fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> std::io::Result<()> {
 	let bytes = os_bytes(path.as_os_str())
 		.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
@@ -215,9 +203,6 @@ fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> s
 	out.flush()
 }
 
-
 pub(crate) fn readlink_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Readlink, SE>()
 }
-
-

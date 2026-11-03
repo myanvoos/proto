@@ -3,10 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionExitCode, ExecutionResult, arithmetic::Evaluatable, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct LetCommand {
-
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	exprs: Vec<String>,
 }

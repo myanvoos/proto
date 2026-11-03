@@ -73,3 +73,36 @@ describe("ToolCallLoopGuard", () => {
 		).toMatchObject({ kind: "repeated_tool_call", count: 2 });
 	});
 });
+
+it("idle polls cannot hide repeated calls, while injected context and failed polls count as progress", () => {
+	const guard = new ToolCallLoopGuard({ threshold: 2, exemptTools: ["wait"], hardLimit: 3 });
+	const repeated = () => turn(toolCall("bash", { command: "same" }));
+	const poll = (useless: boolean, injectedContext = false, isError = false): ToolCallLoopTurn => {
+		const call = toolCall("wait", {});
+		return {
+			...turn(call),
+			injectedContext,
+			toolResults: [
+				{
+					role: "toolResult",
+					toolCallId: call.id,
+					toolName: call.name,
+					content: [],
+					isError,
+					useless,
+					timestamp: 0,
+				},
+			],
+		};
+	};
+	guard.recordTurn(repeated());
+	guard.recordTurn(poll(true));
+	expect(guard.recordTurn(repeated())).toMatchObject({ count: 2, severity: "steer" });
+	guard.recordTurn(poll(true, true));
+	expect(guard.recordTurn(repeated())).toBeNull();
+	guard.recordTurn(poll(false, false, true));
+	expect(guard.recordTurn(repeated())).toBeNull();
+	guard.recordTurn(poll(true));
+	guard.recordTurn(repeated());
+	expect(guard.recordTurn(repeated())).toMatchObject({ count: 3, severity: "stop" });
+});

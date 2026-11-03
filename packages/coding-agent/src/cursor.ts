@@ -17,15 +17,17 @@ import type {
 	CursorExecHandlers as ICursorExecHandlers,
 	ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
+import { validateToolArguments } from "@oh-my-pi/pi-ai";
 import {
 	cursorRawReadPath,
 	omitUndefinedArgs,
 	piLsPath,
 	piReadPath,
 	piTimeout,
-	shellTimeoutSeconds,
+	shellDeadlineSeconds,
 } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { readImageMetadata, sanitizeText } from "@oh-my-pi/pi-utils";
+import { InternalUrlRouter } from "./internal-urls";
 import type { MCPResourceReadResult } from "./mcp/types";
 import type { ChecklistPhase, ChecklistStatus } from "./tools/checklist";
 import {
@@ -119,6 +121,53 @@ function buildToolErrorResult(message: string): AgentToolResult<unknown> {
 	};
 }
 
+function buildUnavailableToolResult(
+	options: CursorExecBridgeOptions,
+	toolCallId: string,
+	toolName: string,
+): ToolResultMessage {
+	const names = [...options.tools.keys()];
+	const shown = names.slice(0, 12).join(", ") || "none";
+	const extra = names.length > 12 ? ` and ${names.length - 12} more` : "";
+	return createToolResultMessage(
+		toolCallId,
+		toolName,
+		buildToolErrorResult(
+			`Tool "${toolName}" not available to this agent; calling it again fails the same way. Use one of: ${shown}${extra}.`,
+		),
+		true,
+	);
+}
+
+function validateCursorToolArguments(
+	tool: AgentTool,
+	toolName: string,
+	toolCallId: string,
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	try {
+		return validateToolArguments(tool, { type: "toolCall", id: toolCallId, name: toolName, arguments: args });
+	} catch (error) {
+		if (!tool.lenientArgValidation || "__parseError" in args) throw error;
+		const fallback = { ...args };
+		delete fallback.__rawJson;
+		return fallback;
+	}
+}
+
+async function cursorReadToolPath(options: CursorExecBridgeOptions, readPath: string): Promise<string> {
+	if (InternalUrlRouter.instance().canResolve(readPath)) return readPath;
+	const cwd = options.getCwd?.() ?? options.cwd;
+	try {
+		const { path: filePath, sel } = await splitPathAndSelPreferringLiteral(readPath, cwd);
+		if (sel === undefined) return readPath;
+		const image = await readImageMetadata(await resolveReadPathAsync(filePath, cwd), 16);
+		return image ? filePath : readPath;
+	} catch {
+		return readPath;
+	}
+}
+
 async function executeTool(
 	options: CursorExecBridgeOptions,
 	toolName: string,
@@ -127,8 +176,7 @@ async function executeTool(
 ): Promise<ToolResultMessage> {
 	const tool = options.getExecutableTool?.(toolName) ?? options.tools.get(toolName);
 	if (!tool) {
-		const result = buildToolErrorResult(`Tool "${toolName}" not available`);
-		return createToolResultMessage(toolCallId, toolName, result, true);
+		return buildUnavailableToolResult(options, toolCallId, toolName);
 	}
 
 	const toolArgs = omitUndefinedArgs(args);
@@ -157,7 +205,7 @@ async function executeTool(
 	try {
 		result = await tool.execute(
 			toolCallId,
-			toolArgs as Record<string, unknown>,
+			validateCursorToolArguments(tool, toolName, toolCallId, toolArgs),
 			undefined,
 			onUpdate,
 			options.getToolContext?.(),
@@ -182,8 +230,7 @@ async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, 
 	const toolName = "delete";
 
 	if (options.allowDirectFileMutation === false) {
-		const result = buildToolErrorResult(`Tool "${toolName}" not available`);
-		return createToolResultMessage(toolCallId, toolName, result, true);
+		return buildUnavailableToolResult(options, toolCallId, toolName);
 	}
 
 	options.emitEvent?.({ type: "tool_execution_start", toolCallId, toolName, args: { path: pathArg } });
@@ -319,7 +366,9 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		if (composed === null) {
 			return createToolResultMessage(toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
 		}
-		return await executeTool(this.options, "read", toolCallId, { path: composed });
+		return await executeTool(this.options, "read", toolCallId, {
+			path: await cursorReadToolPath(this.options, cursorRawReadPath(composed)),
+		});
 	}
 
 	async ls(args: Parameters<NonNullable<ICursorExecHandlers["ls"]>>[0]) {
@@ -337,7 +386,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async shell(args: Parameters<NonNullable<ICursorExecHandlers["shell"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
+		const timeoutSeconds = shellDeadlineSeconds(args);
 		const toolResultMessage = await executeTool(this.options, "bash", toolCallId, {
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -354,11 +403,10 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const toolName = "bash";
 		const tool = this.options.tools.get(toolName);
 		if (!tool) {
-			const result = buildToolErrorResult(`Tool "${toolName}" not available`);
-			return createToolResultMessage(toolCallId, toolName, result, true);
+			return buildUnavailableToolResult(this.options, toolCallId, toolName);
 		}
 
-		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
+		const timeoutSeconds = shellDeadlineSeconds(args);
 		const toolArgs = omitUndefinedArgs({
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -408,7 +456,13 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		};
 
 		try {
-			result = await tool.execute(toolCallId, toolArgs, undefined, onUpdate, this.options.getToolContext?.());
+			result = await tool.execute(
+				toolCallId,
+				validateCursorToolArguments(tool, toolName, toolCallId, toolArgs),
+				undefined,
+				onUpdate,
+				this.options.getToolContext?.(),
+			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			result = buildToolErrorResult(message);
@@ -450,7 +504,9 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		if (composed === null) {
 			return createToolResultMessage(call.toolCallId, "read", { content: [{ type: "text", text: "" }] }, false);
 		}
-		return await executeTool(this.options, "read", call.toolCallId, { path: cursorRawReadPath(composed) });
+		return await executeTool(this.options, "read", call.toolCallId, {
+			path: await cursorReadToolPath(this.options, cursorRawReadPath(composed)),
+		});
 	}
 
 	async piBash(call: Parameters<NonNullable<ICursorExecHandlers["piBash"]>>[0]) {

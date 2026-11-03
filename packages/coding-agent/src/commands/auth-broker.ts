@@ -24,6 +24,7 @@ export default class AuthBroker extends Command {
 			flags: {
 				json: flags.json,
 				bind: flags.bind,
+				trustProxyHeaders: flags["trust-proxy-headers"],
 				regenerate: flags.regenerate,
 				via: flags.via,
 

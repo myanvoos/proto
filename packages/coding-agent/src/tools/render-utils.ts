@@ -176,6 +176,15 @@ export function capPreviewLines(
 	return [`${options.prefix ?? ""}${theme.fg("dim", marker)}`, ...visible];
 }
 
+/** Wrap content while keeping continuation rows beneath its label rather than beneath its prefix. */
+export function wrapPrefixedLine(prefix: string, continuationPrefix: string, content: string, width: number): string[] {
+	const reserved = Math.max(Bun.stringWidth(prefix), Bun.stringWidth(continuationPrefix));
+	if (width <= reserved) return wrapTextWithAnsi(prefix + content, Math.max(1, width));
+	return wrapTextWithAnsi(content, width - reserved).map(
+		(row, index) => `${index === 0 ? prefix : continuationPrefix}${row}`,
+	);
+}
+
 export function formatMeta(meta: string[], theme: Theme): string {
 	return meta.length > 0 ? ` ${theme.fg("muted", meta.join(theme.sep.dot))}` : "";
 }
@@ -444,6 +453,9 @@ export function createCachedComponent(
 			return paddedLines;
 		},
 		invalidate() {
+			cached = undefined;
+		},
+		releaseRenderCaches() {
 			cached = undefined;
 		},
 	};

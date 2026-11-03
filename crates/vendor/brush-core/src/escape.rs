@@ -1,25 +1,15 @@
-
-
 use std::borrow::Cow;
 
 use itertools::Itertools;
 
 use crate::{error, int_utils};
 
-
 #[derive(Clone, Copy)]
 pub enum EscapeExpansionMode {
-
 	EchoBuiltin,
 
 	AnsiCQuotes,
 }
-
-
-
-
-
-
 
 #[expect(clippy::too_many_lines)]
 pub fn expand_backslash_escapes(
@@ -30,13 +20,11 @@ pub fn expand_backslash_escapes(
 	let mut it = s.chars();
 	while let Some(c) = it.next() {
 		if c != '\\' {
-
 			result.append(c.to_string().into_bytes().as_mut());
 			continue;
 		}
 
 		let Some(escape_cmd) = it.next() else {
-
 			result.push(b'\\');
 			continue;
 		};
@@ -44,52 +32,43 @@ pub fn expand_backslash_escapes(
 		match escape_cmd {
 			'a' => result.push(b'\x07'),
 			'b' => result.push(b'\x08'),
-			'c' => {
-				match mode {
-					EscapeExpansionMode::EchoBuiltin => {
-
-						return Ok((result, false));
-					},
-					EscapeExpansionMode::AnsiCQuotes => {
-						if let Some(char_value) = it.next() {
-
-
-
-
-							if char_value == '\\' {
-								let orig_it = it.clone();
-								if !matches!(it.next(), Some('\\')) {
-
-									it = orig_it;
-								}
+			'c' => match mode {
+				EscapeExpansionMode::EchoBuiltin => {
+					return Ok((result, false));
+				},
+				EscapeExpansionMode::AnsiCQuotes => {
+					if let Some(char_value) = it.next() {
+						if char_value == '\\' {
+							let orig_it = it.clone();
+							if !matches!(it.next(), Some('\\')) {
+								it = orig_it;
 							}
-
-							let mut bytes: Vec<u8> = if char_value.is_ascii_lowercase() {
-								char_value
-									.to_ascii_uppercase()
-									.to_string()
-									.bytes()
-									.collect()
-							} else {
-								char_value.to_string().bytes().collect()
-							};
-
-							if !bytes.is_empty() {
-								if bytes[0] == b'?' {
-
-									bytes[0] = 0x7f;
-								} else {
-									bytes[0] &= 0x1f;
-								}
-							}
-
-							result.append(bytes.as_mut());
-						} else {
-							result.push(b'\\');
-							result.push(b'c');
 						}
-					},
-				}
+
+						let mut bytes: Vec<u8> = if char_value.is_ascii_lowercase() {
+							char_value
+								.to_ascii_uppercase()
+								.to_string()
+								.bytes()
+								.collect()
+						} else {
+							char_value.to_string().bytes().collect()
+						};
+
+						if !bytes.is_empty() {
+							if bytes[0] == b'?' {
+								bytes[0] = 0x7f;
+							} else {
+								bytes[0] &= 0x1f;
+							}
+						}
+
+						result.append(bytes.as_mut());
+					} else {
+						result.push(b'\\');
+						result.push(b'c');
+					}
+				},
 			},
 			'e' | 'E' => result.push(b'\x1b'),
 			'f' => result.push(b'\x0c'),
@@ -102,7 +81,6 @@ pub fn expand_backslash_escapes(
 			'\"' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => result.push(b'\"'),
 			'?' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => result.push(b'?'),
 			'0' => {
-
 				let mut taken_so_far = 0;
 				let mut octal_chars: String = it
 					.take_while_ref(|c| {
@@ -123,14 +101,12 @@ pub fn expand_backslash_escapes(
 				result.push(value);
 			},
 			'x' => {
-
 				let mut hex_chars = String::new();
 				let mut invalid_prefix = false;
 				let mut hexits_consumed = 0;
 				let mut start_brace_consumed = false;
 
 				loop {
-
 					let orig_it = it.clone();
 
 					let Some(next_c) = it.next() else {
@@ -153,7 +129,6 @@ pub fn expand_backslash_escapes(
 					} else if start_brace_consumed && hexits_consumed == 0 {
 						invalid_prefix = true;
 					} else {
-
 						it = orig_it;
 						break;
 					}
@@ -173,7 +148,6 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			'u' => {
-
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
@@ -200,7 +174,6 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			'U' => {
-
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
@@ -227,10 +200,8 @@ pub fn expand_backslash_escapes(
 				}
 			},
 			first_octal @ '1'..='7' if matches!(mode, EscapeExpansionMode::AnsiCQuotes) => {
-
 				let mut octal_chars = String::new();
 				octal_chars.push(first_octal);
-
 
 				let mut taken_so_far = 1;
 				for next_c in it.take_while_ref(|next_c| {
@@ -248,13 +219,11 @@ pub fn expand_backslash_escapes(
 				result.push(value);
 			},
 			unknown => {
-
 				result.push(b'\\');
 				result.append(unknown.to_string().into_bytes().as_mut());
 			},
 		}
 	}
-
 
 	if matches!(mode, EscapeExpansionMode::AnsiCQuotes) {
 		if let Some(nul_index) = result.iter().position(|&b| b == 0) {
@@ -265,10 +234,8 @@ pub fn expand_backslash_escapes(
 	Ok((result, true))
 }
 
-
 #[derive(Clone, Copy, Default)]
 pub enum QuoteMode {
-
 	#[default]
 	SingleQuote,
 
@@ -277,18 +244,11 @@ pub enum QuoteMode {
 	BackslashEscape,
 }
 
-
 #[derive(Default)]
 pub(crate) struct QuoteOptions {
+	pub always_quote: bool,
 
-
-
-	pub always_quote:                 bool,
-
-
-	pub preferred_mode:               QuoteMode,
-
-
+	pub preferred_mode: QuoteMode,
 
 	pub avoid_ansi_c_quoting_newline: bool,
 }
@@ -316,24 +276,11 @@ pub(crate) fn quote<'a>(s: &'a str, options: &QuoteOptions) -> Cow<'a, str> {
 	}
 }
 
-
-
-
-
-
-
 pub fn force_quote(s: &str, mode: QuoteMode) -> String {
 	let options = QuoteOptions { always_quote: true, preferred_mode: mode, ..Default::default() };
 
 	quote(s, &options).to_string()
 }
-
-
-
-
-
-
-
 
 pub fn quote_if_needed(s: &str, mode: QuoteMode) -> Cow<'_, str> {
 	let options = QuoteOptions { always_quote: false, preferred_mode: mode, ..Default::default() };
@@ -343,7 +290,6 @@ pub fn quote_if_needed(s: &str, mode: QuoteMode) -> Cow<'_, str> {
 
 fn backslash_escape(s: &str) -> Cow<'_, str> {
 	if s.is_empty() {
-
 		Cow::Owned("''".to_string())
 	} else if !s.chars().any(needs_escaping) {
 		Cow::Borrowed(s)
@@ -360,15 +306,11 @@ fn backslash_escape(s: &str) -> Cow<'_, str> {
 }
 
 fn single_quote(s: &str) -> Cow<'_, str> {
-
 	if s.is_empty() {
 		return Cow::Borrowed("''");
 	}
 
 	let mut result = String::with_capacity(s.len());
-
-
-
 
 	let mut first = true;
 	for part in s.split('\'') {
@@ -435,8 +377,6 @@ fn ansi_c_quote(s: &str) -> String {
 	result
 }
 
-
-
 const fn needs_escaping(c: char) -> bool {
 	matches!(
 		c,
@@ -457,5 +397,3 @@ const fn needs_escaping(c: char) -> bool {
 const fn needs_ansi_c_quoting(c: char) -> bool {
 	c.is_ascii_control()
 }
-
-

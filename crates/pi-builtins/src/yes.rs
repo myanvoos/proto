@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	ffi::OsString,
 	io::{self, Write},
@@ -12,10 +8,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
-
-
 const BUF_SIZE: usize = 16 * 1024;
-
 
 pub(crate) struct Yes {
 	matches: ArgMatches,
@@ -27,10 +20,6 @@ impl Utility for Yes {
 	const NAME: &'static str = "yes";
 
 	fn rewrite_argv(mut argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
-
-
-
-
 		if argv.is_empty()
 			|| (argv.len() == 2 && matches!(argv[1].to_str(), Some("--help" | "--version")))
 		{
@@ -54,8 +43,6 @@ impl Utility for Yes {
 		prepare_buffer(&mut buffer);
 
 		match exec(&buffer, host) {
-
-
 			ExecStop::Io(error) if error.kind() == io::ErrorKind::BrokenPipe => 0,
 			ExecStop::Io(error) => {
 				host.error(format!("standard output: {}", strip_errno(&error)), 1);
@@ -66,7 +53,6 @@ impl Utility for Yes {
 		}
 	}
 }
-
 
 fn app() -> Command {
 	Command::new(Yes::NAME)
@@ -84,12 +70,10 @@ fn app() -> Command {
 		.infer_long_args(true)
 }
 
-
 fn args_into_buffer<'a>(
 	buffer: &mut Vec<u8>,
 	strings: impl Iterator<Item = &'a OsString>,
 ) -> Result<(), &'static str> {
-
 	#[cfg(any(unix, target_os = "wasi"))]
 	{
 		#[cfg(unix)]
@@ -101,7 +85,6 @@ fn args_into_buffer<'a>(
 			buffer.extend_from_slice(part);
 		}
 	}
-
 
 	#[cfg(not(any(unix, target_os = "wasi")))]
 	{
@@ -117,7 +100,6 @@ fn args_into_buffer<'a>(
 	Ok(())
 }
 
-
 fn prepare_buffer(buffer: &mut Vec<u8>) {
 	let line_len = buffer.len();
 	debug_assert!(line_len > 0, "buffer is not empty since we have newline");
@@ -130,17 +112,13 @@ fn prepare_buffer(buffer: &mut Vec<u8>) {
 	}
 }
 
-
 enum ExecStop {
 	Io(io::Error),
 	Cancelled,
 }
 
-
 fn exec(bytes: &[u8], host: &mut Host) -> ExecStop {
 	loop {
-
-
 		if host.is_cancelled() {
 			return ExecStop::Cancelled;
 		}
@@ -150,7 +128,6 @@ fn exec(bytes: &[u8], host: &mut Host) -> ExecStop {
 	}
 }
 
-
 fn strip_errno(error: &io::Error) -> String {
 	let mut message = error.to_string();
 	if let Some(position) = message.find(" (os error ") {
@@ -159,9 +136,6 @@ fn strip_errno(error: &io::Error) -> String {
 	message
 }
 
-
 pub(crate) fn yes_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Yes, SE>()
 }
-
-

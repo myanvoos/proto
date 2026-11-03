@@ -13,10 +13,15 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
-import { prompt } from "@oh-my-pi/pi-utils";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import type { Theme } from "../modes/theme/theme";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
+import { WidthAwareText } from "../tui/width-aware-text";
 import type { ToolSession } from ".";
+import { formatDefaultToolExecution } from "./default-renderer";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
 
 const YIELD_RESULT_FORMAT_HINT =
@@ -63,6 +68,55 @@ function assistantText(content: readonly { type: string; text?: string }[]): str
 		.map(block => block.text ?? "")
 		.join("\n");
 }
+
+export const yieldToolRenderer = {
+	mergeCallAndResult: true,
+	renderCall(_args: unknown, options: RenderResultOptions, uiTheme: Theme): Component {
+		return new WidthAwareText(
+			width => formatDefaultToolExecution({ label: "Submit Result", args: undefined, options }, width, uiTheme),
+			0,
+			0,
+		);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+		options: RenderResultOptions,
+		uiTheme: Theme,
+		args?: unknown,
+	): Component {
+		const details = isRecord(result.details) ? result.details : undefined;
+		const envelope = isRecord(args) && isRecord(args.result) ? args.result : undefined;
+		const data = details?.data ?? envelope?.data;
+		const error = details?.error ?? envelope?.error;
+		const output = result.isError
+			? result.content
+					.filter(block => block.type === "text")
+					.map(block => block.text ?? "")
+					.join("\n")
+			: typeof error === "string"
+				? error
+				: typeof data === "string"
+					? data
+					: data === undefined
+						? "Result submitted."
+						: JSON.stringify(data, null, 2);
+		return new WidthAwareText(
+			width =>
+				formatDefaultToolExecution(
+					{
+						label: "Submit Result",
+						args: undefined,
+						options,
+						result: { output, isError: result.isError || typeof error === "string" },
+					},
+					width,
+					uiTheme,
+				),
+			0,
+			0,
+		);
+	},
+};
 
 interface YieldDetails {
 	data?: unknown;
@@ -182,6 +236,26 @@ function resolveResultRecord(
 	return undefined;
 }
 
+const PLACEHOLDER_YIELD_ERRORS: Record<string, true> = {
+	ignore: true,
+	ignored: true,
+	"n/a": true,
+	none: true,
+	"not applicable": true,
+	null: true,
+	placeholder: true,
+	undefined: true,
+	unused: true,
+};
+
+function parseYieldError(value: unknown, hasData: boolean): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") throw new Error("error must be a string");
+	const trimmed = value.trim();
+	if (!trimmed || (hasData && Object.hasOwn(PLACEHOLDER_YIELD_ERRORS, trimmed.toLowerCase()))) return undefined;
+	return trimmed;
+}
+
 function formatYieldLabels(labels: readonly string[]): string {
 	if (labels.length === 0) return '""';
 	return labels.map(label => `"${label}"`).join(", ");
@@ -268,6 +342,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	readonly #validate?: (value: unknown) => JsonSchemaValidationResult;
 	readonly #validateSection?: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult>;
+	readonly #normalizeData?: (value: unknown) => unknown;
+	readonly #normalizeSection?: (label: string, value: unknown) => unknown;
 	#rejectUnknownSections = false;
 	#knownSectionLabels: readonly string[] = [];
 	#isKnownSection?: (label: string) => boolean;
@@ -282,6 +358,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#session = session;
 		this.#schemaStrict = session.outputSchemaMode === "strict";
 		let validate: ((value: unknown) => JsonSchemaValidationResult) | undefined;
+		let normalizeData: ((value: unknown) => unknown) | undefined;
+		let normalizeSection: ((label: string, value: unknown) => unknown) | undefined;
 		let validateSection: ReadonlyMap<string, (value: unknown) => JsonSchemaValidationResult> | undefined;
 		let rejectUnknownSections = false;
 		let knownSectionLabels: readonly string[] = [];
@@ -311,6 +389,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			if (!schemaError && normalizedSchema !== undefined) {
 				const strictProbe = tryEnforceStrictSchema(normalizedSchema);
 				if (strictProbe.strict) {
+					if (validator) {
+						normalizeData = value => validator.normalize(value);
+						normalizeSection = (label, value) => validator.normalizeSection(label, value);
+					}
 					sanitizedSchema = sanitizeSchemaForStrictMode(normalizedSchema);
 				} else {
 					sanitizedSchema = normalizedSchema;
@@ -348,10 +430,14 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				looseRecordSchema(`Structured JSON output (schema processing failed: ${errorMsg})`),
 			);
 			validate = undefined;
+			normalizeData = undefined;
+			normalizeSection = undefined;
 			this.strict = false;
 		}
 
 		this.#validate = validate;
+		this.#normalizeData = normalizeData;
+		this.#normalizeSection = normalizeSection;
 		this.#validateSection = validateSection;
 		this.#rejectUnknownSections = rejectUnknownSections;
 		this.#knownSectionLabels = knownSectionLabels;
@@ -384,9 +470,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			throw new Error(`result must be an object containing either data or error. ${YIELD_RESULT_FORMAT_HINT}`);
 		}
 		// Non-strict backends fill the optional `error` with "" beside valid data; "" is never a failure reason.
-		const errorMessage =
-			typeof resultRecord.error === "string" && resultRecord.error !== "" ? resultRecord.error : undefined;
-		let data = resultRecord.data;
+		let data: unknown = resultRecord.data === null ? undefined : resultRecord.data;
+		const errorMessage = parseYieldError(resultRecord.error, data !== undefined);
 		let useLastTurn =
 			errorMessage === undefined && data === undefined && yieldType !== undefined && !("error" in resultRecord);
 
@@ -471,6 +556,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				useLastTurn = false;
 			}
 		}
+		const normalizeData = (value: unknown): unknown =>
+			Array.isArray(yieldType) && yieldType.length === 1
+				? (this.#normalizeSection?.(yieldType[0]!, value) ?? value)
+				: !isIncremental
+					? (this.#normalizeData?.(value) ?? value)
+					: value;
+		if (status === "success" && data !== undefined) data = normalizeData(data);
 		if (status === "success" && !useLastTurn) {
 			if (data === null) {
 				throw new Error("data is required when yield indicates success");
@@ -487,9 +579,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				// adopted: finalization treats null data as missing and would warn post-mortem instead of retrying.
 				const decoded = parseJsonEncodedValue(data);
 				if (decoded.parsed && decoded.value !== null) {
-					const revalidated = validateData(decoded.value);
+					const normalized = normalizeData(decoded.value);
+					const revalidated = validateData(normalized);
 					if (revalidated === undefined || revalidated.success) {
-						data = decoded.value;
+						data = normalized;
 						sectionFailure = revalidated;
 					}
 				}

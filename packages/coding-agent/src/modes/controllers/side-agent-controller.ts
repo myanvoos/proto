@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import backgroundSideDispatchPrompt from "../../prompts/system/background-side-dispatch.md" with { type: "text" };
 import sideAgentContextSwitchPrompt from "../../prompts/system/side-agent-context-switch.md" with { type: "text" };
@@ -41,7 +41,7 @@ async function removeCloneSession(cloneFile: string): Promise<void> {
 export class SideAgentController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
-	async start(work: string): Promise<void> {
+	async start(work: string, images?: ImageContent[]): Promise<void> {
 		const trimmedWork = work.trim();
 		if (!trimmedWork) {
 			this.ctx.showStatus("Usage: /side --agent <work>");
@@ -140,6 +140,7 @@ export class SideAgentController {
 							agentId: cloneId,
 							agentDisplayName: "side",
 							parentTaskPrefix: cloneId,
+							asyncJobManager: manager,
 							parentAgentId: ownerId,
 							agentRegistry,
 							disableExtensionDiscovery: true,
@@ -187,7 +188,7 @@ export class SideAgentController {
 							}
 
 							injectContextSwitch();
-							await clone.prompt(trimmedWork, { attribution: "user" });
+							await clone.prompt(trimmedWork, { attribution: "user", images });
 							await clone.waitForIdle();
 							return extractAssistantText(clone.getLastAssistantMessage()) || "(no output)";
 						} finally {

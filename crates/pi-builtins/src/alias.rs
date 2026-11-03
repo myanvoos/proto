@@ -3,13 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct AliasCommand {
-
 	#[arg(short = 'p')]
 	print: bool,
-
 
 	#[arg(name = "name[=value]")]
 	aliases: Vec<String>,

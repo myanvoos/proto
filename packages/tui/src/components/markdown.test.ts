@@ -889,3 +889,220 @@ describe("Markdown GFM fidelity", () => {
 		expect(rendered).toEqual(["before pic (https://img.example.com/y.png) after"]);
 	});
 });
+
+describe("Markdown streaming correctness", () => {
+	const streaming = (text: string, customTheme = theme): Markdown => {
+		const markdown = new Markdown(text, 0, 0, customTheme);
+		markdown.transientRenderCache = true;
+		return markdown;
+	};
+
+	test("windowed rendering preserves fences, comments and display math across probe boundaries", () => {
+		for (const block of [
+			`\`\`\`text\n${"literal *text*\n\n".repeat(1400)}\`\`\`\n\n`,
+			`<!--\n${"hidden\n\n".repeat(2400)}-->\n\n`,
+			`$$\n${"x + y\n\n".repeat(2400)}z\n$$\n\n`,
+			`\\[\n${"x + y\n\n".repeat(2400)}z\n\\]\n\n`,
+		]) {
+			const text = `Before.\n\n${block}After.`;
+			expect(streaming(text).render(47)).toEqual(new Markdown(text, 0, 0, theme).render(47));
+		}
+	});
+
+	test("appended display math closers and nested reference definitions reparse their affected prefixes", () => {
+		for (const [prefix, suffix] of [
+			["Before.\n\n$$\nx\n\ny\n\nTail", "\n$$\n\nDone"],
+			["Before.\n\n\\[\nx\n\ny\n\nTail", "\n\\]\n\nDone"],
+			["[resolved][label]\n\nUnfinished", "\n\n> [label]: https://example.test"],
+			["Before.\n\n- [resolved][label]\n- growing", "\n\n> [label]: https://example.test"],
+		]) {
+			const markdown = streaming(prefix);
+			markdown.render(42);
+			markdown.setText(prefix + suffix);
+			expect(markdown.render(42)).toEqual(streaming(prefix + suffix).render(42));
+			markdown.transientRenderCache = false;
+			expect(markdown.render(42)).toEqual(new Markdown(prefix + suffix, 0, 0, theme).render(42));
+		}
+	});
+
+	test("nonappend edits discard frozen boundaries even when their source prefix survives", () => {
+		const markdown = streaming("Before.\n\n- item\n\nTail");
+		markdown.render(40);
+		const edited = "Before.\n\n- item\n\n- continuation";
+		markdown.setText(edited);
+		expect(markdown.render(40)).toEqual(streaming(edited).render(40));
+	});
+
+	test("streamed list lexing preserves nested items, looseness and closing blocks", () => {
+		const chunks = [
+			"Before.\n\n",
+			"1. first\n",
+			"   - nested\n",
+			"2. second",
+			"\n\n   loose paragraph",
+			"\n3. third",
+			"\n\nAfter.",
+		];
+		const markdown = streaming("");
+		let text = "";
+		for (const chunk of chunks) {
+			text += chunk;
+			markdown.setText(text);
+			expect(markdown.render(32)).toEqual(streaming(text).render(32));
+		}
+	});
+
+	test("mutable theme callbacks repaint completed streamed list items", () => {
+		let color = "\x1b[31m";
+		const custom = { ...theme, bold: (text: string) => `${color}${text}\x1b[39m` };
+		const markdown = streaming("- **finished**\n- growing", custom);
+		markdown.render(40);
+		color = "\x1b[32m";
+		markdown.setText("- **finished**\n- growing tail");
+		const output = markdown.render(40).join("\n");
+		expect(output).toContain("\x1b[32mfinished");
+		expect(output).not.toContain("\x1b[31m");
+	});
+
+	test("a styled span after a hard break retains its following space", () => {
+		const output = new Markdown("before  \n**bold** after\n\nnext<br>*italic* after", 0, 0, theme)
+			.render(80)
+			.join("\n");
+		expect(output).toContain("bold after");
+		expect(output).toContain("italic after");
+	});
+
+	test("open links and math render as their closed form without speculating inside code or escapes", () => {
+		for (const [open, closed] of [
+			["See [docs](https://example.test/a(b", "See [docs](https://example.test/a(b))"],
+			["value $x^{2", "value $x^{2}$"],
+			["- See [docs](https://example.test", "- See [docs](https://example.test)"],
+			["> value $x^{2", "> value $x^{2}$"],
+		])
+			expect(streaming(open).render(40)).toEqual(new Markdown(closed, 0, 0, theme).render(40));
+		for (const literal of [
+			"`[docs](https://example.test",
+			"\\[docs](https://example.test",
+			"    [docs](https://example.test",
+			"cost $5 per",
+			"```text\n[docs](https://example.test",
+		]) {
+			expect(streaming(literal).render(40)).toEqual(new Markdown(literal, 0, 0, theme).render(40));
+		}
+	});
+
+	test("unresolved list labels remain mutable until their reference definition arrives", () => {
+		const markdown = streaming("- finished\n- [pending]\n- newest item");
+		markdown.render(50);
+		expect(markdown.getLastRenderStableText()).toBe("- finished\n");
+		const final = "- finished\n- [pending]\n- newest item\n\n[pending]: https://example.test";
+		markdown.setText(final);
+		markdown.transientRenderCache = false;
+		expect(markdown.render(50)).toEqual(new Markdown(final, 0, 0, theme).render(50));
+	});
+
+	test("growing table cells keep completed column widths and row heights until they close", () => {
+		const prefix = "| key | value |\n| --- | --- |\n| a | short |\n| b | ";
+		const markdown = streaming(`${prefix}tiny`);
+		const before = [...markdown.render(38)];
+		const grown = `${prefix}a very long cell whose text is hidden until this cell closes`;
+		markdown.setText(grown);
+		const held = markdown.render(38);
+		expect(held.length).toBe(before.length);
+		expect(held[0]).toBe(before[0]);
+		expect(Bun.stripANSI(held.join("\n"))).toContain("…");
+		markdown.setText(`${grown} |`);
+		expect(markdown.render(38)).toEqual(new Markdown(`${grown} |`, 0, 0, theme).render(38));
+		markdown.transientRenderCache = false;
+		expect(Bun.stripANSI(markdown.render(38).join("\n"))).toContain("closes");
+	});
+
+	test("wide table glyphs never overflow their columns at narrow widths", () => {
+		const text = "| a | b |\n| --- | --- |\n| 😀😀 | 中文中文 |";
+		for (const width of [9, 11, 13]) {
+			const rows = new Markdown(text, 0, 0, theme).render(width);
+			for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
+			expect(Bun.stripANSI(rows.join("\n"))).toContain("a");
+		}
+	});
+
+	test("tables nested in lists render borders and fit within the list's content width", () => {
+		const rows = new Markdown("- item\n\n  | a | b |\n  | --- | --- |\n  | one | two |", 0, 0, theme).render(24);
+		const plain = Bun.stripANSI(rows.join("\n"));
+		expect(plain).toContain("+-----+-----+");
+		expect(plain).toContain("one");
+		for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(24);
+	});
+
+	test("custom themes without symbols render quotes, rules and tables with fallback glyphs", () => {
+		const { symbols: _symbols, ...plainTheme } = theme;
+		const output = new Markdown("> quoted\n\n---\n\n| a | b |\n| --- | --- |\n| one | two |", 0, 0, plainTheme)
+			.render(40)
+			.join("\n");
+		expect(output).toContain("│ quoted");
+		expect(output).toContain("┌");
+		expect(output).toContain("one");
+	});
+
+	test("prose foreground colors do not override heading and link semantic colors", () => {
+		const custom = {
+			...theme,
+			heading: (text: string) => `\x1b[31m${text}\x1b[39m`,
+			link: (text: string) => `\x1b[32m${text}\x1b[39m`,
+		};
+		const output = new Markdown("# heading\n\nplain [label](https://example.test)", 0, 0, custom, {
+			color: text => `\x1b[34m${text}\x1b[39m`,
+			proseFg: true,
+		})
+			.render(80)
+			.join("\n");
+		expect(output).toContain("\x1b[34mplain");
+		expect(output).not.toContain("\x1b[34mheading");
+		expect(output).not.toContain("\x1b[34mlabel");
+		expect(output).toContain("\x1b[32mlabel");
+	});
+
+	test("releasing cached rows preserves a live stream and a finalized render", () => {
+		const markdown = streaming("First.\n\n- finished\n- growing");
+		const before = [...markdown.render(32)];
+		const stable = markdown.getLastRenderStableText();
+		markdown.releaseRenderCaches();
+		expect(markdown.render(32)).toEqual(before);
+		expect(markdown.getLastRenderStableText()).toBe(stable);
+		markdown.transientRenderCache = false;
+		const finalized = [...markdown.render(32)];
+		markdown.releaseRenderCaches();
+		expect(markdown.render(32)).toEqual(finalized);
+	});
+});
+
+describe("Markdown fenced code hyperlinks", () => {
+	const previousHyperlinks = TERMINAL.hyperlinks;
+	beforeEach(() => setTerminalHyperlinks(true));
+	afterEach(() => setTerminalHyperlinks(previousHyperlinks));
+
+	test("every wrapped URL fragment opens the complete target and excludes unbalanced punctuation", () => {
+		const url = "https://example.test/a-very-long-path/with-balanced_(part)";
+		const markdown = new Markdown(`\`\`\`text\n[${url}], {https://example.test/second}.\n\`\`\``, 0, 0, theme);
+		const rows = markdown.render(24);
+		const fragments = rows.filter(row => row.includes(`\x1b]8;;${url}\x07`));
+		expect(fragments.length).toBeGreaterThan(1);
+		for (const row of fragments) expect(row).toContain("\x1b]8;;\x07");
+		expect(rows.join("\n")).toContain("\x1b]8;;https://example.test/second\x07");
+		expect(rows.join("\n")).not.toContain(`${url}]\x07`);
+		expect(rows.join("\n")).not.toContain("https://example.test/second}\x07");
+	});
+
+	test("streamed code URL appends keep linked rows equal to a fresh streaming render", () => {
+		let source = "```text\nhttps://example.test/first-path\nhttps://example.test/second";
+		const markdown = new Markdown(source, 0, 0, theme);
+		markdown.transientRenderCache = true;
+		markdown.render(25);
+		source += "-long-path\nlast";
+		markdown.setText(source);
+		const fresh = new Markdown(source, 0, 0, theme);
+		fresh.transientRenderCache = true;
+		expect(markdown.render(25)).toEqual(fresh.render(25));
+		expect(markdown.render(25).join("\n")).toContain("\x1b]8;;https://example.test/second-long-path\x07");
+	});
+});

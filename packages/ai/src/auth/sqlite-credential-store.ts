@@ -168,7 +168,7 @@ function resolveRowCredentialIdentityKey(provider: string, row: AuthRow): string
 	return credential?.type === "oauth" ? resolveCredentialIdentityKey(provider, credential) : null;
 }
 
-function matchesReplacementCredential(
+export function matchesReplacementCredential(
 	provider: string,
 	existing: AuthCredential | null,
 	existingIdentityKey: string | null,
@@ -216,6 +216,16 @@ function matchesReplacementCredential(
 		if (existingIdentifiers?.includes(identifier)) return true;
 	}
 	return false;
+}
+
+export function isSameOAuthAccount(a: OAuthCredential, b: OAuthCredential): boolean {
+	const orgId = normalizeStoredAccountId(a.orgId);
+	if (orgId !== normalizeStoredAccountId(b.orgId)) return false;
+	const emailA = normalizeStoredEmail(a.email);
+	const emailB = normalizeStoredEmail(b.email);
+	if (emailA !== null && emailB !== null) return emailA === emailB;
+	const accountId = normalizeStoredAccountId(a.accountId);
+	return accountId !== null && accountId !== orgId && accountId === normalizeStoredAccountId(b.accountId);
 }
 
 function extractOAuthCredentialIdentifiers(credential: OAuthCredential): string[] {
@@ -312,6 +322,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#getCredentialRefreshLeaseStmt: Statement;
 	#renewCredentialRefreshLeaseStmt: Statement;
 	#releaseCredentialRefreshLeaseStmt: Statement;
+	#lastCredentialBlockSweepMs = Number.NEGATIVE_INFINITY;
 	#credentialBlockReconcileAfter: Map<string, number> = new Map();
 	#insertUsageHistoryStmt: Statement;
 	#lastUsageHistoryStmt: Statement;
@@ -391,11 +402,10 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			"SELECT blocked_until_ms, updated_at FROM auth_credential_blocks WHERE credential_id = ? AND provider_key = ? AND block_scope = ? AND blocked_until_ms > ?",
 		);
 		this.#listCredentialBlocksByCredentialStmt = this.#db.prepare(
-			`SELECT credential_id, provider_key, block_scope, blocked_until_ms, updated_at
-			FROM auth_credential_blocks
-			WHERE credential_id = ? AND blocked_until_ms > ?
-				AND NOT (provider_key = ? AND block_scope = ?)
-			ORDER BY provider_key ASC, block_scope ASC`,
+			`SELECT b.credential_id, b.provider_key, b.block_scope, b.blocked_until_ms, b.updated_at
+			FROM json_each(?) AS ids JOIN auth_credential_blocks AS b ON b.credential_id = ids.value
+			WHERE b.blocked_until_ms > ? AND NOT (b.provider_key = ? AND b.block_scope = ?)
+			ORDER BY ids.key ASC, b.provider_key ASC, b.block_scope ASC`,
 		);
 		this.#upsertCredentialBlockStmt = this.#db.prepare(
 			`INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at)
@@ -1393,7 +1403,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		if (isCodexBlock && blockScope === LEGACY_CODEX_BLOCK_SCOPE) {
 			return undefined;
 		}
-		if (!isCodexBlock) this.#deleteExpiredCredentialBlocksStmt.run(nowMs);
+		this.#sweepExpiredCredentialBlocks();
 		const row = this.#getCredentialBlockStmt.get(credentialId, providerKey, blockScope, nowMs) as
 			| { blocked_until_ms?: number; updated_at?: number }
 			| undefined;
@@ -1406,7 +1416,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		if (isCodexBlock && blockScope === LEGACY_CODEX_BLOCK_SCOPE) {
 			return undefined;
 		}
-		if (!isCodexBlock) this.#deleteExpiredCredentialBlocksStmt.run(nowMs);
+		this.#sweepExpiredCredentialBlocks();
 		const row = this.#getCredentialBlockStmt.get(credentialId, providerKey, blockScope, nowMs) as
 			| { blocked_until_ms?: number; updated_at?: number }
 			| undefined;
@@ -1423,7 +1433,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		const isLegacyCodexBlock =
 			block.providerKey === LEGACY_CODEX_BLOCK_PROVIDER_KEY && block.blockScope === LEGACY_CODEX_BLOCK_SCOPE;
 		const blockScopes = isLegacyCodexBlock ? CODEX_METER_BLOCK_SCOPES : [block.blockScope];
+		const nowMs = Date.now();
 		const upsert = this.#db.transaction(() => {
+			this.#deleteExpiredCredentialBlocksStmt.run(nowMs);
 			for (const blockScope of blockScopes) {
 				this.#upsertCredentialBlockStmt.run(
 					block.credentialId,
@@ -1434,6 +1446,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			}
 		});
 		upsert.immediate();
+		this.#lastCredentialBlockSweepMs = nowMs;
 
 		const reconcileAfterMs = Math.min(block.blockedUntilMs, Date.now() + USAGE_REPORT_TTL_MS);
 		for (const blockScope of blockScopes) {
@@ -1462,38 +1475,39 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	cleanExpiredCredentialBlocks(nowMs: number): void {
+		this.#lastCredentialBlockSweepMs = Date.now();
 		this.#deleteExpiredCredentialBlocksStmt.run(nowMs);
 		for (const [key, reconcileAfterMs] of this.#credentialBlockReconcileAfter) {
 			if (reconcileAfterMs <= nowMs) this.#credentialBlockReconcileAfter.delete(key);
 		}
 	}
 
+	#sweepExpiredCredentialBlocks(): void {
+		const nowMs = Date.now();
+		if (nowMs - this.#lastCredentialBlockSweepMs < 60_000) return;
+		try {
+			this.cleanExpiredCredentialBlocks(nowMs);
+		} catch (error) {
+			if (!isSqliteBusyError(error)) throw error;
+		}
+	}
+
 	listCredentialBlocks(credentialIds: readonly number[]): StoredCredentialBlock[] {
 		if (credentialIds.length === 0) return [];
-		const nowMs = Date.now();
-		this.cleanExpiredCredentialBlocks(nowMs);
-		const seenCredentialIds = new Set<number>();
-		const blocks: StoredCredentialBlock[] = [];
-		for (const credentialId of credentialIds) {
-			if (seenCredentialIds.has(credentialId)) continue;
-			seenCredentialIds.add(credentialId);
-			const rows = this.#listCredentialBlocksByCredentialStmt.all(
-				credentialId,
-				nowMs,
-				LEGACY_CODEX_BLOCK_PROVIDER_KEY,
-				LEGACY_CODEX_BLOCK_SCOPE,
-			) as CredentialBlockRow[];
-			for (const row of rows) {
-				blocks.push({
-					credentialId: row.credential_id,
-					providerKey: row.provider_key,
-					blockScope: row.block_scope,
-					blockedUntilMs: row.blocked_until_ms,
-					updatedAtMs: row.updated_at * 1000,
-				});
-			}
-		}
-		return blocks;
+		this.#sweepExpiredCredentialBlocks();
+		const rows = this.#listCredentialBlocksByCredentialStmt.all(
+			JSON.stringify([...new Set(credentialIds)]),
+			Date.now(),
+			LEGACY_CODEX_BLOCK_PROVIDER_KEY,
+			LEGACY_CODEX_BLOCK_SCOPE,
+		) as CredentialBlockRow[];
+		return rows.map(row => ({
+			credentialId: row.credential_id,
+			providerKey: row.provider_key,
+			blockScope: row.block_scope,
+			blockedUntilMs: row.blocked_until_ms,
+			updatedAtMs: row.updated_at * 1000,
+		}));
 	}
 
 	tryAcquireCredentialRefreshLease(credentialId: number, owner: string, expiresAtMs: number): boolean {

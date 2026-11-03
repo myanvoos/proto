@@ -1,6 +1,8 @@
 mod ax;
 mod capture;
+mod date;
 mod input;
+mod permission;
 mod skylight;
 
 use image::RgbaImage;
@@ -36,9 +38,7 @@ impl MacosBackend {
 		if ax::is_trusted() {
 			Ok(())
 		} else {
-			Err(DesktopError::permission_denied(
-				"macOS Accessibility permission is required for native input",
-			))
+			Err(permission::denied("Accessibility"))
 		}
 	}
 }

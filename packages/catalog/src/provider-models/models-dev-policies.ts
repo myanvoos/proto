@@ -14,6 +14,28 @@ const BEDROCK_MANTLE_OPENAI_MODEL_IDS: Readonly<Record<string, true>> = {
  */
 export function filterModelsDevCatalogRows<TApi extends Api>(models: readonly ModelSpec<TApi>[]): ModelSpec<TApi>[] {
 	return models.filter(model => {
+		if (model.provider === "anthropic") {
+			const retired = ["claude-3-5-haiku", "claude-3-5-sonnet", "claude-3-7-sonnet", "claude-opus-4-1"];
+			return (
+				!retired.some(prefix => model.id.startsWith(prefix)) &&
+				![
+					"claude-3-haiku-20240307",
+					"claude-3-opus-20240229",
+					"claude-3-sonnet-20240229",
+					"claude-opus-4-0",
+					"claude-opus-4-20250514",
+					"claude-sonnet-4-0",
+					"claude-sonnet-4-20250514",
+				].includes(model.id)
+			);
+		}
+		if (model.provider === "google-antigravity" && ["gemini-3-flash", "gemini-3.5-flash"].includes(model.id))
+			return false;
+		if (
+			(model.provider === "minimax-code" || model.provider === "minimax-code-cn") &&
+			model.id === "MiniMax-M3.1-Flash-Preview"
+		)
+			return false;
 		if (model.provider === "amazon-bedrock") {
 			// AWS documents no jp. Opus 5 profile; the openai.gpt-5.x rows are Responses-only Mantle ids.
 			return model.id !== "jp.anthropic.claude-opus-5" && !BEDROCK_MANTLE_OPENAI_MODEL_IDS[model.id];

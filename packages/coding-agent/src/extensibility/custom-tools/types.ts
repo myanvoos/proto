@@ -161,6 +161,7 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 	mcpServerName?: string;
 
 	mcpToolName?: string;
+	mcpReadOnlyHint?: boolean;
 
 	execute(
 		toolCallId: string,

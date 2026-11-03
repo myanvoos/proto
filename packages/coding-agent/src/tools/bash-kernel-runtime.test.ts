@@ -285,6 +285,34 @@ test("a background kernel cell force-closed mid-run fails with the close as its 
 	});
 }, 30_000);
 
+test("a backgrounded bash call reuses the session's node kernel instead of starting a new one", async () => {
+	await fixture(async (bash, _cwd, _owner, session) => {
+		const manager = new AsyncJobManager({});
+		const managedSession = {
+			...session,
+			asyncJobManager: manager,
+			settings: {
+				get: (key: string) => (key === "async.enabled" ? true : undefined),
+				getShellConfig: () => ({ env: {} }),
+			},
+		} as unknown as ToolSession;
+		try {
+			await bash.execute("seed-node-main", { command: `node -e 'globalThis.background_marker = 39'` });
+			const before = await handleKernelControl(managedSession, { op: "inspect", language: "node", lane: "main" });
+			const job = await new BashTool(managedSession).execute("background-node", {
+				async: true,
+				command: `node -e 'console.log(globalThis.background_marker)'`,
+			});
+			await manager.waitForAll();
+			expect(manager.getJob(job.details!.async!.jobId)!.resultText).toContain("39");
+			const after = await handleKernelControl(managedSession, { op: "inspect", language: "node", lane: "main" });
+			expect(after.kernel?.generation).toBe(before.kernel?.generation);
+		} finally {
+			await manager.dispose();
+		}
+	});
+}, 30_000);
+
 test("a cancelled lane waiter never executes or resets the active shell", async () => {
 	await fixture(async (_bash, cwd, owner) => {
 		const busy = executeBash("sleep 0.05; export QUEUE_MARKER=kept", { cwd, sessionKey: owner });
@@ -324,9 +352,14 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 				lane: "work",
 				command: "export BG_MARKER=work; python -c 'background_marker = 41'",
 			});
+			const mainKernelBefore = await handleKernelControl(managedSession, {
+				op: "inspect",
+				language: "python",
+				lane: "main",
+			});
 			const isolated = await managed.execute("background-default", {
 				async: true,
-				command: `printf 'shell=%s\n' "$BG_MARKER"; python -c 'print("known", "background_marker" in globals())'`,
+				command: `printf 'shell=%s\n' "$BG_MARKER"; python -c 'print("known", "background_marker" in globals(), background_marker)'`,
 			});
 			const shared = await managed.execute("background-work", {
 				async: true,
@@ -336,8 +369,16 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 			await manager.waitForAll();
 			const isolatedJob = manager.getJob(isolated.details!.async!.jobId)!;
 			const sharedJob = manager.getJob(shared.details!.async!.jobId)!;
-			expect(isolatedJob.resultText).toContain("known False");
+			// A backgrounded call gets its own shell lane but shares the session's kernel:
+			// it sees the main lane's python state instead of spawning a second kernel.
+			expect(isolatedJob.resultText).toContain("known True 39");
 			expect(isolatedJob.resultText).not.toContain("shell=main");
+			const mainKernelAfter = await handleKernelControl(managedSession, {
+				op: "inspect",
+				language: "python",
+				lane: "main",
+			});
+			expect(mainKernelAfter.kernel?.generation).toBe(mainKernelBefore.kernel?.generation);
 			expect(sharedJob.status).toBe("failed");
 			const history = await runEvalRuntime({ op: "executions", id: sharedJob.id }, { session: managedSession });
 			if (!("records" in history)) throw new Error("Expected execution history");

@@ -78,6 +78,11 @@ const PROVIDER_META: Record<SearchProviderId, ProviderMeta> = {
 		label: SEARCH_PROVIDER_LABELS.brave,
 		load: async () => new (await import("./providers/brave")).BraveProvider(),
 	},
+	deepseek: {
+		id: "deepseek",
+		label: SEARCH_PROVIDER_LABELS.deepseek,
+		load: async () => new (await import("./providers/deepseek")).DeepSeekProvider(),
+	},
 	kimi: {
 		id: "kimi",
 		label: SEARCH_PROVIDER_LABELS.kimi,

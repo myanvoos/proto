@@ -15,6 +15,8 @@ export interface ToolCallLoopGuardOptions {
 export interface ToolCallLoopTurn {
 	readonly message: AssistantMessage;
 	readonly toolResults: readonly ToolResultMessage[];
+	/** Context delivered outside tool results counts as progress. */
+	readonly injectedContext?: boolean;
 }
 
 export interface RepeatedToolCallDetection {
@@ -82,9 +84,23 @@ export class ToolCallLoopGuard {
 
 	recordTurn(turn: ToolCallLoopTurn): RepeatedToolCallDetection | null {
 		const toolCalls = turn.message.content.filter((part): part is ToolCall => part.type === "toolCall");
-		if (toolCalls.length === 0 || toolCalls.every(toolCall => this.#exemptTools.has(toolCall.name))) {
+		if (toolCalls.length === 0) {
 			this.#lastHash = undefined;
 			this.#count = 0;
+			return null;
+		}
+
+		if (toolCalls.every(toolCall => this.#exemptTools.has(toolCall.name))) {
+			// Only explicitly useless polls are idle; failures may still change state.
+			const idle =
+				!turn.injectedContext &&
+				toolCalls.every(
+					toolCall => turn.toolResults.find(result => result.toolCallId === toolCall.id)?.useless === true,
+				);
+			if (!idle) {
+				this.#lastHash = undefined;
+				this.#count = 0;
+			}
 			return null;
 		}
 

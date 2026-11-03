@@ -333,6 +333,24 @@ const DEFAULTS: MarkedOptions = {
 };
 const PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 
+/** Bare-url probe for the inline text-run walk: matched against a bounded window. */
+const BARE_URL_PROBE = /(?:https?:\/\/|ftp:\/\/|www\.|[A-Za-z0-9._+-]+@)/i;
+/** Hard-break probe for the same walk: a line ending in two spaces or a backslash. */
+const HARD_BREAK_PROBE = /(?: {2,}|\\)\n/;
+/**
+ * Characters that end a plain-text run: each can start a construct the loop
+ * handles at the next run (escape, code span, autolink, link/image, emphasis,
+ * strikethrough), or the hard break the probes scan for. Global so a search can
+ * begin at index 1 via `lastIndex` and read only up to the next stop.
+ */
+const INLINE_TEXT_STOP = /[\\`<[!*_~\n]/g;
+/**
+ * How far past the text-run stop the two probes may read. A match must start
+ * before the stop to matter, and the longest fixed url prefix spans seven chars
+ * past its start; the slack keeps envelope-length bare urls and addresses whole.
+ */
+const INLINE_PROBE_LOOKAHEAD = 64;
+
 function tokenList(links: Links = Object.create(null) as Links): TokensList {
 	const list = [] as unknown as TokensList;
 	list.links = links;
@@ -539,7 +557,15 @@ function inlineTokens(src: string, lexer: Lexer, output: Token[] = []): Token[] 
 		}
 		if (rest[0] === "`") {
 			const opener = /^`+/.exec(rest)![0];
-			const end = findDelimiter(rest, opener, opener.length);
+			// Backslashes have no escaping meaning inside a code span. A closer
+			// must be a whole run with exactly the opener's number of backticks.
+			let end = rest.indexOf("`", opener.length);
+			while (end !== -1) {
+				let runEnd = end + 1;
+				while (rest[runEnd] === "`") runEnd++;
+				if (runEnd - end === opener.length) break;
+				end = rest.indexOf("`", runEnd);
+			}
 			if (end !== -1) {
 				const raw = rest.slice(0, end + opener.length);
 				let text = rest.slice(opener.length, end).replace(/\n/g, " ");
@@ -650,14 +676,23 @@ function inlineTokens(src: string, lexer: Lexer, output: Token[] = []): Token[] 
 			continue;
 		}
 
-		let next = rest.length;
-		for (const char of ["\\", "`", "<", "[", "!", "*", "_", "~", "\n"]) {
-			const at = rest.indexOf(char, 1);
-			if (at !== -1 && at < next) next = at;
-		}
-		const urlAt = /(?:https?:\/\/|ftp:\/\/|www\.|[A-Za-z0-9._+-]+@)/i.exec(rest.slice(1));
+		// Leftmost text-run stop: a construct the loop must re-check at the start
+		// of the next run. One scanning search beats nine `indexOf` probes, each of
+		// which runs to the end of the document when its character is absent.
+		INLINE_TEXT_STOP.lastIndex = 1;
+		const stop = INLINE_TEXT_STOP.exec(rest);
+		let next = stop ? stop.index : rest.length;
+		// A url or hard break only shortens the run when it starts before `next`;
+		// the lookahead lets such a match complete inside the window (a two-space
+		// hard break closes on a `\n` just past the stop, "https://" spans 7 chars
+		// past its start). Probing the whole `rest.slice(1)` again re-read the rest
+		// of the document on every run — quadratic on token-dense text (a 35 KB
+		// tool result took seconds to lex, and a settled tmux resize re-renders
+		// every tool result in the transcript).
+		const runWindow = rest.slice(1, next + INLINE_PROBE_LOOKAHEAD);
+		const urlAt = BARE_URL_PROBE.exec(runWindow);
 		if (urlAt && urlAt.index + 1 < next) next = urlAt.index + 1;
-		const hardBreak = /(?: {2,}|\\)\n/.exec(rest.slice(1));
+		const hardBreak = HARD_BREAK_PROBE.exec(runWindow);
 		if (hardBreak && hardBreak.index + 1 < next) next = hardBreak.index + 1;
 		for (const extension of lexer.extensions.inline) {
 			const at = extension.start?.call({ lexer }, rest);
@@ -688,7 +723,10 @@ function splitTableRow(line: string): string[] {
 }
 
 function isFence(line: string): RegExpExecArray | null {
-	return /^ {0,3}(`{3,}|~{3,})(.*?)(?:\n|$)$/.exec(line);
+	// Unicode line separators may occur in the info string.
+	const match = /^ {0,3}(`{3,}|~{3,})([^\n]*?)(?:\n|$)$/.exec(line);
+	// Backtick fences cannot contain backticks in their info string.
+	return match && match[1]!.startsWith("`") && match[2]!.includes("`") ? null : match;
 }
 function isHeading(line: string): boolean {
 	return /^ {0,3}#{1,6}(?:\s|$)/.test(line);
@@ -734,8 +772,10 @@ function isBlockStart(lines: string[], index: number): boolean {
 	return false;
 }
 
+// `[^\n]`, not `.`: `.` stops at U+2028 and U+2029, which end no Markdown line,
+// and the match then skips the text in front of them.
 function lineArray(src: string): string[] {
-	return src.match(/.*(?:\n|$)/g)?.filter((line, index, all) => line !== "" || index < all.length - 1) ?? [];
+	return src.match(/[^\n]*(?:\n|$)/g)?.filter((line, index, all) => line !== "" || index < all.length - 1) ?? [];
 }
 function stripFinalNewline(value: string): string {
 	return value.endsWith("\n") ? value.slice(0, -1) : value;

@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "bun:test";
+import * as tui from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "../../config/keybindings";
 import { initThemeSync, theme } from "../theme/theme";
 import { AskDialogComponent } from "./ask-dialog";
 
@@ -144,5 +146,109 @@ describe("AskDialogComponent recommended options", () => {
 		);
 		expect(render(dialog)).toContain("Generic MLE loop (Recommended)");
 		expect(render(dialog)).not.toContain("(Recommended) (Recommended)");
+	});
+});
+
+it("fenced diff in the ask question renders as code rather than leaking its fence", () => {
+	const dialog = createDialog("Compare changes:\n\n```diff\n-oldValue\n+newValue\n```");
+	try {
+		dialog.toggleQuestionExpansion();
+		const body = render(dialog);
+		expect(body).toContain("-oldValue");
+		expect(body).toContain("+newValue");
+		expect(body).not.toContain("```diff");
+	} finally {
+		dialog.dispose();
+	}
+});
+
+it("submits a note with the selected option it annotates", async () => {
+	const onSubmit = vi.fn();
+	const dialog = new AskDialogComponent(
+		[{ id: "q", question: "Choose?", options: [{ label: "A" }, { label: "B" }] }],
+		{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn().mockResolvedValue("needs review") },
+	);
+	dialog.handleInput("n");
+	await Promise.resolve();
+	await Promise.resolve();
+	dialog.handleInput("\r");
+	expect(onSubmit.mock.calls[0]?.[0].results[0]).toMatchObject({
+		selectedOptions: ["A"],
+		note: "needs review",
+		noteOption: "A",
+	});
+});
+
+test("up/down explicitly hands a guarded draft to the ask without clearing the user's draft", () => {
+	let draft = "in-progress prompt";
+	const onSubmit = vi.fn();
+	const dialog = new AskDialogComponent(
+		[{ id: "q", question: "Proceed?", options: [{ label: "Yes" }] }],
+		{
+			onSubmit,
+			onCancel: vi.fn(),
+			onPrompt: vi.fn(),
+		},
+		{
+			inputGuard: {
+				isBlocked: () => draft.length > 0,
+				handleInput: text => {
+					draft += text;
+				},
+				hint: "draft",
+			},
+		},
+	);
+	dialog.handleInput("x");
+	expect(draft).toBe("in-progress promptx");
+	dialog.handleInput("\x1b[B");
+	dialog.handleInput("\r");
+	expect(onSubmit).toHaveBeenCalledTimes(1);
+	expect(draft).toBe("in-progress promptx");
+});
+
+describe("pending ask visibility", () => {
+	beforeEach(() => {
+		vi.spyOn(tui, "getKeybindings").mockReturnValue(KeybindingsManager.inMemory());
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	it("keeps the selected answer pending while hidden and restores it before submitting", () => {
+		const onSubmit = vi.fn();
+		const dialog = new AskDialogComponent(
+			[{ id: "q", question: "Which environment?", options: [{ label: "A" }, { label: "B" }] }],
+			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+		);
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\x1bh");
+		expect(dialog.render(40)).toHaveLength(1);
+		expect(tui.visibleWidth(dialog.render(40)[0]!)).toBeLessThanOrEqual(40);
+		dialog.handleInput("\x1b[A");
+		dialog.handleInput("\r");
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(dialog.render(80).length).toBeGreaterThan(1);
+		dialog.handleInput("\r");
+		expect(onSubmit.mock.calls[0]?.[0].results[0].selectedOptions).toEqual(["B"]);
+	});
+
+	it("routes hidden typing to a guarded draft and still allows cancellation", () => {
+		const onCancel = vi.fn();
+		const onSubmit = vi.fn();
+		const input = vi.fn();
+		const dialog = new AskDialogComponent(
+			[{ id: "q", question: "Continue?", options: [{ label: "Yes" }] }],
+			{ onSubmit, onCancel, onPrompt: vi.fn() },
+			{ inputGuard: { isBlocked: () => true, handleInput: input, hint: "draft owns input" } },
+		);
+		dialog.handleInput("\x1bh");
+		dialog.handleInput("\r");
+		expect(input).toHaveBeenCalledWith("\r");
+		expect(dialog.render(80)).toHaveLength(1);
+		dialog.handleInput("\x1bh");
+		expect(dialog.render(80).length).toBeGreaterThan(1);
+		dialog.handleInput("\x1bh");
+		dialog.handleInput("\x1b");
+		expect(onCancel).toHaveBeenCalledTimes(1);
+		expect(onSubmit).not.toHaveBeenCalled();
 	});
 });

@@ -10,7 +10,13 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
-import { createMCPJsonRpcError, MCPTransportError, normalizeMCPTransportError } from "../errors";
+import {
+	createMCPJsonRpcError,
+	MCPTransportError,
+	nonRetryableMCPTransportError,
+	normalizeMCPTransportError,
+} from "../errors";
+import { routeProgressNotification, withProgressToken } from "../progress";
 import { RequestIdAllocator } from "../request-id";
 import { isMCPTimeoutEnabled, MCPRequestTimeoutError, resolveMCPTimeoutMs } from "../timeout";
 
@@ -248,6 +254,7 @@ export class StdioTransport implements MCPTransport {
 
 	#detached = false;
 	readonly #requestIds = new RequestIdAllocator();
+	readonly #progressCallbacks = new Map<string | number, NonNullable<MCPRequestOptions["onProgress"]>>();
 
 	onClose?: () => void;
 	onError?: (error: Error) => void;
@@ -277,6 +284,7 @@ export class StdioTransport implements MCPTransport {
 		let proc: Subprocess<"pipe", "pipe", "pipe">;
 		try {
 			spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
+			if (options?.signal?.aborted) throw abortReason(options.signal);
 			proc = Bun.spawn(spawnCommand.cmd, {
 				cwd,
 				env,
@@ -383,6 +391,9 @@ export class StdioTransport implements MCPTransport {
 
 		if ("method" in message) {
 			const notification = message as { method: string; params?: unknown };
+			routeProgressNotification(notification.method, notification.params, token =>
+				this.#progressCallbacks.get(token),
+			);
 			this.onNotification?.(notification.method, notification.params);
 		}
 	}
@@ -419,8 +430,12 @@ export class StdioTransport implements MCPTransport {
 
 		for (const [, pending] of this.#pendingRequests) {
 			pending.reject(
-				error ??
-					normalizeMCPTransportError(new Error("Transport closed"), { transport: "stdio", stage: "receive" }),
+				nonRetryableMCPTransportError(
+					normalizeMCPTransportError(error ?? new Error("Transport closed"), {
+						transport: "stdio",
+						stage: "receive",
+					}),
+				),
 			);
 		}
 		this.#pendingRequests.clear();
@@ -443,17 +458,19 @@ export class StdioTransport implements MCPTransport {
 		}
 
 		const id = this.#requestIds.next(this.config.requestIdFormat);
+		if (options?.onProgress) this.#progressCallbacks.set(id, options.onProgress);
 		const request = {
 			jsonrpc: "2.0" as const,
 			id,
 			method,
-			params: params ?? {},
+			params: options?.onProgress ? withProgressToken(params, id) : (params ?? {}),
 		};
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
 		const signal = options?.signal;
 
 		if (signal?.aborted) {
+			this.#progressCallbacks.delete(id);
 			const reason = signal.reason instanceof Error ? signal.reason : new Error("Aborted");
 			return Promise.reject(reason);
 		}
@@ -473,12 +490,28 @@ export class StdioTransport implements MCPTransport {
 				signal.removeEventListener("abort", onAbort);
 			}
 			this.#pendingRequests.delete(id);
+			this.#progressCallbacks.delete(id);
 		};
 
+		let sent = false;
+		const stdin = this.#process.stdin;
+		const sendCancellation = (reason: string) => {
+			if (!sent || method === "initialize" || !this.#connected || this.#process?.stdin !== stdin) return;
+			void writeFrame(
+				stdin,
+				`${JSON.stringify({
+					jsonrpc: "2.0",
+					method: "notifications/cancelled",
+					params: { requestId: id, reason },
+				})}\n`,
+			).catch(() => {});
+		};
 		const onAbort = () => {
+			if (settled) return;
 			cleanup();
 			const reason = signal?.reason instanceof Error ? signal.reason : new Error("Aborted");
 			reject(reason);
+			sendCancellation("Request cancelled by the client");
 		};
 
 		if (signal) {
@@ -501,25 +534,23 @@ export class StdioTransport implements MCPTransport {
 				const timeoutError = new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`, "stdio");
 				cleanup();
 				reject(timeoutError);
-				// A request that outlives its timeout means the server stopped
-				// answering this pipe. Tear the transport down so the manager
-				// reconnects instead of leaving every later call to burn the
-				// full timeout on the same wedged process.
+				sendCancellation(`Request timed out after ${timeout}ms`);
 				void this.#handleTransportFailure(timeoutError).catch(() => {});
 			}, timeout);
 		}
 
-		const stdin = this.#process.stdin;
 		const message = `${JSON.stringify(request)}\n`;
 		const failFromSend = (error: unknown) => {
 			if (settled) return;
 			cleanup();
-			reject(normalizeMCPTransportError(error, { transport: "stdio", stage: "send" }));
+			const normalized = normalizeMCPTransportError(error, { transport: "stdio", stage: "send" });
+			reject(sent ? nonRetryableMCPTransportError(normalized) : normalized);
 		};
 		const send = writeFrame(stdin, message).catch(async error => {
 			failFromSend(error);
 			await this.#handleTransportFailure(error);
 		});
+		sent = true;
 		send.catch(() => {});
 
 		return promise;

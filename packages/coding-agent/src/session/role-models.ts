@@ -24,7 +24,11 @@ export function formatRoleModelValue(
 	const existingRoleValue = settings.getModelRole(role);
 	if (!existingRoleValue) return modelKey;
 	const thinkingLevel = extractExplicitThinkingSelector(existingRoleValue, settings, {
-		isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+		isLiteralModelId: (provider, id) => {
+			if (provider !== undefined) return modelRegistry.find(provider, id) !== undefined;
+			const lowerId = id.toLowerCase();
+			return modelRegistry.getAll().some(model => model.id.toLowerCase() === lowerId);
+		},
 	});
 	return formatModelSelectorValue(modelKey, thinkingLevel);
 }
@@ -38,7 +42,12 @@ function resolveConfiguredModelTarget(
 	if (!trimmedTarget) return undefined;
 	const parsed = parseModelString(trimmedTarget, {
 		allowMaxSuffix: true,
-		isLiteralModelId: (provider, id) => availableModels.some(model => model.provider === provider && model.id === id),
+		isLiteralModelId: (provider, id) =>
+			availableModels.some(model =>
+				provider === undefined
+					? model.id.toLowerCase() === id.toLowerCase()
+					: model.provider === provider && model.id === id,
+			),
 	});
 	if (parsed) {
 		const explicitModel = availableModels.find(model => model.provider === parsed.provider && model.id === parsed.id);

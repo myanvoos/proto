@@ -18,6 +18,7 @@ function buildAutocompleteFuzzyDiscoveryProfile(
 	hidden: boolean;
 	gitignore: boolean;
 	cache: boolean;
+	timeoutMs: number;
 	signal?: AbortSignal;
 } {
 	return {
@@ -27,6 +28,8 @@ function buildAutocompleteFuzzyDiscoveryProfile(
 		hidden: true,
 		gitignore: true,
 		cache: true,
+		// Bound symlink DAG walks so aborted popup refreshes cannot starve completion.
+		timeoutMs: 1500,
 		...(signal ? { signal } : {}),
 	};
 }
@@ -493,6 +496,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commandUsage?: (name: string) => number;
 
 	#dirCache: Map<string, { entries: fs.Dirent[]; timestamp: number }> = new Map();
+	#scopedBaseCache = new Map<string, { isDirectory: boolean; timestamp: number }>();
 	#dirInflight: Map<string, Promise<fs.Dirent[]>> = new Map();
 	#dirInflightGeneration: Map<string, number> = new Map();
 	// Epoch-based invalidation: every invalidateDirCache() bumps one counter
@@ -810,14 +814,28 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			baseDir = path.join(this.#basePath, displayBase);
 		}
 
-		try {
-			if (signal?.aborted) return null;
-			if (!(await untilAborted(signal, fs.promises.stat(baseDir))).isDirectory()) {
-				return null;
+		if (signal?.aborted) return null;
+		const now = Date.now();
+		let cached = this.#scopedBaseCache.get(baseDir);
+		if (!cached || now - cached.timestamp >= this.#DIR_CACHE_TTL) {
+			const generation = this.#dirCacheEpoch;
+			let isDirectory = false;
+			try {
+				isDirectory = (await untilAborted(signal, fs.promises.stat(baseDir))).isDirectory();
+			} catch {
+				if (signal?.aborted) return null;
 			}
-		} catch {
-			return null;
+			cached = { isDirectory, timestamp: now };
+			if (generation === this.#dirCacheEpoch) {
+				this.#scopedBaseCache.delete(baseDir);
+				this.#scopedBaseCache.set(baseDir, cached);
+				if (this.#scopedBaseCache.size > 100) {
+					const oldest = this.#scopedBaseCache.keys().next().value;
+					if (oldest !== undefined) this.#scopedBaseCache.delete(oldest);
+				}
+			}
 		}
+		if (!cached.isDirectory) return null;
 
 		return { baseDir, query, displayBase };
 	}
@@ -853,6 +871,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				// A cache entry computed against a stale generation (the
 				// directory was invalidated mid-read) must not be published.
 				if (this.#dirCacheEpoch === generation) {
+					this.#dirCache.delete(key);
 					this.#dirCache.set(key, { entries, timestamp: Date.now() });
 					this.#evictDirCacheOverflow();
 				}
@@ -871,11 +890,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 	#evictDirCacheOverflow(): void {
 		if (this.#dirCache.size <= 100) return;
-		const sortedKeys = [...this.#dirCache.entries()]
-			.sort((a, b) => a[1].timestamp - b[1].timestamp)
-			.slice(0, 50)
-			.map(([key]) => key);
-		for (const key of sortedKeys) {
+		let remaining = 50;
+		for (const key of this.#dirCache.keys()) {
+			if (remaining-- === 0) break;
 			this.#dirCache.delete(key);
 		}
 	}
@@ -887,8 +904,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		this.#dirCacheEpoch++;
 		if (dir) {
 			this.#dirCache.delete(path.resolve(dir));
+			this.#scopedBaseCache.delete(path.resolve(dir));
 		} else {
 			this.#dirCache.clear();
+			this.#scopedBaseCache.clear();
 		}
 	}
 
@@ -946,8 +965,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			if (signal?.aborted) return [];
 			const suggestions: AutocompleteItem[] = [];
 
+			const lowerSearchPrefix = searchPrefix.toLowerCase();
 			const matched = entries.filter(
-				entry => entry.name !== ".git" && entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase()),
+				entry => entry.name !== ".git" && entry.name.toLowerCase().startsWith(lowerSearchPrefix),
 			);
 
 			// Symlink classification costs one stat per link; bound the
@@ -1154,7 +1174,6 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const slashStart = findLeadingSlashCommandStart(textBeforeCursor);
 		if (slashStart === null) return null;
 		const commandText = textBeforeCursor.slice(slashStart);
-		if (commandText.length <= 1) return null;
 		if (commandText.includes(" ")) return null;
 
 		const prefix = commandText.slice(1);
@@ -1164,7 +1183,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			collapseSkillNamespace(this.#commands, lowerPrefix),
 			lowerPrefix,
 			this.#commandUsage,
-		).filter(item => item.value !== SKILL_NAMESPACE);
+		);
 
 		if (matches.length === 0) return null;
 

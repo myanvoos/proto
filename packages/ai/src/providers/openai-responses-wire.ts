@@ -2763,7 +2763,7 @@ export interface ResponseCreateParamsBase {
 
 	prompt_cache_retention?: "in_memory" | "24h" | null;
 
-	prompt_cache_options?: { mode: "implicit" | "explicit"; ttl?: "30m" } | null;
+	prompt_cache_options?: { mode: "implicit" | "explicit"; ttl?: "30m" | "12h" } | null;
 
 	reasoning?: Reasoning | null;
 

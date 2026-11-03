@@ -56,3 +56,38 @@ test("an empty-string error beside valid data is accepted as success", async () 
 	const result = await tool.execute("yield-call", { result: { data: { count: 3 }, error: "" } });
 	expect(result.details).toMatchObject({ status: "success", data: { count: 3 } });
 });
+
+test("strict provider optional nulls are omitted while explicit nullable fields remain null", async () => {
+	const tool = new YieldTool({
+		outputSchemaMode: "strict",
+		outputSchema: {
+			properties: { count: { type: "int32" } },
+			optionalProperties: { omitted: { type: "string" }, nullable: { type: "string", nullable: true } },
+		},
+	} as unknown as ToolSession);
+	const result = await tool.execute("strict-nulls", {
+		result: { data: { count: 3, omitted: null, nullable: null } },
+	});
+	expect(result.details).toMatchObject({ status: "success", data: { count: 3, nullable: null } });
+	expect(result.details?.data).not.toHaveProperty("omitted");
+});
+
+test("placeholder errors beside data do not discard the result but real errors remain conflicts", async () => {
+	const tool = yieldTool("strict");
+	for (const error of ["  ", " Unused ", "N/A"]) {
+		const result = await tool.execute("placeholder", { result: { data: { count: 3 }, error } });
+		expect(result.details).toMatchObject({ status: "success", data: { count: 3 } });
+	}
+	await expect(
+		tool.execute("real-error", { result: { data: { count: 3 }, error: "failed to save" } }),
+	).rejects.toThrow("both data and error");
+	const failed = await tool.execute("error-only", { result: { error: "unused" } });
+	expect(failed.details).toMatchObject({ status: "aborted", error: "unused" });
+});
+
+test("strict-provider null data placeholders do not conflict with a genuine failure outcome", async () => {
+	const result = await yieldTool("strict").execute("strict-error", {
+		result: { data: null, error: "failed to save" },
+	});
+	expect(result.details).toMatchObject({ status: "aborted", error: "failed to save" });
+});

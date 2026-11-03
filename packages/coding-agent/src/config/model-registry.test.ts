@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { fingerprintStaticModels } from "@oh-my-pi/pi-catalog/model-manager";
 import * as catalogModels from "@oh-my-pi/pi-catalog/models";
+import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import { ModelRegistry } from "./model-registry";
 import { Settings } from "./settings";
 
@@ -333,7 +335,21 @@ test("Codex Astra opens its 922K input window only with extended context, and ov
 		const modelsPath = path.join(tempDir!, `models-${extendedContext}-${modelOverrides ? "o" : "n"}.yml`);
 		await Bun.write(
 			modelsPath,
-			JSON.stringify(modelOverrides ? { providers: { "openai-codex": { modelOverrides } } } : {}),
+			JSON.stringify(
+				modelOverrides
+					? {
+							providers: {
+								"openai-codex": {
+									baseUrl: "https://chatgpt.com/backend-api",
+									api: "openai-codex-responses",
+									auth: "none",
+									models: [{ id: "custom-uncapped", contextWindow: 100_000 }],
+									modelOverrides,
+								},
+							},
+						}
+					: {},
+			),
 		);
 		return new ModelRegistry(authStorage!, modelsPath, {
 			cacheDbPath: path.join(tempDir!, "models.db"),
@@ -347,11 +363,11 @@ test("Codex Astra opens its 922K input window only with extended context, and ov
 
 	const overridden = await load(false, {
 		"gpt-6-astra": { contextWindow: 1_050_000 },
-		"gpt-5.5": { contextWindow: 2_000_000 },
+		"custom-uncapped": { contextWindow: 2_000_000 },
 	});
 	expect(overridden.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
 	// No curated or live maximum: the override passes through unclamped.
-	expect(overridden.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(2_000_000);
+	expect(overridden.find("openai-codex", "custom-uncapped")?.contextWindow).toBe(2_000_000);
 });
 
 test.each([
@@ -595,4 +611,106 @@ test("a disabled provider's model neither resolves by name nor gets a key", asyn
 	});
 	expect(enabled.find("openai", bundled.id)?.id).toBe(bundled.id);
 	expect(await enabled.getApiKey(bundled)).toBe("test-key");
+});
+
+test("custom model image budgets survive overrides and invalid fractional budgets reject the config", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-image-budget-"));
+	const modelsPath = path.join(tempDir, "models.yml");
+	await Bun.write(
+		modelsPath,
+		JSON.stringify({
+			providers: {
+				gateway: {
+					baseUrl: "https://gateway.invalid/v1",
+					api: "openai-completions",
+					auth: "none",
+					models: [{ id: "route", imageCountBudget: 7, tokenizer: "cl100k" }],
+					modelOverrides: { route: { imageCountBudget: 9 } },
+				},
+			},
+		}),
+	);
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	const registry = new ModelRegistry(authStorage, modelsPath, { cacheDbPath: path.join(tempDir, "models.db") });
+	expect(registry.getError()).toBeUndefined();
+	expect(registry.find("gateway", "route")?.imageCountBudget).toBe(9);
+	expect(registry.find("gateway", "route")?.tokenizer).toBe("cl100k");
+	await Bun.write(
+		modelsPath,
+		JSON.stringify({
+			providers: {
+				gateway: {
+					baseUrl: "https://gateway.invalid/v1",
+					api: "openai-completions",
+					auth: "none",
+					models: [{ id: "route", imageCountBudget: 1.5 }],
+				},
+			},
+		}),
+	);
+	const invalid = new ModelRegistry(authStorage, modelsPath, { cacheDbPath: path.join(tempDir, "invalid-models.db") });
+	expect(invalid.getError()?.message).toContain("imageCountBudget");
+});
+
+test("legacy model configuration migration publishes inline credentials with owner-only permissions", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-migration-"));
+	const modelsPath = path.join(tempDir, "models.yml");
+	await Bun.write(
+		path.join(tempDir, "models.json"),
+		JSON.stringify({
+			providers: {
+				gateway: {
+					baseUrl: "https://gateway.invalid/v1",
+					api: "openai-completions",
+					apiKey: "inline-secret",
+					models: [{ id: "route" }],
+				},
+			},
+		}),
+	);
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	const registry = new ModelRegistry(authStorage, modelsPath, { cacheDbPath: path.join(tempDir, "models.db") });
+	expect(registry.find("gateway", "route")?.provider).toBe("gateway");
+	expect((await fs.stat(modelsPath)).mode & 0o777).toBe(0o600);
+});
+
+test("offline account-scoped discovery restores its cached roster from an expired stored account", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-expired-cache-"));
+	const cachePath = path.join(tempDir, "models.db");
+	const accountKey = "expired-account-token";
+	const cached = buildModel({
+		id: "account-only-route",
+		name: "Account route",
+		provider: "kimi-code",
+		api: "openai-completions",
+		baseUrl: "https://api.kimi.com/coding/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 64000,
+		maxTokens: 8000,
+	});
+	writeModelCache(
+		resolveModelCacheProviderId("kimi-code", { apiKey: accountKey }),
+		Date.now(),
+		[cached],
+		true,
+		fingerprintStaticModels(catalogModels.getBundledModels("kimi-code"), { authoritative: true, additive: true }),
+		cachePath,
+	);
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	vi.spyOn(authStorage, "peekApiKey").mockImplementation(async (provider, options) =>
+		provider === "kimi-code" && options?.includeExpired ? accountKey : undefined,
+	);
+	const network: string[] = [];
+	const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), {
+		cacheDbPath: cachePath,
+		fetch: input => {
+			network.push(String(input));
+			return Promise.reject(new Error("offline must not fetch"));
+		},
+	});
+	await registry.refreshProvider("kimi-code", "offline");
+	expect(registry.find("kimi-code", "account-only-route")?.name).toBe("Account route");
+	expect(network).toEqual([]);
 });

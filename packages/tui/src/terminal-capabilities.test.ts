@@ -17,6 +17,7 @@ import {
 	shouldEnableSynchronizedOutputByDefault,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { tmuxClientProgramsFromReport } from "./tmux";
 
 const TERMINAL_ENV_KEYS = [
 	"PI_FORCE_IMAGE_PROTOCOL",
@@ -258,7 +259,7 @@ describe("tmux client terminal resolution", () => {
 			await Bun.write(
 				tmux,
 				`#!/bin/sh
-[ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = '#{client_termtype}' ] || exit 64
+[ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = '#{client_termtype}	#{client_termname}' ] || exit 64
 printf "%s\\n" "WezTerm 20260905-175422-0f4b5596"
 `,
 			);
@@ -295,4 +296,60 @@ printf "%s\\n" "WezTerm 20260905-175422-0f4b5596"
 			await fs.rm(binDir, { force: true, recursive: true });
 		}
 	});
+});
+
+describe("new terminal graphics identities", () => {
+	it("keeps Monstar graphics usable with placeholders and wide Jamo", () => {
+		const env = { TERM: "monstar", TERM_PROGRAM: "Monstar" };
+		const id = detectTerminalId(env);
+		expect(id).toBe("monstar");
+		expect(resolveImageProtocol(id, env, true)).toBe(ImageProtocol.Kitty);
+		expect(detectKittyUnicodePlaceholdersSupport(id, env)).toBe(true);
+		expect(getTerminalInfo(id).hangulJamoWidth).toBe(2);
+	});
+
+	it("recognizes Rex over SSH without assuming placeholder or hyperlink support", () => {
+		const env = { TERM: "xterm-rex" };
+		const id = detectTerminalId(env);
+		expect(id).toBe("rex");
+		expect(resolveImageProtocol(id, env, true)).toBe(ImageProtocol.Kitty);
+		expect(detectKittyUnicodePlaceholdersSupport(id, env)).toBe(false);
+		expect(shouldEnableHyperlinksByDefault(env, id)).toBe(false);
+	});
+
+	it("uses the emulator TERM when a nested tmux obscures its terminal-type reply", () => {
+		expect(tmuxClientProgramsFromReport("tmux 3.4\txterm-rex")).toEqual(["tmux", "rex"]);
+		expect(tmuxClientProgramsFromReport("\txterm-rex")).toEqual(["rex"]);
+	});
+});
+
+it("uses reported SIXEL backgrounds except in Zellij, where the theme fallback wins", async () => {
+	const source = `
+import { getTerminalBackgroundColor, setTerminalBackgroundColor, setTerminalBackgroundFallback } from "./src/terminal-capabilities.ts";
+const colors = [getTerminalBackgroundColor()];
+setTerminalBackgroundFallback(0x123456);
+colors.push(getTerminalBackgroundColor());
+setTerminalBackgroundColor(0xabcdef);
+colors.push(getTerminalBackgroundColor());
+setTerminalBackgroundColor(undefined);
+colors.push(getTerminalBackgroundColor());
+console.log(JSON.stringify(colors));
+`;
+	for (const zellij of [false, true]) {
+		const proc = Bun.spawn({
+			cmd: [process.execPath, "--eval", source],
+			cwd: import.meta.dir.replace(/\/src$/u, ""),
+			env: subprocessEnv({ COLORFGBG: "0;15", ...(zellij ? { ZELLIJ: "1" } : {}) }),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(JSON.parse(stdout)).toEqual([0xffffff, 0x123456, zellij ? 0x123456 : 0xabcdef, 0x123456]);
+	}
 });

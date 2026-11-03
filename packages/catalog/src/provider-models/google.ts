@@ -96,6 +96,7 @@ export function googleGeminiCliModelManagerOptions(
 						const fetcher = toDiscoveryFetch(config?.fetch);
 						const models = await fetchAntigravityDiscoveryModels({
 							token,
+							projectId: config?.projectId,
 							fetcher,
 							collapseTable: GEMINI_CLI_VARIANT_COLLAPSE_TABLE,
 						});

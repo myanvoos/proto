@@ -413,6 +413,45 @@ test("stray stdout writers go to stderr instead of corrupting the JSON-RPC strea
 	}
 }, 180_000);
 
+test("ACP handles remain usable after an extension resets the conversation and after restart", async () => {
+	const extension = path.join(tmpDir, "replace-conversation.ts");
+	await Bun.write(
+		extension,
+		'export default api => { api.registerCommand("replace-conversation", { handler: async (_args, ctx) => { await ctx.newSession(); } }); };',
+	);
+	const server = new AcpServer(["--model", "w7ok/mok", "-e", extension]);
+	let handle: string;
+	try {
+		await server.initialize();
+		handle = await server.newSession();
+		expect((await server.prompt(handle, "/replace-conversation")).error).toBeUndefined();
+		expect((await server.prompt(handle, "hello", 4)).result?.stopReason).toBe("end_turn");
+		expect(server.notifications("agent_message_chunk").every(frame => frame.params?.sessionId === handle)).toBe(true);
+		expect(await server.close()).toBe(0);
+	} finally {
+		server.kill();
+	}
+	const reopened = new AcpServer(["--model", "w7ok/mok"]);
+	try {
+		await reopened.initialize();
+		reopened.send({
+			jsonrpc: "2.0",
+			id: 2,
+			method: "session/load",
+			params: { sessionId: handle, cwd: workDir, mcpServers: [] },
+		});
+		const loaded = await reopened.response(2);
+		expect(loaded.error).toBeUndefined();
+		expect((await reopened.prompt(handle, "hello again", 3)).result?.stopReason).toBe("end_turn");
+		expect(reopened.notifications("agent_message_chunk").every(frame => frame.params?.sessionId === handle)).toBe(
+			true,
+		);
+	} finally {
+		await reopened.close();
+		reopened.kill();
+	}
+}, 30_000);
+
 afterAll(async () => {
 	flaky.stop(true);
 	unauthorized.stop(true);
@@ -420,3 +459,52 @@ afterAll(async () => {
 	streaming.stop(true);
 	await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
 });
+
+test("steering hands idle content back to the client and rejects malformed blocks without losing the session", async () => {
+	const server = new AcpServer(["--model", "w7ok/mok"]);
+	try {
+		const initialized = await server.initialize();
+		expect(initialized.result?._meta).toEqual({ steering: { supported: true } });
+		const sessionId = await server.newSession(2);
+		server.send({
+			jsonrpc: "2.0",
+			id: 3,
+			method: "_session/steering",
+			params: { sessionId, prompt: [{ type: "text", text: "keep ownership" }] },
+		});
+		expect((await server.response(3)).result).toEqual({ outcome: "promptRequired", queue: "steering" });
+		server.send({
+			jsonrpc: "2.0",
+			id: 4,
+			method: "_session/steering",
+			params: { sessionId, prompt: [{ type: "constructor" }] },
+		});
+		expect((await server.response(4)).error?.code).toBe(-32602);
+		server.send({
+			jsonrpc: "2.0",
+			id: 5,
+			method: "_session/steering",
+			params: { sessionId: "missing", prompt: "content" },
+		});
+		expect((await server.response(5)).error?.code).toBe(-32602);
+		const malformed = [
+			{ type: "resource", resource: { uri: "file:///image", blob: "eA==", mimeType: null } },
+			{ type: "resource_link", uri: "file:///doc", mimeType: 42 },
+			{ type: "resource_link", uri: "file:///doc", description: 42 },
+			{ type: "resource_link", uri: "file:///doc", size: "42" },
+		];
+		for (const [index, block] of malformed.entries()) {
+			server.send({
+				jsonrpc: "2.0",
+				id: index + 6,
+				method: "_session/steering",
+				params: { sessionId, prompt: [block] },
+			});
+			expect((await server.response(index + 6)).error?.code).toBe(-32602);
+		}
+		const completion = await server.prompt(sessionId, "hello", 10);
+		expect(completion.result?.stopReason).toBe("end_turn");
+	} finally {
+		server.kill();
+	}
+}, 180_000);

@@ -1,5 +1,11 @@
 import type { ModelManagerConfig, ProviderCatalogEntry, ProviderDescriptor } from "./descriptor-types";
 import { googleModelManagerOptions, googleVertexModelManagerOptions } from "./google";
+import {
+	coralbricksModelManagerOptions,
+	inceptionModelManagerOptions,
+	sambanovaModelManagerOptions,
+	scalewayModelManagerOptions,
+} from "./new-providers";
 import { ollamaCloudModelManagerOptions } from "./ollama";
 import {
 	abliterationModelManagerOptions,
@@ -295,6 +301,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "kimi-code",
+		dynamicModelsAuthoritative: true,
 		defaultModel: "kimi-for-coding",
 		createModelManagerOptions: (config: ModelManagerConfig) => kimiCodeModelManagerOptions(config),
 		catalogDiscovery: { label: "Kimi Code", envVars: ["KIMI_API_KEY"] },
@@ -570,35 +577,35 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "xiaomi",
-		defaultModel: "mimo-v2.5",
+		defaultModel: "mimo-v2.6",
 		envVars: ["XIAOMI_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => xiaomiModelManagerOptions(config),
 		catalogDiscovery: { label: "Xiaomi" },
 	},
 	{
 		id: "xiaomi-token-plan-ams",
-		defaultModel: "mimo-v2.5",
+		defaultModel: "mimo-v2.6",
 		envVars: ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) =>
 			xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-ams", tokenPlanRegion: "ams" }),
 	},
 	{
 		id: "xiaomi-token-plan-cn",
-		defaultModel: "mimo-v2.5",
+		defaultModel: "mimo-v2.6",
 		envVars: ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) =>
 			xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-cn", tokenPlanRegion: "cn" }),
 	},
 	{
 		id: "xiaomi-token-plan-sgp",
-		defaultModel: "mimo-v2.5",
+		defaultModel: "mimo-v2.6",
 		envVars: ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) =>
 			xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-sgp", tokenPlanRegion: "sgp" }),
 	},
 	{
 		id: "yolo-auto",
-		defaultModel: "qwen3.8-flash",
+		defaultModel: "qwen3.8-27b",
 		envVars: ["YOLO_AUTO_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => yoloAutoModelManagerOptions(config),
 		dynamicModelsAuthoritative: true,
@@ -626,6 +633,46 @@ export const CATALOG_PROVIDERS = [
 		createModelManagerOptions: (config: ModelManagerConfig) => zhipuCodingPlanModelManagerOptions(config),
 		dynamicModelsAuthoritative: true,
 		catalogDiscovery: { label: "Zhipu Coding Plan" },
+	},
+	{
+		id: "coralbricks",
+		defaultModel: "glm-5.3-fast",
+		envVars: ["CORAL_API_KEY", "CORALBRICKS_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => coralbricksModelManagerOptions(config),
+		skipCrossProviderReferenceFills: true,
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "CoralBricks" },
+	},
+	{
+		id: "sambanova",
+		defaultModel: "gpt-oss-120b",
+		envVars: ["SAMBANOVA_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => sambanovaModelManagerOptions(config),
+		skipCrossProviderReferenceFills: true,
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "SambaNova" },
+	},
+	{
+		id: "inception",
+		defaultModel: "mercury-3",
+		envVars: ["INCEPTION_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => inceptionModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Inception" },
+	},
+	{
+		id: "scaleway",
+		defaultModel: "glm-5.3",
+		envVars: ["SCW_SECRET_KEY", "SCW_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => scalewayModelManagerOptions(config),
+		skipCrossProviderReferenceFills: true,
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Scaleway" },
+	},
+	{
+		id: "modular",
+		defaultModel: "google/gemma-4-31b-it",
+		envVars: ["MODULAR_API_KEY"],
 	},
 ] as const satisfies readonly ProviderCatalogEntry[];
 

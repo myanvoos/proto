@@ -1,9 +1,22 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { formatSessionHistoryMarkdown } from "../session/session-history-format";
+import { formatSessionHistoryMarkdown, type ToolIOTransform } from "../session/session-history-format";
 
 export interface AdvisorObfuscator {
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string;
+	redactionPrefixEnd?(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number;
+}
+
+export function advisorToolIOTransform(
+	obfuscator: AdvisorObfuscator,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): ToolIOTransform {
+	const transform: ToolIOTransform = text => obfuscator.obfuscate(text, sharedRegexSecretValues);
+	if (obfuscator.redactionPrefixEnd) {
+		transform.redactionPrefixEnd = (text, limit) =>
+			obfuscator.redactionPrefixEnd!(text, limit, sharedRegexSecretValues);
+	}
+	return transform;
 }
 
 export const ADVISOR_RENDER_OPTIONS = {
@@ -44,6 +57,9 @@ export function renderAdvisorDeltaChunks(
 			toolResultIndex: resultsByCallId,
 			consumedToolCallIds: consumed,
 			watchedRoleState,
+			transformExpandedToolIO: opts.obfuscator
+				? advisorToolIOTransform(opts.obfuscator, opts.advisorRegexSecretValues)
+				: undefined,
 		});
 
 	const chunks: { role: "user"; content: TextContent[]; timestamp: number }[] = [];
@@ -64,7 +80,6 @@ export function renderAdvisorDeltaChunks(
 		for (let i = 0; i < chunks.length; i++) chunks[i].content[0].text = individuallyObfuscated[i];
 	}
 	chunks[0].content[0].text = `${ADVISOR_UPDATE_HEADING}\n\n${chunks[0].content[0].text}`;
-	if (chunks.length === 0) return null;
 	if (opts.wip) {
 		const last = chunks[chunks.length - 1];
 		last.content[0].text += ADVISOR_WIP_SUFFIX;

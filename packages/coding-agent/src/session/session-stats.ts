@@ -16,9 +16,15 @@ import type { ContextUsageBreakdown, SessionStats } from "./agent-session-types"
 import type { SessionEntry, SessionMessageEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
+interface NonMessageSnapshot {
+	nonMessageTokens: number;
+	toolSchemaTokens?: number;
+}
+
 interface PendingContextSnapshot {
 	promptTokens: number;
 	nonMessageTokens: number;
+	toolSchemaTokens: number;
 	cutoffCount: number;
 
 	epoch: number;
@@ -61,17 +67,25 @@ export class SessionStatsTracker {
 
 	#anchoredUsedTokens(
 		base: number,
-		anchorNonMessageTokens: number,
-		currentNonMessageTokens: number,
+		anchor: NonMessageSnapshot,
+		current: Required<NonMessageSnapshot>,
 		tailFromIndex: number,
 		activeMessages: readonly AgentMessage[],
 		pendingTokens: number,
 	): number {
+		const delta =
+			anchor.toolSchemaTokens === undefined
+				? Math.max(0, current.nonMessageTokens - anchor.nonMessageTokens)
+				: Math.max(
+						0,
+						current.nonMessageTokens -
+							current.toolSchemaTokens -
+							(anchor.nonMessageTokens - anchor.toolSchemaTokens),
+					) +
+					current.toolSchemaTokens -
+					anchor.toolSchemaTokens;
 		return (
-			base +
-			Math.max(0, currentNonMessageTokens - anchorNonMessageTokens) +
-			this.#tokenizer.countMessages(activeMessages.slice(tailFromIndex)) +
-			pendingTokens
+			Math.max(0, base + delta) + this.#tokenizer.countMessages(activeMessages.slice(tailFromIndex)) + pendingTokens
 		);
 	}
 
@@ -175,7 +189,10 @@ export class SessionStatsTracker {
 			this.#tokenizer,
 		);
 		const categoryNonMessageTokens = skillsTokens + toolsTokens + systemContextTokens + systemPromptTokens;
-		const currentNonMessageTokens = computeNonMessageTokens(this.#host.session, this.#tokenizer);
+		const current = {
+			nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
+			toolSchemaTokens: toolsTokens,
+		};
 		const { entries: branchEntries, latestAnchor } = this.#contextBranch();
 		let usedTokens = 0;
 		let anchored = false;
@@ -205,14 +222,11 @@ export class SessionStatsTracker {
 			anchorIndex !== -1 &&
 			(!pending || (anchorIndex >= pending.cutoffCount && anchorEpoch >= pending.epoch));
 		if (useAnchor && anchorAssistant) {
-			const nonMessageTokens =
-				anchorAssistant.contextSnapshot?.nonMessageTokens ??
-				computeNonMessageTokens(this.#host.session, this.#tokenizer);
 			anchored = true;
 			usedTokens = this.#anchoredUsedTokens(
 				correctedPromptTokens(anchorAssistant),
-				nonMessageTokens,
-				currentNonMessageTokens,
+				anchorAssistant.contextSnapshot ?? current,
+				current,
 				anchorIndex + 1,
 				activeMessages,
 				pendingTokens,
@@ -221,8 +235,8 @@ export class SessionStatsTracker {
 			anchored = true;
 			usedTokens = this.#anchoredUsedTokens(
 				pending.promptTokens,
-				pending.nonMessageTokens,
-				currentNonMessageTokens,
+				pending,
+				current,
 				pending.cutoffCount,
 				activeMessages,
 				pendingTokens,
@@ -232,13 +246,10 @@ export class SessionStatsTracker {
 		if (!anchored && !pending && branchEntries.length === 0) {
 			const liveAnchor = findTranscriptUsageAnchor(activeMessages);
 			if (liveAnchor) {
-				const nonMessageTokens =
-					liveAnchor.message.contextSnapshot?.nonMessageTokens ??
-					computeNonMessageTokens(this.#host.session, this.#tokenizer);
 				usedTokens = this.#anchoredUsedTokens(
 					correctedPromptTokens(liveAnchor.message),
-					nonMessageTokens,
-					currentNonMessageTokens,
+					liveAnchor.message.contextSnapshot ?? current,
+					current,
 					liveAnchor.index + 1,
 					activeMessages,
 					pendingTokens,
@@ -247,7 +258,7 @@ export class SessionStatsTracker {
 			}
 		}
 		if (!anchored) {
-			usedTokens = currentNonMessageTokens + this.#tokenizer.countMessages(activeMessages) + pendingTokens;
+			usedTokens = current.nonMessageTokens + this.#tokenizer.countMessages(activeMessages) + pendingTokens;
 		}
 		return {
 			contextWindow,
@@ -279,8 +290,19 @@ export class SessionStatsTracker {
 		return this.#compactionEpoch;
 	}
 
-	get pendingNonMessageTokens(): number | undefined {
-		return this.#pendingContextSnapshot?.nonMessageTokens;
+	/** Accounting captured with the active request, not a later model's schema policy. */
+	nonMessageSnapshot(): Required<NonMessageSnapshot> {
+		const pending = this.#pendingContextSnapshot;
+		return pending
+			? { nonMessageTokens: pending.nonMessageTokens, toolSchemaTokens: pending.toolSchemaTokens }
+			: this.#currentNonMessageSnapshot();
+	}
+
+	#currentNonMessageSnapshot(): Required<NonMessageSnapshot> {
+		return {
+			nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
+			toolSchemaTokens: computeNonMessageBreakdown(this.#host.session, this.#tokenizer).toolsTokens,
+		};
 	}
 
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void {
@@ -299,7 +321,7 @@ export class SessionStatsTracker {
 		if (!assistant.contextSnapshot) {
 			assistant.contextSnapshot = {
 				promptTokens: calculatePromptTokens(assistant.usage),
-				nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
+				...this.#currentNonMessageSnapshot(),
 				compactionEpoch: this.#compactionEpoch,
 			};
 		}
@@ -308,8 +330,14 @@ export class SessionStatsTracker {
 		this.#contextUsageRevision++;
 	}
 
-	setPendingSnapshot(snapshot: Omit<PendingContextSnapshot, "epoch"> | undefined): void {
-		this.#pendingContextSnapshot = snapshot ? { ...snapshot, epoch: this.#compactionEpoch } : undefined;
+	setPendingSnapshot(snapshot: Omit<PendingContextSnapshot, "epoch" | "toolSchemaTokens"> | undefined): void {
+		this.#pendingContextSnapshot = snapshot
+			? {
+					...snapshot,
+					toolSchemaTokens: computeNonMessageBreakdown(this.#host.session, this.#tokenizer).toolsTokens,
+					epoch: this.#compactionEpoch,
+				}
+			: undefined;
 		this.#contextUsageRevision++;
 	}
 

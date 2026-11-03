@@ -64,3 +64,31 @@ describe("advisor compaction replay", () => {
 		expect(JSON.stringify(advisorMock.calls[0]!.context.messages)).toContain("ADVISOR_COMPACTED_HISTORY_MARKER");
 	});
 });
+
+it.each(["main", "sub"] as const)("attaches only advisors whose scope includes the %s session", async agentKind => {
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected bundled model");
+	const auth = await AuthStorage.create(":memory:");
+	auth.setRuntimeApiKey("anthropic", "test-key");
+	const settings = Settings.isolated({ "compaction.enabled": false, "retry.enabled": false });
+	const agent = new Agent({ getApiKey: () => "test-key", initialState: { model, tools: [] } });
+	const session = new AgentSession({
+		agent,
+		agentKind,
+		sessionManager: SessionManager.inMemory(),
+		settings,
+		modelRegistry: new ModelRegistry(auth),
+		advisorTools: [],
+		advisorConfigs: [
+			{ name: "main-only", scope: "main", model: "anthropic/claude-sonnet-4-5" },
+			{ name: "sub-only", scope: "subagent", model: "anthropic/claude-sonnet-4-5" },
+			{ name: "every-session", model: "anthropic/claude-sonnet-4-5", includeReasoning: false },
+		],
+	});
+	active = { session, auth };
+	expect(session.setAdvisorEnabled(true)).toBe(true);
+	expect(session.getAdvisorStats().advisors.map(advisor => advisor.name)).toEqual([
+		agentKind === "main" ? "main-only" : "sub-only",
+		"every-session",
+	]);
+});

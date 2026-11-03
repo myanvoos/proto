@@ -148,7 +148,7 @@ test("an unreadable directory is reported as unreadable, not as empty", async ()
 	const locked = await runCli(["read", "locked"]);
 	expect(locked.exitCode).toBe(1);
 	expect(locked.stderr).toContain("Cannot read directory");
-	expect(locked.stderr).toContain("EACCES");
+	expect(locked.stderr).toMatch(/permission denied|EACCES/i);
 	expect(locked.stdout).not.toContain("(empty directory)");
 }, 60_000);
 
@@ -196,13 +196,14 @@ test("a session that reads a FIFO finishes its turn with a tool error", async ()
 	}
 }, 120_000);
 
-test("character devices and regular files keep their existing behaviour", async () => {
+test("character devices fail fast while regular files remain readable", async () => {
 	const devNull = await runCli(["read", "/dev/null"]);
-	expect(devNull.exitCode).toBe(0);
+	expect(devNull.exitCode).toBe(1);
+	expect(devNull.stderr).toContain("character device");
 
 	const devZero = await runCli(["read", "/dev/zero"]);
-	expect(devZero.exitCode).toBe(0);
-	expect(devZero.stdout).toContain("binary file");
+	expect(devZero.exitCode).toBe(1);
+	expect(devZero.stderr).toContain("character device");
 
 	const plain = await runCli(["read", "plain.txt"]);
 	expect(plain.exitCode).toBe(0);

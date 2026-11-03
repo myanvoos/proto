@@ -31,6 +31,7 @@
 		"int": 23.9,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -111,9 +112,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -162,7 +163,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"mimo-v2.5": {
 		"id": "mimo-v2.5",
@@ -196,6 +198,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -264,8 +267,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"int": 26,
-		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -279,6 +280,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -361,6 +363,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -443,6 +446,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -525,6 +529,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

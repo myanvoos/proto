@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Fixed
+
+- Apply numeric bounds consistently, including exponent-form and unsatisfiable ranges.
+
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed

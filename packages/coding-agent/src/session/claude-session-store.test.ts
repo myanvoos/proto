@@ -168,3 +168,64 @@ describe("ClaudeSessionStore", () => {
 		expect(after?.message).toMatchObject({ content: [{ type: "text", text: "Preserve this after the result." }] });
 	});
 });
+
+it("lists the sanitized current Claude sidecar rename and imports it as a user title", async () => {
+	const root = path.join(tempRoot, ".claude");
+	const id = "sidecar-session";
+	const file = path.join(root, "projects", "-project", `${id}.jsonl`);
+	await writeJsonl(file, [
+		{ type: "custom-title", customTitle: "Old transcript rename" },
+		{ type: "ai-title", aiTitle: "Generated name" },
+		{ type: "user", uuid: "u", message: { content: "A named conversation" } },
+	]);
+	await Bun.write(
+		path.join(path.dirname(file), id, "custom-title.json"),
+		JSON.stringify({ customTitle: "\u001b[31mCurrent\u001b[0m\tuser\nrename" }),
+	);
+	const store = new ClaudeSessionStore(root);
+	const [info] = await store.list();
+	expect(info.title).toBe("Current user rename");
+	const manager = await store.load(info);
+	try {
+		expect(manager.getSessionName()).toBe("Current user rename");
+		expect(manager.titleSource).toBe("user");
+	} finally {
+		await manager.close();
+	}
+	await Bun.write(path.join(path.dirname(file), id, "custom-title.json"), "{broken");
+	const [fallback] = await store.list();
+	const imported = await store.load(fallback);
+	try {
+		expect(imported.getSessionName()).toBe("Old transcript rename");
+	} finally {
+		await imported.close();
+	}
+});
+
+it("retains the last real model when a Claude API error has a synthetic model placeholder", async () => {
+	const root = path.join(tempRoot, ".claude");
+	const id = "synthetic-session";
+	await writeJsonl(path.join(root, "projects", "-project", `${id}.jsonl`), [
+		{ type: "assistant", uuid: "a", message: { model: "claude-real", content: [{ type: "text", text: "answer" }] } },
+		{
+			type: "assistant",
+			uuid: "b",
+			parentUuid: "a",
+			isApiErrorMessage: true,
+			message: { model: "<synthetic>", content: [{ type: "text", text: "API Error" }] },
+		},
+	]);
+	const store = new ClaudeSessionStore(root);
+	const manager = await store.load((await store.list())[0]);
+	try {
+		expect(manager.buildSessionContext().models.default).toBe("anthropic/claude-real");
+		expect(
+			manager
+				.getEntries()
+				.filter(entry => entry.type === "model_change")
+				.map(entry => entry.model),
+		).toEqual(["anthropic/claude-real"]);
+	} finally {
+		await manager.close();
+	}
+});

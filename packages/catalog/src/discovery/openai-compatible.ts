@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { Api, FetchImpl, ModelSpec, Provider } from "../types";
-import { discoveryFetch } from "../utils";
+import { discoveryFetch, isRecord, parseServiceTierIds } from "../utils";
 
 const MODELS_PATH = "/models";
 
@@ -43,6 +43,8 @@ const openAICompatibleModelRecordSchema = type({
 	"name?": "string | null",
 	"object?": "unknown",
 	"owned_by?": "unknown",
+	"service_tiers?": "unknown",
+	"metadata?": "unknown",
 });
 
 const openAICompatibleModelsEnvelopeSchema = type({
@@ -72,6 +74,8 @@ export interface FetchOpenAICompatibleModelsOptions<TApi extends Api> {
 	apiKey?: string;
 
 	headers?: Record<string, string>;
+
+	query?: Readonly<Record<string, string>>;
 
 	signal?: AbortSignal;
 
@@ -104,11 +108,13 @@ export async function fetchOpenAICompatibleModels<TApi extends Api>(
 		requestHeaders.Authorization = `Bearer ${options.apiKey}`;
 	}
 
+	const requestUrl = new URL(`${baseUrl}${MODELS_PATH}`);
+	for (const [key, value] of Object.entries(options.query ?? {})) requestUrl.searchParams.set(key, value);
 	const fetchImpl = discoveryFetch(options.fetch);
 	const fetchPayload = async (signal?: AbortSignal): Promise<unknown | null> => {
 		let response: Response;
 		try {
-			response = await fetchImpl(`${baseUrl}${MODELS_PATH}`, {
+			response = await fetchImpl(requestUrl.toString(), {
 				method: "GET",
 				headers: requestHeaders,
 				signal,
@@ -162,6 +168,9 @@ export async function fetchOpenAICompatibleModels<TApi extends Api>(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: null,
 			maxTokens: null,
+			serviceTiers: parseServiceTierIds(
+				entry.service_tiers ?? (isRecord(entry.metadata) ? entry.metadata.service_tiers : undefined),
+			),
 		};
 
 		const mapped = options.mapModel ? options.mapModel(entry, defaults, context) : defaults;

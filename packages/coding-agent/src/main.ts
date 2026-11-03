@@ -14,6 +14,8 @@ import {
 	getLogPath,
 	getProjectDir,
 	isBunTestRuntime,
+	isEnoent,
+	isEnotdir,
 	logger,
 	normalizePathForComparison,
 	postmortem,
@@ -90,6 +92,7 @@ import {
 	createAgentSession,
 	discoverAuthStorage,
 	loadSessionExtensions,
+	SessionModelRestoreError,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import {
@@ -304,7 +307,7 @@ export async function submitInteractiveInput(
 				display: input.display ?? false,
 				attribution: "agent" as const,
 			};
-			await session.promptCustomMessage(message, { streamingBehavior });
+			input.dispatched = await session.promptCustomMessage(message, { streamingBehavior });
 		} else if (input.synthetic) {
 			await session.prompt(input.text, {
 				synthetic: true,
@@ -445,6 +448,7 @@ async function runInteractiveMode(
 	initialMessage?: string,
 	initialImages?: ImageContent[],
 	startupLease?: ComposerLease,
+	refreshScopedModelsAfterLogin?: (session: AgentSession) => Promise<void>,
 ): Promise<void> {
 	let mode: InteractiveMode;
 	try {
@@ -457,6 +461,9 @@ async function runInteractiveMode(
 			eventBus,
 			startupLease?.composer,
 		);
+		mode.refreshScopedModelsAfterLogin = refreshScopedModelsAfterLogin
+			? () => refreshScopedModelsAfterLogin(mode.session)
+			: undefined;
 		startupLease?.adopt();
 	} catch (error) {
 		startupLease?.dispose();
@@ -702,8 +709,19 @@ async function switchToResumedProject(
 	return { cwd };
 }
 
-function notifyResumedProjectFallback(parsedArgs: Args, resumed: ResumedProject): void {
+function notifyResumedProjectFallback(
+	parsedArgs: Args,
+	resumed: ResumedProject,
+	notifs?: (InteractiveModeNotify | null)[],
+): void {
 	if (!resumed.unenterable) return;
+	if (notifs) {
+		notifs.push({
+			kind: "warn",
+			message: `Could not switch to resumed project ${resumed.unenterable}; staying in ${resumed.cwd}.`,
+		});
+		return;
+	}
 	writeStartupNotice(
 		parsedArgs,
 		`${chalk.yellow(`Could not switch to resumed project ${resumed.unenterable}; staying in ${resumed.cwd}.`)}\n`,
@@ -802,10 +820,18 @@ export async function rebuildScopedModelsAfterDiscovery(
 	modelRegistry: Pick<ModelRegistry, "getAvailable" | "awaitBackgroundRefresh">,
 	activeSettings: Settings,
 ): Promise<void> {
-	const patterns = parsed.models ?? activeSettings.get("enabledModels");
-	if (!patterns || patterns.length === 0) return;
 	await modelRegistry.awaitBackgroundRefresh();
-	if (session.isDisposed) return;
+	await rebuildScopedModels(session, parsed, modelRegistry, activeSettings);
+}
+
+export async function rebuildScopedModels(
+	session: ScopedModelSink,
+	parsed: Args,
+	modelRegistry: Pick<ModelRegistry, "getAvailable">,
+	activeSettings: Settings,
+): Promise<ScopedModel[] | undefined> {
+	const patterns = parsed.models ?? activeSettings.get("enabledModels");
+	if (!patterns || patterns.length === 0 || session.isDisposed) return undefined;
 	const rebuilt = await resolveModelScope(
 		patterns,
 		modelRegistry,
@@ -813,8 +839,9 @@ export async function rebuildScopedModelsAfterDiscovery(
 		activeSettings,
 	);
 	const mapped = toSessionScopedModels(rebuilt, activeSettings);
-	if (mapped.length === 0 || sameScopedModelSet(session.scopedModels, mapped)) return;
+	if (session.isDisposed || mapped.length === 0 || sameScopedModelSet(session.scopedModels, mapped)) return undefined;
 	session.setScopedModels(mapped);
+	return rebuilt;
 }
 
 async function getChangelogForDisplay(
@@ -899,17 +926,24 @@ export async function createSessionManager(
 					`Run \`proto --fork ${sessionPath}\` to continue in a copy, or close the other process first.`,
 				);
 			}
-			return SessionManager.open(sessionPath, parsed.sessionDir);
+			return SessionManager.open(sessionPath, parsed.sessionDir, undefined, { throwIfMissing: true });
 		}
 		const manager = SessionManager.inMemory(cwd);
-		await manager.setSessionFile(sessionPath);
+		await manager.setSessionFile(sessionPath, { throwIfMissing: true });
 		return manager;
 	};
 
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
-			return await openSession(sessionArg);
+			try {
+				return await openSession(sessionArg);
+			} catch (error) {
+				if (isEnoent(error) || isEnotdir(error)) {
+					throw new SessionResolutionError(`Session "${sessionArg}" not found.`, FORK_NOT_FOUND_HINT);
+				}
+				throw error;
+			}
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
@@ -1030,6 +1064,7 @@ export async function buildSessionOptions(
 	sessionManager: SessionManager | undefined,
 	modelRegistry: ModelRegistry,
 	activeSettings: Settings,
+	warn: (message: string) => void = message => process.stderr.write(`${chalk.yellow(`Warning: ${message}`)}\n`),
 ): Promise<CreateAgentSessionOptions> {
 	const options: CreateAgentSessionOptions = {
 		cwd: parsed.cwd ?? getProjectDir(),
@@ -1099,7 +1134,7 @@ export async function buildSessionOptions(
 			preferences: modelMatchPreferences,
 		});
 		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			warn(resolved.warning);
 		}
 		if (resolved.disabledProvider !== undefined) {
 			// Deferring a disabled pin to post-extension resolution would let it through.
@@ -1245,21 +1280,15 @@ export async function buildSessionOptions(
 			lastResolution ??
 			resolveCandidate(targetPatterns[0] ?? target);
 		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			warn(resolved.warning);
 		}
 
 		if (resolved.error || !resolved.model) {
-			process.stderr.write(
-				`${chalk.yellow(`Warning: prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`)}\n`,
-			);
+			warn(`prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`);
 		} else if (disabledProviders.has(resolved.model.provider)) {
-			process.stderr.write(
-				`${chalk.yellow(`Warning: prewalk disabled — provider "${resolved.model.provider}" is disabled`)}\n`,
-			);
+			warn(`prewalk disabled — provider "${resolved.model.provider}" is disabled`);
 		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			process.stderr.write(
-				`${chalk.yellow(`Warning: prewalk disabled — no API key for ${resolved.model.provider}/${resolved.model.id}`)}\n`,
-			);
+			warn(`prewalk disabled — no API key for ${resolved.model.provider}/${resolved.model.id}`);
 		} else {
 			options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 		}
@@ -1301,6 +1330,10 @@ export async function buildSessionOptions(
 
 	if (parsed.noRules) {
 		options.rules = [];
+	}
+
+	if (parsed.noContextFiles) {
+		options.noContextFiles = true;
 	}
 
 	if (parsed.trustedExtensions && parsed.trustedExtensions.length > 0) {
@@ -1432,6 +1465,9 @@ export async function runRootCommand(
 		await logger.time("initTheme:initial", ensureTheme);
 
 		const parsedArgs = parsed;
+		const explicitSessionSelection = Boolean(
+			parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || isForeignSessionImport(parsedArgs),
+		);
 		await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
 		if (parsedArgs.sessionDir) await assertSessionDirUsable(parsedArgs.sessionDir);
 
@@ -1582,6 +1618,11 @@ export async function runRootCommand(
 			},
 		});
 
+		await modelRegistry.hydrateCredentialScopedModelCaches();
+		for (const warning of sanitizeDisplayWarnings(modelRegistry.drainConfigWarnings())) {
+			if (isInteractive) notifs.push({ kind: "warn", message: warning });
+			else process.stderr.write(`${chalk.yellow(`Warning: ${warning}`)}\n`);
+		}
 		let scopedModels = await logger.time("resolveModelScope", () =>
 			resolveScopedModels(parsedArgs, modelRegistry, settingsInstance, { reportUnmatched: true }),
 		);
@@ -1689,7 +1730,7 @@ export async function runRootCommand(
 				sessionManager,
 			);
 			cwd = resumed.cwd;
-			notifyResumedProjectFallback(parsedArgs, resumed);
+			notifyResumedProjectFallback(parsedArgs, resumed, isInteractive ? notifs : undefined);
 			if (cwd !== previousCwd) {
 				parsedArgs.cwd = cwd;
 
@@ -1761,7 +1802,7 @@ export async function runRootCommand(
 				sessionManager,
 			);
 			cwd = resumed.cwd;
-			notifyResumedProjectFallback(parsedArgs, resumed);
+			notifyResumedProjectFallback(parsedArgs, resumed, isInteractive ? notifs : undefined);
 			if (cwd !== previousCwd) {
 				parsedArgs.cwd = cwd;
 				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
@@ -1788,12 +1829,6 @@ export async function runRootCommand(
 			await logger.time("registerDaemonProjectPresence", registerDaemonProjectPresence, cwd);
 		}
 
-		scheduleMarketplaceAutoUpdate({
-			autoUpdate: settingsInstance.get("marketplace.autoUpdate"),
-			resolveActiveProjectRegistryPath,
-			clearPluginRootsCache: clearPluginRootsAndCaches,
-		});
-
 		const sessionOptions = await logger.time(
 			"buildSessionOptions",
 			buildSessionOptions,
@@ -1802,10 +1837,15 @@ export async function runRootCommand(
 			sessionManager,
 			modelRegistry,
 			settingsInstance,
+			(warning: string) => {
+				if (isInteractive) notifs.push({ kind: "warn", message: warning });
+				else process.stderr.write(`${chalk.yellow(`Warning: ${warning}`)}\n`);
+			},
 		);
 		sessionOptions.authStorage = authStorage;
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+		sessionOptions.allowSessionModelFallback = isInteractive;
 		sessionOptions.settings = settingsInstance;
 
 		await logger.time("initTelemetryExport", initTelemetryExport);
@@ -1910,11 +1950,31 @@ export async function runRootCommand(
 					)
 				: undefined;
 
-			const { session, setToolUIContext, modelFallbackMessage, mcpManager } = await createSession({
-				...sessionOptions,
-				eventBus,
-				preloadedExtensions: extensionsResult,
-			});
+			const startupOptions = { ...sessionOptions, eventBus, preloadedExtensions: extensionsResult };
+			let created: CreateAgentSessionResult;
+			try {
+				created = await createSession(startupOptions);
+			} catch (error) {
+				if (
+					!(error instanceof SessionModelRestoreError) ||
+					!isInteractive ||
+					explicitSessionSelection ||
+					!parsedArgs.continue
+				)
+					throw error;
+				await sessionManager?.close();
+				sessionManager = parsedArgs.noSession
+					? SessionManager.inMemory(cwd)
+					: SessionManager.create(cwd, parsedArgs.sessionDir);
+				claimSessionOwnership(sessionManager.getSessionFile());
+				parsedArgs.continue = false;
+				notifs.push({
+					kind: "warn",
+					message: `Auto resume skipped: ${sanitizeDisplayWarnings([error.message])[0]}. Started a new session without the saved history.`,
+				});
+				created = await createSession({ ...startupOptions, sessionManager });
+			}
+			const { session, setToolUIContext, modelFallbackMessage, mcpManager } = created;
 
 			// A session started fresh here (no --resume/--continue) is resolved inside
 			// createAgentSession, so this is the first moment its file is known: claim it
@@ -1928,6 +1988,12 @@ export async function runRootCommand(
 				await session.dispose();
 				throw error;
 			}
+
+			scheduleMarketplaceAutoUpdate({
+				autoUpdate: settingsInstance.get("marketplace.autoUpdate"),
+				resolveActiveProjectRegistryPath,
+				clearPluginRootsCache: clearPluginRootsAndCaches,
+			});
 
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 				createPersistedSubagentReviverFactory({
@@ -1944,6 +2010,10 @@ export async function runRootCommand(
 			}
 
 			const configuredScope = parsedArgs.models ?? settingsInstance.get("enabledModels");
+			if (configuredScope.length > 0) {
+				const rebuilt = await rebuildScopedModels(session, parsedArgs, modelRegistry, settingsInstance);
+				if (rebuilt) scopedModels = rebuilt;
+			}
 			if (isInteractive && configuredScope.length > 0) {
 				void rebuildScopedModelsAfterDiscovery(session, parsedArgs, modelRegistry, settingsInstance).catch(error =>
 					logger.warn("Scoped model rebuild after discovery failed", { error: String(error) }),
@@ -1952,6 +2022,9 @@ export async function runRootCommand(
 
 			if (modelFallbackMessage) {
 				notifs.push({ kind: "warn", message: modelFallbackMessage });
+				if (!isInteractive && session.model) {
+					process.stderr.write(`${chalk.yellow(`Warning: ${modelFallbackMessage}`)}\n`);
+				}
 			}
 
 			const modelRegistryError = modelRegistry.getError();
@@ -2033,6 +2106,9 @@ export async function runRootCommand(
 						initialMessage,
 						initialImages,
 						startupLease,
+						async currentSession => {
+							await rebuildScopedModels(currentSession, parsedArgs, modelRegistry, settingsInstance);
+						},
 					);
 				} finally {
 					startupLease?.dispose();

@@ -629,6 +629,7 @@ class DaemonBroker {
 	readonly #sockets = new Set<net.Socket>();
 	#server: net.Server | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
+	#endpointTimer: NodeJS.Timeout | undefined;
 	#shuttingDown = false;
 
 	constructor(
@@ -637,6 +638,7 @@ class DaemonBroker {
 		token: string,
 		idleGraceMs: number,
 		restartBackoffBaseMs: number,
+		private readonly endpointCheckMs: number,
 	) {
 		this.#projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
@@ -657,6 +659,17 @@ class DaemonBroker {
 		server.listen(this.#endpoint);
 		await listening;
 		await fs.chmod(this.#endpoint, 0o600);
+		this.#endpointTimer = setInterval(() => {
+			void fs
+				.stat(this.#endpoint)
+				.catch(async error => {
+					if (!isEnoent(error) || this.#shuttingDown) return;
+					logger.warn("Daemon broker socket was deleted; releasing the scope", { endpoint: this.#endpoint });
+					await this.shutdown();
+				})
+				.catch(error => logger.warn("Daemon broker socket recovery failed", { error: String(error) }));
+		}, this.endpointCheckMs);
+		this.#endpointTimer.unref();
 		this.#scheduleIdleShutdown();
 		await this.#finished.promise;
 	}
@@ -666,6 +679,8 @@ class DaemonBroker {
 		this.#shuttingDown = true;
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = undefined;
+		clearInterval(this.#endpointTimer);
+		this.#endpointTimer = undefined;
 		for (const record of this.#records.values()) {
 			const detached = record.spec.detached && !record.stopRequested && record.snapshot.pid !== undefined;
 			if (!detached && !terminalState(record.snapshot.state)) await this.#stopRecord(record, 2_000);
@@ -1788,6 +1803,7 @@ class DaemonBroker {
 }
 
 export interface DaemonBrokerStartOptions {
+	endpointCheckMs?: number;
 	restartBackoffBaseMs?: number;
 }
 
@@ -1824,7 +1840,14 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 	});
 	const token = (await Bun.file(path.join(runtimeDir, TOKEN_FILE)).text()).trim();
 	if (!token) throw new Error("Daemon broker token is empty");
-	const broker = new DaemonBroker(projectDir, runtimeDir, token, idleGraceMs, restartBackoffBaseMs);
+	const broker = new DaemonBroker(
+		projectDir,
+		runtimeDir,
+		token,
+		idleGraceMs,
+		restartBackoffBaseMs,
+		options.endpointCheckMs ?? 5_000,
+	);
 	const cancelCleanup = postmortem.register("daemon-broker", () => broker.shutdown());
 	try {
 		await broker.run();

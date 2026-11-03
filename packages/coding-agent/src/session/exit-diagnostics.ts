@@ -89,6 +89,16 @@ function readSessionExit(entry: SessionEntry): SessionExitData | undefined {
 	};
 }
 
+/** Process-exit recovery, rather than live-fork repair, owns a source whose writer exited. */
+export function sessionExitFollowsLastMessage(entries: readonly SessionEntry[]): boolean {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "message") return false;
+		if (readSessionExit(entry)) return true;
+	}
+	return false;
+}
+
 export function createInterruptedTurnAbortMessage(
 	entries: readonly SessionEntry[],
 	fallbackModel?: AssistantModelMetadata,

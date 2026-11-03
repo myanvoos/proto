@@ -10,30 +10,22 @@ use brush_core::{
 };
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct TypeCommand {
-
 	#[arg(short = 'a')]
 	all_locations: bool,
-
 
 	#[arg(short = 'f')]
 	suppress_func_lookup: bool,
 
-
-
 	#[arg(short = 'P')]
 	force_path_search: bool,
-
 
 	#[arg(short = 'p')]
 	show_path_only: bool,
 
-
 	#[arg(short = 't')]
 	type_only: bool,
-
 
 	names: Vec<String>,
 }
@@ -69,7 +61,6 @@ impl builtins::Command for TypeCommand {
 
 			for resolved_type in resolved_types {
 				if self.show_path_only && !matches!(resolved_type, ResolvedType::File { .. }) {
-
 				} else if self.type_only {
 					match resolved_type {
 						ResolvedType::Alias(_) => {
@@ -109,8 +100,6 @@ impl builtins::Command for TypeCommand {
 						},
 						ResolvedType::File { path, hashed } => {
 							if hashed && self.all_locations && !self.force_path_search {
-
-
 							} else if self.show_path_only || self.force_path_search {
 								writeln!(context.stdout(), "{}", path.to_string_lossy())?;
 							} else if hashed {
@@ -132,7 +121,6 @@ impl builtins::Command for TypeCommand {
 					}
 				}
 
-
 				if !self.all_locations {
 					break;
 				}
@@ -152,7 +140,6 @@ impl TypeCommand {
 		let mut types = vec![];
 
 		if !self.force_path_search {
-
 			if let Some(a) = shell.aliases().get(name) {
 				types.push(ResolvedType::Alias(a.clone()));
 				if !self.all_locations {
@@ -160,14 +147,12 @@ impl TypeCommand {
 				}
 			}
 
-
 			if shell.is_keyword(name) {
 				types.push(ResolvedType::Keyword);
 				if !self.all_locations {
 					return types;
 				}
 			}
-
 
 			if !self.suppress_func_lookup {
 				if let Some(registration) = shell.funcs().get(name) {
@@ -178,7 +163,6 @@ impl TypeCommand {
 				}
 			}
 
-
 			if shell.builtins().get(name).is_some_and(|b| !b.disabled) {
 				types.push(ResolvedType::Builtin);
 				if !self.all_locations {
@@ -186,7 +170,6 @@ impl TypeCommand {
 				}
 			}
 		}
-
 
 		if sys::fs::contains_path_separator(name) {
 			if shell.absolute_path(Path::new(name)).executable() {

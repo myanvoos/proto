@@ -1,5 +1,5 @@
-import type { Agent } from "@oh-my-pi/pi-agent-core";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { IrcBus, type IrcMessage } from "../irc/bus";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
@@ -7,6 +7,7 @@ import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { typ
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -30,6 +31,7 @@ export class IrcBridge {
 	#asides: CustomMessage[] = [];
 	#interruptBytes = 0;
 	#asideBytes = 0;
+	#deferredWakes: CustomMessage[] = [];
 
 	constructor(host: IrcBridgeHost) {
 		this.#host = host;
@@ -63,6 +65,7 @@ export class IrcBridge {
 		this.#asides = [];
 		this.#interruptBytes = 0;
 		this.#asideBytes = 0;
+		this.#deferredWakes = [];
 	}
 
 	hasInterrupts(): boolean {
@@ -73,8 +76,34 @@ export class IrcBridge {
 		return this.#interrupts.length > 0 || this.#asides.length > 0;
 	}
 
-	drainPending(): CustomMessage[] {
-		const records = [...this.#interrupts, ...this.#asides];
+	get hasDeferredWakes(): boolean {
+		return this.#deferredWakes.length > 0;
+	}
+
+	isPeerMessage(record: CustomMessage): boolean {
+		return record.customType === "irc:incoming" && isRecord(record.details) && record.details.peerMessage === true;
+	}
+
+	hasQueuedFrom(from: string): boolean {
+		return [...this.#interrupts, ...this.#asides, ...this.#deferredWakes].some(
+			record => record.customType === "irc:incoming" && isRecord(record.details) && record.details.from === from,
+		);
+	}
+
+	deferPeerWakes(records: CustomMessage[]): void {
+		this.#deferredWakes.push(...records);
+	}
+
+	drainDeferredWakes(): CustomMessage[] {
+		const records = this.#deferredWakes;
+		this.#deferredWakes = [];
+		return records;
+	}
+
+	drainPending(options?: { keepPeerMessages?: boolean }): CustomMessage[] {
+		const all = [...this.#interrupts, ...this.#asides];
+		const records = options?.keepPeerMessages ? all.filter(record => !this.isPeerMessage(record)) : all;
+		if (options?.keepPeerMessages) this.deferPeerWakes(all.filter(record => this.isPeerMessage(record)));
 		this.#interrupts = [];
 		this.#asides = [];
 		this.#interruptBytes = 0;
@@ -145,32 +174,52 @@ export class IrcBridge {
 	async deliver(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
 		const streaming = this.#host.isStreaming();
+		const registry = AgentRegistry.global();
+		const parentId = registry.get(msg.to)?.parentId;
+		const fromParent = parentId === msg.from;
+		let fromDescendant = false;
+		const seen = new Set<string>();
+		for (let id = registry.get(msg.from)?.parentId; id && !seen.has(id); id = registry.get(id)?.parentId) {
+			if (id === msg.to) {
+				fromDescendant = true;
+				break;
+			}
+			seen.add(id);
+		}
+		const peerMessage = parentId !== undefined && !fromParent && !fromDescendant;
 		const autoReply = (opts?.expectsReply ?? false) && streaming && !this.#host.settings.get("async.enabled");
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
-				message: msg.body,
+				message: escapeHarnessTags(msg.body),
 				replyTo: msg.replyTo ?? "",
 				autoReplied: autoReply,
 				interrupting: streaming,
 			}),
 			display: true,
-			details: { id: msg.id, from: msg.from, message: msg.body, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) },
+			details: {
+				id: msg.id,
+				from: msg.from,
+				message: msg.body,
+				fromParent,
+				peerMessage,
+				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
+			},
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
 		if (streaming) {
-			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
-			if (recipientParentId === msg.from) {
-				this.#host.agent.steer({
+			if (fromParent) {
+				const steer: AgentMessage = {
 					role: "user",
-					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: escapeHarnessTags(msg.body) }),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,
-				});
+				};
+				this.#host.agent.steer(steer);
 			} else {
 				this.#enqueuePending(this.#interrupts, [record]);
 			}

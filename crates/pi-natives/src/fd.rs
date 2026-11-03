@@ -40,12 +40,28 @@ pub struct FuzzyFindResult {
 	pub total_matches: u32,
 }
 
-fn normalize_fuzzy_text(value: &str) -> String {
-	value
-		.chars()
-		.filter(|ch| !ch.is_whitespace() && !matches!(ch, '/' | '\\' | '.' | '_' | '-'))
-		.flat_map(|ch| ch.to_lowercase())
-		.collect()
+fn normalize_fuzzy_into<'a>(out: &'a mut String, value: &str) -> &'a str {
+	out.clear();
+	out.extend(
+		value
+			.chars()
+			.filter(|ch| !ch.is_whitespace() && !matches!(ch, '/' | '\\' | '.' | '_' | '-'))
+			.flat_map(char::to_lowercase),
+	);
+	out
+}
+
+/// Write `value.to_lowercase()` into `out`, allocating only for non-ASCII
+/// text, whose context-dependent lowering (final sigma) `str` owns.
+fn lowercase_into<'a>(out: &'a mut String, value: &str) -> &'a str {
+	out.clear();
+	if value.is_ascii() {
+		out.push_str(value);
+		out.make_ascii_lowercase();
+	} else {
+		out.push_str(&value.to_lowercase());
+	}
+	out
 }
 
 fn fuzzy_subsequence_score(query_chars: &[char], target: &str) -> u32 {
@@ -76,57 +92,81 @@ fn fuzzy_subsequence_score(query_chars: &[char], target: &str) -> u32 {
 	40u32.saturating_sub(gap_penalty).max(1)
 }
 
+/// The query in the forms every path is scored against.
+struct FuzzyQuery {
+	lower:      String,
+	normalized: String,
+	chars:      Vec<char>,
+	/// A path-style query (contains '/') matches against the full relative
+	/// path. Plain queries match by basename only, otherwise '@plan' surfaces
+	/// every file whose ancestor directories contain 'plan'.
+	has_slash:  bool,
+}
+
+impl FuzzyQuery {
+	fn new(query: &str) -> Self {
+		let lower = query.trim().to_lowercase();
+		let mut normalized = String::new();
+		normalize_fuzzy_into(&mut normalized, &lower);
+		let chars = normalized.chars().collect();
+		let has_slash = lower.contains('/');
+		Self { lower, normalized, chars, has_slash }
+	}
+}
+
+/// Buffers reused across scored paths, so scoring allocates only while they
+/// grow to the longest path.
+#[derive(Default)]
+struct ScoreScratch {
+	lower:      String,
+	normalized: String,
+}
+
 fn score_fuzzy_path(
 	path: &str,
 	is_directory: bool,
-	query_lower: &str,
-	normalized_query: &str,
-	query_chars: &[char],
+	query: &FuzzyQuery,
+	scratch: &mut ScoreScratch,
 ) -> u32 {
-	if query_lower.is_empty() {
+	if query.lower.is_empty() {
 		return if is_directory { 11 } else { 1 };
 	}
-
-	let query_has_slash = query_lower.contains('/');
 
 	let file_name = Path::new(path)
 		.file_name()
 		.and_then(|name| name.to_str())
 		.unwrap_or(path);
-	let lower_file_name = file_name.to_lowercase();
+	let lower_file_name = lowercase_into(&mut scratch.lower, file_name);
 
-	let mut score = if lower_file_name == query_lower {
+	let mut score = if lower_file_name == query.lower {
 		120
-	} else if lower_file_name.starts_with(query_lower) {
+	} else if lower_file_name.starts_with(&query.lower) {
 		100
-	} else if lower_file_name.contains(query_lower) {
+	} else if lower_file_name.contains(&query.lower) {
 		80
-	} else if !query_has_slash {
-		let normalized_file_name = normalize_fuzzy_text(file_name);
-		let file_name_fuzzy = fuzzy_subsequence_score(query_chars, &normalized_file_name);
+	} else if !query.has_slash {
+		let normalized_file_name = normalize_fuzzy_into(&mut scratch.normalized, file_name);
+		let file_name_fuzzy = fuzzy_subsequence_score(&query.chars, normalized_file_name);
 		if file_name_fuzzy > 0 {
 			50 + file_name_fuzzy
 		} else {
 			0
 		}
+	} else if lowercase_into(&mut scratch.lower, path).contains(&query.lower) {
+		60
 	} else {
-		let lower_path = path.to_lowercase();
-		if lower_path.contains(query_lower) {
-			60
+		let normalized_file_name = normalize_fuzzy_into(&mut scratch.normalized, file_name);
+		let file_name_fuzzy = fuzzy_subsequence_score(&query.chars, normalized_file_name);
+		if file_name_fuzzy > 0 {
+			50 + file_name_fuzzy
 		} else {
-			let normalized_file_name = normalize_fuzzy_text(file_name);
-			let file_name_fuzzy = fuzzy_subsequence_score(query_chars, &normalized_file_name);
-			if file_name_fuzzy > 0 {
-				50 + file_name_fuzzy
+			let normalized_path = normalize_fuzzy_into(&mut scratch.normalized, path);
+			let path_fuzzy = if normalized_path == query.normalized {
+				40
 			} else {
-				let normalized_path = normalize_fuzzy_text(path);
-				let path_fuzzy = if normalized_path == normalized_query {
-					40
-				} else {
-					fuzzy_subsequence_score(query_chars, &normalized_path)
-				};
-				if path_fuzzy > 0 { 30 + path_fuzzy } else { 0 }
-			}
+				fuzzy_subsequence_score(&query.chars, normalized_path)
+			};
+			if path_fuzzy > 0 { 30 + path_fuzzy } else { 0 }
 		}
 	};
 
@@ -137,6 +177,10 @@ fn score_fuzzy_path(
 	score
 }
 
+/// Directory depth of a relative match path (trailing slash ignored).
+/// Used as a sort tie-break so equally scored matches surface shallow paths
+/// first — `@scripts` should rank cwd-root `scripts/` above
+/// `packages/*/scripts/`.
 fn path_depth(path: &str) -> usize {
 	path.trim_end_matches('/').matches('/').count()
 }
@@ -147,9 +191,21 @@ struct RankedMatch {
 }
 
 impl RankedMatch {
-	fn new(entry: FuzzyFindMatch) -> Self {
-		let depth = path_depth(&entry.path);
-		Self { depth, entry }
+	/// How a scored `path` (a directory's without its trailing '/') ranks
+	/// against this retained match, under the same ordering as [`Ord`], without
+	/// building its result path.
+	fn cmp_candidate(&self, path: &str, is_directory: bool, depth: usize, score: u32) -> Ordering {
+		self
+			.entry
+			.score
+			.cmp(&score)
+			.then_with(|| depth.cmp(&self.depth))
+			.then_with(|| {
+				path
+					.bytes()
+					.chain(is_directory.then_some(b'/'))
+					.cmp(self.entry.path.bytes())
+			})
 	}
 }
 
@@ -189,21 +245,30 @@ impl TopMatches {
 		Self { capacity, total: 0, heap: BinaryHeap::with_capacity(capacity.min(256)) }
 	}
 
-	fn push(&mut self, entry: FuzzyFindMatch) {
+	fn push(&mut self, path: &str, is_directory: bool, score: u32) {
 		self.total = self.total.saturating_add(1);
 		if self.capacity == 0 {
 			return;
 		}
-		let candidate = RankedMatch::new(entry);
-		if self.heap.len() < self.capacity {
-			self.heap.push(candidate);
-			return;
-		}
-
-		if self.heap.peek().is_some_and(|worst| candidate < *worst) {
+		let depth = path_depth(path);
+		if self.heap.len() == self.capacity {
+			// The root is the worst retained candidate; replace it only when the
+			// new candidate outranks it under the final comparator.
+			if self.heap.peek().is_none_or(|worst| {
+				worst.cmp_candidate(path, is_directory, depth, score) != Ordering::Less
+			}) {
+				return;
+			}
 			self.heap.pop();
-			self.heap.push(candidate);
 		}
+		let mut result = String::with_capacity(path.len() + usize::from(is_directory));
+		result.push_str(path);
+		if is_directory {
+			result.push('/');
+		}
+		self
+			.heap
+			.push(RankedMatch { depth, entry: FuzzyFindMatch { path: result, is_directory, score } });
 	}
 
 	const fn total_matches(&self) -> u32 {
@@ -233,20 +298,13 @@ fn score_entry(
 	scored: &mut TopMatches,
 	path: &str,
 	is_directory: bool,
-	query_lower: &str,
-	normalized_query: &str,
-	query_chars: &[char],
+	query: &FuzzyQuery,
+	scratch: &mut ScoreScratch,
 ) {
-	let score = score_fuzzy_path(path, is_directory, query_lower, normalized_query, query_chars);
-	if score == 0 {
-		return;
+	let score = score_fuzzy_path(path, is_directory, query, scratch);
+	if score > 0 {
+		scored.push(path, is_directory, score);
 	}
-
-	let mut path = path.to_owned();
-	if is_directory {
-		path.push('/');
-	}
-	scored.push(FuzzyFindMatch { path, is_directory, score });
 }
 
 fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<FuzzyFindResult> {
@@ -258,14 +316,12 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 		return Ok(FuzzyFindResult { matches: Vec::new(), total_matches: 0 });
 	}
 
-	let query_lower = config.query.trim().to_lowercase();
-	let normalized_query = normalize_fuzzy_text(&query_lower);
-	let query_chars: Vec<char> = normalized_query.chars().collect();
-	if !query_lower.is_empty() && normalized_query.is_empty() {
+	let query = FuzzyQuery::new(&config.query);
+	if !query.lower.is_empty() && query.normalized.is_empty() {
 		return Ok(FuzzyFindResult { matches: Vec::new(), total_matches: 0 });
 	}
-
 	let mut scored = TopMatches::new(max_results);
+	let mut scratch = ScoreScratch::default();
 	pi_walker::WalkRequest::new(root)
 		.hidden(include_hidden)
 		.gitignore(respect_gitignore)
@@ -285,14 +341,7 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 				ct.heartbeat()?;
 				if entry.file_type != pi_walker::FileType::Symlink {
 					let is_directory = entry.file_type == pi_walker::FileType::Dir;
-					score_entry(
-						&mut scored,
-						entry.relative_path,
-						is_directory,
-						&query_lower,
-						&normalized_query,
-						&query_chars,
-					);
+					score_entry(&mut scored, entry.relative_path, is_directory, &query, &mut scratch);
 				}
 				Ok(pi_walker::WalkDecision::Include)
 			},

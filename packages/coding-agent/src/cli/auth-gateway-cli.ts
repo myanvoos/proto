@@ -16,15 +16,19 @@ import {
 	RemoteAuthCredentialStore,
 	type SnapshotResponse,
 } from "@oh-my-pi/pi-ai/auth-broker";
-import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
+import { DEFAULT_AUTH_GATEWAY_BIND, type ModelResolveOptions, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
+import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
+
+import { resolveProviderModelReference } from "../config/model-resolver";
 import {
 	type AuthBrokerClientConfig,
 	loadEffectiveAuthAccountPolicyConfig,
 	resolveAuthBrokerConfig,
+	resolveEffectiveSettings,
 } from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
@@ -117,17 +121,71 @@ const CATALOG_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 // credentialed providers become routable and removed ones stop being advertised without a restart.
 const CREDENTIAL_SYNC_INTERVAL_MS = 10 * 1000;
 
+export interface GatewayModelIndex {
+	/**
+	 * Every served model, catalog order. One array per rebuild:
+	 * `resolveProviderModelReference` caches its lookups on the array identity.
+	 */
+	readonly models: readonly Model<Api>[];
+	/** `provider/id` → model. */
+	readonly qualified: ReadonlyMap<string, Model<Api>>;
+	/**
+	 * Bare `id` → its models grouped into provider-priority tiers, best first.
+	 * A tier holds the providers sharing one rank (every provider the priority
+	 * order leaves unranked shares the last), sorted by provider id.
+	 */
+	readonly bare: ReadonlyMap<string, readonly (readonly Model<Api>[])[]>;
+}
+
 export function indexModelsByRequestId(
 	models: readonly Model<Api>[],
 	providersWithCreds: ReadonlySet<string>,
-): Map<string, Model<Api>> {
-	const modelById = new Map<string, Model<Api>>();
-	for (const model of models) {
-		if (!providersWithCreds.has(model.provider)) continue;
-		modelById.set(`${model.provider}/${model.id}`, model);
-		if (!modelById.has(model.id)) modelById.set(model.id, model);
+	providerOrder?: readonly string[],
+): GatewayModelIndex {
+	const served = models.filter(model => providersWithCreds.has(model.provider));
+	const priority = buildModelProviderPriorityRank(providerOrder);
+	const rankOf = (model: Model<Api>): number => priority.get(model.provider.toLowerCase()) ?? Number.POSITIVE_INFINITY;
+	const qualified = new Map<string, Model<Api>>();
+	const byId = new Map<string, Model<Api>[]>();
+	for (const model of served) {
+		qualified.set(`${model.provider}/${model.id}`, model);
+		const sameId = byId.get(model.id);
+		if (sameId) sameId.push(model);
+		else byId.set(model.id, [model]);
 	}
-	return modelById;
+	const bare = new Map<string, Model<Api>[][]>();
+	for (const [id, candidates] of byId) {
+		candidates.sort((a, b) => rankOf(a) - rankOf(b) || a.provider.localeCompare(b.provider));
+		const tiers: Model<Api>[][] = [];
+		let tierRank: number | undefined;
+		for (const model of candidates) {
+			const rank = rankOf(model);
+			if (rank === tierRank) tiers[tiers.length - 1].push(model);
+			else tiers.push([model]);
+			tierRank = rank;
+		}
+		bare.set(id, tiers);
+	}
+	return { models: served, qualified, bare };
+}
+
+/** Resolve exact catalog IDs first, then OpenRouter routing variants against credentialed models only. */
+export function resolveGatewayModel(
+	id: string,
+	index: GatewayModelIndex,
+	options?: ModelResolveOptions,
+): Model<Api> | undefined {
+	const accepts = options?.accepts ?? (() => true);
+	const exact = index.qualified.get(id);
+	if (exact) return accepts(exact) ? exact : undefined;
+	for (const tier of index.bare.get(id) ?? []) {
+		const admitted = tier.filter(accepts);
+		if (admitted.length > 0) return admitted.find(model => model.api === options?.api) ?? admitted[0];
+	}
+	const prefix = "openrouter/";
+	if (!id.startsWith(prefix)) return undefined;
+	const variant = resolveProviderModelReference("openrouter", id.slice(prefix.length), index.models);
+	return variant && accepts(variant) ? variant : undefined;
 }
 
 // Serializes catalog rebuilds; non-forced requests coalesce onto an in-flight pass, but a forced request
@@ -167,7 +225,9 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const gatewayToken = flags.noAuth ? null : await ensureToken();
 
 	const accountPool = await loadAuthBrokerAccountPool();
-	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
+	const settings = await resolveEffectiveSettings();
+	const excludedProviders = new Set(settings.get("disabledProviders"));
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig({ settings });
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -183,18 +243,21 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	});
 	await storage.reload();
 
-	const registry = new ModelRegistry(storage, undefined, { ignoreLocalModelConfig: true });
+	const registry = new ModelRegistry(storage, undefined, { ignoreLocalModelConfig: true, settings });
 	const providersWithCreds = (): Set<string> => {
 		const providers = new Set<string>();
-		for (const entry of storage.exportSnapshot().credentials) providers.add(entry.provider);
+		for (const entry of storage.exportSnapshot().credentials) {
+			if (!excludedProviders.has(entry.provider)) providers.add(entry.provider);
+		}
 		return providers;
 	};
-	let modelById = new Map<string, Model<Api>>();
+	let index = indexModelsByRequestId([], new Set());
 	// Credential-triggered rebuilds force online discovery: an account added to or removed from an
 	// already-authenticated provider leaves its model cache fresh, so a cached pass would miss the change.
 	const rebuildCatalog = createSerializedRebuilder(async force => {
 		await registry.refresh(force ? "online" : "online-if-uncached");
-		modelById = indexModelsByRequestId(registry.getAll(), providersWithCreds());
+		const providers = providersWithCreds();
+		index = indexModelsByRequestId(registry.getAll(), providers, settings.get("modelProviderOrder"));
 	});
 	await rebuildCatalog();
 
@@ -202,10 +265,11 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		storage,
 		bind,
 		bearerTokens: gatewayToken ? [gatewayToken] : [],
+		excludeProviders: excludedProviders,
 		version: VERSION,
 		trustProxyHeaders: flags.trustProxyHeaders,
-		resolveModel: (id: string) => modelById.get(id),
-		listModels: () => modelById.values(),
+		resolveModel: (id, options) => resolveGatewayModel(id, index, options),
+		listModels: () => index.qualified.values(),
 	});
 	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
 	if (gatewayToken) {
@@ -528,7 +592,9 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	}
 
 	const accountPool = await loadAuthBrokerAccountPool();
-	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
+	const settings = await resolveEffectiveSettings();
+	const excludedProviders = new Set(settings.get("disabledProviders"));
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig({ settings });
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -543,11 +609,12 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	});
 	try {
 		await storage.reload();
-		const results = await storage.checkCredentials(
-			flags.strict
+		const results = await storage.checkCredentials({
+			excludeProviders: excludedProviders,
+			...(flags.strict
 				? { completionProbe: createStrictCompletionProbe(), completionTimeoutMs: STRICT_PROBE_OVERALL_TIMEOUT_MS }
-				: undefined,
-		);
+				: {}),
+		});
 
 		if (flags.json) {
 			process.stdout.write(

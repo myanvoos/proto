@@ -5,7 +5,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@oh-my-pi/pi-ai";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
+import { $which, ptree, truncate, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { ArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { Element as DomElement } from "@oh-my-pi/pi-utils/dom";
 import type { Settings } from "../config/settings";
@@ -16,7 +16,9 @@ import type { AgentStorage } from "../session/agent-storage";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
 import { renderStatusLine, urlHyperlink } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
-import { MAX_BYTES, type RenderResult, readResponseText, type SpecialHandler } from "../web/scrapers/types";
+import { decodeBody, readResponseText } from "../web/response-body";
+import { MAX_BYTES, type RenderResult, type SpecialHandler } from "../web/scrapers/types";
+import type { BinaryFetchResult } from "../web/scrapers/utils";
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
@@ -168,11 +170,11 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 		return null;
 	}
 
-	let raw = false;
+	const selectors = embedded?.sels ?? [];
+	const raw = selectors.some(sel => sel.toLowerCase() === "raw");
 	let ranges: readonly LineRange[] | undefined;
-	for (const sel of embedded?.sels ?? []) {
+	for (const sel of selectors) {
 		if (sel.toLowerCase() === "raw") {
-			raw = true;
 			continue;
 		}
 		if (ranges !== undefined) {
@@ -180,7 +182,7 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 				`URL selector has multiple range groups; combine them with commas (e.g. \`:5-10,20-30\`).`,
 			);
 		}
-		const parsed = parseLineRanges(sel);
+		const parsed = parseLineRanges(raw ? sel.replace(/(^|,)\s*(\d+)\s*(?=,|$)/g, "$1$2-$2") : sel);
 		if (parsed === null) {
 			throw new ToolError(`Invalid URL line selector: ${sel}`);
 		}
@@ -285,47 +287,11 @@ function isInlineImageMimeTypeSupported(mimeType: string): boolean {
 	return SUPPORTED_INLINE_IMAGE_MIME_TYPES.has(mimeType);
 }
 
-async function tryMdSuffix(url: string, timeout: number, signal?: AbortSignal): Promise<string | null> {
-	const { loadPage, looksLikeHtml } = await loadScraperTypes();
-	const candidates: string[] = [];
-
-	try {
-		const parsed = new URL(url);
-		const pathname = parsed.pathname;
-
-		if (pathname.endsWith("/")) {
-			candidates.push(`${parsed.origin}${pathname}index.html.md`);
-		} else if (pathname.includes(".")) {
-			candidates.push(`${parsed.origin}${pathname}.md`);
-		} else {
-			candidates.push(`${parsed.origin}${pathname}.md`);
-		}
-	} catch {
-		return null;
-	}
-
-	if (signal?.aborted) {
-		return null;
-	}
-
-	for (const candidate of candidates) {
-		if (signal?.aborted) {
-			return null;
-		}
-		const result = await loadPage(candidate, { timeout, signal });
-		if (result.ok && result.content.trim().length > 100 && !looksLikeHtml(result.content)) {
-			return result.content;
-		}
-	}
-
-	return null;
-}
-
 async function tryLlmEndpoints(
 	url: string,
 	timeout: number,
 	signal?: AbortSignal,
-): Promise<{ content: string; endpoint: string } | null> {
+): Promise<{ content: string; endpoint: string; finalUrl: string; truncated: boolean } | null> {
 	const { loadPage, looksLikeHtml } = await loadScraperTypes();
 	const endpoints = buildLlmEndpointCandidates(url);
 
@@ -339,7 +305,7 @@ async function tryLlmEndpoints(
 		}
 		const result = await loadPage(endpoint, { timeout: Math.min(timeout, 5), signal });
 		if (result.ok && result.content.trim().length > 100 && !looksLikeHtml(result.content)) {
-			return { content: result.content, endpoint };
+			return { content: result.content, endpoint, finalUrl: result.finalUrl, truncated: Boolean(result.truncated) };
 		}
 	}
 	return null;
@@ -349,7 +315,7 @@ async function tryContentNegotiation(
 	url: string,
 	timeout: number,
 	signal?: AbortSignal,
-): Promise<{ content: string; type: string } | null> {
+): Promise<{ content: string; type: string; finalUrl: string; truncated: boolean } | null> {
 	const { loadPage, looksLikeHtml } = await loadScraperTypes();
 	if (signal?.aborted) {
 		return null;
@@ -365,7 +331,12 @@ async function tryContentNegotiation(
 
 	const mime = normalizeMime(result.contentType);
 	if ((mime.includes("markdown") || mime === "text/plain") && !looksLikeHtml(result.content)) {
-		return { content: result.content, type: result.contentType };
+		return {
+			content: result.content,
+			type: result.contentType,
+			finalUrl: result.finalUrl,
+			truncated: Boolean(result.truncated),
+		};
 	}
 
 	return null;
@@ -398,11 +369,11 @@ function extractHeadHtml(html: string): string {
 	return html.slice(headStart, headTagEnd + 1 + relativeEnd + 7);
 }
 
-function parseAlternateLinks(html: string, pageUrl: string): string[] {
-	const links: string[] = [];
+function parseAlternateLinks(html: string, pageUrl: string): Array<{ href: string; kind: "markdown" | "feed" }> {
+	const links: Array<{ href: string; kind: "markdown" | "feed" }> = [];
 
 	try {
-		const pagePath = new URL(pageUrl).pathname;
+		const pagePath = new URL(pageUrl).pathname.replace(/\/+$/, "");
 		const headHtml = extractHeadHtml(html);
 		const linkTags = headHtml.match(/<link\b[^>]*>/gi) ?? [];
 
@@ -424,14 +395,14 @@ function parseAlternateLinks(html: string, pageUrl: string): string[] {
 				continue;
 			}
 
-			if (type.includes("markdown")) {
-				links.push(href);
-			} else if (
-				(type.includes("rss") || type.includes("atom") || type.includes("feed")) &&
-				(href.includes(pagePath) || href.includes("comments"))
-			) {
-				links.push(href);
-			}
+			const altPath = new URL(href, pageUrl).pathname;
+			const pageSpecific =
+				altPath === pagePath ||
+				(pagePath !== "" && (altPath.startsWith(`${pagePath}/`) || altPath.startsWith(`${pagePath}.`)));
+			if (!pageSpecific) continue;
+			if (type.includes("markdown")) links.push({ href, kind: "markdown" });
+			else if (pagePath !== "" && (type.includes("rss") || type.includes("atom") || type.includes("feed")))
+				links.push({ href, kind: "feed" });
 		}
 	} catch {}
 
@@ -579,6 +550,70 @@ function stripDataUriImages(markdown: string): string {
 	return markdown.replace(DATA_URI_IMAGE_RE, (_match, alt: string) => (alt.trim() ? `![${alt}]` : ""));
 }
 
+/**
+ * `<meta>` names and properties, as the page writes them in any letter case, whose front-matter
+ * line is worth its tokens to a reader; Open Graph, Twitter Card, viewport and verification tags
+ * are not.
+ */
+const READER_META_NAMES: Record<string, true> = {
+	description: true,
+	author: true,
+	"article:published_time": true,
+	"article:modified_time": true,
+};
+
+/** The key of a front-matter line: a plain YAML scalar, which holds no `: `, or a double-quoted one. */
+const FRONT_MATTER_KEY_RE = /^(?:("(?:\\.|[^\\"])*")|([^"][^\n]*?)): /;
+
+/** Omitted `<meta>` names the front matter lists by name; the rest are counted. */
+const MAX_OMITTED_META_NAMES = 25;
+
+/** Reader output at or under this many characters is no rendering of the page. */
+const MIN_RENDERED_CHARS = 100;
+
+/**
+ * Drop the native converter's front-matter lines for `<meta>` tags outside {@link READER_META_NAMES}
+ * (keys `meta-<name>`, YAML-escaped) and name them in one `meta_omitted` line. A page whose only
+ * content is its `<head>` is returned whole.
+ */
+function pruneFrontMatter(markdown: string): string {
+	if (!markdown.startsWith("---\n")) return markdown;
+	const end = markdown.indexOf("\n---\n", 3);
+	if (end < 0) return markdown;
+	const kept: string[] = [];
+	const omitted: string[] = [];
+	for (const line of markdown.slice(4, end).split("\n")) {
+		const key = FRONT_MATTER_KEY_RE.exec(line);
+		// No front matter: the body opens with a `---` rule.
+		if (!key) return markdown;
+		let name: string;
+		try {
+			// The converter's double-quoted escapes are JSON's.
+			name = key[1] === undefined ? key[2] : JSON.parse(key[1]);
+		} catch {
+			return markdown;
+		}
+		if (name.startsWith("meta-") && !Object.hasOwn(READER_META_NAMES, name.slice(5).toLowerCase())) {
+			omitted.push(name.slice(5));
+		} else {
+			kept.push(line);
+		}
+	}
+	if (omitted.length === 0) return markdown;
+	const rest = markdown.slice(end);
+	const head = kept.join("\n");
+	// `renderHtmlToText` already stripped data-URI images, so the length check needs no second pass.
+	if ((head ? `---\n${head}${rest}` : rest.slice(5)).trim().length <= MIN_RENDERED_CHARS) return markdown;
+	const more = omitted.length - MAX_OMITTED_META_NAMES;
+	const note = `${omitted.slice(0, MAX_OMITTED_META_NAMES).join(", ")}${more > 0 ? ` (+${more} more)` : ""}; read the URL with :raw for their values`;
+	// A JSON string is a YAML double-quoted scalar once the characters YAML reads as line breaks are escaped.
+	const value = JSON.stringify(note).replace(
+		/[\u0085\u2028\u2029]/g,
+		c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+	return `---\n${head ? `${head}\n` : ""}meta_omitted: ${value}${rest}`;
+}
+
 type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "jina";
 
 const FETCH_PROVIDER_ORDER: readonly FetchProvider[] = ["native", "trafilatura", "lynx", "parallel", "jina"];
@@ -610,16 +645,19 @@ export async function renderHtmlToText(
 	const runners: Record<FetchProvider, () => Promise<string | null>> = {
 		native: async () => {
 			const { htmlToMarkdown } = await import("@oh-my-pi/pi-natives");
-			return htmlToMarkdown(html, { cleanContent: true });
+			return htmlToMarkdown(html, { cleanContent: true, hiddenContent: "reachable" });
 		},
 		trafilatura: async () => {
 			const { ensureTool } = await import("../utils/tools-manager");
+			overallSignal?.throwIfAborted();
 			const trafilatura = await ensureTool("trafilatura", { signal: overallSignal, silent: true });
+			overallSignal?.throwIfAborted();
 			if (!trafilatura) return null;
 			const result = await ptree.exec([trafilatura, "-u", url, "--output-format", "markdown"], execOptions);
 			return result.ok ? result.stdout : null;
 		},
 		lynx: async () => {
+			overallSignal?.throwIfAborted();
 			if (!hasCommand("lynx")) return null;
 			const result = await ptree.exec(["lynx", "-dump", "-nolist", "-width", "250", url], execOptions);
 			return result.ok ? result.stdout : null;
@@ -675,7 +713,7 @@ export async function renderHtmlToText(
 			if (!rendered) continue;
 			const content = stripDataUriImages(rendered);
 			if (content.trim().length <= 100) continue;
-			if (!isLowQualityOutput(content)) {
+			if (!isLowQualityOutput(content, method)) {
 				return { content, ok: true, method };
 			}
 			lowQuality ??= { content, method };
@@ -690,7 +728,7 @@ export async function renderHtmlToText(
 	return { content: "", ok: false, method: "none" };
 }
 
-function isLowQualityOutput(content: string): boolean {
+function isLowQualityOutput(content: string, method: string): boolean {
 	const lower = content.toLowerCase();
 
 	const jsGated = [
@@ -704,13 +742,22 @@ function isLowQualityOutput(content: string): boolean {
 		return true;
 	}
 
-	const lines = content.split("\n").filter(l => l.trim());
-	const shortLines = lines.filter(l => l.trim().length < 40);
-	if (lines.length > 10 && shortLines.length / lines.length > 0.7) {
-		return true;
-	}
+	return method === "lynx" && isMostlyShortLines(content);
+}
 
-	return false;
+function isMostlyShortLines(content: string): boolean {
+	const lines = content.split("\n").filter(line => line.trim());
+	return lines.length > 10 && lines.filter(line => line.trim().length < 40).length / lines.length > 0.7;
+}
+
+function renderedLinkTargets(content: string, baseUrl: string): Set<string> {
+	const targets = new Set<string>();
+	for (const match of content.matchAll(/\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))/g)) {
+		try {
+			targets.add(new URL(match[1] ?? match[2], baseUrl).href);
+		} catch {}
+	}
+	return targets;
 }
 
 function formatJson(content: string): string {
@@ -820,9 +867,9 @@ async function buildBinaryPayloadResult(
 		finalUrl,
 		contentType: binaryContentType(mime),
 		method,
-		content: output.content,
+		content: output,
 		fetchedAt,
-		truncated: output.truncated,
+		truncated: false,
 		notes,
 	};
 }
@@ -880,7 +927,8 @@ async function tryRenderBinaryPayload(
 	signal: AbortSignal | undefined,
 	fetchedAt: string,
 	notes: readonly string[],
-): Promise<FetchRenderResult | null> {
+	prefetched?: BinaryFetchResult,
+): Promise<FetchRenderResult | string | null> {
 	const hasNotebookHint = isNotebookHint(mime, extHint);
 	const hasSqliteHint = isSqliteHint(mime, extHint);
 	const hasArchiveHint = isArchiveHint(mime, extHint);
@@ -890,7 +938,7 @@ async function tryRenderBinaryPayload(
 	}
 
 	const resultNotes = [...notes];
-	const binary = await fetchBinaryPayload(finalUrl, timeout, signal);
+	const binary = prefetched ?? (await fetchBinaryPayload(finalUrl, timeout, signal));
 	if (!binary.ok) {
 		resultNotes.push(binary.error ? `Binary fetch failed: ${binary.error}` : "Binary fetch failed");
 		return buildBinaryPayloadResult(
@@ -987,6 +1035,12 @@ async function tryRenderBinaryPayload(
 		}
 	}
 
+	if (rawLooksBinary && !bodySkipped && !hasNotebookHint && !hasSqliteHint && !hasArchiveHint) {
+		const bytes = Buffer.from(binary.buffer.buffer, binary.buffer.byteOffset, binary.buffer.byteLength);
+		if (!sampleLooksBinary(decodeBody(bytes.subarray(0, BINARY_SAMPLE_CHARS), binary.contentType ?? mime)))
+			return decodeBody(bytes, binary.contentType ?? mime);
+	}
+
 	if (rawLooksBinary) {
 		return buildBinaryPayloadResult(
 			url,
@@ -1036,7 +1090,7 @@ async function renderUrl(
 	fetchOverride?: FetchImpl,
 	excludeWebP?: true,
 ): Promise<FetchRenderResult> {
-	const { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES } = await loadScraperTypes();
+	const { finalizeOutput, loadPage, looksLikeHtml } = await loadScraperTypes();
 	const notes: string[] = [];
 	const fetchedAt = new Date().toISOString();
 	if (signal?.aborted) {
@@ -1063,7 +1117,24 @@ async function renderUrl(
 		if (specialResult) return specialResult;
 	}
 
-	const response = await loadPage(url, { timeout, signal, skipBodyForContentType: shouldSkipBodyDownload });
+	const requestExtHint = getExtensionHint(url);
+	const genericBinaryMimes = new Set(["application/octet-stream", "binary/octet-stream", "application/x-download"]);
+	const skipBody = (contentType: string) =>
+		shouldSkipBodyDownload(contentType) ||
+		(genericBinaryMimes.has(normalizeMime(contentType)) && isPotentialMarkitExtension(requestExtHint));
+	let response = await loadPage(url, { timeout, signal, skipBodyForContentType: skipBody });
+	if (
+		response.ok &&
+		response.bodySkipped &&
+		!shouldSkipBodyDownload(response.contentType) &&
+		!isPotentialMarkitExtension(getExtensionHint(response.finalUrl))
+	) {
+		response = await loadPage(url, {
+			timeout,
+			signal,
+			skipBodyForContentType: shouldSkipBodyDownload,
+		});
+	}
 	if (signal?.aborted) {
 		throw new ToolAbortError();
 	}
@@ -1084,12 +1155,33 @@ async function renderUrl(
 		};
 	}
 
-	const { finalUrl, content: rawContent } = response;
-	if (response.truncated) {
-		notes.push(`Response body exceeded ${formatBytes(MAX_BYTES)} and was cut mid-stream; content is incomplete`);
-	}
+	const { finalUrl } = response;
+	let rawContent = response.content;
+	let sourceTruncated = Boolean(response.truncated);
 	const mime = normalizeMime(response.contentType);
 	const extHint = getExtensionHint(finalUrl);
+	if (response.status === 204)
+		return {
+			url,
+			finalUrl,
+			contentType: mime,
+			method: "no-content",
+			content: "",
+			fetchedAt,
+			truncated: false,
+			notes: ["HTTP 204 No Content"],
+		};
+	if (raw)
+		return {
+			url,
+			finalUrl,
+			contentType: mime,
+			method: "raw",
+			content: rawContent,
+			fetchedAt,
+			truncated: sourceTruncated,
+			notes,
+		};
 
 	const imageMimeType = resolveImageMimeType(mime, extHint);
 	let skipConvertibleBinaryRetry = false;
@@ -1117,9 +1209,9 @@ async function renderUrl(
 						finalUrl,
 						contentType: imageMimeType,
 						method: "image-too-large",
-						content: output.content,
+						content: output,
 						fetchedAt,
-						truncated: output.truncated,
+						truncated: false,
 						notes,
 					};
 				}
@@ -1141,9 +1233,9 @@ async function renderUrl(
 						finalUrl,
 						contentType: imageMimeType,
 						method: "image-invalid",
-						content: output.content,
+						content: output,
 						fetchedAt,
-						truncated: output.truncated,
+						truncated: false,
 						notes,
 					};
 				}
@@ -1159,9 +1251,9 @@ async function renderUrl(
 						finalUrl,
 						contentType: imageMimeType,
 						method: "image-too-large",
-						content: output.content,
+						content: output,
 						fetchedAt,
-						truncated: output.truncated,
+						truncated: false,
 						notes,
 					};
 				}
@@ -1177,9 +1269,9 @@ async function renderUrl(
 					finalUrl,
 					contentType: resized.mimeType,
 					method: "image",
-					content: output.content,
+					content: output,
 					fetchedAt,
-					truncated: output.truncated,
+					truncated: false,
 					notes,
 					image: {
 						data: resized.data,
@@ -1193,8 +1285,10 @@ async function renderUrl(
 		}
 	}
 
+	let convertibleBinary: BinaryFetchResult | undefined;
 	if (!skipConvertibleBinaryRetry && (await isConvertible(mime, extHint))) {
 		const binary = await fetchBinaryPayload(finalUrl, timeout, signal);
+		convertibleBinary = binary;
 		if (binary.ok) {
 			const ext = getExtensionHint(finalUrl, binary.contentDisposition) || extHint;
 			const converted = await convertWithMarkitPayload(binary.buffer, ext, timeout, signal);
@@ -1207,9 +1301,9 @@ async function renderUrl(
 						finalUrl,
 						contentType: mime,
 						method: "markit",
-						content: output.content,
+						content: output,
 						fetchedAt,
-						truncated: output.truncated,
+						truncated: false,
 						notes,
 					};
 				}
@@ -1237,8 +1331,12 @@ async function renderUrl(
 		signal,
 		fetchedAt,
 		notes,
+		convertibleBinary,
 	);
-	if (binaryPayloadResult) return binaryPayloadResult;
+	if (typeof binaryPayloadResult === "string") {
+		rawContent = binaryPayloadResult;
+		sourceTruncated = false;
+	} else if (binaryPayloadResult) return binaryPayloadResult;
 
 	const isHtml = mime.includes("html") || mime.includes("xhtml");
 	const isJson = mime.includes("json");
@@ -1246,19 +1344,6 @@ async function renderUrl(
 	const isText = mime.includes("text/plain") || mime.includes("text/markdown");
 	const isFeed = mime.includes("rss") || mime.includes("atom") || mime.includes("feed");
 
-	if (raw) {
-		const output = finalizeOutput(rawContent);
-		return {
-			url,
-			finalUrl,
-			contentType: mime,
-			method: "raw",
-			content: output.content,
-			fetchedAt,
-			truncated: output.truncated,
-			notes,
-		};
-	}
 	if (isJson) {
 		const output = finalizeOutput(formatJson(rawContent));
 		return {
@@ -1266,9 +1351,9 @@ async function renderUrl(
 			finalUrl,
 			contentType: mime,
 			method: "json",
-			content: output.content,
+			content: output,
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: sourceTruncated,
 			notes,
 		};
 	}
@@ -1281,9 +1366,9 @@ async function renderUrl(
 			finalUrl,
 			contentType: mime,
 			method: "feed",
-			content: output.content,
+			content: output,
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: sourceTruncated,
 			notes,
 		};
 	}
@@ -1295,49 +1380,33 @@ async function renderUrl(
 			finalUrl,
 			contentType: mime,
 			method: "text",
-			content: output.content,
+			content: output,
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: sourceTruncated,
 			notes,
 		};
 	}
 
 	if (isHtml && !raw) {
 		const alternates = parseAlternateLinks(rawContent, finalUrl);
-		const markdownAlt = alternates.find(alt => alt.endsWith(".md") || alt.includes("markdown"));
+		const markdownAlt = alternates.find(alt => alt.kind === "markdown");
 		if (markdownAlt) {
-			const resolved = markdownAlt.startsWith("http") ? markdownAlt : new URL(markdownAlt, finalUrl).href;
+			const resolved = new URL(markdownAlt.href, finalUrl).href;
 			const altResult = await loadPage(resolved, { timeout, signal });
 			if (altResult.ok && altResult.content.trim().length > 100 && !looksLikeHtml(altResult.content)) {
 				notes.push(`Used markdown alternate: ${resolved}`);
 				const output = finalizeOutput(altResult.content);
 				return {
 					url,
-					finalUrl,
+					finalUrl: altResult.finalUrl,
 					contentType: "text/markdown",
 					method: "alternate-markdown",
-					content: output.content,
+					content: output,
 					fetchedAt,
-					truncated: output.truncated,
+					truncated: Boolean(altResult.truncated),
 					notes,
 				};
 			}
-		}
-
-		const mdSuffix = await tryMdSuffix(finalUrl, timeout, signal);
-		if (mdSuffix) {
-			notes.push("Found .md suffix version");
-			const output = finalizeOutput(mdSuffix);
-			return {
-				url,
-				finalUrl,
-				contentType: "text/markdown",
-				method: "md-suffix",
-				content: output.content,
-				fetchedAt,
-				truncated: output.truncated,
-				notes,
-			};
 		}
 
 		const negotiated = await tryContentNegotiation(url, timeout, signal);
@@ -1346,20 +1415,20 @@ async function renderUrl(
 			const output = finalizeOutput(negotiated.content);
 			return {
 				url,
-				finalUrl,
+				finalUrl: negotiated.finalUrl,
 				contentType: normalizeMime(negotiated.type),
 				method: "content-negotiation",
-				content: output.content,
+				content: output,
 				fetchedAt,
-				truncated: output.truncated,
+				truncated: Boolean(negotiated.truncated),
 				notes,
 			};
 		}
 
-		const feedAlternates = alternates.filter(alt => !alt.endsWith(".md") && !alt.includes("markdown"));
+		const feedAlternates = alternates.filter(alt => alt.kind === "feed");
 		const tryFeedAlternate = async (pageContent: string): Promise<FetchRenderResult | null> => {
 			for (const altUrl of feedAlternates.slice(0, 2)) {
-				const resolved = altUrl.startsWith("http") ? altUrl : new URL(altUrl, finalUrl).href;
+				const resolved = new URL(altUrl.href, finalUrl).href;
 				const altResult = await loadPage(resolved, { timeout, signal });
 				if (!altResult.ok) continue;
 				const parsed = await parseFeedToMarkdown(altResult.content);
@@ -1368,12 +1437,12 @@ async function renderUrl(
 				const output = finalizeOutput(parsed);
 				return {
 					url,
-					finalUrl,
+					finalUrl: altResult.finalUrl,
 					contentType: "application/feed",
 					method: "alternate-feed",
-					content: output.content,
+					content: output,
 					fetchedAt,
-					truncated: output.truncated,
+					truncated: Boolean(altResult.truncated),
 					notes,
 				};
 			}
@@ -1405,12 +1474,12 @@ async function renderUrl(
 				const output = finalizeOutput(llmResult.content);
 				return {
 					url,
-					finalUrl,
+					finalUrl: llmResult.finalUrl,
 					contentType: "text/plain",
 					method: "llms.txt",
-					content: output.content,
+					content: output,
 					fetchedAt,
-					truncated: output.truncated,
+					truncated: Boolean(llmResult.truncated),
 					notes,
 				};
 			}
@@ -1421,15 +1490,22 @@ async function renderUrl(
 				finalUrl,
 				contentType: mime,
 				method: "raw-html",
-				content: output.content,
+				content: output,
 				fetchedAt,
-				truncated: output.truncated,
+				truncated: sourceTruncated,
 				notes,
 			};
 		}
 
-		if (isLowQualityOutput(htmlResult.content)) {
-			const docLinks = await extractDocumentLinks(rawContent, finalUrl);
+		const lowQuality = isLowQualityOutput(htmlResult.content, htmlResult.method);
+		const wrapper =
+			isMostlyShortLines(htmlResult.content) && htmlResult.content.split("\n").length <= FETCH_DEFAULT_MAX_LINES;
+		if (lowQuality || wrapper) {
+			let docLinks = await extractDocumentLinks(rawContent, finalUrl);
+			if (!lowQuality) {
+				const retained = renderedLinkTargets(htmlResult.content, finalUrl);
+				docLinks = docLinks.filter(link => retained.has(link));
+			}
 			if (docLinks.length > 0) {
 				const docUrl = docLinks[0];
 				const binary = await fetchBinaryPayload(docUrl, timeout, signal);
@@ -1441,12 +1517,12 @@ async function renderUrl(
 						const output = finalizeOutput(converted.content);
 						return {
 							url,
-							finalUrl,
+							finalUrl: docUrl,
 							contentType: "application/document",
 							method: "extracted-document",
-							content: output.content,
+							content: output,
 							fetchedAt,
-							truncated: output.truncated,
+							truncated: false,
 							notes,
 						};
 					}
@@ -1457,7 +1533,8 @@ async function renderUrl(
 					notes.push(`Binary fetch failed: ${binary.error}`);
 				}
 			}
-
+		}
+		if (lowQuality) {
 			const feedResult = await tryFeedAlternate(htmlResult.content);
 			if (feedResult) return feedResult;
 
@@ -1467,12 +1544,12 @@ async function renderUrl(
 				const output = finalizeOutput(llmResult.content);
 				return {
 					url,
-					finalUrl,
+					finalUrl: llmResult.finalUrl,
 					contentType: "text/plain",
 					method: "llms.txt",
-					content: output.content,
+					content: output,
 					fetchedAt,
-					truncated: output.truncated,
+					truncated: Boolean(llmResult.truncated),
 					notes,
 				};
 			}
@@ -1480,15 +1557,17 @@ async function renderUrl(
 			notes.push("Page appears to require JavaScript or is mostly navigation");
 		}
 
-		const output = finalizeOutput(htmlResult.content);
+		const output = finalizeOutput(
+			htmlResult.method === "native" ? pruneFrontMatter(htmlResult.content) : htmlResult.content,
+		);
 		return {
 			url,
 			finalUrl,
 			contentType: mime,
 			method: htmlResult.method,
-			content: output.content,
+			content: output,
 			fetchedAt,
-			truncated: output.truncated,
+			truncated: sourceTruncated,
 			notes,
 		};
 	}
@@ -1499,14 +1578,15 @@ async function renderUrl(
 		finalUrl,
 		contentType: mime,
 		method: "raw",
-		content: output.content,
+		content: output,
 		fetchedAt,
-		truncated: output.truncated,
+		truncated: sourceTruncated,
 		notes,
 	};
 }
 
 export interface ReadUrlToolDetails {
+	raw?: boolean;
 	kind: "url";
 	url: string;
 	finalUrl: string;
@@ -1586,7 +1666,11 @@ export async function fetchReadUrl(
 		webpExclusionForModel(session.getActiveModel?.()),
 	);
 	if (result.failure) throw fetchFailureError(url, result);
-	const output = buildUrlReadOutput(result, result.content);
+	if (result.truncated)
+		result.notes.push(
+			`Response body exceeded ${formatBytes(MAX_BYTES)} and was cut mid-stream; content is incomplete`,
+		);
+	const output = raw ? result.content : buildUrlReadOutput(result, result.content);
 	const artifact = options?.ensureArtifact ? await persistReadUrlArtifact(session, output) : undefined;
 
 	return {
@@ -1594,6 +1678,7 @@ export async function fetchReadUrl(
 		artifactPath: artifact?.path,
 		details: {
 			kind: "url",
+			raw,
 			url: result.url,
 			finalUrl: result.finalUrl,
 			contentType: result.contentType,
@@ -1644,12 +1729,22 @@ export async function executeReadUrl(
 	params: { path: string; raw?: boolean },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadUrlToolDetails>> {
-	const { MAX_OUTPUT_CHARS } = await loadScraperTypes();
 	let entry = await fetchReadUrl(session, params, signal);
-	const truncation = truncateHead(entry.output, {
+	let truncation = truncateHead(entry.output, {
 		maxBytes: DEFAULT_MAX_BYTES,
 		maxLines: FETCH_DEFAULT_MAX_LINES,
 	});
+	if (truncation.firstLineExceedsLimit) {
+		const preview = truncateHeadBytes(entry.output, DEFAULT_MAX_BYTES);
+		const newline = entry.output.indexOf("\n");
+		truncation = {
+			...truncation,
+			content: preview.text,
+			totalBytes: Buffer.byteLength(newline === -1 ? entry.output : entry.output.slice(0, newline), "utf-8"),
+			outputLines: preview.bytes > 0 ? 1 : 0,
+			outputBytes: preview.bytes,
+		};
+	}
 	const needsArtifact = truncation.truncated;
 	if (needsArtifact && !entry.artifactId) {
 		entry = await ensureReadUrlArtifact(session, entry);
@@ -1668,17 +1763,6 @@ export async function executeReadUrl(
 	const resultBuilder = toolResult(details).content(contentBlocks).sourceUrl(details.finalUrl);
 	if (needsArtifact) {
 		resultBuilder.truncation(truncation, { direction: "head", artifactId: entry.artifactId });
-	} else if (entry.details.truncated) {
-		const outputLines = entry.output.split("\n").length;
-		const outputBytes = Buffer.byteLength(entry.output, "utf-8");
-		const totalBytes = Math.max(outputBytes + 1, MAX_OUTPUT_CHARS + 1);
-		const totalLines = outputLines + 1;
-		resultBuilder.truncationFromText(entry.output, {
-			direction: "tail",
-			totalLines,
-			totalBytes,
-			maxBytes: MAX_OUTPUT_CHARS,
-		});
 	}
 
 	return resultBuilder.done();
@@ -1760,9 +1844,10 @@ export function renderReadUrlResult(
 	);
 
 	const contentText = result.content[0]?.text ?? "";
-	const contentBody = contentText.includes("---\n\n")
-		? contentText.split("---\n\n").slice(1).join("---\n\n")
-		: contentText;
+	const contentBody =
+		!details.raw && contentText.includes("---\n\n")
+			? contentText.split("---\n\n").slice(1).join("---\n\n")
+			: contentText;
 	const lineCount = countNonEmptyLines(contentBody);
 	const charCount = contentBody.trim().length;
 	const contentLines = contentBody.split("\n").filter(l => l.trim());

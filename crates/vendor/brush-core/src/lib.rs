@@ -1,5 +1,4 @@
-
-
+#![cfg_attr(unix, feature(process_setsid))]
 
 pub mod arithmetic;
 mod braceexpansion;
@@ -32,8 +31,8 @@ pub mod patterns;
 pub mod processes;
 mod prompt;
 mod regex;
-pub mod rlimits;
 pub mod results;
+pub mod rlimits;
 mod shell;
 pub mod sourceinfo;
 pub mod sys;
@@ -44,7 +43,6 @@ pub mod trace_categories;
 pub mod traps;
 pub mod variables;
 mod wellknownvars;
-
 
 pub mod parser {
 	pub use brush_parser::{
@@ -57,8 +55,8 @@ pub use commands::{CommandArg, ExecutionContext};
 pub use error::{BuiltinError, Error, ErrorKind};
 pub use extensions::ShellExtensions;
 pub use interp::{
-	CommandObserver, CommandObservation, ExecutionParameters, ExternalCommandInfo, ExternalCommandOutputMarker,
-	ExternalCommandOutputMarkers, ProcessGroupPolicy, SpawnObserver,
+	CommandObservation, CommandObserver, ExecutionParameters, ExternalCommandInfo,
+	ExternalCommandOutputMarker, ExternalCommandOutputMarkers, ProcessGroupPolicy, SpawnObserver,
 };
 pub use parser::{SourcePosition, SourcePositionOffset, SourceSpan};
 pub use results::{ExecutionControlFlow, ExecutionExitCode, ExecutionResult, ExecutionSpawnResult};

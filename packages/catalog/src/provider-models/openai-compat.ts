@@ -39,6 +39,7 @@ import type {
 	OpenAICompat,
 	Provider,
 	ThinkingConfig,
+	TokenCost,
 } from "../types";
 import { discoveryFetch, isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
 import { ALIBABA_TOKEN_PLAN_BASE_URL, parseAlibabaTokenPlanCredential } from "../wire/alibaba-token-plan";
@@ -63,6 +64,7 @@ import {
 	SINGULARITYAPI_DEV_API_BASE_URL,
 	SINGULARITYAPI_TECH_API_BASE_URL,
 } from "../wire/singularityapi";
+import { isXiaomiTokenPlanKey } from "../wire/xiaomi-token-plan";
 import {
 	createBundledReferenceMap,
 	createReferenceResolver,
@@ -377,6 +379,8 @@ function mapWithBundledReference<TApi extends Api>(
 		return {
 			...defaults,
 			name,
+			contextWindow: toPositiveNumber(entry.context_length, defaults.contextWindow),
+			maxTokens: toPositiveNumber(entry.max_completion_tokens, defaults.maxTokens),
 		};
 	}
 	return {
@@ -386,8 +390,38 @@ function mapWithBundledReference<TApi extends Api>(
 		api: defaults.api,
 		provider: defaults.provider,
 		baseUrl: defaults.baseUrl,
+		serviceTiers: defaults.serviceTiers ?? reference.serviceTiers,
 		contextWindow: toPositiveNumber(entry.context_length, reference.contextWindow),
 		maxTokens: toPositiveNumber(entry.max_completion_tokens, reference.maxTokens),
+	};
+}
+
+/** Gateway per-token rates; missing legs stay unknown rather than becoming free. */
+function perTokenPricingCost(pricing: unknown): TokenCost {
+	const rates = isRecord(pricing) ? pricing : {};
+	const rate = (value: unknown): number => {
+		const parsed = toNumber(value);
+		return parsed !== undefined && parsed >= 0 ? parsed * 1_000_000 : Number.NaN;
+	};
+	return {
+		input: rate(rates.prompt),
+		output: rate(rates.completion),
+		cacheRead: rate(rates.input_cache_read),
+		cacheWrite: rate(rates.input_cache_write),
+	};
+}
+
+function nanoGptPricingCost(pricing: unknown, fallback: TokenCost): TokenCost {
+	if (!isRecord(pricing) || pricing.unit !== "per_million_tokens") return fallback;
+	const rate = (value: unknown, old: number, scale = 1): number => {
+		const parsed = toNumber(value);
+		return parsed !== undefined && parsed >= 0 ? parsed * scale : old;
+	};
+	return {
+		input: rate(pricing.prompt, fallback.input),
+		output: rate(pricing.completion, fallback.output),
+		cacheRead: rate(pricing.cacheReadInputPer1kTokens, fallback.cacheRead, 1_000),
+		cacheWrite: rate(pricing.cacheWriteInputPer1kTokens, fallback.cacheWrite, 1_000),
 	};
 }
 
@@ -1087,10 +1121,10 @@ export const OPENAI_GPT_56_LONG_CONTEXT_COSTS = {
 	},
 	sol: {
 		inputThreshold: 272_000,
-		input: 10,
-		output: 45,
-		cacheRead: 1,
-		cacheWrite: 12.5,
+		input: 8,
+		output: 30,
+		cacheRead: 0.8,
+		cacheWrite: 10,
 	},
 	terra: {
 		inputThreshold: 272_000,
@@ -1547,8 +1581,7 @@ export function deepinfraModelManagerOptions(
 const YOLO_AUTO_BASE_URL = "https://yolo-auto.com/v1";
 const YOLO_AUTO_FLAT_RATE_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
-// `qwen3.8-flash` is the documented default on every plan at a 256K window; the paid `yolo` route is backed
-// by the same Flash deployment, so the opaque alias carries the Qwen tokenizer explicitly.
+// Qwen3.8-27B and the paid yolo router share a documented 256K deployment cap.
 function createYoloAutoQwenFlashModel(id: string, name: string): ModelSpec<"openai-completions"> {
 	return {
 		id,
@@ -1562,7 +1595,7 @@ function createYoloAutoQwenFlashModel(id: string, name: string): ModelSpec<"open
 		contextWindow: 262_144,
 		maxTokens: 131_072,
 		tokenizer: "qwen3",
-		thinking: { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High] },
+		thinking: { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] },
 		compat: {
 			supportsDeveloperRole: false,
 			supportsStore: false,
@@ -1576,42 +1609,26 @@ function createYoloAutoQwenFlashModel(id: string, name: string): ModelSpec<"open
 /**
  * Documented Yolo-Auto catalog (yolo-auto.com/models): `/v1/models` lists bare ids with no limit fields, so
  * these seeds are the provider-local references that discovery maps onto. Without them the bare
- * `qwen3.8-flash` slug resolves through the global index, whose largest bundled window (1M) misreports the
+ * `qwen3.8-27b` slug resolves through the global index, whose largest bundled window (1M) misreports the
  * deployment cap.
  */
 export const YOLO_AUTO_STATIC_MODELS: readonly ModelSpec<"openai-completions">[] = [
-	{
-		id: "deepseek-flash-v4",
-		name: "DeepSeek Flash V4",
-		api: "openai-completions",
+	createYoloAutoQwenFlashModel("qwen3.8-27b", "Qwen3.8-27B"),
+	createYoloAutoQwenFlashModel("yolo", "Yolo"),
+	...[
+		{ id: "yolo-small", name: "Yolo Small", contextWindow: 262_144 },
+		{ id: "yolo-128k", name: "Yolo 128K", contextWindow: 131_072 },
+	].map(model => ({
+		...model,
+		api: "openai-completions" as const,
 		provider: "yolo-auto",
 		baseUrl: YOLO_AUTO_BASE_URL,
-		reasoning: true,
-		input: ["text", "image"],
+		reasoning: false,
+		input: ["text"] as ("text" | "image")[],
 		cost: { ...YOLO_AUTO_FLAT_RATE_COST },
-		contextWindow: 131_072,
-		maxTokens: 131_072,
-		thinking: {
-			mode: "effort",
-			efforts: [...THINKING_EFFORTS],
-			effortMap: {
-				[Effort.Minimal]: "low",
-				[Effort.Low]: "low",
-				[Effort.Medium]: "high",
-				[Effort.High]: "high",
-				[Effort.XHigh]: "max",
-				[Effort.Max]: "max",
-			},
-		},
-		compat: {
-			supportsDeveloperRole: false,
-			supportsStore: false,
-			supportsReasoningEffort: true,
-			thinkingFormat: "chat-template",
-		},
-	},
-	createYoloAutoQwenFlashModel("qwen3.8-flash", "Qwen3.8 Flash"),
-	createYoloAutoQwenFlashModel("yolo", "Yolo"),
+		maxTokens: null,
+		compat: { supportsDeveloperRole: false, supportsStore: false },
+	})),
 ];
 
 export interface YoloAutoModelManagerConfig {
@@ -2597,9 +2614,8 @@ const FIREWORKS_FAST_VARIANT_SPECS: ReadonlyArray<{
 	name: string;
 	cost: { input: number; output: number; cacheRead: number };
 }> = [
-	{ base: "kimi-k2.7-code", name: "Kimi K2.7 Code Fast", cost: { input: 1.9, output: 8, cacheRead: 0.38 } },
-	{ base: "kimi-k2.6", name: "Kimi K2.6 Fast", cost: { input: 2, output: 8, cacheRead: 0.3 } },
-	{ base: "glm-5.1", name: "GLM-5.1 Fast", cost: { input: 2.8, output: 8.8, cacheRead: 0.52 } },
+	{ base: "kimi-k3", name: "Kimi K3 Fast", cost: { input: 4.5, output: 22.5, cacheRead: 0.45 } },
+	{ base: "glm-5.3", name: "GLM-5.3 Fast", cost: { input: 2.1, output: 6.6, cacheRead: 0.39 } },
 	{ base: "glm-5.2", name: "GLM-5.2 Fast", cost: { input: 2.1, output: 6.6, cacheRead: 0.21 } },
 ];
 
@@ -2677,6 +2693,7 @@ function mapFireworksControlPlaneModel(
 	publicModelId: string,
 	reference: ModelSpec<"openai-completions"> | undefined,
 	baseUrl: string,
+	cost: ModelCost | undefined,
 ): ModelSpec<"openai-completions"> {
 	const name = toModelName(record.displayName, reference?.name ?? publicModelId);
 	const supportsImage = toBoolean(record.supportsImageInput) === true;
@@ -2708,7 +2725,7 @@ function mapFireworksControlPlaneModel(
 		provider: "fireworks",
 		baseUrl,
 		name,
-
+		cost: cost ?? base.cost,
 		reasoning: reference?.reasoning ?? true,
 		input: supportsImage ? ["text", "image"] : (reference?.input ?? ["text"]),
 		contextWindow,
@@ -2722,6 +2739,7 @@ async function fetchFireworksServerlessModels(options: {
 	baseUrl: string;
 	apiKey: string;
 	resolveReference: (publicModelId: string) => ModelSpec<"openai-completions"> | undefined;
+	resolveCost: (publicModelId: string) => ModelCost | undefined;
 	fetch?: FetchImpl;
 }): Promise<ModelSpec<"openai-completions">[] | null> {
 	const listUrl = toFireworksControlPlaneModelsUrl(options.baseUrl, FIREWORKS_CONTROL_PLANE_ACCOUNT);
@@ -2768,6 +2786,7 @@ async function fetchFireworksServerlessModels(options: {
 					publicModelId,
 					options.resolveReference(publicModelId),
 					options.baseUrl,
+					options.resolveCost(publicModelId),
 				),
 			);
 		}
@@ -2814,6 +2833,27 @@ async function loadModelsDevReferences<TApi extends Api>(fetchImpl?: FetchImpl):
 		return new Map<string, ModelSpec<TApi>>();
 	}
 }
+const FIREWORKS_MODELS_DEV_DESCRIPTORS: readonly ModelsDevProviderDescriptor[] = [
+	openAiCompletionsDescriptor("fireworks-ai", "fireworks", "https://api.fireworks.ai/inference/v1", {
+		// `mapModelsDevToModels` maps an absent price to zeros, so tell them apart on the raw row.
+		filterModel: (_id, raw) => typeof raw.cost?.input === "number" || typeof raw.cost?.output === "number",
+	}),
+];
+
+async function loadFireworksModelsDevCosts(
+	fetchImpl?: FetchImpl,
+): Promise<Map<string, ModelSpec<"openai-completions">["cost"]>> {
+	const costs = new Map<string, ModelSpec<"openai-completions">["cost"]>();
+	try {
+		const payload = await fetchWellKnownModels(fetchImpl);
+		for (const model of mapModelsDevToModels(payload as Record<string, unknown>, FIREWORKS_MODELS_DEV_DESCRIPTORS)) {
+			costs.set(toFireworksPublicModelId(model.id), model.cost);
+		}
+	} catch {
+		// Optional enrichment: without it, discovered rows keep their reference price.
+	}
+	return costs;
+}
 export function fireworksModelManagerOptions(
 	config?: FireworksModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
@@ -2826,12 +2866,16 @@ export function fireworksModelManagerOptions(
 		providerId: "fireworks",
 		...(apiKey && {
 			fetchDynamicModels: async () => {
-				const modelsDevReferences = await loadModelsDevReferences<"openai-completions">(config?.fetch);
+				const [modelsDevReferences, fireworksCosts] = await Promise.all([
+					loadModelsDevReferences<"openai-completions">(config?.fetch),
+					loadFireworksModelsDevCosts(config?.fetch),
+				]);
 				return fetchFireworksServerlessModels({
 					baseUrl,
 					apiKey,
 					resolveReference: publicModelId =>
 						modelsDevReferences.get(publicModelId) ?? bundledReferences(publicModelId),
+					resolveCost: publicModelId => fireworksCosts.get(publicModelId),
 					fetch: config?.fetch,
 				});
 			},
@@ -3316,6 +3360,7 @@ function openCodeBaseUrlForApi(api: Api, basePath: string): string {
 // The gateway's GPT-6 Astra listing carries no transport metadata; it is served only at /responses (#12030).
 // models.dev omits muse-spark-1.3-contributor-free entirely; the gateway serves it only at /responses (#10610).
 const OPENCODE_ZEN_API_ID_OVERRIDES: Readonly<Record<string, Api>> = {
+	"gemini-4-argon": "google-generative-ai",
 	"union-alpha": "anthropic-messages",
 	"gpt-6-astra": "openai-responses",
 	"muse-spark-1.3-contributor-free": "openai-responses",
@@ -3324,10 +3369,16 @@ const OPENCODE_ZEN_API_ID_OVERRIDES: Readonly<Record<string, Api>> = {
 };
 
 // Rows cached before a capability correction keep stale thinking metadata until the authoritative TTL expires.
-const OPENCODE_CACHE_MIGRATION_MODEL_IDS = ["glm-5.3-flash"] as const;
+const OPENCODE_CACHE_MIGRATION_MODEL_IDS = [
+	"deepseek-flash",
+	"glm-5.3-flash",
+	"longcat-2.5-preview-free",
+	"space-bunny-free",
+] as const;
 const OPENCODE_ZEN_CACHE_MIGRATION_MODEL_IDS = ["gemini-3.7-flash", "gemini-3.8-flash"] as const;
 
 const OPENCODE_GO_API_ID_OVERRIDES: Readonly<Record<string, Api>> = {
+	"gemini-4-argon": "google-generative-ai",
 	"union-alpha": "anthropic-messages",
 	"deepseek-v4-flash": "openai-responses",
 	"muse-spark-1.2": "openai-responses",
@@ -3359,7 +3410,15 @@ const OPENCODE_GO_IMAGE_INPUT_MODEL_IDS: Record<string, true> = {
 
 function withOpenCodeDeclaredInput<TApi extends Api>(spec: ModelSpec<TApi>): ModelSpec<TApi> {
 	if (spec.provider !== "opencode-go" || OPENCODE_GO_IMAGE_INPUT_MODEL_IDS[spec.id] !== true) return spec;
-	return spec.input.includes("image") ? spec : { ...spec, input: ["text", "image"] };
+	return {
+		...spec,
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: spec.contextWindow ?? 1_000_000,
+		maxTokens: spec.maxTokens ?? 131_072,
+		cost:
+			spec.cost.input || spec.cost.output ? spec.cost : { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 },
+	};
 }
 
 function openCodeModelManagerOptions(
@@ -3752,6 +3811,7 @@ export function kiloModelManagerOptions(config?: KiloModelManagerConfig): ModelM
 				provider: "kilo",
 				baseUrl,
 				apiKey,
+				mapModel: (entry, defaults) => ({ ...defaults, cost: perTokenPricingCost(entry.pricing) }),
 				fetch: config?.fetch,
 			}),
 	};
@@ -4199,8 +4259,10 @@ export function kimiCodeMaxTokens(
 // /coding/v1/models carries no pricing; seed the public Moonshot list card only when every token price is 0.
 // `kimi-for-coding` (K2.8 Preview) has no public SKU yet and uses the K2.7 Code line rate.
 const KIMI_CODE_LIST_COSTS: Readonly<Record<string, ModelCost>> = {
-	k3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
-	"k3-256k": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+	k3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+	"k3-256k": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+	"k3.1-pro": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2 },
+	"k3.1-pro-highspeed": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 4 },
 	"kimi-for-coding": { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
 	"kimi-for-coding-highspeed": { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
 	"kimi-k2": { input: 0.6, output: 2.5, cacheRead: 0.15, cacheWrite: 0 },
@@ -4221,6 +4283,8 @@ export function kimiCodeModelManagerOptions(
 	const baseUrl = config?.baseUrl ?? "https://api.kimi.com/coding/v1";
 	return {
 		providerId: "kimi-code",
+		cacheProviderId: resolveModelCacheProviderId("kimi-code", { apiKey, baseUrl }),
+		dynamicModelsAuthoritative: true,
 		...(apiKey && {
 			fetchDynamicModels: () =>
 				fetchOpenAICompatibleModels({
@@ -5456,7 +5520,7 @@ export function xiaomiModelManagerOptions(
 		: XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS;
 	const XIAOMI_STANDARD_BASE_URL = "https://api.xiaomimimo.com/v1";
 	const isTokenPlanProvider = config?.tokenPlanRegion !== undefined || providerId.startsWith("xiaomi-token-plan-");
-	const isTokenPlanKey = isTokenPlanProvider || apiKey?.startsWith("tp-");
+	const isTokenPlanKey = isTokenPlanProvider || (apiKey !== undefined && isXiaomiTokenPlanKey(apiKey));
 
 	const baseUrl = isTokenPlanKey ? tokenPlanBaseUrls[0] : (config?.baseUrl ?? XIAOMI_STANDARD_BASE_URL);
 	const references = createBundledReferenceMap<"openai-completions">("xiaomi");
@@ -5535,7 +5599,7 @@ type LiteLLMRichEndpointModel<TApi extends Api> = {
 };
 type LiteLLMRichEndpointFailure = {
 	endpoint: string;
-	reason: "http-status" | "invalid-json" | "network-error";
+	reason: "http-status" | "invalid-json" | "invalid-pagination" | "network-error";
 	status?: number;
 	error?: unknown;
 };
@@ -5547,6 +5611,7 @@ type LiteLLMRichEndpointResult<TApi extends Api> =
 	  }
 	| { failure: LiteLLMRichEndpointFailure };
 
+const LITELLM_MAX_RICH_PAGES = 100;
 const LITELLM_RICH_ENDPOINTS = ["/model_group/info", "/v2/model/info", "/model/info", "/v1/model/info"] as const;
 const LITELLM_TASK_SPECIFIC_MODES: Record<string, true> = {
 	audio_speech: true,
@@ -5982,28 +6047,82 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 	if (options.apiKey) {
 		requestHeaders.Authorization = `Bearer ${options.apiKey}`;
 	}
-	let response: Response;
-	try {
-		response = await fetchImpl(`${managementBaseUrl}${endpoint}`, {
-			method: "GET",
-			headers: requestHeaders,
-			signal,
-		});
-	} catch (error) {
-		return { failure: { endpoint, reason: "network-error", error } };
+	const fetchPage = async (
+		page?: number,
+	): Promise<{ payload: unknown; status: number } | { failure: LiteLLMRichEndpointFailure } | null> => {
+		let response: Response;
+		try {
+			response = await fetchImpl(`${managementBaseUrl}${endpoint}${page === undefined ? "" : `?page=${page}`}`, {
+				method: "GET",
+				headers: requestHeaders,
+				signal,
+			});
+		} catch (error) {
+			return { failure: { endpoint, reason: "network-error", error } };
+		}
+		if (!response.ok) {
+			return response.status === 404 && page === undefined
+				? null
+				: { failure: { endpoint, reason: "http-status", status: response.status } };
+		}
+		try {
+			return { payload: await response.json(), status: response.status };
+		} catch (error) {
+			return { failure: { endpoint, reason: "invalid-json", status: response.status, error } };
+		}
+	};
+	const firstPage = await fetchPage();
+	if (!firstPage || "failure" in firstPage) {
+		return firstPage;
 	}
-	if (!response.ok) {
-		return response.status === 404 ? null : { failure: { endpoint, reason: "http-status", status: response.status } };
-	}
-	let payload: unknown;
-	try {
-		payload = await response.json();
-	} catch (error) {
-		return { failure: { endpoint, reason: "invalid-json", status: response.status, error } };
-	}
-	const entries = extractLiteLLMRichEntries(payload);
+	const entries = extractLiteLLMRichEntries(firstPage.payload);
 	if (!entries || entries.length === 0) {
 		return null;
+	}
+	// /v2/model/info returns {current_page, total_pages, data}; older
+	// endpoints and unpaginated /v2 proxies must keep their existing behavior.
+	if (
+		endpoint === "/v2/model/info" &&
+		isRecord(firstPage.payload) &&
+		("current_page" in firstPage.payload || "total_pages" in firstPage.payload)
+	) {
+		const { current_page: currentPage, total_pages: totalPages, total_count: totalCount } = firstPage.payload;
+		const invalidPage = (status: number): LiteLLMRichEndpointResult<TApi> => ({
+			failure: { endpoint, reason: "invalid-pagination", status },
+		});
+		if (
+			currentPage !== 1 ||
+			typeof totalPages !== "number" ||
+			!Number.isSafeInteger(totalPages) ||
+			totalPages < 1 ||
+			totalPages > LITELLM_MAX_RICH_PAGES ||
+			(totalCount !== undefined &&
+				(typeof totalCount !== "number" || !Number.isSafeInteger(totalCount) || totalCount < entries.length))
+		) {
+			return invalidPage(firstPage.status);
+		}
+		const remainingPages = await Promise.all(
+			Array.from({ length: totalPages - 1 }, (_, index) => fetchPage(index + 2)),
+		);
+		for (const [index, nextPage] of remainingPages.entries()) {
+			if (!nextPage || "failure" in nextPage) {
+				return nextPage ?? invalidPage(firstPage.status);
+			}
+			const nextEntries = extractLiteLLMRichEntries(nextPage.payload);
+			if (
+				!isRecord(nextPage.payload) ||
+				nextPage.payload.current_page !== index + 2 ||
+				nextPage.payload.total_pages !== totalPages ||
+				(totalCount !== undefined && nextPage.payload.total_count !== totalCount) ||
+				!nextEntries?.length
+			) {
+				return invalidPage(nextPage.status);
+			}
+			entries.push(...nextEntries);
+		}
+		if (totalCount !== undefined && entries.length !== totalCount) {
+			return invalidPage(firstPage.status);
+		}
 	}
 	const deduped = new Map<string, LiteLLMRichEndpointModel<TApi>>();
 	const excludedModelIds = new Set<string>();
@@ -6246,10 +6365,20 @@ export function nanoGptModelManagerOptions(
 					provider: "nanogpt",
 					baseUrl,
 					apiKey,
+					query: { detailed: "true" },
 					mapModel: (entry, defaults) => {
 						const reference = resolveReference(defaults.id);
-						const mapped = mapWithBundledReference(entry, defaults, reference);
-						return { ...mapped, api: "openai-completions", provider: "nanogpt" };
+						const mapped = mapWithBundledReference(
+							{ ...entry, max_completion_tokens: entry.max_output_tokens ?? entry.max_completion_tokens },
+							defaults,
+							reference,
+						);
+						return {
+							...mapped,
+							api: "openai-completions",
+							provider: "nanogpt",
+							cost: { ...mapped.cost, ...nanoGptPricingCost(entry.pricing, mapped.cost) },
+						};
 					},
 					filterModel: (_entry, model) => {
 						const match = NANO_GPT_THINKING_SUFFIX_RE.exec(model.id);
@@ -6357,7 +6486,7 @@ function parseCopilotTokenPriceTier(value: unknown): CopilotTokenPriceTier | und
 		return undefined;
 	}
 	return {
-		contextMax: toNumber(value.context_max),
+		contextMax: toNumber(value.max_prompt_tokens) ?? toNumber(value.context_max),
 		inputPrice: toNumber(value.input_price),
 		outputPrice: toNumber(value.output_price),
 		cachePrice: toNumber(value.cache_price),
@@ -6520,7 +6649,14 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 									: (reference?.input ?? defaults.input);
 
 						const tokenPrices = extractCopilotTokenPrices(entry);
-						const defaultContextMax = tokenPrices.defaultTier?.contextMax;
+						const billedDefaultMax = tokenPrices.defaultTier?.contextMax;
+						const tieredPromptBudget =
+							(tokenPrices.longContext?.contextMax ?? 0) > 0 ? (copilotLimits.maxPromptTokens ?? 0) : 0;
+						const defaultContextMax =
+							tieredPromptBudget > 0 &&
+							(billedDefaultMax === undefined || billedDefaultMax <= 0 || tieredPromptBudget < billedDefaultMax)
+								? tieredPromptBudget
+								: billedDefaultMax;
 						const defaultTierWindow =
 							defaultContextMax !== undefined &&
 							defaultContextMax > 0 &&
@@ -7032,7 +7168,7 @@ const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution(
 	OPENCODE_ZEN_API_ID_OVERRIDES,
 );
 const OPENCODE_GO_API_RESOLUTION = createOpenCodeApiResolution(
-	"https://opencode.ai/zen/go",
+	"https://opencode.ai/inference/go",
 	OPENCODE_GO_API_ID_OVERRIDES,
 );
 
@@ -7256,21 +7392,17 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_CODING_PLANS: readonly ModelsDevProviderDe
 		},
 	}),
 
-	openAiCompletionsDescriptor("minimax-coding-plan", "minimax-code", "https://api.minimax.io/v1", {
-		compat: {
-			supportsStore: false,
-			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
-			reasoningContentField: "reasoning_content",
-		},
+	anthropicMessagesDescriptor("minimax-coding-plan", "minimax-code", "https://api.minimax.io/anthropic", {
+		resolveApi: id =>
+			id.includes("lightning")
+				? { api: "openai-completions", baseUrl: "https://api.minimax.io/v1" }
+				: { api: "anthropic-messages", baseUrl: "https://api.minimax.io/anthropic" },
 	}),
-	openAiCompletionsDescriptor("minimax-cn-coding-plan", "minimax-code-cn", "https://api.minimaxi.com/v1", {
-		compat: {
-			supportsStore: false,
-			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
-			reasoningContentField: "reasoning_content",
-		},
+	anthropicMessagesDescriptor("minimax-cn-coding-plan", "minimax-code-cn", "https://api.minimaxi.com/anthropic", {
+		resolveApi: id =>
+			id.includes("lightning")
+				? { api: "openai-completions", baseUrl: "https://api.minimaxi.com/v1" }
+				: { api: "anthropic-messages", baseUrl: "https://api.minimaxi.com/anthropic" },
 	}),
 
 	openAiCompletionsDescriptor(
@@ -7327,7 +7459,7 @@ const OPENCODE_MODELS_DEV_DESCRIPTORS: readonly ModelsDevProviderDescriptor[] = 
 				OPENCODE_ZEN_API_RESOLUTION.defaultResolution,
 			),
 	}),
-	openAiCompletionsDescriptor("opencode-go", "opencode-go", "https://opencode.ai/zen/go/v1", {
+	openAiCompletionsDescriptor("opencode-go", "opencode-go", "https://opencode.ai/inference/go/v1", {
 		filterModel: filterActiveToolCallModels,
 		resolveApi: (modelId, raw) =>
 			resolveApiByRules(
@@ -7365,6 +7497,7 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_SPECIALIZED: readonly ModelsDevProviderDes
 	),
 
 	openAiCompletionsDescriptor("mistral", "mistral", "https://api.mistral.ai/v1"),
+	openAiCompletionsDescriptor("modular", "modular", "https://api.modular.com/v1"),
 
 	...OPENCODE_MODELS_DEV_DESCRIPTORS,
 

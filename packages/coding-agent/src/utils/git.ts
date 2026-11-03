@@ -1363,6 +1363,50 @@ export async function writeTree(cwd: string, options: Pick<CommandOptions, "env"
 	return (await runText(cwd, ["write-tree"], options)).trim();
 }
 
+/** Publish immutable Git objects whole, without changing destination refs or index. */
+export async function copyGitObjects(fromRoot: string, toRoot: string): Promise<void> {
+	const [source, destination] = await Promise.all([repo.resolve(fromRoot), repo.resolve(toRoot)]);
+	if (!source || !destination) throw new Error("Git repository not found while preserving isolation objects");
+	const from = path.join(source.commonDir, "objects");
+	const to = path.join(destination.commonDir, "objects");
+	if (from === to) return;
+	const publish = async (sourceFile: string, targetFile: string): Promise<void> => {
+		const temporary = path.join(path.dirname(targetFile), `tmp_obj_proto_${Snowflake.next()}`);
+		try {
+			await fs.promises.copyFile(sourceFile, temporary, fs.constants.COPYFILE_EXCL);
+			try {
+				await fs.promises.link(temporary, targetFile);
+			} catch (error) {
+				if (hasFsCode(error, "EEXIST")) return;
+				if (!hasFsCode(error, "EPERM") && !hasFsCode(error, "ENOTSUP") && !hasFsCode(error, "EXDEV")) throw error;
+				await fs.promises.rename(temporary, targetFile);
+			}
+		} finally {
+			await fs.promises.rm(temporary, { force: true });
+		}
+	};
+	for (const entry of await fs.promises.readdir(from, { withFileTypes: true })) {
+		if (!entry.isDirectory() || !/^[0-9a-f]{2}$/.test(entry.name)) continue;
+		await fs.promises.mkdir(path.join(to, entry.name), { recursive: true });
+		for (const name of await fs.promises.readdir(path.join(from, entry.name))) {
+			if (!/^[0-9a-f]{38,62}$/.test(name)) continue;
+			await publish(path.join(from, entry.name, name), path.join(to, entry.name, name));
+		}
+	}
+	const packDir = path.join(from, "pack");
+	const packs = await fs.promises.readdir(packDir).catch(error => {
+		if (isEnoent(error)) return [];
+		throw error;
+	});
+	await fs.promises.mkdir(path.join(to, "pack"), { recursive: true });
+	// Readers may use an index as soon as it exists, so publish packs before indexes.
+	for (const suffix of ["pack", "idx", "rev", "keep", "promisor", "mtimes"]) {
+		for (const name of packs.filter(name => /^pack-[0-9a-f]+\./.test(name) && name.endsWith(`.${suffix}`))) {
+			await publish(path.join(packDir, name), path.join(to, "pack", name));
+		}
+	}
+}
+
 type DetachGitDirResult = "no-git" | "independent" | "detached";
 
 export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string): Promise<DetachGitDirResult> {
@@ -1998,14 +2042,41 @@ export const ls = {
 	},
 
 	async submodules(cwd: string, signal?: AbortSignal): Promise<string[]> {
-		// runText throws on a nonzero exit; a bare `git()` here would turn a missing
-		// binary, broken repo, or abort into an apparently empty submodule list.
-		return splitLines(
-			await runText(cwd, ["submodule", "--quiet", "foreach", "--recursive", "echo $sm_path"], {
+		const modulesFile = path.join(cwd, ".gitmodules");
+		try {
+			await fs.promises.lstat(modulesFile);
+		} catch (error) {
+			if (isEnoent(error)) return [];
+			throw error;
+		}
+		const result = await git(
+			cwd,
+			["config", "-z", "--file", modulesFile, "--get-regexp", "^submodule\\..*\\.path$"],
+			{
 				readOnly: true,
 				signal,
-			}),
+			},
 		);
+		if (result.exitCode === 1) return [];
+		if (result.exitCode !== 0) throw new GitCommandError(["config", "--file", modulesFile], result);
+		return result.stdout
+			.split("\0")
+			.filter(Boolean)
+			.map(record => {
+				const relativePath = record.slice(record.indexOf("\n") + 1);
+				const resolved = path.relative(path.resolve(cwd), path.resolve(cwd, relativePath));
+				if (
+					!relativePath ||
+					relativePath.split(path.sep).some(component => component === "." || component === "..") ||
+					path.isAbsolute(relativePath) ||
+					!resolved ||
+					resolved === ".." ||
+					resolved.startsWith(`..${path.sep}`)
+				) {
+					throw new Error(`Unsafe submodule path in ${modulesFile}: ${relativePath}`);
+				}
+				return relativePath;
+			});
 	},
 };
 

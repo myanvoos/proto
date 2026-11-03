@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { runUnchecked } from "../../utils/git";
+import { runBunCli } from "./bun-cli";
 import type { GitSource } from "./git-url";
 
 function normalizeRepositoryUrl(repository: string): string {
@@ -23,29 +24,8 @@ function normalizeRepositoryUrl(repository: string): string {
 	}
 }
 
-interface CommandResult {
-	readonly exitCode: number;
-	readonly stdout: string;
-	readonly stderr: string;
-}
-
-async function runBunCommand(command: string[], cwd: string): Promise<CommandResult> {
-	const proc = Bun.spawn(command, {
-		cwd,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [exitCode, stdout, stderr] = await Promise.all([
-		proc.exited,
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-	]);
-	return { exitCode, stdout, stderr };
-}
-
 export async function refreshBunGitCache(source: GitSource, cwd: string): Promise<void> {
-	const cacheResult = await runBunCommand(["bun", "pm", "cache"], cwd);
+	const cacheResult = await runBunCli(["pm", "cache"], cwd);
 	if (cacheResult.exitCode !== 0) {
 		throw new Error(`bun pm cache failed: ${cacheResult.stderr}`);
 	}

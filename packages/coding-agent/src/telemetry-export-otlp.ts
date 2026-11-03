@@ -7,16 +7,14 @@ import type {
 	ToolStatus,
 } from "@oh-my-pi/pi-agent-core";
 import { logger, postmortem } from "@oh-my-pi/pi-utils";
+import { type Attributes, type Counter, context, type Histogram, type Meter, metrics } from "@opentelemetry/api";
 import {
-	type Attributes,
-	type AttributeValue,
-	type Counter,
-	context,
-	type Histogram,
-	type Meter,
-	metrics,
-} from "@opentelemetry/api";
-import { type LogAttributes, logs, type Logger as OtelLogger, SeverityNumber } from "@opentelemetry/api-logs";
+	type AnyValue,
+	type LogAttributes,
+	logs,
+	type Logger as OtelLogger,
+	SeverityNumber,
+} from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
@@ -94,7 +92,9 @@ export async function registerProviders(signalConfig: TelemetrySignalConfig): Pr
 	if (signalConfig.trace) {
 		const exporter = new OTLPTraceExporter();
 		traceProvider = new NodeTracerProvider({
-			resource,
+			// sdk-trace-base 2.12 still consumes the 2.x resource/api types while the
+			// metrics and logs SDKs are on 3.0; the resource shapes are identical.
+			resource: resource as unknown as NonNullable<ConstructorParameters<typeof NodeTracerProvider>[0]>["resource"],
 			spanProcessors: [new BatchSpanProcessor(exporter)],
 		});
 		traceProvider.register({ contextManager: new AsyncLocalStorageContextManager().enable() });
@@ -366,7 +366,7 @@ function logAttributesFromContext(input: Record<string, unknown> | undefined): L
 	return out;
 }
 
-function logAttributeValue(value: unknown): AttributeValue | undefined {
+function logAttributeValue(value: unknown): AnyValue {
 	if (value === undefined || value === null) return undefined;
 	if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
 	if (value instanceof Error) {

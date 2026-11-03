@@ -99,4 +99,4 @@ export function resolveNodeInterpreter(
 export const NODE_REMOTE_TARGET_UNSUPPORTED =
 	"node kernels run on the local host only; use `bun` cells for a remote or container target, or run node there as an ordinary command";
 
-export const NODE_INTERPRETER_NOT_FOUND = `Node.js not found (no ${NODE_INTERPRETERS.join(" or ")} on PATH); install Node.js >= 22 or start the lane with an explicit interpreter: protolens context --resource kernel --op start --language node --interpreter /path/to/node`;
+export const NODE_INTERPRETER_NOT_FOUND = `Node.js not found (no ${NODE_INTERPRETERS.join(" or ")} on PATH); install Node.js >= 24 or start the lane with an explicit interpreter: protolens context --resource kernel --op start --language node --interpreter /path/to/node`;

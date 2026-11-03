@@ -25,6 +25,23 @@ const MODEL = {
 } as Model;
 
 describe("V2 streaming compaction retries", () => {
+	test("replacement history retains explicitly authored implicit-type user turns rather than injected user-role summaries", async () => {
+		const authored = { role: "user", content: [{ type: "input_text", text: "actual question" }] };
+		const injected = { role: "user", content: [{ type: "input_text", text: "injected summary" }] };
+		const compacted = { type: "compaction", encrypted_content: "opaque" };
+		const request = buildCompactionV2Request(MODEL, [injected, authored], "instructions", {
+			retainedUserItems: [authored],
+		});
+		const result = await requestCompactionV2Streaming(MODEL, "test-key", request, undefined, {
+			fetch: async () =>
+				sseResponse([
+					{ type: "response.output_item.done", output_index: 0, item: compacted },
+					{ type: "response.completed" },
+				]),
+		});
+		expect(result.replacementHistory).toEqual([authored, compacted]);
+	});
+
 	test("retries a transport that closed the socket unexpectedly", async () => {
 		const userItem = { type: "message", role: "user", content: [{ type: "input_text", text: "real user" }] };
 		const request = buildCompactionV2Request(MODEL, [userItem], "instructions");

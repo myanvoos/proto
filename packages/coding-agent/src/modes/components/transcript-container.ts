@@ -10,11 +10,6 @@ export interface AnimationFrame {
 	readonly now: number;
 }
 
-/** Lets an active block adapt its presentation to its allocated viewport rows. */
-export interface TranscriptPresentationTarget {
-	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
-}
-
 /** Presentation declaration captured permanently when a block is added. */
 export type TranscriptBlockMode = "mutable" | "appendOnly";
 
@@ -60,8 +55,6 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
-	/** Render the row that must remain represented under emergency viewport pressure. */
-	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 }
 
 /**
@@ -117,7 +110,7 @@ interface LiveRenderCache {
 	width: number;
 	frame: AnimationFrame;
 	generation: number;
-	blocks: Map<Component, { allocation: number; rows: readonly string[] }>;
+	blocks: Map<Component, readonly string[]>;
 }
 type Offered = { width: number } & (
 	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
@@ -135,11 +128,7 @@ const REPLAY_WINDOW_NOTICE =
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];
 
-/**
- * A block's leading and trailing spacer rows are decoration, not content: a
- * clipped block must spend its allocation on rows that say something, or a
- * one-row user message renders as its blank spacer and the prompt disappears.
- */
+/** Keep outer spacer rows from hiding the newest content in a short viewport. */
 function contentRows(rows: readonly string[]): readonly string[] {
 	let end = rows.length;
 	while (end > 0 && Bun.stripANSI(rows[end - 1]!).trim().length === 0) end--;
@@ -199,7 +188,7 @@ function isStablePrefix(prefix: readonly TranscriptStableRow[], rows: readonly T
 	return true;
 }
 
-/** Strip leading/trailing all-blank rows; the viewport allocator measures blocks by this trimmed height. */
+/** Strip leading/trailing all-blank rows from a transcript block. */
 export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	let start = 0;
 	let end = rows.length;
@@ -210,6 +199,7 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
+	#releaseFailures = new WeakSet<Component>();
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
@@ -227,9 +217,8 @@ export class TranscriptContainer extends Container {
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new WeakMap<Component, number>();
 	#historyEvicted = false;
-	// Watchdog for the wedge where an unfinalized frontier block pins pressure
-	// retirement: everything behind it stays live and degrades to one-line
-	// allocations. Logs once per pinned episode after a grace period.
+	// An unfinalized frontier can pin retirement and leave older live output
+	// above the viewport. Log once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	#renderRevision = 0;
 	#renderedRows: readonly string[] = [];
@@ -240,17 +229,35 @@ export class TranscriptContainer extends Container {
 		this.#liveGeneration++;
 	}
 
+	/** Insert into the live tail while retaining the component/entry mirror and immutable history order. */
+	insertChildAt(component: Component, index: number): void {
+		this.#syncEntries();
+		const target = Math.max(this.#frontier, Math.min(this.children.length, Math.trunc(index)));
+		this.addChild(component);
+		const child = this.children.pop()!;
+		const entry = this.#entries.pop()!;
+		this.children.splice(target, 0, child);
+		this.#entries.splice(target, 0, entry);
+		this.#clearDerived();
+	}
+
 	override removeChild(component: Component): void {
-		if (this.children.indexOf(component) < 0 || !this.canRemoveBlock(component)) return;
-		super.removeChild(component);
-		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
+		const index = this.#removableIndex(component);
+		if (index < 0) return;
+		this.#removeAt(index);
+	}
+
+	#removeAt(index: number): void {
+		this.children.splice(index, 1);
+		this.#entries.splice(index, 1);
 		this.#clearDerived();
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 	}
 
 	override disposeAndRemoveChild(component: Component): void {
-		if (!this.children.includes(component) || !this.canRemoveBlock(component)) return;
-		this.removeChild(component);
+		const index = this.#removableIndex(component);
+		if (index < 0) return;
+		this.#removeAt(index);
 		component.dispose?.();
 	}
 
@@ -336,19 +343,23 @@ export class TranscriptContainer extends Container {
 
 	/** Whether a transient block may be discarded without leaving tape history. */
 	canRemoveBlock(component: Component): boolean {
+		return this.#removableIndex(component) >= 0;
+	}
+
+	#removableIndex(component: Component): number {
 		this.#syncEntries();
-		const index = this.#entries.findIndex(entry => entry.component === component);
-		if (index < 0) return false;
+		const index = this.#entries.findLastIndex(entry => entry.component === component);
+		if (index < 0) return -1;
 		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.emitted > 0) return false;
+		if (entry.state === "committed" || entry.emitted > 0) return -1;
 		if ((this.#offered?.kind === "commit" || this.#offered?.kind === "replay") && index < this.#offered.end)
-			return false;
+			return -1;
 		if (
 			(this.#offered?.kind === "append" && index === this.#offered.entry) ||
 			(this.#offered?.kind === "replay" && index === this.#offered.end && this.#offered.emittedEnd > 0)
 		)
-			return false;
-		return true;
+			return -1;
+		return index;
 	}
 
 	/** Whether a superseded snapshot (a repeated poll) may be replaced; one directly above its turn's usage row stays. */
@@ -405,7 +416,7 @@ export class TranscriptContainer extends Container {
 		this.#settleFinalized();
 		let total = 0;
 		for (const { entry, index } of this.#liveEntries()) {
-			const rendered = this.#renderLiveEntry(entry, width, Number.MAX_SAFE_INTEGER, frame);
+			const rendered = this.#renderLiveEntry(entry, width, frame);
 			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width, rendered));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
 		}
@@ -413,93 +424,35 @@ export class TranscriptContainer extends Container {
 	}
 
 	/** Render the live tail, constrained to the supplied transcript height. */
+	/** Render normal block layouts, showing only the tail that fits on screen. */
 	renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
 		this.#lastFrame = frame;
 		this.#lastLiveLayout = undefined;
 		this.#syncEntries();
 		this.#settleFinalized();
 		this.#trimReplayWindow();
-		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
-		if (live.length === 0 || capacity === 0) {
-			return EMPTY_ROWS;
-		}
+		if (capacity === 0) return EMPTY_ROWS;
 
-		const shown: Array<{ entry: TranscriptEntry; index: number }> = [];
-		const blocks: (readonly string[])[] = [];
+		const output: string[] = [];
 		const layout: LiveLayoutBlock[] = [];
-		let total = 0;
-		for (const candidate of live) {
-			const rendered = this.#renderLiveEntry(candidate.entry, width, Number.MAX_SAFE_INTEGER, frame);
-			const emitted = this.#projectedEmitted(candidate.entry, candidate.index);
-			const block = rendered.slice(this.#emittedRowCount(candidate.entry, emitted, width, rendered));
+		for (const { entry, index } of this.#liveEntries()) {
+			const rendered = this.#renderLiveEntry(entry, width, frame);
+			const emitted = this.#projectedEmitted(entry, index);
+			const block = rendered.slice(this.#emittedRowCount(entry, emitted, width, rendered));
 			if (block.length === 0) continue;
-			total += block.length + (shown.length > 0 ? 1 : 0);
-			shown.push(candidate);
-			blocks.push(block);
-			layout.push({
-				index: candidate.index,
-				rows: block,
-				emitted,
-				stable: candidate.entry.stableRows.length,
-			});
+			if (output.length > 0) output.push("");
+			for (const line of block) output.push(line);
+			layout.push({ index, rows: block, emitted, stable: entry.stableRows.length });
 		}
-		if (shown.length === 0) {
-			return EMPTY_ROWS;
-		}
-		if (shown.length > capacity) return this.#renderEmergency(shown, width, capacity, frame);
-		if (total <= capacity) {
+		if (output.length <= capacity) {
 			this.#lastLiveLayout = { width, blocks: layout };
-			const output: string[] = [];
-			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
-				if (output.length > 0) {
-					output.push("");
-				}
-				for (const line of blocks[blockIndex]!) {
-					output.push(line);
-				}
-			}
 			return output;
 		}
 
-		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
-		const allocation: number[] = new Array(shown.length).fill(1);
-		let surplus = capacity - shown.length;
-		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
-		// cards (newest-first within each class), so a growing tool card collapses to
-		// its compact form instead of clipping already-visible assistant text (#9718).
-		const order: number[] = [];
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (const index of order) {
-			if (surplus <= 0) break;
-			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
-			allocation[index] += extra;
-			surplus -= extra;
-		}
-		const output: string[] = [];
-		for (let index = 0; index < shown.length; index++) {
-			const candidate = shown[index]!;
-			const allocated = allocation[index]!;
-			const full = this.#renderLiveEntry(candidate.entry, width, allocated, frame);
-			const rendered = full.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, full));
-			const content = contentRows(rendered);
-			const visible =
-				rendered.length <= allocated
-					? rendered
-					: content.length <= allocated
-						? content
-						: content.slice(content.length - allocated);
-			for (const line of visible) {
-				output.push(line);
-			}
-		}
-		const drop = Math.max(0, output.length - capacity);
-		return drop > 0 ? output.slice(drop) : output;
+		// Preserve each card's layout and chronological order. Overflow is off
+		// screen, not a reason to replace tool output with a one-line summary.
+		return contentRows(output).slice(-capacity);
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
@@ -588,7 +541,6 @@ export class TranscriptContainer extends Container {
 		let visible = 0;
 		for (let index = 0; index < live.length; index++) {
 			const candidate = live[index]!;
-			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const renderedEntry = this.#renderEntry(candidate.entry, width);
 			const rows = renderedEntry.slice(
 				this.#emittedRowCount(candidate.entry, candidate.entry.emitted, width, renderedEntry),
@@ -765,6 +717,9 @@ export class TranscriptContainer extends Container {
 				this.#entries[offered.end]!.emitted = offered.emittedEnd;
 			}
 		}
+		for (let index = 0; index < this.#frontier; index++) {
+			this.#releaseRenderCaches(this.#entries[index]!);
+		}
 		this.#offered = undefined;
 		this.#trimReplayWindow();
 	}
@@ -781,7 +736,6 @@ export class TranscriptContainer extends Container {
 		const rows: string[] = [];
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.unshift("");
@@ -799,7 +753,6 @@ export class TranscriptContainer extends Container {
 			? [...wrapTextWithAnsi(REPLAY_WINDOW_NOTICE, Math.max(1, width))]
 			: [];
 		for (const entry of this.#entries) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
@@ -978,7 +931,6 @@ export class TranscriptContainer extends Container {
 		let separate = false;
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			// Only the range head is sliced by its emitted stable prefix; every other
 			// entry renders whole, so the append-only verification pass (a second
 			// full render of the block's stable prefix) is skipped for them. This
@@ -1018,6 +970,20 @@ export class TranscriptContainer extends Container {
 		entry.emitted = 0;
 		entry.stableFrozen = false;
 		entry.archived = undefined;
+		this.#releaseRenderCaches(entry);
+	}
+
+	#releaseRenderCaches(entry: TranscriptEntry): void {
+		try {
+			entry.component.releaseRenderCaches?.();
+		} catch (error) {
+			if (this.#releaseFailures.has(entry.component)) return;
+			this.#releaseFailures.add(entry.component);
+			logger.warn("Transcript block failed to release render caches", {
+				component: entry.component.constructor.name,
+				error: String(error),
+			});
+		}
 	}
 
 	/** Forget acknowledged history only; an in-flight batch and live output remain intact. */
@@ -1047,7 +1013,6 @@ export class TranscriptContainer extends Container {
 		while (this.#frontier < this.#entries.length) {
 			const entry = this.#entries[this.#frontier]!;
 			if (entry.mode !== "appendOnly" || entry.state !== "settled") return;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#emittedRowCount(entry, entry.emitted, width, rendered) !== rendered.length) return;
@@ -1056,73 +1021,7 @@ export class TranscriptContainer extends Container {
 		}
 	}
 
-	#renderEmergency(
-		shown: readonly { entry: TranscriptEntry; index: number }[],
-		width: number,
-		rows: number,
-		frame: AnimationFrame,
-	): readonly string[] {
-		let visibleRows = rows;
-		let visible: { entry: TranscriptEntry; index: number }[] = [];
-		let emergencyCandidate: { entry: TranscriptEntry; index: number } | undefined;
-		let emergencyRow: string | undefined;
-		let hiddenActive = 0;
-		for (let attempt = 0; attempt < 2; attempt++) {
-			visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
-			emergencyCandidate = undefined;
-			emergencyRow = undefined;
-			const visibleStart = shown.length - visibleRows;
-			for (let index = visibleStart - 1; index >= 0; index--) {
-				const candidate = shown[index]!;
-				const block = candidate.entry.component as Component & FinalizableBlock;
-				const row =
-					candidate.entry.state === "settled" ? block.renderTranscriptBlockEmergencyRow?.(width) : undefined;
-				if (row === undefined) continue;
-				emergencyCandidate = candidate;
-				emergencyRow = row;
-				visible = [candidate, ...visible.slice(1)];
-				break;
-			}
-
-			let activeTotal = 0;
-			for (const candidate of shown) {
-				if (candidate.entry.state === "active") activeTotal++;
-			}
-			hiddenActive = activeTotal;
-			for (const candidate of visible) {
-				if (candidate.entry.state === "active") hiddenActive--;
-			}
-			// The summary row itself represents the newest active block when no
-			// active row fits beside it; report only the additional backlog.
-			if (hiddenActive === activeTotal && hiddenActive > 0) hiddenActive--;
-			if (attempt === 0 && hiddenActive > 0) {
-				visibleRows = Math.max(0, rows - 1);
-				continue;
-			}
-			break;
-		}
-
-		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
-		for (const candidate of visible) {
-			if (candidate === emergencyCandidate) {
-				output.push(emergencyRow ?? "");
-				continue;
-			}
-			this.#setAllocation(candidate.entry.component, 1, frame);
-			const full = this.#renderEntry(candidate.entry, width);
-			const rendered = full.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, full));
-			output.push(contentRows(rendered)[0] ?? "");
-		}
-		const visibleOutput = output.slice(0, rows);
-		return visibleOutput;
-	}
-
-	#renderLiveEntry(
-		entry: TranscriptEntry,
-		width: number,
-		allocation: number,
-		frame: AnimationFrame,
-	): readonly string[] {
+	#renderLiveEntry(entry: TranscriptEntry, width: number, frame: AnimationFrame): readonly string[] {
 		let cache = this.#liveRenderCache;
 		if (
 			cache === undefined ||
@@ -1135,15 +1034,10 @@ export class TranscriptContainer extends Container {
 			this.#liveRenderCache = cache;
 		}
 		const cached = cache.blocks.get(entry.component);
-		if (cached?.allocation === allocation) return cached.rows;
-		this.#setAllocation(entry.component, allocation, frame);
+		if (cached !== undefined) return cached;
 		const rows = this.#renderEntry(entry, width);
-		cache.blocks.set(entry.component, { allocation, rows });
+		cache.blocks.set(entry.component, rows);
 		return rows;
-	}
-
-	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
-		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
 
 	#settleFinalized(): void {

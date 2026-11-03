@@ -56,6 +56,7 @@ export const handleReadTheDocs: SpecialHandler = async (
 			el.remove();
 		});
 
+	const versionSlug = new URL(result.finalUrl).pathname.match(/^\/[^/]+\/([^/]+)\//)?.[1] ?? null;
 	const editLinks = root.querySelectorAll('a[href*="github.com"], a[href*="gitlab.com"]');
 	let sourceUrl: string | null = null;
 
@@ -64,6 +65,17 @@ export const handleReadTheDocs: SpecialHandler = async (
 		const text = link.textContent?.toLowerCase() || "";
 
 		if (href && (text.includes("edit") || text.includes("source"))) {
+			const ref = href.match(/\/(?:blob|raw|edit)\/([^/]+)\//)?.[1] ?? null;
+			if (
+				ref === null ||
+				versionSlug === null ||
+				!(versionSlug === "latest" || versionSlug === "stable" || ref === versionSlug)
+			) {
+				notes.push(
+					`Skipped raw source from ${href}: repository ref does not match documentation version ${versionSlug ?? "(unknown)"}`,
+				);
+				continue;
+			}
 			if (href.includes("github.com")) {
 				sourceUrl = href.replace("/blob/", "/raw/").replace("/edit/", "/raw/");
 			} else if (href.includes("gitlab.com")) {
@@ -74,12 +86,14 @@ export const handleReadTheDocs: SpecialHandler = async (
 	}
 
 	let content = "";
+	let fetchedRaw = false;
 
 	if (sourceUrl) {
 		try {
 			const sourceResult = await loadPage(sourceUrl, { timeout: Math.min(timeout, 10), signal });
 			if (sourceResult.ok && sourceResult.content.length > 0 && sourceResult.content.length < 1_000_000) {
 				content = sourceResult.content;
+				fetchedRaw = true;
 				notes.push(`Fetched raw source from ${sourceUrl}`);
 			}
 		} catch {}
@@ -101,6 +115,6 @@ export const handleReadTheDocs: SpecialHandler = async (
 		method: "readthedocs",
 		fetchedAt,
 		notes,
-		contentType: sourceUrl ? "text/plain" : "text/html",
+		contentType: fetchedRaw ? "text/plain" : "text/html",
 	});
 };

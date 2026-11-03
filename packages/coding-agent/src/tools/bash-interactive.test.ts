@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import { PtySession } from "@oh-my-pi/pi-natives";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { KeybindingsManager } from "../config/keybindings";
+import { Settings } from "../config/settings";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink } from "../session/streaming-output";
@@ -53,3 +54,18 @@ test("PTY sink finalization failure completes the overlay with a bounded error r
 	expect(bounded.result.output).toContain("PTY finalization failed: sink exploded");
 	expect(bounded.result.collector).toEqual({ state: "failed", error: "sink exploded" });
 }, 5_000);
+
+test("interactive PTYs receive shell spawn additions while caller env retains precedence", async () => {
+	const config = Settings.isolated().getShellConfig();
+	spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+		...config,
+		env: { ...config.env, PROTO_PTY_PROBE: "from-shell", CI: "guard" },
+	});
+	const result = await runInteractiveBashPty(testUi(), {
+		command: `printf 'probe=%s ci=%s term=%s\n' "$PROTO_PTY_PROBE" "$CI" "$TERM"`,
+		cwd: process.cwd(),
+		env: { CI: "caller", TERM: "xterm-256color" },
+	});
+	expect(result.output).toContain("probe=from-shell ci=caller term=xterm-256color");
+	expect(result.exitCode).toBe(0);
+});

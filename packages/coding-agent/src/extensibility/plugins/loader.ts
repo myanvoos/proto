@@ -8,6 +8,7 @@ import {
 	isEacces,
 	isEnoent,
 	logger,
+	normalizePathForComparison,
 	pathIsWithin,
 } from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
@@ -206,7 +207,7 @@ async function loadEnabledPlugins(cwd: string, home?: string): Promise<ScopedIns
 	const projectRegistryPath = await resolveActiveProjectRegistryPath(cwd);
 	if (projectRegistryPath) {
 		const projectRoot = path.dirname(projectRegistryPath);
-		if (projectRoot !== userRoot) {
+		if (normalizePathForComparison(projectRoot) !== normalizePathForComparison(userRoot)) {
 			projectPlugins = await collectPluginsAtRoot(projectRoot, projectOverrides, "project");
 		}
 	}

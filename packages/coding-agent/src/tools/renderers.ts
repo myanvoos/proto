@@ -23,6 +23,7 @@ import {
 	renderXdevCall,
 	setXdevRendererLookup,
 } from "./xdev";
+import { yieldToolRenderer } from "./yield";
 
 export type ToolRenderer = {
 	renderCall: (args: unknown, options: RenderResultOptions, theme: Theme) => Component;
@@ -37,8 +38,6 @@ export type ToolRenderer = {
 	inline?: boolean;
 
 	animatedPendingPreview?: boolean | ((args: unknown) => boolean);
-
-	animatedPartialResult?: boolean | ((args: unknown) => boolean);
 };
 
 let bashProtoRendererInstance: ToolRenderer | undefined;
@@ -213,6 +212,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	resolve: resolveRenderer as ToolRenderer,
 	reject: resolveRenderer as ToolRenderer,
 	think: thinkToolRenderer as ToolRenderer,
+	yield: yieldToolRenderer,
 	checklist: checklistToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,

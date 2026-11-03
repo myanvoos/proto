@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	collections::HashMap,
 	ffi::{OsStr, OsString},
@@ -33,134 +29,101 @@ use crate::host::{Host, Utility, util};
 	args_override_self = true
 )]
 struct FdCli {
-
 	#[arg(short = 'H', long, overrides_with = "no_hidden")]
 	hidden: bool,
-
 
 	#[arg(long = "no-hidden", overrides_with = "hidden", hide = true)]
 	no_hidden: bool,
 
-
 	#[arg(short = 'I', long = "no-ignore", overrides_with = "ignore")]
 	no_ignore: bool,
-
 
 	#[arg(long = "ignore", overrides_with = "no_ignore", hide = true)]
 	ignore: bool,
 
-
 	#[arg(long = "no-ignore-vcs", overrides_with = "ignore_vcs")]
 	no_ignore_vcs: bool,
-
 
 	#[arg(long = "ignore-vcs", overrides_with = "no_ignore_vcs", hide = true)]
 	ignore_vcs: bool,
 
-
 	#[arg(long = "no-require-git", overrides_with = "require_git")]
 	no_require_git: bool,
-
 
 	#[arg(long = "require-git", overrides_with = "no_require_git", hide = true)]
 	require_git: bool,
 
-
 	#[arg(long = "no-ignore-parent", overrides_with = "ignore_parent")]
 	no_ignore_parent: bool,
-
 
 	#[arg(long = "ignore-parent", overrides_with = "no_ignore_parent", hide = true)]
 	ignore_parent: bool,
 
-
 	#[arg(short = 'u', long = "unrestricted", action = ArgAction::Count)]
 	unrestricted: u8,
-
 
 	#[arg(short = 's', long = "case-sensitive", overrides_with = "ignore_case")]
 	case_sensitive: bool,
 
-
 	#[arg(short = 'i', long = "ignore-case", overrides_with = "case_sensitive")]
 	ignore_case: bool,
-
 
 	#[arg(short = 'g', long = "glob", overrides_with = "regex", conflicts_with = "fixed_strings")]
 	glob: bool,
 
-
 	#[arg(long = "regex", overrides_with = "glob")]
 	regex: bool,
-
 
 	#[arg(short = 'F', long = "fixed-strings", alias = "literal")]
 	fixed_strings: bool,
 
-
 	#[arg(long = "and", value_name = "pattern", allow_hyphen_values = true)]
 	and_patterns: Vec<String>,
-
 
 	#[arg(short = 'a', long = "absolute-path", overrides_with = "relative_path")]
 	absolute_path: bool,
 
-
 	#[arg(long = "relative-path", overrides_with = "absolute_path", hide = true)]
 	relative_path: bool,
-
 
 	#[arg(short = 'l', long = "list-details", hide = true)]
 	list_details: bool,
 
-
 	#[arg(short = 'L', long = "follow", overrides_with = "no_follow")]
 	follow: bool,
-
 
 	#[arg(long = "no-follow", overrides_with = "follow", hide = true)]
 	no_follow: bool,
 
-
 	#[arg(short = 'p', long = "full-path")]
 	full_path: bool,
-
 
 	#[arg(short = '0', long = "print0")]
 	print0: bool,
 
-
 	#[arg(short = 'd', long = "max-depth", value_name = "depth")]
 	max_depth: Option<usize>,
-
 
 	#[arg(long = "min-depth", value_name = "depth")]
 	min_depth: Option<usize>,
 
-
 	#[arg(long = "exact-depth", value_name = "depth")]
 	exact_depth: Option<usize>,
-
 
 	#[arg(short = 'E', long = "exclude", value_name = "pattern")]
 	excludes: Vec<String>,
 
-
 	#[arg(long = "prune")]
 	prune: bool,
-
 
 	#[arg(short = 't', long = "type", value_name = "filetype")]
 	types: Vec<String>,
 
-
 	#[arg(short = 'e', long = "extension", value_name = "ext")]
 	extensions: Vec<String>,
 
-
 	#[arg(short = 'S', long = "size", value_name = "size")]
 	sizes: Vec<String>,
-
 
 	#[arg(
 		long = "changed-within",
@@ -171,7 +134,6 @@ struct FdCli {
 	)]
 	changed_within: Option<String>,
 
-
 	#[arg(
 		long = "changed-before",
 		alias = "change-older-than",
@@ -180,86 +142,65 @@ struct FdCli {
 	)]
 	changed_before: Option<String>,
 
-
 	#[arg(short = 'o', long = "owner", value_name = "user:group")]
 	owners: Vec<String>,
-
 
 	#[arg(long = "format", value_name = "fmt")]
 	format_template: Option<String>,
 
-
 	#[arg(short = 'x', long = "exec", value_name = "cmd", num_args = 1.., allow_hyphen_values = true, hide = true)]
 	exec: Vec<OsString>,
-
 
 	#[arg(short = 'X', long = "exec-batch", value_name = "cmd", num_args = 1.., allow_hyphen_values = true, hide = true)]
 	exec_batch: Vec<OsString>,
 
-
 	#[arg(long = "batch-size", default_value_t = 0, hide = true)]
 	batch_size: usize,
-
 
 	#[arg(long = "ignore-file", value_name = "path")]
 	ignore_files: Vec<PathBuf>,
 
-
 	#[arg(short = 'c', long = "color", value_enum, default_value_t = When::Auto)]
 	color: When,
-
 
 	#[arg(long = "hyperlink", value_enum, num_args = 0..=1, default_missing_value = "auto")]
 	hyperlink: Option<When>,
 
-
 	#[arg(long = "ignore-contain", value_name = "name")]
 	ignore_contains: Vec<OsString>,
-
 
 	#[arg(short = 'j', long = "threads", value_name = "num")]
 	threads: Option<usize>,
 
-
 	#[arg(long = "max-results", value_name = "count")]
 	max_results: Option<usize>,
-
 
 	#[arg(short = '1')]
 	max_one_result: bool,
 
-
 	#[arg(short = 'q', long = "quiet", alias = "has-results")]
 	quiet: bool,
-
 
 	#[arg(long = "show-errors")]
 	show_errors: bool,
 
-
 	#[arg(short = 'C', long = "base-directory", value_name = "path")]
 	base_directory: Option<PathBuf>,
-
 
 	#[arg(long = "path-separator", value_name = "separator")]
 	path_separator: Option<String>,
 
-
 	#[arg(long = "search-path", value_name = "search-path")]
 	search_paths: Vec<PathBuf>,
-
 
 	#[arg(long = "strip-cwd-prefix", value_enum, num_args = 0..=1, default_missing_value = "always")]
 	strip_cwd_prefix: Option<When>,
 
-
 	#[arg(long = "one-file-system")]
 	one_file_system: bool,
 
-
 	#[arg(allow_hyphen_values = false)]
 	pattern: Option<String>,
-
 
 	#[arg(value_name = "path")]
 	paths: Vec<PathBuf>,
@@ -489,10 +430,6 @@ impl TypeFilter {
 			|| self.block
 			|| self.character
 	}
-
-	const fn is_empty(&self) -> bool {
-		!self.has_kind() && !self.executable && !self.empty
-	}
 }
 
 #[derive(Clone, Copy)]
@@ -583,8 +520,6 @@ impl Utility for FdCli {
 				}
 			},
 
-
-
 			Err(err) if err.kind() == io::ErrorKind::BrokenPipe => 141,
 			Err(err) => {
 				let _ = writeln!(host.stderr, "fd: {err}");
@@ -593,7 +528,6 @@ impl Utility for FdCli {
 		}
 	}
 }
-
 
 pub(crate) fn fd_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<FdCli, SE>()
@@ -727,7 +661,11 @@ fn fd_walk_request(
 		.gitignore(use_gitignore)
 		.skip_git(false)
 		.skip_node_modules(false)
-		.follow_links(cli.follow.into())
+		.follow_links(if cli.follow {
+			pi_walker::FollowLinks::Always
+		} else {
+			pi_walker::FollowLinks::Roots
+		})
 		.detail(pi_walker::WalkDetail::Minimal)
 		.order(pi_walker::WalkOrder::Path)
 		.emit_root(true)
@@ -849,8 +787,7 @@ fn process_walker_entry<W: Write>(
 		}
 	}
 
-	let metadata = fs::symlink_metadata(path).ok();
-	if !matches_walker_filters(config, path, file_type, metadata.as_ref()) {
+	if !matches_entry(config, path, file_type) {
 		return Ok(pi_walker::WalkDecision::Skip);
 	}
 	let target = match_target(path, &config.base_dir, config.full_path);
@@ -877,16 +814,39 @@ fn process_walker_entry<W: Write>(
 	Ok(pi_walker::WalkDecision::Include)
 }
 
-fn matches_walker_filters(
-	config: &SearchConfig,
-	path: &Path,
-	file_type: pi_walker::FileType,
-	metadata: Option<&Metadata>,
-) -> bool {
-	if !matches_walker_type_filter(&config.types, path, file_type, metadata) {
+fn matches_entry(config: &SearchConfig, path: &Path, file_type: pi_walker::FileType) -> bool {
+	let filter = &config.types;
+	if filter.has_kind()
+		&& !((filter.regular && file_type == pi_walker::FileType::File)
+			|| (filter.directory && file_type == pi_walker::FileType::Dir)
+			|| (filter.symlink && file_type == pi_walker::FileType::Symlink))
+	{
 		return false;
 	}
 	if !config.extensions.is_empty() && !matches_extension(path, &config.extensions) {
+		return false;
+	}
+	if !config
+		.matcher
+		.matches(&match_target(path, &config.base_dir, config.full_path))
+	{
+		return false;
+	}
+	let needs_metadata = filter.executable
+		|| filter.empty
+		|| !config.sizes.is_empty()
+		|| config.changed_after.is_some()
+		|| config.changed_before.is_some()
+		|| !config.owners.is_empty();
+	if !needs_metadata {
+		return true;
+	}
+	let metadata = fs::symlink_metadata(path).ok();
+	let metadata = metadata.as_ref();
+	if filter.executable && !is_executable(metadata) {
+		return false;
+	}
+	if filter.empty && !is_empty_entry(path, metadata, filter) {
 		return false;
 	}
 	if !config.sizes.is_empty() && !matches_size_filters(&config.sizes, metadata) {
@@ -902,46 +862,6 @@ fn matches_walker_filters(
 	}
 	true
 }
-
-fn matches_walker_type_filter(
-	filter: &TypeFilter,
-	path: &Path,
-	file_type: pi_walker::FileType,
-	metadata: Option<&Metadata>,
-) -> bool {
-	if filter.is_empty() {
-		return true;
-	}
-	let kind_matches = if filter.has_kind() {
-		(filter.regular && file_type == pi_walker::FileType::File)
-			|| (filter.directory && file_type == pi_walker::FileType::Dir)
-			|| (filter.symlink && file_type == pi_walker::FileType::Symlink)
-	} else {
-		true
-	};
-	if !kind_matches {
-		return false;
-	}
-	if filter.executable && !is_executable(metadata) {
-		return false;
-	}
-	if filter.empty && !is_empty_entry(path, metadata, filter) {
-		return false;
-	}
-	true
-}
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn cancel_heartbeat(cancelled: &AtomicBool) -> impl Fn() -> io::Result<()> + Sync + '_ {
 	move || {
@@ -1017,8 +937,7 @@ fn process_collected_entry<W: Write>(
 		}
 	}
 
-	let metadata = fs::symlink_metadata(&path).ok();
-	if !matches_walker_filters(config, &path, entry.file_type, metadata.as_ref()) {
+	if !matches_entry(config, &path, entry.file_type) {
 		return Ok(());
 	}
 	let target = match_target(&path, &config.base_dir, config.full_path);
@@ -1136,11 +1055,7 @@ const fn owner_side_matches(side: OwnerSide, actual: u32) -> bool {
 	}
 }
 
-fn resolve_search_paths(
-	cli: &FdCli,
-	base_dir: &Path,
-	host: &Host,
-) -> io::Result<Vec<SearchPath>> {
+fn resolve_search_paths(cli: &FdCli, base_dir: &Path, host: &Host) -> io::Result<Vec<SearchPath>> {
 	if !cli.search_paths.is_empty() && !cli.paths.is_empty() {
 		return Err(io::Error::new(
 			io::ErrorKind::InvalidInput,
@@ -1171,7 +1086,6 @@ struct SearchPath {
 	original: PathBuf,
 	resolved: PathBuf,
 }
-
 
 const fn include_hidden(cli: &FdCli) -> bool {
 	(cli.hidden || cli.unrestricted > 0) && !cli.no_hidden
@@ -1564,6 +1478,3 @@ fn remove_extension(value: &str) -> String {
 		base.to_string()
 	}
 }
-
-
-

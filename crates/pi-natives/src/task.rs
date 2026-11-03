@@ -6,8 +6,16 @@ use std::{
 use napi::{Env, Error, Result, Status, Task, bindgen_prelude::*};
 use pi_shell::cancel as core_cancel;
 
-use crate::prof::profile_region;
+use crate::{
+	memory::{Settled, native_work},
+	prof::profile_region,
+};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Cancellation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reason for task abortion.
 #[derive(Debug, Clone, Copy)]
 pub enum AbortReason {
 	Unknown,
@@ -118,10 +126,11 @@ where
 	T: ToNapiValue + Send + 'static + TypeName,
 {
 	type JsValue = T;
-	type Output = T;
+	type Output = Settled<T>;
 
 	fn compute(&mut self) -> Result<Self::Output> {
 		let _guard = profile_region(self.tag);
+		let _work = native_work();
 		let work = self
 			.work
 			.take()
@@ -132,7 +141,7 @@ where
 		match catch_unwind(AssertUnwindSafe(move || {
 			crate::crash_handler::blocking_task_panic_scope(move || work(cancel_token))
 		})) {
-			Ok(result) => result,
+			Ok(result) => result.map(Settled::new),
 			Err(payload) => {
 				let message = crate::crash_handler::panic_payload(&*payload);
 				dispose_panic_payload(payload);
@@ -154,7 +163,7 @@ where
 			})();
 			return Err(built.unwrap_or_else(|_| Error::new(Status::Cancelled, message)));
 		}
-		Ok(output)
+		Ok(output.into_inner())
 	}
 }
 
@@ -180,6 +189,30 @@ where
 	AsyncTask::new(Blocking { tag, cancel_token: cancel_token.into(), work: Some(Box::new(work)) })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Async Task - Tokio runtime integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run an async task on Tokio's runtime with profiling.
+///
+/// Use this for operations that need to `.await` (async I/O, `select!`, etc.).
+/// For CPU-bound blocking work, use [`blocking_task`] instead.
+///
+/// # Arguments
+/// - `env`: N-API environment (needed for `spawn_future`)
+/// - `tag`: Profiling tag for this work
+/// - `work`: Async closure that performs the work
+///
+/// # Example
+/// ```ignore
+/// #[napi]
+/// fn run_async_io<'e>(env: &'e Env) -> Result<PromiseRaw<'e, String>> {
+///     async_task(env, "async_io", async move {
+///         let data = fetch_data().await?;
+///         Ok(data)
+///     })
+/// }
+/// ```
 pub fn future<'env, T, Fut>(
 	env: &'env Env,
 	tag: &'static str,

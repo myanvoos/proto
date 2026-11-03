@@ -14,6 +14,7 @@ import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
 	$env,
+	$flag,
 	classifyJsonPrefix,
 	getInstallId,
 	isEnoent,
@@ -33,6 +34,7 @@ import type {
 	AnthropicServerToolContent,
 	Api,
 	AssistantMessage,
+	AssistantMessageEvent,
 	AudioContent,
 	CacheRetention,
 	Context,
@@ -82,7 +84,12 @@ import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
-import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import {
+	getStreamFirstEventTimeoutMs,
+	getStreamIdleTimeoutMs,
+	iterateWithIdleTimeout,
+	iterateWithTerminalGrace,
+} from "../utils/idle-iterator";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { getHeadersFromError, getRetryAfterMsFromHeaders } from "../utils/retry-after";
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
@@ -97,6 +104,7 @@ import {
 	type AnthropicMessagesClientLike,
 	calculateAnthropicRetryDelayMs,
 } from "./anthropic-client";
+import { prepareAnthropicImageContext } from "./anthropic-images";
 import { servedModelFromAnthropicSignature } from "./anthropic-signature";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
@@ -135,7 +143,7 @@ import {
 	resolveGitHubCopilotBaseUrl,
 	wrapFetchForCopilotFallback,
 } from "./github-copilot-headers";
-import { applyInferenceHeaders } from "./inference-headers";
+import { applyInferenceHeaders, mergeHeaders } from "./inference-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
 import { redactSensitiveCredentials, transformMessages } from "./transform-messages";
 import { mediaOmissionNote, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
@@ -193,6 +201,7 @@ const contextManagementBeta = "context-management-2025-06-27";
 const structuredOutputsBeta = "structured-outputs-2025-12-15";
 const thinkingTokenCountBeta = "thinking-token-count-2026-05-13";
 const fallbackCreditBeta = "fallback-credit-2026-06-01";
+const promptCachingScopeBeta = "prompt-caching-scope-2026-01-05";
 const coworkUtilityBetaDefaults = [
 	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",
@@ -218,6 +227,10 @@ const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
+
+function carriesThinkingBinding(thinking: MessageCreateParamsStreaming["thinking"]): boolean {
+	return thinking !== undefined && "block_binding" in thinking && thinking.block_binding !== undefined;
+}
 
 function resolveAnthropicControlBetas(
 	model: Model<"anthropic-messages">,
@@ -389,6 +402,80 @@ function normalizeAnthropicImageMediaType(mimeType: string): AnthropicImageMedia
 	return undefined;
 }
 
+const promptCacheBetas = new Set([extendedCacheTtlBeta, promptCachingScopeBeta]);
+const killSwitchBetas = new Set([
+	THINKING_BINDING_CONTROLS_BETA,
+	contextManagementBeta,
+	COMPACTION_BETA,
+	structuredOutputsBeta,
+	taskBudgetBeta,
+	midConversationToolChangesBeta,
+]);
+
+function experimentalBetasDisabled(model: Model<"anthropic-messages">): boolean {
+	return model.provider === "anthropic" && $flag("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS");
+}
+
+function withoutDisabledExperimentalBetas(model: Model<"anthropic-messages">): Model<"anthropic-messages"> {
+	if (!experimentalBetasDisabled(model)) return model;
+	return {
+		...model,
+		compat: {
+			...model.compat,
+			supportsContextManagement: false,
+			supportsThinkingBindingControls: false,
+			supportsServerCompaction: false,
+			disableStrictTools: true,
+			supportsEagerToolInputStreaming: false,
+			supportsMidConversationToolChanges: false,
+		},
+	};
+}
+
+function withholdKillSwitchControls(holder: {
+	thinking?: MessageCreateParams["thinking"];
+	output_config?: MessageCreateParams["output_config"];
+}): void {
+	if (holder.thinking && "block_binding" in holder.thinking) delete holder.thinking.block_binding;
+	const config = holder.output_config;
+	if (!config) return;
+	delete config.task_budget;
+	if ("format" in config) delete config.format;
+	if (Object.keys(config).length === 0) delete holder.output_config;
+}
+
+function withholdKillSwitchFields(params: MessageCreateParamsStreaming): void {
+	withholdKillSwitchControls(params);
+	delete params.context_management;
+	if ("compaction" in params) delete params.compaction;
+	for (const entry of params.fallbacks ?? []) withholdKillSwitchControls(entry);
+	for (const tool of params.tools ?? []) {
+		delete tool.strict;
+		delete tool.defer_loading;
+		delete tool.eager_input_streaming;
+	}
+	for (const message of params.messages) {
+		withholdKillSwitchControls(message);
+		if (!Array.isArray(message.content)) continue;
+		for (let index = 0; index < message.content.length; index++) {
+			const block = message.content[index];
+			if (block.type === "compaction") message.content[index] = { type: "text", text: block.content };
+		}
+	}
+	if (params.anthropic_beta) params.anthropic_beta = params.anthropic_beta.filter(beta => !killSwitchBetas.has(beta));
+}
+
+function stripHeaderBetas(headers: Record<string, string>, dropped: ReadonlySet<string>): Record<string, string> {
+	const result = { ...headers };
+	for (const [key, value] of Object.entries(result)) {
+		if (key.toLowerCase() === "anthropic-beta")
+			result[key] = normalizeExtraBetas(value)
+				.filter(beta => !dropped.has(beta))
+				.join(",");
+	}
+	return result;
+}
+
 function cloneAnthropicCacheControl(cacheControl: AnthropicCacheControl): AnthropicCacheControl {
 	return { ...cacheControl };
 }
@@ -423,10 +510,14 @@ type AnthropicControlState = {
 type AnthropicProviderSessionState = ProviderSessionState & {
 	strictToolsDisabled: boolean;
 	fastModeDisabled: boolean;
+	fastModeRearmGeneration: number;
+	cacheControlUnsupported: boolean;
+	cacheControlOptionsUnsupported: boolean;
 
 	replayUnsignedThinkingDisabled: boolean;
 	thinkingReplayDisabled: boolean;
 	prefixDroppedThinkingBlocks: Set<string>;
+	reportedPrefixDroppedThinking: Set<string>;
 	controlStates: Map<string, AnthropicControlState>;
 	pendingControlStates: Map<string, AnthropicControlState>;
 };
@@ -448,17 +539,24 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 	const state: AnthropicProviderSessionState = {
 		strictToolsDisabled: false,
 		fastModeDisabled: false,
+		fastModeRearmGeneration: 0,
+		cacheControlUnsupported: false,
+		cacheControlOptionsUnsupported: false,
 		replayUnsignedThinkingDisabled: false,
 		thinkingReplayDisabled: false,
 		prefixDroppedThinkingBlocks: new Set(),
+		reportedPrefixDroppedThinking: new Set(),
 		controlStates: new Map(),
 		pendingControlStates: new Map(),
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
+			state.cacheControlUnsupported = false;
+			state.cacheControlOptionsUnsupported = false;
 			state.replayUnsignedThinkingDisabled = false;
 			state.thinkingReplayDisabled = false;
 			state.prefixDroppedThinkingBlocks.clear();
+			state.reportedPrefixDroppedThinking.clear();
 			state.controlStates.clear();
 			state.pendingControlStates.clear();
 		},
@@ -470,22 +568,69 @@ function anthropicProviderSessionStateKey(baseUrl: string, modelId: string): str
 	return `${ANTHROPIC_PROVIDER_SESSION_STATE_KEY}:${baseUrl}\u0000${modelId}`;
 }
 
+const ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY = "anthropic-opaque-clients";
+type AnthropicOpaqueClientAnchor = ProviderSessionState & {
+	stores: WeakMap<AnthropicMessagesClientLike, Map<string, ProviderSessionState>>;
+	fastModeRearmGeneration: number;
+};
+
+function anthropicOpaqueClientAnchor(states: Map<string, ProviderSessionState>): AnthropicOpaqueClientAnchor {
+	const existing = states.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
+	if (
+		existing &&
+		"stores" in existing &&
+		existing.stores instanceof WeakMap &&
+		"fastModeRearmGeneration" in existing &&
+		typeof existing.fastModeRearmGeneration === "number"
+	) {
+		return existing as AnthropicOpaqueClientAnchor;
+	}
+	const anchor: AnthropicOpaqueClientAnchor = {
+		stores: new WeakMap(),
+		fastModeRearmGeneration: 0,
+		close: () => {
+			anchor.stores = new WeakMap();
+		},
+	};
+	states.set(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, anchor);
+	return anchor;
+}
+
 function getAnthropicProviderSessionState(
 	providerSessionState: Map<string, ProviderSessionState> | undefined,
+	client: AnthropicMessagesClientLike | undefined,
 	baseUrl: string,
 	modelId: string,
 ): AnthropicProviderSessionState | undefined {
 	if (!providerSessionState) return undefined;
-	const key = anthropicProviderSessionStateKey(baseUrl, modelId);
-	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
+	const clientBaseUrl = client === undefined ? undefined : injectedClientBaseUrl(client);
+	let store = providerSessionState;
+	let anchor: AnthropicOpaqueClientAnchor | undefined;
+	if (client !== undefined && clientBaseUrl === undefined) {
+		anchor = anthropicOpaqueClientAnchor(providerSessionState);
+		const existing = anchor.stores.get(client);
+		if (existing) store = existing;
+		else {
+			store = new Map();
+			anchor.stores.set(client, store);
+		}
+	}
+	const key = anthropicProviderSessionStateKey(clientBaseUrl ?? baseUrl, modelId);
+	const existing = store.get(key) as AnthropicProviderSessionState | undefined;
+	if (existing && anchor && existing.fastModeRearmGeneration !== anchor.fastModeRearmGeneration) {
+		existing.fastModeRearmGeneration = anchor.fastModeRearmGeneration;
+		existing.fastModeDisabled = false;
+	}
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
+		existing.reportedPrefixDroppedThinking ??= new Set();
 		existing.controlStates ??= new Map();
 		existing.pendingControlStates ??= new Map();
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
-	providerSessionState.set(key, created);
+	created.fastModeRearmGeneration = anchor?.fastModeRearmGeneration ?? 0;
+	store.set(key, created);
 	return created;
 }
 
@@ -498,6 +643,10 @@ export function clearAnthropicFastModeFallback(
 	for (const [key, value] of providerSessionState) {
 		if (key !== ANTHROPIC_PROVIDER_SESSION_STATE_KEY && !key.startsWith(prefix)) continue;
 		(value as AnthropicProviderSessionState).fastModeDisabled = false;
+	}
+	const anchor = providerSessionState.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
+	if (anchor && "fastModeRearmGeneration" in anchor && typeof anchor.fastModeRearmGeneration === "number") {
+		anchor.fastModeRearmGeneration++;
 	}
 }
 
@@ -822,151 +971,6 @@ function decodeAnthropicToolName(name: string, isOAuthToken: boolean, escapeBuil
 	return name;
 }
 
-const ANTHROPIC_MANY_IMAGE_THRESHOLD = 20;
-const ANTHROPIC_MANY_IMAGE_MAX_DIMENSION = 2000;
-
-function countAnthropicImageBlocks(messages: Message[]): number {
-	let count = 0;
-	for (const message of messages) {
-		if (message.role !== "user" && message.role !== "developer" && message.role !== "toolResult") continue;
-		if (!Array.isArray(message.content)) continue;
-		for (const block of message.content) {
-			if (block.type === "image") count++;
-		}
-	}
-	return count;
-}
-
-const ANTHROPIC_IMAGE_RESIZE_CONCURRENCY = 4;
-
-const anthropicManyImageResizeCache = new WeakMap<ImageContent, ImageContent>();
-
-type ResizeLimiter = <R>(fn: () => Promise<R>) => Promise<R>;
-
-function createResizeLimiter(limit: number): ResizeLimiter {
-	let active = 0;
-	const queue: (() => void)[] = [];
-	return async fn => {
-		if (active >= limit) {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			queue.push(resolve);
-			await promise;
-		} else {
-			active++;
-		}
-		try {
-			return await fn();
-		} finally {
-			const next = queue.shift();
-			if (next) next();
-			else active--;
-		}
-	};
-}
-
-async function resizeAnthropicManyImageBlock(block: ImageContent): Promise<ImageContent> {
-	try {
-		const inputBuffer = Buffer.from(block.data, "base64");
-		const { width, height } = await new Bun.Image(inputBuffer).metadata();
-		if (!width || !height) return block;
-		if (width <= ANTHROPIC_MANY_IMAGE_MAX_DIMENSION && height <= ANTHROPIC_MANY_IMAGE_MAX_DIMENSION) return block;
-
-		const scale = Math.min(ANTHROPIC_MANY_IMAGE_MAX_DIMENSION / width, ANTHROPIC_MANY_IMAGE_MAX_DIMENSION / height);
-		const targetWidth = Math.max(1, Math.min(ANTHROPIC_MANY_IMAGE_MAX_DIMENSION, Math.round(width * scale)));
-		const targetHeight = Math.max(1, Math.min(ANTHROPIC_MANY_IMAGE_MAX_DIMENSION, Math.round(height * scale)));
-
-		const [png, jpeg] = await Promise.all([
-			new Bun.Image(inputBuffer).resize(targetWidth, targetHeight).png().bytes(),
-			new Bun.Image(inputBuffer).resize(targetWidth, targetHeight).jpeg({ quality: 85 }).bytes(),
-		]);
-		const best =
-			png.length <= jpeg.length ? { buffer: png, mimeType: "image/png" } : { buffer: jpeg, mimeType: "image/jpeg" };
-
-		return {
-			type: "image",
-			data: Buffer.from(best.buffer).toString("base64"),
-			mimeType: best.mimeType,
-		};
-	} catch (error) {
-		logger.warn("anthropic: failed to resize oversized image for many-image request", {
-			mimeType: block.mimeType,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return block;
-	}
-}
-
-async function resizeAnthropicManyImageContent<T extends AudioContent | ImageContent | TextContent | VideoContent>(
-	content: T[],
-	state: { resized: number },
-	limit: ResizeLimiter,
-): Promise<T[]> {
-	let changed = false;
-	const next = await Promise.all(
-		content.map(async (block): Promise<T> => {
-			if (
-				block.type !== "image" ||
-				block.url ||
-				(block.providerFile?.provider === "anthropic" && block.providerFile.id)
-			)
-				return block;
-			const imageBlock: ImageContent = block;
-			let resized = anthropicManyImageResizeCache.get(imageBlock);
-			if (resized === undefined) {
-				resized = await limit(() => resizeAnthropicManyImageBlock(imageBlock));
-				anthropicManyImageResizeCache.set(imageBlock, resized);
-			}
-			if (resized !== imageBlock) {
-				changed = true;
-				state.resized++;
-			}
-			return resized as T;
-		}),
-	);
-	return changed ? next : content;
-}
-
-async function resizeAnthropicManyImageMessage(
-	message: Message,
-	state: { resized: number },
-	limit: ResizeLimiter,
-): Promise<Message> {
-	if (message.role === "user" || message.role === "developer") {
-		if (!Array.isArray(message.content)) return message;
-		const content = await resizeAnthropicManyImageContent(message.content, state, limit);
-		return content === message.content ? message : { ...message, content };
-	}
-	if (message.role === "toolResult") {
-		const content = await resizeAnthropicManyImageContent(message.content, state, limit);
-		return content === message.content ? message : { ...message, content };
-	}
-	return message;
-}
-
-async function prepareAnthropicManyImageContext(context: Context, supportsImages: boolean): Promise<Context> {
-	if (!supportsImages) return context;
-	const imageCount = countAnthropicImageBlocks(context.messages);
-	if (imageCount <= ANTHROPIC_MANY_IMAGE_THRESHOLD) return context;
-
-	let changed = false;
-	const state = { resized: 0 };
-	const limit = createResizeLimiter(ANTHROPIC_IMAGE_RESIZE_CONCURRENCY);
-	const messages = await Promise.all(
-		context.messages.map(async message => {
-			const next = await resizeAnthropicManyImageMessage(message, state, limit);
-			if (next !== message) changed = true;
-			return next;
-		}),
-	);
-	if (!changed) return context;
-	logger.debug("anthropic: resized oversized images for many-image request", {
-		imageCount,
-		resized: state.resized,
-		maxDimension: ANTHROPIC_MANY_IMAGE_MAX_DIMENSION,
-	});
-	return { ...context, messages };
-}
-
 type AnthropicImageSource =
 	| { type: "base64"; media_type: AnthropicImageMediaType; data: string }
 	| { type: "url"; url: string }
@@ -978,8 +982,9 @@ type AnthropicToolResultContent =
 
 function convertContentBlocks(
 	content: (AudioContent | ImageContent | TextContent | VideoContent)[],
-	supportsImages = true,
+	options: { supportsImages: boolean; rejectUnsupportedMedia?: boolean },
 ): AnthropicToolResultContent {
+	const { supportsImages, rejectUnsupportedMedia = false } = options;
 	const blocks: Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }> = [];
 	let sawText = false;
 	let sawImage = false;
@@ -994,6 +999,10 @@ function convertContentBlocks(
 		}
 
 		if (block.type === "audio" || block.type === "video") {
+			if (rejectUnsupportedMedia)
+				throw new AIError.ValidationError(
+					`${block.type} attachments are not supported here; send JPEG, PNG, GIF or WebP images instead`,
+				);
 			blocks.push({ type: "text", text: mediaOmissionNote(block.type) });
 			continue;
 		}
@@ -1011,6 +1020,10 @@ function convertContentBlocks(
 		} else {
 			const mediaType = normalizeAnthropicImageMediaType(block.mimeType);
 			if (!mediaType) {
+				if (rejectUnsupportedMedia)
+					throw new AIError.ValidationError(
+						`${block.mimeType} attachments are not supported here; send JPEG, PNG, GIF or WebP images instead`,
+					);
 				blocks.push({ type: "text", text: `[unsupported image: ${block.mimeType}]` });
 				continue;
 			}
@@ -1078,9 +1091,11 @@ export type AnthropicClientOptionsArgs = {
 	dynamicHeaders?: Record<string, string>;
 	isOAuth?: boolean;
 	hasTools?: boolean;
+	hasBufferedInputTools?: boolean;
 	thinkingEnabled?: boolean;
 	thinkingDisplay?: AnthropicThinkingDisplay;
 	disableStrictTools?: boolean;
+	dropPromptCacheBetas?: boolean;
 	fetch?: FetchImpl;
 	maxRetryDelayMs?: number;
 	sessionId?: string;
@@ -1283,21 +1298,6 @@ function buildCoworkTlsFetchOptions(
 		},
 	};
 }
-function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
-	const merged: Record<string, string> = {};
-	const keyByLower = new Map<string, string>();
-	for (const headers of headerSources) {
-		if (!headers) continue;
-		for (const [key, value] of Object.entries(headers)) {
-			const lower = key.toLowerCase();
-			const existing = keyByLower.get(lower);
-			if (existing !== undefined && existing !== key) delete merged[existing];
-			keyByLower.set(lower, key);
-			merged[key] = value;
-		}
-	}
-	return merged;
-}
 
 const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 	"message_start",
@@ -1311,6 +1311,23 @@ const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 type RawMessagePingEvent = { type: "ping" };
 type AnthropicStreamEvent = RawMessageStreamEvent | RawMessagePingEvent;
 const ANTHROPIC_PING_EVENT: RawMessagePingEvent = { type: "ping" };
+
+/** Repeated empty content deltas must not keep a stalled relay alive. */
+export function isEmptyAnthropicContentDelta(event: unknown): boolean {
+	if (!isRecord(event) || event.type !== "content_block_delta") return false;
+	const delta = event.delta;
+	if (!isRecord(delta)) return false;
+	switch (delta.type) {
+		case "text_delta":
+			return delta.text === "";
+		case "thinking_delta":
+			return delta.thinking === "";
+		case "input_json_delta":
+			return delta.partial_json === "";
+		default:
+			return false;
+	}
+}
 
 function createAnthropicSseStreamError(data: string): Error {
 	try {
@@ -1802,6 +1819,29 @@ function rememberPrefixDroppedThinking(
 	}
 }
 
+/** Thinking replay keys across the latest assistant/tool-result run. */
+function latestAnthropicAssistantTurnThinkingKeys(messages: readonly MessageParam[]): string[] {
+	const keys: string[] = [];
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role !== "assistant") {
+			if (
+				Array.isArray(message.content) &&
+				message.content.length > 0 &&
+				message.content.every(block => block.type === "tool_result")
+			)
+				continue;
+			break;
+		}
+		if (!Array.isArray(message.content)) continue;
+		for (const block of message.content) {
+			const key = thinkingReplayKey(block);
+			if (key) keys.push(key);
+		}
+	}
+	return keys;
+}
+
 function rememberPrefixBindingFailure(
 	params: MessageCreateParamsStreaming,
 	message: string,
@@ -1849,14 +1889,39 @@ function applyReportedInputTransformations(
 	}
 	if (fresh.length === 0) return;
 	output.inputTransformations = [...(output.inputTransformations ?? []), ...fresh];
-	rememberPrefixDroppedThinking(params, fresh, state);
+	// drop_block reports are replayed verbatim; only a rejected request teaches client-side stripping.
+	const dropped: Array<string | undefined> = [];
+	let repeated = 0;
 	for (const transformation of fresh) {
 		if (transformation.reason !== "prefix_binding_mismatch") continue;
+		const path = transformation.path;
+		const match = path === undefined ? null : INPUT_TRANSFORMATION_PATH_PATTERN.exec(path);
+		const content = match ? params.messages[Number(match[1])]?.content : undefined;
+		const block = match && Array.isArray(content) ? content[Number(match[2])] : undefined;
+		const key = (block && thinkingReplayKey(block)) || (path === undefined ? undefined : `path:${path}`);
+		if (state && key !== undefined) {
+			if (state.reportedPrefixDroppedThinking.has(key)) {
+				repeated++;
+				continue;
+			}
+			state.reportedPrefixDroppedThinking.add(key);
+		}
+		dropped.push(path);
+	}
+	if (dropped.length > 0) {
 		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
 			model: output.model,
-			path: transformation.path,
+			count: dropped.length,
+			path: dropped[0],
 		});
+		if (dropped.length > 1)
+			logger.debug("anthropic: dropped thinking block paths", { model: output.model, paths: dropped });
 	}
+	if (repeated > 0)
+		logger.debug("anthropic: API re-dropped previously reported thinking blocks", {
+			model: output.model,
+			count: repeated,
+		});
 }
 
 export function maybeAddReplayUnsignedThinkingHint(model: Model<"anthropic-messages">, message: string): string {
@@ -1901,6 +1966,30 @@ const streamAnthropicOnce = (
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		let activeAbortTracker = createAbortSourceTracker(options?.signal);
 
+		type ToolCallEvent = Extract<
+			AssistantMessageEvent,
+			{ type: "toolcall_start" | "toolcall_delta" | "toolcall_end" }
+		>;
+		const heldToolCallEvents: Array<{
+			event: ToolCallEvent;
+			block: AssistantMessage["content"][number] | undefined;
+		}> = [];
+		const pushToolCallEvent = (event: ToolCallEvent): void => {
+			if (options?.fallbacks?.length) heldToolCallEvents.push({ event, block: output.content[event.contentIndex] });
+			else stream.push(event);
+		};
+		const settleFallbackHandoff = (): AssistantMessage["content"] => {
+			const boundary = output.content.findLastIndex(block => block.type === "fallback");
+			const declined = (block: AssistantMessage["content"][number], index: number): boolean =>
+				index < boundary &&
+				(block.type === "thinking" || block.type === "redactedThinking" || block.type === "toolCall");
+			for (const { event, block } of heldToolCallEvents) {
+				if (!block || output.content[event.contentIndex] !== block || declined(block, event.contentIndex)) continue;
+				stream.push(event);
+			}
+			heldToolCallEvents.length = 0;
+			return boundary <= 0 ? output.content : output.content.filter((block, index) => !declined(block, index));
+		};
 		const onSseEvent = options?.onSseEvent;
 		const rawSseObserver = onSseEvent ? (event: RawSseEvent) => onSseEvent(event, model) : undefined;
 
@@ -1934,6 +2023,7 @@ const streamAnthropicOnce = (
 				: supportsAnthropicCompaction(model, baseUrl);
 			const providerSessionState = getAnthropicProviderSessionState(
 				options?.providerSessionState,
+				options?.client,
 				baseUrl,
 				model.id,
 			);
@@ -1945,15 +2035,21 @@ const streamAnthropicOnce = (
 				(model.compat?.disableStrictTools ?? false) ||
 				isBedrockAnthropic;
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
+			let dropCacheControl = providerSessionState?.cacheControlUnsupported ?? false;
+			let dropCacheControlOptions = providerSessionState?.cacheControlOptionsUnsupported ?? false;
+			let cacheControlOptionRejectionReplayed = false;
+			let cacheControlRejectionReplayed = false;
 			let forceDemoteUnsignedThinking = providerSessionState?.replayUnsignedThinkingDisabled ?? false;
 			let droppedAllThinkingForSignature = providerSessionState?.thinkingReplayDisabled ?? false;
 			let dropAllThinking = droppedAllThinkingForSignature;
 			let prefixBindingRetryAttempted = false;
+			let latestTurnThinkingRetryAttempted = false;
 			let prefixMismatchBehavior =
 				model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls
 					? (options?.anthropicPrefixMismatchBehavior ?? "drop_block")
 					: undefined;
-			const controlBetas = resolveAnthropicControlBetas(model, prefixMismatchBehavior);
+			const controlBetas = resolveAnthropicControlBetas(model, undefined);
+			const killSwitchActive = experimentalBetasDisabled(model);
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
 
@@ -1974,16 +2070,13 @@ const streamAnthropicOnce = (
 			}
 
 			const zeroOutputCacheRefresh = options?.anthropicCacheRefreshRequest === true;
-			let client: AnthropicMessagesClientLike;
-			let isOAuthToken: boolean;
-			// Retained so a Claude Code version bump can rebuild the client fingerprint headers.
 			let clientArgs: AnthropicClientOptionsArgs | undefined;
-
-			if (options?.client) {
-				client = options.client;
-				isOAuthToken = false;
-			} else {
-				const extraBetas = normalizeExtraBetas(options?.betas);
+			let clientDefaultHeaders: Record<string, string> | undefined;
+			const resolveClient = (): { client: AnthropicMessagesClientLike; isOAuthToken: boolean } => {
+				if (options?.client) return { client: options.client, isOAuthToken: false };
+				const extraBetas = normalizeExtraBetas(options?.betas).filter(
+					beta => !(dropCacheControl || dropCacheControlOptions) || !promptCacheBetas.has(beta),
+				);
 				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
 
 				if (wantsAnthropicPriority && !dropFastMode && !extraBetas.includes(fastModeBeta)) {
@@ -2012,15 +2105,6 @@ const streamAnthropicOnce = (
 				}
 
 				if (
-					model.reasoning &&
-					options?.thinkingEnabled &&
-					model.compat.supportsContextManagement &&
-					!extraBetas.includes(contextManagementBeta)
-				) {
-					extraBetas.push(contextManagementBeta);
-				}
-
-				if (
 					compactionSupported &&
 					(options?.anthropicCompaction !== undefined ||
 						contextReplaysAnthropicCompaction(context.messages, model)) &&
@@ -2032,6 +2116,8 @@ const streamAnthropicOnce = (
 				const isOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
 				if (
 					!isOAuth &&
+					!dropCacheControl &&
+					!dropCacheControlOptions &&
 					getCacheControl(model, options?.cacheRetention, isOAuth).cacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {
@@ -2064,6 +2150,9 @@ const streamAnthropicOnce = (
 					headers: options?.headers,
 					dynamicHeaders: copilotDynamicHeaders?.headers,
 					isOAuth: options?.isOAuth,
+					dropPromptCacheBetas: dropCacheControl || dropCacheControlOptions,
+					hasBufferedInputTools:
+						context.tools?.some(tool => ANTHROPIC_BUFFERED_INPUT_TOOLS.has(tool.name)) ?? false,
 					hasTools: !!context.tools?.length,
 					thinkingEnabled: options?.thinkingEnabled,
 					thinkingDisplay: options?.thinkingDisplay,
@@ -2078,13 +2167,16 @@ const streamAnthropicOnce = (
 					copilotCacheSnapshot: copilotApiKey ? (copilotCached ?? null) : undefined,
 				};
 				const created = createClient(model, clientArgs);
-				client = created.client;
-				isOAuthToken = created.isOAuthToken;
-			}
-			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
+				clientDefaultHeaders = created.defaultHeaders;
+				return created;
+			};
+			let { client, isOAuthToken } = resolveClient();
+			const preparedContext = await prepareAnthropicImageContext(context, model);
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
 					compactionSupported,
+					dropCacheControl,
+					dropCacheControlOptions,
 					disableStrictTools,
 					useUmansGatewayWebSearch: umansGatewayWebSearchHeader !== undefined,
 					forceDemoteUnsignedThinking,
@@ -2106,6 +2198,15 @@ const streamAnthropicOnce = (
 				if (replacementPayload !== undefined) {
 					nextParams = replacementPayload as typeof nextParams;
 				}
+				if (
+					isVertexRawPredictUrl((options?.client && injectedClientBaseUrl(options.client)) || baseUrl) &&
+					carriesThinkingBinding(nextParams.thinking)
+				) {
+					const betas = nextParams.anthropic_beta ?? [];
+					if (!betas.includes(THINKING_BINDING_CONTROLS_BETA))
+						nextParams.anthropic_beta = [...betas, THINKING_BINDING_CONTROLS_BETA];
+				}
+				if (killSwitchActive) withholdKillSwitchFields(nextParams);
 				if (isBedrockAnthropic) fitBedrockAnthropicParams(nextParams);
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
 				rawRequestDump = {
@@ -2119,6 +2220,13 @@ const streamAnthropicOnce = (
 				return nextParams;
 			};
 			let params = await prepareParams();
+			const callerBetaBaseHeaders = (): Record<string, string> => {
+				const headers =
+					dropCacheControl || dropCacheControlOptions
+						? stripHeaderBetas(mergedCallerHeaders, promptCacheBetas)
+						: mergedCallerHeaders;
+				return killSwitchActive ? stripHeaderBetas(headers, killSwitchBetas) : headers;
+			};
 			const seenInputTransformations = new Set<string>();
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
@@ -2148,7 +2256,7 @@ const streamAnthropicOnce = (
 					options?.client !== undefined &&
 					!isVertexRawPredictUrl(refreshBetaRouteUrl) &&
 					carriesCompactionEdit(refreshParams)
-						? mergeAnthropicBetaHeader(mergedCallerHeaders, COMPACTION_BETA)
+						? mergeAnthropicBetaHeader(callerBetaBaseHeaders(), COMPACTION_BETA)
 						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
@@ -2270,7 +2378,7 @@ const streamAnthropicOnce = (
 						}
 					}
 					clearStreamingPartialJson(block);
-					stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
+					pushToolCallEvent({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 					return true;
 				}
 				return true;
@@ -2287,33 +2395,52 @@ const streamAnthropicOnce = (
 			while (true) {
 				activeAbortTracker = createAbortSourceTracker(options?.signal);
 				const { requestSignal } = activeAbortTracker;
-				let injectedClientBetaHeaders: Record<string, string> | undefined;
+				let injectedClientBetaHeaders: Record<string, string> | undefined =
+					dropCacheControl || dropCacheControlOptions || killSwitchActive
+						? { "anthropic-beta": getHeaderCaseInsensitive(callerBetaBaseHeaders(), "anthropic-beta") ?? "" }
+						: undefined;
 				const injectedBetaRouteUrl =
 					options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl;
 				if (options?.client !== undefined && !isVertexRawPredictUrl(injectedBetaRouteUrl)) {
 					for (const beta of controlBetas) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
-							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							injectedClientBetaHeaders ?? callerBetaBaseHeaders(),
 							beta,
 						);
 					}
 					if ((params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
-							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							injectedClientBetaHeaders ?? callerBetaBaseHeaders(),
 							effortBeta,
 						);
 					}
 					if (carriesCompactionEdit(params)) {
 						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
-							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							injectedClientBetaHeaders ?? callerBetaBaseHeaders(),
 							COMPACTION_BETA,
 						);
 					}
 				}
-				const perRequestHeaders =
+				let perRequestHeaders =
 					umansGatewayWebSearchHeader || injectedClientBetaHeaders
 						? { ...umansGatewayWebSearchHeader, ...injectedClientBetaHeaders }
 						: undefined;
+				if (!isVertexRawPredictUrl(injectedBetaRouteUrl)) {
+					const requiredBetas: string[] = [];
+					if (carriesThinkingBinding(params.thinking)) requiredBetas.push(THINKING_BINDING_CONTROLS_BETA);
+					if (params.context_management?.edits.some(edit => edit.type === "clear_thinking_20251015"))
+						requiredBetas.push(contextManagementBeta);
+					if (params.output_config?.effort !== undefined) requiredBetas.push(effortBeta);
+					for (const beta of requiredBetas) {
+						const current =
+							getHeaderCaseInsensitive(perRequestHeaders, "anthropic-beta") !== undefined
+								? (perRequestHeaders ?? {})
+								: options?.client
+									? callerBetaBaseHeaders()
+									: (clientDefaultHeaders ?? {});
+						perRequestHeaders = { ...perRequestHeaders, ...mergeAnthropicBetaHeader(current, beta) };
+					}
+				}
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
@@ -2357,6 +2484,7 @@ const streamAnthropicOnce = (
 					let sawMessageStart = false;
 					let sawTerminalEnvelope = false;
 					let sawMessageStop = false;
+					let messageStopAtMs: number | undefined;
 
 					let sawSplicedEnvelope = false;
 					const closedBlockIndexes = new Set<number>();
@@ -2365,6 +2493,7 @@ const streamAnthropicOnce = (
 						number,
 						{
 							contentIndex: number;
+							signatureDeltaStarted?: boolean;
 							kind:
 								| "text"
 								| "thinking"
@@ -2394,7 +2523,8 @@ const streamAnthropicOnce = (
 						onFirstItemTimeout: () => activeAbortTracker.abortLocally(firstEventTimeoutAbortError),
 						abortSignal: options?.signal,
 						isProgressItem: item => {
-							if ((item as AnthropicStreamEvent).type === "ping") {
+							if (!isRecord(item) || isEmptyAnthropicContentDelta(item)) return false;
+							if (item.type === "ping") {
 								if (!sawNonPingEvent) return false;
 								if (pingProgressCapMs === undefined) return true;
 								return Date.now() - lastNonPingProgressAtMs < pingProgressCapMs;
@@ -2404,10 +2534,17 @@ const streamAnthropicOnce = (
 							return true;
 						},
 					});
+					const drainRequestAbortController = activeAbortTracker.requestAbortController;
+					const drainedAnthropicStream = iterateWithTerminalGrace(timedAnthropicStream, {
+						finishedAtMs: () => messageStopAtMs,
+						graceMs: 2_500,
+						onGraceEnd: () => drainRequestAbortController.abort(),
+						awaitDrainOnReturn: options?.waitForTerminalDrain,
+					});
 					const observedAnthropicStream =
 						rawSseObserver && !recordsRawSseEvents
-							? observeDecodedAnthropicSdkEvents(timedAnthropicStream, rawSseObserver)
-							: timedAnthropicStream;
+							? observeDecodedAnthropicSdkEvents(drainedAnthropicStream, rawSseObserver)
+							: drainedAnthropicStream;
 					for await (const event of observedAnthropicStream) {
 						sawEvent = true;
 
@@ -2483,10 +2620,8 @@ const streamAnthropicOnce = (
 							if (!firstTokenTime) firstTokenTime = performance.now();
 							if (event.content_block.type === "fallback") {
 								const fallback = parseAnthropicFallbackWireBlock(event.content_block);
-								if (!serverSideFallback || !fallback) {
-									if (!fallback) {
-										reportAnthropicEnvelopeAnomaly("fallback content_block missing model refs");
-									}
+								if (!fallback) {
+									reportAnthropicEnvelopeAnomaly("fallback content_block missing model refs");
 									openBlocks.set(event.index, { contentIndex: -1, kind: "ignored" });
 									continue;
 								}
@@ -2497,7 +2632,7 @@ const streamAnthropicOnce = (
 									kind: "fallback",
 								});
 
-								output.model = fallback.to.model;
+								if (serverSideFallback) output.model = fallback.to.model;
 								continue;
 							}
 							if (event.content_block.type === "text") {
@@ -2520,7 +2655,8 @@ const streamAnthropicOnce = (
 								const block: Block = {
 									type: "thinking",
 									thinking: event.content_block.thinking ?? "",
-									thinkingSignature: "",
+									thinkingSignature:
+										typeof event.content_block.signature === "string" ? event.content_block.signature : "",
 									[kStreamingBlockIndex]: event.index,
 								};
 								output.content.push(block);
@@ -2587,7 +2723,7 @@ const streamAnthropicOnce = (
 								output.content.push(block);
 								const contentIndex = output.content.length - 1;
 								openBlocks.set(event.index, { contentIndex, kind: "toolCall" });
-								stream.push({
+								pushToolCallEvent({
 									type: "toolcall_start",
 									contentIndex,
 									partial: output,
@@ -2668,7 +2804,7 @@ const streamAnthropicOnce = (
 									block.arguments = throttled.value;
 									block[kStreamingLastParseLen] = throttled.parsedLen;
 								}
-								stream.push({
+								pushToolCallEvent({
 									type: "toolcall_delta",
 									contentIndex: openBlock.contentIndex,
 									delta: event.delta.partial_json,
@@ -2680,8 +2816,11 @@ const streamAnthropicOnce = (
 									continue;
 								}
 								streamedReplayUnsafeContent = true;
-								block.thinkingSignature = block.thinkingSignature || "";
-								block.thinkingSignature += event.delta.signature;
+								// A block-start signature is a fallback, not a prefix of native signature deltas.
+								block.thinkingSignature = openBlock.signatureDeltaStarted
+									? `${block.thinkingSignature ?? ""}${event.delta.signature}`
+									: event.delta.signature;
+								openBlock.signatureDeltaStarted = true;
 							} else if (event.delta.type === "compaction_delta") {
 								if (openBlock.kind !== "compaction") {
 									reportAnthropicEnvelopeAnomaly(`received compaction_delta for ${openBlock.kind} block`);
@@ -2804,7 +2943,7 @@ const streamAnthropicOnce = (
 						} else if (event.type === "message_stop") {
 							sawTerminalEnvelope = true;
 							sawMessageStop = true;
-
+							messageStopAtMs = Date.now();
 							break;
 						}
 					}
@@ -2935,6 +3074,32 @@ const streamAnthropicOnce = (
 						continue;
 					}
 					if (
+						!latestTurnThinkingRetryAttempted &&
+						firstTokenTime === undefined &&
+						!streamedReplayUnsafeContent &&
+						AIError.isImmutableLatestThinkingText(streamFailureMessage)
+					) {
+						const keys = latestAnthropicAssistantTurnThinkingKeys(params.messages);
+						if (keys.length > 0) {
+							latestTurnThinkingRetryAttempted = true;
+							if (providerSessionState)
+								for (const key of keys) providerSessionState.prefixDroppedThinkingBlocks.add(key);
+							else dropAllThinking = true;
+							params = await prepareParams();
+							providerRetryAttempt = 0;
+							output.content.length = 0;
+							output.model = model.id;
+							output.responseId = undefined;
+							output.upstreamModel = undefined;
+							output.errorMessage = undefined;
+							output.inputTransformations = undefined;
+							output.providerPayload = undefined;
+							output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+							output.stopReason = "stop";
+							continue;
+						}
+					}
+					if (
 						!forceDemoteUnsignedThinking &&
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
@@ -3030,6 +3195,37 @@ const streamAnthropicOnce = (
 						firstTokenTime = undefined;
 						continue;
 					}
+					if (
+						!dropCacheControl &&
+						firstTokenTime === undefined &&
+						!streamedReplayUnsafeContent &&
+						AIError.isCacheControlUnsupported(streamFailure)
+					) {
+						const cacheControl = getCacheControl(model, options?.cacheRetention, isOAuthToken).cacheControl;
+						if (
+							!dropCacheControlOptions &&
+							cacheControl &&
+							(cacheControl.ttl !== undefined || cacheControl.scope !== undefined)
+						) {
+							cacheControlOptionRejectionReplayed = true;
+							dropCacheControlOptions = true;
+						} else {
+							cacheControlRejectionReplayed = true;
+							dropCacheControl = true;
+						}
+						({ client, isOAuthToken } = resolveClient());
+						params = await prepareParams();
+						providerRetryAttempt = 0;
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.upstreamModel = undefined;
+						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						continue;
+					}
 					const isTransientEnvelopeFailure =
 						AIError.isTransientStreamParseError(streamFailure) || AIError.isStreamEnvelopeError(streamFailure);
 					const isLocalIdleTimeout =
@@ -3085,7 +3281,19 @@ const streamAnthropicOnce = (
 			if (droppedAllThinkingForSignature) {
 				output.disabledFeatures = [...(output.disabledFeatures ?? []), "thinking-replay"];
 			}
-			stream.push({ type: "done", reason: output.stopReason, message: output });
+			if (dropCacheControl) output.disabledFeatures = [...(output.disabledFeatures ?? []), "prompt-cache"];
+			if (!dropCacheControl && dropCacheControlOptions)
+				output.disabledFeatures = [...(output.disabledFeatures ?? []), "prompt-cache-retention"];
+			if (providerSessionState) {
+				if (cacheControlRejectionReplayed) providerSessionState.cacheControlUnsupported = true;
+				else if (cacheControlOptionRejectionReplayed) providerSessionState.cacheControlOptionsUnsupported = true;
+			}
+			const retained = settleFallbackHandoff();
+			stream.push({
+				type: "done",
+				reason: output.stopReason,
+				message: retained === output.content ? output : { ...output, content: retained },
+			});
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
@@ -3103,7 +3311,12 @@ const streamAnthropicOnce = (
 			output.errorMessage = maybeAddReplayUnsignedThinkingHint(model, result.message);
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
-			stream.push({ type: "error", reason: output.stopReason, error: output });
+			const retained = settleFallbackHandoff();
+			stream.push({
+				type: "error",
+				reason: output.stopReason,
+				error: retained === output.content ? output : { ...output, content: retained },
+			});
 			stream.end();
 		}
 	})();
@@ -3113,7 +3326,9 @@ const streamAnthropicOnce = (
 
 /** Messages-protocol transport for gateways and non-Anthropic providers. */
 export const streamAnthropicMessages: StreamFunction<"anthropic-messages"> = (model, context, options) =>
-	withReplaySafeStreamRetry(model, context, options, streamAnthropicOnce, { retryEmptyCompletion: true });
+	withReplaySafeStreamRetry(withoutDisabledExperimentalBetas(model), context, options, streamAnthropicOnce, {
+		retryEmptyCompletion: true,
+	});
 
 export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, context, options) =>
 	model.provider === "anthropic"
@@ -3131,13 +3346,20 @@ type SystemBlockOptions = {
 
 	firstUserMessageText?: string;
 	cacheControl?: AnthropicCacheControl;
+	dropCacheControl?: boolean;
 };
 
 export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
+	const {
+		includeClaudeCodeInstruction = false,
+		extraInstructions = [],
+		firstUserMessageText,
+		cacheControl,
+		dropCacheControl = false,
+	} = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
 	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
@@ -3148,7 +3370,13 @@ export function buildAnthropicSystemBlocks(
 			{
 				type: "text",
 				text: claudeCodeSystemInstruction,
-				cache_control: cacheControl ? cloneAnthropicCacheControl(cacheControl) : { type: "ephemeral" },
+				...(!dropCacheControl
+					? {
+							cache_control: cacheControl
+								? cloneAnthropicCacheControl(cacheControl)
+								: { type: "ephemeral" as const },
+						}
+					: {}),
 			},
 		];
 
@@ -3188,6 +3416,8 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		headers,
 		dynamicHeaders,
 		hasTools = false,
+		hasBufferedInputTools = false,
+		dropPromptCacheBetas = false,
 		thinkingEnabled = false,
 		isOAuth,
 		maxRetryDelayMs,
@@ -3210,7 +3440,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
 	const supportsEagerToolInputStreaming = resolveEagerToolInputStreamingSupport(model, baseUrl);
 	const needsFineGrainedToolStreamingBeta =
-		hasTools && isOfficialAnthropicApiUrl(baseUrl) && !supportsEagerToolInputStreaming;
+		hasTools && !hasBufferedInputTools && isOfficialAnthropicApiUrl(baseUrl) && !supportsEagerToolInputStreaming;
 	const foundryCustomHeaders = resolveAnthropicCustomHeaders(model, baseUrl);
 	const tlsFetchOptions = buildCoworkTlsFetchOptions(model, baseUrl);
 
@@ -3222,7 +3452,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		const copilotApiKey = parseGitHubCopilotApiKey(apiKey).accessToken;
 
 		const betaFeatures = [...extraBetas];
-		const defaultHeaders = mergeHeaders(
+		let defaultHeaders = mergeHeaders(
 			{
 				Accept: stream ? "text/event-stream" : "application/json",
 				"Content-Type": "application/json",
@@ -3235,6 +3465,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			dynamicHeaders,
 			headers,
 		);
+		if (dropPromptCacheBetas) defaultHeaders = stripHeaderBetas(defaultHeaders, promptCacheBetas);
 		applyInferenceHeaders(defaultHeaders, {
 			provider: model.provider,
 			protocol: "anthropic",
@@ -3275,7 +3506,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		headers,
 		dynamicHeaders,
 	);
-	const defaultHeaders = buildAnthropicHeaders({
+	let defaultHeaders = buildAnthropicHeaders({
 		apiKey,
 		baseUrl,
 		isOAuth: oauthToken,
@@ -3294,6 +3525,8 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 				)
 			: [],
 	});
+	if (dropPromptCacheBetas) defaultHeaders = stripHeaderBetas(defaultHeaders, promptCacheBetas);
+	if (experimentalBetasDisabled(model)) defaultHeaders = stripHeaderBetas(defaultHeaders, killSwitchBetas);
 	applyInferenceHeaders(defaultHeaders, {
 		provider: model.provider,
 		protocol: "anthropic",
@@ -3352,10 +3585,10 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 function createClient(
 	model: Model<"anthropic-messages">,
 	args: AnthropicClientOptionsArgs,
-): { client: AnthropicMessagesClient; isOAuthToken: boolean } {
+): { client: AnthropicMessagesClient; isOAuthToken: boolean; defaultHeaders: Record<string, string> | undefined } {
 	const { isOAuthToken: oauthToken, ...clientOptions } = buildAnthropicClientOptions({ ...args, model });
 	const client = new AnthropicMessagesClient(clientOptions);
-	return { client, isOAuthToken: oauthToken };
+	return { client, isOAuthToken: oauthToken, defaultHeaders: clientOptions.defaultHeaders };
 }
 
 function disableThinkingIfToolChoiceForced(
@@ -3436,6 +3669,16 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 	return false;
 }
 
+function isToolControlMessage(message: MessageParam): boolean {
+	return (
+		message.role === "system" &&
+		typeof message.content !== "string" &&
+		Array.isArray(message.content) &&
+		message.content.length > 0 &&
+		message.content.every(block => block.type === "tool_addition" || block.type === "tool_removal")
+	);
+}
+
 const ANTHROPIC_MAX_BREAKPOINTS = 4;
 const ANTHROPIC_DECIMATION_INTERVAL = 15;
 
@@ -3472,6 +3715,10 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	const headBreakpoints = countHeadBreakpoints(params);
 	const messageBudget = Math.max(0, ANTHROPIC_MAX_BREAKPOINTS - headBreakpoints);
 	if (messageBudget <= 0 || params.messages.length === 0) return;
+	// `convertAnthropicMessages` appends a neutral `Continue.` pad after a trailing
+	// assistant because Anthropic rejects assistant-prefill endings. It is absent
+	// from the next normal turn, so anchor the rolling window on the preceding
+	// real assistant instead.
 	const trailingIndex = params.messages.length - 1;
 	const trailingMessage = params.messages[trailingIndex];
 	const hasTrailingAssistantPad =
@@ -3481,60 +3728,109 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 		params.messages[trailingIndex - 1]?.role === "assistant";
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
 
-	let stableMessageEnd = messageEnd;
-	for (let index = 0; index <= messageEnd; index++) {
-		const message = params.messages[index];
-		if (message && (message.clear_at === "next_user_message" || isPerCallContextMessage(message))) {
-			stableMessageEnd = index - 1;
-			break;
-		}
-	}
-
-	const userIndices: number[] = [];
-	for (let index = 0; index <= stableMessageEnd; index++) {
-		const message = params.messages[index];
-		if (message && isConversationalUser(message)) {
-			userIndices.push(index);
-		}
-	}
-
-	const decimationIndices = userIndices.filter((_, ordinal) => (ordinal + 1) % ANTHROPIC_DECIMATION_INTERVAL === 0);
-
+	// A breakpoint caches every preceding byte, not only the decorated message.
+	// A per-call or turn-scoped message is rebuilt next request, so a prefix
+	// spanning it cannot match — but only at its own position. Messages after
+	// the mark are ordinary persisted history with stable bytes, so a later
+	// breakpoint still matches everything after the mark. The cost is bounded
+	// to re-billing the marked bytes themselves, not the growing tail.
+	// Hence two anchors, not a truncation: the newest candidate at or before
+	// the first per-call/turn-scoped message (when one exists) pins the
+	// reusable prefix behind the mark, and the rolling tail candidates pin
+	// the suffix after it. Turn-scoped `clear_at` messages are absent next
+	// request, so they still truncate the decimation range (ordinals would
+	// shift), but per-call marks no longer freeze the tail.
+	//
+	// One backward walk over the message tail resolves everything the anchor
+	// selection needs at once: the trailing candidates, the stable prefix end,
+	// and the conversational-turn count under it. The first per-call/turn-scoped
+	// message from the start is the last mark this walk sees (so `markIndex` ends
+	// up as that boundary), and the turn counter — reset on every mark — ends up
+	// counting exactly the turns a mark would have excluded. Nothing is
+	// materialized: the checkpoint search below walks the same history backwards
+	// and stops as soon as the breakpoint budget is spent.
+	let markIndex = -1;
+	let stableUserTurns = 0;
+	// Collect up to 2 trailing candidates from the message tail, skipping
+	// per-call messages, turn-scoped messages, and mid-conversation
+	// tool-control messages. A per-call tail candidate is rebuilt next request
+	// (fresh timestamps on appended probes, fresh redaction bytes), so a
+	// breakpoint on it cannot match — it would spend the tail anchor on bytes
+	// that never repeat while the persisted history behind it gets uncached.
+	// Turn-scoped messages are absent next request for the same reason, and
+	// tool controls reject cache_control outright. The walk starts at the
+	// message tail (not the truncated prefix end) so the anchor advances every
+	// turn; the sub-prefix candidate below covers the reusable region behind
+	// a mark.
 	const trailingCandidates: number[] = [];
-	for (let index = messageEnd; index >= 0 && trailingCandidates.length < 2; index--) {
+	for (let index = messageEnd; index >= 0; index--) {
 		const message = params.messages[index];
-		if (!message || message.clear_at === "next_user_message" || isPerCallContextMessage(message)) continue;
-		if (
-			message.role === "system" &&
-			typeof message.content !== "string" &&
-			Array.isArray(message.content) &&
-			message.content.length > 0 &&
-			message.content.every(block => block.type === "tool_addition" || block.type === "tool_removal")
-		) {
+		if (!message) continue;
+		if (message.clear_at === "next_user_message" || isPerCallContextMessage(message)) {
+			markIndex = index;
+			stableUserTurns = 0;
 			continue;
 		}
-		trailingCandidates.push(index);
+		if (trailingCandidates.length < 2 && !isToolControlMessage(message)) {
+			trailingCandidates.push(index);
+		}
+		// Decimation counts conversational turns, so it reads the provenance marker
+		// `convertAnthropicMessages` records rather than the wire role. A wire `user`
+		// can also be a serialized `developer` message, a tool_result run, or an
+		// interior `Continue.` pad, none of which advance the user turn ordinal.
+		if (isConversationalUser(message)) stableUserTurns++;
 	}
-	const candidateIndices: number[] = [];
-	if (trailingCandidates.length > 0) {
-		candidateIndices.push(trailingCandidates[0]);
-	}
-	for (let i = decimationIndices.length - 1; i >= 0; i--) {
-		if (!candidateIndices.includes(decimationIndices[i])) {
-			candidateIndices.push(decimationIndices[i]);
+	const stableMessageEnd = markIndex === -1 ? messageEnd : markIndex - 1;
+
+	// Decimation checkpoints are generated newest-first on demand instead of
+	// being materialized as index arrays: the newest sits `stableUserTurns %
+	// ANTHROPIC_DECIMATION_INTERVAL` conversational turns back from the stable
+	// prefix end and every 15th turn follows it, so the walk stops as soon as the
+	// breakpoint budget is spent. Candidates repeat when a trailing or sub-prefix
+	// anchor is already a checkpoint; re-decorating the same message is a no-op
+	// (its block already carries cache_control), so the budget accounting is
+	// unchanged.
+	//
+	// Priority order:
+	// 1. Most recent trailing message
+	// 2. Latest decimation checkpoints (newest first) to maintain stable long-context anchors
+	// 3. Newest message at or before the first per-call/turn-scoped mark, so a
+	//    volatile interior message costs only its own re-billed bytes instead
+	//    of invalidating the whole reusable prefix behind it
+	// 4. Second trailing message
+	//
+	// Count only successful block decorations toward the message budget so an uncacheable
+	// block (such as a thinking-only assistant) does not silently consume a breakpoint.
+	let appliedCount = 0;
+	if (trailingCandidates.length > 0 && appliedCount < messageBudget) {
+		const message = params.messages[trailingCandidates[0]];
+		if (message && applyCacheControlToMessage(message, cacheControl)) {
+			appliedCount++;
 		}
 	}
-	if (stableMessageEnd < messageEnd && stableMessageEnd >= 0 && !candidateIndices.includes(stableMessageEnd)) {
-		candidateIndices.push(stableMessageEnd);
+	// Stable historical decimation checkpoint every 15 user turns (15th, 30th, 45th...)
+	if (stableUserTurns >= ANTHROPIC_DECIMATION_INTERVAL) {
+		let turnsSinceCheckpoint = stableUserTurns % ANTHROPIC_DECIMATION_INTERVAL;
+		for (let index = stableMessageEnd; index >= 0 && appliedCount < messageBudget; index--) {
+			const message = params.messages[index];
+			if (!message || !isConversationalUser(message)) continue;
+			if (turnsSinceCheckpoint > 0) {
+				turnsSinceCheckpoint--;
+				continue;
+			}
+			turnsSinceCheckpoint = ANTHROPIC_DECIMATION_INTERVAL - 1;
+			if (applyCacheControlToMessage(message, cacheControl)) {
+				appliedCount++;
+			}
+		}
+	}
+	if (stableMessageEnd < messageEnd && stableMessageEnd >= 0 && appliedCount < messageBudget) {
+		const message = params.messages[stableMessageEnd];
+		if (message && applyCacheControlToMessage(message, cacheControl)) {
+			appliedCount++;
+		}
 	}
 	for (const index of trailingCandidates) {
-		if (!candidateIndices.includes(index)) {
-			candidateIndices.push(index);
-		}
-	}
-
-	let appliedCount = 0;
-	for (const index of candidateIndices) {
 		if (appliedCount >= messageBudget) break;
 		const message = params.messages[index];
 		if (message && applyCacheControlToMessage(message, cacheControl)) {
@@ -3543,6 +3839,27 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	}
 }
 
+/**
+ * System-prompt segments whose bytes differ between sessions or turns of the
+ * same agent: per-turn memory recall (`<memories>`) and the coding agent's
+ * working-directory context (`<project-context>`: context files with their
+ * paths, workspace tree, workspace roots, session append text; advisors use
+ * the same tag for their context-file block). The coding agent renders them
+ * as their own `systemPrompt` array elements after the large static prompt.
+ * The system cache breakpoint anchors on the block right before the first
+ * such segment, so the static head is shared byte-for-byte across sessions in
+ * different directories (e.g. one git worktree per task) and a recall refresh
+ * re-bills only the suffix and the message tail.
+ *
+ * Everything from the first volatile segment on sits after the head
+ * breakpoint, including stable blocks appended behind it (per-spawn subagent
+ * role text, `before_agent_start` extension policy): prefix caching is
+ * positional, so bytes after a changing segment can never extend the cached
+ * head anyway; the rolling message breakpoints still cover them.
+ *
+ * Detection is by our own markup, not model identity: only a leading tag
+ * counts, so stable segments quoting these tags elsewhere are unaffected.
+ */
 const VOLATILE_SYSTEM_SEGMENT_MARKERS = ["<memories>"];
 
 function stableSystemSuffixStart(systemBlocks: readonly AnthropicSystemBlock[]): number {
@@ -3621,14 +3938,18 @@ function resolveAnthropicAdaptiveEffort(
 
 function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): string {
 	for (const message of messages) {
-		if (message.role !== "user") continue;
+		if (
+			(message.role !== "user" && message.role !== "developer") ||
+			message.providerPayload?.type === "anthropicMessage"
+		)
+			continue;
 		const { content } = message;
-		if (typeof content === "string") return content;
-		if (!Array.isArray(content)) return "";
-		for (const block of content) {
-			if (block.type === "text") return block.text;
+		if (typeof content === "string") {
+			if (content.trim()) return content;
+			continue;
 		}
-		return "";
+		for (const block of content) if (block.type === "text" && block.text.trim()) return block.text;
+		if (content.some(block => block.type === "image")) return "";
 	}
 	return "";
 }
@@ -3782,8 +4103,10 @@ function planStableAnthropicTools(
 	messages: readonly MessageParam[],
 	state: AnthropicControlState | undefined,
 	enabled: boolean,
+	ownChange = true,
 ): AnthropicWireTool[] | undefined {
 	if (!state || !enabled || !current) return current;
+	if (!ownChange && state.declaredTools) return cloneAnthropicTools(state.declaredTools);
 	if (!state.declaredTools) {
 		state.declaredTools = cloneAnthropicTools(current);
 		state.activeToolNames = new Set(current.map(tool => tool.name));
@@ -3822,6 +4145,9 @@ function planStableAnthropicTools(
 			tool: { type: "tool_reference", name: tool.name },
 		});
 	}
+	if (state.declaredTools.every(tool => tool.defer_loading === true)) {
+		for (const tool of state.declaredTools) delete tool.defer_loading;
+	}
 	if (changes.length > 0) recordAnthropicControlTransition(state, messages, messages.length, changes);
 	state.activeToolNames = nextActive;
 	return cloneAnthropicTools(state.declaredTools);
@@ -3832,8 +4158,10 @@ function planStableAnthropicEffort(
 	messages: readonly MessageParam[],
 	state: AnthropicControlState | undefined,
 	enabled: boolean,
+	ownChange = true,
 ): AnthropicOutputEffort | undefined {
 	if (!state || !enabled) return current;
+	if (!ownChange && state.effortBaselined) return state.baseEffortWire;
 	// An omitted effort is the API's per-model default, tracked as its own state; a per-message
 	// control cannot express "back to the default", so dropping the effort keeps the level in force.
 	if (!state.effortBaselined) {
@@ -3886,11 +4214,31 @@ function materializeAnthropicControlTransitions(
 		renderedIndex = index;
 		offset++;
 	}
+	for (let index = 0; index < result.length; index++) {
+		const control = result[index];
+		if (
+			control.role !== "system" ||
+			!Array.isArray(control.content) ||
+			!control.content.some(block => block.type === "tool_addition" || block.type === "tool_removal")
+		)
+			continue;
+		let next = index + 1;
+		while (result[next]?.role === "system") next++;
+		if (result[next]?.role !== "user") continue;
+		let slot = next;
+		while (slot < result.length && result[slot].role !== "assistant") slot++;
+		while (slot > next && result[slot - 1]?.role === "system") slot--;
+		result.splice(slot, 0, control);
+		result.splice(index, 1);
+		index--;
+	}
 	return result;
 }
 
 type AnthropicParamBuildOptions = {
 	disableStrictTools: boolean;
+	dropCacheControl?: boolean;
+	dropCacheControlOptions?: boolean;
 	useUmansGatewayWebSearch: boolean;
 	forceDemoteUnsignedThinking: boolean;
 	supportsEagerToolInputStreaming: boolean;
@@ -3912,6 +4260,8 @@ function buildParams(
 ): MessageCreateParamsStreaming {
 	const {
 		disableStrictTools,
+		dropCacheControl = false,
+		dropCacheControlOptions = false,
 		useUmansGatewayWebSearch,
 		forceDemoteUnsignedThinking,
 		supportsEagerToolInputStreaming,
@@ -3928,7 +4278,11 @@ function buildParams(
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
+	const resolvedCacheControl = dropCacheControl
+		? undefined
+		: getCacheControl(model, options?.cacheRetention, isOAuthToken).cacheControl;
+	const cacheControl =
+		dropCacheControlOptions && resolvedCacheControl ? { type: resolvedCacheControl.type } : resolvedCacheControl;
 
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
 	const firstUserMessageText = shouldInjectClaudeCodeInstruction
@@ -3938,6 +4292,7 @@ function buildParams(
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
 		cacheControl,
+		dropCacheControl,
 	});
 
 	let tools: AnthropicWireTool[] | undefined;
@@ -3989,7 +4344,9 @@ function buildParams(
 				if (mode === "anthropic-budget-effort" && effort && effort !== "adaptive") outputConfigEffort = effort;
 			}
 		} else if (options?.thinkingEnabled === false) {
-			if (isAdaptiveOnlyThinking(model)) {
+			if (model.compat.disabledThinking === "disabled") {
+				thinking = { type: "disabled" };
+			} else if (isAdaptiveOnlyThinking(model)) {
 				outputConfigEffort = "low";
 			} else {
 				thinking = { type: "disabled" };
@@ -4024,19 +4381,28 @@ function buildParams(
 	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
 		serverSideFallbackEnabled: !!fallbacks?.length,
 		replayCompaction: compactionSupported,
+		compactionRequest: compactionSupported && options?.anthropicCompaction !== undefined,
 		dropAllThinking,
+		thinkingEnabled: thinking?.type === "adaptive" || thinking?.type === "enabled",
 		droppedThinkingBlocks,
 	});
 	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
 	systemBlocks = planStableAnthropicSystem(systemBlocks, controlState, model.compat.supportsMidConversationSystem);
-	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
+	tools = planStableAnthropicTools(
+		tools,
+		wireMessages,
+		controlState,
+		model.compat.supportsMidConversationToolChanges,
+		!options?.anthropicCompaction,
+	);
 	applyHeadCaching(systemBlocks, tools, cacheControl);
 	const topLevelEffort = planStableAnthropicEffort(
 		outputConfigEffort,
 		wireMessages,
 		controlState,
 		model.compat.supportsPerMessageEffort,
+		!options?.anthropicCompaction,
 	);
 	wireMessages = materializeAnthropicControlTransitions(wireMessages, controlState);
 
@@ -4053,7 +4419,7 @@ function buildParams(
 		effectiveBaseUrl ??
 		model.baseUrl;
 	const vertexControlBetas = isVertexRawPredictUrl(vertexRequestUrl)
-		? resolveAnthropicControlBetas(model, prefixMismatchBehavior)
+		? resolveAnthropicControlBetas(model, undefined)
 		: [];
 	if (
 		isVertexRawPredictUrl(vertexRequestUrl) &&
@@ -4161,7 +4527,7 @@ function buildToolResultBlock(
 	msg: ToolResultMessage,
 	hoistedImages: ContentBlockParam[],
 ): ContentBlockParam {
-	let content = convertContentBlocks(msg.content, model.input.includes("image"));
+	let content = convertContentBlocks(msg.content, { supportsImages: model.input.includes("image") });
 
 	if (msg.isError && typeof content !== "string" && content.some(block => block.type === "image")) {
 		for (const block of content) {
@@ -4215,6 +4581,27 @@ function toWellFormedDeep(value: unknown): unknown {
 	return value;
 }
 
+function collapseFallbackSegments(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	let segments = 0;
+	let reasoningSegment = 0;
+	for (const block of content) {
+		if (block.type === "fallback") segments++;
+		else if (block.type === "thinking" || block.type === "redactedThinking") reasoningSegment = segments;
+	}
+	if (segments === 0) return content;
+	const collapsed: AssistantMessage["content"] = [];
+	let segment = 0;
+	for (const block of content) {
+		if (block.type === "fallback") {
+			segment++;
+			continue;
+		}
+		if ((block.type === "thinking" || block.type === "redactedThinking") && segment !== reasoningSegment) continue;
+		collapsed.push(block);
+	}
+	return collapsed;
+}
+
 export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
@@ -4222,7 +4609,9 @@ export function convertAnthropicMessages(
 	opts?: {
 		serverSideFallbackEnabled?: boolean;
 		replayCompaction?: boolean;
+		compactionRequest?: boolean;
 		dropAllThinking?: boolean;
+		thinkingEnabled?: boolean;
 		droppedThinkingBlocks?: ReadonlySet<string>;
 		onAssistantMessage?: (source: AssistantMessage, converted: AnthropicMessageParam) => void;
 	},
@@ -4239,6 +4628,41 @@ export function convertAnthropicMessages(
 	};
 
 	const transformedMessages = transformMessages(messages, model, normalizeToolCallId);
+
+	// Strict replay gateways require reasoning presence only after the latest text-bearing prompt.
+	const padsThinkingWindow =
+		opts?.thinkingEnabled === true && !opts.dropAllThinking && model.compat.requiresThinkingPresence === true;
+	let thinkingWindowStart = -1;
+	if (padsThinkingWindow) {
+		for (let index = transformedMessages.length - 1; index >= 0; index--) {
+			const message = transformedMessages[index];
+			if (message.role !== "user" && message.role !== "developer") continue;
+			const content = message.content;
+			const hasText =
+				typeof content === "string"
+					? content.trim().length > 0
+					: content.some(block => block.type === "text" && block.text.trim().length > 0);
+			if (!hasText) continue;
+			thinkingWindowStart = index;
+			break;
+		}
+	}
+
+	// Only the newest unanswered kickoff rejects unreadable media; older failed prompts remain replayable.
+	let unansweredUserIndex = -1;
+	if (!opts?.compactionRequest) {
+		for (let index = transformedMessages.length - 1; index >= 0; index--) {
+			const message = transformedMessages[index];
+			if (message.role === "assistant") break;
+			if (
+				message.role === "user" ||
+				(message.role === "developer" && (message.synthetic === true || message.attribution === "user"))
+			) {
+				unansweredUserIndex = index;
+				break;
+			}
+		}
+	}
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
@@ -4279,7 +4703,10 @@ export function convertAnthropicMessages(
 					content = msg.content.toWellFormed();
 				}
 			} else {
-				const contentBlocks = convertContentBlocks(msg.content, model.input.includes("image"));
+				const contentBlocks = convertContentBlocks(msg.content, {
+					supportsImages: model.input.includes("image"),
+					rejectUnsupportedMedia: i === unansweredUserIndex,
+				});
 				if (typeof contentBlocks === "string") {
 					if (contentBlocks.trim().length === 0) {
 						if (!hasProviderControls) continue;
@@ -4306,7 +4733,8 @@ export function convertAnthropicMessages(
 				}
 				content = blocks;
 			}
-			if (msg.role === "developer") developerParams.push({ index: params.length, payload });
+			if (msg.role === "developer" && (msg.attribution !== "user" || hasProviderControls))
+				developerParams.push({ index: params.length, payload });
 			const param: AnthropicMessageParam & ConversationalUserCarrier = { role: "user", content };
 			if (msg.role === "user" && msg.synthetic !== true && msg.attribution !== "agent" && !isSyntheticUser(msg)) {
 				param[kConversationalUser] = true;
@@ -4315,7 +4743,11 @@ export function convertAnthropicMessages(
 			params.push(param);
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
-			const hasSignedThinking = msg.content.some(
+			const content =
+				opts?.serverSideFallbackEnabled && model.compat.officialEndpoint
+					? msg.content
+					: collapseFallbackSegments(msg.content);
+			const hasSignedThinking = content.some(
 				block =>
 					block.type === "thinking" && !!block.thinkingSignature && block.thinkingSignature.trim().length > 0,
 			);
@@ -4324,7 +4756,7 @@ export function convertAnthropicMessages(
 				blocks.push(compactionBlockParam(msg.providerPayload));
 			}
 
-			for (const block of msg.content) {
+			for (const block of content) {
 				if (block.type === "text") {
 					if (block.text.trim().length === 0) continue;
 					blocks.push({
@@ -4423,6 +4855,10 @@ export function convertAnthropicMessages(
 				blocks.push(...nonToolUse, ...toolUse);
 			}
 			if (blocks.length === 0) continue;
+			// Nonblank padding survives gateways that discard empty thinking blocks. Redaction alone is not thinking.
+			if (padsThinkingWindow && i > thinkingWindowStart && !blocks.some(block => block.type === "thinking")) {
+				blocks.unshift({ type: "thinking", thinking: "(no reasoning was returned for this turn)", signature: "" });
+			}
 			const assistantParam: AnthropicMessageParam = {
 				role: "assistant",
 				content: blocks,
@@ -4466,6 +4902,8 @@ export function convertAnthropicMessages(
 			flushCompactionFiles();
 		}
 	}
+
+	flushCompactionFiles();
 
 	if (developerParams.length > 0 && model.compat.supportsMidConversationSystem) {
 		for (const developer of developerParams.toReversed()) {
@@ -4536,8 +4974,7 @@ export function convertAnthropicMessages(
 			params.splice(i, 0, { role: "user", content: "Continue." });
 		}
 	}
-	flushCompactionFiles();
-	if (params.length > 0 && params[params.length - 1]?.role === "assistant") {
+	if (!opts?.compactionRequest && params.length > 0 && params[params.length - 1]?.role === "assistant") {
 		params.push({ role: "user", content: "Continue." });
 	}
 
@@ -4578,7 +5015,9 @@ const ANTHROPIC_TOOL_SCHEMA_STRING_FORMATS = new Set([
 	"ipv6",
 	"uuid",
 ]);
-const ANTHROPIC_STRICT_TOOL_ALLOWLIST = new Set(["bash", "python", "edit", "find"]);
+const ANTHROPIC_STRICT_TOOL_ALLOWLIST = new Set(["python", "edit", "find", "yield"]);
+// Structured results must be buffered so the API validates the complete JSON before streaming it.
+const ANTHROPIC_BUFFERED_INPUT_TOOLS = new Set(["yield"]);
 const MAX_ANTHROPIC_STRICT_TOOLS = 20;
 const MAX_ANTHROPIC_STRICT_OPTIONAL_PARAMETERS = 24;
 const MAX_ANTHROPIC_STRICT_UNION_PARAMETERS = 16;
@@ -4723,13 +5162,118 @@ function normalizeAnthropicToolSchemaNode(
 	return result;
 }
 
+function stringEntries(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/**
+ * Whether a root combinator variant can merge into the root object. `allOf` branches
+ * may be open (every branch must hold, so an open one loosens nothing); an open
+ * `anyOf`/`oneOf` variant admits any value for keys other variants declare.
+ */
+function isFoldableAnthropicRootVariant(variant: unknown, conjunctive: boolean): variant is Record<string, unknown> {
+	if (!isRecord(variant)) return false;
+	const type = pickAnthropicEffectiveScalarType(variant);
+	if (type !== undefined && type !== "object") return false;
+	if (variant.$ref !== undefined || variant.not !== undefined || variant.if !== undefined) return false;
+	if (COMBINATOR_KEYS.some(key => variant[key] !== undefined)) return false;
+	return conjunctive || variant.additionalProperties === undefined || variant.additionalProperties === false;
+}
+
+/**
+ * Fold root `anyOf`/`oneOf`/`allOf` object variants into the root object.
+ *
+ * Messages rejects combinators at the tool `input_schema` root, so
+ * {@link normalizeAnthropicToolSchemaNode} spills them into `description`. Without
+ * this fold a pure root union reaches the wire as a closed object with no
+ * properties, which admits only `{}`. The folded root admits every value the
+ * union admits:
+ * - properties merge; a key declared differently by several variants keeps every
+ *   declaration under a nested `anyOf` (`allOf` for a root `allOf`);
+ * - `required` gains the keys every `anyOf`/`oneOf` variant requires, or every
+ *   key any `allOf` branch requires;
+ * - variants that cannot merge (non-object, `$ref`, nested combinators, open
+ *   `anyOf`/`oneOf` members) open the root with `additionalProperties: true`.
+ *
+ * The exact union still reaches the model through the spilled description, and
+ * {@link validateToolArguments} enforces it against the original tool schema.
+ */
+function foldAnthropicRootCombinators(schema: Record<string, unknown>): Record<string, unknown> {
+	const rootType = pickAnthropicEffectiveScalarType(schema);
+	if (rootType !== undefined && rootType !== "object") return schema;
+	if (!COMBINATOR_KEYS.some(key => Array.isArray(schema[key]) && schema[key].length > 0)) return schema;
+
+	const properties: Record<string, unknown> = isRecord(schema.properties) ? { ...schema.properties } : {};
+	const required = new Set(stringEntries(schema.required));
+	let open = false;
+	for (const key of COMBINATOR_KEYS) {
+		const variants = schema[key];
+		if (!Array.isArray(variants) || variants.length === 0) continue;
+		const conjunctive = key === "allOf";
+		if (!variants.every(variant => isFoldableAnthropicRootVariant(variant, conjunctive))) {
+			open = true;
+			continue;
+		}
+
+		const declared = new Map<string, unknown[]>();
+		let shared: Set<string> | undefined;
+		for (const variant of variants) {
+			if (isRecord(variant.properties)) {
+				for (const name in variant.properties) {
+					if (!Object.hasOwn(variant.properties, name)) continue;
+					const propertySchema = variant.properties[name];
+					const declarations = declared.get(name) ?? [];
+					if (!declarations.some(entry => Bun.deepEquals(entry, propertySchema)))
+						declarations.push(propertySchema);
+					declared.set(name, declarations);
+				}
+			}
+			const variantRequired = stringEntries(variant.required);
+			if (conjunctive) {
+				for (const name of variantRequired) required.add(name);
+			} else {
+				shared = new Set(shared ? variantRequired.filter(name => shared?.has(name)) : variantRequired);
+			}
+			if (variant.additionalProperties !== undefined && variant.additionalProperties !== false) open = true;
+		}
+		for (const name of shared ?? []) required.add(name);
+		// A key the root (or an earlier combinator) already declares keeps that
+		// declaration: both must hold, so either alone admits every valid value.
+		for (const [name, declarations] of declared) {
+			if (Object.hasOwn(properties, name)) continue;
+			properties[name] =
+				declarations.length === 1 ? declarations[0] : { [conjunctive ? "allOf" : "anyOf"]: declarations };
+		}
+	}
+
+	const folded: Record<string, unknown> = { ...schema };
+	if (Object.keys(properties).length > 0 || isRecord(schema.properties)) folded.properties = properties;
+	if (required.size > 0) folded.required = [...required];
+	if (open && folded.additionalProperties === undefined && isRecord(folded.properties)) {
+		folded.additionalProperties = true;
+	}
+	return folded;
+}
+
+/**
+ * Normalize a tool parameter schema into an Anthropic `input_schema`: root
+ * combinators fold into the root object ({@link foldAnthropicRootCombinators}),
+ * then {@link normalizeAnthropicToolSchemaNode} applies the keyword whitelist.
+ */
 export function normalizeAnthropicToolSchema(schema: unknown): unknown {
-	return normalizeAnthropicToolSchemaNode(schema, new WeakMap(), true);
+	const root = isRecord(schema) ? foldAnthropicRootCombinators(schema) : schema;
+	return normalizeAnthropicToolSchemaNode(root, new WeakMap(), true);
 }
 
 type AnthropicToolSchemaPlan = {
 	inputSchema: AnthropicToolInputSchema;
 	strict: boolean;
+};
+
+type AnthropicStrictSchemaResult = {
+	schema: Record<string, unknown>;
+	optionalCount: number;
+	unionCount: number;
 };
 
 type AnthropicStrictBudget = {
@@ -4786,7 +5330,7 @@ function makeAnthropicNullableSchema(schema: unknown, budget: AnthropicStrictBud
 function normalizeAnthropicStrictSchemaNode(
 	schema: unknown,
 	budget: AnthropicStrictBudget,
-	cache: WeakMap<Record<string, unknown>, Record<string, unknown>>,
+	cache: WeakMap<Record<string, unknown>, AnthropicStrictSchemaResult | null>,
 ): unknown | undefined {
 	if (Array.isArray(schema)) {
 		const result: unknown[] = [];
@@ -4801,16 +5345,34 @@ function normalizeAnthropicStrictSchemaNode(
 	if (!isRecord(schema)) return schema;
 
 	const cached = cache.get(schema);
-	if (cached) return cached;
+	if (cached === null) return undefined;
+	if (
+		cached !== undefined &&
+		cached.optionalCount <= budget.optionalRemaining &&
+		cached.unionCount <= budget.unionRemaining
+	) {
+		// JSON repeats shared nodes; Anthropic charges every serialized occurrence.
+		budget.optionalRemaining -= cached.optionalCount;
+		budget.optionalCount += cached.optionalCount;
+		budget.unionRemaining -= cached.unionCount;
+		budget.unionCount += cached.unionCount;
+		return cached.schema;
+	}
 
+	// Re-normalize an overflowing occurrence so optionals can become nullable-required.
 	if (!hasAnthropicSchemaDefiningKeyword(schema)) return undefined;
 
+	// Strict tool use only supports closed objects. Open maps stay available on
+	// the non-strict schema plan instead of producing an Anthropic 400.
 	if (isJsonSchemaObjectNode(schema) && schema.additionalProperties !== false) {
 		return undefined;
 	}
 
 	const result: Record<string, unknown> = { ...schema };
-	cache.set(schema, result);
+	const optionalCountBefore = budget.optionalCount;
+	const unionCountBefore = budget.unionCount;
+	// An unfinished entry denotes a cycle, not a reusable serialized subtree.
+	cache.set(schema, null);
 
 	if (hasAnthropicUnionType(result)) {
 		if (budget.unionRemaining <= 0) return undefined;
@@ -4889,6 +5451,11 @@ function normalizeAnthropicStrictSchemaNode(
 		result[defsKey] = normalizedDefinitions;
 	}
 
+	cache.set(schema, {
+		schema: result,
+		optionalCount: budget.optionalCount - optionalCountBefore,
+		unionCount: budget.unionCount - unionCountBefore,
+	});
 	return result;
 }
 
@@ -4919,7 +5486,7 @@ function normalizeAnthropicStrictSchema(
 	schema: Record<string, unknown>,
 	optionalRemaining: number,
 	unionRemaining: number,
-): { schema: Record<string, unknown>; optionalCount: number; unionCount: number } | undefined {
+): AnthropicStrictSchemaResult | undefined {
 	const budget: AnthropicStrictBudget = {
 		optionalRemaining,
 		unionRemaining,
@@ -5004,7 +5571,9 @@ function convertTools(
 		};
 		return {
 			...baseTool,
-			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
+			...(supportsEagerToolInputStreaming
+				? { eager_input_streaming: !ANTHROPIC_BUFFERED_INPUT_TOOLS.has(tool.name) }
+				: {}),
 			...(plan.strict ? { strict: true } : {}),
 			...(tool.deferLoading ? { defer_loading: true } : {}),
 		};

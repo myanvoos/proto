@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
-import { callMCP, parseSSE } from "./json-rpc";
+import { callMCP, parseSSE, redactUrlForLog } from "./json-rpc";
 
 const URL = "https://mcp.example.test/rpc";
 
@@ -93,4 +93,13 @@ test("MCP SSE streams past notifications, requests, and malformed envelopes to i
 	const response = await callMCP<{ selected: boolean }>(URL, "tools/list");
 
 	expect(response.result).toEqual({ selected: true });
+});
+
+test("diagnostic URLs remove userinfo and credential queries while retaining useful routing", () => {
+	const diagnostic = redactUrlForLog("https://alice:password@gateway.example/v1/models?apiKey=secret&region=eu");
+	expect(diagnostic).not.toContain("alice");
+	expect(diagnostic).not.toContain("password");
+	expect(diagnostic).not.toContain("secret");
+	expect(diagnostic).toContain("gateway.example/v1/models");
+	expect(diagnostic).toContain("region=eu");
 });

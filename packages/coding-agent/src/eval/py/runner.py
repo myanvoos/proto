@@ -56,6 +56,7 @@ import importlib
 import importlib.machinery
 import inspect
 import io
+import itertools
 import json
 import locale
 import math
@@ -1136,31 +1137,6 @@ def _compiles(source: str) -> bool:
     return True
 
 
-def _string_body_lines(source: str) -> set[int]:
-    """1-based physical lines that begin inside Python multiline strings."""
-    protected: set[int] = set()
-    fstring_start = getattr(tokenize, "FSTRING_START", None)
-    fstring_end = getattr(tokenize, "FSTRING_END", None)
-    depth = 0
-    outer_start = 0
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-            if tok.type == tokenize.STRING:
-                if tok.end[0] > tok.start[0]:
-                    protected.update(range(tok.start[0] + 1, tok.end[0] + 1))
-            elif fstring_start is not None and tok.type == fstring_start:
-                if depth == 0:
-                    outer_start = tok.start[0]
-                depth += 1
-            elif fstring_end is not None and tok.type == fstring_end:
-                depth = max(0, depth - 1)
-                if depth == 0 and tok.end[0] > outer_start:
-                    protected.update(range(outer_start + 1, tok.end[0] + 1))
-    except (tokenize.TokenError, SyntaxError, ValueError):
-        pass
-    return protected
-
-
 def _unicode_repairs(source: str) -> tuple[str, list[str]]:
     """Replace typography homoglyphs that are never valid code.
 
@@ -1346,6 +1322,69 @@ def _quote_arg(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
+_STRING_START_TOKENS = {
+    getattr(tokenize, name, -1) for name in ("FSTRING_START", "TSTRING_START")
+}
+_STRING_END_TOKENS = {
+    getattr(tokenize, name, -1) for name in ("FSTRING_END", "TSTRING_END")
+}
+
+
+def _magic_line_indices(lines: list[str]) -> set[int]:
+    """Find command lines outside Python strings without lexing shell payloads."""
+    indices: set[int] = set()
+    offset = 0
+    while offset < len(lines):
+        # A synthetic enclosing expression suppresses indentation checks when
+        # restarting in the middle of a suite; this pass only identifies tokens.
+        stream = itertools.chain(
+            ("(\n",),
+            (line + "\n" for line in itertools.islice(lines, offset, None)),
+            (")\n",),
+        )
+        last_row = -1
+        string_depth = 0
+        try:
+            for item in tokenize.generate_tokens(lambda: next(stream, "")):
+                if item.type in _STRING_START_TOKENS:
+                    string_depth += 1
+                elif item.type in _STRING_END_TOKENS:
+                    string_depth -= 1
+                    continue
+                if string_depth or item.type in (
+                    tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                    tokenize.DEDENT, tokenize.ENDMARKER, tokenize.COMMENT,
+                ) or (item.type == tokenize.ERRORTOKEN and item.string.isspace()):
+                    # Python < 3.12 emits indentation before `!` as one
+                    # whitespace ERRORTOKEN per column.
+                    continue
+                row = offset + item.start[0] - 2
+                if row < offset or row >= len(lines) or row == last_row:
+                    continue
+                last_row = row
+                stripped = lines[row].lstrip()
+                if item.start[1] != len(lines[row]) - len(stripped):
+                    continue
+                assignment = _ASSIGN_LINE_RE.match(lines[row])
+                rhs = assignment.group("rhs").strip() if assignment else ""
+                if not stripped.startswith(("%", "!")) and not rhs.startswith(("%", "!")):
+                    continue
+                indices.add(row)
+                if stripped.startswith("%%"):
+                    return indices
+                # Shell quotes and cell/line magic arguments are not Python.
+                # Restart after the command instead of tokenizing its payload.
+                consumed = _fold_continuations(lines, row)[1] if stripped.startswith(("%", "!")) else 1
+                offset = row + consumed
+                break
+            else:
+                return indices
+        except (tokenize.TokenError, IndentationError):
+            # Leave incomplete Python source to the ordinary syntax-error path.
+            return indices
+    return indices
+
+
 def transform_cell(source: str) -> str:
     """Translate IPython-style magics + shell escapes into plain Python.
 
@@ -1359,12 +1398,9 @@ def transform_cell(source: str) -> str:
       (cell magic must be the first non-whitespace token of a top-level line and
       consumes the remainder of the cell)
 
-    A bare ``%name`` / ``!cmd`` line is never valid Python, so a cell that
-    parses cleanly contains no magics and is returned untouched — this is what
-    keeps ``!``/``%`` lines inside triple-quoted strings (markdown badges,
-    ``%d`` templates, ``!important``) from being rewritten. Cells that do not
-    parse are scanned line by line, skipping physical lines that begin inside
-    a multi-line string literal.
+    A cell that compiles is left untouched. Otherwise Python tokenization
+    identifies command lines outside strings and comments, restarting after
+    each command without lexing shell quotes or magic arguments as Python.
     """
 
     if "%" not in source and "!" not in source:
@@ -1375,13 +1411,13 @@ def transform_cell(source: str) -> str:
     except SyntaxError:
         pass
 
-    protected = _string_body_lines(source)
     lines = source.splitlines()
+    magic_lines = _magic_line_indices(lines)
     out: list[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
-        if (i + 1) in protected:
+        if i not in magic_lines:
             out.append(line)
             i += 1
             continue
@@ -1648,26 +1684,210 @@ class _BoundedLineScanner:
 @line_magic("pip")
 def _magic_pip(args: str) -> None:
     argv = shlex.split(args) if args else ["--help"]
-    cmd = [sys.executable, "-m", "pip", *argv]
+    # Installs are host work, not cell compute: suspend the eval watchdog (same
+    # protocol as bridge waits in bridge-timeout.ts). Caller aborts still apply.
+    _emit_status("timeout-pause")
+    try:
+        _run_pip(argv, args)
+    finally:
+        _emit_status("timeout-resume")
+
+
+def _has_pip() -> bool:
+    import importlib.util
+
+    importlib.invalidate_caches()
+    try:
+        return importlib.util.find_spec("pip") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _procfs_usable() -> bool:
+    # /proc can be missing, unreadable or an empty unmounted directory (some
+    # containers and chroots); a mounted procfs lists this process. One
+    # inherited from a parent PID namespace lists outer pids, which can collide
+    # with ours (init is 1 in both) but never match its parents to our children:
+    # its /proc/self is this process under another pid.
+    try:
+        if str(os.getpid()) not in os.listdir("/proc"):
+            return False
+        with open("/proc/self/stat", "rb") as stat:
+            return int(stat.read().split(b" ", 1)[0]) == os.getpid()
+    except (OSError, ValueError):
+        return False
+
+
+def _child_pids() -> dict[int, list[int]]:
+    """Map each live pid to the pids of its children."""
+    children: dict[int, list[int]] = {}
+    if sys.platform.startswith("linux"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return children
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", "rb") as stat:
+                    ppid = int(stat.read().rsplit(b")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            children.setdefault(ppid, []).append(int(entry))
+        return children
+    try:
+        listing = subprocess.run(
+            # /bin/ps first: the kernel's PATH is the user's and may not hold it.
+            ["/bin/ps" if os.path.exists("/bin/ps") else "ps", "-A", "-o", "pid=,ppid="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return children
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 2:
+            children.setdefault(int(fields[1]), []).append(int(fields[0]))
+    return children
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    # Installers spawn their own children (ensurepip runs pip in one, source
+    # builds run backends and compilers), so killing `proc` alone is not enough.
+    # The tree stays in the kernel's process group so kernel shutdown still
+    # reaches it.
+    # Stop each process before listing its children, so nothing can spawn
+    # behind the walk; then kill every stopped process.
+    stopped: list[int] = []
+    level = [proc.pid]
+    while level:
+        for pid in level:
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                continue
+            stopped.append(pid)
+        children = _child_pids()
+        level = [child for pid in level for child in children.get(pid, ())]
+    for pid in stopped:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.wait()
+
+
+def _run_installer(
+    cmd: list[str],
+    on_text: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
+    if sys.platform.startswith("linux") and not _procfs_usable():
+        return _run_guarded_installer(cmd, on_text, env)
+    # stdin=DEVNULL: see _run_shell_body.
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=env,
     )
+    try:
+        _stream_process_output(proc, on_text)
+        return proc.wait()
+    except BaseException:
+        # Cancelling the cell interrupts only the kernel: stop the installer too.
+        _kill_process_tree(proc)
+        raise
+
+
+# Parent of the installer in a session of its own. Its stdin is a pipe only the
+# kernel writes to, which reads EOF once the kernel closes it or exits by any
+# means (SIGKILL included); the whole group dies with it then.
+_INSTALLER_GUARD = """\
+import os, signal, subprocess, sys, threading
+def guard():
+    while os.read(0, 1):
+        pass
+    os.killpg(0, signal.SIGKILL)
+threading.Thread(target=guard, daemon=True).start()
+code = subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL)
+sys.exit(code if code >= 0 else 128 - code)
+"""
+
+
+def _run_guarded_installer(
+    cmd: list[str],
+    on_text: Callable[[str], None] | None,
+    env: dict[str, str] | None,
+) -> int:
+    # Without procfs nothing on Linux can list processes (ps reads /proc too),
+    # so the installer cannot stay in the kernel's group to be walked: it runs
+    # in a group of its own, under a guard that kills the group when the kernel
+    # goes, since kernel shutdown sweeps only the kernel's group.
+    read_end, write_end = os.pipe()
+    proc: subprocess.Popen | None = None
+    try:
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-I", "-c", _INSTALLER_GUARD, *cmd],
+                stdin=read_end,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        finally:
+            os.close(read_end)
+        _stream_process_output(proc, on_text)
+        return proc.wait()
+    finally:
+        # Ends the guard, so a cancel landing inside Popen still stops the tree.
+        os.close(write_end)
+        if proc is not None:
+            # A cancel, or what the installer left running once it exited.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+
+
+def _bootstrap_pip() -> int:
+    # Environments made by `uv venv` ship without pip. Install it from the
+    # stdlib wheel; where ensurepip is missing or disabled (Debian's system
+    # Python), have uv install it into the kernel's interpreter instead.
+    code = _run_installer([sys.executable, "-m", "ensurepip"])
+    uv = shutil.which("uv")
+    if code == 0 or uv is None:
+        return code
+    return _run_installer(
+        [uv, "pip", "install", "pip"],
+        env={**os.environ, "UV_PYTHON": sys.executable},
+    )
+
+
+def _run_pip(argv: list[str], args: str) -> None:
+    if not _has_pip():
+        code = _bootstrap_pip()
+        if code != 0:
+            _emit_status("pip", args=args, installed=[], exit_code=code)
+            return
     installed_packages: list[str] = []
 
     def scan_pip_line(raw_line: str) -> None:
         m = re.search(r"Successfully installed\s+(.+)$", raw_line)
         if m:
             for token in m.group(1).split():
+                # Token is name-version; drop the version suffix.
                 pkg = token.rsplit("-", 1)[0]
                 installed_packages.append(pkg.replace("_", "-"))
 
     scanner = _BoundedLineScanner(_PIP_LINE_SCAN_CHARS, scan_pip_line)
-    _stream_process_output(proc, scanner.add)
+    returncode = _run_installer([sys.executable, "-m", "pip", *argv], scanner.add)
     scanner.finish()
-    proc.wait()
     if installed_packages:
         import importlib
 
@@ -1678,7 +1898,7 @@ def _magic_pip(args: str) -> None:
             if head in prefixes:
                 sys.modules.pop(mod_name, None)
     _emit_status(
-        "pip", args=args, installed=installed_packages, exit_code=proc.returncode
+        "pip", args=args, installed=installed_packages, exit_code=returncode
     )
 
 
@@ -2068,11 +2288,29 @@ def _mime_bundle(value: Any) -> dict:
     return bundle
 
 
+_MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
+
+
+def _safe_display_json(value: Any) -> Any:
+    """Preserve integers that JavaScript cannot represent exactly as decimal strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value) if abs(value) > _MAX_SAFE_JSON_INTEGER else value
+    if isinstance(value, dict):
+        return {key: _safe_display_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_display_json(item) for item in value]
+    return value
+
+
 def _emit_display(bundle: dict, *, kind: str = "display") -> None:
     rid = _current_run_id()
     if rid is None:
         return
     _sync_before_frame(rid)
+    if "application/json" in bundle:
+        bundle = {**bundle, "application/json": _safe_display_json(bundle["application/json"])}
     _emit({"type": kind, "id": rid, "bundle": bundle})
 
 

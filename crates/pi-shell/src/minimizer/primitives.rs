@@ -26,6 +26,15 @@ pub const fn reduced(cap: usize, by: usize) -> usize {
 	if reduced == 0 && cap > 0 { 1 } else { reduced }
 }
 
+/// Size up to which output the agent asked to read is returned whole.
+///
+/// Applies to patches, `jq` results and remote command output. Below it a
+/// lossy summary sends the agent to the raw artifact more often than it saves
+/// context: in recorded sessions, nearly half of the summarized `jq` results
+/// and `git diff`/`git show` patches were followed by a read of the raw output.
+pub const WHOLE_OUTPUT_BYTES: usize = 16 * 1024;
+
+/// Remove ANSI CSI escape sequences while preserving line endings verbatim.
 #[must_use]
 pub fn strip_ansi(input: &str) -> String {
 	let mut out = String::with_capacity(input.len());
@@ -81,6 +90,16 @@ pub fn head_tail_lines(input: &str, head: usize, tail: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
 	if lines.len() <= head + tail {
 		return input.to_string();
+	}
+	head_tail_of_lines(&lines, head, tail)
+}
+
+/// [`head_tail_lines`] over already-split lines; when nothing is elided the
+/// lines are joined back with `\n`.
+#[must_use]
+pub fn head_tail_of_lines(lines: &[&str], head: usize, tail: usize) -> String {
+	if lines.len() <= head + tail {
+		return lines.join("\n");
 	}
 	let omitted = lines.len() - head - tail;
 	let mut out = String::new();

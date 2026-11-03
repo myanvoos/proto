@@ -6,33 +6,18 @@ use brush_core::builtins::{self, builtin, decl_builtin, raw_arg_builtin, simple_
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum BuiltinSet {
-
 	ShMode,
-
 
 	BashMode,
 }
-
-
-
-
-
 
 #[allow(clippy::too_many_lines)]
 pub fn default_builtins<SE: brush_core::ShellExtensions>(
 	set: BuiltinSet,
 ) -> HashMap<String, builtins::Registration<SE>> {
 	let mut m = HashMap::<String, builtins::Registration<SE>>::new();
-
-
-
-
-
-
-
 
 	#[cfg(feature = "builtin.break")]
 	m.insert("break".into(), builtin::<break_::BreakCommand, SE>().special());
@@ -65,10 +50,6 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 	m.insert("readonly".into(), decl_builtin::<declare::DeclareCommand, SE>().special());
 	#[cfg(feature = "builtin.times")]
 	m.insert("times".into(), builtin::<times::TimesCommand, SE>().special());
-
-
-
-
 
 	#[cfg(feature = "builtin.alias")]
 	m.insert("alias".into(), builtin::<alias::AliasCommand, SE>());
@@ -144,14 +125,12 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.declare")]
 		m.insert("typeset".into(), decl_builtin::<declare::DeclareCommand, SE>());
 
-
 		#[cfg(feature = "builtin.complete")]
 		m.insert("complete".into(), builtin::<complete::CompleteCommand, SE>());
 		#[cfg(feature = "builtin.compgen")]
 		m.insert("compgen".into(), builtin::<complete::CompGenCommand, SE>());
 		#[cfg(feature = "builtin.compopt")]
 		m.insert("compopt".into(), builtin::<complete::CompOptCommand, SE>());
-
 
 		#[cfg(feature = "builtin.dirs")]
 		m.insert("dirs".into(), builtin::<dirs::DirsCommand, SE>());
@@ -160,10 +139,8 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.pushd")]
 		m.insert("pushd".into(), builtin::<pushd::PushdCommand, SE>());
 
-
 		#[cfg(feature = "builtin.bind")]
 		m.insert("bind".into(), builtin::<bind::BindCommand, SE>());
-
 
 		#[cfg(feature = "builtin.history")]
 		m.insert("history".into(), builtin::<history::HistoryCommand, SE>());
@@ -171,22 +148,13 @@ pub fn default_builtins<SE: brush_core::ShellExtensions>(
 		#[cfg(feature = "builtin.caller")]
 		m.insert("caller".into(), builtin::<caller::CallerCommand, SE>());
 
-
 		m.insert("disown".into(), builtin::<unimp::UnimplementedCommand, SE>());
-
 
 		m.insert("logout".into(), builtin::<unimp::UnimplementedCommand, SE>());
 	}
 
 	m
 }
-
-
-
-
-
-
-
 
 #[allow(clippy::too_many_lines, reason = "one line per utility")]
 pub fn utility_builtins<SE: brush_core::ShellExtensions>()
@@ -263,6 +231,18 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m.push(("mktemp", mktemp::mktemp_builtin::<SE>()));
 	#[cfg(feature = "util.mv")]
 	m.push(("mv", mv::mv_builtin::<SE>()));
+	#[cfg(feature = "util.fold")]
+	m.push(("fold", fold::fold_builtin::<SE>()));
+	#[cfg(feature = "util.id")]
+	m.push(("id", id::id_builtin::<SE>()));
+	#[cfg(feature = "util.od")]
+	m.push(("od", od::od_builtin::<SE>()));
+	#[cfg(feature = "util.rmdir")]
+	m.push(("rmdir", rmdir::rmdir_builtin::<SE>()));
+	#[cfg(feature = "util.uptime")]
+	m.push(("uptime", uptime::uptime_builtin::<SE>()));
+	#[cfg(feature = "util.nl")]
+	m.push(("nl", nl::nl_builtin::<SE>()));
 	#[cfg(feature = "util.nproc")]
 	m.push(("nproc", nproc::nproc_builtin::<SE>()));
 	#[cfg(feature = "util.paste")]
@@ -327,26 +307,13 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m
 }
 
-
-
-
-
-
-
-
 pub fn process_builtins<SE: brush_core::ShellExtensions>()
 -> Vec<(&'static str, builtins::Registration<SE>)> {
 	#[allow(unused_mut, reason = "empty when no process features are enabled")]
 	let mut m = Vec::<(&'static str, builtins::Registration<SE>)>::new();
 
 	#[cfg(feature = "util.nohup")]
-
-
-
-	m.push((
-		"nohup",
-		builtin::<nohup::NohupCommand, SE>().transparent_background_wrapper(),
-	));
+	m.push(("nohup", builtin::<nohup::NohupCommand, SE>().transparent_background_wrapper()));
 	#[cfg(feature = "util.pgrep")]
 	m.push(("pgrep", builtin::<pgrep::PgrepCommand, SE>()));
 	#[cfg(feature = "util.pidwait")]

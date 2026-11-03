@@ -8,6 +8,8 @@ import type { AgentProgress, SingleResult } from "../task/types";
  * owns the bookkeeping, so the two meet here instead of importing each other.
  */
 export interface WakeTurnClaim {
+	/** Cancellation of the owner-routed job also stops the session turn it represents. */
+	signal?: AbortSignal;
 	/** Live activity of the wake turn, so the owner can render it while it runs. */
 	progress(progress: AgentProgress): void;
 	/** The wake turn produced a result; deliver it as this worker's next turn. */

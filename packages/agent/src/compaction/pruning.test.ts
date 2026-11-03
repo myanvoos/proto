@@ -67,6 +67,54 @@ function prune(entries: SessionEntry[]) {
 const DETAILED = Array.from({ length: 100 }, (_, i) => `  const importantLine${i} = compute(${i});`).join("\n");
 
 describe("pruneSupersededToolResults read supersede", () => {
+	test("a failed newer read cannot erase the earlier successful content", () => {
+		const failed = readResult("c2", "permission denied", 4);
+		if (failed.type !== "message" || failed.message.role !== "toolResult") throw new Error("invalid fixture");
+		failed.message.isError = true;
+		const entries = [
+			readCall("c1", "file.ts", 1),
+			readResult("c1", DETAILED, 2),
+			readCall("c2", "file.ts", 3),
+			failed,
+		];
+		expect(prune(entries).prunedCount).toBe(0);
+		expect(textOf(entries[1])).toBe(DETAILED);
+	});
+
+	test("a newer incomplete whole-file read invalidates an older whole-file completeness claim", () => {
+		const entries = [
+			readCall("range", "file.ts:1-20", 1),
+			readResult("range", DETAILED, 2),
+			readCall("whole", "file.ts", 3),
+			readResult("whole", DETAILED, 4),
+			readCall("new", "file.ts", 5),
+			readResult("new", "outline", 6, 20),
+		];
+		expect(prune(entries).prunedCount).toBe(1);
+		expect(textOf(entries[1])).toBe(DETAILED);
+	});
+
+	test("warm-cache pruning stays inside the provider block lookback even when text is tiny", () => {
+		const entries: SessionEntry[] = [readCall("old", "file.ts", 1), readResult("old", DETAILED, 2)];
+		for (let index = 0; index < 16; index++)
+			entries.push({
+				type: "message",
+				id: `user-${index}`,
+				message: { role: "user", content: "x", timestamp: index + 3 },
+			} as SessionEntry);
+		entries.push(readCall("new", "file.ts", 30), readResult("new", "fresh", 31));
+		const result = pruneSupersededToolResults(entries, new Tokenizer(), {
+			supersedeKey: readToolSupersedeKey,
+			protectedTools: [],
+			cacheLookbackPositions: 20,
+			suffixTokenLimit: 100_000,
+			now: 32,
+			idleFlushMs: 1000,
+		});
+		expect(result.prunedCount).toBe(0);
+		expect(textOf(entries[1])).toBe(DETAILED);
+	});
+
 	test("a structurally summarized whole-file read does not supersede an explicit ranged read", () => {
 		// read(path) with no selector returns an outline with bodies elided, so it carries strictly
 		// less detail than read(path:100-200). Pruning the ranged result destroys content the

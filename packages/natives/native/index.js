@@ -204,7 +204,7 @@ export const TtyWriter = lazyNativeExport("TtyWriter", undefined, true);
 
 // functions
 export const __ompInstallTokioRuntime = lazyNativeExport("__ompInstallTokioRuntime");
-export const __piNativesV19_2_0 = lazyNativeExport("__piNativesV19_2_0");
+export const __piNativesV19_2_1 = lazyNativeExport("__piNativesV19_2_1");
 export const astEdit = lazyNativeExport("astEdit");
 export const astGrep = lazyNativeExport("astGrep");
 export const astMatch = lazyNativeExport("astMatch");
@@ -250,6 +250,7 @@ export const matchesKittySequence = lazyNativeExport("matchesKittySequence");
 export const matchesLegacySequence = lazyNativeExport("matchesLegacySequence");
 export const mmrRerankIndices = lazyNativeExport("mmrRerankIndices");
 export const nodeChainAt = lazyNativeExport("nodeChainAt");
+export const parseCodeStatus = lazyNativeExport("parseCodeStatus");
 export const parseKey = lazyNativeExport("parseKey");
 export const parseKittySequence = lazyNativeExport("parseKittySequence");
 export const pdfToMarkdown = lazyNativeExport("pdfToMarkdown");
@@ -264,6 +265,7 @@ export const supportsLanguage = lazyNativeExport("supportsLanguage");
 export const truncateToWidth = lazyNativeExport("truncateToWidth");
 export const vectorIndexTopK = lazyNativeExport("vectorIndexTopK");
 export const visibleWidth = lazyNativeExport("visibleWidth");
+export const warmBlockParse = lazyNativeExport("warmBlockParse");
 export const wrapTextWithAnsi = lazyNativeExport("wrapTextWithAnsi");
 
 // string/numeric enums (napi-rs string_enum produces TS-only const enum)

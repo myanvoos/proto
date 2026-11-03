@@ -153,7 +153,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly runtimeDir: string;
 	readonly #runtimeDir: string;
 	readonly #endpoint: string;
-	readonly #token: string;
+	#token: string;
 	readonly #seenCompletionIds = new Set<string>();
 	readonly #idleGraceMs: number | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
@@ -340,6 +340,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 
 	async #connectOnce(): Promise<void> {
+		this.#token = await readOrCreateToken(this.#runtimeDir);
 		try {
 			this.#bindSocket(await openSocket(this.#endpoint, 250));
 			return;

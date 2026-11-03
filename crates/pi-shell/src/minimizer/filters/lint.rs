@@ -340,6 +340,10 @@ fn is_js_frame_noise(program: &str, trimmed: &str) -> bool {
 	}
 }
 
+/// True when `trimmed` is a code-frame gutter row: a run of ASCII digits,
+/// optional spaces, then a `│` (biome/oxlint) or `|` (ruff) bar (`3 │
+/// interface`, `14 | assert skill.read()`). The bar makes this form
+/// unambiguous: no genuine summary or location line matches it.
 fn is_gutter_bar_line(trimmed: &str) -> bool {
 	let mut rest = trimmed;
 	let digits = rest
@@ -349,7 +353,7 @@ fn is_gutter_bar_line(trimmed: &str) -> bool {
 		return false;
 	}
 	rest = rest[digits..].trim_start_matches(' ');
-	rest.starts_with('│')
+	rest.starts_with('│') || rest.starts_with('|')
 }
 
 fn is_bare_gutter_numbered_line(trimmed: &str) -> bool {
@@ -436,6 +440,10 @@ pub fn group_diagnostics(input: &str) -> String {
 }
 
 fn split_diagnostic(line: &str) -> Option<(&str, &str)> {
+	// Frame rows quote source (`14 | assert skill.read()`); never a location.
+	if is_gutter_bar_line(line.trim_start()) {
+		return None;
+	}
 	if let Some((file, rest)) = split_tsc_diagnostic(line) {
 		return Some((file, rest));
 	}
@@ -454,7 +462,7 @@ fn split_tsc_diagnostic(line: &str) -> Option<(&str, &str)> {
 	if !looks_like_path(file)
 		|| !loc
 			.split(',')
-			.all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+			.all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
 	{
 		return None;
 	}

@@ -6,22 +6,16 @@ use brush_core::{
 };
 use clap::Parser;
 
-
-
 #[derive(Default, Parser)]
 pub(crate) struct CommandCommand {
-
 	#[arg(short = 'p')]
 	pub use_default_path: bool,
-
 
 	#[arg(short = 'v')]
 	pub print_description: bool,
 
-
 	#[arg(short = 'V')]
 	pub print_verbose_description: bool,
-
 
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	pub command_and_args: Vec<String>,
@@ -50,11 +44,9 @@ impl builtins::Command for CommandCommand {
 			}
 			let mut any_found = false;
 			for command_name in &self.command_and_args {
-				let Some(found_cmd) = Self::try_find_command(
-					context.shell,
-					command_name.as_str(),
-					self.use_default_path,
-				) else {
+				let Some(found_cmd) =
+					Self::try_find_command(context.shell, command_name.as_str(), self.use_default_path)
+				else {
 					if self.print_verbose_description {
 						writeln!(context.stderr(), "command: {command_name}: not found")?;
 					}
@@ -110,7 +102,6 @@ impl CommandCommand {
 		command_name: &str,
 		use_default_path: bool,
 	) -> Option<FoundCommand> {
-
 		if sys::fs::contains_path_separator(command_name) {
 			let candidate_path = shell.absolute_path(Path::new(command_name));
 			if candidate_path.executable() {

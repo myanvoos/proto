@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { detectMacOSAppearance, MacAppearanceObserver } from "@oh-my-pi/pi-natives";
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
+import { setTerminalBackgroundFallback } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { colorLuma, getCustomThemesDir, logger } from "@oh-my-pi/pi-utils";
 import { resolveVarRefs } from "./color";
 import {
@@ -69,6 +70,7 @@ function detectTerminalBackground(): "dark" | "light" {
 
 function getDefaultTheme(): string {
 	const bg = detectTerminalBackground();
+	setTerminalBackgroundFallback(bg === "light" ? 0xffffff : 0x000000);
 	return bg === "light" ? autoLightTheme : autoDarkTheme;
 }
 
@@ -358,9 +360,10 @@ function applyResolvedAutoTheme(resolved: string, debugLabel: string, event: The
 }
 
 function reevaluateAutoTheme(debugLabel: string, event: ThemeChangeEvent = {}, appearance?: "dark" | "light"): void {
+	const background = appearance ?? detectTerminalBackground();
+	setTerminalBackgroundFallback(background === "light" ? 0xffffff : 0x000000);
 	if (!autoDetectedTheme) return;
-	const resolved =
-		appearance === undefined ? getDefaultTheme() : appearance === "dark" ? autoDarkTheme : autoLightTheme;
+	const resolved = background === "dark" ? autoDarkTheme : autoLightTheme;
 	applyResolvedAutoTheme(resolved, debugLabel, event);
 }
 

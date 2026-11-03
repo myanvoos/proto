@@ -1118,6 +1118,48 @@ test("narrowing the terminal keeps every word of blocks already retired to scrol
 	}
 });
 
+test("tool output keeps its full layout behind a pinned transcript frontier", () => {
+	const { composer, terminal, scheduler, transcript } = createHarness(80, 24);
+	const redraw = () => render(composer, scheduler);
+	const pinned = new SettlingCard(2);
+	const card = new ToolExecutionComponent(
+		"bash",
+		{ command: "printf full-tool-output" },
+		{ useBuiltInRenderer: true },
+		undefined,
+		{ requestRender: redraw, requestComponentRender: redraw },
+	);
+	try {
+		transcript.addChild(pinned);
+		for (let index = 0; index < 40; index++) {
+			transcript.addChild(new StaticBlock([`backlog-${index}-end`]));
+		}
+		transcript.addChild(card);
+		const lines = ["result-alpha", "result-beta", "result-gamma"];
+		card.updateResult({ content: [{ type: "text", text: lines.join("\n") }], isError: false }, false);
+		redraw();
+
+		const screen = terminal.screen().join("\n");
+		expect(screen).toContain("printf full-tool-output");
+		for (const line of lines) expect(screen).toContain(line);
+		expect(screen).not.toContain("more transcript blocks active");
+		expectTranscriptAbovePrompt(terminal, "result-");
+
+		// Once the frontier settles, every previously hidden block reaches native
+		// scrollback in order, with the normal tool output still present once.
+		pinned.settled = true;
+		redraw();
+		const tape = terminal.tape();
+		for (let index = 0; index < 40; index++) {
+			expect(countContaining(tape, `backlog-${index}-end`)).toBe(1);
+		}
+		for (const line of lines) expect(countContaining(tape, line)).toBe(1);
+	} finally {
+		card.dispose();
+		composer.stop();
+	}
+});
+
 test("Ctrl+O expands a tool card that already retired to scrollback", () => {
 	// Retired cards keep their "Ctrl+O expand" hint in scrollback; the replay
 	// Ctrl+O triggers must redraw them expanded, not repeat the collapsed rows.

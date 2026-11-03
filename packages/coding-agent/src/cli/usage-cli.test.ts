@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { computeProviderWindowStats, formatUsageBreakdown } from "./usage-cli";
+import {
+	annotateUsagePolicy,
+	collectUnreportedAccounts,
+	computeProviderWindowStats,
+	formatUsageBreakdown,
+} from "./usage-cli";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -44,6 +49,19 @@ describe("formatUsageBreakdown account policy diagnostics", () => {
 		expect(text).toContain("policy: priority 5 · reserve 25% (override) · inside reserve · 20.0% left");
 		expect(text).toContain("policy: priority 0 · reserve 10% (global) · eligible · 80.0% left");
 	});
+});
+
+it("provider exhausted flags win over positive remaining fractions in text and JSON policy state", () => {
+	const exhausted = report("flagged@example.test", 0.2);
+	exhausted.limits[0]!.status = "exhausted";
+	const options = {
+		globalReservePct: 10,
+		getAccountPolicy: () => ({ provider: "anthropic", account: { email: "flagged@example.test" }, priority: 1 }),
+	};
+	const text = Bun.stripANSI(formatUsageBreakdown([exhausted], [], 0, undefined, [], options));
+	expect(text).toContain("exhausted · 80.0% left");
+	const json = annotateUsagePolicy([exhausted], [], [], options);
+	expect(json.reports[0]?.policy?.state).toBe("exhausted");
 });
 
 describe("computeProviderWindowStats meters", () => {
@@ -124,4 +142,55 @@ describe("formatUsageBreakdown Codex plan", () => {
 		expect(text).toContain("shared@example.test · workspace-two");
 		expect(text).not.toContain(" · free");
 	});
+});
+
+it("JSON policy diagnostics distinguish reserve, exhaustion and unknown usage without changing unconfigured providers", () => {
+	const options = {
+		globalReservePct: 10,
+		getAccountPolicy: (provider: string) =>
+			provider === "anthropic"
+				? { provider, account: { email: "policy@example.test" }, priority: 3, reservePct: 20 }
+				: undefined,
+	};
+	const annotated = annotateUsagePolicy(
+		[
+			report("reserve@example.test", 0.91),
+			report("spent@example.test", 1),
+			{ ...report("other@example.test", 0.5), provider: "other" },
+		],
+		[{ provider: "anthropic", type: "oauth", email: "unknown@example.test" }],
+		[],
+		options,
+	);
+	expect(annotated.reports[0]?.policy).toEqual({
+		priority: 3,
+		reservePct: 20,
+		reserveSource: "override",
+		state: "inside-reserve",
+		remainingPct: 9,
+	});
+	expect(annotated.reports[1]?.policy?.state).toBe("exhausted");
+	expect(annotated.reports[2]).not.toHaveProperty("policy");
+	expect(annotated.accountsWithoutUsage[0]?.policy).toEqual({
+		priority: 3,
+		reservePct: 20,
+		reserveSource: "override",
+		state: "unknown",
+	});
+});
+
+it("identity-less OAuth credentials are not reported missing beside org-scoped usage", () => {
+	const orgReport = {
+		...report("known@example.test", 0.4),
+		metadata: { orgId: "org-1", email: "known@example.test" },
+	};
+	expect(
+		collectUnreportedAccounts(
+			[orgReport],
+			[
+				{ provider: "anthropic", type: "oauth" },
+				{ provider: "anthropic", type: "oauth", email: "missing@example.test" },
+			],
+		),
+	).toEqual([{ provider: "anthropic", type: "oauth", email: "missing@example.test" }]);
 });

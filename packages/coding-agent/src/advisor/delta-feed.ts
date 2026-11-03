@@ -6,6 +6,7 @@ import {
 	ADVISOR_RENDER_OPTIONS,
 	ADVISOR_UPDATE_HEADING,
 	ADVISOR_WIP_SUFFIX,
+	advisorToolIOTransform,
 	renderAdvisorDeltaChunks,
 } from "./delta-split";
 
@@ -253,17 +254,26 @@ export class DeltaCursorFeed implements ReviewerFeed {
 		return this.renderPrepared(delta, wip);
 	}
 
-	renderPrepared(preparedMessages: AgentMessage[], wip = false): string | null {
+	renderPrepared(
+		preparedMessages: AgentMessage[],
+		wip = false,
+		includeThinking = this.owner.includeThinking(),
+	): string | null {
 		const delta = preparedMessages;
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
 		let md = formatSessionHistoryMarkdown(delta, {
 			...ADVISOR_RENDER_OPTIONS,
-			includeThinking: this.owner.includeThinking(),
+			includeThinking,
 		});
 		if (!md.trim()) return null;
 		if (obfuscator?.hasSecrets()) {
 			this.#collectAdvisorSecrets(obfuscator, delta, md);
+			md = formatSessionHistoryMarkdown(delta, {
+				...ADVISOR_RENDER_OPTIONS,
+				includeThinking,
+				transformExpandedToolIO: advisorToolIOTransform(obfuscator, this.#advisorRegexSecretValues),
+			});
 			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
 		}
 
@@ -272,23 +282,24 @@ export class DeltaCursorFeed implements ReviewerFeed {
 		return `${mdHead}${ADVISOR_WIP_SUFFIX}`;
 	}
 
-	renderChunks(preparedMessages: AgentMessage[], wip = false): AgentMessage[] | null {
+	renderChunks(
+		preparedMessages: AgentMessage[],
+		wip = false,
+		includeThinking = this.owner.includeThinking(),
+	): AgentMessage[] | null {
 		const delta = preparedMessages;
 		if (delta.length === 0) return null;
 
 		const obfuscator = this.host.obfuscator;
 
-		const probeMd = formatSessionHistoryMarkdown(delta, {
-			...ADVISOR_RENDER_OPTIONS,
-			includeThinking: this.owner.includeThinking(),
-		});
 		if (obfuscator?.hasSecrets()) {
+			const probeMd = formatSessionHistoryMarkdown(delta, { ...ADVISOR_RENDER_OPTIONS, includeThinking });
 			this.#collectAdvisorSecrets(obfuscator, delta, probeMd);
 		}
 
 		const chunks = renderAdvisorDeltaChunks(delta, {
 			wip,
-			includeThinking: this.owner.includeThinking(),
+			includeThinking,
 			obfuscator: obfuscator?.hasSecrets() ? obfuscator : undefined,
 			advisorRegexSecretValues: this.#advisorRegexSecretValues,
 		});

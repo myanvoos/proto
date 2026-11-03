@@ -1,5 +1,3 @@
-
-
 use std::os::fd::RawFd;
 
 use crate::{ShellFd, error, openfiles};
@@ -23,12 +21,6 @@ cfg_if::cfg_if! {
 	 }
 }
 
-
-
-
-
-
-
 #[cfg(any(
 	target_os = "linux",
 	target_os = "android",
@@ -45,45 +37,17 @@ pub fn try_iter_open_fds() -> impl Iterator<Item = (ShellFd, openfiles::OpenFile
 		.filter_map(|entry| {
 			let fd: RawFd = entry.file_name().to_str()?.parse().ok()?;
 
-
-
-
-
-
-
-
 			let file = unsafe { open_file_by_fd(fd) }.ok()?;
 
 			Some((fd, file))
 		})
 }
 
-
-
-
-
-
-
-
-
-
-
 pub fn try_get_file_for_open_fd(fd: RawFd) -> Option<openfiles::OpenFile> {
-
-
-
-
-
-
-
 	unsafe { open_file_by_fd(fd).ok() }
 }
 
 unsafe fn open_file_by_fd(fd: RawFd) -> Result<openfiles::OpenFile, error::Error> {
-
-
-
-
 	let borrowed_fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
 	let owned_fd = borrowed_fd.try_clone_to_owned()?;
 	Ok(std::fs::File::from(owned_fd).into())

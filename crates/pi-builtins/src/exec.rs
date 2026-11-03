@@ -6,21 +6,16 @@ use std::{
 use brush_core::{ErrorKind, ExecutionExitCode, ExecutionResult, builtins, commands};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct ExecCommand {
-
 	#[arg(short = 'a', value_name = "NAME")]
 	name_for_argv0: Option<String>,
-
 
 	#[arg(short = 'c')]
 	empty_environment: bool,
 
-
 	#[arg(short = 'l')]
 	exec_as_login: bool,
-
 
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	args: Vec<String>,
@@ -34,19 +29,12 @@ impl builtins::Command for ExecCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
 		if self.args.is_empty() {
-
-
-
 			#[allow(clippy::needless_collect)]
 			let fds: Vec<_> = context.iter_fds().collect();
 
 			context.shell.replace_open_files(fds.into_iter());
 			return Ok(ExecutionResult::success());
 		}
-
-
-
-
 
 		if context.shell.is_subshell() {
 			if self.empty_environment || self.exec_as_login || self.name_for_argv0.is_some() {

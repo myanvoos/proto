@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { expandTilde } from "../../../tools/path-utils";
@@ -12,11 +13,20 @@ export interface HelperContext {
 
 export interface HelperBundle {
 	resolvePath(rawPath: string): string;
+	readPublishedOutput(rawPath: string): Promise<string | undefined>;
 	env(key?: string, value?: string): string | Record<string, string> | undefined;
 }
 
 export function createHelpers(ctx: HelperContext): HelperBundle {
 	return {
+		// A remote resource may resolve to a host-only path; retain the protocol fallback then.
+		readPublishedOutput: async rawPath => {
+			try {
+				return await fs.readFile(rawPath, "utf8");
+			} catch {
+				return undefined;
+			}
+		},
 		resolvePath: (rawPath: string) => {
 			if (typeof rawPath !== "string" || rawPath.length === 0) {
 				throw new ToolError("Expected a filesystem path string");

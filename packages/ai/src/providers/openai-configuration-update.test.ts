@@ -25,7 +25,7 @@ const update = (effort: string) => ({ type: "configuration_update", reasoning: {
 const shape = (items: TestItem[]) => items.map(item => item.type ?? item.role);
 
 function freshState() {
-	return getOpenAIEffortControlState<string>(new Map(), "session");
+	return getOpenAIEffortControlState<string>(new Map(), "session", "session");
 }
 
 afterEach(() => {
@@ -233,5 +233,40 @@ describe("openai-responses configuration_update", () => {
 		const allItems = bodies.flatMap(body => body.input ?? []);
 		expect(allItems.filter(item => item.type === "configuration_update")).toEqual([update("high")]);
 		for (const state of providerSessionState.values()) state.close();
+	});
+
+	it("uses the catalog's stateful policy for custom endpoints and honors explicit per-call false", async () => {
+		for (const [catalogEnabled, explicit, chained] of [
+			[true, undefined, true],
+			[false, undefined, false],
+			[true, false, false],
+		] as const) {
+			const target = {
+				...model,
+				provider: "custom-stateful",
+				baseUrl: "https://custom.example.test/v1",
+				compat: { ...model.compat, statefulResponses: catalogEnabled },
+			};
+			const state = new Map<string, ProviderSessionState>();
+			const requests: { previous_response_id?: string }[] = [];
+			const fetchMock: FetchImpl = async (_url, init) => {
+				requests.push(JSON.parse(init?.body as string));
+				return sse(`policy_${requests.length}`);
+			};
+			const options = {
+				apiKey: "test",
+				fetch: fetchMock,
+				sessionId: "policy",
+				providerSessionState: state,
+				statefulResponses: explicit,
+			};
+			try {
+				const first = await streamOpenAIResponses(target, { messages: [firstUser] }, options).result();
+				await streamOpenAIResponses(target, { messages: [firstUser, first, secondUser] }, options).result();
+				expect(requests[1]?.previous_response_id).toBe(chained ? "policy_1" : undefined);
+			} finally {
+				for (const provider of state.values()) provider.close();
+			}
+		}
 	});
 });

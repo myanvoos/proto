@@ -41,6 +41,19 @@ describe("pathIsWithin", () => {
 		expect(pathIsWithin(root, root)).toBe(true);
 	});
 
+	test("canonicalizes missing descendants through symlinked ancestors without allowing escapes", async () => {
+		const root = await makeTree("actual", "outside");
+		const actual = path.join(root, "actual");
+		const alias = path.join(root, "alias");
+		await fs.symlink(actual, alias);
+		expect(pathIsWithin(actual, path.join(alias, "missing", "nested"))).toBe(true);
+		expect(relativePathWithinRoot(actual, path.join(alias, "missing", "nested"))).toBe(
+			path.join("missing", "nested"),
+		);
+		await fs.symlink(path.join(root, "outside"), path.join(actual, "escape"));
+		expect(pathIsWithin(actual, path.join(alias, "escape", "missing"))).toBe(false);
+	});
+
 	test("rejects paths that traverse above the root", async () => {
 		const root = await makeTree("child");
 		const parent = path.dirname(root);

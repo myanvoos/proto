@@ -1,14 +1,10 @@
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct PopdCommand {
-
 	#[clap(short = 'n')]
 	no_directory_change: bool,
-
-
 }
 
 impl builtins::Command for PopdCommand {
@@ -22,7 +18,6 @@ impl builtins::Command for PopdCommand {
 			if !self.no_directory_change {
 				context.shell.set_working_dir(&popped)?;
 			}
-
 
 			let dirs_cmd = crate::dirs::DirsCommand::default();
 			dirs_cmd.execute(context).await?;

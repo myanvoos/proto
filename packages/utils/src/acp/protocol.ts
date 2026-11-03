@@ -95,6 +95,7 @@ export interface ToolCallLocation extends Meta {
 }
 
 export interface ToolCall extends Meta {
+	name?: string | null;
 	toolCallId: ToolCallId;
 	title: string;
 	kind?: ToolKind | null;

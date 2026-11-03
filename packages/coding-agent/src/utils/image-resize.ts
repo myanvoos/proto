@@ -136,13 +136,21 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 						targetHeight = Math.min(opts.maxHeight, Math.max(minDimension, targetHeight));
 					}
 
+					let resized: { width: number; height: number; bytes: Uint8Array } | undefined;
+					async function resizeOnce(width: number, height: number): Promise<Uint8Array> {
+						if (resized?.width === width && resized.height === height) return resized.bytes;
+						const bytes = await new Bun.Image(inputBuffer).resize(width, height).png().bytes();
+						resized = { width, height, bytes };
+						return bytes;
+					}
+
 					async function encodeSmallest(
 						width: number,
 						height: number,
 						quality: number,
 					): Promise<{ buffer: Uint8Array; mimeType: string }> {
 						const png = {
-							buffer: await new Bun.Image(inputBuffer).resize(width, height).png().bytes(),
+							buffer: await resizeOnce(width, height),
 							mimeType: "image/png",
 						};
 						return pickSmallest(png, await encodeLossy(width, height, quality));
@@ -154,12 +162,12 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 						quality: number,
 					): Promise<{ buffer: Uint8Array; mimeType: string }> {
 						const jpeg = {
-							buffer: await new Bun.Image(inputBuffer).resize(width, height).jpeg({ quality }).bytes(),
+							buffer: await new Bun.Image(await resizeOnce(width, height)).jpeg({ quality }).bytes(),
 							mimeType: "image/jpeg",
 						};
 						if (opts.excludeWebP) return jpeg;
 						const webp = {
-							buffer: await new Bun.Image(inputBuffer).resize(width, height).webp({ quality }).bytes(),
+							buffer: await new Bun.Image(await resizeOnce(width, height)).webp({ quality }).bytes(),
 							mimeType: "image/webp",
 						};
 						return pickSmallest(jpeg, webp);

@@ -55,7 +55,7 @@ describe("Chromium launch flags", () => {
 	});
 });
 
-describe("Snap Chromium profile paths", () => {
+describe.skipIf(process.platform !== "linux")("Snap Chromium profile paths", () => {
 	test("recognizes the supported Snap executable spellings", () => {
 		expect(isSnapChromiumExecutable("/snap/bin/chromium")).toBe(true);
 		expect(isSnapChromiumExecutable("/snap/bin/chromium-browser")).toBe(true);

@@ -24,9 +24,10 @@
 				"cacheWrite": 0
 			}
 		},
-		"contextWindow": 2000000,
+		"contextWindow": 1000000,
 		"maxTokens": 2000000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -79,7 +80,6 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 25.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -116,9 +116,10 @@
 				"cacheWrite": 0
 			}
 		},
-		"contextWindow": 2000000,
+		"contextWindow": 1000000,
 		"maxTokens": 2000000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -171,7 +172,6 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 25.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
@@ -207,9 +207,10 @@
 				"cacheWrite": 0
 			}
 		},
-		"contextWindow": 2000000,
+		"contextWindow": 1000000,
 		"maxTokens": 2000000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -315,6 +316,7 @@
 		"contextWindow": 1000000,
 		"maxTokens": 1000000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -367,8 +369,6 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 24.9,
-		"tps": 143.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -425,6 +425,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -477,8 +478,6 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 38.8,
-		"tps": 56.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -535,6 +534,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -585,8 +585,6 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 44.3,
-		"tps": 75.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -642,6 +640,7 @@
 		"contextWindow": 500000,
 		"maxTokens": 500000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -692,8 +691,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 46.4,
-		"tps": 79,
+		"int": 35.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -741,6 +739,7 @@
 		"contextWindow": 512000,
 		"maxTokens": 512000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -832,6 +831,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 256000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -914,6 +914,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 200000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,

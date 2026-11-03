@@ -72,6 +72,7 @@ function windowingContext(
 		keybindings: { getDisplayString: () => "" },
 		chatContainer: new TranscriptContainer(),
 		pendingMessagesContainer: new Container(),
+		pendingShellContainer: new Container(),
 		pendingTools: new Map(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
@@ -196,4 +197,14 @@ test("a transcript rebuild such as rewind keeps the queued-message bar visible",
 	expect(pending).toContain("queued one");
 	ctx.chatContainer.dispose();
 	await manager.close();
+});
+
+test("refreshing queued input leaves deferred shell output visible until it joins the transcript", () => {
+	const { ctx } = windowingContext([]);
+	const shell = new DisposableBlock("deferred shell output");
+	ctx.pendingShellContainer.addChild(shell);
+	const helper = new UiHelpers(ctx);
+	helper.updatePendingMessagesDisplay();
+	expect(ctx.pendingShellContainer.render(80).join("\n")).toContain("deferred shell output");
+	expect(shell.disposed).toBe(false);
 });

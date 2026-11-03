@@ -1,7 +1,7 @@
 {
 	"deepseek-flash": {
 		"id": "deepseek-flash",
-		"name": "DeepSeek V4.1 Flash",
+		"name": "DeepSeek V4.1 Flash 1017",
 		"api": "openai-completions",
 		"provider": "deepseek",
 		"baseUrl": "https://api.deepseek.com",
@@ -43,9 +43,10 @@
 				]
 			}
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 1048576,
 		"maxTokens": 393216,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -95,6 +96,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": true,
@@ -220,11 +222,10 @@
 				]
 			}
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 1048576,
 		"maxTokens": 393216,
-		"int": 34.3,
-		"tps": 219.8,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -274,6 +275,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": true,
@@ -400,9 +402,10 @@
 				]
 			}
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 1048576,
 		"maxTokens": 393216,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -452,6 +455,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": true,
@@ -574,23 +578,14 @@
 						"startMinute": 360,
 						"endMinute": 600
 					}
-				],
-				"effectiveRates": [
-					{
-						"effectiveFrom": 1789358400000,
-						"input": 0.3,
-						"output": 1.2,
-						"cacheRead": 0.006,
-						"cacheWrite": 0
-					}
 				]
 			}
 		},
-		"contextWindow": 1000000,
+		"contextWindow": 1048576,
 		"maxTokens": 393216,
-		"int": 36,
-		"tps": 109.2,
+		"int": 23.1,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -640,6 +635,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": true,

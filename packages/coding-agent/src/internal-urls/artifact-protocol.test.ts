@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveArtifactFile } from "./artifact-protocol";
+import { ArtifactProtocolHandler, resolveArtifactFile } from "./artifact-protocol";
 import { registerArtifactsDir } from "./registry-helpers";
 import type { InternalUrl } from "./types";
 
@@ -28,4 +28,13 @@ test("artifact resolution refuses a symlink that escapes the registered root", a
 		resolveArtifactFile(url, { localProtocolOptions: { getArtifactsDir: (): string | null => root ?? null } }),
 	).rejects.toThrow(/outside/i);
 	await fs.rm(outside, { force: true });
+});
+
+test("nonpersistent callers read their own in-memory spill even without artifact directories", async () => {
+	const url = Object.assign(new URL("artifact://0"), { rawHost: "0" }) as InternalUrl;
+	const result = await new ArtifactProtocolHandler().resolve(url, {
+		getArtifactContent: id => (id === "0" ? "caller spill\n" : null),
+	});
+	expect(result.content).toBe("caller spill\n");
+	expect(result.sourcePath).toBeUndefined();
 });

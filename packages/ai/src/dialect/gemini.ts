@@ -9,6 +9,7 @@ import {
 	messageContentText,
 	pyValue,
 } from "./rendering";
+import { TerminatorWait } from "./terminator-wait";
 import type {
 	DialectDefinition,
 	DialectRenderOptions,
@@ -36,6 +37,7 @@ export class GeminiInbandScanner implements InbandScanner {
 	#buffer = "";
 	#state: State = "outside";
 	#thinking = "";
+	readonly #closeWait = new TerminatorWait();
 
 	#fenced: FencedThinkingScanner | undefined;
 	readonly #parseThinking: boolean;
@@ -46,11 +48,15 @@ export class GeminiInbandScanner implements InbandScanner {
 
 	feed(text: string): InbandScanEvent[] {
 		if (text.length === 0) return [];
-		this.#buffer += text;
-		return this.#consume(false);
+		if (this.#closeWait.absorb(text)) return [];
+		this.#buffer = this.#closeWait.release(this.#buffer) + text;
+		const events = this.#consume(false);
+		if (this.#state === "tool") this.#closeWait.arm(FENCE, this.#buffer);
+		return events;
 	}
 
 	flush(): InbandScanEvent[] {
+		this.#buffer = this.#closeWait.release(this.#buffer);
 		return this.#consume(true);
 	}
 

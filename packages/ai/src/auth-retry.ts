@@ -175,7 +175,16 @@ export async function withAuth<T>(
 
 	const resolver = key;
 	const signal = opts?.signal;
-	const initialKey = await resolveRetryKey(resolver, false, undefined, signal);
+	let initialKey: string | undefined;
+	try {
+		initialKey = await resolveApiKeyOnce(resolver, signal);
+	} catch (error) {
+		if (error instanceof AIError.MissingApiKeyError) throw error;
+		throw new AIError.ConfigurationError(
+			`Failed to resolve API key: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
+		);
+	}
 	if (initialKey === undefined) throw missingKey();
 
 	const state = createAuthRetryKeyState(initialKey);

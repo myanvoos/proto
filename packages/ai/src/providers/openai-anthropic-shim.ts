@@ -91,6 +91,7 @@ export function streamOpenAIAnthropicShim(
 					reasoning: config.anthropicThinkingMode ? reasoningEffort : undefined,
 					toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 					serviceTier: options?.serviceTier,
+					waitForTerminalDrain: options?.waitForTerminalDrain,
 				});
 
 				for await (const event of innerStream) {
@@ -116,6 +117,7 @@ export function streamOpenAIAnthropicShim(
 					presencePenalty: options?.presencePenalty,
 					repetitionPenalty: options?.repetitionPenalty,
 					maxTokens: options?.maxTokens ?? model.maxTokens ?? undefined,
+					maxHttpAttempts: options?.maxHttpAttempts,
 					signal: options?.signal,
 					headers: mergedHeaders,
 					cacheRetention: config.forwardCacheOptions ? options?.cacheRetention : undefined,
@@ -130,6 +132,7 @@ export function streamOpenAIAnthropicShim(
 					toolChoice: options?.toolChoice,
 					serviceTier: options?.serviceTier,
 					disableReasoning: options?.disableReasoning,
+					waitForTerminalDrain: options?.waitForTerminalDrain,
 				});
 
 				for await (const event of innerStream) {

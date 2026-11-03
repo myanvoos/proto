@@ -12,6 +12,7 @@ import {
 	MarketplaceManager,
 	parsePluginId,
 } from "../extensibility/plugins/marketplace/index.js";
+import { setInstalledPluginEnabled } from "../extensibility/plugins/toggle";
 import type { InstalledPlugin } from "../extensibility/plugins/types";
 import { theme } from "../modes/theme/theme";
 
@@ -50,6 +51,16 @@ import { classifyInstallTarget } from "./classify-install-target";
 export { classifyInstallTarget } from "./classify-install-target";
 
 export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
+	if (cmd.flags.dryRun) {
+		const mutates =
+			cmd.action === "enable" ||
+			cmd.action === "disable" ||
+			(cmd.action === "doctor" && cmd.flags.fix) ||
+			(cmd.action === "features" && (cmd.flags.enable || cmd.flags.disable)) ||
+			(cmd.action === "config" && ["set", "delete"].includes(cmd.args[0] ?? "")) ||
+			(cmd.action === "marketplace" && ["add", "remove", "update"].includes(cmd.args[0] ?? ""));
+		if (mutates) throw new CliUsageError(`--dry-run is not supported for plugin ${cmd.action}. Nothing was changed.`);
+	}
 	const manager = new PluginManager();
 
 	switch (cmd.action) {
@@ -210,49 +221,18 @@ async function handleUpgrade(
 	flags: PluginCommandArgs["flags"],
 ): Promise<void> {
 	const manager = await makeMarketplaceManager();
-	let pluginId = args[0];
-	// A non-`name@marketplace` argument is a bare marketplace plugin name or an npm/git plugin.
-	if (pluginId && !parsePluginId(pluginId)) {
-		const bareName = pluginId;
-		const candidates = [
-			...new Set(
-				(await manager.listInstalledPlugins())
-					.map(p => p.id)
-					.filter(id => id.slice(0, id.lastIndexOf("@")) === bareName),
-			),
-		];
-		if (candidates.length > 1) {
-			console.error(
-				chalk.red(
-					`${bareName} is installed from ${candidates.length} marketplaces. Qualify it: ${candidates.join(", ")}`,
-				),
-			);
-			process.exit(1);
-		}
-		if (candidates.length === 0) {
-			await upgradePackagePlugin(pluginManager, bareName, flags);
-			return;
-		}
-		pluginId = candidates[0];
-	}
 	try {
-		if (pluginId) {
-			if (flags.scope) {
-				const result = await manager.upgradePlugin(pluginId, flags.scope);
-				console.log(chalk.green(`Upgraded ${pluginId} (${flags.scope}) to ${result.version}`));
-			} else {
-				const entries = await manager.upgradePluginAcrossScopes(pluginId);
-				for (const entry of entries) {
-					console.log(chalk.green(`Upgraded ${pluginId} (${entry.scope}) to ${entry.version}`));
-				}
-			}
-		} else {
+		if (args.length === 0) {
 			if (flags.scope) {
 				console.error(
 					chalk.yellow(
 						`Warning: --scope is ignored when upgrading all plugins. Use 'proto plugin upgrade <id> --scope ${flags.scope}' to target a specific plugin and scope.`,
 					),
 				);
+			}
+			if (flags.dryRun) {
+				await previewMarketplaceUpgradeAll(manager);
+				return;
 			}
 			const results = await manager.upgradeAllPlugins();
 			if (results.length === 0) {
@@ -262,6 +242,45 @@ async function handleUpgrade(
 					console.log(chalk.green(`  ${r.pluginId} (${r.scope}): ${r.from} -> ${r.to}`));
 				}
 			}
+			return;
+		}
+		for (let pluginId of args) {
+			// A non-`name@marketplace` argument is a bare marketplace plugin name or an npm/git plugin.
+			if (pluginId && !parsePluginId(pluginId)) {
+				const bareName = pluginId;
+				const candidates = [
+					...new Set(
+						(await manager.listInstalledPlugins())
+							.map(p => p.id)
+							.filter(id => id.slice(0, id.lastIndexOf("@")) === bareName),
+					),
+				];
+				if (candidates.length > 1) {
+					console.error(
+						chalk.red(
+							`${bareName} is installed from ${candidates.length} marketplaces. Qualify it: ${candidates.join(", ")}`,
+						),
+					);
+					process.exit(1);
+				}
+				if (candidates.length === 0) {
+					await upgradePackagePlugin(pluginManager, bareName, flags);
+					continue;
+				}
+				pluginId = candidates[0];
+			}
+
+			if (flags.dryRun) {
+				await previewMarketplaceReinstall(manager, pluginId, flags.scope);
+			} else if (flags.scope) {
+				const result = await manager.upgradePlugin(pluginId, flags.scope);
+				console.log(chalk.green(`Upgraded ${pluginId} (${flags.scope}) to ${result.version}`));
+			} else {
+				const entries = await manager.upgradePluginAcrossScopes(pluginId);
+				for (const entry of entries) {
+					console.log(chalk.green(`Upgraded ${pluginId} (${entry.scope}) to ${entry.version}`));
+				}
+			}
 		}
 	} catch (err) {
 		console.error(chalk.red(`Failed to upgrade: ${err}`));
@@ -269,6 +288,37 @@ async function handleUpgrade(
 	}
 }
 
+async function previewMarketplaceUpgradeAll(manager: MarketplaceManager): Promise<void> {
+	const updates = await manager.previewUpgradeAllPlugins();
+	if (updates.length === 0) {
+		console.log(chalk.dim("[dry-run] All marketplace plugins are up to date"));
+		return;
+	}
+	for (const u of updates) {
+		console.log(chalk.dim(`[dry-run] Would upgrade ${u.pluginId} (${u.scope}): ${u.from} -> ${u.to}`));
+	}
+}
+
+/**
+ * `upgrade <id> --dry-run`: one row per scope the real command reinstalls. `upgradePlugin` and
+ * `upgradePluginAcrossScopes` force a reinstall of the catalog's current version whatever it is,
+ * so a same or older catalog version is reported as a reinstall or downgrade, not skipped.
+ */
+async function previewMarketplaceReinstall(
+	manager: MarketplaceManager,
+	pluginId: string,
+	scope: "user" | "project" | undefined,
+): Promise<void> {
+	for (const row of await manager.previewUpgradePlugin(pluginId, scope)) {
+		const label = `${pluginId} (${row.scope})`;
+		const line = row.to
+			? `Would ${row.change} ${label}: ${row.from ?? "?"} -> ${row.to}`
+			: `Would reinstall ${label} from ${row.from ?? "?"}; the new version is known only after fetching its source`;
+		console.log(chalk.dim(`[dry-run] ${line}`));
+	}
+}
+
+/** Upgrade an npm/git-installed plugin in place from its recorded source. */
 async function upgradePackagePlugin(
 	manager: PluginManager,
 	name: string,
@@ -279,6 +329,12 @@ async function upgradePackagePlugin(
 			chalk.yellow(
 				`Warning: --scope is only supported for marketplace plugins (name@marketplace). Ignoring for ${name}.`,
 			),
+		);
+	}
+	if (flags.dryRun) {
+		await manager.validateUpgrade(name);
+		throw new CliUsageError(
+			`--dry-run cannot resolve npm/git upgrades for ${name} without installing. Nothing was changed.`,
 		);
 	}
 	try {
@@ -944,23 +1000,14 @@ async function handleSetEnabled(
 	const installedPlugins = new Set((await mktMgr.listInstalledPlugins()).map(p => p.id));
 
 	for (const name of plugins) {
-		if (installedPlugins.has(name)) {
-			try {
-				await mktMgr.setPluginEnabled(name, enabled, flags.scope);
-				if (flags.json) {
-					console.log(JSON.stringify({ [jsonKey]: name }));
-				} else {
-					console.log(chalk.green(`${theme.status.success} ${pastTense} ${name}`));
-				}
-			} catch (err) {
-				console.error(chalk.red(`${theme.status.error} Failed to ${action} ${name}: ${err}`));
-				process.exit(1);
-			}
-			continue;
-		}
-
 		try {
-			await manager.setEnabled(name, enabled);
+			await setInstalledPluginEnabled(name, {
+				enabled,
+				scope: flags.scope,
+				marketplaceIds: installedPlugins,
+				marketplace: mktMgr,
+				npm: manager,
+			});
 			if (flags.json) {
 				console.log(JSON.stringify({ [jsonKey]: name }));
 			} else {

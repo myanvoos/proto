@@ -5,8 +5,9 @@ import type {
 	EditorWordReplacements,
 } from "@oh-my-pi/pi-tui/components/editor";
 import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withTimeout } from "@oh-my-pi/pi-utils";
 import { maskNonProse } from "./markdown-prose";
+import type { TypingWord } from "./typing-word";
 
 /** Styled underline: red curly undercurl via colon-subparameter SGR (4:3 + SGR 58 color). */
 const STYLED_TYPO_MARKS = { start: "\x1b[4:3m\x1b[58:2::255:95:95m", end: "\x1b[4:0m\x1b[59m" } as const;
@@ -21,6 +22,7 @@ const COMPLETED_WORD = /([\p{L}\p{M}']+)([\s.,;:!?"\])}])$/u;
 const CODEISH_CHARACTERS = "\\/@_=:{}[]<>";
 const CAMEL_CASE = /\p{Ll}\p{Lu}/u;
 const CACHE_LIMIT = 256;
+const BACKEND_TIMEOUT_MS = 1500;
 const MAX_SPELLING_BUFFER_LENGTH = 20_000;
 const MAX_SPELLING_LINE_LENGTH = 1_000;
 const WORD_BOUNDARY = /[\s.,;:!?"\])}]/u;
@@ -36,6 +38,7 @@ export interface SpellingDecorationContext {
 	lines: readonly string[];
 	line: number;
 	startCol: number;
+	typing?: TypingWord;
 }
 
 export interface SpellingBackend {
@@ -130,28 +133,40 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		decorate: (span: string) => string = value => value,
 	): string {
 		if (!this.#available || !this.#features.typoDetection || text.length === 0) return decorate(text);
-		if (!this.#sourceRangeIsProse(context, context.startCol, context.startCol + text.length)) {
+		const line = context.lines[context.line];
+		const segmentEnd = context.startCol + text.length;
+		if (
+			line === undefined ||
+			context.startCol < 0 ||
+			segmentEnd > line.length ||
+			!line.startsWith(text, context.startCol)
+		) {
 			return decorate(text);
 		}
-		const ranges = this.#typoCache.get(text);
+		if (!this.#sourceRangeIsProse(context, context.startCol, segmentEnd)) return decorate(text);
+		const lane = `${context.line}:0`;
+		const ranges = this.#typoCache.get(line);
 		if (!ranges) {
-			this.#scheduleTypoRanges(text, `${context.line}:${context.startCol}`);
+			this.#scheduleTypoRanges(line, lane);
 			return decorate(text);
 		}
-		this.#automaticTypoQueue.delete(`${context.line}:${context.startCol}`);
-		if (ranges.length === 0) return decorate(text);
+		this.#automaticTypoQueue.delete(lane);
+		const typing = context.typing?.line === context.line ? context.typing : undefined;
 		let rendered = "";
 		let cursor = 0;
+		let rangeEnd = 0;
 		for (const range of ranges) {
 			const end = range.start + range.length;
-			// Overlapping or out-of-bounds ranges would re-emit rendered text and desync the measured width.
-			if (range.start < cursor || end > text.length) continue;
-			if (!this.#sourceRangeIsProse(context, context.startCol + range.start, context.startCol + end)) {
-				continue;
-			}
-			rendered += decorate(text.slice(cursor, range.start));
-			rendered += this.#marks.start + decorate(text.slice(range.start, end)) + this.#marks.end;
-			cursor = end;
+			if (range.start < rangeEnd || end > line.length) continue;
+			if (typing && range.start <= typing.end && typing.start <= end) continue;
+			if (!this.#sourceRangeIsProse(context, range.start, end)) continue;
+			rangeEnd = end;
+			const start = Math.max(range.start, context.startCol) - context.startCol;
+			const clippedEnd = Math.min(end, segmentEnd) - context.startCol;
+			if (start >= clippedEnd) continue;
+			rendered += decorate(text.slice(cursor, start));
+			rendered += this.#marks.start + decorate(text.slice(start, clippedEnd)) + this.#marks.end;
+			cursor = clippedEnd;
 		}
 		return rendered + decorate(text.slice(cursor));
 	}
@@ -192,7 +207,11 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		const context = this.#context(lines, cursorLine);
 		if (!this.#sourceRangeIsProse(context, start, start + word.length)) return null;
 		try {
-			const correction = await this.backend.autocorrectWord(textBeforeCursor, start, word.length);
+			const correction = await withTimeout(
+				this.backend.autocorrectWord(textBeforeCursor, start, word.length),
+				BACKEND_TIMEOUT_MS,
+				`macOS spelling service did not respond within ${BACKEND_TIMEOUT_MS}ms`,
+			);
 			if (!correction || correction === word) return null;
 			return { replaceLen: word.length + boundary.length, insert: correction + boundary };
 		} catch (error) {
@@ -224,7 +243,11 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		try {
 			const seen = new Set<string>();
 			const items: string[] = [];
-			for (const guess of await this.backend.spellingGuesses(line, range.start, range.length)) {
+			for (const guess of await withTimeout(
+				this.backend.spellingGuesses(line, range.start, range.length),
+				BACKEND_TIMEOUT_MS,
+				`macOS spelling service did not respond within ${BACKEND_TIMEOUT_MS}ms`,
+			)) {
 				if (!guess || seen.has(guess)) continue;
 				seen.add(guess);
 				items.push(guess);
@@ -294,7 +317,11 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 	async #fetchTypoRanges(text: string, generation: number): Promise<readonly native.SpellingRange[]> {
 		let checked: readonly native.SpellingRange[];
 		try {
-			checked = await this.backend.checkSpelling(text);
+			checked = await withTimeout(
+				this.backend.checkSpelling(text),
+				BACKEND_TIMEOUT_MS,
+				`macOS spelling service did not respond within ${BACKEND_TIMEOUT_MS}ms`,
+			);
 		} catch (error) {
 			this.#disable(error);
 			return [];
@@ -343,7 +370,11 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 		generation: number,
 	): Promise<void> {
 		try {
-			const completions = await this.backend.completeWord(line, start, prefix.length);
+			const completions = await withTimeout(
+				this.backend.completeWord(line, start, prefix.length),
+				BACKEND_TIMEOUT_MS,
+				`macOS spelling service did not respond within ${BACKEND_TIMEOUT_MS}ms`,
+			);
 			if (generation !== this.#cacheGeneration || !this.#available) return;
 			const lowerPrefix = prefix.toLocaleLowerCase();
 			let suffix: string | null = null;

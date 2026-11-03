@@ -2,6 +2,7 @@ import { buildJsKernel } from "../src/eval/js/node-runtime";
 import { createClaudeAgentPlugin } from "./claude-agent-plugin";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createHostVirtualModulePlugin } from "./host-virtual-module";
+import { createJsonParsePlugin } from "./json-parse-plugin";
 
 export const COMPILED_EXTERNAL_DEPENDENCIES: readonly string[] = Object.freeze(["fastembed", "onnxruntime-node"]);
 
@@ -41,18 +42,20 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_JS_KERNEL": JSON.stringify(jsKernel),
 			},
 			splitting: true,
-			// Bun's default chunk naming (chunk-[hash]) collides when distinct chunks share a
-			// hash (observed with same-named modules like discovery/ssh.ts and capability/ssh.ts
-			// reached via both static and dynamic imports) — see oven-sh/bun#17674. Adding
-			// [name] keeps chunk output paths unique.
-			naming: { chunk: "./chunk-[name]-[hash].[ext]" },
+			// Distinct modules can share both a basename and an emitted-content hash.
+			// Keep their source directories so lazy host exports do not collide.
+			naming: { chunk: "./chunks/[dir]/[name]-[hash].[ext]" },
 			minify: {
 				identifiers: options.minifyIdentifiers ?? true,
 				whitespace: true,
 				syntax: true,
 				keepNames: true,
 			},
-			plugins: [await createHostVirtualModulePlugin(), createClaudeAgentPlugin(options.target)],
+			plugins: [
+				await createHostVirtualModulePlugin(),
+				createClaudeAgentPlugin(options.target),
+				createJsonParsePlugin(),
+			],
 			compile: {
 				...(options.executablePath
 					? { executablePath: options.executablePath }

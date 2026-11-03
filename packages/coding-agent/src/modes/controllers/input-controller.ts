@@ -41,6 +41,7 @@ import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import {
 	copyToClipboard,
+	isClipboardTerminalLocal,
 	readImageFromClipboard,
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
@@ -167,10 +168,12 @@ export class InputController {
 			readImage: typeof readImageFromClipboard;
 			readText: typeof readTextFromClipboard;
 			readMacFileUrls?: typeof readMacFileUrlsFromClipboard;
+			isTerminalLocal?: typeof isClipboardTerminalLocal;
 		} = {
 			readImage: readImageFromClipboard,
 			readText: readTextFromClipboard,
 			readMacFileUrls: readMacFileUrlsFromClipboard,
+			isTerminalLocal: isClipboardTerminalLocal,
 		},
 	) {}
 
@@ -631,8 +634,10 @@ export class InputController {
 			write: data => this.ctx.ui.terminal.write(data),
 			pasteText: text => {
 				const focused = this.ctx.ui.getFocused();
-				const target = focused && focused !== this.ctx.editor && hasPasteText(focused) ? focused : this.ctx.editor;
-				target.pasteText(text);
+				if (focused && focused !== this.ctx.editor && hasPasteText(focused)) focused.pasteText(text);
+				else if (focused && focused !== this.ctx.editor && focused.handleInput)
+					focused.handleInput(`\x1b[200~${text}\x1b[201~`);
+				else this.ctx.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
 				this.ctx.ui.requestRender();
 			},
 			pasteImage: async image => {
@@ -933,7 +938,13 @@ export class InputController {
 			return;
 		}
 		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
-			const command = parseSlashCommand(text)?.name;
+			const parsed = parseSlashCommand(text);
+			const command = parsed?.name;
+			if (command === "jobs" && (!parsed?.args.trim() || parsed.args.trim() === "full")) {
+				this.ctx.editor.clearDraft(text);
+				await this.ctx.handleJobsCommand();
+				return;
+			}
 			if (command && FOCUS_SCOPED_COMMANDS[command]) {
 				this.ctx.editor.clearDraft(text);
 				this.ctx.showModelSelector();
@@ -942,11 +953,16 @@ export class InputController {
 			this.ctx.showStatus("Commands run in the main session — press Esc to return first");
 			return;
 		}
+		const continueShortcut = streamingBehavior === "steer" && !images && (text === "." || text === "c");
 		this.ctx.editor.clearDraft(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
-				imageCount: images?.length ?? 0,
-			});
+			if (continueShortcut) {
+				await target.prompt(manualContinuePrompt, { synthetic: true, userInitiated: true });
+			} else {
+				await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
+					imageCount: images?.length ?? 0,
+				});
+			}
 		} catch (error) {
 			restoreInputDraft(this.ctx.editor, text, images, imageLinks);
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -1015,8 +1031,9 @@ export class InputController {
 	}
 
 	handleDequeue(): void {
-		const fromSessionQueue = this.ctx.session.peekLastQueuedMessage();
-		const last = fromSessionQueue ?? this.ctx.compactionQueuedMessages.at(-1);
+		const target = this.ctx.viewSession;
+		const fromSessionQueue = target.peekLastQueuedMessage();
+		const last = fromSessionQueue ?? (this.ctx.focusedAgentId ? undefined : this.ctx.compactionQueuedMessages.at(-1));
 		if (!last) {
 			this.ctx.showStatus("No queued messages to restore");
 			return;
@@ -1026,7 +1043,7 @@ export class InputController {
 			this.ctx.showStatus("Queued message exceeds the draft limit; it remains queued");
 			return;
 		}
-		if (fromSessionQueue) this.ctx.session.popLastQueuedMessage();
+		if (fromSessionQueue) target.popLastQueuedMessage();
 		else this.ctx.compactionQueuedMessages = this.ctx.compactionQueuedMessages.slice(0, -1);
 		// Only the popped message loses its local-submission signature: the ones still queued
 		// must keep theirs so their delivery echo does not blank the restored draft.
@@ -1486,8 +1503,7 @@ export class InputController {
 	}
 
 	async #tryPasteClipboardImage(): Promise<boolean> {
-		const env = process.env;
-		if (env.SSH_CONNECTION || env.SSH_TTY || env.SSH_CLIENT) return false;
+		if (this.clipboard.isTerminalLocal?.() === false) return false;
 		try {
 			const image = await this.clipboard.readImage();
 			if (!image) return false;
@@ -1582,6 +1598,12 @@ export class InputController {
 	}
 
 	async handleImagePaste(): Promise<boolean> {
+		if (this.clipboard.isTerminalLocal?.() === false) {
+			this.ctx.showStatus(
+				"Clipboard here belongs to the SSH host — use your terminal paste shortcut to paste from your machine",
+			);
+			return false;
+		}
 		if (this.#clipboardPastePending) {
 			this.ctx.showStatus("Clipboard paste is still processing; paste was not queued");
 			return false;
@@ -1664,6 +1686,12 @@ export class InputController {
 	}
 
 	async handleClipboardTextRawPaste(): Promise<void> {
+		if (this.clipboard.isTerminalLocal?.() === false) {
+			this.ctx.showStatus(
+				"Clipboard here belongs to the SSH host — use your terminal paste shortcut to paste from your machine",
+			);
+			return;
+		}
 		if (this.#clipboardPastePending) {
 			this.ctx.showStatus("Clipboard paste is still processing; paste was not queued");
 			return;

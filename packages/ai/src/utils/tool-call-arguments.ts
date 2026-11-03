@@ -11,6 +11,15 @@ export function parseToolCallArguments(json: string | undefined): ToolCall["argu
 	}
 }
 
+export function replayableToolCallArguments(raw: string, executed: ToolCall["arguments"]): string {
+	try {
+		JSON.parse(raw);
+		return raw;
+	} catch {
+		return executed && typeof executed === "object" && "__parseError" in executed ? raw : JSON.stringify(executed);
+	}
+}
+
 export const INVALID_ARGUMENTS_RAW_LIMIT = 512;
 const TRUNCATED_SUFFIX = /… \[truncated \d+ chars\]$/;
 

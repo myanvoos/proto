@@ -18,8 +18,9 @@ import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, readProviderErrorText, withHardTimeout } from "./utils";
 
-const FALLBACK_MODEL = "gpt-5.5";
+const FALLBACK_MODEL = "gpt-6-luna";
 const DEFAULT_MODEL_PREFERENCES = [
+	"gpt-6-luna",
 	"gpt-5.6-luna",
 	"gpt-5.6-terra",
 	"gpt-5.6-sol",
@@ -672,27 +673,46 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			signal: params.signal,
 		});
 		if (!seed) {
-			throw new Error(
-				"No Codex OAuth credentials found. Login with 'proto /login openai-codex' to enable Codex web search.",
+			const credentialSource = params.modelRegistry?.authStorage ?? params.authStorage;
+			if (credentialSource.getCredentialOrigin("openai-codex")?.kind !== "env") {
+				throw new Error(
+					"No Codex OAuth credentials found. Login with 'proto /login openai-codex' to enable Codex web search.",
+				);
+			}
+			const keyOrResolver = params.modelRegistry
+				? params.modelRegistry.resolver("openai-codex", { sessionId: params.sessionId })
+				: params.authStorage.resolver("openai-codex", { sessionId: params.sessionId });
+			result = await withAuth(
+				keyOrResolver,
+				async accessToken =>
+					runCodexSearchCandidates({
+						auth: { accessToken, accountId: getCodexAccountId(accessToken) },
+						params,
+						query,
+						modelCandidates,
+						modelWasConfigured: configuredModel !== undefined,
+						transport: await requestTransport(),
+					}),
+				{ signal: params.signal },
+			);
+		} else {
+			result = await withOAuthAccess(
+				params.authStorage,
+				"openai-codex",
+				async access => {
+					const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
+					return runCodexSearchCandidates({
+						auth: { accessToken: access.accessToken, accountId },
+						params,
+						query,
+						modelCandidates,
+						modelWasConfigured: configuredModel !== undefined,
+						transport: await requestTransport(),
+					});
+				},
+				{ sessionId: params.sessionId, signal: params.signal, seed },
 			);
 		}
-
-		result = await withOAuthAccess(
-			params.authStorage,
-			"openai-codex",
-			async access => {
-				const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
-				return runCodexSearchCandidates({
-					auth: { accessToken: access.accessToken, accountId },
-					params,
-					query,
-					modelCandidates,
-					modelWasConfigured: configuredModel !== undefined,
-					transport: await requestTransport(),
-				});
-			},
-			{ sessionId: params.sessionId, signal: params.signal, seed },
-		);
 	}
 
 	let sources = result.sources;

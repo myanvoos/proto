@@ -1,8 +1,3 @@
-
-
-
-
-
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -17,7 +12,6 @@ mod options {
 	pub static SUFFIX: &str = "suffix";
 	pub static ZERO: &str = "zero";
 }
-
 
 pub(crate) struct Basename {
 	matches: ArgMatches,
@@ -41,8 +35,6 @@ impl Utility for Basename {
 			return 1;
 		}
 
-
-
 		let explicit_suffix = self.matches.get_one::<OsString>(options::SUFFIX);
 		let suffix = if explicit_suffix.is_some() || self.matches.get_flag(options::MULTIPLE) {
 			explicit_suffix.cloned().unwrap_or_default()
@@ -62,7 +54,8 @@ impl Utility for Basename {
 				host.error(format!("invalid argument {}", name.quote()), 1);
 				return 1;
 			};
-			if host.stdout.write_all(&stripped).is_err() || write!(host.stdout, "{line_ending}").is_err()
+			if host.stdout.write_all(&stripped).is_err()
+				|| write!(host.stdout, "{line_ending}").is_err()
 			{
 				return 1;
 			}
@@ -74,14 +67,8 @@ impl Utility for Basename {
 	}
 }
 
-
-
-
-
-
 fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 	let fullname_bytes = os_bytes(fullname)?;
-
 
 	if fullname_bytes.ends_with(b"/.") {
 		return Some(b".".into());
@@ -99,9 +86,13 @@ fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 		return Some(name_bytes.into());
 	}
 	let suffix_bytes = os_bytes(suffix)?;
-	Some(name_bytes.strip_suffix(suffix_bytes).unwrap_or(name_bytes).into())
+	Some(
+		name_bytes
+			.strip_suffix(suffix_bytes)
+			.unwrap_or(name_bytes)
+			.into(),
+	)
 }
-
 
 fn app() -> Command {
 	Command::new(Basename::NAME)
@@ -147,9 +138,6 @@ fn app() -> Command {
 		)
 }
 
-
 pub(crate) fn basename_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Basename, SE>()
 }
-
-

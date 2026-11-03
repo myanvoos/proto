@@ -2,6 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../../async";
+import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { DaemonSnapshot } from "../../launch/protocol";
 import {
 	type CustomMessage,
@@ -13,6 +14,7 @@ import {
 } from "../../session/messages";
 import type { MonitorEventDetails, PersistedMonitorEvent } from "../../session/monitor-event";
 import { createIrcMessageCard } from "../../tools/fleet";
+import { formatMinimizedMeta, type OutputMeta } from "../../tools/output-meta";
 import {
 	formatMoreItems,
 	PREVIEW_LIMITS,
@@ -21,6 +23,7 @@ import {
 	truncateToWidth,
 } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
+import { CustomMessageComponent } from "../components/custom-message";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
@@ -52,12 +55,14 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 			label?: string;
 			durationMs?: number;
 			status?: AsyncJob["status"];
+			meta?: OutputMeta;
 			jobs?: Array<{
 				jobId?: string;
 				type?: AsyncJobType;
 				label?: string;
 				durationMs?: number;
 				status?: AsyncJob["status"];
+				meta?: OutputMeta;
 			}>;
 		}>
 	).details;
@@ -71,6 +76,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 						label: details?.label,
 						durationMs: details?.durationMs,
 						status: details?.status,
+						meta: details?.meta,
 					},
 				];
 	const block = new TranscriptBlock();
@@ -90,8 +96,26 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 			.filter(Boolean)
 			.join(" ");
 		block.addChild(new Text(line, 1, 0));
+		if (job.meta?.minimized)
+			block.addChild(new Text(theme.fg("dim", `Minimized: ${formatMinimizedMeta(job.meta.minimized)}`), 1, 0));
 	}
 	return new ToolActivityContainer(block);
+}
+
+/** Registered renderers own completion cards; declining or failing renderers retain the built-in summary. */
+export function buildAsyncResultComponent(
+	message: CustomOrHookMessage,
+	renderer?: MessageRenderer,
+): ToolActivityContainer {
+	if (!renderer) return buildAsyncResultBlock(message);
+	const component = new CustomMessageComponent(message as CustomMessage<unknown>, (value, options, uiTheme) => {
+		try {
+			const rendered = renderer(value, options, uiTheme);
+			if (rendered) return rendered;
+		} catch {}
+		return buildAsyncResultBlock(message);
+	});
+	return new ToolActivityContainer(component);
 }
 
 export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolActivityContainer {
@@ -183,17 +207,19 @@ export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: (
 			: message.customType === "irc:autoreply"
 				? ("autoreply" as const)
 				: ("relay" as const);
-	return createIrcMessageCard(
-		{
-			kind,
-			from: details?.from,
-			to: details?.to,
-			body: kind === "incoming" ? details?.message : details?.body,
-			replyTo: details?.replyTo,
-			timestamp: message.timestamp,
-		},
-		getExpanded,
-		theme,
+	return new ToolActivityContainer(
+		createIrcMessageCard(
+			{
+				kind,
+				from: details?.from,
+				to: details?.to,
+				body: kind === "incoming" ? details?.message : details?.body,
+				replyTo: details?.replyTo,
+				timestamp: message.timestamp,
+			},
+			getExpanded,
+			theme,
+		),
 	);
 }
 

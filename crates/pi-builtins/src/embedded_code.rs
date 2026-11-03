@@ -222,13 +222,14 @@ enum Target {
 
 #[derive(Debug, Clone)]
 struct HereDoc {
-	/// Body as the program reads it (tab-stripped for `<<-`), final newline kept.
-	body:          String,
-	body_start:    usize,
+	/// Body as the program reads it (tab-stripped for `<<-`), final newline
+	/// kept.
+	body:         String,
+	body_start:   usize,
 	/// End of the raw body, excluding the newline before the terminator line.
-	body_end:      usize,
+	body_end:     usize,
 	/// End of the terminator line, including its newline.
-	consumed_end:  usize,
+	consumed_end: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +241,8 @@ struct Redirect {
 
 impl Redirect {
 	fn reads_stdin(&self) -> bool {
-		matches!(self.fd, None | Some(0)) && matches!(self.op.as_str(), "<" | "<<" | "<<-" | "<<<" | "<>" | "<&")
+		matches!(self.fd, None | Some(0))
+			&& matches!(self.op.as_str(), "<" | "<<" | "<<-" | "<<<" | "<>" | "<&")
 	}
 
 	fn writes_stdout(&self) -> bool {
@@ -275,7 +277,11 @@ impl Command {
 
 	/// The redirect stdin ends up reading (the last one wins).
 	fn stdin(&self) -> Option<&Redirect> {
-		self.redirects.iter().rev().find(|redirect| redirect.reads_stdin())
+		self
+			.redirects
+			.iter()
+			.rev()
+			.find(|redirect| redirect.reads_stdin())
 	}
 }
 
@@ -345,7 +351,10 @@ fn push_piece(value: &mut WordValue, raw: &str, piece: &WordPieceWithSource) {
 		| WordPiece::CommandSubstitution(_)
 		| WordPiece::BackquotedCommandSubstitution(_)
 		| WordPiece::ArithmeticExpression(_) => {
-			value.text.push_str(raw.get(piece.start_index..piece.end_index).unwrap_or_default());
+			value.text.push_str(
+				raw.get(piece.start_index..piece.end_index)
+					.unwrap_or_default(),
+			);
 			value.dynamic = true;
 		},
 	}
@@ -364,7 +373,8 @@ fn command_substitutions(raw: &str) -> Vec<(usize, usize)> {
 						out.push((start, start + body.len()));
 					}
 				},
-				WordPiece::DoubleQuotedSequence(inner) | WordPiece::GettextDoubleQuotedSequence(inner) => {
+				WordPiece::DoubleQuotedSequence(inner)
+				| WordPiece::GettextDoubleQuotedSequence(inner) => {
 					collect(raw, inner, out);
 				},
 				_ => {},
@@ -388,7 +398,9 @@ fn is_assignment(raw: &str) -> bool {
 	let name = raw[..eq].strip_suffix('+').unwrap_or(&raw[..eq]);
 	let name = name.split_once('[').map_or(name, |(base, _)| base);
 	let mut chars = name.chars();
-	chars.next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+	chars
+		.next()
+		.is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
 		&& chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
@@ -401,7 +413,16 @@ fn is_control_operator(op: &str) -> bool {
 fn is_passthrough_reserved(word: &str) -> bool {
 	matches!(
 		word,
-		"if" | "then" | "else" | "elif" | "fi" | "do" | "done" | "while" | "until" | "{" | "}" | "!" | "esac"
+		"if"
+			| "then"
+			| "else"
+			| "elif"
+			| "fi" | "do"
+			| "done"
+			| "while"
+			| "until"
+			| "{" | "}"
+			| "!" | "esac"
 	)
 }
 
@@ -422,7 +443,10 @@ impl Scan<'_> {
 	/// the body of a command substitution.
 	fn scan_tokens(&mut self, tokens: &[Token], base: usize, limit: usize, nested: bool) {
 		let commands = self.segment(tokens, base);
-		let count = commands.iter().filter(|command| !command.is_empty()).count();
+		let count = commands
+			.iter()
+			.filter(|command| !command.is_empty())
+			.count();
 		for command in &commands {
 			for word in &command.words {
 				self.scan_substitutions(word);
@@ -443,7 +467,11 @@ impl Scan<'_> {
 	fn only_whitespace_outside(&self, command: &Command, base: usize, limit: usize) -> bool {
 		let start = command.start.unwrap_or(base);
 		self.source.slice(base, start).trim().is_empty()
-			&& self.source.slice(command.end, limit.min(self.source.original_chars)).trim().is_empty()
+			&& self
+				.source
+				.slice(command.end, limit.min(self.source.original_chars))
+				.trim()
+				.is_empty()
 	}
 
 	fn scan_substitutions(&mut self, word: &WordTok) {
@@ -506,7 +534,9 @@ impl Scan<'_> {
 							_ => Target::Missing,
 						}
 					};
-					current.redirects.push(Redirect { fd, op: op.clone(), target });
+					current
+						.redirects
+						.push(Redirect { fd, op: op.clone(), target });
 				},
 				Token::Word(raw, _) => {
 					if current.is_empty() && !current.invalid {
@@ -538,7 +568,13 @@ impl Scan<'_> {
 	}
 
 	/// Consume the delimiter, body and end-tag tokens brush emits after `<<`.
-	fn read_heredoc(&self, tokens: &[Token], index: &mut usize, base: usize, strip_tabs: bool) -> Option<HereDoc> {
+	fn read_heredoc(
+		&self,
+		tokens: &[Token],
+		index: &mut usize,
+		base: usize,
+		strip_tabs: bool,
+	) -> Option<HereDoc> {
 		let Some(Token::Word(delimiter, _)) = tokens.get(*index) else {
 			return None;
 		};
@@ -557,9 +593,17 @@ impl Scan<'_> {
 		loop {
 			let line_end = self.source.line_end(line_start);
 			let line = self.source.slice(line_start, line_end);
-			let line = if strip_tabs { line.trim_start_matches('\t') } else { line };
+			let line = if strip_tabs {
+				line.trim_start_matches('\t')
+			} else {
+				line
+			};
 			if line == delimiter {
-				let body_end = if line_start > body_start { line_start - 1 } else { body_start };
+				let body_end = if line_start > body_start {
+					line_start - 1
+				} else {
+					body_start
+				};
 				let consumed_end = (line_end + 1).min(self.source.chars());
 				return Some(HereDoc { body: body.clone(), body_start, body_end, consumed_end });
 			}
@@ -568,14 +612,22 @@ impl Scan<'_> {
 				if body_end > body_start && self.source.char_at(body_end - 1) == Some('\n') {
 					body_end -= 1;
 				}
-				return Some(HereDoc { body: body.clone(), body_start, body_end, consumed_end: line_end });
+				return Some(HereDoc {
+					body: body.clone(),
+					body_start,
+					body_end,
+					consumed_end: line_end,
+				});
 			}
 			line_start = line_end + 1;
 		}
 	}
 
 	fn classify(&mut self, command: &Command, alone: bool) {
-		let first = command.words.iter().position(|word| !is_assignment(&word.raw));
+		let first = command
+			.words
+			.iter()
+			.position(|word| !is_assignment(&word.raw));
 		let Some(first) = first else {
 			return;
 		};
@@ -604,7 +656,12 @@ impl Scan<'_> {
 		}
 	}
 
-	fn try_cell(&mut self, context: &CellContext<'_>, index: usize, interpreter: Interpreter) -> bool {
+	fn try_cell(
+		&mut self,
+		context: &CellContext<'_>,
+		index: usize,
+		interpreter: Interpreter,
+	) -> bool {
 		let args = &context.values[index + 1..];
 		let stdin = context.command.stdin();
 		let source = interpreter.program_source(args);
@@ -619,7 +676,11 @@ impl Scan<'_> {
 			},
 			ProgramSource::Stdin => match stdin.map(|redirect| &redirect.target) {
 				Some(Target::HereDoc(here)) => {
-					let code = here.body.strip_suffix('\n').unwrap_or(&here.body).to_owned();
+					let code = here
+						.body
+						.strip_suffix('\n')
+						.unwrap_or(&here.body)
+						.to_owned();
 					(code, here.body_start, here.body_end)
 				},
 				Some(Target::Word(word)) if stdin.is_some_and(|redirect| redirect.op == "<<<") => {
@@ -680,7 +741,8 @@ impl Scan<'_> {
 	}
 
 	fn try_write(&mut self, context: &CellContext<'_>) -> bool {
-		let Some(Target::HereDoc(here)) = context.command.stdin().map(|redirect| &redirect.target) else {
+		let Some(Target::HereDoc(here)) = context.command.stdin().map(|redirect| &redirect.target)
+		else {
 			return false;
 		};
 		let path = match context.values[0].static_text() {
@@ -718,7 +780,11 @@ impl Scan<'_> {
 		};
 		self.writes.push(FileWrite {
 			path,
-			code: here.body.strip_suffix('\n').unwrap_or(&here.body).to_owned(),
+			code: here
+				.body
+				.strip_suffix('\n')
+				.unwrap_or(&here.body)
+				.to_owned(),
 			start: self.source.utf16(here.body_start),
 			end: self.source.utf16(here.body_end),
 		});
@@ -750,7 +816,8 @@ fn dispatches_builtin(prefix: &[WordValue]) -> bool {
 		let Some(text) = value.static_text() else {
 			return false;
 		};
-		let allowed = is_builtin_dispatcher(text) || text.starts_with('-') || after_option || is_duration(text);
+		let allowed =
+			is_builtin_dispatcher(text) || text.starts_with('-') || after_option || is_duration(text);
 		after_option = text.starts_with('-') && !text.contains('=');
 		allowed
 	})
@@ -761,10 +828,21 @@ fn is_interpreter_runner(word: &str) -> bool {
 	is_builtin_dispatcher(name)
 		|| matches!(
 			name,
-			"uv" | "pixi" | "poetry" | "pipenv" | "pdm" | "hatch" | "rye"
-				| "conda" | "mamba" | "micromamba" | "env" | "sudo" | "doas"
-				| "ssh" | "xargs" | "find" | "nice" | "ionice" | "setsid"
-				| "docker" | "podman"
+			"uv"
+				| "pixi" | "poetry"
+				| "pipenv"
+				| "pdm" | "hatch"
+				| "rye" | "conda"
+				| "mamba"
+				| "micromamba"
+				| "env" | "sudo"
+				| "doas" | "ssh"
+				| "xargs"
+				| "find" | "nice"
+				| "ionice"
+				| "setsid"
+				| "docker"
+				| "podman"
 		)
 }
 
@@ -774,7 +852,10 @@ fn is_builtin_dispatcher(word: &str) -> bool {
 
 fn is_duration(word: &str) -> bool {
 	let number = word.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(word);
-	!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+	!number.is_empty()
+		&& number
+			.bytes()
+			.all(|byte| byte.is_ascii_digit() || byte == b'.')
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -816,13 +897,19 @@ impl Interpreter {
 
 /// `""`, `3`, `3.12`, `3.13t`: the tail of a versioned interpreter name.
 fn is_version_suffix(rest: &str) -> bool {
-	let rest = rest.strip_suffix(|ch: char| ch.is_ascii_lowercase()).filter(|trimmed| !trimmed.is_empty()).unwrap_or(rest);
+	let rest = rest
+		.strip_suffix(|ch: char| ch.is_ascii_lowercase())
+		.filter(|trimmed| !trimmed.is_empty())
+		.unwrap_or(rest);
 	rest.is_empty()
 		|| (rest.starts_with(|ch: char| ch.is_ascii_digit())
-			&& rest.split('.').all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+			&& rest
+				.split('.')
+				.all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
 }
 
-/// CPython's command line: `python [option…] (-c cmd | -m mod | file | -) [arg…]`.
+/// CPython's command line: `python [option…] (-c cmd | -m mod | file | -)
+/// [arg…]`.
 fn python_program_source(args: &[WordValue]) -> ProgramSource {
 	let mut index = 0;
 	while index < args.len() {
@@ -834,7 +921,10 @@ fn python_program_source(args: &[WordValue]) -> ProgramSource {
 			"--" => return stdin_after_double_dash(args, index),
 			"--check-hash-based-pycs" => index += 2,
 			_ if arg.starts_with("--") => {
-				if matches!(arg, "--help" | "--version" | "--help-env" | "--help-xoptions" | "--help-all") {
+				if matches!(
+					arg,
+					"--help" | "--version" | "--help-env" | "--help-xoptions" | "--help-all"
+				) {
 					return ProgramSource::None;
 				}
 				index += 1;
@@ -852,7 +942,12 @@ fn python_program_source(args: &[WordValue]) -> ProgramSource {
 								ProgramSource::None
 							};
 						},
-						'c' => return ProgramSource::Arg { index, skip: 1 + cluster[..offset].chars().count() + 1 },
+						'c' => {
+							return ProgramSource::Arg {
+								index,
+								skip: 1 + cluster[..offset].chars().count() + 1,
+							};
+						},
 						'm' | 'h' | 'V' | '?' => return ProgramSource::None,
 						'W' | 'X' => {
 							consumed_next = rest.is_empty();
@@ -886,11 +981,22 @@ fn js_program_source(args: &[WordValue]) -> ProgramSource {
 					ProgramSource::None
 				};
 			},
-			"-r" | "--require" | "--import" | "--loader" | "--experimental-loader" | "-C" | "--conditions"
-			| "--input-type" | "--env-file" | "--title" => index += 2,
+			"-r"
+			| "--require"
+			| "--import"
+			| "--loader"
+			| "--experimental-loader"
+			| "-C"
+			| "--conditions"
+			| "--input-type"
+			| "--env-file"
+			| "--title" => index += 2,
 			"-h" | "--help" | "-v" | "--version" => return ProgramSource::None,
 			_ => {
-				if let Some(eval) = ["--eval=", "--print="].iter().find(|prefix| arg.starts_with(**prefix)) {
+				if let Some(eval) = ["--eval=", "--print="]
+					.iter()
+					.find(|prefix| arg.starts_with(**prefix))
+				{
 					return ProgramSource::Arg { index, skip: eval.len() };
 				}
 				if !arg.starts_with('-') {

@@ -29,6 +29,8 @@ export interface AuthGatewaySessionStateRequest {
 	model: Model<Api>;
 	/** Used only without a client key, to place the request on the conversation it continues. */
 	context: Context;
+	/** Shared nonempty tool serialization; omitted callers retain the same key derivation. */
+	toolsJson?: string;
 	/** Stable identity of the account the request's credential resolved to. */
 	account: string;
 }
@@ -90,7 +92,7 @@ function sessionKeys(request: AuthGatewaySessionStateRequest): string[] {
 	if (request.clientKey !== undefined) return [`c\u0000${scope}\u0000${request.clientKey}`];
 	const { context } = request;
 	let hash = Bun.hash(
-		`${scope}\u0000${context.systemPrompt?.join("\n\n") ?? ""}\u0000${context.tools ? JSON.stringify(context.tools) : ""}`,
+		`${scope}\u0000${context.systemPrompt?.join("\n\n") ?? ""}\u0000${request.toolsJson ?? (context.tools ? JSON.stringify(context.tools) : "")}`,
 	);
 	const keys: string[] = [];
 	for (const message of context.messages) {

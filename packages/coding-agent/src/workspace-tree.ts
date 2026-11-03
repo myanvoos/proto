@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { FileType, type GlobMatch, listWorkspace } from "@oh-my-pi/pi-natives";
+import { FileType, type GlobMatch, listWorkspace, type WorkspaceDirectoryError } from "@oh-my-pi/pi-natives";
 import { formatAge, formatBytes } from "@oh-my-pi/pi-utils";
+
+import { sanitizeDisplayWarning } from "./tools/render-utils";
 
 const WORKSPACE_DEFAULTS = {
 	maxDepth: 3,
@@ -52,6 +54,8 @@ export async function buildDirectoryTree(cwd: string, options: BuildDirectoryTre
 		maxDepth,
 		hidden: true,
 		gitignore: false,
+		reportDirectoryErrors: true,
+		pruneExcludedDirs: false,
 	});
 	const entries: readonly GlobMatch[] = result.entries;
 	const nativeTruncated = result.truncated;
@@ -62,8 +66,10 @@ export async function buildDirectoryTree(cwd: string, options: BuildDirectoryTre
 		rootLimit,
 		lineCap: options.lineCap === undefined ? null : options.lineCap,
 		nativeTruncated,
+		directoryErrors: result.directoryErrors,
 
 		ageMode: "relative",
+		compactMetadata: true,
 	});
 }
 
@@ -86,6 +92,7 @@ export async function buildWorkspaceTree(cwd: string, options: BuildWorkspaceTre
 			nativeTruncated: result.truncated,
 
 			ageMode: "absolute",
+			compactMetadata: false,
 		});
 		return { ...tree, agentsMdFiles: result.agentsMdFiles };
 	} catch (error) {
@@ -104,6 +111,7 @@ interface Node {
 	children: Node[];
 
 	droppedCount: number;
+	listingError?: string;
 }
 
 interface RenderedLine {
@@ -119,12 +127,15 @@ interface AssembleOptions {
 	rootLimit: number | null;
 	lineCap: number | null;
 	nativeTruncated: boolean;
+	directoryErrors?: readonly WorkspaceDirectoryError[];
 
 	ageMode: "relative" | "absolute";
+	compactMetadata: boolean;
 }
 
 function assembleTree(rootPath: string, entries: readonly GlobMatch[], opts: AssembleOptions): DirectoryTree {
 	const byParent = new Map<string, Node[]>();
+	const directoryErrors = new Map(opts.directoryErrors?.map(error => [error.path, error.error]));
 	for (const entry of entries) {
 		const slash = entry.path.lastIndexOf("/");
 		const name = slash === -1 ? entry.path : entry.path.slice(slash + 1);
@@ -137,6 +148,7 @@ function assembleTree(rootPath: string, entries: readonly GlobMatch[], opts: Ass
 			depth: parentPath ? parentPath.split("/").length + 1 : 1,
 			children: [],
 			droppedCount: 0,
+			listingError: directoryErrors.get(entry.path),
 		};
 		const bucket = byParent.get(parentPath);
 		if (bucket) bucket.push(node);
@@ -178,7 +190,7 @@ function assembleTree(rootPath: string, entries: readonly GlobMatch[], opts: Ass
 
 	return {
 		rootPath,
-		rendered: formatLines(lines),
+		rendered: formatLines(lines, opts.compactMetadata),
 		truncated: truncated || elidedCount > 0,
 		totalLines: lines.length,
 	};
@@ -206,7 +218,7 @@ function renderNode(node: Node, formatNodeAge: (mtimeMs: number) => string, out:
 		const indent = "  ".repeat(node.depth);
 		const suffix = node.isDir ? "/" : "";
 		out.push({
-			label: `${indent}- ${node.name}${suffix}`,
+			label: `${indent}- ${node.name}${suffix}${node.listingError ? ` (unreadable: ${sanitizeDisplayWarning(node.listingError)})` : ""}`,
 			depth: node.depth,
 			isRoot: false,
 			size: node.isDir ? undefined : formatBytes(node.size),
@@ -256,7 +268,15 @@ function applyLineCap(
 	return { lines: kept, elidedCount: removable.length };
 }
 
-function formatLines(lines: readonly RenderedLine[]): string {
+function formatLines(lines: readonly RenderedLine[], compactMetadata: boolean): string {
+	if (compactMetadata) {
+		return lines
+			.map(line => {
+				if (!line.age) return line.label;
+				return `${line.label}${line.size ? ` ${line.size}` : ""} ${line.age}`;
+			})
+			.join("\n");
+	}
 	const maxLabelLength = lines.reduce((max, line) => Math.max(max, line.label.length), 0);
 	return lines
 		.map(line => {
@@ -276,7 +296,7 @@ async function assertListable(rootPath: string): Promise<void> {
 }
 
 function unlistableTree(rootPath: string, error: unknown): DirectoryTree {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = sanitizeDisplayWarning(error instanceof Error ? error.message : String(error));
 	return {
 		rootPath,
 		rendered: `.\n  (listing unavailable: ${message})`,

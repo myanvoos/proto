@@ -1,12 +1,14 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	Container,
+	type DefaultTextStyle,
 	Image,
 	type ImageBudget,
 	ImageProtocol,
 	Markdown,
 	replaceTabs,
 	Spacer,
+	streamingMarkdownSource,
 	TERMINAL,
 	Text,
 } from "@oh-my-pi/pi-tui";
@@ -26,6 +28,9 @@ import { isRowPrefix, type TranscriptStableRow, trimBlankEdges } from "./transcr
 
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
 const EMPTY_STABLE_RENDER: readonly string[] = [];
+
+// A partial fence or empty-comment sentinel can still fold onto the thinking line above it.
+const UNSETTLED_THINKING_TAIL = /(?:^|\n)[^\S\n]*(?:`{1,2}|~{1,2}|<(?:!(?:-(?:-[^\S\n]*-{0,2})?)?)?)[^\S\n]*$/;
 
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
@@ -132,7 +137,6 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
-	#emergencyText?: Markdown;
 	#convertedKittyImages?: Map<string, ImageContent>;
 	#showImages = true;
 	#kittyConversionsInFlight?: Set<string>;
@@ -175,6 +179,12 @@ export class AssistantMessageComponent extends Container {
 
 	#textColorTransform?: (text: string) => string;
 
+	#getProseTextStyle(): DefaultTextStyle | undefined {
+		if (this.#textColorTransform) return { color: this.#textColorTransform };
+		if (typeof theme === "undefined" || !theme.hasColor("assistantMessageText")) return undefined;
+		return { color: text => theme.fg("assistantMessageText", text), proseFg: true };
+	}
+
 	setTextColorTransform(transform?: (text: string) => string): void {
 		if (this.#textColorTransform === transform) return;
 		this.#textColorTransform = transform;
@@ -211,6 +221,7 @@ export class AssistantMessageComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this.#stableRenderCache.clear();
 		this.#cacheInvalidationMarker?.invalidate();
 		this.#servedModelMarker?.invalidate();
 
@@ -367,11 +378,13 @@ export class AssistantMessageComponent extends Container {
 			if (child === this.#thinkingLabel) continue;
 			const item = items[itemIndex];
 			if (item?.md === child) {
-				const source = item.md.getText();
+				const source = streamingMarkdownSource(item.md.getText());
 				if (itemIndex === items.length - 1) {
 					const stableText = item.md.getLastRenderStableText();
 					const frozen = stableText.trim();
-					if (frozen.length > 0 && /\S/.test(source.slice(stableText.length))) {
+					let past = source.slice(stableText.length);
+					if (item.blockType === "thinking") past = past.replace(UNSETTLED_THINKING_TAIL, "");
+					if (frozen.length > 0 && /\S/.test(past)) {
 						parts.push({ kind: item.blockType, text: frozen });
 					}
 					break;
@@ -409,7 +422,7 @@ export class AssistantMessageComponent extends Container {
 							2,
 							0,
 							getMarkdownTheme(this.localProtocolOptions),
-							this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
+							this.#getProseTextStyle(),
 							2,
 						)
 					: new Markdown(
@@ -425,6 +438,11 @@ export class AssistantMessageComponent extends Container {
 			rows.push(...markdown.render(width));
 		}
 		return rows;
+	}
+
+	override releaseRenderCaches(): void {
+		super.releaseRenderCaches();
+		this.#stableRenderCache.clear();
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -538,13 +556,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	isTranscriptBlockFinalized(): boolean {
-		return this.#transcriptBlockFinalized;
-	}
-
-	/** Render completed prose rather than an earlier thinking row under emergency viewport pressure. */
-	renderTranscriptBlockEmergencyRow(width: number): string | undefined {
-		if (!this.#transcriptBlockFinalized) return undefined;
-		return this.#emergencyText?.render(width)[0];
+		return this.#transcriptBlockFinalized && !(this.#showImages && this.#kittyConversionsInFlight?.size);
 	}
 
 	markTranscriptBlockFinalized(): void {
@@ -595,16 +607,14 @@ export class AssistantMessageComponent extends Container {
 		const blocks = this.#staticTextBlocks;
 		if (blocks === undefined) return;
 		this.#clearContent();
-		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
+		const mdOptions = this.#getProseTextStyle();
 		for (const text of blocks) {
-			this.#emergencyText = new Markdown(text, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2);
-			this.addChild(this.#emergencyText);
+			this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2));
 		}
 		super.invalidate();
 	}
 
 	#clearContent(): void {
-		this.#emergencyText = undefined;
 		this.disposeChildren();
 	}
 
@@ -677,6 +687,7 @@ export class AssistantMessageComponent extends Container {
 				.catch(() => {
 					this.#kittyConversionsInFlight?.delete(key);
 					if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
+					this.onImageUpdate?.();
 				});
 		}
 	}
@@ -886,10 +897,9 @@ export class AssistantMessageComponent extends Container {
 			const content = message.content[i];
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				const trimmed = this.#withParagraphCuts(i, content.text.trim());
-				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
+				const mdOptions = this.#getProseTextStyle();
 				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(this.localProtocolOptions), mdOptions, 2);
 				this.addChild(md);
-				this.#emergencyText = md;
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
 			} else if (content.type === "thinking") {

@@ -108,10 +108,11 @@ test("reading a feed URL renders each item's title, date, summary, and link", as
 	expect(text).not.toContain("Untitled");
 });
 
-test("a navigation-only page falls back to its feed alternate when the feed has entries", async () => {
+test("native short-line content is not replaced by a feed solely for its line shape", async () => {
 	const result = await read.execute("nav", { path: `${origin}/nav/` });
-	expect(result.details?.method).toBe("alternate-feed");
-	expect(textOf(result)).toContain("## A new website");
+	expect(result.details?.method).toBe("native");
+	expect(textOf(result)).toContain("Nav 3");
+	expect(textOf(result)).not.toContain("## A new website");
 });
 
 test("a feed alternate with no entries never replaces the page", async () => {

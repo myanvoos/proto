@@ -116,7 +116,10 @@ export function terminateProcess(
 	identity: Process | null,
 	options: ProcessTerminationOptions = {},
 ): Promise<boolean> {
-	const exited = proc.exitCode !== null || identity?.status() === "exited";
+	let exited = proc.exitCode !== null;
+	try {
+		exited ||= identity?.status() === "exited";
+	} catch {}
 	if (exited) {
 		if (!options.detached || !options.hasOpenPipes || process.platform === "win32") return Promise.resolve(true);
 		// A pipe-holding member of the owned detached group can outlive its leader. Signal before any await;
@@ -129,13 +132,37 @@ export function terminateProcess(
 			return Promise.reject(error);
 		}
 	}
-	return (
-		identity?.terminate({
-			group: options.detached,
-			gracefulMs: options.gracefulMs,
-			timeoutMs: options.timeoutMs,
-		}) ?? Promise.resolve(false)
-	);
+	const signalDirectly = async (): Promise<boolean> => {
+		const signal = (name: NodeJS.Signals): void => {
+			if (proc.exitCode !== null) return;
+			try {
+				process.kill(options.detached && process.platform !== "win32" ? -proc.pid : proc.pid, name);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			}
+		};
+		const gracefulMs = options.gracefulMs ?? 1000;
+		if (gracefulMs >= 0) {
+			signal("SIGTERM");
+			const deadline = Date.now() + gracefulMs;
+			while (proc.exitCode === null && Date.now() < deadline) await Bun.sleep(Math.min(25, deadline - Date.now()));
+		}
+		signal("SIGKILL");
+		return true;
+	};
+	try {
+		return (
+			identity
+				?.terminate({
+					group: options.detached,
+					gracefulMs: options.gracefulMs,
+					timeoutMs: options.timeoutMs,
+				})
+				.catch(signalDirectly) ?? signalDirectly()
+		);
+	} catch {
+		return signalDirectly();
+	}
 }
 
 export class ChildProcess<In extends InMask = InMask> {
@@ -148,10 +175,8 @@ export class ChildProcess<In extends InMask = InMask> {
 	#exited: Promise<number>;
 	// The stderr drain counts as one open reader until it ends; stdout readers add themselves.
 	#openPipeReaders = 1;
-	// Pipe reads race this cutoff only when attachTimeout() sets a command deadline. Untimed commands keep complete
-	// EOF-based capture; timed ones stop at the deadline even when an orphaned descendant still holds the pipes.
-	#drainCutoff: Promise<void>;
-	#resolveDrainCutoff: () => void;
+	#cutoff = false;
+	#pipeReaders = new Set<ChunkReader>();
 	#timeoutTimer?: NodeJS.Timeout;
 	#stderrStream?: ReadableStream<Uint8Array>;
 	#stderrLimitError?: OutputLimitError;
@@ -172,7 +197,11 @@ export class ChildProcess<In extends InMask = InMask> {
 		this.#maxStdoutBytes = normalizeOutputLimit(outputLimits.maxStdoutBytes);
 		this.#maxStderrBytes = normalizeOutputLimit(outputLimits.maxStderrBytes) ?? DEFAULT_STDERR_CAPTURE_BYTES;
 		this.#terminateGroup = terminateGroup;
-		this.#identity = Process.fromPid(proc.pid);
+		let identity: Process | null = null;
+		try {
+			identity = Process.fromPid(proc.pid);
+		} catch {}
+		this.#identity = identity;
 		if (retainFullStderr) this.#stderrChunks = [];
 
 		const dec = new TextDecoder();
@@ -186,12 +215,10 @@ export class ChildProcess<In extends InMask = InMask> {
 			this.#stderrStream = teeStream;
 			stderrStream = drainStream;
 		}
-		const drainCutoff = Promise.withResolvers<void>();
-		this.#drainCutoff = drainCutoff.promise;
-		this.#resolveDrainCutoff = drainCutoff.resolve;
 
 		this.#stderrDone = (async () => {
 			const reader = stderrStream.getReader();
+			this.#pipeReaders.add(reader);
 			try {
 				let retainedBytes = 0;
 				for (;;) {
@@ -214,6 +241,7 @@ export class ChildProcess<In extends InMask = InMask> {
 					}
 				}
 			} catch {}
+			this.#pipeReaders.delete(reader);
 			this.#openPipeReaders--;
 			this.#stderrTail += dec.decode();
 			trim();
@@ -318,11 +346,8 @@ export class ChildProcess<In extends InMask = InMask> {
 
 	/** Next chunk, or `undefined` at EOF or once the command deadline cuts collection off. */
 	async #nextChunk(reader: ChunkReader): Promise<Uint8Array<ArrayBuffer> | undefined> {
-		const next = await Promise.race([reader.read(), this.#drainCutoff.then(() => undefined)]);
-		if (next === undefined) {
-			await reader.cancel().catch(() => {});
-			return undefined;
-		}
+		if (this.#cutoff) return undefined;
+		const next = await reader.read();
 		return next.done ? undefined : next.value;
 	}
 
@@ -330,6 +355,7 @@ export class ChildProcess<In extends InMask = InMask> {
 	async #collectStdout(maxBytes: number | undefined): Promise<CollectedOutput> {
 		this.#openPipeReaders++;
 		const reader = this.proc.stdout.getReader();
+		this.#pipeReaders.add(reader);
 		const chunks: Uint8Array[] = [];
 		let length = 0;
 		let overflow: OutputLimitError | undefined;
@@ -354,6 +380,7 @@ export class ChildProcess<In extends InMask = InMask> {
 		} catch {
 			// A cancelled or failed read keeps whatever was already collected.
 		} finally {
+			this.#pipeReaders.delete(reader);
 			this.#openPipeReaders--;
 			reader.releaseLock();
 		}
@@ -469,7 +496,8 @@ export class ChildProcess<In extends InMask = InMask> {
 			if (this.proc.exitCode === null || (this.#openPipeReaders > 0 && this.#terminateGroup)) {
 				this.kill(new TimeoutError(ms, this.#stderrTail), -1);
 			}
-			this.#resolveDrainCutoff();
+			this.#cutoff = true;
+			for (const reader of this.#pipeReaders) reader.cancel().catch(() => {});
 		}, ms);
 		timer.unref?.();
 		this.#timeoutTimer = timer;

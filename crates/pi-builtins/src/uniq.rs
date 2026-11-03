@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	ffi::OsString,
 	io::{BufRead, BufReader, BufWriter, Write},
@@ -199,8 +195,6 @@ impl UniqState {
 		}
 	}
 
-
-
 	fn key_end_index(&self, line: &[u8], key_start: usize) -> usize {
 		let remainder = &line[key_start..];
 		match self.slice_stop {
@@ -210,14 +204,11 @@ impl UniqState {
 					return key_start;
 				}
 				if self.is_c_locale {
-
 					key_start + remainder.len().min(limit)
 				} else if let Ok(valid) = std::str::from_utf8(remainder) {
-
 					let prefix_len = Self::char_prefix_len(valid, limit);
 					key_start + prefix_len
 				} else {
-
 					key_start + remainder.len().min(limit)
 				}
 			},
@@ -256,16 +247,11 @@ impl UniqState {
 	}
 
 	fn should_print_delimiter(&self, group_count: usize, first_line_printed: bool) -> bool {
-
 		self.delimiters != Delimiters::None
-
-            && group_count == 1
-
-            && (first_line_printed
-
-                || self.delimiters == Delimiters::Prepend
-
-                || self.delimiters == Delimiters::Both)
+			&& group_count == 1
+			&& (first_line_printed
+				|| self.delimiters == Delimiters::Prepend
+				|| self.delimiters == Delimiters::Both)
 	}
 
 	fn write_line(
@@ -295,9 +281,6 @@ impl UniqState {
 
 		write_line_terminator!(writer, line_terminator)
 	}
-
-
-
 
 	fn build_count_prefix(count: usize, buf: &mut [u8; Self::COUNT_PREFIX_BUF_SIZE]) -> &[u8] {
 		let mut digits_buf = [0u8; 20];
@@ -338,29 +321,12 @@ fn opt_parsed(opt_name: &str, matches: &ArgMatches) -> PortResult<Option<usize>>
 			Ok(v) => Ok(Some(v)),
 			Err(e) => match e.kind() {
 				IntErrorKind::PosOverflow => Ok(Some(usize::MAX)),
-				_ => Err(format!(
-					"Invalid argument for {opt_name}: {}",
-					arg_str.maybe_quote()
-				)),
+				_ => Err(format!("Invalid argument for {opt_name}: {}", arg_str.maybe_quote())),
 			},
 		},
 		None => Ok(None),
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn handle_obsolete(args: impl uucore::Args) -> (Vec<OsString>, Option<usize>, Option<usize>) {
 	let mut skip_fields_old = None;
@@ -379,9 +345,6 @@ fn handle_obsolete(args: impl uucore::Args) -> (Vec<OsString>, Option<usize>, Op
 			)
 		})
 		.collect();
-
-
-
 
 	let skip_fields_old: Option<usize> = skip_fields_old.and_then(|v| v.parse::<usize>().ok());
 	let skip_chars_old: Option<usize> = skip_chars_old.and_then(|v| v.parse::<usize>().ok());
@@ -403,24 +366,15 @@ fn filter_args(
 			*preceding_long_opt_req_value,
 			*preceding_short_opt_req_value,
 		) {
-
-
 			filter = handle_extract_obs_skip_fields(slice, skip_fields_old);
 		} else if should_extract_obs_skip_chars(
 			slice,
 			*preceding_long_opt_req_value,
 			*preceding_short_opt_req_value,
 		) {
-
 			filter = handle_extract_obs_skip_chars(slice, skip_chars_old);
 		} else {
-
-
 			filter = Some(OsString::from(slice));
-
-
-
-
 
 			if slice.starts_with("-f") {
 				*skip_fields_old = None;
@@ -431,18 +385,10 @@ fn filter_args(
 		}
 		handle_preceding_options(slice, preceding_long_opt_req_value, preceding_short_opt_req_value);
 	} else {
-
-
-
-
 		filter = Some(os_slice);
 	}
 	filter
 }
-
-
-
-
 
 fn should_extract_obs_skip_fields(
 	slice: &str,
@@ -458,8 +404,6 @@ fn should_extract_obs_skip_fields(
 		&& !slice.starts_with("-w")
 }
 
-
-
 fn should_extract_obs_skip_chars(
 	slice: &str,
 	preceding_long_opt_req_value: bool,
@@ -472,18 +416,11 @@ fn should_extract_obs_skip_chars(
 		&& slice.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
-
-
-
 fn handle_preceding_options(
 	slice: &str,
 	preceding_long_opt_req_value: &mut bool,
 	preceding_short_opt_req_value: &mut bool,
 ) {
-
-
-
-
 	if slice.starts_with("--") {
 		use options as O;
 		*preceding_long_opt_req_value = &slice[2..] == O::SKIP_CHARS
@@ -493,20 +430,13 @@ fn handle_preceding_options(
 			|| &slice[2..] == O::ALL_REPEATED;
 	}
 
-
-
-
 	*preceding_short_opt_req_value = slice == "-s" || slice == "-f" || slice == "-w";
-
 
 	if !slice.starts_with('-') {
 		*preceding_short_opt_req_value = false;
 		*preceding_long_opt_req_value = false;
 	}
 }
-
-
-
 
 fn handle_extract_obs_skip_fields(
 	slice: &str,
@@ -519,16 +449,8 @@ fn handle_extract_obs_skip_fields(
 		.chars()
 		.filter(|c| {
 			if c.eq(&'f') {
-
-
-
-
-
-
 				obs_overwritten_by_new = true;
 			}
-
-
 
 			if c.is_ascii_digit() && !obs_end_reached {
 				obs_extracted.push(*c);
@@ -543,13 +465,8 @@ fn handle_extract_obs_skip_fields(
 		.collect();
 
 	if obs_extracted.is_empty() {
-
 		Some(OsString::from(slice))
 	} else {
-
-
-
-
 		if obs_overwritten_by_new {
 			*skip_fields_old = None;
 		} else {
@@ -560,9 +477,6 @@ fn handle_extract_obs_skip_fields(
 			*skip_fields_old = Some(extracted);
 		}
 		if filtered_slice.get(1).is_some() {
-
-
-
 			let filtered_slice: String = filtered_slice.iter().collect();
 			Some(OsString::from(filtered_slice))
 		} else {
@@ -570,8 +484,6 @@ fn handle_extract_obs_skip_fields(
 		}
 	}
 }
-
-
 
 fn handle_extract_obs_skip_chars(
 	slice: &str,
@@ -584,21 +496,13 @@ fn handle_extract_obs_skip_chars(
 		if c.is_ascii_digit() {
 			obs_extracted.push(c);
 		} else {
-
-
-
-
 			*skip_chars_old = None;
 			return Some(OsString::from(slice));
 		}
 	}
 	if obs_extracted.is_empty() {
-
-
 		Some(OsString::from(slice))
 	} else {
-
-
 		*skip_chars_old = Some(obs_extracted.iter().collect());
 		None
 	}
@@ -738,14 +642,11 @@ fn validate_special_clap_errors(args: &[OsString]) -> Result<(), String> {
 	}
 
 	if has_group && has_conflict {
-		Err(format!(
-			"--group is mutually exclusive with -c/-d/-D/-u\n{footer}"
-		))
+		Err(format!("--group is mutually exclusive with -c/-d/-D/-u\n{footer}"))
 	} else {
 		Ok(())
 	}
 }
-
 
 pub(crate) struct Uniq {
 	matches: ArgMatches,
@@ -837,19 +738,25 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 	let output_file = output_path
 		.as_ref()
 		.map(|path| {
-			host.open_write(path, std::fs::OpenOptions::new().write(true).create(true).truncate(true)).map_err(|error| {
-				io_error(
-					&format!(
-						"Could not open {}",
-						out_file_name.expect("path operand exists").maybe_quote()
-					),
-					error,
+			host
+				.open_write(
+					path,
+					std::fs::OpenOptions::new()
+						.write(true)
+						.create(true)
+						.truncate(true),
 				)
-			})
+				.map_err(|error| {
+					io_error(
+						&format!(
+							"Could not open {}",
+							out_file_name.expect("path operand exists").maybe_quote()
+						),
+						error,
+					)
+				})
 		})
 		.transpose()?;
-
-
 
 	let writer: Box<dyn Write + '_> = match output_file {
 		Some(file) => Box::new(BufWriter::with_capacity(OUTPUT_BUFFER_CAPACITY, file)),
@@ -863,7 +770,9 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 }
 
 fn operand_path(host: &Host, operand: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
-	operand.filter(|path| *path != "-").map(|path| host.resolve(path))
+	operand
+		.filter(|path| *path != "-")
+		.map(|path| host.resolve(path))
 }
 
 fn is_c_locale(host: &Host) -> bool {
@@ -1001,9 +910,6 @@ fn get_delimiter(matches: &ArgMatches) -> Delimiters {
 	}
 }
 
-
 pub(crate) fn uniq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Uniq, SE>()
 }
-
-

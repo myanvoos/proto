@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Fixed
+
+- Keep resize frames and history stable through rapid bursts and synchronized terminal updates.
+- Recover stalled terminal replies without swallowing typed keys, split UTF-8 or pasted input; avoid rearming paste mid-paste.
+- Improve Monstar, Rex, SSH iTerm2 and attached tmux capability detection.
+- Clip SIXEL and overlapping image placements safely, composite transparency against the terminal background and refresh changed backgrounds.
+- Keep streamed Markdown equivalent to a fresh render for long lists, math, growing tables, wrapped links and wide characters.
+- Refresh autocomplete before same-batch selection and reuse fuzzy searches without stale candidates.
+- Release render caches without losing finalized content or component state.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Fixed

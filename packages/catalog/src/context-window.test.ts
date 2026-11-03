@@ -36,7 +36,7 @@ describe("resolveMaxContextWindow", () => {
 				maxContextWindow: 872_000,
 				maxTokens: 128_000,
 			});
-			expect(sol.contextWindow).toBe(272_000);
+			expect(sol.contextWindow).toBe(500_000);
 			expect(resolveMaxContextWindow(sol)).toBe(922_000);
 		}
 	});

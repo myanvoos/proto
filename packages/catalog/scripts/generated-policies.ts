@@ -64,7 +64,6 @@ const PRICING_PEER_RULES: Readonly<Record<string, PricingPeerRule>> = {
 	"google-antigravity": {
 		peers: ["google", "google-vertex", "anthropic"],
 		aliases: {
-			"gemini-3-flash": "gemini-3-flash-preview",
 			"gemini-3-pro": "gemini-3-pro-preview",
 			"gemini-3.1-pro": "gemini-3.1-pro-preview",
 			"claude-opus-4-5": "claude-opus-4-5@20251101",
@@ -73,8 +72,8 @@ const PRICING_PEER_RULES: Readonly<Record<string, PricingPeerRule>> = {
 			"claude-sonnet-4-6": "claude-sonnet-4-6@default",
 		},
 	},
-	"minimax-code": { peers: ["minimax"], aliases: { "MiniMax-M3.1-Flash-Preview": "MiniMax-M3" } },
-	"minimax-code-cn": { peers: ["minimax-cn", "minimax"], aliases: { "MiniMax-M3.1-Flash-Preview": "MiniMax-M3" } },
+	"minimax-code": { peers: ["minimax"] },
+	"minimax-code-cn": { peers: ["minimax-cn", "minimax"] },
 };
 
 /** Price zero-cost rows at their pricing-peer equivalents; billable rows and ids without a billable peer keep their cost. */
@@ -185,10 +184,7 @@ const DEEPSEEK_TIME_BASED_COSTS: Readonly<Record<string, ModelCost>> = {
 		output: 3.96,
 		cacheRead: 0.044,
 		cacheWrite: 0,
-		timeBased: {
-			...DEEPSEEK_PEAK_SCHEDULE,
-			effectiveRates: [{ effectiveFrom: Date.UTC(2026, 8, 14, 4), ...DEEPSEEK_FLASH_PEAK_COST }],
-		},
+		timeBased: DEEPSEEK_PEAK_SCHEDULE,
 	},
 };
 

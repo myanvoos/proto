@@ -35,7 +35,7 @@ import {
 import { renderSessionUsageSummary } from "../../slash-commands/helpers/usage-report";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
-import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
+import { replaceTabs, shortenEmbeddedPaths, truncateToWidth } from "../../tools/render-utils";
 import { openPath } from "../../utils/open";
 import { resumeCommand } from "../../utils/resume-command";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
@@ -214,7 +214,7 @@ export class CommandController {
 	}
 
 	async handleJobsCommand(): Promise<void> {
-		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
+		const snapshot = this.ctx.viewSession.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
 			return;
@@ -235,7 +235,7 @@ export class CommandController {
 			info += `\n${theme.bold("Running Jobs")}\n`;
 			for (const job of snapshot.running) {
 				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateToWidth(job.label, lineWidth))}\n`;
+				info += `  ${theme.fg("dim", truncateToWidth(shortenEmbeddedPaths(replaceTabs(sanitizeText(job.label))), lineWidth))}\n`;
 			}
 		}
 
@@ -243,7 +243,7 @@ export class CommandController {
 			info += `\n${theme.bold("Recent Jobs")}\n`;
 			for (const job of snapshot.recent) {
 				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateToWidth(job.label, lineWidth))}\n`;
+				info += `  ${theme.fg("dim", truncateToWidth(shortenEmbeddedPaths(replaceTabs(sanitizeText(job.label))), lineWidth))}\n`;
 			}
 		}
 
@@ -590,7 +590,7 @@ export class CommandController {
 		this.ctx.chatContainer.accountSource(bashComponent, command);
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(bashComponent);
+			this.ctx.pendingShellContainer.addChild(bashComponent);
 			this.ctx.pendingBashComponents.push(bashComponent);
 		} else {
 			this.ctx.present(bashComponent);
@@ -714,7 +714,7 @@ export class CommandController {
 		this.ctx.chatContainer.accountSource(component, code);
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(component);
+			this.ctx.pendingShellContainer.addChild(component);
 			this.ctx.pendingPythonComponents.push(component);
 		} else {
 			this.ctx.present(component);
@@ -1230,7 +1230,14 @@ export function renderUsageReports(
 		for (const report of providerReports) {
 			for (const limit of report.limits) {
 				const windowId = limit.window?.id ?? limit.scope.windowId ?? "default";
-				const key = `${formatLimitTitle(limit)}|${windowId}`;
+				// Distinct buckets can share a label and window (Antigravity's Gemini
+				// vs Gemini (Argon) weekly) and must stay separate rows instead of
+				// averaging into "50% free", so the id joins the key. Label and window
+				// stay in it too: some providers build ids positionally or per plan
+				// (kimi's `${index}`, copilot's allowance), where ids differ across
+				// accounts for the same quota. `sharedGroup` keeps the routing copies
+				// of one shared bucket together.
+				const key = limit.scope.sharedGroup ?? `${formatLimitTitle(limit)}|${windowId}|${limit.id}`;
 				const windowLabel = limit.window?.label ?? windowId;
 				const entry = limitGroups.get(key) ?? {
 					label: formatLimitTitle(limit),

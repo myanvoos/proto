@@ -5,6 +5,7 @@ import {
 	type ClientUsageClientSummary,
 	type DisabledCredentialSummary,
 	type OAuthAccountIdentity,
+	resolveCredentialIdentityKey,
 	resolveUsedFraction,
 	type UsageHistoryEntry,
 	type UsageLimit,
@@ -186,7 +187,8 @@ function formatProviderName(provider: string): string {
 
 function formatUnitValue(value: number, unit: UsageUnit): string {
 	if (unit === "usd") return `$${value.toFixed(2)}`;
-	return formatNumber(value);
+	// Metered balances (e.g. Codex spend-cap credits) arrive as fractional floats.
+	return formatNumber(Number.isInteger(value) ? value : Math.round(value * 100) / 100);
 }
 
 const UNIT_SUFFIX: Record<UsageUnit, string> = {
@@ -300,6 +302,7 @@ export function collectUnreportedAccounts(
 		const ids = [account.email, account.accountId, account.projectId]
 			.filter((value): value is string => typeof value === "string" && value.length > 0)
 			.map(value => value.toLowerCase());
+		if (!accountOrg && ids.length === 0) return false;
 		const sameOrgReports: UsageReport[] = [];
 		let sawReportOrg = false;
 		for (const report of providerReports) {
@@ -346,6 +349,18 @@ function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<str
 	return `${masked} · ${redaction?.get(org) ?? org}`;
 }
 
+/** Bold identity plus the dim same-email qualifier and plan the main view shows. */
+function formatQualifiedIdentity(
+	report: UsageReport,
+	peers: readonly UsageReport[],
+	label: string,
+	redaction?: Map<string, string>,
+): string {
+	const identity = sanitizeText((redaction?.get(label) ?? label).replace(/[\r\n\t]+/g, " "));
+	const rendered = formatCodexUsageReportLabel(report, peers, label, redaction, true, "inline");
+	return `${chalk.bold(identity)}${chalk.dim(rendered.slice(identity.length))}`;
+}
+
 function formatAccountHeader(
 	report: UsageReport,
 	peers: readonly UsageReport[],
@@ -358,9 +373,7 @@ function formatAccountHeader(
 	const label = reportAccountLabel(report, index);
 	let header = `${icon} ${chalk.bold(redaction?.get(label) ?? label)}`;
 	if (report.provider === "openai-codex") {
-		const identity = sanitizeText((redaction?.get(label) ?? label).replace(/[\r\n\t]+/g, " "));
-		const rendered = formatCodexUsageReportLabel(report, peers, label, redaction, true, "inline");
-		header = `${icon} ${chalk.bold(identity)}${chalk.dim(rendered.slice(identity.length))}`;
+		header = `${icon} ${formatQualifiedIdentity(report, peers, label, redaction)}`;
 	} else {
 		const metaOrgName = report.metadata?.orgName;
 		const metaOrgId = report.metadata?.orgId;
@@ -415,18 +428,54 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 }
 
 interface ProviderLimitTemplate {
-	id: string;
+	key: string;
 	title: string;
 }
 
-function collectProviderLimitTemplates(reports: UsageReport[]): ProviderLimitTemplate[] {
-	const seen = new Set<string>();
+/**
+ * One row per meter (label and window), not per limit id: Codex ids name a slot, and an
+ * account without a 5-hour window reports its 7-day one as `primary`. Most providers put the
+ * subscription plan in the tier (see {@link meterForLimit}), so the tier joins the key only for
+ * meters a single report repeats per tier (e.g. Antigravity's `Usage (<tier>)` rows).
+ */
+function meterKey(limit: UsageLimit): string {
+	return `${limit.label}|${limit.window?.id ?? limit.scope.windowId ?? ""}`;
+}
+
+function createLimitRowKey(reports: UsageReport[]): (limit: UsageLimit) => string {
+	const tiered = new Set<string>();
+	for (const report of reports) {
+		const seen = new Set<string>();
+		for (const limit of report.limits) {
+			const key = meterKey(limit);
+			if (seen.has(key)) tiered.add(key);
+			seen.add(key);
+		}
+	}
+	return limit => {
+		const key = meterKey(limit);
+		return tiered.has(key) ? `${key}|${limit.scope.tier ?? ""}` : key;
+	};
+}
+
+function collectProviderLimitTemplates(
+	reports: UsageReport[],
+	rowKey: (limit: UsageLimit) => string,
+): ProviderLimitTemplate[] {
 	const templates: ProviderLimitTemplate[] = [];
 	for (const report of reports) {
+		// A row first seen in a later report goes right after its predecessor in that report,
+		// so each account keeps its own row order.
+		let insertAt = 0;
 		for (const limit of report.limits) {
-			if (seen.has(limit.id)) continue;
-			seen.add(limit.id);
-			templates.push({ id: limit.id, title: limitTitle(limit) });
+			const key = rowKey(limit);
+			const existing = templates.findIndex(template => template.key === key);
+			if (existing >= 0) {
+				insertAt = existing + 1;
+				continue;
+			}
+			templates.splice(insertAt, 0, { key, title: limitTitle(limit) });
+			insertAt++;
 		}
 	}
 	return templates;
@@ -607,28 +656,87 @@ function policyEnabledProviders(
 	return providers;
 }
 
+export interface UsagePolicyDiagnostics {
+	priority: number;
+	reservePct: number;
+	reserveSource: "global" | "override";
+	reclaimAbovePct?: number;
+	state: "unknown" | "exhausted" | "eligible" | "inside-reserve";
+	remainingPct?: number;
+}
+
+function computePolicyDiagnostics(
+	provider: string,
+	identity: OAuthAccountIdentity,
+	limits: UsageLimit[] | undefined,
+	options: UsagePolicyDiagnosticsOptions,
+): UsagePolicyDiagnostics {
+	const policy = options.getAccountPolicy(provider, identity);
+	const configuredReservePct = policy?.reservePct;
+	const reservePct = Math.max(0, Math.min(100, configuredReservePct ?? options.globalReservePct));
+	const exhausted = (limits ?? []).some(limit => resolveStatus(limit) === "exhausted");
+	const usedFractions = (limits ?? [])
+		.map(resolveUsedFraction)
+		.filter((fraction): fraction is number => fraction !== undefined && Number.isFinite(fraction));
+	const base = {
+		priority: policy?.priority ?? 0,
+		reservePct,
+		reserveSource: configuredReservePct === undefined ? "global" : "override",
+		...(policy?.reclaimAbovePct === undefined ? {} : { reclaimAbovePct: policy.reclaimAbovePct }),
+	} as const;
+	if (usedFractions.length === 0) return { ...base, state: exhausted ? "exhausted" : "unknown" };
+	const remainingPct = Math.max(0, 1 - Math.max(...usedFractions)) * 100;
+	return {
+		...base,
+		state: exhausted || remainingPct <= 0 ? "exhausted" : remainingPct <= reservePct ? "inside-reserve" : "eligible",
+		remainingPct: Number(remainingPct.toFixed(1)),
+	};
+}
+
 function formatPolicyLine(
 	provider: string,
 	identity: OAuthAccountIdentity,
 	limits: UsageLimit[] | undefined,
 	options: UsagePolicyDiagnosticsOptions,
 ): string {
-	const policy = options.getAccountPolicy(provider, identity);
-	const priority = policy?.priority ?? 0;
-	const configuredReservePct = policy?.reservePct;
-	const reservePct = Math.max(0, Math.min(100, configuredReservePct ?? options.globalReservePct));
-	const reserveLabel = `${reservePct}% ${configuredReservePct === undefined ? "(global)" : "(override)"}`;
-	// `proto usage` has no model/session context, so report the conservative account-wide state from the
-	// most-consumed visible window; routing itself scopes limits per request in AuthStorage.
-	const usedFractions = (limits ?? [])
-		.map(resolveUsedFraction)
-		.filter((fraction): fraction is number => fraction !== undefined && Number.isFinite(fraction));
-	if (usedFractions.length === 0) {
-		return `policy: priority ${priority} · reserve ${reserveLabel} · reserve unknown`;
-	}
-	const remainingPct = Math.max(0, 1 - Math.max(...usedFractions)) * 100;
-	const state = remainingPct <= reservePct ? "inside reserve" : "eligible";
-	return `policy: priority ${priority} · reserve ${reserveLabel} · ${state} · ${remainingPct.toFixed(1)}% left`;
+	const policy = computePolicyDiagnostics(provider, identity, limits, options);
+	const reclaim = policy.reclaimAbovePct === undefined ? "" : ` · reclaim above ${policy.reclaimAbovePct}%`;
+	const prefix = `policy: priority ${policy.priority} · reserve ${policy.reservePct}% (${policy.reserveSource})${reclaim}`;
+	if (policy.remainingPct === undefined)
+		return `${prefix} · ${policy.state === "exhausted" ? "exhausted" : "reserve unknown"}`;
+	const state = policy.state === "inside-reserve" ? "inside reserve" : policy.state;
+	return `${prefix} · ${state} · ${policy.remainingPct.toFixed(1)}% left`;
+}
+
+/** Annotate original identities before redaction; providers without policies retain their wire shape. */
+export function annotateUsagePolicy(
+	reports: UsageReport[],
+	unreported: UsageAccountIdentity[],
+	accounts: UsageAccountIdentity[],
+	options: UsagePolicyDiagnosticsOptions,
+): {
+	reports: (UsageReport & { policy?: UsagePolicyDiagnostics })[];
+	accountsWithoutUsage: (UsageAccountIdentity & { policy?: UsagePolicyDiagnostics })[];
+} {
+	const enabled = policyEnabledProviders(reports, accounts, options);
+	return {
+		reports: reports.map(report =>
+			enabled.has(report.provider)
+				? {
+						...report,
+						policy: computePolicyDiagnostics(report.provider, metadataIdentity(report), report.limits, options),
+					}
+				: report,
+		),
+		accountsWithoutUsage: unreported.map(account =>
+			enabled.has(account.provider) && account.type === "oauth"
+				? {
+						...account,
+						policy: computePolicyDiagnostics(account.provider, accountOAuthIdentity(account), undefined, options),
+					}
+				: account,
+		),
+	};
 }
 
 function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
@@ -692,8 +800,14 @@ export function formatUsageBreakdown(
 		for (const note of providerNotes)
 			lines.push(`  ${chalk.dim(sanitizeText(note.replace(/[\r\n]+/g, " ").replace(/\t/g, "  ")))}`);
 
-		const providerLimitTemplates = collectProviderLimitTemplates(providerReports);
-		const labelWidth = providerLimitTemplates.reduce((max, template) => Math.max(max, template.title.length), 0);
+		const limitRowKey = createLimitRowKey(providerReports);
+		const providerLimitTemplates = collectProviderLimitTemplates(providerReports, limitRowKey);
+		// Rows sharing a key can carry different titles (plan tiers), so measure every rendered title.
+		const labelWidth = Math.max(
+			0,
+			...providerLimitTemplates.map(template => template.title.length),
+			...providerReports.flatMap(report => report.limits.map(limit => limitTitle(limit).length)),
+		);
 
 		providerReports.forEach((report, index) => {
 			lines.push(`  ${formatAccountHeader(report, providerReports, index, nowMs, redaction)}`);
@@ -706,15 +820,14 @@ export function formatUsageBreakdown(
 				lines.push(`      ${chalk.dim("no limits reported")}`);
 				return;
 			}
-			const limitsById = new Map<string, UsageLimit>();
-			for (const limit of report.limits) limitsById.set(limit.id, limit);
+			const limitsByKey = Map.groupBy(report.limits, limitRowKey);
 			for (const template of providerLimitTemplates) {
-				const limit = limitsById.get(template.id);
-				if (limit) {
-					lines.push(...formatLimitLine(limit, labelWidth, nowMs));
-				} else {
+				const limits = limitsByKey.get(template.key);
+				if (!limits) {
 					lines.push(formatMissingLimitLine(template, labelWidth));
+					continue;
 				}
+				for (const limit of limits) lines.push(...formatLimitLine(limit, labelWidth, nowMs));
 			}
 		});
 
@@ -766,6 +879,10 @@ interface HistorySeries {
 
 interface HistoryAccount {
 	label: string;
+	provider: string;
+	email?: string;
+	accountId?: string;
+	recordedAt: number;
 	series: Map<string, HistorySeries>;
 }
 
@@ -778,8 +895,25 @@ function historySeriesTitle(entry: UsageHistoryEntry): string {
 	return `${label} (${windowLabel})`;
 }
 
-function historyAccountLabel(entry: UsageHistoryEntry): string {
-	return entry.email ?? entry.accountId ?? entry.accountKey;
+function historyAccount(entry: UsageHistoryEntry): HistoryAccount {
+	return {
+		label: entry.email ?? entry.accountId ?? entry.accountKey,
+		provider: entry.provider,
+		email: entry.email,
+		accountId: entry.accountId,
+		recordedAt: entry.recordedAt,
+		series: new Map(),
+	};
+}
+
+/** Identity stand-in so same-email accounts get the main view's qualifier. */
+function historyIdentityReport(account: HistoryAccount): UsageReport {
+	return {
+		provider: account.provider,
+		fetchedAt: account.recordedAt,
+		limits: [],
+		metadata: { email: account.email, accountId: account.accountId },
+	};
 }
 
 function historyStatus(fraction: number | undefined, status: UsageHistoryEntry["status"]): LimitStatus {
@@ -835,7 +969,7 @@ export function formatUsageHistory(
 		}
 		let account = accounts.get(entry.accountKey);
 		if (!account) {
-			account = { label: historyAccountLabel(entry), series: new Map() };
+			account = historyAccount(entry);
 			accounts.set(entry.accountKey, account);
 		}
 		let series = account.series.get(entry.limitId);
@@ -860,8 +994,12 @@ export function formatUsageHistory(
 			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accounts.size === 1 ? "account" : "accounts"}`)}`,
 		);
 		const sortedAccounts = [...accounts.values()].sort((a, b) => a.label.localeCompare(b.label));
-		for (const account of sortedAccounts) {
-			lines.push(`  ${chalk.bold(redaction?.get(account.label) ?? account.label)}`);
+		const reports = provider === "openai-codex" ? sortedAccounts.map(historyIdentityReport) : undefined;
+		for (const [index, account] of sortedAccounts.entries()) {
+			const identity = reports
+				? formatQualifiedIdentity(reports[index], reports, account.label, redaction)
+				: chalk.bold(redaction?.get(account.label) ?? account.label);
+			lines.push(`  ${identity}`);
 			const labelWidth = [...account.series.values()].reduce((max, series) => Math.max(max, series.title.length), 0);
 			const sortedSeries = [...account.series.values()].sort((a, b) => a.title.localeCompare(b.title));
 			for (const series of sortedSeries) {
@@ -1018,18 +1156,134 @@ export function formatClientUsage(clients: ClientUsageClientSummary[], sinceMs: 
 	return lines.join("\n");
 }
 
+async function loadUsageSources(
+	cmd: UsageCommandArgs,
+	settings: Settings,
+	authStorage: AuthStorage,
+): Promise<ModelRegistry> {
+	const modelRegistry = new ModelRegistry(authStorage);
+	// Extensions contribute usage providers via `registerProvider(name, { usage })`; without loading
+	// them their accounts would show as having no usage provider.
+	await loadCliExtensionProviders(modelRegistry, settings, getProjectDir(), {
+		additionalExtensionPaths: cmd.extensions,
+		disableExtensionDiscovery: cmd.noExtensions,
+		discoverModels: false,
+	});
+	// Refresh the credential snapshot before probing extension providers with local keys and labeling
+	// accounts; an offline broker keeps the cached snapshot.
+	try {
+		await authStorage.revalidateCredentials();
+	} catch {}
+	return modelRegistry;
+}
+
+function formatNoProviderCredentials(provider: string, storedAccounts: UsageAccountIdentity[]): string {
+	const providers = [...new Set(storedAccounts.map(account => account.provider))].sort();
+	const hint =
+		providers.length > 0
+			? `Providers with stored credentials: ${providers.join(", ")}.`
+			: "Run `proto` and use /login to add accounts.";
+	return `No credentials stored for provider "${provider}". ${hint}\n`;
+}
+
+/** One OAuth account as `proto usage accounts` lists it. */
+interface OAuthIdentityKeyRow {
+	provider: string;
+	/** `null` when the credential carries no account identity, so no pool can name it. */
+	identityKey: string | null;
+	/** Organization or workspace display name, when the provider reports one. */
+	orgName?: string;
+}
+
+/**
+ * Every OAuth account this process sees (after any broker account pool), with
+ * the identity key that broker account pools match. Only the provider, the key, and the
+ * organization's display name leave each credential; tokens never do.
+ */
+function collectOAuthIdentityKeys(authStorage: AuthStorage, provider: string | undefined): OAuthIdentityKeyRow[] {
+	const rows: OAuthIdentityKeyRow[] = [];
+	for (const { provider: rowProvider, credential } of authStorage.listStoredCredentials(provider)) {
+		if (credential.type !== "oauth") continue;
+		const identityKey = resolveCredentialIdentityKey(rowProvider, credential);
+		rows.push(
+			credential.orgName
+				? { provider: rowProvider, identityKey, orgName: credential.orgName }
+				: { provider: rowProvider, identityKey },
+		);
+	}
+	return rows;
+}
+
+/** Render {@link collectOAuthIdentityKeys} rows grouped under their provider, one key per line. */
+function formatOAuthIdentityKeys(rows: readonly OAuthIdentityKeyRow[]): string {
+	const width = Math.max(...rows.map(row => row.identityKey?.length ?? 0));
+	const lines: string[] = [];
+	let provider: string | undefined;
+	for (const row of rows) {
+		if (row.provider !== provider) {
+			provider = row.provider;
+			lines.push(chalk.bold(provider));
+		}
+		if (row.identityKey === null) {
+			lines.push(chalk.dim("  (no identity key: no pool can name this account)"));
+			continue;
+		}
+		const orgName = row.orgName ? sanitizeText(row.orgName.replace(/[\r\n\t]+/g, " ")) : undefined;
+		lines.push(orgName ? `  ${row.identityKey.padEnd(width)}  ${chalk.dim(orgName)}` : `  ${row.identityKey}`);
+	}
+	return lines.join("\n");
+}
+
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 	const settings = await Settings.loadReadOnly();
 	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		if (cmd.action === "invalidate") {
 			const provider = cmd.provider?.toLowerCase();
+			if (provider) {
+				await loadUsageSources(cmd, settings, authStorage);
+				const accounts = collectStoredAccounts(authStorage);
+				if (
+					!authStorage.usageProviderFor(provider) &&
+					!accounts.some(account => account.provider.toLowerCase() === provider)
+				) {
+					process.stderr.write(chalk.yellow(formatNoProviderCredentials(provider, accounts)));
+					process.exitCode = 1;
+					return;
+				}
+			}
 			await authStorage.invalidateUsageCache(provider);
 			if (provider) {
 				process.stdout.write(`Invalidated cached usage reports for provider "${provider}".\n`);
 			} else {
 				process.stdout.write("Invalidated cached usage reports for all providers.\n");
 			}
+			return;
+		}
+		if (cmd.action === "accounts") {
+			if (cmd.redact) {
+				process.stderr.write(
+					chalk.red(
+						"`proto usage accounts` prints identity keys verbatim for configuration; --redact does not apply.\n",
+					),
+				);
+				process.exitCode = 1;
+				return;
+			}
+			const rows = collectOAuthIdentityKeys(authStorage, cmd.provider?.toLowerCase());
+			if (cmd.json) {
+				process.stdout.write(`${JSON.stringify({ accounts: rows }, null, 2)}\n`);
+				return;
+			}
+			if (rows.length === 0) {
+				const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
+				process.stderr.write(
+					chalk.yellow(`No OAuth accounts found${scope}. Run \`proto\` and use /login to add accounts.\n`),
+				);
+				process.exitCode = 1;
+				return;
+			}
+			process.stdout.write(`${formatOAuthIdentityKeys(rows)}\n`);
 			return;
 		}
 		if (cmd.action === "clients") {
@@ -1065,7 +1319,15 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const days = cmd.days !== undefined && Number.isFinite(cmd.days) && cmd.days > 0 ? cmd.days : 7;
 			const nowMs = Date.now();
 			const sinceMs = nowMs - days * 86_400_000;
-			const entries = authStorage.listUsageHistory({ sinceMs, provider: cmd.provider?.toLowerCase() });
+			const brokerConfig = await resolveAuthBrokerConfig();
+			const query = { sinceMs, provider: cmd.provider?.toLowerCase() };
+			const entries = brokerConfig
+				? (
+						await new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token }).fetchUsageHistory(
+							query,
+						)
+					).entries
+				: authStorage.listUsageHistory(query);
 			const redaction = cmd.redact ? buildRedactionMap(collectHistoryIdentityStrings(entries)) : undefined;
 			const emptyHistoryReason =
 				entries.length === 0
@@ -1094,19 +1356,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			process.stdout.write(`${formatUsageHistory(entries, sinceMs, nowMs, redaction)}\n`);
 			return;
 		}
-		const modelRegistry = new ModelRegistry(authStorage);
-		// Extensions contribute usage providers via `registerProvider(name, { usage })`; without loading
-		// them their accounts would show as having no usage provider.
-		await loadCliExtensionProviders(modelRegistry, settings, getProjectDir(), {
-			additionalExtensionPaths: cmd.extensions,
-			disableExtensionDiscovery: cmd.noExtensions,
-			discoverModels: false,
-		});
-		// Refresh the credential snapshot before probing extension providers with local keys and labeling
-		// accounts; an offline broker keeps the cached snapshot.
-		try {
-			await authStorage.revalidateCredentials();
-		} catch {}
+		const modelRegistry = await loadUsageSources(cmd, settings, authStorage);
 		const reports =
 			(await authStorage.fetchUsageReports({
 				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
@@ -1142,9 +1392,20 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 					: `No credentials found${cmd.provider ? ` for provider "${cmd.provider}"` : ""}. Run \`proto\` and use /login to add accounts.`
 				: undefined;
 
+		const policyOptions: UsagePolicyDiagnosticsOptions = {
+			globalReservePct: settings.get("retry.usageReservePct"),
+			getAccountPolicy: (provider, identity) => authStorage.getAccountPolicy(provider, identity),
+		};
+
 		if (cmd.json) {
-			let trimmed = filteredReports.map(({ raw: _raw, ...rest }) => rest);
-			let unreportedAccounts = collectUnreportedAccounts(filteredReports, accounts);
+			const annotated = annotateUsagePolicy(
+				filteredReports,
+				collectUnreportedAccounts(filteredReports, accounts),
+				accounts,
+				policyOptions,
+			);
+			let trimmed = annotated.reports.map(({ raw: _raw, ...rest }) => rest);
+			let unreportedAccounts = annotated.accountsWithoutUsage;
 			if (redaction) {
 				trimmed = trimmed.map(report => redactReportForJson(report, redaction));
 				unreportedAccounts = unreportedAccounts.map(account => ({
@@ -1192,10 +1453,6 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 
-		const policyOptions: UsagePolicyDiagnosticsOptions = {
-			globalReservePct: settings.get("retry.usageReservePct"),
-			getAccountPolicy: (provider, identity) => authStorage.getAccountPolicy(provider, identity),
-		};
 		process.stdout.write(
 			`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled, policyOptions)}\n`,
 		);

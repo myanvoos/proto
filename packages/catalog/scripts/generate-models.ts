@@ -21,6 +21,7 @@ import { ANTIGRAVITY_PRIMARY_ENDPOINT, fetchAntigravityDiscoveryModels } from ".
 import { fetchCodexModels } from "../src/discovery/codex";
 import { buildGitLabDuoWorkflowFallbackModel } from "../src/discovery/gitlab-duo-workflow";
 import { createModelManager } from "../src/model-manager";
+import { applyModelPolicy, REVIEWED_MODEL_SEEDS } from "../src/model-policy";
 import { resolveOpenAIDaybreakStandardCost } from "../src/openai-pricing";
 import { toModelSpec } from "../src/provider-models/bundled-references";
 import {
@@ -31,6 +32,12 @@ import {
 } from "../src/provider-models/descriptor-types";
 import { getCatalogProviderEntry, PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
+import {
+	CORALBRICKS_STATIC_MODELS,
+	INCEPTION_STATIC_MODELS,
+	SAMBANOVA_STATIC_MODELS,
+	SCALEWAY_STATIC_MODELS,
+} from "../src/provider-models/new-providers";
 import {
 	ABLITERATION_STATIC_MODELS,
 	AIAND_STATIC_MODELS,
@@ -114,6 +121,8 @@ export function mergePreviousSnapshotModels(
 				!DISCOVERY_ONLY_PROVIDERS.has(model.provider) &&
 				!RETIRED_PROVIDERS.has(model.provider) &&
 				!CREDENTIAL_SCOPED_PROVIDERS.has(model.provider) &&
+				model.provider !== "yolo-auto" &&
+				model.provider !== "coralbricks" &&
 				!excludedProviders.has(model.provider)
 			) {
 				merged.push(model);
@@ -493,6 +502,15 @@ async function generateModels() {
 	allModels.push(...OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS);
 
 	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
+	allModels.unshift(...REVIEWED_MODEL_SEEDS);
+	for (const seeds of [
+		CORALBRICKS_STATIC_MODELS,
+		SAMBANOVA_STATIC_MODELS,
+		INCEPTION_STATIC_MODELS,
+		SCALEWAY_STATIC_MODELS,
+	]) {
+		if (!authoritativeCatalogProviders.has(seeds[0]!.provider)) allModels.unshift(...seeds);
+	}
 
 	allModels.push({
 		id: "glm-5.3",
@@ -624,6 +642,7 @@ async function generateModels() {
 
 	allModels = projectOpenAIProReasoningAliases(allModels);
 	applyGeneratedModelPolicies(allModels);
+	allModels = allModels.map(applyModelPolicy);
 	linkOpenAIPromotionTargets(allModels);
 
 	allModels = collapseEffortVariantsAcrossProviders(allModels);

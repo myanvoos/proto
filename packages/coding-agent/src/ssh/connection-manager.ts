@@ -174,10 +174,13 @@ async function validateKeyPermissions(keyPath?: string): Promise<void> {
 	}
 }
 
-function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): string[] {
+type ControlPathOwner = "proto" | "config";
+
+function buildCommonArgs(host: SSHConnectionTarget, owner: ControlPathOwner, options?: SSHArgsOptions): string[] {
 	const args = options?.allowStdin ? [] : ["-n"];
 
-	args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
+	args.push("-o", "ControlMaster=auto");
+	if (owner === "proto") args.push("-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
 	args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new");
 
 	if (host.port) {
@@ -226,6 +229,39 @@ function ensureSshBinary(): void {
 	if (!$which("ssh")) {
 		throw new Error("ssh binary not found on PATH");
 	}
+}
+
+// Reuse authenticated user masters (including MFA hosts), without owning their lifetime.
+const controlPathOwners = new Map<string, Promise<ControlPathOwner>>();
+
+function resolveControlPathOwner(host: SSHConnectionTarget): Promise<ControlPathOwner> {
+	const target = buildSshTarget(host.username, host.host);
+	const key = `${target}:${host.port ?? ""}`;
+	let owner = controlPathOwners.get(key);
+	if (!owner) {
+		owner = lookupControlPathOwner(target, host.port);
+		controlPathOwners.set(key, owner);
+	}
+	return owner;
+}
+
+async function lookupControlPathOwner(target: string, port?: number): Promise<ControlPathOwner> {
+	const args = port ? ["-G", "-p", String(port), target] : ["-G", target];
+	try {
+		const { exitCode, stdout, stderr } = await runSshCaptureSync(args);
+		if (exitCode !== 0) {
+			logger.debug("ssh -G failed; using proto ControlPath", { target, error: stderr });
+			return "proto";
+		}
+		for (const line of stdout.split("\n")) {
+			if (!line.startsWith("controlpath ")) continue;
+			const value = line.slice("controlpath ".length).trim();
+			return value && value !== "none" ? "config" : "proto";
+		}
+	} catch (err) {
+		logger.debug("ssh -G failed; using proto ControlPath", { target, error: String(err) });
+	}
+	return "proto";
 }
 
 function parseOs(value: unknown): SSHHostOs | null {
@@ -442,13 +478,30 @@ export async function buildRemoteCommand(
 	options?: SSHArgsOptions,
 ): Promise<string[]> {
 	await validateKeyPermissions(host.keyPath);
-	return [...buildCommonArgs(host, options), buildSshTarget(host.username, host.host), command];
+	const target = buildSshTarget(host.username, host.host);
+	const owner = await resolveControlPathOwner(host);
+	return [...buildCommonArgs(host, owner, options), target, command];
 }
 
 let registered = false;
 
+const CONNECTION_VERIFY_TTL_MS = 30_000;
+const verifiedConnections = new Map<string, { at: number; fingerprint: string }>();
+
 export async function ensureConnection(host: SSHConnectionTarget): Promise<void> {
+	// Recheck socket-directory safety even when the connection itself remains trusted.
+	ensureSshControlDir();
 	const key = host.name;
+	const fingerprint = `${host.username ?? ""}@${host.host}:${host.port ?? ""}\0${host.keyPath ?? ""}`;
+	const verified = verifiedConnections.get(key);
+	if (
+		verified &&
+		Date.now() - verified.at < CONNECTION_VERIFY_TTL_MS &&
+		verified.fingerprint === fingerprint &&
+		activeHosts.has(key) &&
+		hostInfoCache.has(key)
+	)
+		return;
 	const pending = pendingConnections.get(key);
 	if (pending) {
 		await pending;
@@ -457,7 +510,6 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 
 	const promise = (async () => {
 		ensureSshBinary();
-		ensureSshControlDir();
 		await validateKeyPermissions(host.keyPath);
 
 		if (!registered) {
@@ -468,8 +520,11 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 		}
 
 		const target = buildSshTarget(host.username, host.host);
-		const check = await runSshSync(["-O", "check", ...buildCommonArgs(host), target]);
-		if (check.exitCode === 0) {
+		const owner = await resolveControlPathOwner(host);
+		const commonArgs = buildCommonArgs(host, owner);
+		const check = await runSshSync(["-O", "check", ...commonArgs, target]);
+		// Configured sockets connect on demand under the user's ControlPersist policy.
+		if (check.exitCode === 0 || owner === "config") {
 			activeHosts.set(key, host);
 			if (!hostInfoCache.has(key) && !(await loadHostInfoFromDisk(host))) {
 				await probeHostInfo(host);
@@ -477,7 +532,7 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 			return;
 		}
 
-		const start = await runSshSync(["-M", "-N", "-f", ...buildCommonArgs(host), target]);
+		const start = await runSshSync(["-M", "-N", "-f", ...commonArgs, target]);
 		if (start.exitCode !== 0) {
 			const detail = start.stderr ? `: ${start.stderr}` : "";
 			throw new Error(`Failed to start SSH master for ${target}${detail}`);
@@ -492,6 +547,7 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 	pendingConnections.set(key, promise);
 	try {
 		await promise;
+		verifiedConnections.set(key, { at: Date.now(), fingerprint });
 	} finally {
 		pendingConnections.delete(key);
 	}
@@ -499,13 +555,17 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 
 async function closeConnectionInternal(host: SSHConnectionTarget): Promise<void> {
 	const target = buildSshTarget(host.username, host.host);
-	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target]);
+	const owner = await resolveControlPathOwner(host);
+	// A configured socket can now belong to a replacement user master; never exit it.
+	if (owner === "config") return;
+	await runSshSync(["-O", "exit", ...buildCommonArgs(host, owner), target]);
 }
 
 export async function closeAllConnections(): Promise<void> {
 	for (const [name, host] of Array.from(activeHosts.entries())) {
 		await closeConnectionInternal(host);
 		activeHosts.delete(name);
+		verifiedConnections.delete(name);
 	}
 }
 

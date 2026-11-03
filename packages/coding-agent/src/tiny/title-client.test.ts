@@ -96,3 +96,39 @@ describe("TinyTitleClient idle worker kill", () => {
 		await client.terminate();
 	});
 });
+
+test("a worker exit closes an aborted model load without adding an error for an idle ready model", async () => {
+	let reply: ((message: TinyTitleWorkerOutbound) => void) | undefined;
+	let fail: ((error: Error) => void) | undefined;
+	const client = new TinyTitleClient(() => {
+		const worker = createFakeWorker();
+		worker.handle.onMessage = handler => {
+			reply = handler;
+			return () => {
+				reply = undefined;
+			};
+		};
+		worker.handle.onError = handler => {
+			fail = handler;
+			return () => {
+				fail = undefined;
+			};
+		};
+		return worker.handle;
+	}, 0);
+	const progress: string[] = [];
+	client.onProgress(event => progress.push(event.status));
+	const abort = new AbortController();
+	const pending = client.generate("lfm2-700m", "title", abort.signal);
+	reply?.({ type: "progress", id: "1", event: { modelKey: "lfm2-700m", status: "initiate" } });
+	abort.abort();
+	expect(await pending).toBeNull();
+	fail?.(new Error("tiny model subprocess exited with code 1"));
+	expect(progress).toEqual(["initiate", "error"]);
+
+	client.prewarm("lfm2-700m");
+	reply?.({ type: "progress", id: "2", event: { modelKey: "lfm2-700m", status: "ready" } });
+	fail?.(new Error("tiny model subprocess exited with code 1"));
+	expect(progress).toEqual(["initiate", "error", "ready"]);
+	await client.terminate();
+});

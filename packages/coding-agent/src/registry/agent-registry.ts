@@ -79,6 +79,8 @@ export interface AgentHistorySummary {
 
 	resolvedModelIsFallback?: boolean;
 	metrics?: AgentMetricsSummary;
+	/** Lifetime spend of this agent only, including off-transcript model calls. */
+	directCost?: number;
 	readOnly?: boolean;
 
 	outputPath?: string;

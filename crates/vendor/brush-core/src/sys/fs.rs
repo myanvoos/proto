@@ -1,16 +1,12 @@
-
-
 use std::{
 	borrow::Cow,
 	path::{Path, PathBuf},
 };
 
-
 #[allow(clippy::missing_const_for_fn)]
 pub fn normalize_shell_path(path: &Path) -> Cow<'_, Path> {
 	Cow::Borrowed(path)
 }
-
 
 #[allow(clippy::missing_const_for_fn)]
 pub fn pattern_drive_alias_root(
@@ -23,19 +19,14 @@ pub fn pattern_drive_alias_root(
 	None
 }
 
-
 pub use super::platform::fs::*;
 
-
 pub trait PathExt {
-
 	fn readable(&self) -> bool;
 
 	fn writable(&self) -> bool;
 
-
 	fn executable(&self) -> bool;
-
 
 	fn exists_and_is_block_device(&self) -> bool;
 
@@ -51,8 +42,5 @@ pub trait PathExt {
 
 	fn exists_and_is_sticky_bit(&self) -> bool;
 
-
 	fn get_device_and_inode(&self) -> Result<(u64, u64), crate::error::Error>;
 }
-
-

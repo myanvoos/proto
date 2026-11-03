@@ -20,6 +20,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -92,6 +93,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

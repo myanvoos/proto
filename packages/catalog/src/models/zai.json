@@ -17,7 +17,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 98304,
-		"int": 12.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -33,6 +32,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -52,6 +53,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -74,8 +76,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 98304,
-		"int": 11.1,
-		"tps": 85.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -91,6 +91,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -110,6 +112,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -147,6 +150,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -166,6 +171,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -184,13 +190,11 @@
 		"cost": {
 			"input": 0.6,
 			"output": 1.8,
-			"cacheRead": 0,
+			"cacheRead": 0.11,
 			"cacheWrite": 0
 		},
 		"contextWindow": 64000,
 		"maxTokens": 16384,
-		"int": 6.7,
-		"tps": 51.9,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -206,6 +210,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -225,6 +231,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -247,8 +254,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 14.9,
-		"tps": 36.7,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -264,6 +269,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -283,6 +290,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -301,13 +309,11 @@
 		"cost": {
 			"input": 0.3,
 			"output": 0.9,
-			"cacheRead": 0,
+			"cacheRead": 0.05,
 			"cacheWrite": 0
 		},
 		"contextWindow": 128000,
 		"maxTokens": 32768,
-		"int": 8.4,
-		"tps": 87,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -323,6 +329,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -342,6 +350,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -380,6 +389,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -399,6 +410,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -421,8 +433,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.2,
-		"tps": 68.3,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -438,6 +448,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -457,6 +469,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -479,8 +492,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 131072,
-		"int": 14.9,
-		"tps": 65.3,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -496,6 +507,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -515,6 +528,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -552,6 +566,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -571,6 +587,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -593,8 +610,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 27.9,
-		"tps": 78.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -611,6 +626,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -630,6 +647,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -652,7 +670,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 131072,
-		"int": 26.6,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -669,6 +686,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -688,6 +707,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -710,8 +730,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 131072,
-		"int": 26.1,
-		"tps": 43.2,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -728,6 +746,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -747,6 +767,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -769,8 +790,6 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
-		"int": 33.7,
-		"tps": 93.3,
 		"thinking": {
 			"mode": "anthropic-budget-effort",
 			"efforts": [
@@ -783,6 +802,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -802,6 +823,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -824,8 +846,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
-		"int": 44.8,
-		"tps": 74.1,
+		"int": 31.7,
 		"thinking": {
 			"mode": "anthropic-budget-effort",
 			"efforts": [
@@ -841,6 +862,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -860,6 +883,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -883,8 +907,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
-		"int": 41.8,
-		"tps": 54.1,
+		"int": 27.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -900,6 +923,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -985,6 +1009,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -1004,6 +1030,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -1027,7 +1054,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 131072,
-		"int": 23.5,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -1044,6 +1070,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -1063,6 +1091,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": true,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}

@@ -4,29 +4,22 @@ use brush_core::{ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 use itertools::Itertools;
 
-
 #[derive(Parser)]
 pub(crate) struct ShoptCommand {
-
 	#[arg(short = 'o')]
 	set_o_names_only: bool,
-
 
 	#[arg(short = 'p')]
 	print: bool,
 
-
 	#[arg(short = 'q')]
 	quiet: bool,
-
 
 	#[arg(short = 's')]
 	set: bool,
 
-
 	#[arg(short = 'u')]
 	unset: bool,
-
 
 	options: Vec<String>,
 }
@@ -48,7 +41,6 @@ impl builtins::Command for ShoptCommand {
 			if self.quiet {
 				return Ok(ExecutionResult::success());
 			}
-
 
 			let options = if self.set_o_names_only {
 				brush_core::namedoptions::options(brush_core::namedoptions::ShellOptionKind::SetO)
@@ -86,7 +78,6 @@ impl builtins::Command for ShoptCommand {
 			Ok(ExecutionResult::success())
 		} else {
 			let mut return_value = ExecutionResult::success();
-
 
 			for option_name in &self.options {
 				let option_definition = if self.set_o_names_only {

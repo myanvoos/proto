@@ -42,24 +42,31 @@ test("disposes a persistent shell and force-kills a stubborn background child", 
 	}
 });
 
-test("an interrupted persistent shell is closed after its quarantine drains", async () => {
+test("an interrupted persistent shell terminates its process and never reuses quarantined state", async () => {
 	const sessionKey = `bash-shell-quarantine-${crypto.randomUUID()}`;
-	const started = Promise.withResolvers<void>();
-	const originalRun = Shell.prototype.run;
-	const close = spyOn(Shell.prototype, "close");
-	spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk, dispatcher) {
-		started.resolve();
-		return originalRun.call(this, options, onChunk, dispatcher);
-	});
+	const started = Promise.withResolvers<number>();
 	const abort = new AbortController();
+	let child: Process | null = null;
+	let output = "";
 	try {
-		const result = executeBash("sleep 30", { sessionKey, signal: abort.signal });
-		await started.promise;
+		const result = executeBash(`export QUARANTINED_SHELL=stale; /bin/sh -c 'printf "%s\\n" "$$"; exec sleep 30'`, {
+			sessionKey,
+			signal: abort.signal,
+			onChunk: chunk => {
+				output += chunk;
+				if (output.includes("\n")) started.resolve(Number.parseInt(output, 10));
+			},
+		});
+		child = Process.fromPid(await started.promise);
+		expect(child).not.toBeNull();
 		abort.abort();
 		expect((await result).cancelled).toBe(true);
-		await close.mock.results.at(-1)?.value;
-		expect(close).toHaveBeenCalled();
+		expect(await child!.waitForExit({ timeoutMs: 5_000 })).toBe(true);
+		const replacement = await executeBash('printf "<%s>" "$QUARANTINED_SHELL"', { sessionKey });
+		expect(replacement.output).toBe("<>");
 	} finally {
+		abort.abort();
+		child?.killTree(9);
 		await disposeBashSessions(sessionKey);
 	}
 }, 10_000);
@@ -110,17 +117,19 @@ test("retains background jobs from a replacement shell after cancellation", asyn
 	const firstRun = Promise.withResolvers<ShellRunResult>();
 	const started = Promise.withResolvers<void>();
 	const oldShellClosed = Promise.withResolvers<void>();
+	let interruptedShell: Shell | undefined;
 	let first = true;
 	const originalRun = Shell.prototype.run;
 	const originalClose = Shell.prototype.close;
 	spyOn(Shell.prototype, "close").mockImplementation(async function (this: Shell) {
 		const result = await originalClose.call(this);
-		oldShellClosed.resolve();
+		if (this === interruptedShell) oldShellClosed.resolve();
 		return result;
 	});
 	spyOn(Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk, dispatcher) {
 		if (first) {
 			first = false;
+			interruptedShell = this;
 			started.resolve();
 			return firstRun.promise;
 		}
@@ -198,19 +207,46 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 	expect(result.output).not.toContain("multiple ... errors");
 });
 
-test("only a session-owned lane reports a shell lost by an earlier call", async () => {
+test("exit ends the command without losing the lane's variables and functions", async () => {
+	const lane = `exit-${crypto.randomUUID()}`;
+	const sessionKey = `bash-shell-exit-${crypto.randomUUID()}`;
+	try {
+		const exited = await executeBash('KEPT=preserved; kept_fn() { printf "%s" "$KEPT"; }; exit 3; KEPT=unreachable', {
+			lane,
+			sessionKey,
+		});
+		expect(exited.exitCode).toBe(3);
+		const resumed = await executeBash("kept_fn", { lane, sessionKey });
+		expect(resumed.exitCode).toBe(0);
+		expect(resumed.output).toBe("preserved");
+		expect(resumed.shellStateLost).toBeUndefined();
+	} finally {
+		await disposeBashSessions(sessionKey);
+	}
+});
+
+test("only a session-owned lane reports cancellation loss, and only once", async () => {
 	const lane = `lost-${crypto.randomUUID()}`;
 	const sessionKey = `bash-shell-lost-${crypto.randomUUID()}`;
 	try {
-		// Without a session id the lane's shell is shared by every caller; nobody owns the loss.
-		await executeBash("exit 3", { lane });
-		expect((await executeBash("true", { lane })).shellStateLost).toBeUndefined();
-
-		expect((await executeBash("exit 3", { lane, sessionKey })).exitCode).toBe(3);
-		expect((await executeBash("true", { lane, sessionKey })).shellStateLost).toContain(
-			`lane ${lane} shell exited with code 3`,
-		);
-		expect((await executeBash("true", { lane, sessionKey })).shellStateLost).toBeUndefined();
+		for (const owner of [undefined, sessionKey]) {
+			const abort = new AbortController();
+			const interrupted = await executeBash("printf ready; sleep 30", {
+				lane,
+				sessionKey: owner,
+				signal: abort.signal,
+				onChunk: () => abort.abort(),
+			});
+			expect(interrupted.cancelled).toBe(true);
+			const resumed = await executeBash("true", { lane, sessionKey: owner });
+			if (owner) {
+				expect(resumed.shellStateLost).toContain(`lane ${lane} shell was killed by a cancellation`);
+			} else {
+				// Shared lanes have no session owner to receive a loss notice.
+				expect(resumed.shellStateLost).toBeUndefined();
+			}
+			expect((await executeBash("true", { lane, sessionKey: owner })).shellStateLost).toBeUndefined();
+		}
 	} finally {
 		await disposeBashSessions(sessionKey);
 	}
@@ -284,3 +320,19 @@ test("watchdog timeout flags output as possibly incomplete when the native shell
 		await disposeBashSessions(sessionKey);
 	}
 }, 15_000);
+
+test("non-interactive rebase defaults do not overwrite persistent shell git config exports", async () => {
+	const sessionKey = `bash-git-config-${crypto.randomUUID()}`;
+	try {
+		await executeBash("export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=test.marker GIT_CONFIG_VALUE_0=preserved", {
+			sessionKey,
+		});
+		const result = await executeBash(
+			'printf "%s:%s:%s:%s" "$GIT_SEQUENCE_EDITOR" "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0"',
+			{ sessionKey },
+		);
+		expect(result.output).toContain("true:1:test.marker:preserved");
+	} finally {
+		await disposeBashSessions(sessionKey);
+	}
+});

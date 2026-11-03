@@ -5,8 +5,11 @@ import { resolveProviderModels } from "../model-manager";
 import type { FetchImpl } from "../types";
 import {
 	alibabaTokenPlanModelManagerOptions,
+	fetchLiteLLMRichModels,
+	kiloModelManagerOptions,
 	kimiCodeModelManagerOptions,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
+	nanoGptModelManagerOptions,
 	opencodeGoModelManagerOptions,
 	opencodeZenModelManagerOptions,
 	openrouterModelManagerOptions,
@@ -165,7 +168,7 @@ describe("OpenCode gateway discovery", () => {
 	it("routes gateway-listed Union Alpha to Messages on Go and Zen", async () => {
 		const fetchModels: FetchImpl = async () => Response.json({ data: [{ id: "union-alpha" }] });
 		for (const [makeOptions, baseUrl] of [
-			[opencodeGoModelManagerOptions, "https://opencode.ai/zen/go"],
+			[opencodeGoModelManagerOptions, "https://opencode.ai/inference/go"],
 			[opencodeZenModelManagerOptions, "https://opencode.ai/zen"],
 		] as const) {
 			const options = makeOptions({ apiKey: "sk-test", fetch: fetchModels });
@@ -182,8 +185,8 @@ describe("OpenCode gateway discovery", () => {
 	it("routes models.dev-omitted Muse Spark 1.3 lanes to Responses (#10610)", () => {
 		// Both gateways serve these ids only at /v1/responses; the completions default 500s every turn.
 		for (const [providerId, modelId, baseUrl] of [
-			["opencode-go", "muse-spark-1.3", "https://opencode.ai/zen/go/v1"],
-			["opencode-go", "muse-spark-1.3-contributor", "https://opencode.ai/zen/go/v1"],
+			["opencode-go", "muse-spark-1.3", "https://opencode.ai/inference/go/v1"],
+			["opencode-go", "muse-spark-1.3-contributor", "https://opencode.ai/inference/go/v1"],
 			["opencode-zen", "muse-spark-1.3-contributor-free", "https://opencode.ai/zen/v1"],
 		] as const) {
 			const descriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === providerId);
@@ -239,5 +242,112 @@ describe("Kimi Code discovery", () => {
 		expect(costOf("k3")).toMatchObject({ input: 3, output: 15, cacheRead: 0.3 });
 		expect(costOf("kimi-k2")).toMatchObject({ input: 0.6, output: 2.5, cacheRead: 0.15 });
 		expect(costOf("kimi-unlisted")).toMatchObject({ input: 0, output: 0 });
+	});
+});
+
+describe("Live gateway metadata", () => {
+	it("reads provider token limits for an unbundled model instead of leaving them unknown", async () => {
+		const models = await veniceModelManagerOptions({
+			apiKey: "fixture",
+			fetch: async () =>
+				Response.json({
+					data: [{ id: "unbundled-fixture", context_length: 262144, max_completion_tokens: 4096 }],
+				}),
+		}).fetchDynamicModels?.();
+		expect(models?.find(model => model.id === "unbundled-fixture")).toMatchObject({
+			contextWindow: 262144,
+			maxTokens: 4096,
+		});
+	});
+
+	it("uses Kilo's per-token tariff and preserves a published free rate", async () => {
+		const models = await kiloModelManagerOptions({
+			fetch: async () =>
+				Response.json({
+					data: [
+						{
+							id: "priced-fixture",
+							pricing: {
+								prompt: "0.000002",
+								completion: "0.00001",
+								input_cache_read: "0",
+								input_cache_write: "0.000003",
+							},
+						},
+					],
+				}),
+		}).fetchDynamicModels?.();
+		expect(models?.[0]?.cost).toEqual({ input: 2, output: 10, cacheRead: 0, cacheWrite: 3 });
+	});
+
+	it("requests NanoGPT's detailed roster and converts its cache tariff units", async () => {
+		let url = "";
+		const models = await nanoGptModelManagerOptions({
+			apiKey: "fixture",
+			fetch: async input => {
+				url = String(input);
+				return Response.json({
+					data: [
+						{
+							id: "unbundled-fixture",
+							name: "Detailed Name",
+							context_length: 262144,
+							max_output_tokens: 16384,
+							pricing: {
+								unit: "per_million_tokens",
+								prompt: 2,
+								completion: 10,
+								cacheReadInputPer1kTokens: 0.001,
+								cacheWriteInputPer1kTokens: 0.003,
+							},
+						},
+					],
+				});
+			},
+		}).fetchDynamicModels?.();
+		expect(new URL(url).searchParams.get("detailed")).toBe("true");
+		expect(models?.[0]).toMatchObject({
+			name: "Detailed Name",
+			contextWindow: 262144,
+			maxTokens: 16384,
+			cost: { input: 2, output: 10, cacheRead: 1, cacheWrite: 3 },
+		});
+	});
+
+	it("collects every LiteLLM management page and rejects a partial paginated roster", async () => {
+		let failLast = false;
+		const fetchModels: FetchImpl = async input => {
+			const url = new URL(String(input));
+			if (url.pathname !== "/v2/model/info") return new Response(null, { status: 404 });
+			const page = Number(url.searchParams.get("page") ?? 1);
+			if (failLast && page === 2) return new Response(null, { status: 503 });
+			return Response.json({
+				current_page: page,
+				total_pages: 2,
+				total_count: 2,
+				data: [
+					{
+						model_name: `model-${page}`,
+						model_info: {
+							max_input_tokens: 128000,
+							max_output_tokens: 4096,
+							supports_vision: false,
+							supports_reasoning: false,
+							supports_function_calling: true,
+						},
+					},
+				],
+			});
+		};
+		const options = {
+			api: "openai-completions" as const,
+			provider: "litellm",
+			baseUrl: "http://fixture.test/v1",
+			fetch: fetchModels,
+		};
+		const complete = await fetchLiteLLMRichModels(options);
+		expect(complete?.map(model => model.id)).toEqual(["model-1", "model-2"]);
+		failLast = true;
+		expect(await fetchLiteLLMRichModels(options)).toBeNull();
 	});
 });

@@ -13,6 +13,7 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import {
 	directoryExists,
 	directoryIsEnterable,
@@ -34,6 +35,7 @@ import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore, sweepUnreferencedBlobs } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
+import { sessionExitFollowsLastMessage } from "./exit-diagnostics";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -54,6 +56,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
+	EPHEMERAL_MODEL_CHANGE_ROLE,
 	emptyUsageStatistics,
 	type FileEntry,
 	type LabelEntry,
@@ -62,6 +65,7 @@ import {
 	type NewSessionOptions,
 	parseSubagentUsageEntry,
 	type ResetBoundaryEntry,
+	resolveSessionLeafId,
 	type ServiceTierChangeEntry,
 	type SessionEntry,
 	type SessionHeader,
@@ -72,6 +76,7 @@ import {
 	SUBAGENT_USAGE_CUSTOM_TYPE,
 	type SubagentUsageEntryData,
 	type SubagentUsageTotals,
+	sessionEntryLeafId,
 	type ThinkingLevelChangeEntry,
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
@@ -94,6 +99,7 @@ import {
 	appendSessionArchive,
 	estimateResolvedBlobBytes,
 	loadSessionFile,
+	normalizeAssistantUsage,
 	resolveBlobRefsInEntries,
 	resolveBlobRefsInEntriesSync,
 	type SessionArchive,
@@ -111,7 +117,7 @@ import {
 	sessionDirectoryError,
 	writeTerminalBreadcrumb,
 } from "./session-paths";
-import { prepareEntryForPersistence } from "./session-persistence";
+import { forgetExternalizedImages, prepareEntryForPersistence } from "./session-persistence";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
@@ -429,13 +435,16 @@ class SessionEntryIndex {
 	rebuild(entries: readonly SessionEntry[]): void {
 		this.clear();
 		for (const entry of entries) this.insert(entry);
+		this.setLeaf(resolveSessionLeafId(entries));
 	}
 
 	insert(entry: SessionEntry): void {
+		const isNew = !this.#entriesById.has(entry.id);
+		const nextLeaf = sessionEntryLeafId(entry);
 		this.#entriesById.set(entry.id, entry);
-		if (this.#leafPath && entry.parentId === this.#leaf) this.#leafPath.push(entry);
+		if (isNew && nextLeaf === entry.id && this.#leafPath && entry.parentId === this.#leaf) this.#leafPath.push(entry);
 		else this.#leafPath = undefined;
-		this.#leaf = entry.id;
+		this.#leaf = nextLeaf;
 
 		const bucket = this.#children.get(entry.parentId);
 		if (bucket) bucket.push(entry);
@@ -563,6 +572,7 @@ export type ReadonlySessionManager = Pick<
 	| "allocateArtifactPath"
 	| "saveArtifact"
 	| "getArtifactPath"
+	| "getArtifactContent"
 	| "getLeafId"
 	| "getLeafEntry"
 	| "getEntry"
@@ -653,6 +663,20 @@ export class ForkSourceNotFoundError extends Error {
 		super(`Session "${sourcePath}" not found.`);
 		this.name = "ForkSourceNotFoundError";
 	}
+}
+
+interface SessionFileBody {
+	lines: string[];
+	bytes: number;
+}
+
+function textMatchesBody(text: string, body: SessionFileBody): boolean {
+	let offset = 0;
+	for (const line of body.lines) {
+		if (!text.startsWith(line, offset)) return false;
+		offset += line.length;
+	}
+	return offset === text.length;
 }
 
 export class SessionManager {
@@ -749,16 +773,16 @@ export class SessionManager {
 
 	private constructor(cwd: string, sessionDir: string, persist: boolean, storage: SessionStorage) {
 		this.#cwd = cwd;
-		this.#sessionDir = sessionDir;
+		this.#sessionDir = sessionDir ? path.resolve(sessionDir) : sessionDir;
 		this.#persist = persist;
 		this.#storage = storage;
 		this.#blobs = new BlobStore(getBlobsDir());
 
 		if (persist && sessionDir) {
 			try {
-				this.#storage.ensureDirSync(sessionDir);
+				this.#storage.ensureDirSync(this.#sessionDir);
 			} catch (error) {
-				throw sessionDirectoryError(sessionDir, error);
+				throw sessionDirectoryError(this.#sessionDir, error);
 			}
 		}
 	}
@@ -782,6 +806,7 @@ export class SessionManager {
 	}
 
 	#noteDiskFailure(errorLike: unknown): Error {
+		forgetExternalizedImages(this.#blobs);
 		const error = toError(errorLike);
 		// Lock contention is retryable, so it never latches a permanent disk failure —
 		// but it must never be silent either: another live process holding the file
@@ -876,6 +901,7 @@ export class SessionManager {
 	}
 
 	#latchIndeterminate(operationError: Error, recoveryErrors: readonly Error[]): SessionPersistenceIndeterminateError {
+		forgetExternalizedImages(this.#blobs);
 		const error = new SessionPersistenceIndeterminateError(operationError, recoveryErrors);
 		this.#diskFailure = error;
 		if (!this.#diskFailureLogged) {
@@ -967,7 +993,7 @@ export class SessionManager {
 						recoveryErrors.push(toError(readFailure));
 						throw this.#latchIndeterminate(operationError, recoveryErrors);
 					}
-					if (actual !== body) {
+					if (!textMatchesBody(actual, body)) {
 						recoveryErrors.push(new Error("Authoritative session repair did not match durable storage."));
 						throw this.#latchIndeterminate(operationError, recoveryErrors);
 					}
@@ -1060,17 +1086,7 @@ export class SessionManager {
 	#retainEntry(entry: SessionEntry): SessionEntry {
 		// Older and imported transcripts can carry assistant turns without usage; renderers and totals dereference it.
 		// Repaired in memory only, so loading such a session never forces a rewrite.
-		if (entry.type === "message" && entry.message.role === "assistant" && !entry.message.usage) {
-			entry.message.usage = {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
-			logger.debug("Assistant message without usage treated as zero usage", { id: entry.id });
-		}
+		if (entry.type === "message" && entry.message.role === "assistant") normalizeAssistantUsage(entry.message);
 		// Configuration/identity rows are already lightweight. Every payload-bearing row lives on disk,
 		// including ordinary messages below the persistence truncation threshold.
 		if (
@@ -1279,17 +1295,16 @@ export class SessionManager {
 		this.#expectedDiskSize = (this.#expectedDiskSize ?? 0) + Buffer.byteLength(line, "utf8");
 	}
 
-	#recordFullRewrite(body: string): void {
-		this.#expectedDiskSize = Buffer.byteLength(body, "utf8");
+	#recordFullRewrite(body: SessionFileBody): void {
+		this.#expectedDiskSize = body.bytes;
 	}
 
-	#fileBody(): string {
-		let body = this.#titleSlotLine();
-		body += this.#lineFor(this.#header);
+	#fileBody(): SessionFileBody {
+		const lines = [this.#titleSlotLine(), this.#lineFor(this.#header)];
 		for (const entry of this.#entries) {
-			if (!this.#archivedEntryIds.has(entry.id)) body += this.#lineFor(entry);
+			if (!this.#archivedEntryIds.has(entry.id)) lines.push(this.#lineFor(entry));
 		}
-		return body;
+		return { lines, bytes: lines.reduce((total, line) => total + Buffer.byteLength(line, "utf8"), 0) };
 	}
 
 	#noteLockContention(error: SessionStorageLockError): void {
@@ -1330,6 +1345,12 @@ export class SessionManager {
 
 	#rewriteSynchronously(): void {
 		if (this.#released) return;
+		if (this.#storage.defersSyncPublish) {
+			this.#fileIsCurrent = false;
+			this.#rewriteRequired = true;
+			void this.#rewriteAtomically().catch(error => this.#noteDiskFailure(error));
+			return;
+		}
 		if (!this.#persist || !this.#shouldHaveSessionFile()) return;
 		const targetPath = this.#liveRelocationWritePath() ?? this.#sessionFile;
 		if (!targetPath) return;
@@ -1339,7 +1360,9 @@ export class SessionManager {
 			this.#diskEpoch++;
 			this.#diskTail = Promise.resolve();
 			this.#closeWriterEventually();
-			this.#storage.writeTextSync(targetPath, body, { expectedSize: this.#expectedDiskSize });
+			if (this.#storage.writeLinesSync)
+				this.#storage.writeLinesSync(targetPath, body.lines, { expectedSize: this.#expectedDiskSize });
+			else this.#storage.writeTextSync(targetPath, body.lines.join(""), { expectedSize: this.#expectedDiskSize });
 			this.#recordFullRewrite(body);
 			this.#clearDiskError();
 
@@ -1380,13 +1403,15 @@ export class SessionManager {
 	}
 
 	/** Publishes a fenced rewrite's body; it commits only while `epoch` is still current. */
-	async #publishAtomically(sessionFile: string, body: string, epoch: number): Promise<void> {
+	async #publishAtomically(sessionFile: string, body: SessionFileBody, epoch: number): Promise<void> {
 		this.#atomicPublishInFlight = true;
 		try {
-			await this.#storage.writeTextAtomic(sessionFile, body, {
+			const options = {
 				expectedSize: this.#expectedDiskSize,
 				commitGuard: () => !this.#released && this.#diskEpoch === epoch,
-			});
+			};
+			if (this.#storage.writeLinesAtomic) await this.#storage.writeLinesAtomic(sessionFile, body.lines, options);
+			else await this.#storage.writeTextAtomic(sessionFile, body.lines.join(""), options);
 		} finally {
 			this.#atomicPublishInFlight = false;
 		}
@@ -1407,13 +1432,20 @@ export class SessionManager {
 					await this.#publishAtomically(sessionFile, body, epoch);
 				} catch (error) {
 					try {
-						if ((await this.#storage.readText(sessionFile)) === body) this.#recordFullRewrite(body);
+						if (textMatchesBody(await this.#storage.readText(sessionFile), body)) this.#recordFullRewrite(body);
 					} catch {
 						// Preserve the publish error when durable state cannot be read back.
 					}
 					throw error;
 				}
-				if (this.#diskEpoch !== epoch) return false;
+				if (this.#diskEpoch !== epoch) {
+					try {
+						if (textMatchesBody(await this.#storage.readText(sessionFile), body)) this.#recordFullRewrite(body);
+					} catch {
+						// A newer rewrite owns the durability token when readback is unavailable.
+					}
+					return false;
+				}
 				this.#recordFullRewrite(body);
 			} while (this.#atomicRewriteDirty);
 			return true;
@@ -1644,7 +1676,7 @@ export class SessionManager {
 		if (batch?.collecting) batch.entryIds.add(entry.id);
 		if (batch && !batch.collecting) {
 			batch.externalLeafChanged = true;
-			batch.externalLeafId = entry.id;
+			batch.externalLeafId = sessionEntryLeafId(entry);
 		}
 		this.#appendToSessionFile(retained);
 		if (batch) batch.deferredNotifications.push(entry);
@@ -1661,7 +1693,10 @@ export class SessionManager {
 			return id;
 		};
 		const retained = this.#materializeEntries(this.#entries.filter(entry => !batch.entryIds.has(entry.id)));
-		for (const entry of retained) entry.parentId = retainedAncestor(entry.parentId);
+		for (const entry of retained) {
+			entry.parentId = retainedAncestor(entry.parentId);
+			if (typeof entry.activeLeafId === "string") entry.activeLeafId = retainedAncestor(entry.activeLeafId);
+		}
 		const restoredLeaf = retainedAncestor(batch.externalLeafChanged ? batch.externalLeafId : batch.preBatchLeafId);
 		this.#replaceEntries(retained);
 		this.#index.setLeaf(restoredLeaf && this.#index.has(restoredLeaf) ? restoredLeaf : null);
@@ -1869,8 +1904,8 @@ export class SessionManager {
 		}
 	}
 
-	async setSessionFile(sessionFile: string): Promise<void> {
-		await this.#setSessionFile(sessionFile);
+	async setSessionFile(sessionFile: string, options?: { throwIfMissing?: boolean }): Promise<void> {
+		await this.#setSessionFile(sessionFile, undefined, undefined, options?.throwIfMissing === true);
 	}
 
 	async #loadRetainedSession(
@@ -2433,6 +2468,7 @@ export class SessionManager {
 
 	releaseRetainedEntries(): void {
 		this.seal();
+		this.#inMemoryArtifacts = null;
 		this.#entries = [];
 		this.#index.clear();
 		this.#clearRawEntryRetention();
@@ -2588,6 +2624,14 @@ export class SessionManager {
 		return !!this.#sessionFile && this.#storage.existsSync(this.#sessionFile);
 	}
 
+	/** Resume hints may only advertise files the backing store has confirmed. */
+	isSessionConfirmedOnDisk(): boolean {
+		const file = this.#sessionFile;
+		if (!file) return false;
+		if (this.#storage.existsConfirmedSync) return this.#storage.existsConfirmedSync(file);
+		return !this.#storage.defersSyncPublish && this.#storage.existsSync(file);
+	}
+
 	getArtifactsDir(): string | null {
 		if (this.#adoptedArtifactManager) return this.#adoptedArtifactManager.dir;
 		return artifactsDirectoryFor(this.#sessionFile);
@@ -2602,10 +2646,12 @@ export class SessionManager {
 	}
 
 	async allocateArtifactPath(toolType: string): Promise<{ id?: string; path?: string }> {
+		if (this.#released) return {};
 		return (await this.#artifactManagerForSession()?.allocatePath(toolType)) ?? {};
 	}
 
 	async saveArtifact(content: string, toolType: string): Promise<string | undefined> {
+		if (this.#released) return undefined;
 		const manager = this.#artifactManagerForSession();
 		if (manager) return manager.save(content, toolType);
 
@@ -2613,6 +2659,10 @@ export class SessionManager {
 		const id = String(this.#inMemoryArtifactCounter++);
 		this.#inMemoryArtifacts.set(id, content);
 		return id;
+	}
+
+	getArtifactContent(id: string): string | null {
+		return this.#inMemoryArtifacts?.get(id) ?? null;
 	}
 
 	async getArtifactPath(id: string): Promise<string | null> {
@@ -2782,6 +2832,7 @@ export class SessionManager {
 			| PythonExecutionMessage
 			| FileMentionMessage,
 		parentId: string | null,
+		options?: { preserveActiveLeaf?: boolean },
 	): string {
 		if (parentId !== null && !this.#index.has(parentId)) throw new Error(`Entry ${parentId} not found`);
 		const activeLeafId = this.#index.leafId();
@@ -2791,9 +2842,9 @@ export class SessionManager {
 			parentId,
 			timestamp: nowIso(),
 			message,
+			...(options?.preserveActiveLeaf === false ? {} : { activeLeafId }),
 		};
 		this.#recordEntry(entry);
-		this.#index.setLeaf(activeLeafId);
 		return entry.id;
 	}
 
@@ -2833,9 +2884,11 @@ export class SessionManager {
 	}
 
 	appendSessionInit(init: {
-		systemPrompt: string;
+		systemPrompt: string | string[];
 		task: string;
 		tools: string[];
+		mountedTools?: string[];
+		thinkingLevelCeiling?: Effort;
 		agent?: string;
 		modelRole?: string;
 		modelOverride?: string;
@@ -3045,11 +3098,14 @@ export class SessionManager {
 		return entry ? this.#materializeEntry(entry) : undefined;
 	}
 
-	getLastModelChangeRole(): string | undefined {
+	getLastModelChangeRole(options?: { skipEphemeral?: boolean }): string | undefined {
 		const branch = this.#index.pathToView();
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const entry = branch[index];
-			if (entry.type === "model_change") return entry.role ?? "default";
+			if (entry.type !== "model_change") continue;
+			const role = entry.role ?? "default";
+			if (options?.skipEphemeral && role === EPHEMERAL_MODEL_CHANGE_ROLE) continue;
+			return role;
 		}
 		return undefined;
 	}
@@ -3215,6 +3271,15 @@ export class SessionManager {
 		return changed;
 	}
 
+	/** Latest revival contract without hydrating unrelated transcript payloads. */
+	getSessionInit(): PersistedSessionInit | null {
+		for (let index = this.#entries.length - 1; index >= 0; index--) {
+			const entry = this.#entries[index];
+			if (entry.type === "session_init") return extractSessionInit([this.#materializeEntry(entry)]);
+		}
+		return null;
+	}
+
 	getHeader(): SessionHeader | null {
 		return this.#header;
 	}
@@ -3318,7 +3383,9 @@ export class SessionManager {
 		const branchPath = this.getBranch(leafId);
 		if (branchPath.length === 0) throw new Error(`Entry ${leafId} not found`);
 
-		const entriesToKeep = branchPath.filter(entry => entry.type !== "label");
+		const entriesToKeep = branchPath
+			.filter(entry => entry.type !== "label")
+			.map(entry => (entry.activeLeafId === undefined ? entry : { ...entry, activeLeafId: undefined }));
 		const keptIds = new Set(entriesToKeep.map(entry => entry.id));
 		const labelsToCarry: Array<{ targetId: string; label: string }> = [];
 		for (const [targetId, label] of this.#index.labelsInEffect()) {
@@ -3468,14 +3535,20 @@ export class SessionManager {
 				path: path.resolve(sourcePath),
 			});
 		}
-		const sourceEntries = structuredClone(loadedSource.entries) as FileEntry[];
+		const sourceEntries = loadedSource.entries;
 		migrateToCurrentVersion(sourceEntries);
 		await resolveBlobRefsInEntries(sourceEntries, manager.#blobs);
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
 		if (options?.resetInheritedCost) {
-			for (const entry of history) resetUsageCost(entryUsage(entry));
+			for (const entry of history) {
+				resetUsageCost(entryUsage(entry));
+				if (entry.type === "custom" && entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE) {
+					const usage = parseSubagentUsageEntry(entry.data);
+					if (usage) entry.data = { ...usage, cost: 0, premiumRequests: 0 };
+				}
+			}
 		}
 		manager.#resetToNewSession(
 			{
@@ -3515,9 +3588,9 @@ export class SessionManager {
 	 * replaying orphan tool calls to the model. Only the root-to-leaf path counts; sibling branches are ignored.
 	 */
 	#repairInterruptedTail(): void {
-		const branch = this.#index.pathTo();
+		const branch = this.getBranch();
 		const leaf = branch.at(-1);
-		if (!leaf) return;
+		if (!leaf || sessionExitFollowsLastMessage(branch)) return;
 		let assistant: AssistantMessage | undefined;
 		const pairedResultIds = new Set<string>();
 		for (let i = branch.length - 1; i >= 0; i--) {
@@ -3792,9 +3865,11 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
 
 /** The persisted `session_init` contract a cold revive rebuilds a subagent from. */
 export interface PersistedSessionInit {
-	systemPrompt: string;
+	systemPrompt: string[];
 	task: string;
 	tools: string[];
+	mountedTools?: string[];
+	thinkingLevelCeiling?: Effort;
 	agent?: string;
 	modelRole?: string;
 	modelOverride?: string;
@@ -3814,9 +3889,13 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 	for (const entry of entries) {
 		if (entry.type !== "session_init") continue;
 		init = {
-			systemPrompt: entry.systemPrompt,
+			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
 			tools: entry.tools,
+			mountedTools: entry.mountedTools,
+			...(entry.thinkingLevelCeiling !== undefined && THINKING_EFFORTS.includes(entry.thinkingLevelCeiling)
+				? { thinkingLevelCeiling: entry.thinkingLevelCeiling }
+				: {}),
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			modelOverride: entry.modelOverride,

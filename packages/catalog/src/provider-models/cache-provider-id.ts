@@ -17,6 +17,7 @@ const CREDENTIAL_SCOPED_MODEL_CACHE_PROVIDERS: Readonly<Record<string, true>> = 
 	"opencode-zen": true,
 	"github-copilot": true,
 	"muse-code": true,
+	"kimi-code": true,
 	"singularityapi-dev": true,
 	"singularityapi-tech": true,
 };
@@ -37,7 +38,7 @@ export function getDefaultModelDiscoveryBaseUrl(providerId: string): string | un
 		case "litellm":
 			return Bun.env.LITELLM_BASE_URL ?? "http://localhost:4000/v1";
 		case "opencode-go":
-			return "https://opencode.ai/zen/go/v1";
+			return "https://opencode.ai/inference/go/v1";
 		case "opencode-zen":
 			return "https://opencode.ai/zen/v1";
 		case "vllm":
@@ -78,7 +79,7 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			return `${providerId}:models-v1`;
 		case "litellm": {
 			const baseUrl = options.baseUrl ?? getDefaultModelDiscoveryBaseUrl(providerId)!;
-			return `litellm:rich-v11:${Bun.hash(baseUrl).toString(36)}`;
+			return `litellm:rich-v14:${Bun.hash(baseUrl).toString(36)}`;
 		}
 		case "opencode-go":
 		case "opencode-zen": {
@@ -86,7 +87,7 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			const trimmedBaseUrl = configuredBaseUrl.endsWith("/") ? configuredBaseUrl.slice(0, -1) : configuredBaseUrl;
 			const discoveryBaseUrl = trimmedBaseUrl.endsWith("/v1") ? trimmedBaseUrl : `${trimmedBaseUrl}/v1`;
 			const scope = `${options.apiKey ?? ""}\u0000${discoveryBaseUrl}`;
-			return `${providerId}:models-v3:${Bun.hash(scope).toString(36)}`;
+			return `${providerId}:models-v4:${Bun.hash(scope).toString(36)}`;
 		}
 		case "github-copilot": {
 			// v2: rows cached before the cross-provider routing strip can inherit another
@@ -95,6 +96,10 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			const baseUrl = options.baseUrl ?? PERSONAL_GITHUB_COPILOT_BASE_URL;
 			const scope = `${options.apiKey ?? ""}\u0000${baseUrl}`;
 			return `github-copilot:models-v2:${Bun.hash(scope).toString(36)}`;
+		}
+		case "kimi-code": {
+			const scope = `${options.apiKey ?? ""}\u0000${options.baseUrl ?? "https://api.kimi.com/coding/v1"}`;
+			return `kimi-code:models-v1:${Bun.hash(scope).toString(36)}`;
 		}
 		case "muse-code": {
 			// The roster is scoped to the subscription-minted key.
@@ -118,8 +123,8 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			return `vllm:models-v2:${Bun.hash(baseUrl).toString(36)}`;
 		}
 		case "devin":
-			// v2: older rows sent Fusion composite uids instead of their lead uid.
-			return "devin:models-v2";
+			// v3: prior rows lost account defaults and ModelInfo context windows.
+			return "devin:models-v3";
 		default:
 			return providerId;
 	}

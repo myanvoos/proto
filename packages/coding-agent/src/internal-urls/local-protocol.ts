@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { AgentRegistry } from "../registry/agent-registry";
 import { isMarkdownPath } from "../utils/lang-from-path";
 import { buildDirectoryResource } from "./filesystem-resource";
@@ -32,7 +33,7 @@ function toLocalValidationError(error: unknown): Error {
 function safeSessionId(options: LocalProtocolOptions): string {
 	const raw = options.getSessionId?.() ?? "session";
 	const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, "_");
-	return safe.length > 0 ? safe : "session";
+	return safe && safe !== "." && safe !== ".." ? safe : "session";
 }
 
 function getContentType(filePath: string): InternalResource["contentType"] {
@@ -180,6 +181,17 @@ async function listFilesRecursively(rootPath: string): Promise<string[]> {
 	}
 
 	return files.sort((a, b) => a.localeCompare(b));
+}
+
+const completionListings = new LRUCache<string, Promise<string[]>>({ max: 16, ttl: 2000 });
+
+function listCompletionFiles(root: string): Promise<string[]> {
+	const cached = completionListings.get(root);
+	if (cached) return cached;
+	const listing = listFilesRecursively(root);
+	completionListings.set(root, listing);
+	listing.catch(() => completionListings.delete(root));
+	return listing;
 }
 
 async function buildListing(url: InternalUrl, localRoot: string): Promise<InternalResource> {
@@ -404,7 +416,7 @@ export class LocalProtocolHandler implements ProtocolHandler {
 		if (!opts) return [];
 		const localRoot = path.resolve(resolveLocalRoot(opts));
 		try {
-			const files = await listFilesRecursively(localRoot);
+			const files = await listCompletionFiles(localRoot);
 			return files.map(value => ({ value }));
 		} catch (err) {
 			if (isEnoent(err)) return [];

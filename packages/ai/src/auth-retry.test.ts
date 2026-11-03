@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { type OAuthAccessSource, withAuth, withOAuthAccess } from "./auth-retry";
 import type { OAuthAccess } from "./auth-storage";
+import { ConfigurationError, MissingApiKeyError } from "./error";
 
 function authError(): Error & { status: number } {
 	return Object.assign(new Error("401 authentication_error"), { status: 401 });
@@ -63,4 +64,25 @@ describe("401 sibling rotation", () => {
 		expect(result).toBe("success");
 		expect(attempts).toEqual(["stale", "fresh", "sibling-1", "sibling-2"]);
 	});
+});
+
+it("surfaces resolver outages rather than misreporting a missing API key", async () => {
+	const outage = new Error("auth broker unavailable");
+	const failure = await withAuth(
+		() => {
+			throw outage;
+		},
+		async () => "unreachable",
+	).catch((error: unknown) => error);
+	expect(failure).toBeInstanceOf(ConfigurationError);
+	expect((failure as Error).cause).toBe(outage);
+	const missing = new MissingApiKeyError("test-provider");
+	await expect(
+		withAuth(
+			() => {
+				throw missing;
+			},
+			async () => "unreachable",
+		),
+	).rejects.toBe(missing);
 });

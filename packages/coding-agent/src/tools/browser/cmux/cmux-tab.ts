@@ -450,7 +450,8 @@ export class CmuxTab {
 		return new CmuxElementHandle(this, selector);
 	}
 
-	async click(selector: string): Promise<void> {
+	async click(selector: string, options?: { button?: string; count?: number }): Promise<void> {
+		refuseUnpressableClick("tab", `tab.click(${JSON.stringify(selector)}, `, options);
 		await this.#selectorAction(selector, "click");
 	}
 
@@ -521,6 +522,20 @@ export class CmuxTab {
 
 	async select(selector: string, ...values: string[]): Promise<string[]> {
 		return await this.#selectorAction<string[]>(selector, "select", { values });
+	}
+
+	async text(selector = "body"): Promise<string> {
+		assertSelectorString(selector);
+		return await this.evaluateOnSelector(
+			selector,
+			`element => (typeof element.innerText === "string" ? element.innerText : element.textContent || "").trim()`,
+			[],
+		);
+	}
+
+	async html(selector = "body"): Promise<string> {
+		assertSelectorString(selector);
+		return await this.evaluateOnSelector(selector, "element => element.innerHTML", []);
 	}
 
 	async extract(format: ReadableFormat = "markdown"): Promise<string> {
@@ -931,14 +946,19 @@ export class CmuxTab {
 				case "select": {
 					const values = Array.isArray(args.values) ? args.values.map(String) : [String(args.value || "")];
 					if (element.tagName !== "SELECT") throw new Error("tab.select() requires a <select> element");
-					const wanted = new Set(values);
-					const selected = [];
-					for (const option of Array.from(element.options)) {
-						option.selected = wanted.has(option.value);
-						if (option.selected) selected.push(option.value);
+					const options = Array.from(element.options);
+					const wanted = [];
+					const missing = [];
+					for (const value of values) {
+						const option = options.find(candidate => candidate.value === value) || options.find(candidate => candidate.label === value || candidate.text.replace(/\\s+/g, " ").trim() === value);
+						if (option) wanted.push(option); else missing.push(value);
 					}
+					if (missing.length) throw new Error("No <select> option matches " + missing.map(value => JSON.stringify(value)).join(", "));
+					if (!wanted.length) for (const option of options) option.selected = false;
+					else if (element.multiple) for (const option of options) option.selected = wanted.includes(option);
+					else element.selectedIndex = wanted[0].index;
 					inputEvent(element);
-					return selected;
+					return options.filter(option => option.selected).map(option => option.value);
 				}
 				case "uploadFile": {
 					if (element.tagName !== "INPUT" || element.type !== "file") {
@@ -1148,6 +1168,21 @@ class CmuxResponse {
 	}
 }
 
+function refuseUnpressableClick(
+	owner: "tab" | "handle",
+	call: string,
+	options?: { button?: string; count?: number },
+): void {
+	if (options?.button !== undefined && options.button !== "left")
+		throw new ToolError(
+			`${call}{ button: ${JSON.stringify(options.button)} }) is not supported in a cmux browser, which only left-clicks elements`,
+		);
+	if (options?.count !== undefined && options.count !== 1)
+		throw new ToolError(
+			`${call}{ count: ${options.count} }) is not supported in a cmux browser; use ${owner}.dblclick(${owner === "tab" ? "selector" : ""}) for a double click`,
+		);
+}
+
 class CmuxElementHandle {
 	readonly #tab: CmuxTab;
 	readonly #selector: string;
@@ -1157,7 +1192,8 @@ class CmuxElementHandle {
 		this.#selector = selector;
 	}
 
-	async click(): Promise<void> {
+	async click(options?: { button?: string; count?: number }): Promise<void> {
+		refuseUnpressableClick("handle", "handle.click(", options);
 		await this.#tab.click(this.#selector);
 	}
 

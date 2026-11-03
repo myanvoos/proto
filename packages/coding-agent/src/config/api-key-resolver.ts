@@ -15,7 +15,13 @@ export interface ApiKeyResolverRegistry {
 	getApiKeyForProvider(
 		provider: string,
 		sessionId?: string,
-		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+		options?: {
+			baseUrl?: string;
+			modelId?: string;
+			forceRefresh?: boolean;
+			signal?: AbortSignal;
+			throwOnTransientOAuthRefreshFailure?: boolean;
+		},
 	): Promise<string | undefined>;
 	authStorage: Pick<AuthStorage, "rotateSessionCredential">;
 
@@ -31,7 +37,12 @@ export function createApiKeyResolver(
 	const { sessionId, baseUrl, modelId } = options;
 	return async ({ lastChance, error, signal, previousKey }) => {
 		if (error === undefined) {
-			return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId });
+			return registry.getApiKeyForProvider(provider, sessionId, {
+				baseUrl,
+				modelId,
+				signal,
+				throwOnTransientOAuthRefreshFailure: true,
+			});
 		}
 		if (lastChance) {
 			const switched = await registry.authStorage.rotateSessionCredential(provider, sessionId, {
@@ -46,8 +57,19 @@ export function createApiKeyResolver(
 
 				if (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message)) return undefined;
 			}
-			return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId });
+			return registry.getApiKeyForProvider(provider, sessionId, {
+				baseUrl,
+				modelId,
+				signal,
+				throwOnTransientOAuthRefreshFailure: true,
+			});
 		}
-		return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
+		return registry.getApiKeyForProvider(provider, sessionId, {
+			baseUrl,
+			modelId,
+			forceRefresh: true,
+			signal,
+			throwOnTransientOAuthRefreshFailure: true,
+		});
 	};
 }

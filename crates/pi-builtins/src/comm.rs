@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	cmp::Ordering,
 	ffi::{OsStr, OsString},
@@ -128,8 +124,14 @@ fn write_delimited(writer: &mut impl Write, delim: &[u8], line: &[u8]) -> io::Re
 	writer.write_all(line)
 }
 
-fn read_context(reader: &mut LineReader<'_>, buf: &mut Vec<u8>, name: &OsStr) -> Result<usize, String> {
-	reader.read_line(buf).map_err(|e| format!("{}: {e}", name.maybe_quote()))
+fn read_context(
+	reader: &mut LineReader<'_>,
+	buf: &mut Vec<u8>,
+	name: &OsStr,
+) -> Result<usize, String> {
+	reader
+		.read_line(buf)
+		.map_err(|e| format!("{}: {e}", name.maybe_quote()))
 }
 
 fn compare(
@@ -154,10 +156,8 @@ fn compare(
 	let (mut n1, mut n2, mut n3) = (0usize, 0usize, 0usize);
 	let explicit = opts.get_flag(options::CHECK_ORDER);
 	let should_check = !opts.get_flag(options::NO_CHECK_ORDER) && (explicit || !identical);
-	let (mut c1, mut c2) = (
-		OrderChecker::new(FileNumber::One, explicit),
-		OrderChecker::new(FileNumber::Two, explicit),
-	);
+	let (mut c1, mut c2) =
+		(OrderChecker::new(FileNumber::One, explicit), OrderChecker::new(FileNumber::Two, explicit));
 	let mut delayed_error = false;
 	while na != 0 || nb != 0 {
 		let ord = match (na, nb) {
@@ -171,7 +171,9 @@ fn compare(
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_1) {
-					stdout.write_all(&ra).map_err(|e| format!("write error: {e}"))?;
+					stdout
+						.write_all(&ra)
+						.map_err(|e| format!("write error: {e}"))?;
 				}
 				ra.clear();
 				na = read_context(a, &mut ra, name1)?;
@@ -190,9 +192,7 @@ fn compare(
 				n2 += 1;
 			},
 			Ordering::Equal => {
-				if should_check
-					&& (!c1.verify_order(&ra, stderr) || !c2.verify_order(&rb, stderr))
-				{
+				if should_check && (!c1.verify_order(&ra, stderr) || !c2.verify_order(&rb, stderr)) {
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_3) {
@@ -238,9 +238,11 @@ fn open_file<'a>(
 	if fs::metadata(resolved)?.is_dir() {
 		return Err(io::Error::other("is a directory"));
 	}
-	Ok(LineReader::new(Box::new(BufReader::new(brush_core::heldfiles::open_read(resolved)?)), ending))
+	Ok(LineReader::new(
+		Box::new(BufReader::new(brush_core::heldfiles::open_read(resolved)?)),
+		ending,
+	))
 }
-
 
 pub(crate) struct Comm {
 	matches: ArgMatches,
@@ -274,14 +276,17 @@ impl Utility for Comm {
 			host.error("multiple conflicting output delimiters specified", 1);
 			return 1;
 		}
-		let delim = if delimiters[0].is_empty() { "\0" } else { delimiters[0] };
+		let delim = if delimiters[0].is_empty() {
+			"\0"
+		} else {
+			delimiters[0]
+		};
 		let identical = if name1 == "-" || name2 == "-" {
 			false
 		} else {
 			files_identical(&path1, &path2).unwrap_or(false)
 		};
 		let ending = LineEnding::from_zero_flag(self.matches.get_flag(options::ZERO_TERMINATED));
-
 
 		let mut stdout = host.stdout_writer();
 		let opened: Result<_, (&OsStr, io::Error)> = if name1 == "-" {
@@ -344,21 +349,75 @@ fn app() -> Command {
 		.override_usage(format_usage("comm [OPTION]... FILE1 FILE2"))
 		.infer_long_args(true)
 		.args_override_self(true)
-		.arg(Arg::new(options::COLUMN_1).short('1').help("suppress column 1 (lines unique to FILE1)").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::COLUMN_2).short('2').help("suppress column 2 (lines unique to FILE2)").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::COLUMN_3).short('3').help("suppress column 3 (lines that appear in both files)").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::DELIMITER).long(options::DELIMITER).help("separate columns with STR").value_name("STR").default_value("\t").allow_hyphen_values(true).action(ArgAction::Append).hide_default_value(true))
-		.arg(Arg::new(options::ZERO_TERMINATED).long(options::ZERO_TERMINATED).short('z').overrides_with(options::ZERO_TERMINATED).help("line delimiter is NUL, not newline").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::FILE_1).required(true).value_hint(clap::ValueHint::FilePath).value_parser(clap::value_parser!(OsString)))
-		.arg(Arg::new(options::FILE_2).required(true).value_hint(clap::ValueHint::FilePath).value_parser(clap::value_parser!(OsString)))
-		.arg(Arg::new(options::TOTAL).long(options::TOTAL).help("output a summary").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::CHECK_ORDER).long(options::CHECK_ORDER).help("check that input is correctly sorted, even if all input lines are pairable").action(ArgAction::SetTrue))
-		.arg(Arg::new(options::NO_CHECK_ORDER).long(options::NO_CHECK_ORDER).help("do not check that input is correctly sorted").action(ArgAction::SetTrue).conflicts_with(options::CHECK_ORDER))
+		.arg(
+			Arg::new(options::COLUMN_1)
+				.short('1')
+				.help("suppress column 1 (lines unique to FILE1)")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::COLUMN_2)
+				.short('2')
+				.help("suppress column 2 (lines unique to FILE2)")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::COLUMN_3)
+				.short('3')
+				.help("suppress column 3 (lines that appear in both files)")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::DELIMITER)
+				.long(options::DELIMITER)
+				.help("separate columns with STR")
+				.value_name("STR")
+				.default_value("\t")
+				.allow_hyphen_values(true)
+				.action(ArgAction::Append)
+				.hide_default_value(true),
+		)
+		.arg(
+			Arg::new(options::ZERO_TERMINATED)
+				.long(options::ZERO_TERMINATED)
+				.short('z')
+				.overrides_with(options::ZERO_TERMINATED)
+				.help("line delimiter is NUL, not newline")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::FILE_1)
+				.required(true)
+				.value_hint(clap::ValueHint::FilePath)
+				.value_parser(clap::value_parser!(OsString)),
+		)
+		.arg(
+			Arg::new(options::FILE_2)
+				.required(true)
+				.value_hint(clap::ValueHint::FilePath)
+				.value_parser(clap::value_parser!(OsString)),
+		)
+		.arg(
+			Arg::new(options::TOTAL)
+				.long(options::TOTAL)
+				.help("output a summary")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::CHECK_ORDER)
+				.long(options::CHECK_ORDER)
+				.help("check that input is correctly sorted, even if all input lines are pairable")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new(options::NO_CHECK_ORDER)
+				.long(options::NO_CHECK_ORDER)
+				.help("do not check that input is correctly sorted")
+				.action(ArgAction::SetTrue)
+				.conflicts_with(options::CHECK_ORDER),
+		)
 }
-
 
 pub(crate) fn comm_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Comm, SE>()
 }
-
-

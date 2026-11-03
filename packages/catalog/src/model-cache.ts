@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
+import * as path from "node:path";
 import { getModelDbPath, isSqliteCorruptionError, openSqliteDatabaseSync } from "@oh-my-pi/pi-utils";
 import type { Api, Model, ModelSpec } from "./types";
 
-const CACHE_SCHEMA_VERSION = 13;
+const CACHE_SCHEMA_VERSION = 15;
 const HEADER_RESTORE_VERSION = 1;
 
 interface CacheRow {
@@ -10,6 +11,7 @@ interface CacheRow {
 	version: number;
 	updated_at: number;
 	authoritative: number;
+	payload_authoritative: number;
 	static_fingerprint: string;
 	models: string;
 	header_omitted_model_ids: string;
@@ -25,6 +27,8 @@ interface CacheEntry<TApi extends Api = Api> {
 	models: ModelSpec<TApi>[];
 	fresh: boolean;
 	authoritative: boolean;
+	/** Roster authority survives failed refreshes independently of retry freshness. */
+	payloadAuthoritative: boolean;
 	updatedAt: number;
 
 	headerOmittedModelIds: readonly string[];
@@ -38,6 +42,7 @@ interface CacheEntry<TApi extends Api = Api> {
 
 let sharedDb: Database | null = null;
 let sharedDbPath: string | null = null;
+const readMemo = new Map<string, { dataVersion: number; entry: CacheEntry }>();
 
 function initializeDb(db: Database): void {
 	db.run("PRAGMA secure_delete = ON");
@@ -48,6 +53,7 @@ function initializeDb(db: Database): void {
 			version INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			authoritative INTEGER NOT NULL DEFAULT 0,
+			payload_authoritative INTEGER NOT NULL DEFAULT 0,
 			static_fingerprint TEXT NOT NULL DEFAULT '',
 			header_omitted_model_ids TEXT NOT NULL DEFAULT '[]',
 			unrestorable_header_model_ids TEXT NOT NULL DEFAULT '[]',
@@ -63,6 +69,7 @@ function closeSharedDb(): void {
 	sharedDb.close();
 	sharedDb = null;
 	sharedDbPath = null;
+	readMemo.clear();
 }
 
 function runModelCacheDb<T>(resolvedPath: string, shared: boolean, useDb: (db: Database) => T): T {
@@ -96,14 +103,19 @@ function runModelCacheDb<T>(resolvedPath: string, shared: boolean, useDb: (db: D
 }
 
 function withModelCacheDb<T>(dbPath: string | undefined, useDb: (db: Database) => T): T {
-	const resolvedPath = dbPath ?? getModelDbPath();
-	return runModelCacheDb(resolvedPath, dbPath === undefined, useDb);
+	const defaultPath = getModelDbPath();
+	const shared = dbPath === undefined || path.resolve(dbPath) === path.resolve(defaultPath);
+	return runModelCacheDb(shared ? defaultPath : dbPath!, shared, useDb);
 }
 
 function migrateCacheSchema(db: Database): void {
 	const stmt = db.prepare("PRAGMA table_info(model_cache)");
 	try {
 		const columns = stmt.all() as TableInfoRow[];
+		if (!columns.some(column => column.name === "payload_authoritative")) {
+			db.run("ALTER TABLE model_cache ADD COLUMN payload_authoritative INTEGER NOT NULL DEFAULT 0");
+			db.run("UPDATE model_cache SET payload_authoritative = authoritative");
+		}
 		if (!columns.some(column => column.name === "static_fingerprint")) {
 			db.run("ALTER TABLE model_cache ADD COLUMN static_fingerprint TEXT NOT NULL DEFAULT ''");
 		}
@@ -131,6 +143,15 @@ export function readModelCache<TApi extends Api>(
 ): CacheEntry<TApi> | null {
 	try {
 		return withModelCacheDb(dbPath, db => {
+			const shared = db === sharedDb;
+			const dataVersion = shared
+				? db.query<{ data_version: number }, []>("PRAGMA data_version").get()?.data_version
+				: undefined;
+			const memo = shared ? readMemo.get(providerId) : undefined;
+			if (memo && memo.dataVersion === dataVersion) {
+				const age = now() - memo.entry.updatedAt;
+				return { ...memo.entry, fresh: Number.isFinite(age) && age >= 0 && age <= ttlMs } as CacheEntry<TApi>;
+			}
 			const stmt = db.query<CacheRow, [string]>("SELECT * FROM model_cache WHERE provider_id = ?");
 			try {
 				const row = stmt.get(providerId);
@@ -148,16 +169,22 @@ export function readModelCache<TApi extends Api>(
 					: [];
 				const ageMs = now() - row.updated_at;
 				const fresh = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= ttlMs;
-				return {
+				const entry: CacheEntry<TApi> = {
 					models,
 					fresh,
 					authoritative: row.authoritative === 1,
+					payloadAuthoritative: row.payload_authoritative === 1,
 					updatedAt: row.updated_at,
 					headerOmittedModelIds,
 					unrestorableHeaderModelIds,
 					legacyHeaderRestoreMarkers: row.header_restore_version < HEADER_RESTORE_VERSION,
 					staticFingerprint: row.static_fingerprint ?? "",
 				};
+				if (dataVersion !== undefined) {
+					if (readMemo.size >= 128) readMemo.clear();
+					readMemo.set(providerId, { dataVersion, entry });
+				}
+				return entry;
 			} finally {
 				stmt.finalize();
 			}
@@ -206,8 +233,10 @@ export function writeModelCache<TApi extends Api>(
 	dbPath?: string,
 	staticHeaderSources: readonly Model<TApi>[] = [],
 	restorableHeaderFallback?: Record<string, string>,
+	payloadAuthoritative = authoritative,
 ): void {
 	try {
+		readMemo.delete(providerId);
 		withModelCacheDb(dbPath, db => {
 			const headerOmittedModelIds: string[] = [];
 			const unrestorableHeaderModelIds: string[] = [];
@@ -234,15 +263,16 @@ export function writeModelCache<TApi extends Api>(
 			}
 			db.run(
 				`INSERT OR REPLACE INTO model_cache (
-					provider_id, version, updated_at, authoritative, static_fingerprint,
+					provider_id, version, updated_at, authoritative, payload_authoritative, static_fingerprint,
 					header_omitted_model_ids, unrestorable_header_model_ids,
 					header_restore_version, models
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					providerId,
 					CACHE_SCHEMA_VERSION,
 					updatedAt,
 					authoritative ? 1 : 0,
+					payloadAuthoritative ? 1 : 0,
 					staticFingerprint,
 					JSON.stringify(headerOmittedModelIds),
 					JSON.stringify(unrestorableHeaderModelIds),

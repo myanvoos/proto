@@ -12,6 +12,9 @@ export const MIN_FITTED_OUTPUT_TOKENS = 1024;
  */
 const PROMPT_ESTIMATE_MARGIN_DIVISOR = 10;
 
+/** Per-message chat-template role markers and response wrappers. */
+export const MESSAGE_FRAMING_TOKENS = 16;
+
 /**
  * Absolute headway subtracted from the remaining room: a host can count a few tokens more than any local estimate
  * sees (chat-template framing, reasoning wrappers). Fitted caps measured +11 to +42 tokens over a 262,144-token host.
@@ -80,13 +83,16 @@ function countPromptTokens(context: Context, tokenizer: Tokenizer): number {
 	const { messages, systemPrompt, tools } = context;
 	const anchor = findRequestUsageAnchor(messages);
 	if (!anchor) {
-		return withMargin(
-			countFraming(systemPrompt, tokenizer, () => [...(systemPrompt ?? [])]) +
-				countFraming(tools, tokenizer, () => toolFragments(tools ?? [])) +
-				tokenizer.countMessages(messages),
+		return (
+			withMargin(
+				countFraming(systemPrompt, tokenizer, () => [...(systemPrompt ?? [])]) +
+					countFraming(tools, tokenizer, () => toolFragments(tools ?? [])) +
+					tokenizer.countMessages(messages),
+			) +
+			messages.length * MESSAGE_FRAMING_TOKENS
 		);
 	}
 	let tail = 0;
 	for (let index = anchor.index + 1; index < messages.length; index++) tail += tokenizer.countMessage(messages[index]);
-	return anchor.tokens + withMargin(tail);
+	return anchor.tokens + withMargin(tail) + (messages.length - anchor.index - 1) * MESSAGE_FRAMING_TOKENS;
 }

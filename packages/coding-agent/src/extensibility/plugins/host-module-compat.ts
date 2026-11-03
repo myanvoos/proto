@@ -30,6 +30,7 @@ const HOST_PACKAGE_NAMES = [
 	"omptype",
 	"pi-agent-core",
 	"pi-ai",
+	"pi-catalog",
 	"pi-coding-agent",
 	"pi-natives",
 	"pi-tui",
@@ -47,7 +48,7 @@ interface ExtensionSpecifierReference {
 
 function parseExtensionSource(source: string, importerPath: string): ParseResult {
 	const extension = path.extname(importerPath).toLowerCase();
-	const plugins: ParserPlugin[] = ["decorators-legacy", "explicitResourceManagement"];
+	const plugins: ParserPlugin[] = ["decorators-legacy"];
 	if (extension === ".ts" || extension === ".mts" || extension === ".cts" || extension === ".tsx") {
 		plugins.push("typescript");
 	}
@@ -434,6 +435,7 @@ function collectExtensionSpecifierReferences(
 }
 
 interface ExtensionSourceAnalysis {
+	readonly sourceType: "script" | "module";
 	readonly references: readonly ExtensionSpecifierReference[];
 }
 
@@ -451,6 +453,7 @@ function getExtensionSourceAnalysis(source: string, importerPath: string): Exten
 
 	const ast = parseExtensionSource(source, importerPath);
 	const analysis: ExtensionSourceAnalysis = {
+		sourceType: ast.program.sourceType,
 		references: collectExtensionSpecifierReferences(source, importerPath, ast),
 	};
 	if (extensionSourceAnalysisCache.size >= EXTENSION_ANALYSIS_CACHE_MAX_ENTRIES) {
@@ -728,9 +731,13 @@ async function collectHostExtensionModules(entryRealPath: string): Promise<Exten
 		} catch {
 			continue;
 		}
+		const analysis = getExtensionSourceAnalysis(source, file);
+		// Runtime onLoad source hooks turn CommonJS exports into an empty ESM namespace.
+		// Native Bun loading supplies the CommonJS wrapper and its once-per-process cache.
+		if (analysis.sourceType === "script") continue;
 		modules.set(file, source);
 		const dir = path.dirname(file);
-		for (const reference of getExtensionSourceAnalysis(source, file).references) {
+		for (const reference of analysis.references) {
 			if (reference.kind !== "import") continue;
 			const specifier = reference.specifier;
 			if (!specifier.startsWith(".")) continue;
@@ -813,7 +820,7 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
 	};
 }
 
-export async function loadHostModule(resolvedPath: string): Promise<unknown> {
+export async function loadHostModule(resolvedPath: string, options: { reload?: boolean } = {}): Promise<unknown> {
 	const entryRealPath = await realpathOrSelf(path.resolve(resolvedPath));
 	await ensureHostOverridesReady();
 	const pendingSources = await ensureExtensionGraphHook(entryRealPath);
@@ -821,6 +828,7 @@ export async function loadHostModule(resolvedPath: string): Promise<unknown> {
 		const entrySpecifier = isBundledVirtualSpecifier(entryRealPath)
 			? toImportSpecifier(entryRealPath)
 			: entryRealPath;
+		if (options.reload === false) return await import(entrySpecifier);
 		return await import(`${entrySpecifier}?mtime=${nextHostLoadTag()}`);
 	} finally {
 		pendingSources?.clear();

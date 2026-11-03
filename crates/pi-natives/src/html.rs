@@ -1,5 +1,6 @@
 use html_to_markdown_rs::{
-	ConversionOptions, PreprocessingOptions, PreprocessingPreset, WarningKind, convert,
+	ConversionOptions, HiddenContent, PreprocessingOptions, PreprocessingPreset, WarningKind,
+	convert,
 };
 use napi::{JsString, bindgen_prelude::*};
 use napi_derive::napi;
@@ -12,6 +13,8 @@ pub struct HtmlToMarkdownOptions {
 	pub clean_content: Option<bool>,
 
 	pub skip_images: Option<bool>,
+
+	pub hidden_content: Option<String>,
 }
 
 #[napi(catch_unwind)]
@@ -23,10 +26,16 @@ pub fn html_to_markdown(
 	let options = options.unwrap_or_default();
 	let clean_content = options.clean_content.unwrap_or(false);
 	let skip_images = options.skip_images.unwrap_or(false);
+	let hidden_content = match options.hidden_content.as_deref() {
+		Some(value) => HiddenContent::parse(value)
+			.map_err(|error| Error::from_reason(format!("Invalid hiddenContent: {error}")))?,
+		None => HiddenContent::Drop,
+	};
 
 	Ok(task::blocking("html_to_markdown", (), move |_| {
 		let conversion_opts = ConversionOptions {
 			skip_images,
+			hidden_content,
 			preprocessing: PreprocessingOptions {
 				enabled:           clean_content,
 				preset:            PreprocessingPreset::Aggressive,

@@ -44,10 +44,12 @@ interface DryBalanceCommandArgs {
 		concurrency?: number;
 		json?: boolean;
 		bench?: boolean;
+		config?: string[];
 	};
 }
 
 interface DryBalanceAuthOptions {
+	recordAffinity?: boolean;
 	baseUrl?: string;
 	modelId?: string;
 	signal?: AbortSignal;
@@ -513,12 +515,13 @@ async function runBenchTargets(
 	);
 }
 
-async function createDefaultRuntime(): Promise<DryBalanceRuntime> {
-	const authStorage = await discoverAuthStorage();
+async function createDefaultRuntime(configFiles: string[] | undefined): Promise<DryBalanceRuntime> {
+	const cwd = getProjectDir();
+	const settings = await Settings.init({ cwd, configFiles });
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
-		const cwd = getProjectDir();
-		const settings = await Settings.init({ cwd });
-		const modelRegistry = new ModelRegistry(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
+		await modelRegistry.hydrateCredentialScopedModelCaches();
 		await loadCliExtensionProviders(modelRegistry, settings, cwd);
 		return {
 			modelRegistry,
@@ -535,7 +538,6 @@ async function resolveDryBalanceModel(
 	modelSelector: string | undefined,
 	modelRegistry: DryBalanceModelRegistry,
 	settings: Settings | undefined,
-	randomSessionId: () => string,
 ): Promise<{ model: Model<Api>; warning?: string }> {
 	const preferences = getModelMatchPreferences(settings);
 	if (modelSelector) {
@@ -566,7 +568,7 @@ async function resolveDryBalanceModel(
 	}
 
 	for (const candidate of allowedModels) {
-		const apiKey = await modelRegistry.getApiKey(candidate, randomSessionId());
+		const apiKey = await modelRegistry.getApiKey(candidate);
 		if (apiKey) return { model: candidate };
 	}
 
@@ -586,6 +588,7 @@ async function runOneAttempt(
 		const access = await modelRegistry.authStorage.getOAuthAccess(model.provider, sessionId, {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
+			recordAffinity: false,
 		});
 		if (!access) return { ok: false, reason: "no OAuth access resolved" };
 		return { ok: true, account: extractAccount(access) };
@@ -776,7 +779,7 @@ export async function runDryBalanceCommand(
 		});
 	const streamFn = deps.streamSimple ?? streamSimple;
 	const now = deps.now ?? (() => performance.now());
-	const runtime = await (deps.createRuntime ?? createDefaultRuntime)();
+	const runtime = await (deps.createRuntime?.() ?? createDefaultRuntime(command.flags.config));
 	let progress: DryBalanceBenchProgressSink | undefined;
 	let progressClosed = false;
 	const closeProgress = (): void => {
@@ -786,12 +789,7 @@ export async function runDryBalanceCommand(
 	};
 	try {
 		const modelSelector = command.flags.model ?? command.model;
-		const { model, warning } = await resolveDryBalanceModel(
-			modelSelector,
-			runtime.modelRegistry,
-			runtime.settings,
-			randomSessionId,
-		);
+		const { model, warning } = await resolveDryBalanceModel(modelSelector, runtime.modelRegistry, runtime.settings);
 		if (warning) writeStderr(`${chalk.yellow(`Warning: ${warning}`)}\n`);
 		let results: DryBalanceAttemptResult[];
 		let benchResults: DryBalanceBenchResult[] | undefined;

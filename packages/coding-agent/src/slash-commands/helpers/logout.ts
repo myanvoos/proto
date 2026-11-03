@@ -1,4 +1,5 @@
-import type { OAuthAccountIdentity, StoredAuthCredential } from "../../session/auth-storage";
+import type { ModelRegistry } from "../../config/model-registry";
+import type { AuthStorage, OAuthAccountIdentity, StoredAuthCredential } from "../../session/auth-storage";
 
 export interface LogoutAccount {
 	credentialId: number;
@@ -66,9 +67,13 @@ function oauthMatchesActiveIdentity(
 			return true;
 		}
 	}
+	// When both sides carry an email it decides: Codex Team seats share an
+	// account id and Antigravity accounts share one Google project.
+	if (activeIdentity.email !== undefined && credential.email !== undefined) {
+		return credential.email === activeIdentity.email;
+	}
 	return (
 		(activeIdentity.accountId !== undefined && credential.accountId === activeIdentity.accountId) ||
-		(activeIdentity.email !== undefined && credential.email === activeIdentity.email) ||
 		(activeIdentity.projectId !== undefined && credential.projectId === activeIdentity.projectId)
 	);
 }
@@ -98,4 +103,30 @@ export function toLogoutAccounts(
 			if (left.active !== right.active) return left.active ? -1 : 1;
 			return left.label.localeCompare(right.label) || left.credentialId - right.credentialId;
 		});
+}
+
+/** Stored accounts, sorted with the credential active in this conversation first. */
+export async function listLogoutAccounts(
+	authStorage: AuthStorage,
+	providerId: string,
+	sessionId: string,
+): Promise<LogoutAccount[]> {
+	await authStorage.reload();
+	return toLogoutAccounts(providerId, authStorage.listStoredCredentials(providerId), {
+		activeIdentity: authStorage.getOAuthAccountIdentity(providerId, sessionId),
+		activeApiKey: authStorage.getCredentialOrigin(providerId)?.kind === "api_key",
+	});
+}
+
+export async function logoutCredential(
+	modelRegistry: ModelRegistry,
+	providerId: string,
+	credentialId: number,
+	sessionId: string,
+): Promise<{ removed: boolean; remainingSource?: string }> {
+	const authStorage = modelRegistry.authStorage;
+	const removed = await authStorage.removeCredential(providerId, credentialId);
+	if (!removed) return { removed: false };
+	await modelRegistry.refreshProvider(providerId, "online");
+	return { removed: true, remainingSource: authStorage.describeCredentialSource(providerId, sessionId) };
 }

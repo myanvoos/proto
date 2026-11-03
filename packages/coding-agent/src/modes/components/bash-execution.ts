@@ -12,7 +12,7 @@ import {
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import type { ExecutionMetadata } from "../../session/execution-metadata";
-import type { TruncationMeta } from "../../tools/output-meta";
+import type { MinimizedMeta, TruncationMeta } from "../../tools/output-meta";
 import {
 	getSixelLineMask,
 	isSixelPassthroughEnabled,
@@ -40,6 +40,7 @@ export class BashExecutionComponent extends Container {
 	#execution?: ExecutionMetadata;
 	#loader: Loader;
 	#truncation?: TruncationMeta;
+	#minimized?: MinimizedMeta;
 	#expanded = false;
 
 	#displayDirty = false;
@@ -180,13 +181,19 @@ export class BashExecutionComponent extends Container {
 	setComplete(
 		exitCode: number | undefined,
 		cancelled: boolean,
-		options?: { output?: string; truncation?: TruncationMeta; execution?: ExecutionMetadata },
+		options?: {
+			output?: string;
+			truncation?: TruncationMeta;
+			minimized?: MinimizedMeta;
+			execution?: ExecutionMetadata;
+		},
 	): void {
 		this.#flushPendingOutput();
 		this.#exitCode = exitCode;
 		this.#execution = options?.execution;
 		this.#status = resolveExecutionStatus(exitCode, cancelled, this.#execution);
 		this.#truncation = options?.truncation;
+		this.#minimized = options?.minimized;
 		if (options?.output !== undefined) {
 			this.#setOutput(options.output);
 		}
@@ -242,6 +249,7 @@ export class BashExecutionComponent extends Container {
 				status: this.#status,
 				exitCode: this.#exitCode,
 				truncation: this.#truncation,
+				minimized: this.#minimized,
 				hiddenLineCount,
 				suppressHiddenCount: hasSixelOutput,
 			});

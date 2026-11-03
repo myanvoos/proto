@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use std::{collections::HashSet, fmt::Write as _};
 
 use serde_json::{Map, Value};
 
@@ -846,18 +846,23 @@ fn filter_psql(input: &str, exit_code: i32) -> String {
 		return String::new();
 	}
 
-	let compacted = if looks_like_psql_table(input) {
+	let table = looks_like_psql_table(input);
+	let expanded = !table && looks_like_psql_expanded(input);
+	let compacted = if table {
 		compact_psql_table(input)
-	} else if looks_like_psql_expanded(input) {
+	} else if expanded {
 		compact_psql_expanded(input)
 	} else {
 		compact_jsonish_or_text(input, 120, 80, 40)
 	};
+	// Table rows and expanded `key | value` fields are data, already capped by
+	// the compactors; only messages outside them need preserving.
+	let structured = table || expanded;
 
 	if exit_code == 0 {
-		preserve_important_lines(input, &compacted)
+		preserve_important_lines(input, &compacted, structured)
 	} else {
-		preserve_important_lines(input, &head_tail_dedup(&compacted, 80, 40))
+		preserve_important_lines(input, &head_tail_dedup(&compacted, 80, 40), structured)
 	}
 }
 
@@ -1051,7 +1056,11 @@ fn compact_psql_table(input: &str) -> String {
 			row_count_lines.push(trimmed.to_string());
 			continue;
 		}
-		if is_important_line(trimmed) {
+		// psql's own messages stay verbatim, even when they quote SQL with `|`
+		// (`ERROR:  operator does not exist: integer || integer`). Any other
+		// line with a `|` is a table row, whatever its first cell says, and
+		// counts against the row cap.
+		if is_psql_message(line) {
 			out.push(trimmed.to_string());
 			continue;
 		}
@@ -1096,6 +1105,13 @@ fn compact_psql_expanded(input: &str) -> String {
 			flush_record(&mut out, &mut current, records);
 			records += 1;
 			current.push(trimmed.to_string());
+			continue;
+		}
+		// A psql message ends the record before it and stays verbatim, even
+		// when it quotes SQL with `|`.
+		if is_psql_message(line) {
+			flush_record(&mut out, &mut current, records);
+			out.push(trimmed.to_string());
 			continue;
 		}
 		if is_important_line(trimmed) && current.is_empty() {
@@ -1152,39 +1168,64 @@ fn is_psql_row_count(line: &str) -> bool {
 		&& trimmed.chars().any(|ch| ch.is_ascii_digit())
 }
 
-fn preserve_important_lines(original: &str, compacted: &str) -> String {
+/// Puts important lines the compaction dropped back in front of it. With
+/// `skip_cells`, lines holding a `|` cell separator are data, not messages.
+fn preserve_important_lines(original: &str, compacted: &str, structured: bool) -> String {
+	let mut kept: Option<HashSet<&str>> = None;
+	let mut seen = HashSet::new();
 	let mut out = Vec::new();
 	for line in original.lines() {
 		let trimmed = line.trim();
-		if is_important_line(trimmed)
-			&& !contains_line(&out, trimmed)
-			&& !compacted.lines().any(|existing| existing.trim() == trimmed)
-		{
-			out.push(trimmed.to_string());
+		let important = if structured && trimmed.contains('|') {
+			is_psql_message(line)
+		} else {
+			is_important_line(trimmed)
+		};
+		if !important {
+			continue;
+		}
+		let kept = kept.get_or_insert_with(|| compacted.lines().map(str::trim).collect());
+		if !kept.contains(trimmed) && seen.insert(trimmed) {
+			out.push(trimmed);
 		}
 	}
 	if out.is_empty() {
 		return compacted.to_string();
 	}
-	out.push(compacted.trim_end().to_string());
-	join_lines(out)
+	let mut text = String::with_capacity(
+		out.iter().map(|line| line.len() + 1).sum::<usize>() + compacted.len() + 1,
+	);
+	for line in out {
+		text.push_str(line);
+		text.push('\n');
+	}
+	text.push_str(compacted.trim_end());
+	text.push('\n');
+	text
+}
+
+fn is_psql_message(line: &str) -> bool {
+	const LEVELS: [&str; 5] = ["ERROR:", "FATAL:", "PANIC:", "DETAIL:", "HINT:"];
+	LEVELS.iter().any(|level| line.starts_with(level))
+		|| line.strip_prefix("LINE ").is_some_and(|rest| {
+			let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+			digits > 0 && rest.as_bytes().get(digits) == Some(&b':')
+		})
 }
 
 fn is_important_line(line: &str) -> bool {
-	let upper = line.trim_start().to_ascii_uppercase();
-	upper.starts_with("ERROR")
-		|| upper.starts_with("FATAL")
-		|| upper.starts_with("PANIC")
-		|| upper.starts_with("DETAIL")
-		|| upper.starts_with("HINT")
-		|| upper.starts_with("LINE ")
-		|| upper.starts_with("SQLSTATE")
-		|| upper.starts_with("AN ERROR OCCURRED")
-		|| upper.contains("EXCEPTION")
-}
-
-fn contains_line(lines: &[String], needle: &str) -> bool {
-	lines.iter().any(|line| line == needle)
+	const PREFIXES: [&str; 8] =
+		["ERROR", "FATAL", "PANIC", "DETAIL", "HINT", "LINE ", "SQLSTATE", "AN ERROR OCCURRED"];
+	let line = line.trim_start();
+	PREFIXES.iter().any(|prefix| {
+		line
+			.as_bytes()
+			.get(..prefix.len())
+			.is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+	}) || line
+		.as_bytes()
+		.windows(b"EXCEPTION".len())
+		.any(|window| window.eq_ignore_ascii_case(b"EXCEPTION"))
 }
 
 fn head_tail_dedup(input: &str, head: usize, tail: usize) -> String {

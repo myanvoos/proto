@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
@@ -42,7 +43,38 @@ export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): C
 const MAX_TOOL_BYTES = 128;
 
 /** An over-long `tool` is prose put on line 1: keep it at the head of the report and truncate only the name. */
-function clampGrievance(tool: string, report: string): { tool: string; report: string } {
+function redactUserIdentity(text: string): string {
+	let redacted = text;
+	const home = os.homedir();
+	// Case-insensitive throughout: Windows and default macOS volumes name the
+	// same home in any case (`c:\users\will`), and over-matching another
+	// casing only hides more.
+	if (home.length > 1) {
+		for (const form of new Set([home, home.replaceAll("\\", "/")])) {
+			const pattern = `(?<![\\p{L}\\p{N}_.-])${RegExp.escape(form)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`;
+			redacted = redacted.replace(new RegExp(pattern, "giu"), "~");
+		}
+	}
+	let user: string | undefined;
+	try {
+		user = os.userInfo().username;
+	} catch {
+		// No passwd entry for the uid (some containers): the home rewrite above still applies.
+	}
+	if (user && user !== "root") {
+		const name = RegExp.escape(user);
+		const pattern = new RegExp(
+			`(?<=(?<![\\p{L}\\p{N}])(?:Users|home)[/\\\\-]|~|(?<![\\p{L}\\p{N}])(?:com|org|net|io|dev)\\.)${name}(?![\\p{L}\\p{N}])|(?<![\\p{L}\\p{N}])${name}(?=@)`,
+			"giu",
+		);
+		redacted = redacted.replace(pattern, "<user>");
+	}
+	return redacted;
+}
+
+function normalizeGrievance(rawTool: string, rawReport: string): { tool: string; report: string } {
+	const tool = redactUserIdentity(rawTool);
+	const report = redactUserIdentity(rawReport);
 	if (Buffer.byteLength(tool, "utf8") <= MAX_TOOL_BYTES) return { tool, report };
 	return { tool: truncateHeadBytes(tool, MAX_TOOL_BYTES).text, report: `${tool}\n${report}` };
 }
@@ -56,13 +88,13 @@ function parseReportIssueBody(text: string): { tool: string; report: string } {
 	if (firstNewline >= 0) {
 		const tool = body.slice(0, firstNewline).trim();
 		const report = body.slice(firstNewline + 1).trim();
-		if (tool && report) return clampGrievance(tool, report);
+		if (tool && report) return normalizeGrievance(tool, report);
 	}
-	const colon = body.indexOf(":");
+	const colon = body.search(/:\s/);
 	if (colon > 0) {
 		const tool = body.slice(0, colon).trim();
 		const report = body.slice(colon + 1).trim();
-		if (tool && report) return clampGrievance(tool, report);
+		if (tool && report) return normalizeGrievance(tool, report);
 	}
 	throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 }
@@ -295,7 +327,7 @@ async function performFlush(db: Database, config: PushConfig, options: FlushOpti
 
 			platform: process.platform,
 			arch: process.arch,
-			entries: batch.map(row => ({ ...row, ...clampGrievance(row.tool, row.report) })),
+			entries: batch.map(row => ({ ...row, ...normalizeGrievance(row.tool, row.report) })),
 		});
 		const headers: Record<string, string> = { "content-type": "application/json" };
 		if (config.token) headers.authorization = `Bearer ${config.token}`;

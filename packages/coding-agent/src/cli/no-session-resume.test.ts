@@ -7,6 +7,18 @@ import { CURRENT_SESSION_VERSION } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import { parseArgs } from "./args";
 
+test.each([false, true])("missing explicit resume paths fail closed (noSession=%s)", async noSession => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-missing-resume-"));
+	const missing = path.join(cwd, "missing.jsonl");
+	try {
+		const args = parseArgs([...(noSession ? ["--no-session"] : []), "--resume", missing]);
+		await expect(createSessionManager(args, cwd)).rejects.toThrow("not found");
+		expect(await Bun.file(missing).exists()).toBe(false);
+	} finally {
+		await fs.rm(cwd, { recursive: true, force: true });
+	}
+});
+
 test.each(["path", "id", "continue"] as const)("--no-session resumes %s without enabling persistence", async mode => {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-no-session-resume-"));
 	const id = "00000000-0000-4000-8000-000000000077";

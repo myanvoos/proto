@@ -7,7 +7,6 @@ use std::{
 
 use brush_parser::ast::{self, CommandPrefixOrSuffixItem};
 use itertools::Itertools;
-
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -23,126 +22,193 @@ use crate::{
 	variables::{ArrayLiteral, ShellValue, ShellValueLiteral, ShellValueUnsetType, ShellVariable},
 };
 
-
 struct PipelineExecutionContext<'a, SE: extensions::ShellExtensions> {
-
-	shell:            commands::ShellForCommand<'a, SE>,
+	shell: commands::ShellForCommand<'a, SE>,
 
 	process_group_id: Option<i32>,
 
-	in_pipeline:       bool,
+	in_pipeline: bool,
 }
 
-
 pub struct ExternalCommandInfo<'a> {
-
-	pub command_name:    &'a str,
+	pub command_name: &'a str,
 
 	pub executable_path: &'a str,
 
-	pub args:            Vec<&'a str>,
+	pub args: Vec<&'a str>,
 }
-
 
 #[derive(Clone)]
 pub struct ExternalCommandOutputMarkers {
-
-	pub start_marker:      String,
-
+	pub start_marker: String,
 
 	pub end_marker_prefix: String,
 
 	pub end_marker_suffix: String,
 }
 
-
-
 pub trait ExternalCommandOutputMarker: Send + Sync {
-
-
 	fn markers_for_external_command(
 		&self,
 		info: ExternalCommandInfo<'_>,
 	) -> Option<ExternalCommandOutputMarkers>;
 }
 
-
-
-
-
-
-
-
-
-
-
 pub trait SpawnObserver: Send + Sync {
-
-
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>);
 }
 
-
-/// Observer for actual command invocations, including pipeline members and nested commands.
+/// Observer for actual command invocations, including pipeline members and
+/// nested commands.
 pub trait CommandObserver: Send + Sync {
-	fn start(&self, command: String, span: Option<brush_parser::SourceSpan>, parent: Option<usize>) -> Option<usize>;
+	fn start(
+		&self,
+		command: String,
+		span: Option<brush_parser::SourceSpan>,
+		parent: Option<usize>,
+	) -> Option<usize>;
 	fn route(&self, id: usize, route: &str);
-	fn finish(&self, id: usize, exit_code: Option<i32>, signal: Option<i32>) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+	fn finish(
+		&self,
+		id: usize,
+		exit_code: Option<i32>,
+		signal: Option<i32>,
+	) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 	fn capture(&self, id: usize, fd: u32, output: openfiles::OpenFile) -> openfiles::OpenFile;
 }
 
 #[derive(Clone)]
 pub struct CommandObservation {
 	pub observer: Arc<dyn CommandObserver>,
-	pub id: usize,
+	pub id:       usize,
 }
 impl CommandObservation {
 	pub async fn finish(&self, exit_code: Option<i32>, signal: Option<i32>) {
 		self.observer.finish(self.id, exit_code, signal).await;
 	}
-	pub fn route(&self, route: &str) { self.observer.route(self.id, route); }
+
+	pub fn route(&self, route: &str) {
+		self.observer.route(self.id, route);
+	}
 }
 
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
+	defer_fifo_redirects: bool,
+	deferred_redirects:   Vec<DeferredRedirect>,
+	reported_error:       Option<Arc<std::sync::atomic::AtomicBool>>,
+	quiet_cancellation:   bool,
 	/// Regular stdout identity before command tracing replaces it with a pipe.
-	pub stdout_identity: Option<(u64, u64)>,
+	pub stdout_identity:  Option<(u64, u64)>,
 
-	open_files:               openfiles::OpenFiles,
+	open_files: openfiles::OpenFiles,
 
 	pub process_group_policy: ProcessGroupPolicy,
 
-
-
-
 	pub detach_reparent: bool,
 
-	cancel_token:             Option<CancellationToken>,
+	cancel_token: Option<CancellationToken>,
 
-	command_output_marker:    Option<Arc<dyn ExternalCommandOutputMarker>>,
+	command_output_marker: Option<Arc<dyn ExternalCommandOutputMarker>>,
 
+	command_output_disabled: bool,
 
-	command_output_disabled:  bool,
+	pub suppress_errexit: bool,
 
-
-	pub suppress_errexit:     bool,
-
-	spawn_observer:           Option<Arc<dyn SpawnObserver>>,
-	pub command_observer: Option<Arc<dyn CommandObserver>>,
+	spawn_observer:          Option<Arc<dyn SpawnObserver>>,
+	pub command_observer:    Option<Arc<dyn CommandObserver>>,
 	pub command_observation: Option<CommandObservation>,
 }
 
+#[derive(Clone)]
+pub(crate) enum DeferredRedirect {
+	/// `fd OP path`; `options` reopen it in the parent if the redirections
+	/// must be made there after all.
+	Open { fd: ShellFd, op: &'static str, path: String, options: std::fs::OpenOptions },
+	/// `fd>&from`.
+	Duplicate { fd: ShellFd, from: ShellFd },
+	/// `fd>&-`.
+	Close { fd: ShellFd },
+}
+
+impl DeferredRedirect {
+	/// The descriptor this redirection sets.
+	const fn fd(&self) -> ShellFd {
+		match self {
+			Self::Open { fd, .. } | Self::Duplicate { fd, .. } | Self::Close { fd } => *fd,
+		}
+	}
+
+	/// Whether this redirection sets or reads `fd`.
+	const fn touches(&self, fd: ShellFd) -> bool {
+		self.fd() == fd || matches!(self, Self::Duplicate { from, .. } if *from == fd)
+	}
+}
+
+/// The highest descriptor a POSIX `sh` redirection is sure to accept.
+const MAX_DEFERRED_FD: ShellFd = 9;
+
 impl ExecutionParameters {
+	pub(crate) fn deferred_redirects(&self) -> &[DeferredRedirect] {
+		&self.deferred_redirects
+	}
+
+	pub(crate) fn sets_deferred(&self, fd: ShellFd) -> bool {
+		self
+			.deferred_redirects
+			.iter()
+			.any(|redirect| redirect.fd() == fd)
+	}
+
+	fn touches_deferred(&self, fd: ShellFd) -> bool {
+		self
+			.deferred_redirects
+			.iter()
+			.any(|redirect| redirect.touches(fd))
+	}
+
+	fn reads_deferred_source(&self, fd: ShellFd) -> bool {
+		self
+			.deferred_redirects
+			.iter()
+			.find(|redirect| redirect.touches(fd))
+			.is_some_and(
+				|redirect| matches!(redirect, DeferredRedirect::Duplicate { from, .. } if *from == fd),
+			)
+	}
+
+	fn defer(&mut self, redirect: DeferredRedirect) -> Result<(), error::Error> {
+		let fd = redirect.fd();
+		if !self.reads_deferred_source(fd) {
+			self.open_files.set_fd(fd, openfiles::null()?);
+		}
+		self.deferred_redirects.push(redirect);
+		Ok(())
+	}
+
+	pub fn set_reported_error(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+		self.reported_error = Some(flag);
+	}
+
+	pub fn reported_error(&self) -> Option<&Arc<std::sync::atomic::AtomicBool>> {
+		self.reported_error.as_ref()
+	}
+
+	pub fn set_quiet_cancellation(&mut self, quiet: bool) {
+		self.quiet_cancellation = quiet;
+	}
+
+	pub(crate) fn reports_errors(&self) -> bool {
+		!(self.quiet_cancellation && self.is_cancelled())
+	}
 
 	pub fn set_cancel_token(&mut self, token: CancellationToken) {
 		self.cancel_token = Some(token);
 	}
 
-
 	pub fn cancel_token(&self) -> Option<CancellationToken> {
 		self.cancel_token.clone()
 	}
-
 
 	pub fn is_cancelled(&self) -> bool {
 		self
@@ -151,17 +217,14 @@ impl ExecutionParameters {
 			.is_some_and(CancellationToken::is_cancelled)
 	}
 
-
 	pub fn set_command_output_marker(&mut self, marker: Arc<dyn ExternalCommandOutputMarker>) {
 		self.command_output_marker = Some(marker);
 		self.command_output_disabled = false;
 	}
 
-
 	pub const fn disable_command_output_marking(&mut self) {
 		self.command_output_disabled = true;
 	}
-
 
 	pub fn command_output_marker(&self) -> Option<&Arc<dyn ExternalCommandOutputMarker>> {
 		if self.command_output_disabled {
@@ -170,20 +233,13 @@ impl ExecutionParameters {
 		self.command_output_marker.as_ref()
 	}
 
-
 	pub fn set_spawn_observer(&mut self, observer: Arc<dyn SpawnObserver>) {
 		self.spawn_observer = Some(observer);
 	}
 
-
 	pub fn spawn_observer(&self) -> Option<&Arc<dyn SpawnObserver>> {
 		self.spawn_observer.as_ref()
 	}
-
-
-
-
-
 
 	pub fn stdin(
 		&self,
@@ -194,22 +250,9 @@ impl ExecutionParameters {
 		})
 	}
 
-
-
-
-
-
 	pub fn try_stdin(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Option<OpenFile> {
 		self.try_fd(shell, openfiles::OpenFiles::STDIN_FD)
 	}
-
-
-
-
-
-
-
-
 
 	pub fn stdout(
 		&self,
@@ -220,21 +263,9 @@ impl ExecutionParameters {
 		})
 	}
 
-
-
-
-
-
 	pub fn try_stdout(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Option<OpenFile> {
 		self.try_fd(shell, openfiles::OpenFiles::STDOUT_FD)
 	}
-
-
-
-
-
-
-
 
 	pub fn stderr(
 		&self,
@@ -245,21 +276,9 @@ impl ExecutionParameters {
 		})
 	}
 
-
-
-
-
-
 	pub fn try_stderr(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Option<OpenFile> {
 		self.try_fd(shell, openfiles::OpenFiles::STDERR_FD)
 	}
-
-
-
-
-
-
-
 
 	pub fn try_fd(
 		&self,
@@ -270,18 +289,10 @@ impl ExecutionParameters {
 			openfiles::OpenFileEntry::Open(f) => Some(f.clone()),
 			openfiles::OpenFileEntry::NotPresent => None,
 			openfiles::OpenFileEntry::NotSpecified => {
-
-
 				shell.persistent_open_files().try_fd(fd).cloned()
 			},
 		}
 	}
-
-
-
-
-
-
 
 	pub fn set_fd(&mut self, fd: ShellFd, file: openfiles::OpenFile) {
 		if fd == OpenFiles::STDOUT_FD {
@@ -289,11 +300,6 @@ impl ExecutionParameters {
 		}
 		self.open_files.set_fd(fd, file);
 	}
-
-
-
-
-
 
 	pub fn iter_fds(
 		&self,
@@ -322,11 +328,9 @@ fn ensure_not_cancelled(params: &ExecutionParameters) -> Result<(), error::Error
 	Ok(())
 }
 
-
 #[derive(Clone, Debug, Default)]
 
 pub enum ProcessGroupPolicy {
-
 	#[default]
 	NewProcessGroup,
 
@@ -364,20 +368,17 @@ impl Execute for ast::Program {
 		for command in &self.complete_commands {
 			ensure_not_cancelled(params)?;
 
-
-
 			match command.execute(shell, params).await {
 				Ok(exec_result) => result = exec_result,
 				Err(err) => {
-
-					let _ = shell.display_error(&mut params.stderr(shell), &err);
+					if params.reports_errors() {
+						let _ = shell.display_error(&mut params.stderr(shell), &err);
+					}
 					result = err.into_result(shell);
 				},
 			}
 
-
 			shell.set_last_exit_status(result.exit_code.into());
-
 
 			if !result.is_normal_flow() {
 				break;
@@ -414,7 +415,6 @@ impl Execute for ast::CompoundList {
 			} else {
 				result = ao_list.execute(shell, params).await?;
 
-
 				shell.set_last_exit_status(result.exit_code.into());
 			}
 
@@ -435,7 +435,6 @@ async fn spawn_async_ao_list_as_job<'a, SE: extensions::ShellExtensions>(
 	let mut async_params = params.clone();
 	async_params.disable_command_output_marking();
 
-
 	if let Ok(null) = openfiles::null() {
 		async_params.set_fd(openfiles::OpenFiles::STDIN_FD, null);
 	}
@@ -443,10 +442,6 @@ async fn spawn_async_ao_list_as_job<'a, SE: extensions::ShellExtensions>(
 	let direct_pipeline =
 		background_process_pipeline_for_async_job(ao_list, shell, &async_params).await?;
 	let job = if let Some((pipeline, detach_reparent)) = direct_pipeline {
-
-
-
-
 		async_params.detach_reparent = detach_reparent;
 		match try_spawn_pipeline_as_job(&pipeline, ao_list.to_string(), shell, &async_params).await? {
 			Some(job) => job,
@@ -456,7 +451,7 @@ async fn spawn_async_ao_list_as_job<'a, SE: extensions::ShellExtensions>(
 		spawn_async_ao_list_in_task(ao_list, shell, &async_params)
 	};
 
-	shell.set_last_background_pid(job.representative_pid());
+	shell.set_last_background_pid(job.last_pid());
 	Ok(shell.jobs_mut().add_as_current(job))
 }
 
@@ -481,8 +476,6 @@ async fn background_process_pipeline_for_async_job<SE: extensions::ShellExtensio
 		match classify_background_process_pipeline(&pipeline, shell, params).await? {
 			BackgroundProcessPipeline::Direct => return Ok(Some((pipeline, detach_reparent))),
 			BackgroundProcessPipeline::Wrapper(unwrapped) => {
-
-
 				detach_reparent = true;
 				pipeline = unwrapped;
 			},
@@ -502,6 +495,31 @@ async fn classify_background_process_pipeline<SE: extensions::ShellExtensions>(
 		return Ok(BackgroundProcessPipeline::Internal);
 	}
 
+	if pipeline.seq.len() > 1 {
+		for command in &pipeline.seq {
+			let ast::Command::Simple(simple) = command else {
+				return Ok(BackgroundProcessPipeline::Internal);
+			};
+			let Some(word) = &simple.word_or_name else {
+				return Ok(BackgroundProcessPipeline::Internal);
+			};
+			let expanded = expansion::full_expand_and_split_word(shell, params, word).await?;
+			let [name] = expanded.as_slice() else {
+				return Ok(BackgroundProcessPipeline::Internal);
+			};
+			let builtin = shell
+				.builtins()
+				.get(name)
+				.or_else(|| SE::builtin_alias(name).and_then(|alias| shell.builtins().get(alias)));
+			if shell.aliases().contains_key(name)
+				|| shell.funcs().get(name).is_some()
+				|| builtin.is_some_and(|registration| !registration.disabled)
+			{
+				return Ok(BackgroundProcessPipeline::Internal);
+			}
+		}
+		return Ok(BackgroundProcessPipeline::Direct);
+	}
 	let [ast::Command::Simple(simple_cmd)] = pipeline.seq.as_slice() else {
 		return Ok(BackgroundProcessPipeline::Internal);
 	};
@@ -545,7 +563,6 @@ fn unwrap_transparent_background_wrapper(pipeline: &ast::Pipeline) -> Option<ast
 		.iter()
 		.position(|item| matches!(item, CommandPrefixOrSuffixItem::Word(_)))?;
 
-
 	if let CommandPrefixOrSuffixItem::Word(word) = &suffix.0[operand_index]
 		&& word.value == "--"
 	{
@@ -566,8 +583,8 @@ fn unwrap_transparent_background_wrapper(pipeline: &ast::Pipeline) -> Option<ast
 
 	Some(ast::Pipeline {
 		timed: pipeline.timed.clone(),
-		bang: pipeline.bang,
-		seq: vec![ast::Command::Simple(unwrapped)],
+		bang:  pipeline.bang,
+		seq:   vec![ast::Command::Simple(unwrapped)],
 	})
 }
 
@@ -580,7 +597,9 @@ async fn try_spawn_pipeline_as_job<SE: extensions::ShellExtensions>(
 	let mut subshell = shell.clone();
 	subshell.options_mut().interactive = false;
 
-	let spawn_results = spawn_pipeline_processes(pipeline, &mut subshell, params).await?;
+	let mut params = params.clone();
+	params.defer_fifo_redirects = true;
+	let spawn_results = spawn_pipeline_processes(pipeline, &mut subshell, &params).await?;
 	let mut tasks = VecDeque::new();
 
 	for spawn_result in spawn_results {
@@ -601,14 +620,25 @@ fn spawn_async_ao_list_in_task<SE: extensions::ShellExtensions>(
 	shell: &Shell<SE>,
 	params: &ExecutionParameters,
 ) -> jobs::Job {
-
+	// Clone the inputs.
 	let mut cloned_shell = shell.clone();
-	let cloned_params = params.clone();
+	let mut cloned_params = params.clone();
 	let cloned_ao_list = ao_list.clone();
 
-
-
+	// Mark the child shell as not interactive; we don't want it messing with the
+	// terminal too much.
 	cloned_shell.options_mut().interactive = false;
+
+	// Let the job flag its own task for cancellation: the interpreter checks
+	// these parameters between commands and loop iterations, so `kill %N` also
+	// stops a body that never yields (a loop of synchronous builtins). It is a
+	// child of the run's token, so cancelling the run (a tool abort) stops the
+	// job too; a run that completes never cancels its token, so a job still
+	// outlives the command line that started it.
+	let cancellation = params
+		.cancel_token()
+		.map_or_else(CancellationToken::new, |token| token.child_token());
+	cloned_params.set_cancel_token(cancellation.clone());
 
 	let join_handle = tokio::spawn(async move {
 		cloned_ao_list
@@ -617,10 +647,11 @@ fn spawn_async_ao_list_in_task<SE: extensions::ShellExtensions>(
 	});
 
 	jobs::Job::new(
-		[jobs::JobTask::Internal(join_handle)],
+		[jobs::JobTask::Internal(jobs::JobJoinHandle::new(join_handle))],
 		ao_list.to_string(),
 		jobs::JobState::Running,
 	)
+	.with_cancellation(cancellation)
 }
 
 #[async_trait::async_trait]
@@ -632,7 +663,6 @@ impl Execute for ast::AndOrList {
 	) -> Result<ExecutionResult, error::Error> {
 		ensure_not_cancelled(params)?;
 		let has_operators = !self.additional.is_empty();
-
 
 		let mut first_params = params.clone();
 		if has_operators {
@@ -653,10 +683,6 @@ impl Execute for ast::AndOrList {
 				ast::AndOr::Or(p) => (false, p),
 			};
 
-
-
-
-
 			if is_and {
 				if !result.is_success() {
 					continue;
@@ -664,8 +690,6 @@ impl Execute for ast::AndOrList {
 			} else if result.is_success() {
 				continue;
 			}
-
-
 
 			let mut params = params.clone();
 
@@ -698,31 +722,20 @@ impl Execute for ast::Pipeline {
 
 		let mut params = params.clone();
 
-
 		if self.bang {
 			params.suppress_errexit = true;
 		}
 
-
-
 		let spawn_results = spawn_pipeline_processes(self, shell, &params).await?;
-
-
 
 		let mut result =
 			wait_for_pipeline_processes_and_update_status(self, spawn_results, shell, &params).await?;
-
 
 		if self.bang {
 			result.exit_code = ExecutionExitCode::from(if result.is_success() { 1 } else { 0 });
 		}
 
-
 		shell.set_last_exit_status(result.exit_code.into());
-
-
-
-
 
 		if !result.is_success() && !params.suppress_errexit && !self.bang {
 			if shell.traps().handles(crate::traps::TrapSignal::Err) {
@@ -732,11 +745,9 @@ impl Execute for ast::Pipeline {
 			}
 		}
 
-
 		if !params.suppress_errexit && !self.bang {
 			shell.apply_errexit_if_enabled(&mut result);
 		}
-
 
 		if let (Some(timed), Some(stopwatch)) = (&self.timed, &stopwatch)
 			&& let Some(mut stderr) = params.try_fd(shell, openfiles::OpenFiles::STDERR_FD)
@@ -777,16 +788,12 @@ async fn spawn_pipeline_processes(
 	let mut spawn_results = VecDeque::new();
 	let mut process_group_id: Option<i32> = None;
 
-
-
 	if pipeline_len > 1 {
 		for _ in 0..(pipeline_len - 1) {
-			let (reader, writer) = std::io::pipe()?;
+			let (reader, writer) = ioutils::pipe("pipeline")?;
 			pipe_readers.push(Some(reader.into()));
 			pipe_writers.push(Some(writer.into()));
 		}
-
-
 
 		pipe_readers.push(None);
 	}
@@ -794,26 +801,15 @@ async fn spawn_pipeline_processes(
 	for (current_pipeline_index, command) in pipeline.seq.iter().enumerate() {
 		ensure_not_cancelled(params)?;
 
-
-
-
-
-
-
-
-
 		let run_in_current_shell = pipeline_len == 1
 			|| (current_pipeline_index == pipeline_len - 1
 				&& shell.options().run_last_pipeline_cmd_in_current_shell
 				&& !shell.options().enable_job_control);
 
-
 		let mut cmd_params = params.clone();
 		if pipeline_len > 1 {
 			cmd_params.disable_command_output_marking();
 		}
-
-
 
 		if let Some(Some(reader)) = pipe_readers.pop() {
 			cmd_params.set_fd(OpenFiles::STDIN_FD, reader);
@@ -823,7 +819,6 @@ async fn spawn_pipeline_processes(
 		}
 
 		let pipeline_context = if !run_in_current_shell {
-
 			if current_pipeline_index > 0 {
 				cmd_params.process_group_policy = ProcessGroupPolicy::SameProcessGroup;
 			}
@@ -844,38 +839,61 @@ async fn spawn_pipeline_processes(
 			}
 		};
 
-        use brush_parser::ast::SourceLocation;
+		use brush_parser::ast::SourceLocation;
 		let observation = cmd_params.command_observer.as_ref().and_then(|observer| {
-			observer.start(command.to_string(), command.location(), cmd_params.command_observation.as_ref().map(|entry| entry.id))
+			observer
+				.start(
+					command.to_string(),
+					command.location(),
+					cmd_params
+						.command_observation
+						.as_ref()
+						.map(|entry| entry.id),
+				)
 				.map(|id| CommandObservation { observer: observer.clone(), id })
 		});
 		cmd_params.command_observation = observation.clone();
-		let spawned = command.execute_in_pipeline(pipeline_context, cmd_params).await;
+		let spawned = command
+			.execute_in_pipeline(pipeline_context, cmd_params)
+			.await;
 		let mut spawn_result = match spawned {
 			Ok(result) => result,
 			Err(error) => {
-				if let Some(observation) = observation { observation.finish(None, None).await; }
+				if let Some(observation) = observation {
+					observation.finish(None, None).await;
+				}
 				return Err(error);
-			}
+			},
 		};
 		if let Some(observation) = observation {
 			spawn_result = match spawn_result {
 				ExecutionSpawnResult::Completed(result) => {
-					observation.finish(Some(i32::from(u8::from(result.exit_code))), None).await;
+					observation
+						.finish(Some(i32::from(u8::from(result.exit_code))), None)
+						.await;
 					ExecutionSpawnResult::Completed(result)
 				},
 				ExecutionSpawnResult::StartedProcess(mut child) => {
 					child.set_command_observation(observation);
 					ExecutionSpawnResult::StartedProcess(child)
 				},
-				ExecutionSpawnResult::StartedTask(task) => ExecutionSpawnResult::StartedTask(tokio::spawn(async move {
-					let result = task.await?;
-					observation.finish(result.as_ref().ok().map(|result| i32::from(u8::from(result.exit_code))), None).await;
-					result
-				})),
+				ExecutionSpawnResult::StartedTask(task) => {
+					ExecutionSpawnResult::StartedTask(tokio::spawn(async move {
+						let result = task.await?;
+						observation
+							.finish(
+								result
+									.as_ref()
+									.ok()
+									.map(|result| i32::from(u8::from(result.exit_code))),
+								None,
+							)
+							.await;
+						result
+					}))
+				},
 			};
 		}
-
 
 		if let ExecutionSpawnResult::StartedProcess(child) = &spawn_result {
 			if process_group_id.is_none() {
@@ -900,7 +918,6 @@ async fn wait_for_pipeline_processes_and_update_status(
 	let mut stopped_children = vec![];
 	let mut last_failure_exit_code: Option<ExecutionExitCode> = None;
 
-
 	shell.last_pipeline_statuses_mut().clear();
 
 	while let Some(child) = process_spawn_results.pop_front() {
@@ -919,7 +936,6 @@ async fn wait_for_pipeline_processes_and_update_status(
 					.last_pipeline_statuses_mut()
 					.push(result.exit_code.into());
 
-
 				if !result.is_success() {
 					last_failure_exit_code = Some(result.exit_code);
 				}
@@ -936,7 +952,6 @@ async fn wait_for_pipeline_processes_and_update_status(
 		}
 	}
 
-
 	if shell.options().return_last_failure_from_pipeline {
 		if let Some(failure_exit_code) = last_failure_exit_code {
 			result.exit_code = failure_exit_code;
@@ -947,8 +962,6 @@ async fn wait_for_pipeline_processes_and_update_status(
 		sys::terminal::move_self_to_foreground()?;
 	}
 
-
-
 	if !stopped_children.is_empty() {
 		let job = shell.jobs_mut().add_as_current(jobs::Job::new(
 			stopped_children,
@@ -957,7 +970,6 @@ async fn wait_for_pipeline_processes_and_update_status(
 		));
 
 		let formatted = job.to_string();
-
 
 		writeln!(params.stderr(shell), "\r{formatted}")?;
 	}
@@ -977,20 +989,12 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::Command {
 			return Ok(ExecutionSpawnResult::Completed(ExecutionResult::success()));
 		}
 
-
 		pipeline_context.shell.set_current_cmd(self);
 
 		match self {
 			Self::Simple(simple) => simple.execute_in_pipeline(pipeline_context, params).await,
 			Self::Compound(compound, redirects) => {
 				params.disable_command_output_marking();
-
-
-
-
-
-
-
 
 				let in_pipeline = pipeline_context.in_pipeline;
 				match pipeline_context.shell {
@@ -1009,7 +1013,6 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::Command {
 						})))
 					},
 					mut shell => {
-
 						if let Some(redirects) = redirects {
 							for redirect in &redirects.0 {
 								setup_redirect(&mut shell, &mut params, redirect).await?;
@@ -1028,13 +1031,11 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::Command {
 					.into())
 			},
 			Self::ExtendedTest(e, redirects) => {
-
 				if let Some(redirects) = redirects {
 					for redirect in &redirects.0 {
 						setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
 					}
 				}
-
 
 				let result = if extendedtests::eval_extended_test_expr(
 					&e.expr,
@@ -1069,25 +1070,19 @@ impl Execute for ast::CompoundCommand {
 		match self {
 			Self::BraceGroup(ast::BraceGroupCommand { list, .. }) => list.execute(shell, params).await,
 			Self::Subshell(ast::SubshellCommand { list, .. }) => {
-
-
 				let mut subshell = shell.clone();
-
-
 
 				let subshell_result = match list.execute(&mut subshell, params).await {
 					Ok(result) => result,
 					Err(error) => {
-
 						let mut stderr = params.stderr(shell);
-						let _ = shell.display_error(&mut stderr, &error);
-
+						if params.reports_errors() {
+							let _ = shell.display_error(&mut stderr, &error);
+						}
 
 						error.into_result(&subshell)
 					},
 				};
-
-
 
 				Ok(ExecutionResult::from(subshell_result.exit_code))
 			},
@@ -1115,8 +1110,6 @@ impl Execute for ast::CoprocessCommand {
 			return Ok(ExecutionResult::success());
 		}
 
-
-
 		let name = self
 			.name
 			.as_ref()
@@ -1127,19 +1120,14 @@ impl Execute for ast::CoprocessCommand {
 			return Ok(ExecutionExitCode::GeneralError.into());
 		}
 
-
-		let (stdin_reader, stdin_writer) = std::io::pipe()?;
-		let (stdout_reader, stdout_writer) = std::io::pipe()?;
-
-
+		let (stdin_reader, stdin_writer) = ioutils::pipe("pipeline")?;
+		let (stdout_reader, stdout_writer) = ioutils::pipe("pipeline")?;
 
 		let stdout_fd = shell.open_files_mut().add(stdout_reader.into())?;
 		let stdin_fd = shell.open_files_mut().add(stdin_writer.into())?;
 
-
 		let mut child_shell = shell.clone();
 		child_shell.options_mut().interactive = false;
-
 
 		let mut child_params = params.clone();
 		child_params.set_fd(OpenFiles::STDIN_FD, stdin_reader.into());
@@ -1147,11 +1135,18 @@ impl Execute for ast::CoprocessCommand {
 
 		let body = self.body.clone();
 		let cancel_token = child_params.cancel_token();
+		// Give the coprocess its own cancellation flag so `kill %N` ends it at its
+		// next interpreter check, even when the body never yields; a child of the
+		// run's token, as for a background job.
+		let cancellation = cancel_token
+			.as_ref()
+			.map_or_else(CancellationToken::new, CancellationToken::child_token);
+		child_params.set_cancel_token(cancellation.clone());
 		let join_handle = tokio::spawn(async move {
 			let pipeline_context = PipelineExecutionContext {
 				shell:            commands::ShellForCommand::ParentShell(&mut child_shell),
 				process_group_id: None,
-				in_pipeline:       false,
+				in_pipeline:      false,
 			};
 			let spawn_result = body
 				.execute_in_pipeline(pipeline_context, child_params)
@@ -1162,19 +1157,20 @@ impl Execute for ast::CoprocessCommand {
 			}
 		});
 
-		let job = shell.jobs_mut().add_as_current(jobs::Job::new(
-			[jobs::JobTask::Internal(join_handle)],
-			format!("coproc {name}"),
-			jobs::JobState::Running,
-		));
+		let job = shell.jobs_mut().add_as_current(
+			jobs::Job::new(
+				[jobs::JobTask::Internal(jobs::JobJoinHandle::new(join_handle))],
+				format!("coproc {name}"),
+				jobs::JobState::Running,
+			)
+			.with_cancellation(cancellation),
+		);
 		let job_id = job.id;
-
 
 		let arr_value = ShellValue::from(vec![stdout_fd.to_string(), stdin_fd.to_string()]);
 		shell
 			.env_mut()
 			.set_global(name.clone(), ShellVariable::new(arr_value))?;
-
 
 		let pid_name = format!("{name}_PID");
 		shell
@@ -1195,8 +1191,6 @@ impl Execute for ast::ForClauseCommand {
 		ensure_not_cancelled(params)?;
 		let mut result = ExecutionResult::success();
 
-
-
 		let mut expanded_values = vec![];
 		if let Some(unexpanded_values) = &self.values {
 			for value in unexpanded_values {
@@ -1204,7 +1198,6 @@ impl Execute for ast::ForClauseCommand {
 				expanded_values.append(&mut expanded);
 			}
 		} else {
-
 			expanded_values.extend_from_slice(shell.current_shell_args());
 		}
 
@@ -1228,7 +1221,6 @@ impl Execute for ast::ForClauseCommand {
 						.await;
 				}
 			}
-
 
 			shell.env_mut().update_or_add(
 				&self.variable_name,
@@ -1265,7 +1257,6 @@ impl Execute for ast::CaseClauseCommand {
 		params: &ExecutionParameters,
 	) -> Result<ExecutionResult, error::Error> {
 		ensure_not_cancelled(params)?;
-
 
 		if shell.options().print_commands_and_arguments {
 			shell
@@ -1306,7 +1297,6 @@ impl Execute for ast::CaseClauseCommand {
 				ExecutionResult::success()
 			};
 
-
 			if !result.is_normal_flow() {
 				break;
 			}
@@ -1339,7 +1329,6 @@ impl Execute for ast::IfClauseCommand {
 		condition_params.suppress_errexit = true;
 		let condition = self.condition.execute(shell, &condition_params).await?;
 
-
 		if !condition.is_normal_flow() {
 			return Ok(condition);
 		}
@@ -1356,7 +1345,6 @@ impl Execute for ast::IfClauseCommand {
 						let else_condition_result =
 							else_condition.execute(shell, &condition_params).await?;
 
-
 						if !else_condition_result.is_normal_flow() {
 							return Ok(else_condition_result);
 						}
@@ -1371,8 +1359,6 @@ impl Execute for ast::IfClauseCommand {
 				}
 			}
 		}
-
-
 
 		let result = ExecutionResult::success();
 		shell.set_last_exit_status(result.exit_code.into());
@@ -1398,7 +1384,6 @@ impl Execute for (WhileOrUntil, &ast::WhileOrUntilClauseCommand) {
 
 		let mut result = ExecutionResult::success();
 
-
 		let mut condition_params = params.clone();
 		condition_params.suppress_errexit = true;
 
@@ -1406,13 +1391,10 @@ impl Execute for (WhileOrUntil, &ast::WhileOrUntilClauseCommand) {
 			ensure_not_cancelled(params)?;
 			let condition_result = test_condition.execute(shell, &condition_params).await?;
 
-
 			shell.set_last_exit_status(condition_result.exit_code.into());
 
 			if !condition_result.is_normal_flow() {
 				result = condition_result;
-
-
 
 				result.next_control_flow = result.next_control_flow.try_decrement_loop_levels();
 				break;
@@ -1478,7 +1460,6 @@ impl Execute for ast::ArithmeticForClauseCommand {
 		loop {
 			ensure_not_cancelled(params)?;
 			if let Some(condition) = &self.condition {
-
 				if !condition.value.is_empty() && condition.eval(shell, params, true).await? == 0 {
 					break;
 				}
@@ -1516,7 +1497,6 @@ impl Execute for ast::FunctionDefinition {
 	) -> Result<ExecutionResult, error::Error> {
 		let func_name = self.fname.value.clone();
 
-
 		if shell.options().posix_mode
 			&& shell
 				.builtins()
@@ -1530,8 +1510,6 @@ impl Execute for ast::FunctionDefinition {
 				.into_fatal(),
 			);
 		}
-
-
 
 		let source_info = shell
 			.call_stack()
@@ -1566,8 +1544,6 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 		let mut args: Vec<CommandArg> = vec![];
 		let mut command_takes_assignments = false;
 
-
-
 		let status_change_count_before_expansion = context.shell.last_exit_status_change_count();
 
 		for item in prefix_iter.chain(cmd_name_items.iter()).chain(suffix_iter) {
@@ -1575,7 +1551,11 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 			match item {
 				CommandPrefixOrSuffixItem::IoRedirect(redirect) => {
 					if let Err(e) = setup_redirect(&mut context.shell, &mut params, redirect).await {
-						writeln!(params.stderr(&context.shell), "error: {e}")?;
+						if params.reports_errors() {
+							context
+								.shell
+								.display_error(&mut params.stderr(&context.shell), &e)?;
+						}
 						return Ok(ExecutionResult::general_error().into());
 					}
 				},
@@ -1590,21 +1570,13 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 				},
 				CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) => {
 					if args.is_empty() {
-
-
 						assignments.push(assignment);
 					} else {
 						if command_takes_assignments {
-
-
-
 							let expanded =
 								expand_assignment(&mut context.shell, &params, assignment).await?;
 							args.push(CommandArg::Assignment(expanded));
 						} else {
-
-
-
 							let mut next_args =
 								expansion::full_expand_and_split_word(&mut context.shell, &params, word)
 									.await?
@@ -1622,10 +1594,6 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 					if args.is_empty() {
 						if let Some(cmd_name) = next_args.first() {
 							if let Some(alias_value) = context.shell.aliases().get(cmd_name.as_str()) {
-
-
-
-
 								let mut alias_pieces: Vec<_> = alias_value
 									.split_ascii_whitespace()
 									.map(|i| i.to_owned())
@@ -1638,8 +1606,6 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 							}
 
 							let first_arg = next_args[0].as_str();
-
-
 
 							if context
 								.shell
@@ -1658,11 +1624,15 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 			}
 		}
 
-
-        if let Some(observation) = params.command_observation.clone() {
+		if let Some(observation) = params.command_observation.clone() {
 			for fd in [OpenFiles::STDOUT_FD, OpenFiles::STDERR_FD] {
 				if let Some(output) = params.try_fd(&context.shell, fd) {
-					params.open_files.set_fd(fd, observation.observer.capture(observation.id, fd as u32, output));
+					params.open_files.set_fd(
+						fd,
+						observation
+							.observer
+							.capture(observation.id, fd as u32, output),
+					);
 				}
 			}
 		}
@@ -1680,27 +1650,32 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 				commands::ShellForCommand::ParentShell(parent_shell)
 			};
 
-			let context =
-				PipelineExecutionContext {
-					shell,
-					process_group_id: context.process_group_id,
-					in_pipeline: context.in_pipeline,
-				};
+			let context = PipelineExecutionContext {
+				shell,
+				process_group_id: context.process_group_id,
+				in_pipeline: context.in_pipeline,
+			};
 
+			let quiet_token = params
+				.quiet_cancellation
+				.then(|| params.cancel_token())
+				.flatten();
 			match execute_command(context, params, cmd_name, assignments, args).await {
 				Ok(result) => Ok(result),
 				Err(err) => {
-					let _ = parent_shell.display_error(&mut stderr, &err);
+					if !quiet_token
+						.as_ref()
+						.is_some_and(CancellationToken::is_cancelled)
+					{
+						let _ = parent_shell.display_error(&mut stderr, &err);
+					}
 
 					let result = err.into_result(parent_shell);
 					Ok(result.into())
 				},
 			}
 		} else {
-
 			for assignment in assignments {
-
-
 				apply_assignment(
 					assignment,
 					&mut context.shell,
@@ -1712,20 +1687,11 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 				.await?;
 			}
 
-
-
-
 			context.shell.update_last_arg_variable(None);
-
-
-
-
 
 			if status_change_count_before_expansion == context.shell.last_exit_status_change_count() {
 				context.shell.set_last_exit_status(0);
 			}
-
-
 
 			Ok(ExecutionResult::new(context.shell.last_exit_status()).into())
 		}
@@ -1739,13 +1705,9 @@ async fn execute_command(
 	assignments: Vec<&ast::Assignment>,
 	args: Vec<CommandArg>,
 ) -> Result<ExecutionSpawnResult, error::Error> {
-
-
-
 	let mut guard = crate::env::ScopeGuard::new(&mut context.shell, EnvironmentScope::Command);
 
 	for assignment in &assignments {
-
 		apply_assignment(
 			assignment,
 			guard.shell(),
@@ -1767,18 +1729,13 @@ async fn execute_command(
 	guard.detach();
 	drop(guard);
 
-
 	let mut cmd = commands::SimpleCommand::new(context.shell, params, cmd_name, args);
 	cmd.process_group_id = context.process_group_id;
 	cmd.in_pipeline = context.in_pipeline;
 
-
 	cmd.post_execute = Some(|shell| shell.env_mut().pop_scope(EnvironmentScope::Command));
 
-
 	let _ = commands::on_preexecute(&mut cmd).await;
-
-
 
 	cmd.execute().await
 }
@@ -1837,7 +1794,6 @@ async fn expand_assignment_value(
 						.into();
 					expanded_values.push((Some(expanded_key), expanded_value));
 				} else {
-
 					let split_expanded_value =
 						expansion::full_expand_and_split_word(shell, params, value).await?;
 					for expanded_value in split_expanded_value {
@@ -1862,8 +1818,6 @@ async fn apply_assignment(
 	required_scope: Option<EnvironmentScope>,
 	creation_scope: EnvironmentScope,
 ) -> Result<(), error::Error> {
-
-
 	let mut array_index;
 	let variable_name = match &assignment.name {
 		ast::AssignmentName::VariableName(name) => {
@@ -1876,7 +1830,6 @@ async fn apply_assignment(
 			name
 		},
 	};
-
 
 	let new_value = match &assignment.value {
 		ast::AssignmentValue::Scalar(unexpanded_value) => {
@@ -1899,7 +1852,6 @@ async fn apply_assignment(
 						expansion::basic_expand_assignment_word(shell, params, unexpanded_value).await?;
 					elements.push((key, value));
 				} else {
-
 					let values =
 						expansion::full_expand_and_split_word(shell, params, unexpanded_value).await?;
 					for value in values {
@@ -1917,7 +1869,6 @@ async fn apply_assignment(
 			.trace_command(params, std::format!("{}{op}{new_value}", assignment.name))
 			.await;
 	}
-
 
 	if let Some(idx) = &array_index {
 		let will_be_indexed_array = if let Some((_, existing_value)) = shell.env().get(variable_name)
@@ -1939,9 +1890,7 @@ async fn apply_assignment(
 		}
 	}
 
-
 	let export_variables_on_modification = shell.options().export_variables_on_modification;
-
 
 	if let Some((existing_value_scope, existing_value)) =
 		shell.env_mut().get_mut(variable_name.as_str())
@@ -1971,11 +1920,9 @@ async fn apply_assignment(
 				existing_value.export();
 			}
 
-
 			return Ok(());
 		}
 	}
-
 
 	let new_value = if let Some(array_index) = array_index {
 		match new_value {
@@ -2020,13 +1967,13 @@ pub(crate) async fn setup_redirect(
 			}
 
 			let expanded_file_path = expanded_fields.remove(0);
-			setup_redirect_output_and_error_to(shell, params, &expanded_file_path, *append)?;
+			setup_redirect_output_and_error_to(shell, params, &expanded_file_path, *append).await?;
 		},
 
 		ast::IoRedirect::File(specified_fd_num, kind, target) => {
 			match target {
 				ast::IoFileRedirectTarget::Filename(f) => {
-					let mut options = std::fs::File::options();
+					let mut options = std::fs::OpenOptions::new();
 
 					let mut expanded_fields =
 						expansion::full_expand_and_split_word(shell, params, f).await?;
@@ -2048,8 +1995,8 @@ pub(crate) async fn setup_redirect(
 								.options()
 								.disallow_overwriting_regular_files_via_output_redirection
 							{
-
-
+								// First check to see if the path points to an existing regular
+								// file.
 								if !expanded_file_path.is_file() {
 									options.create(true);
 								} else {
@@ -2087,32 +2034,58 @@ pub(crate) async fn setup_redirect(
 
 					let fd_num = specified_fd_num.unwrap_or(default_fd_if_unspecified);
 
-					let is_read = matches!(kind,
-						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput);
+					let is_read = matches!(
+						kind,
+						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput
+					);
 					let observation = if is_read {
 						None
 					} else {
-						shell.fs_observations().prepare_write(&expanded_file_path).map_err(|err| {
-							error::ErrorKind::RedirectionFailure(
-								expanded_file_path.to_string_lossy().to_string(), err.to_string())
-						})?
+						shell
+							.fs_observations()
+							.prepare_write(&expanded_file_path)
+							.map_err(|err| {
+								error::ErrorKind::RedirectionFailure(
+									expanded_file_path.to_string_lossy().into_owned(),
+									err,
+								)
+							})?
 					};
+					let follows = params.touches_deferred(fd_num);
+					if params.defer_fifo_redirects
+						&& let Some(op) = deferred_open_operator(kind)
+						&& let Some(redirect) = child_open(
+							shell,
+							fd_num,
+							op,
+							&expanded_file_path,
+							&options,
+							follows,
+							// Opening a FIFO for reading and writing never waits.
+							!matches!(kind, ast::IoFileRedirectKind::ReadAndWrite),
+						) {
+						params.defer(redirect)?;
+						return Ok(());
+					}
+					if follows {
+						materialize_deferred_redirects(shell, params).await?;
+					}
+
 					let opened_file = shell
 						.open_file(&options, &expanded_file_path, params)
+						.await
 						.map_err(|err| {
 							error::ErrorKind::RedirectionFailure(
 								expanded_file_path.to_string_lossy().to_string(),
-								err.to_string(),
+								err,
 							)
 						})?;
 
-					match kind {
-						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput => {
-							shell.fs_observations().record_read(&expanded_file_path);
-						},
-						_ => shell.fs_observations().commit_write(observation),
+					if is_read {
+						shell.fs_observations().record_read(&expanded_file_path);
+					} else {
+						shell.fs_observations().commit_write(observation);
 					}
-
 					params.set_fd(fd_num, opened_file);
 				},
 
@@ -2121,14 +2094,25 @@ pub(crate) async fn setup_redirect(
 						ast::IoFileRedirectKind::DuplicateInput => 0,
 						ast::IoFileRedirectKind::DuplicateOutput => 1,
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"unexpected redirect kind for file descriptor target: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"unexpected redirect kind for file descriptor target: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					};
 
 					let fd_num = specified_fd_num.unwrap_or(default_fd_if_unspecified);
+
+					let touched = params.touches_deferred(fd_num) || params.touches_deferred(*fd);
+					if touched && fd_num <= MAX_DEFERRED_FD && *fd <= MAX_DEFERRED_FD {
+						params.defer(DeferredRedirect::Duplicate { fd: fd_num, from: *fd })?;
+						return Ok(());
+					}
+					if touched {
+						materialize_deferred_redirects(shell, params).await?;
+					}
 
 					if let Some(f) = params.try_fd(shell, *fd) {
 						let target_file = f.try_clone()?;
@@ -2144,10 +2128,12 @@ pub(crate) async fn setup_redirect(
 						ast::IoFileRedirectKind::DuplicateInput => 0,
 						ast::IoFileRedirectKind::DuplicateOutput => 1,
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"unexpected redirect kind for duplicate target: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"unexpected redirect kind for duplicate target: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					};
 
@@ -2169,14 +2155,43 @@ pub(crate) async fn setup_redirect(
 						false
 					};
 
-					if expanded.is_empty() {
+					let source = (!expanded.is_empty() && expanded.chars().all(|c| c.is_ascii_digit()))
+						.then(|| expanded.parse::<ShellFd>().ok())
+						.flatten();
+					let touched = params.touches_deferred(fd_num)
+						|| source.is_some_and(|source| params.touches_deferred(source));
+					if touched && fd_num <= MAX_DEFERRED_FD {
+						// The child makes it after the deferred redirections: a
+						// duplication, a move (`N>&M-`, which `sh` spells `N>&M M>&-`)
+						// or a close (`N>&-`).
+						match source {
+							Some(from) if from <= MAX_DEFERRED_FD => {
+								params.defer(DeferredRedirect::Duplicate { fd: fd_num, from })?;
+								if dash {
+									params.defer(DeferredRedirect::Close { fd: from })?;
+								}
+								return Ok(());
+							},
+							None if dash && expanded.is_empty() => {
+								params.defer(DeferredRedirect::Close { fd: fd_num })?;
+								return Ok(());
+							},
+							_ => {},
+						}
+					}
+					// `>&file` defers through `setup_redirect_output_and_error_to`.
+					if touched && (source.is_some() || dash && expanded.is_empty()) {
+						materialize_deferred_redirects(shell, params).await?;
+					}
 
+					if expanded.is_empty() {
+						// Nothing to do
 					} else if expanded.chars().all(|c: char| c.is_ascii_digit()) {
 						let source_fd_num = expanded
 							.parse::<ShellFd>()
 							.map_err(|_| error::ErrorKind::InvalidRedirection)?;
 
-
+						// Duplicate the fd.
 						let target_file = if let Some(f) = params.try_fd(shell, source_fd_num) {
 							f.try_clone()?
 						} else {
@@ -2185,17 +2200,18 @@ pub(crate) async fn setup_redirect(
 
 						params.set_fd(fd_num, target_file);
 					} else if fd_num == 1 && !dash {
-
-
+						// Special case for compatibility: redirect stdout and stderr to the file
+						// given by `expanded`.
 						setup_redirect_output_and_error_to(
-							shell, params, &expanded, false,
-						)?;
+							shell, params, &expanded, false, /* append? */
+						)
+						.await?;
 					} else {
 						return Err(error::ErrorKind::InvalidRedirection.into());
 					}
 
 					if dash {
-
+						// Close the specified fd. Ignore it if it's not valid.
 						params.open_files.remove_fd(fd_num);
 					}
 				},
@@ -2215,14 +2231,20 @@ pub(crate) async fn setup_redirect(
 
 							let fd_num =
 								specified_fd_num.unwrap_or_else(|| get_default_fd_for_redirect_kind(kind));
+							if params.touches_deferred(fd_num) || params.touches_deferred(substitution_fd)
+							{
+								materialize_deferred_redirects(shell, params).await?;
+							}
 
 							params.set_fd(fd_num, target_file);
 						},
 						_ => {
-							return Err(error::ErrorKind::InternalError(format!(
-								"process substitution used with invalid redirect kind: {kind:?}"
-							))
-							.into());
+							return Err(
+								error::ErrorKind::InternalError(format!(
+									"process substitution used with invalid redirect kind: {kind:?}"
+								))
+								.into(),
+							);
 						},
 					}
 				},
@@ -2230,29 +2252,35 @@ pub(crate) async fn setup_redirect(
 		},
 
 		ast::IoRedirect::HereDocument(fd_num, io_here) => {
-
+			// If not specified, default to stdin (fd 0).
 			let fd_num = fd_num.unwrap_or(0);
 
-
+			// Expand if required.
 			let io_here_doc = if io_here.requires_expansion {
 				expansion::basic_expand_heredoc_word(shell, params, &io_here.doc).await?
 			} else {
 				io_here.doc.flatten()
 			};
 
-			let f = setup_open_file_with_contents(io_here_doc.as_str())?;
+			let f = setup_open_file_with_contents("here-document", io_here_doc.as_str())?;
+			if params.touches_deferred(fd_num) {
+				materialize_deferred_redirects(shell, params).await?;
+			}
 
 			params.set_fd(fd_num, f);
 		},
 
 		ast::IoRedirect::HereString(fd_num, word) => {
-
+			// If not specified, default to stdin (fd 0).
 			let fd_num = fd_num.unwrap_or(0);
 
 			let mut expanded_word = expansion::basic_expand_word(shell, params, word).await?;
 			expanded_word.push('\n');
 
-			let f = setup_open_file_with_contents(expanded_word.as_str())?;
+			let f = setup_open_file_with_contents("here-string", expanded_word.as_str())?;
+			if params.touches_deferred(fd_num) {
+				materialize_deferred_redirects(shell, params).await?;
+			}
 
 			params.set_fd(fd_num, f);
 		},
@@ -2261,16 +2289,7 @@ pub(crate) async fn setup_redirect(
 	Ok(())
 }
 
-
-
-
-
-
-
-
-
-
-fn setup_redirect_output_and_error_to(
+async fn setup_redirect_output_and_error_to(
 	shell: &Shell<impl extensions::ShellExtensions>,
 	params: &mut ExecutionParameters,
 	file_path: &str,
@@ -2279,7 +2298,11 @@ fn setup_redirect_output_and_error_to(
 	let abs_file_path: PathBuf = shell.absolute_path(Path::new(file_path));
 
 	let mut file_options = std::fs::File::options();
-	if !append && shell.options().disallow_overwriting_regular_files_via_output_redirection {
+	if !append
+		&& shell
+			.options()
+			.disallow_overwriting_regular_files_via_output_redirection
+	{
 		if abs_file_path.is_file() {
 			file_options.create_new(true);
 		} else {
@@ -2287,20 +2310,47 @@ fn setup_redirect_output_and_error_to(
 		}
 		file_options.write(true);
 	} else {
-		file_options.create(true).write(true).truncate(!append).append(append);
+		file_options
+			.create(true)
+			.write(true)
+			.truncate(!append)
+			.append(append);
 	}
 
-	let observation = shell.fs_observations().prepare_write(&abs_file_path).map_err(|err| {
-		error::ErrorKind::RedirectionFailure(
-			abs_file_path.to_string_lossy().to_string(), err.to_string())
-	})?;
+	let observation = shell
+		.fs_observations()
+		.prepare_write(&abs_file_path)
+		.map_err(|err| {
+			error::ErrorKind::RedirectionFailure(abs_file_path.to_string_lossy().to_string(), err)
+		})?;
+	let follows = params.touches_deferred(OpenFiles::STDOUT_FD)
+		|| params.touches_deferred(OpenFiles::STDERR_FD);
+	if params.defer_fifo_redirects
+		&& let Some(redirect) = child_open(
+			shell,
+			OpenFiles::STDOUT_FD,
+			if append { ">>" } else { ">" },
+			&abs_file_path,
+			&file_options,
+			follows,
+			true,
+		) {
+		params.defer(redirect)?;
+		params.defer(DeferredRedirect::Duplicate {
+			fd:   OpenFiles::STDERR_FD,
+			from: OpenFiles::STDOUT_FD,
+		})?;
+		return Ok(());
+	}
+	if follows {
+		materialize_deferred_redirects(shell, params).await?;
+	}
+
 	let stdout_file = shell
 		.open_file(&file_options, &abs_file_path, params)
+		.await
 		.map_err(|err| {
-			error::ErrorKind::RedirectionFailure(
-				abs_file_path.to_string_lossy().to_string(),
-				err.to_string(),
-			)
+			error::ErrorKind::RedirectionFailure(abs_file_path.to_string_lossy().to_string(), err)
 		})?;
 
 	shell.fs_observations().commit_write(observation);
@@ -2310,6 +2360,117 @@ fn setup_redirect_output_and_error_to(
 	params.set_fd(OpenFiles::STDERR_FD, stderr_file);
 
 	Ok(())
+}
+
+const fn deferred_open_operator(kind: &ast::IoFileRedirectKind) -> Option<&'static str> {
+	match kind {
+		ast::IoFileRedirectKind::Read => Some("<"),
+		ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => Some(">"),
+		ast::IoFileRedirectKind::Append => Some(">>"),
+		ast::IoFileRedirectKind::ReadAndWrite => Some("<>"),
+		ast::IoFileRedirectKind::DuplicateInput | ast::IoFileRedirectKind::DuplicateOutput => None,
+	}
+}
+
+fn is_native_fifo(_shell: &Shell<impl extensions::ShellExtensions>, path: &Path) -> bool {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::FileTypeExt;
+		openfiles::DescriptorPath::parse(path).is_none()
+			&& !path.starts_with("/proc")
+						&& std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_fifo())
+			// A symlink to a descriptor path (or `/dev/../dev/stdout`) resolves
+			// under `/proc`, or fails to resolve when it reaches a pipe.
+			&& std::fs::canonicalize(path).is_ok_and(|real| !real.starts_with("/proc"))
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = (_shell, path);
+		false
+	}
+}
+
+fn child_open(
+	shell: &Shell<impl extensions::ShellExtensions>,
+	fd: ShellFd,
+	op: &'static str,
+	path: &Path,
+	options: &std::fs::OpenOptions,
+	follows: bool,
+	may_wait: bool,
+) -> Option<DeferredRedirect> {
+	if fd > MAX_DEFERRED_FD {
+		return None;
+	}
+	let open = || {
+		path.to_str().map(|path| DeferredRedirect::Open {
+			fd,
+			op,
+			path: path.to_owned(),
+			options: options.clone(),
+		})
+	};
+	if !follows {
+		return if may_wait && is_native_fifo(shell, path) {
+			open()
+		} else {
+			None
+		};
+	}
+	match openfiles::DescriptorPath::parse(path) {
+		Some(openfiles::DescriptorPath::Fd(from)) => {
+			(from <= MAX_DEFERRED_FD).then_some(DeferredRedirect::Duplicate { fd, from })
+		},
+		Some(openfiles::DescriptorPath::Terminal) => None,
+		None => open(),
+	}
+}
+
+pub(crate) async fn materialize_deferred_redirects(
+	shell: &Shell<impl extensions::ShellExtensions>,
+	params: &mut ExecutionParameters,
+) -> Result<(), error::Error> {
+	for redirect in std::mem::take(&mut params.deferred_redirects) {
+		match redirect {
+			DeferredRedirect::Open { fd, path, options, .. } => {
+				let file = shell
+					.open_file(&options, &path, params)
+					.await
+					.map_err(|err| error::ErrorKind::RedirectionFailure(path.clone(), err))?;
+				params.open_files.set_fd(fd, file);
+			},
+			DeferredRedirect::Duplicate { fd, from } => {
+				let file = params
+					.try_fd(shell, from)
+					.ok_or(error::ErrorKind::BadFileDescriptor(from))?
+					.try_clone()?;
+				params.open_files.set_fd(fd, file);
+			},
+			DeferredRedirect::Close { fd } => {
+				params.open_files.remove_fd(fd);
+			},
+		}
+	}
+	Ok(())
+}
+
+pub(crate) fn deferred_redirect_script(redirects: &[DeferredRedirect]) -> String {
+	use std::fmt::Write as _;
+	let mut script = String::from("exec \"$@\"");
+	for redirect in redirects {
+		match redirect {
+			DeferredRedirect::Open { fd, op, path, .. } => {
+				let _ = write!(script, " {fd}{op}'{}'", path.replace('\'', "'\\''"));
+			},
+			DeferredRedirect::Duplicate { fd, from } => {
+				let _ = write!(script, " {fd}>&{from}");
+			},
+			DeferredRedirect::Close { fd } => {
+				let _ = write!(script, " {fd}>&-");
+			},
+		}
+	}
+	script
 }
 
 const fn get_default_fd_for_redirect_kind(kind: &ast::IoFileRedirectKind) -> ShellFd {
@@ -2330,15 +2491,10 @@ fn setup_process_substitution(
 	kind: &ast::ProcessSubstitutionKind,
 	subshell_cmd: &ast::SubshellCommand,
 ) -> Result<(ShellFd, OpenFile), error::Error> {
-
-
 	let mut subshell = shell.clone();
-
 
 	let mut child_params = params.clone();
 	child_params.process_group_policy = ProcessGroupPolicy::SameProcessGroup;
-
-
 
 	let mut candidate_fd_num = 63;
 	while params.open_files.contains_fd(candidate_fd_num) {
@@ -2348,8 +2504,7 @@ fn setup_process_substitution(
 		}
 	}
 
-
-	let (reader, writer) = std::io::pipe()?;
+	let (reader, writer) = ioutils::pipe("pipeline")?;
 	let (reader, writer) = (reader.into(), writer.into());
 
 	let target_file = match kind {
@@ -2363,50 +2518,28 @@ fn setup_process_substitution(
 		},
 	};
 
-
-
 	let subshell_cmd = subshell_cmd.to_owned();
 	tokio::spawn(async move {
-
 		let _ = subshell_cmd
 			.list
 			.execute(&mut subshell, &child_params)
 			.await;
 	});
 
-
 	Ok((candidate_fd_num, target_file))
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-fn setup_open_file_with_contents(contents: &str) -> Result<OpenFile, error::Error> {
-	let (reader, mut writer) = std::io::pipe()?;
+fn setup_open_file_with_contents(
+	construct: &'static str,
+	contents: &str,
+) -> Result<OpenFile, error::Error> {
+	let (reader, mut writer) = ioutils::pipe(construct)?;
 	let bytes = contents.as_bytes();
 
-
-
-
-
+	// Linux fast path: grow the pipe so the entire body fits inline.
+	// Falls through to the generic writer when (a) `bytes.len()`
+	// overflows `i32`, or (b) the kernel rejects the requested size
+	// (body > /proc/sys/fs/pipe-max-size, default 1 MiB).
 	#[cfg(any(target_os = "linux", target_os = "android"))]
 	{
 		use std::os::fd::AsFd as _;
@@ -2427,17 +2560,17 @@ fn setup_open_file_with_contents(contents: &str) -> Result<OpenFile, error::Erro
 	}
 	#[cfg(not(target_family = "wasm"))]
 	{
-
-
-
-
+		// Generic path: detached writer thread. Writing inline deadlocks
+		// once `bytes.len()` exceeds the OS pipe buffer (Windows ~4 KiB,
+		// macOS 16-64 KiB), neither of which has a `F_SETPIPE_SZ`
+		// equivalent.
 		let payload = bytes.to_vec();
 		std::thread::Builder::new()
 			.name("brush-heredoc-writer".into())
 			.spawn(move || {
-
-
-
+				// `BrokenPipe` is expected when the consumer drops the
+				// reader before the body is fully written; there is
+				// nothing useful to do with that error here.
 				let _ = writer.write_all(&payload);
 			})?;
 	}

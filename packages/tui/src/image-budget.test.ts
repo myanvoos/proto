@@ -475,22 +475,18 @@ test("forgotten owner release does not retire a fresh reacquisition", () => {
 	expect(budget.acquireId("shared")).toBe(fresh);
 });
 
-test("placement salts resolve to distinct wire placement ids", () => {
+test("shared image payloads retain independent placement geometry and disposal clears it", () => {
 	const budget = new ImageBudget();
-	budget.registerPlacementGeometry(7, 10, 10, 111);
-	budget.registerPlacementGeometry(7, 10, 10, 222);
-	const first = budget.resolvePlacementEmit(7, 0, -1, 111);
-	const second = budget.resolvePlacementEmit(7, 0, -1, 222);
-	expect(first?.placementId).toBeDefined();
-	expect(second?.placementId).toBeDefined();
-	expect(first?.placementId).not.toBe(second?.placementId);
-
-	const ids = new Set<number>();
-	for (let salt = 0; salt < 300; salt++) {
-		budget.registerPlacementGeometry(8, 10, 10, salt);
-		ids.add(budget.resolvePlacementEmit(8, 0, -1, salt)?.placementId ?? 0);
-	}
-	expect(ids.size).toBe(300);
+	budget.registerPlacementGeometry(7, 10, 20, 111);
+	budget.registerPlacementGeometry(7, 30, 40, 222);
+	expect(budget.getPlacementGeometry(7, 111)).toEqual({ widthPx: 10, heightPx: 20 });
+	expect(budget.getPlacementGeometry(7, 222)).toEqual({ widthPx: 30, heightPx: 40 });
+	budget.registerPlacementGeometry(7, 50, 60, 111);
+	expect(budget.getPlacementGeometry(7, 111)).toEqual({ widthPx: 50, heightPx: 60 });
+	expect(budget.getPlacementGeometry(7, 222)).toEqual({ widthPx: 30, heightPx: 40 });
+	budget.releaseImageById(7);
+	expect(budget.getPlacementGeometry(7, 111)).toBeUndefined();
+	expect(budget.getPlacementGeometry(7, 222)).toBeUndefined();
 });
 
 test("persistent overlay observations survive the base endPass boundary", () => {

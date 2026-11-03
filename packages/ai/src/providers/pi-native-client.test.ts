@@ -80,3 +80,21 @@ describe("streamPiNative terminal events", () => {
 		expect(AIError.retriable(id)).toBe(true);
 	});
 });
+
+it("turns a gateway transport-failure envelope into a canonical model-attributed error", async () => {
+	let timeout: unknown;
+	const fetchImpl: FetchImpl = async (_url, init) => {
+		timeout = (init as RequestInit & { timeout?: unknown }).timeout;
+		return new Response(
+			'data: {"type":"error","reason":"error","errorMessage":"upstream reset"}\n\ndata: [DONE]\n\n',
+		);
+	};
+	const result = await streamPiNative(fakeModel(), context, { apiKey: "test", fetch: fetchImpl }).result();
+	expect(result).toMatchObject({
+		stopReason: "error",
+		errorMessage: "upstream reset",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+	});
+	expect(timeout).toBe(false);
+});

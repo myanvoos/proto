@@ -1,7 +1,3 @@
-
-
-
-
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::{
@@ -11,12 +7,11 @@ use std::{
 	path::Path,
 };
 
+use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use memchr::memchr2;
 use thiserror::Error;
 use uucore::{display::Quotable, fast_inc::fast_inc_one};
-
-use brush_core::{ShellExtensions, builtins::Registration};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
@@ -28,12 +23,6 @@ struct LineNumber {
 	num_start:   usize,
 	num_end:     usize,
 }
-
-
-
-
-
-
 
 impl LineNumber {
 	fn new() -> Self {
@@ -66,7 +55,6 @@ impl LineNumber {
 
 #[derive(Error, Debug)]
 enum CatError {
-
 	#[error("{}", strip_errno(.0))]
 	Io(io::Error),
 
@@ -112,7 +100,6 @@ enum NumberingMode {
 }
 
 struct OutputOptions {
-
 	number: NumberingMode,
 
 	squeeze_blank: bool,
@@ -133,7 +120,6 @@ impl OutputOptions {
 		if self.show_ends { "$\n" } else { "\n" }
 	}
 
-
 	fn can_write_fast(&self) -> bool {
 		!(self.show_tabs
 			|| self.show_nonprint
@@ -143,21 +129,17 @@ impl OutputOptions {
 	}
 }
 
-
 struct OutputState {
-	line_number: LineNumber,
-	at_line_start: bool,
+	line_number:             LineNumber,
+	at_line_start:           bool,
 	skipped_carriage_return: bool,
-	one_blank_kept: bool,
+	one_blank_kept:          bool,
 }
-
-
 
 struct InputHandle<R: Read> {
 	reader:         R,
 	is_interactive: bool,
 }
-
 
 enum InputType {
 	Directory,
@@ -187,7 +169,6 @@ mod options {
 	pub static SHOW_NONPRINTING: &str = "show-nonprinting";
 	pub static IGNORED_U: &str = "ignored-u";
 }
-
 
 pub(crate) struct Cat {
 	matches: ArgMatches,
@@ -235,7 +216,6 @@ impl Utility for Cat {
 	}
 }
 
-
 fn app() -> Command {
 	Command::new(Cat::NAME)
 		.version("0.8.0")
@@ -266,8 +246,6 @@ fn app() -> Command {
 				.short('b')
 				.long(options::NUMBER_NONBLANK)
 				.help("number nonempty output lines, overrides -n")
-
-
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
@@ -345,7 +323,6 @@ fn cat_path(
 	host: &mut Host,
 	stdout: &mut impl Write,
 ) -> CatResult<()> {
-
 	let resolved = host.resolve(path);
 	match get_input_type(path, &resolved)? {
 		InputType::StdIn => {
@@ -393,7 +370,6 @@ where
 	host.exit_code()
 }
 
-
 fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	if path == "-" {
 		return Ok(InputType::StdIn);
@@ -403,7 +379,6 @@ fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 		Ok(metadata) => metadata.file_type(),
 		Err(error) => {
 			if let Some(raw_error) = error.raw_os_error() {
-
 				#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 				let too_many_symlink_code = 40;
 				#[cfg(any(target_os = "macos", target_os = "freebsd"))]
@@ -431,11 +406,7 @@ fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	}
 }
 
-
-fn write_fast<R: Read>(
-	handle: &mut InputHandle<R>,
-	stdout: &mut impl Write,
-) -> CatResult<()> {
+fn write_fast<R: Read>(handle: &mut InputHandle<R>, stdout: &mut impl Write) -> CatResult<()> {
 	let mut buf = [0; 1024 * 64];
 	loop {
 		match handle.reader.read(&mut buf) {
@@ -448,7 +419,6 @@ fn write_fast<R: Read>(
 	stdout.flush()?;
 	Ok(())
 }
-
 
 fn write_lines<R: Read>(
 	handle: &mut InputHandle<R>,
@@ -505,7 +475,6 @@ fn write_lines<R: Read>(
 	Ok(())
 }
 
-
 fn write_new_line<W: Write>(
 	writer: &mut W,
 	options: &OutputOptions,
@@ -547,8 +516,6 @@ fn write_end<W: Write>(
 	}
 }
 
-
-
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> io::Result<usize> {
 	if let Some(position) = memchr2(b'\n', b'\r', in_buf) {
 		writer.write_all(&in_buf[..position])?;
@@ -581,11 +548,7 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> io::Result<u
 	}
 }
 
-fn write_nonprint_to_end<W: Write>(
-	in_buf: &[u8],
-	writer: &mut W,
-	tab: &[u8],
-) -> io::Result<usize> {
+fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> io::Result<usize> {
 	let mut count = 0;
 	for byte in in_buf.iter().copied() {
 		if byte == b'\n' {
@@ -617,9 +580,6 @@ fn write_end_of_line<W: Write>(
 	Ok(())
 }
 
-
 pub(crate) fn cat_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cat, SE>()
 }
-
-

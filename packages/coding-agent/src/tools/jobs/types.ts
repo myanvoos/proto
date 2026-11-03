@@ -34,6 +34,7 @@ export interface JobSnapshot {
 	/** Watch events consumed by this result (wait only). */
 	events?: AsyncJobEvent[];
 	resolvedModel?: string;
+	progress?: { requests?: number; cost?: number; contextTokens?: number; contextWindow?: number; stage?: string };
 	resultText?: string;
 	rawArtifactId?: string;
 	errorText?: string;

@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isRecord, readJsonl } from "@oh-my-pi/pi-utils";
 
 // A malformed frame used to reach the handler and die inside it ("undefined is not an object
 // (evaluating 'text.trimStart')"), so this drives the real RPC transport end to end.
@@ -53,9 +54,19 @@ interface RpcResponseFrame {
 	error?: string;
 }
 
-async function runRpc(frames: unknown[]): Promise<RpcResponseFrame[]> {
+async function runRpc(frames: unknown[], args: string[] = []): Promise<RpcResponseFrame[]> {
 	const child = Bun.spawn({
-		cmd: [process.execPath, cliEntry, "--mode", "rpc", "--model", "okp/mok", "--no-session", "--no-extensions"],
+		cmd: [
+			process.execPath,
+			cliEntry,
+			"--mode",
+			"rpc",
+			"--model",
+			"okp/mok",
+			"--no-session",
+			"--no-extensions",
+			...args,
+		],
 		cwd,
 		stdin: new TextEncoder().encode(frames.map(frame => `${JSON.stringify(frame)}\n`).join("")),
 		stdout: "pipe",
@@ -123,3 +134,67 @@ test("a well-formed prompt is unaffected by validation", async () => {
 	const responses = await runRpc([{ id: "p", type: "prompt", message: "hello rpc" }]);
 	expect(responses.find(frame => frame.id === "p")).toMatchObject({ command: "prompt", success: true });
 });
+
+test("RPC startup answers extension dialogs before draining ordinary commands", async () => {
+	const extension = path.join(root, "startup-dialog.ts");
+	await Bun.write(
+		extension,
+		'export default api => { api.on("session_start", async (_event, ctx) => { ctx.ui.notify("startup:" + await ctx.ui.confirm("Trust?", "startup")); }); };',
+	);
+	const child = Bun.spawn({
+		cmd: [
+			process.execPath,
+			cliEntry,
+			"--mode",
+			"rpc",
+			"--model",
+			"okp/mok",
+			"--no-session",
+			"--no-extensions",
+			"-e",
+			extension,
+		],
+		cwd,
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "pipe",
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, NO_COLOR: "1", TERM: "dumb" },
+	});
+	const seen: string[] = [];
+	const stderr = new Response(child.stderr).text();
+	try {
+		for await (const frame of readJsonl<unknown>(child.stdout)) {
+			if (!isRecord(frame)) continue;
+			if (frame.type === "extension_ui_request" && frame.method === "confirm") {
+				child.stdin.write(`${JSON.stringify({ id: "held", type: "get_state" })}\n`);
+				child.stdin.write(`${JSON.stringify({ type: "extension_ui_response", id: frame.id, confirmed: true })}\n`);
+				child.stdin.flush();
+			} else if (
+				frame.type === "extension_ui_request" &&
+				frame.method === "notify" &&
+				frame.message === "startup:true"
+			) {
+				seen.push("startup");
+			} else if (frame.type === "response" && frame.id === "held") {
+				seen.push("command");
+				child.stdin.end();
+			}
+		}
+		expect(await child.exited).toBe(0);
+		expect(seen).toEqual(["startup", "command"]);
+	} finally {
+		child.kill();
+		await child.exited;
+		await stderr;
+	}
+}, 10_000);
+
+test("closing stdin rejects an unanswered startup dialog so queued commands can finish", async () => {
+	const extension = path.join(root, "startup-eof.ts");
+	await Bun.write(
+		extension,
+		'export default api => { api.on("session_start", async (_event, ctx) => { await ctx.ui.confirm("Trust?", "startup"); }); };',
+	);
+	const responses = await runRpc([{ id: "held-after-eof", type: "get_state" }], ["-e", extension]);
+	expect(responses.find(frame => frame.id === "held-after-eof")?.success).toBe(true);
+}, 10_000);

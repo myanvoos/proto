@@ -1,19 +1,14 @@
-
-
-
-
 use std::{
 	ffi::OsString,
 	io::{self, BufRead, BufReader, Read, Write},
 };
 
-use bstr::io::BufReadExt;
 use brush_core::{ShellExtensions, builtins::Registration};
+use bstr::io::BufReadExt;
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser};
 use uucore::{display::Quotable, line_ending::LineEnding, ranges::Range};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
-
 
 pub(crate) struct Cut {
 	matches: ArgMatches,
@@ -25,11 +20,15 @@ impl Utility for Cut {
 	const NAME: &'static str = "cut";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
-
-
 		Ok(argv
 			.into_iter()
-			.map(|arg| if arg == "-d=" { OsString::from("--delimiter==") } else { arg })
+			.map(|arg| {
+				if arg == "-d=" {
+					OsString::from("--delimiter==")
+				} else {
+					arg
+				}
+			})
 			.collect())
 	}
 
@@ -43,99 +42,84 @@ impl Utility for Cut {
 }
 
 mod matcher {
-use memchr::{memchr, memchr2};
+	use memchr::{memchr, memchr2};
 
-
-
-
-pub trait Matcher {
-	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)>;
-}
-
-
-pub struct ExactMatcher<'a> {
-	needle: &'a [u8],
-}
-
-impl<'a> ExactMatcher<'a> {
-	pub fn new(needle: &'a [u8]) -> Self {
-		assert!(!needle.is_empty());
-		Self { needle }
+	pub trait Matcher {
+		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)>;
 	}
-}
 
-impl Matcher for ExactMatcher<'_> {
-	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
-		let mut pos = 0usize;
-		loop {
-			let match_idx = memchr(self.needle[0], &haystack[pos..])?;
-			let match_idx = match_idx + pos;
+	pub struct ExactMatcher<'a> {
+		needle: &'a [u8],
+	}
 
-			if self.needle.len() == 1 || haystack[match_idx + 1..].starts_with(&self.needle[1..]) {
-				return Some((match_idx, match_idx + self.needle.len()));
-			}
-
-			pos = match_idx + 1;
+	impl<'a> ExactMatcher<'a> {
+		pub fn new(needle: &'a [u8]) -> Self {
+			assert!(!needle.is_empty());
+			Self { needle }
 		}
 	}
-}
 
+	impl Matcher for ExactMatcher<'_> {
+		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
+			let mut pos = 0usize;
+			loop {
+				let match_idx = memchr(self.needle[0], &haystack[pos..])?;
+				let match_idx = match_idx + pos;
 
-pub struct WhitespaceMatcher {}
+				if self.needle.len() == 1 || haystack[match_idx + 1..].starts_with(&self.needle[1..]) {
+					return Some((match_idx, match_idx + self.needle.len()));
+				}
 
-impl Matcher for WhitespaceMatcher {
-	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
-		let match_idx = memchr2(b' ', b'\t', haystack)?;
-		let mut skip = match_idx + 1;
-
-		while skip < haystack.len() {
-			match haystack[skip] {
-				b' ' | b'\t' => skip += 1,
-				_ => break,
+				pos = match_idx + 1;
 			}
 		}
-
-		Some((match_idx, skip))
 	}
-}
 
+	pub struct WhitespaceMatcher {}
 
+	impl Matcher for WhitespaceMatcher {
+		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
+			let match_idx = memchr2(b' ', b'\t', haystack)?;
+			let mut skip = match_idx + 1;
+
+			while skip < haystack.len() {
+				match haystack[skip] {
+					b' ' | b'\t' => skip += 1,
+					_ => break,
+				}
+			}
+
+			Some((match_idx, skip))
+		}
+	}
 }
 
 mod searcher {
-use super::matcher::Matcher;
+	use super::matcher::Matcher;
 
-
-pub struct Searcher<'a, 'b, M: Matcher> {
-	matcher:  &'a M,
-	haystack: &'b [u8],
-	position: usize,
-}
-
-impl<'a, 'b, M: Matcher> Searcher<'a, 'b, M> {
-	pub fn new(matcher: &'a M, haystack: &'b [u8]) -> Self {
-		Self { matcher, haystack, position: 0 }
+	pub struct Searcher<'a, 'b, M: Matcher> {
+		matcher:  &'a M,
+		haystack: &'b [u8],
+		position: usize,
 	}
-}
 
-
-
-
-impl<M: Matcher> Iterator for Searcher<'_, '_, M> {
-	type Item = (usize, usize);
-
-	fn next(&mut self) -> Option<Self::Item> {
-		let (first, last) = self.matcher.next_match(&self.haystack[self.position..])?;
-		let result = (first + self.position, last + self.position);
-		self.position += last;
-
-		Some(result)
+	impl<'a, 'b, M: Matcher> Searcher<'a, 'b, M> {
+		pub fn new(matcher: &'a M, haystack: &'b [u8]) -> Self {
+			Self { matcher, haystack, position: 0 }
+		}
 	}
-}
 
+	impl<M: Matcher> Iterator for Searcher<'_, '_, M> {
+		type Item = (usize, usize);
 
+		fn next(&mut self) -> Option<Self::Item> {
+			let (first, last) = self.matcher.next_match(&self.haystack[self.position..])?;
+			let result = (first + self.position, last + self.position);
+			self.position += last;
 
-
+			Some(result)
+		}
+	}
 }
 
 use matcher::{ExactMatcher, Matcher, WhitespaceMatcher};
@@ -210,7 +194,6 @@ fn cut_bytes<R: Read, W: Write>(
 	result.map(|_| ())
 }
 
-
 fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -230,7 +213,6 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
-
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -242,17 +224,13 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		for &Range { low, high } in ranges {
 			if low - fields_pos > 0 {
-
-
 				low_idx = match delim_search.nth(low - fields_pos - 1) {
 					Some((_, last)) => last,
 					None => break,
 				};
 			}
 
-
 			for _ in 0..=high - low {
-
 				if print_delim {
 					out.write_all(out_delim)?;
 				} else {
@@ -260,7 +238,6 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 				}
 
 				if let Some((first, last)) = delim_search.next() {
-
 					let segment = &line[low_idx..first];
 
 					out.write_all(segment)?;
@@ -268,7 +245,6 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 					low_idx = last;
 					fields_pos = high + 1;
 				} else {
-
 					let segment = &line[low_idx..];
 
 					out.write_all(segment)?;
@@ -288,7 +264,6 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
-
 fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -307,7 +282,6 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
-
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -352,8 +326,6 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
-
-
 fn cut_fields_newline_char_delim<R: Read, W: Write>(
 	reader: R,
 	out: &mut W,
@@ -364,7 +336,6 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 ) -> io::Result<()> {
 	let mut reader = BufReader::new(reader);
 	let mut line = Vec::new();
-
 
 	let mut current_field_idx = 1;
 	let mut first_field_printed = false;
@@ -382,7 +353,6 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		let mut has_processed_data = false;
 
 		if needs_data {
-
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
@@ -403,8 +373,6 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				reader.consume(len);
 			}
 		} else {
-
-
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
@@ -429,7 +397,6 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		}
 		has_data = true;
 
-
 		if current_field_idx == 1 {
 			let is_eof_next = reader.fill_buf()?.is_empty();
 
@@ -437,7 +404,6 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				if only_delimited {
 					suppressed = true;
 				} else {
-
 					out.write_all(&line)?;
 				}
 				break;
@@ -447,12 +413,10 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		if range_idx < ranges.len() && current_field_idx > ranges[range_idx].high {
 			range_idx += 1;
 
-
 			if range_idx == ranges.len() {
 				break;
 			}
 		}
-
 
 		let is_selected = range_idx < ranges.len() && current_field_idx >= ranges[range_idx].low;
 
@@ -546,7 +510,11 @@ where
 	let inputs = filenames
 		.into_iter()
 		.map(|name| {
-			let path = if name == "-" { None } else { Some(host.resolve(name)) };
+			let path = if name == "-" {
+				None
+			} else {
+				Some(host.resolve(name))
+			};
 			(name, path)
 		})
 		.collect::<Vec<_>>();
@@ -556,8 +524,11 @@ where
 
 	for (filename, path) in inputs {
 		let result = if let Some(path) = path {
-			host.open_read(path)
-				.map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", filename.maybe_quote())))
+			host
+				.open_read(path)
+				.map_err(|error| {
+					io::Error::new(error.kind(), format!("{}: {error}", filename.maybe_quote()))
+				})
 				.and_then(|file| match mode {
 					Mode::Bytes(ranges, opts) | Mode::Characters(ranges, opts) => {
 						cut_bytes(file, &mut out, ranges, opts)
@@ -591,7 +562,6 @@ where
 	}
 }
 
-
 fn get_delimiters(matches: &ArgMatches) -> Result<(Delimiter<'_>, Option<&[u8]>), String> {
 	let whitespace_delimited = matches.get_flag(options::WHITESPACE_DELIMITED);
 	let delim_opt = matches.get_one::<OsString>(options::DELIMITER);
@@ -624,8 +594,7 @@ fn get_delimiters(matches: &ArgMatches) -> Result<(Delimiter<'_>, Option<&[u8]>)
 			if value.is_empty() {
 				Ok(&b"\0"[..])
 			} else {
-				os_bytes(value)
-					.ok_or_else(|| format!("invalid argument {}", value.maybe_quote()))
+				os_bytes(value).ok_or_else(|| format!("invalid argument {}", value.maybe_quote()))
 			}
 		})
 		.transpose()?;
@@ -652,8 +621,6 @@ fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
 	let only_delimited = matches.get_flag(options::ONLY_DELIMITED);
 	let (delimiter, out_delimiter) = get_delimiters(matches)?;
 	let line_ending = LineEnding::from_zero_flag(matches.get_flag(options::ZERO_TERMINATED));
-
-
 
 	let mode_args_count = [
 		matches.indices_of(options::BYTES),
@@ -687,28 +654,29 @@ fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
 			"invalid usage: expects no more than one of --fields (-f), --chars (-c) or --bytes (-b)"
 				.to_owned(),
 		),
-		_ => Err(
-			"invalid usage: expects one of --fields (-f), --chars (-c) or --bytes (-b)".to_owned(),
-		),
+		_ => {
+			Err("invalid usage: expects one of --fields (-f), --chars (-c) or --bytes (-b)".to_owned())
+		},
 	};
 
 	let mode = match mode_parse? {
 		Mode::Bytes(..) | Mode::Characters(..) if matches.contains_id(options::DELIMITER) => {
 			return Err(
-				"invalid input: The '--delimiter' ('-d') option can only be used when printing a sequence of fields"
+				"invalid input: The '--delimiter' ('-d') option can only be used when printing a \
+				 sequence of fields"
 					.into(),
 			);
 		},
-		Mode::Bytes(..) | Mode::Characters(..)
-			if matches.get_flag(options::WHITESPACE_DELIMITED) =>
-		{
+		Mode::Bytes(..) | Mode::Characters(..) if matches.get_flag(options::WHITESPACE_DELIMITED) => {
 			return Err(
-				"invalid input: The '-w' option can only be used when printing a sequence of fields".into(),
+				"invalid input: The '-w' option can only be used when printing a sequence of fields"
+					.into(),
 			);
 		},
 		Mode::Bytes(..) | Mode::Characters(..) if matches.get_flag(options::ONLY_DELIMITED) => {
 			return Err(
-				"invalid input: The '--only-delimited' ('-s') option can only be used when printing a sequence of fields"
+				"invalid input: The '--only-delimited' ('-s') option can only be used when printing a \
+				 sequence of fields"
 					.into(),
 			);
 		},
@@ -731,13 +699,6 @@ fn app() -> Command {
 			 as a file operand to read standard input.",
 		)
 		.infer_long_args(true)
-
-
-
-
-
-
-
 		.args_override_self(true)
 		.arg(
 			Arg::new(options::BYTES)
@@ -829,9 +790,6 @@ fn app() -> Command {
 		)
 }
 
-
 pub(crate) fn cut_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cut, SE>()
 }
-
-

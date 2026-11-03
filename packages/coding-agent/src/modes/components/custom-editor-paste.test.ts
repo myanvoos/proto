@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import { Settings } from "../../config/settings";
 import { getEditorTheme, initThemeSync } from "../theme/theme";
@@ -10,6 +10,14 @@ initThemeSync();
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
+
+let previousKeybindings: TuiKeybindingsManager;
+beforeEach(() => {
+	previousKeybindings = getKeybindings();
+});
+afterEach(() => {
+	setKeybindings(previousKeybindings);
+});
 
 function promptBox(): { editor: CustomEditor; submitted: string[] } {
 	setKeybindings(new KeybindingsManager());
@@ -64,4 +72,39 @@ test("a relative URL-ish image path pastes as text; anchored paths stay attachab
 		"./images/icon.png",
 	]);
 	expect(extractBracketedImagePastePaths(`${PASTE_START}/tmp/icon.png${PASTE_END}`)).toEqual(["/tmp/icon.png"]);
+});
+
+test("escaped POSIX home image paths attach without corrupting Windows tilde directories", () => {
+	expect(extractImagePathFromText(String.raw`\~/Pictures/screenshot.png`)).toBe("~/Pictures/screenshot.png");
+	expect(extractImagePathFromText(String.raw`C:\~\Pictures\screenshot.png`)).toBe(
+		String.raw`C:\~\Pictures\screenshot.png`,
+	);
+});
+
+test("image pastes beneath a dialog finish before draft submission and keep shortcuts suppressed", async () => {
+	const { editor, submitted } = promptBox();
+	const landed = Promise.withResolvers<void>();
+	const attached = Promise.withResolvers<void>();
+	let shortcutCalls = 0;
+	editor.setCustomKeyHandler("alt+m", () => {
+		shortcutCalls++;
+	});
+	editor.onPasteImagePath = async imagePath => {
+		expect(imagePath).toBe("/tmp/photo.png");
+		await landed.promise;
+		editor.insertText("attached ");
+		attached.resolve();
+	};
+	editor.handleDraftEdit(`${PASTE_START}/tmp/photo.png${PASTE_END}`);
+	expect(editor.pasteInFlight).toBe(true);
+	editor.handleDraftEdit("\x1bm");
+	editor.handleDraftEdit("\r");
+	expect(submitted).toEqual([]);
+	landed.resolve();
+	await attached.promise;
+	for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+	expect(editor.pasteInFlight).toBe(false);
+	expect(shortcutCalls).toBe(0);
+	expect(submitted).toEqual(["attached"]);
+	editor.dispose();
 });

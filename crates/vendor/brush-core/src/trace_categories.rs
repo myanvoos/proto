@@ -1,6 +1,3 @@
-
-
-
 pub const COMMANDS: &str = "commands";
 
 pub const COMPLETION: &str = "completion";

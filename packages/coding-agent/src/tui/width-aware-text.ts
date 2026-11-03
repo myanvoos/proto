@@ -34,6 +34,10 @@ export class WidthAwareText implements Component {
 		this.#inner.invalidate();
 	}
 
+	releaseRenderCaches(): void {
+		this.invalidate();
+	}
+
 	render(width: number): readonly string[] {
 		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
 		const contentWidth = Math.max(1, width - paddingX * 2);

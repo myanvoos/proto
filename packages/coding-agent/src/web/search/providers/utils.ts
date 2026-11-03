@@ -1,11 +1,11 @@
 import type { AgentStorage } from "../../../session/agent-storage";
-import { readBoundedText } from "../../../tools/fetch";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
 	type SearchProviderId,
 	type SearchSource,
 } from "../../../web/search/types";
+import { readResponseText } from "../../response-body";
 import { dateToAgeSeconds } from "../utils";
 
 export function findCredential(
@@ -47,7 +47,7 @@ async function readProviderBody(
 	maxBytes: number,
 	kind: "diagnostic" | "response" | "HTML",
 ): Promise<string> {
-	const text = await readBoundedText(response, maxBytes);
+	const text = await readResponseText(response, maxBytes);
 	if (text !== null) return text;
 	const status = response.ok ? 502 : response.status;
 	throw new SearchProviderError(provider, `${provider}: ${kind} body exceeded ${maxBytes} byte limit`, status);
@@ -108,4 +108,12 @@ export function classifyProviderHttpError(
 		return new SearchProviderError(provider, `${provider}: 403 forbidden`, status);
 	}
 	return null;
+}
+
+export function normalizeSearchText(value: unknown): string | undefined {
+	return typeof value === "string" ? value.replace(/\s+/g, " ").trim() || undefined : undefined;
+}
+
+export function siteHosts(sites: readonly string[]): string[] {
+	return [...new Set(sites.map(site => site.split("/", 1)[0]).filter(Boolean))];
 }

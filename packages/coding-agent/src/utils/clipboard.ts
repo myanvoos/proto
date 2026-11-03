@@ -57,6 +57,10 @@ async function spawnCapture(
 	}
 }
 
+export function isClipboardTerminalLocal(): boolean {
+	return !(process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT);
+}
+
 function hasDisplay(): boolean {
 	return process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }

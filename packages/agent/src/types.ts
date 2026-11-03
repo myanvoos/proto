@@ -40,10 +40,15 @@ export type CommittableAsideMessage = AgentMessage & {
 
 export type AsideMessage = CommittableAsideMessage | (() => CommittableAsideMessage | null);
 
+export type AsideBoundary = "work" | "stop";
+
 export interface AgentTurnEndContext {
 	message: AgentMessage;
 
 	toolResults: ToolResultMessage[];
+
+	/** Inputs delivered before this model turn, excluding prior tool results. */
+	additionalMessages: AgentMessage[];
 
 	willContinue: boolean;
 }
@@ -123,9 +128,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	hasIrcInterrupts?: () => boolean | Promise<boolean>;
 
+	/** Non-consuming peek; ends interruptible waits without interrupting foreground tools. */
+	hasQueuedAsides?: () => boolean | Promise<boolean>;
+
 	getFollowUpMessages?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
 
-	getAsideMessages?: () => Promise<AsideMessage[]>;
+	getAsideMessages?: (boundary: AsideBoundary) => Promise<AsideMessage[]>;
 
 	onBeforeYield?: () => Promise<void> | void;
 
@@ -316,6 +324,8 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	lenientArgValidation?: boolean;
 
 	interruptible?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
+	/** May drain owned wake events after a queued tool interrupt; external cancellation still prevents execution. */
+	handlesToolInterrupt?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
 
 	intent?: "omit" | "optional" | "require" | ((args: Partial<Static<TParameters>>) => string | undefined);
 

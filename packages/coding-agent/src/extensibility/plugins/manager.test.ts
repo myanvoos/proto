@@ -182,7 +182,7 @@ test("upgrade re-installs an npm plugin by name and keeps its runtime state", as
 
 	const result = await manager.upgrade("pi-lens");
 
-	expect(spawned).toEqual([["bun", "install", "--no-cache", "pi-lens"]]);
+	expect(spawned).toEqual([[process.execPath, "install", "--no-cache", "pi-lens"]]);
 	expect(result).toMatchObject({ from: "4.1.6", changed: true, plugin: { version: "4.2.0" } });
 	expect((await Bun.file(path.join(pluginRoot, "proto-plugins.lock.json")).json()).plugins["pi-lens"]).toEqual({
 		version: "4.2.0",
@@ -190,4 +190,78 @@ test("upgrade re-installs an npm plugin by name and keeps its runtime state", as
 		enabled: false,
 	});
 	await expect(manager.upgrade("missing-plugin")).rejects.toThrow(/missing-plugin is not installed/);
+});
+
+test.each([
+	["https://git.example.com/group/repo.git", "git+https://git.example.com/group/repo.git"],
+	["git+https://token@git.example.com/group/repo.git@v1", "git+https://git.example.com/group/repo.git#v1"],
+	["https://token@github.com/group/repo#v1", "https://token@github.com/group/repo#v1"],
+	["git:github.com/group/repo", "https://github.com/group/repo"],
+	["git:git@github.com:group/repo@v1", "git@github.com:group/repo#v1"],
+])(
+	"git plugin source %s reaches the embedded Bun with protocol and credentials normalized",
+	async (input, expected) => {
+		const { manager, pluginRoot, nodeModules } = await setupManager("unused");
+		const pkgJsonPath = path.join(pluginRoot, "package.json");
+		const spawn = vi.spyOn(Bun, "spawn").mockImplementation(((
+			cmd: string[],
+			options: { env?: Record<string, string> },
+		) => {
+			expect(cmd).toEqual([process.execPath, "install", expected]);
+			expect(options.env?.BUN_BE_BUN).toBe("1");
+			const exited = (async () => {
+				await Bun.write(pkgJsonPath, JSON.stringify({ private: true, dependencies: { "git-plugin": expected } }));
+				await Bun.write(
+					path.join(nodeModules, "git-plugin", "package.json"),
+					JSON.stringify({ name: "git-plugin", version: "1.0.0" }),
+				);
+				return 0;
+			})();
+			return { pid: 1, stdout: new Response("").body, stderr: new Response("").body, exited } as Subprocess;
+		}) as typeof Bun.spawn);
+		const installed = await manager.install(input);
+		expect(installed.name).toBe("git-plugin");
+		expect(spawn).toHaveBeenCalledTimes(1);
+	},
+);
+
+test("plugin settings replace a readable lockfile without writing secrets into its old inode", async () => {
+	const { manager, pluginRoot } = await setupManager("unused");
+	const lockPath = path.join(pluginRoot, "proto-plugins.lock.json");
+	await Bun.write(lockPath, JSON.stringify({ plugins: {}, settings: {} }));
+	await fs.chmod(lockPath, 0o644);
+	const old = await fs.open(lockPath, "r");
+	try {
+		await manager.setPluginSetting("sample", "token", "credential-value");
+		expect((await fs.stat(lockPath)).mode & 0o777).toBe(0o600);
+		expect((await old.stat()).ino).not.toBe((await fs.stat(lockPath)).ino);
+		expect(await old.readFile("utf8")).not.toContain("credential-value");
+		expect((await Bun.file(lockPath).json()).settings.sample.token).toBe("credential-value");
+	} finally {
+		await old.close();
+	}
+});
+
+test("a failed upgrade restores a relative development link without touching its target", async () => {
+	const { manager, pluginRoot, nodeModules, sourceRoot } = await setupManager("linked-plugin");
+	await fs.mkdir(nodeModules, { recursive: true });
+	const linkPath = path.join(nodeModules, "linked-plugin");
+	await fs.symlink(path.relative(nodeModules, sourceRoot), linkPath, "dir");
+	const pkgJsonPath = path.join(pluginRoot, "package.json");
+	await Bun.write(pkgJsonPath, JSON.stringify({ dependencies: { "linked-plugin": "^1.0.0" } }));
+	vi.spyOn(Bun, "spawn").mockImplementation((() => {
+		const exited = (async () => {
+			await fs.rm(linkPath);
+			await Bun.write(
+				path.join(linkPath, "package.json"),
+				JSON.stringify({ name: "linked-plugin", version: "2.0.0", proto: { extensions: ["missing.ts"] } }),
+			);
+			return 0;
+		})();
+		return { pid: 1, stdout: new Response("").body, stderr: new Response("").body, exited } as Subprocess;
+	}) as typeof Bun.spawn);
+	await expect(manager.install("linked-plugin")).rejects.toThrow(/extension validation failed/);
+	expect((await fs.lstat(linkPath)).isSymbolicLink()).toBe(true);
+	expect(await fs.realpath(linkPath)).toBe(await fs.realpath(sourceRoot));
+	expect((await Bun.file(path.join(sourceRoot, "package.json")).json()).version).toBe("1.0.0");
 });

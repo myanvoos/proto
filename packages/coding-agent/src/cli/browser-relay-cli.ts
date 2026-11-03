@@ -1,13 +1,8 @@
 import * as path from "node:path";
-import { getBrowserRelayDir } from "@oh-my-pi/pi-utils";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
+import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { probeRelayServer } from "../tools/browser/relay/daemon";
-import backgroundJs from "../tools/browser/relay/extension-assets/background.js.txt" with { type: "text" };
-import licenseText from "../tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
-import manifestJson from "../tools/browser/relay/extension-assets/manifest.json.txt" with { type: "text" };
-import optionsHtml from "../tools/browser/relay/extension-assets/options.html.txt" with { type: "text" };
-import optionsJs from "../tools/browser/relay/extension-assets/options.js.txt" with { type: "text" };
-import thirdPartyNotices from "../tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
+import { defaultRelayExtensionDir, writeRelayExtension } from "../tools/browser/relay/extension-files";
 import { type RelayServer, startRelayServer } from "../tools/browser/relay/server";
 import { type BROWSER_RELAY_ACTIONS, DEFAULT_RELAY_PORT } from "./command-help";
 
@@ -24,15 +19,6 @@ interface BrowserRelayCommandArgs {
 	verbose?: boolean;
 }
 
-const EXTENSION_FILES: Record<string, string> = {
-	"background.js": backgroundJs,
-	LICENSE: licenseText,
-	"manifest.json": manifestJson,
-	"options.html": optionsHtml,
-	"options.js": optionsJs,
-	"THIRD-PARTY-NOTICES.txt": thirdPartyNotices,
-};
-
 export async function runBrowserRelayCommand(args: BrowserRelayCommandArgs): Promise<void> {
 	if (args.action === "install") {
 		await runInstall(args.dir);
@@ -45,10 +31,8 @@ export async function runBrowserRelayCommand(args: BrowserRelayCommandArgs): Pro
 }
 
 async function runInstall(dirOverride: string | undefined): Promise<void> {
-	const dir = dirOverride ? path.resolve(dirOverride) : path.join(getBrowserRelayDir(), "extension");
-	for (const name in EXTENSION_FILES) {
-		await Bun.write(path.join(dir, name), EXTENSION_FILES[name]!);
-	}
+	const dir = dirOverride ? path.resolve(dirOverride) : defaultRelayExtensionDir();
+	await writeRelayExtension(dir, VERSION);
 	console.log(`Installed the Proto Browser Relay extension to ${dir}`);
 	console.log("");
 	console.log("Finish setup in Chrome:");

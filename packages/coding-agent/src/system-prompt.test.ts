@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { buildSystemPrompt, composeAppendPrompt } from "./system-prompt";
+import "./discovery";
 
 const MCP_SECTION =
 	"## MCP Server Instructions\n\nThe following instructions are provided by connected MCP servers. They are server-controlled and may not be verified.\n\n### codegraph\nUse codegraph.";
@@ -41,4 +42,72 @@ test("an explicitly empty custom prompt ignores a discovered SYSTEM.md instead o
 		workspaceTree: { rootPath: tmp.path(), rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
 	});
 	expect(systemPrompt.join("\n")).toContain(marker);
+});
+
+test("disabling context discovery omits cwd, additional roots and nested AGENTS while retaining explicit context", async () => {
+	using tmp = TempDir.createSync("@system-prompt-no-context-");
+	const primary = path.join(tmp.path(), "primary");
+	const extra = path.join(tmp.path(), "extra");
+	await Bun.write(path.join(primary, "AGENTS.md"), "PRIMARY-CONTEXT-SENTINEL");
+	await Bun.write(path.join(extra, "AGENTS.md"), "EXTRA-CONTEXT-SENTINEL");
+	const result = await buildSystemPrompt({
+		cwd: primary,
+		additionalWorkspaceRoots: [extra],
+		noContextFiles: true,
+		skills: [],
+		activeRepoContext: null,
+		workspaceTree: {
+			rootPath: primary,
+			rendered: "",
+			truncated: false,
+			totalLines: 0,
+			agentsMdFiles: ["nested/AGENTS.md"],
+		},
+	});
+	const output = result.systemPrompt.join("\n");
+	expect(output).not.toContain("PRIMARY-CONTEXT-SENTINEL");
+	expect(output).not.toContain("EXTRA-CONTEXT-SENTINEL");
+	expect(output).not.toContain("nested/AGENTS.md");
+	const explicit = await buildSystemPrompt({
+		cwd: primary,
+		additionalWorkspaceRoots: [extra],
+		noContextFiles: true,
+		contextFiles: [{ path: path.join(primary, "PINNED.md"), content: "EXPLICIT-CONTEXT-SENTINEL" }],
+		skills: [],
+		activeRepoContext: null,
+		includeWorkspaceTree: false,
+	});
+	expect(explicit.systemPrompt.join("\n")).toContain("EXPLICIT-CONTEXT-SENTINEL");
+});
+
+test("subagent context exclusion filters inherited and additional-root AGENTS but retains other context files", async () => {
+	using tmp = TempDir.createSync("@system-prompt-exclude-agents-");
+	const extra = path.join(tmp.path(), "extra");
+	await Bun.write(path.join(extra, "AGENTS.md"), "EXTRA-AGENTS-SENTINEL");
+
+	const result = await buildSystemPrompt({
+		cwd: tmp.path(),
+		additionalWorkspaceRoots: [extra],
+		excludeAgentsMd: true,
+		contextFiles: [
+			{ path: path.join(tmp.path(), "AgEnTs.Md"), content: "INHERITED-AGENTS-SENTINEL" },
+			{ path: path.join(tmp.path(), "NOTES.md"), content: "INHERITED-NOTES-SENTINEL" },
+		],
+		skills: [],
+		activeRepoContext: null,
+		includeWorkspaceTree: false,
+	});
+	const output = result.systemPrompt.join("\n");
+	expect(output).not.toContain("INHERITED-AGENTS-SENTINEL");
+	expect(output).not.toContain("EXTRA-AGENTS-SENTINEL");
+	expect(output).toContain("INHERITED-NOTES-SENTINEL");
+	const included = await buildSystemPrompt({
+		cwd: tmp.path(),
+		additionalWorkspaceRoots: [extra],
+		contextFiles: [],
+		skills: [],
+		activeRepoContext: null,
+		includeWorkspaceTree: false,
+	});
+	expect(included.systemPrompt.join("\n")).toContain("EXTRA-AGENTS-SENTINEL");
 });

@@ -231,3 +231,29 @@ test("an authoritative replacement with only </think> reclassifies its leading t
 		{ type: "text", text: "answer" },
 	]);
 });
+
+test("discarded terminal errors do not resurrect streamed draft content", async () => {
+	const partial = message([{ type: "text", text: "discard this" }]);
+	const discarded = { ...message([]), stopReason: "error" as const, errorMessage: "provider rejected draft" };
+	const projected = await collect([
+		{ type: "start", partial: message([]) },
+		{ type: "text_delta", contentIndex: 0, delta: "discard this", partial },
+		{ type: "error", reason: "error", error: discarded },
+	]);
+	expect(projected.result.content).toEqual([]);
+});
+
+test("signed native reasoning finalized without deltas emits text before its end event", async () => {
+	const finished = message([{ type: "thinking", thinking: "final reasoning", thinkingSignature: "signature" }]);
+	const projected = await collect([
+		{ type: "start", partial: message([]) },
+		{ type: "thinking_end", contentIndex: 0, content: "final reasoning", partial: finished },
+		{ type: "done", reason: "stop", message: finished },
+	]);
+	expect(projected.result.content).toEqual(finished.content);
+	expect(projected.events.filter(event => event.type.startsWith("thinking_")).map(event => event.type)).toEqual([
+		"thinking_start",
+		"thinking_delta",
+		"thinking_end",
+	]);
+});

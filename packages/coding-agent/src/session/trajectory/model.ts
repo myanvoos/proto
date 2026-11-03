@@ -214,7 +214,9 @@ export function buildTrajectory(
 		}
 
 		switch (entry.type) {
-			case "session_init":
+			case "session_init": {
+				const systemPrompt =
+					typeof entry.systemPrompt === "string" ? entry.systemPrompt : entry.systemPrompt.join("\n\n");
 				pushStep(state, {
 					entryId: entry.id,
 					source: "system",
@@ -223,10 +225,11 @@ export function buildTrajectory(
 					detail: entry.agent ?? entry.modelRole,
 					timestampMs,
 					isError: false,
-					preview: firstLine(entry.systemPrompt),
-					content: entry.systemPrompt,
+					preview: firstLine(systemPrompt),
+					content: systemPrompt,
 				});
 				break;
+			}
 			case "compaction":
 				pushStep(state, {
 					entryId: entry.id,

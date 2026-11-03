@@ -18,7 +18,7 @@ import type {
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { dropUnreadableContextImages } from "./provider-image-budget";
+import { clampProviderContextImages, dropUnreadableContextImages } from "./provider-image-budget";
 
 /**
  * 1x1 PNG whose chunk framing does not land exactly on `IEND`, yet every
@@ -316,5 +316,74 @@ describe("dropUnreadableContextImages", () => {
 		const context: Context = { messages: [result] };
 
 		expect(await dropUnreadableContextImages(context, OPENAI_RESPONSES_MODEL)).toBe(context);
+	});
+});
+
+describe("provider image-count budget", () => {
+	const model: Model = { ...OPENAI_RESPONSES_MODEL, provider: "test-image-budget" };
+	test("assistant output images never evict input images", () => {
+		const inputs = userMessage(Array.from({ length: 5 }, () => INTACT_IMAGE));
+		const output = { role: "assistant", content: [INTACT_IMAGE], timestamp: 1 } as Message;
+		const context: Context = { messages: [inputs, output] };
+		expect(clampProviderContextImages(context, model)).toBe(context);
+	});
+
+	test("dropping an image-only user turn keeps a provider-visible omission instead of losing the turn", () => {
+		const old = userMessage([INTACT_IMAGE]);
+		const latest = userMessage(Array.from({ length: 5 }, () => INTACT_IMAGE));
+		const out = clampProviderContextImages({ messages: [old, latest] }, model);
+		expect(out.messages[0]?.content).toEqual([{ type: "text", text: "[image omitted: provider image limit]" }]);
+		expect(out.messages[1]).toBe(latest);
+	});
+
+	test("a Responses computer result counts as one metadata screenshot, not its unsent content copies", () => {
+		const computer: ToolResultMessage = {
+			...toolResult(Array.from({ length: 6 }, () => INTACT_IMAGE)),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", file_id: "shot" },
+				acknowledgedSafetyChecks: [],
+			},
+		};
+		const context: Context = { messages: [computer, userMessage(Array.from({ length: 4 }, () => INTACT_IMAGE))] };
+		expect(clampProviderContextImages(context, model)).toBe(context);
+	});
+
+	test("evicting a metadata screenshot also removes its stale metadata and unsent content images", () => {
+		const computer: ToolResultMessage = {
+			...toolResult([INTACT_IMAGE, { type: "text", text: "clicked" }]),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", file_id: "shot" },
+				acknowledgedSafetyChecks: [],
+			},
+		};
+		const out = clampProviderContextImages(
+			{ messages: [computer, userMessage(Array.from({ length: 5 }, () => INTACT_IMAGE))] },
+			model,
+		);
+		expect(out.messages[0]).toMatchObject({
+			content: [{ type: "text", text: "clicked" }],
+			providerMetadata: undefined,
+		});
+		expect(computer.providerMetadata).toBeDefined();
+	});
+
+	test("Codex without native computer use clamps content while preserving its unsent screenshot metadata", () => {
+		const computer: ToolResultMessage = {
+			...toolResult(Array.from({ length: 6 }, () => INTACT_IMAGE)),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", file_id: "shot" },
+				acknowledgedSafetyChecks: [],
+			},
+		};
+		const out = clampProviderContextImages(
+			{ messages: [computer] },
+			{ ...model, api: "openai-codex-responses", supportsComputerUse: false },
+		);
+		const result = out.messages[0] as ToolResultMessage;
+		expect(result.content.filter(part => part.type === "image")).toHaveLength(5);
+		expect(result.providerMetadata).toBe(computer.providerMetadata);
 	});
 });

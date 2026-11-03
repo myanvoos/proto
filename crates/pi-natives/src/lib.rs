@@ -23,6 +23,8 @@ pub mod js;
 pub mod kernel_stdio;
 pub mod keys;
 
+mod memory;
+
 pub mod pdf;
 pub mod sixel;
 pub mod spelling;
@@ -49,7 +51,7 @@ pub mod workspace;
 
 use napi_derive::{module_init, napi};
 
-#[napi(js_name = "__piNativesV19_2_0")]
+#[napi(js_name = "__piNativesV19_2_1")]
 pub const fn pi_natives_version_sentinel() {}
 
 #[module_init]

@@ -96,7 +96,9 @@ export async function readBytesWithLimit(
 	return { bytes, truncated };
 }
 
-class ConcatSink {
+const CONCAT_SINK_RETAIN_BYTES = 1024 * 1024;
+
+export class ConcatSink {
 	#space?: Buffer;
 	#length = 0;
 	#skipLeadingLf = false;
@@ -113,6 +115,21 @@ class ConcatSink {
 		return next;
 	}
 
+	/** Drop or right-size an oversized buffer after the buffered length shrank. */
+	#releaseCapacity(): void {
+		const space = this.#space;
+		if (!space || space.length <= CONCAT_SINK_RETAIN_BYTES) return;
+		const length = this.#length;
+		if (length === 0) {
+			this.#space = undefined;
+			return;
+		}
+		if (length * 4 > space.length) return;
+		const next = Buffer.allocUnsafe(length);
+		space.copy(next, 0, 0, length);
+		this.#space = next;
+	}
+
 	append(chunk: Uint8Array) {
 		const n = chunk.length;
 		if (!n) return;
@@ -123,11 +140,10 @@ class ConcatSink {
 	}
 
 	reset(chunk: Uint8Array) {
+		this.#length = 0;
+		this.#releaseCapacity();
 		const n = chunk.length;
-		if (!n) {
-			this.#length = 0;
-			return;
-		}
+		if (!n) return;
 		const space = this.#ensureCapacity(n);
 		space.set(chunk, 0);
 		this.#length = n;
@@ -144,6 +160,7 @@ class ConcatSink {
 
 	clear() {
 		this.#length = 0;
+		this.#releaseCapacity();
 	}
 
 	*appendAndFlushLines(chunk: Uint8Array, maxLineBytes: number) {
@@ -244,13 +261,14 @@ class ConcatSink {
 		if (error) throw error;
 		if (done) {
 			this.#length = 0;
-			return;
+		} else {
+			const rem = total - read;
+			if (rem < total) {
+				space.copyWithin(0, read, total);
+			}
+			this.#length = rem;
 		}
-		const rem = total - read;
-		if (rem < total) {
-			space.copyWithin(0, read, total);
-		}
-		this.#length = rem;
+		this.#releaseCapacity();
 	}
 }
 
@@ -464,26 +482,26 @@ export async function* readSseEvents(
 
 function advanceJsonlChunk<T>(
 	buffer: string,
+	cursor: number,
 	onValues: (values: T[]) => void,
 	options: { onMalformedRecord?: () => void },
-): string {
-	const { values, error, read, done } = Bun.JSONL.parseChunk(buffer);
+): number {
+	const { values, error, read, done } = Bun.JSONL.parseChunk(buffer, cursor);
 	if (values.length > 0) onValues(values as T[]);
 	if (error) {
-		const nextNewline = buffer.indexOf("\n", read);
+		let start = read;
+		while (start < buffer.length && /\s/.test(buffer[start]!)) start++;
+		const nextNewline = buffer.indexOf("\n", start);
 		const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
-		if (buffer.substring(read, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
-		if (nextNewline === -1) return "";
-		return buffer.substring(nextNewline + 1);
+		if (buffer.substring(start, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
+		return nextNewline === -1 ? buffer.length : nextNewline + 1;
 	}
-	if (read === 0) {
-		if (buffer.trim().length > 0) options.onMalformedRecord?.();
-		return "";
+	if (read === cursor) {
+		if (buffer.substring(cursor).trim().length > 0) options.onMalformedRecord?.();
+		return buffer.length;
 	}
-	if (done) return "";
-	return buffer.substring(read);
+	return done ? buffer.length : read;
 }
-
 /** Parsed-records sink for {@link forEachJsonlRecord}; keeps per-record handling allocation-free. */
 export type JsonlRecordSink<T> = (record: T) => void;
 
@@ -498,10 +516,11 @@ export function forEachJsonlRecord<T>(
 	onRecord: JsonlRecordSink<T>,
 	options: { onMalformedRecord?: () => void } = {},
 ): void {
-	let rest = buffer;
-	while (rest.length > 0) {
-		rest = advanceJsonlChunk<T>(
-			rest,
+	let cursor = 0;
+	while (cursor < buffer.length) {
+		cursor = advanceJsonlChunk<T>(
+			buffer,
+			cursor,
 			values => {
 				for (const value of values) onRecord(value);
 			},
@@ -512,10 +531,11 @@ export function forEachJsonlRecord<T>(
 
 export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecord?: () => void } = {}): T[] {
 	const entries: T[] = [];
-	let rest = buffer;
-	while (rest.length > 0) {
-		rest = advanceJsonlChunk<T>(
-			rest,
+	let cursor = 0;
+	while (cursor < buffer.length) {
+		cursor = advanceJsonlChunk<T>(
+			buffer,
+			cursor,
 			values => {
 				for (const value of values) entries.push(value);
 			},

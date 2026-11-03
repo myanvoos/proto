@@ -272,7 +272,7 @@ fn apply_identity(
 		if pipeline.skipped_by_exit(exit_code) {
 			return MinimizerOutput::passthrough(captured).labeled("exit-skip");
 		}
-		if is_below_minimize_threshold(captured) {
+		if is_below_minimize_threshold(captured) || pipeline.skipped_by_size(captured.len()) {
 			return MinimizerOutput::passthrough(captured).labeled("too-short");
 		}
 		let text = catch_unwind(AssertUnwindSafe(|| pipeline.apply(captured).into_owned()))
@@ -381,7 +381,7 @@ fn apply_pipeline_overlay(
 	let Some(pipeline) = resolve_pipeline(config, program, subcommand) else {
 		return inner.labeled(primary_label);
 	};
-	if pipeline.skipped_by_exit(exit_code) {
+	if pipeline.skipped_by_exit(exit_code) || pipeline.skipped_by_size(inner.input_bytes) {
 		return inner.labeled(primary_label);
 	}
 	let text = catch_unwind(AssertUnwindSafe(|| pipeline.apply(&inner.text).into_owned()))
@@ -426,4 +426,15 @@ static BUILTIN_PIPELINES: LazyLock<PipelineRegistry> =
 
 fn builtin_pipelines() -> &'static PipelineRegistry {
 	&BUILTIN_PIPELINES
+}
+
+pub(crate) fn overlay_caps_lines(
+	config: &MinimizerConfig,
+	program: &str,
+	subcommand: Option<&str>,
+	exit_code: i32,
+	input_bytes: usize,
+) -> bool {
+	resolve_pipeline(config, program, subcommand)
+		.is_some_and(|pipeline| pipeline.caps_lines(exit_code, input_bytes))
 }

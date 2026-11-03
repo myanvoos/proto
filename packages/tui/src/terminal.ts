@@ -3,6 +3,7 @@ import { TtyWriter } from "@oh-my-pi/pi-natives";
 import { stripControlChars } from "@oh-my-pi/pi-utils";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { restoreTerminalStderr, suppressTerminalStderr } from "@oh-my-pi/pi-utils/stderr-guard";
 import { setKittyProtocolActive } from "./keys";
@@ -14,6 +15,7 @@ import {
 	setCellDimensions,
 	setOsc99Supported,
 	setOutboundWriter,
+	setTerminalBackgroundColor,
 	setTerminalFocused,
 	TERMINAL,
 } from "./terminal-capabilities";
@@ -322,6 +324,7 @@ export interface Terminal {
 	get appearance(): TerminalAppearance | undefined;
 
 	onPrivateModeReport?(callback: PrivateModeReportHandler): void;
+	onSixelSupport?(callback: (supported: boolean) => void): void;
 
 	/**
 	 * Ask the terminal where its cursor is (CPR, `CSI 6 n`). Resolves with the
@@ -355,6 +358,9 @@ function parseOsc99KeyValues(section: string): Map<string, string> {
 	}
 	return values;
 }
+// Conceal unrecognized probe payloads without wrapping or moving the cursor.
+const PROBE_GUARD_BEGIN = "\x1b7\x1b[?7l\x1b[8m";
+const PROBE_GUARD_END = "\x1b[28m\x1b[?7h\x1b8";
 const XTERM_SCROLL_TO_BOTTOM_MODES = [1010, 1011] as const;
 type Osc11QueryRoute = "direct" | "tmux";
 const TMUX_OSC11_CACHE_REFRESH_DELAY_MS = 100;
@@ -454,7 +460,9 @@ export class ProcessTerminal implements Terminal {
 	#progressActive = false;
 	// Ghostty expires OSC 9;4 state without a heartbeat; persistent hosts restart
 	// their indeterminate animation on every write.
-	readonly #keepProgressAlive = TERMINAL.id === "ghostty";
+	readonly #keepProgressAlive = TERMINAL.id === "ghostty" || TERMINAL.id === "monstar";
+	#rearmBracketedPaste = false;
+	#sixelSupportCallbacks = new Set<(supported: boolean) => void>();
 	#progressTimer?: Timer;
 
 	get kittyProtocolActive(): boolean {
@@ -529,6 +537,7 @@ export class ProcessTerminal implements Terminal {
 		this.#isLoopStalled = options?.isLoopStalled;
 
 		this.#cursorVisible = undefined;
+		setTerminalBackgroundColor(undefined);
 
 		this.#headless = isTerminalHeadless();
 		if (this.#headless) return;
@@ -592,6 +601,8 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.resume();
 
 		this.#safeWrite("\x1b[?2004h");
+		this.#rearmBracketedPaste = isInsideTmux() || /^(?:tmux|screen)/u.test(Bun.env.TERM ?? "");
+		this.#safeWrite(PROBE_GUARD_BEGIN);
 
 		// DEC 1004 focus reporting: hosts that ignore it simply never reply, and
 		// focus stays unknown rather than being assumed.
@@ -620,6 +631,7 @@ export class ProcessTerminal implements Terminal {
 		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
 			this.#queryPrivateMode(mode);
 		}
+		this.#safeWrite(PROBE_GUARD_END);
 	}
 
 	#setupStdinBuffer(): void {
@@ -806,6 +818,9 @@ export class ProcessTerminal implements Terminal {
 			}
 
 			if (da1ResponsePattern.test(sequence)) {
+				if (/;4(?:;|c$)/u.test(sequence)) {
+					for (const callback of this.#sixelSupportCallbacks) callback(true);
+				}
 				const owner = this.#da1SentinelOwners.shift();
 				if (!owner) {
 					return;
@@ -994,6 +1009,9 @@ export class ProcessTerminal implements Terminal {
 		});
 
 		this.#stdinDataHandler = (data: string) => {
+			if (data && this.#active && this.#rearmBracketedPaste && !this.#stdinBuffer!.pasting) {
+				this.#safeWrite("\x1b[?2004h");
+			}
 			this.#stdinBuffer!.process(data);
 		};
 	}
@@ -1114,6 +1132,10 @@ export class ProcessTerminal implements Terminal {
 			const max = 16 ** hex.length - 1;
 			return max > 0 ? value / max : 0;
 		};
+		const red = Math.round(normalize(rHex) * 255);
+		const green = Math.round(normalize(gHex) * 255);
+		const blue = Math.round(normalize(bHex) * 255);
+		setTerminalBackgroundColor((red << 16) | (green << 8) | blue);
 		const luminance = 0.299 * normalize(rHex) + 0.587 * normalize(gHex) + 0.114 * normalize(bHex);
 		const mode: TerminalAppearance = luminance < 0.5 ? "dark" : "light";
 		const changed = mode !== this.#appearance;
@@ -1234,7 +1256,10 @@ export class ProcessTerminal implements Terminal {
 		// per burst. `supported` is true only after an explicit DECRPM reply (the
 		// DA1 sentinel fallback resolves unsupported), so terminals ignoring DECRQM
 		// keep unconditional classification.
-		if (mode === 2004 && supported) this.#stdinBuffer?.setRawPasteStallProbe(this.#isLoopStalled);
+		if (mode === 2004 && supported) {
+			this.#rearmBracketedPaste = true;
+			this.#stdinBuffer?.setRawPasteStallProbe(this.#isLoopStalled);
+		}
 	}
 
 	#disableXtermScrollToBottomMode(mode: number): void {
@@ -1426,6 +1451,8 @@ export class ProcessTerminal implements Terminal {
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
+		this.#rearmBracketedPaste = false;
+		this.#sixelSupportCallbacks.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;
 		// The identity belongs to the tty this terminal was attached to; a
@@ -1501,7 +1528,12 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
+	onSixelSupport(callback: (supported: boolean) => void): void {
+		this.#sixelSupportCallbacks.add(callback);
+	}
+
 	write(data: string): void {
+		if (data && this.#active && this.#rearmBracketedPaste) data = `\x1b[?2004h${data}`;
 		this.#safeWrite(data);
 		if (this.#writeLogPath) {
 			try {
@@ -1538,6 +1570,7 @@ export class ProcessTerminal implements Terminal {
 			this.#trackStdoutBacklog(pending);
 			return;
 		}
+		pushLoopPhase("ui.terminal-write");
 		try {
 			process.stdout.write(data);
 			// A stalled-but-alive consumer never throws: refused writes just queue
@@ -1545,6 +1578,8 @@ export class ProcessTerminal implements Terminal {
 			this.#trackStdoutBacklog(process.stdout.writableLength ?? 0);
 		} catch (err) {
 			this.#markTerminalDisconnected("stdout failed", err);
+		} finally {
+			popLoopPhase();
 		}
 	}
 

@@ -2,6 +2,20 @@ import { expect, test } from "bun:test";
 import { OmpErrors } from "./errors";
 import { fromJsonSchema } from "./from-json-schema";
 
+test("local definition references decode URI fragments before JSON Pointer escapes", () => {
+	const imported = fromJsonSchema({
+		$defs: { "a%2Fb /~1 空\n": { type: "string" }, "a/b /~1 空\n": { type: "boolean" } },
+		$ref: "#/$defs/a%252Fb%20~1~01%20%E7%A9%BA%0A",
+	});
+	expect(imported(false)).toBeInstanceOf(OmpErrors);
+	expect(imported("value")).toBe("value");
+	const empty = fromJsonSchema({ definitions: { "": { type: "integer" } }, $ref: "#/definitions/" });
+	expect(empty(2.5)).toBeInstanceOf(OmpErrors);
+	expect(empty(2)).toBe(2);
+	for (const ref of ["#/$defs/%E0%A4%A", "https://example.com/schema#/$defs/value"])
+		expect(() => fromJsonSchema({ $ref: ref })).toThrow(`unsupported $ref: ${ref}`);
+});
+
 const BOTH_RUNTIMES = [true, true, true, true];
 
 function results(schema: unknown, value: unknown): boolean[] {

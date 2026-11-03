@@ -8,6 +8,7 @@ import { extractTextContent, extractToolCall, parseJsonPayload } from "../commit
 
 import {
 	expandRoleAlias,
+	extractExplicitThinkingSelector,
 	formatModelString,
 	formatModelStringWithRouting,
 	getModelMatchPreferences,
@@ -334,11 +335,26 @@ function resolveTierCandidates(tier: CompletionTier, session: ToolSession): Comp
 	if (available.length === 0) return [];
 
 	const matchPreferences = getModelMatchPreferences(session.settings);
-	const resolve = (pattern: string | undefined): { model: Model<Api>; selector: string } | undefined => {
+	const resolve = (
+		pattern: string | undefined,
+	): { model: Model<Api>; selector: string; configuredEffort?: ThinkingLevel } | undefined => {
 		if (!pattern) return undefined;
 		const selector = expandRoleAlias(pattern, session.settings);
 		const model = resolveModelFromString(selector, available, matchPreferences);
-		return model ? { model, selector } : undefined;
+		if (!model) return undefined;
+		const configuredEffort =
+			tier === "slow"
+				? extractExplicitThinkingSelector(selector, session.settings, {
+						isLiteralModelId: (provider, id) =>
+							available.some(
+								candidate =>
+									(provider === undefined ||
+										candidate.provider.trim().toLowerCase() === provider.trim().toLowerCase()) &&
+									candidate.id.trim().toLowerCase() === id.trim().toLowerCase(),
+							),
+					})
+				: undefined;
+		return { model, selector, configuredEffort };
 	};
 	const primary =
 		tier === "default"
@@ -346,7 +362,10 @@ function resolveTierCandidates(tier: CompletionTier, session: ToolSession): Comp
 			: resolve(TIER_TO_PATTERN[tier]);
 	if (!primary) return [];
 
-	const root: CompletionCandidate = { model: primary.model, ...reasoningForCandidate(tier, primary.model) };
+	const root: CompletionCandidate = {
+		model: primary.model,
+		...reasoningForCandidate(tier, primary.model, primary.configuredEffort),
+	};
 	const candidates = [root];
 	if (!session.settings.get("retry.enabled") || !session.settings.get("retry.modelFallback")) return candidates;
 	appendFallbackCandidates(
@@ -366,7 +385,9 @@ function resolveTierCandidates(tier: CompletionTier, session: ToolSession): Comp
 		},
 		primary.selector,
 		primary.model,
-		undefined,
+		shouldDisableReasoning(primary.configuredEffort) || toReasoningEffort(primary.configuredEffort) !== undefined
+			? root
+			: undefined,
 		tier,
 	);
 	return candidates;

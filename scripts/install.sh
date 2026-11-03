@@ -12,7 +12,7 @@ set -e
 
 REPO="myanvoos/proto"
 INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
-MIN_BUN_VERSION="1.3.14"
+MIN_BUN_VERSION="1.4.0"
 
 # Parse arguments
 MODE=""

@@ -1,4 +1,4 @@
-import { enclosingBlockBoundaries, type NodeSpan, nodeChainAt } from "@oh-my-pi/pi-natives";
+import { enclosingBlockBoundaries, type NodeSpan, nodeChainAt, warmBlockParse } from "@oh-my-pi/pi-natives";
 
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
@@ -27,6 +27,17 @@ export interface BlockContextSource {
 	lang?: string;
 	text?: string;
 	includeContext?: boolean;
+}
+
+/** Warm the native parse cache away from the event loop before synchronous block queries. */
+export async function warmBlockContext(source: BlockContextSource & { text: string }): Promise<void> {
+	if ((!source.path && !source.lang) || source.includeContext === false || exceedsBlockContextScanCeiling(source.text))
+		return;
+	try {
+		await warmBlockParse({ code: source.text, path: source.path, lang: source.lang });
+	} catch (error) {
+		logger.debug("Block context preparse failed; parsing on demand", { error });
+	}
 }
 
 export type LineEntry = { kind: "line"; lineNumber: number; text: string; context: boolean } | { kind: "ellipsis" };

@@ -3,13 +3,10 @@ use std::{borrow::Cow, io::Write, path::Path};
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct PwdCommand {
-
 	#[arg(short = 'P', overrides_with = "allow_symlinks")]
 	physical: bool,
-
 
 	#[arg(short = 'L', overrides_with = "physical")]
 	allow_symlinks: bool,

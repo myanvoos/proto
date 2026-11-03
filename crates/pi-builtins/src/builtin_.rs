@@ -1,7 +1,6 @@
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Default, Parser)]
 pub(crate) struct BuiltinCommand {
 	#[clap(skip)]

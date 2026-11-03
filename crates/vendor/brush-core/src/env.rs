@@ -1,5 +1,3 @@
-
-
 use std::{
 	borrow::Cow,
 	collections::{HashMap, hash_map},
@@ -10,10 +8,8 @@ use crate::{
 	variables::{self, ShellValue, ShellValueUnsetType, ShellVariable},
 };
 
-
 #[derive(Clone, Copy)]
 pub enum EnvironmentLookup {
-
 	Anywhere,
 
 	OnlyInGlobal,
@@ -23,11 +19,9 @@ pub enum EnvironmentLookup {
 	OnlyInLocal,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EnvironmentScope {
-
 	Local,
 
 	Global,
@@ -45,8 +39,6 @@ impl std::fmt::Display for EnvironmentScope {
 	}
 }
 
-
-
 pub(crate) struct ScopeGuard<'a, SE: extensions::ShellExtensions> {
 	scope_type: EnvironmentScope,
 	shell:      &'a mut crate::Shell<SE>,
@@ -54,23 +46,14 @@ pub(crate) struct ScopeGuard<'a, SE: extensions::ShellExtensions> {
 }
 
 impl<'a, SE: extensions::ShellExtensions> ScopeGuard<'a, SE> {
-
-
-
-
-
-
-
 	pub fn new(shell: &'a mut crate::Shell<SE>, scope_type: EnvironmentScope) -> Self {
 		shell.env_mut().push_scope(scope_type);
 		Self { scope_type, shell, detached: false }
 	}
 
-
 	pub const fn shell(&mut self) -> &mut crate::Shell<SE> {
 		self.shell
 	}
-
 
 	pub const fn detach(&mut self) {
 		self.detached = true;
@@ -85,11 +68,9 @@ impl<SE: extensions::ShellExtensions> Drop for ScopeGuard<'_, SE> {
 	}
 }
 
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellEnvironment {
-
 	scopes: Vec<(EnvironmentScope, ShellVariableMap)>,
 
 	export_variables_on_modification: bool,
@@ -104,7 +85,6 @@ impl Default for ShellEnvironment {
 }
 
 impl ShellEnvironment {
-
 	pub fn new() -> Self {
 		Self {
 			scopes: vec![(EnvironmentScope::Global, ShellVariableMap::default())],
@@ -113,24 +93,11 @@ impl ShellEnvironment {
 		}
 	}
 
-
-
-
-
-
 	pub fn push_scope(&mut self, scope_type: EnvironmentScope) {
 		self.scopes.push((scope_type, ShellVariableMap::default()));
 	}
 
-
-
-
-
-
-
 	pub fn pop_scope(&mut self, expected_scope_type: EnvironmentScope) -> Result<(), error::Error> {
-
-
 		match self.scopes.pop() {
 			Some((actual_scope_type, _)) if actual_scope_type == expected_scope_type => Ok(()),
 			Some((actual_scope_type, _)) => Err(
@@ -144,20 +111,12 @@ impl ShellEnvironment {
 		}
 	}
 
-
-
-
-
-
 	pub fn iter_exported(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
-
-
 		let mut visible_vars: HashMap<&String, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
 		for (_, var_map) in self.scopes.iter().rev() {
 			for (name, var) in var_map.iter().filter(|(_, v)| v.is_exported()) {
-
 				if let hash_map::Entry::Vacant(entry) = visible_vars.entry(name) {
 					entry.insert(var);
 				}
@@ -167,23 +126,14 @@ impl ShellEnvironment {
 		visible_vars.into_iter()
 	}
 
-
 	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
 		self.iter_using_policy(EnvironmentLookup::Anywhere)
 	}
-
-
-
-
-
-
 
 	pub fn iter_using_policy(
 		&self,
 		lookup_policy: EnvironmentLookup,
 	) -> impl Iterator<Item = (&String, &ShellVariable)> {
-
-
 		let mut visible_vars: HashMap<&String, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
@@ -213,7 +163,6 @@ impl ShellEnvironment {
 			}
 
 			for (name, var) in var_map.iter() {
-
 				if let hash_map::Entry::Vacant(entry) = visible_vars.entry(name) {
 					entry.insert(var);
 				}
@@ -229,14 +178,7 @@ impl ShellEnvironment {
 		visible_vars.into_iter()
 	}
 
-
-
-
-
-
-
 	pub fn get<S: AsRef<str>>(&self, name: S) -> Option<(EnvironmentScope, &ShellVariable)> {
-
 		for (scope_type, map) in self.scopes.iter().rev() {
 			if let Some(var) = map.get(name.as_ref()) {
 				return Some((*scope_type, var));
@@ -246,17 +188,10 @@ impl ShellEnvironment {
 		None
 	}
 
-
-
-
-
-
-
 	pub fn get_mut<S: AsRef<str>>(
 		&mut self,
 		name: S,
 	) -> Option<(EnvironmentScope, &mut ShellVariable)> {
-
 		for (scope_type, map) in self.scopes.iter_mut().rev() {
 			if let Some(var) = map.get_mut(name.as_ref()) {
 				return Some((*scope_type, var));
@@ -265,13 +200,6 @@ impl ShellEnvironment {
 
 		None
 	}
-
-
-
-
-
-
-
 
 	pub fn get_str<S: AsRef<str>, SE: extensions::ShellExtensions>(
 		&self,
@@ -283,11 +211,6 @@ impl ShellEnvironment {
 			.map(|(_, v)| v.value().to_cow_str(shell))
 	}
 
-
-
-
-
-
 	pub fn is_set<S: AsRef<str>>(&self, name: S) -> bool {
 		if let Some((_, var)) = self.get(name) {
 			!matches!(var.value(), ShellValue::Unset(_))
@@ -295,16 +218,6 @@ impl ShellEnvironment {
 			false
 		}
 	}
-
-
-
-
-
-
-
-
-
-
 
 	pub fn unset(&mut self, name: &str) -> Result<Option<ShellVariable>, error::Error> {
 		let mut local_count = 0;
@@ -316,12 +229,9 @@ impl ShellEnvironment {
 			let unset_result = Self::try_unset_in_map(map, name)?;
 
 			if unset_result.is_some() {
-
-
 				if matches!(scope_type, EnvironmentScope::Local) && local_count == 1 {
 					map.set(name, ShellVariable::new(ShellValue::Unset(ShellValueUnsetType::Untyped)));
 				} else if self.entry_count > 0 {
-
 					self.entry_count -= 1;
 				}
 
@@ -331,14 +241,6 @@ impl ShellEnvironment {
 
 		Ok(None)
 	}
-
-
-
-
-
-
-
-
 
 	pub fn unset_index(&mut self, name: &str, index: &str) -> Result<bool, error::Error> {
 		if let Some((_, var)) = self.get_mut(name) {
@@ -358,13 +260,6 @@ impl ShellEnvironment {
 			None => Ok(None),
 		}
 	}
-
-
-
-
-
-
-
 
 	pub fn get_using_policy<N: AsRef<str>>(
 		&self,
@@ -410,13 +305,6 @@ impl ShellEnvironment {
 		None
 	}
 
-
-
-
-
-
-
-
 	pub fn get_mut_using_policy<N: AsRef<str>>(
 		&mut self,
 		name: N,
@@ -461,18 +349,6 @@ impl ShellEnvironment {
 		None
 	}
 
-
-
-
-
-
-
-
-
-
-
-
-
 	pub fn update_or_add<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -501,19 +377,6 @@ impl ShellEnvironment {
 			self.add(name, var, scope_if_creating)
 		}
 	}
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 	pub fn update_or_add_array_element<N: Into<String>>(
 		&mut self,
@@ -544,13 +407,6 @@ impl ShellEnvironment {
 		}
 	}
 
-
-
-
-
-
-
-
 	pub fn add<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -575,12 +431,6 @@ impl ShellEnvironment {
 		Err(error::ErrorKind::MissingScopeForNewVariable.into())
 	}
 
-
-
-
-
-
-
 	pub fn set_global<N: Into<String>>(
 		&mut self,
 		name: N,
@@ -590,7 +440,6 @@ impl ShellEnvironment {
 	}
 }
 
-
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellVariableMap {
@@ -598,60 +447,26 @@ pub struct ShellVariableMap {
 }
 
 impl ShellVariableMap {
-
-
-
-
-
 	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
 		self.variables.iter()
 	}
-
-
-
-
-
-
 
 	pub fn get(&self, name: &str) -> Option<&ShellVariable> {
 		self.variables.get(name)
 	}
 
-
-
-
-
-
-
 	pub fn get_mut(&mut self, name: &str) -> Option<&mut ShellVariable> {
 		self.variables.get_mut(name)
 	}
-
-
-
-
-
-
-
-
-
-
 
 	pub fn unset(&mut self, name: &str) -> Option<ShellVariable> {
 		self.variables.remove(name)
 	}
 
-
-
-
-
-
-
 	pub fn set<N: Into<String>>(&mut self, name: N, var: ShellVariable) -> Option<ShellVariable> {
 		self.variables.insert(name.into(), var)
 	}
 }
-
 
 pub fn valid_variable_name(s: &str) -> bool {
 	let mut cs = s.chars();
@@ -662,5 +477,3 @@ pub fn valid_variable_name(s: &str) -> bool {
 		Some(_) | None => false,
 	}
 }
-
-

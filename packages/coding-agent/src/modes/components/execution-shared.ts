@@ -4,7 +4,12 @@ import { type Component, Container, type TUI } from "@oh-my-pi/pi-tui/tui";
 import { pluralize } from "@oh-my-pi/pi-utils";
 import { getSymbolTheme, type Theme, theme } from "../../modes/theme/theme";
 import { type ExecutionMetadata, isHardFailureExit } from "../../session/execution-metadata";
-import { formatTruncationMetaNotice, type TruncationMeta } from "../../tools/output-meta";
+import {
+	formatMinimizedMeta,
+	formatTruncationMetaNotice,
+	type MinimizedMeta,
+	type TruncationMeta,
+} from "../../tools/output-meta";
 import { formatExpandHint } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
 import { truncateToVisualLines } from "./visual-truncate";
@@ -53,6 +58,7 @@ export function buildStatusFooter(opts: {
 	status: ExecutionStatus;
 	exitCode: number | undefined;
 	truncation: TruncationMeta | undefined;
+	minimized?: MinimizedMeta;
 	hiddenLineCount: number;
 
 	suppressHiddenCount?: boolean;
@@ -76,6 +82,8 @@ export function buildStatusFooter(opts: {
 	if (opts.truncation) {
 		parts.push(theme.fg("warning", formatTruncationMetaNotice(opts.truncation)));
 	}
+
+	if (opts.minimized) parts.push(theme.fg("dim", `Minimized: ${formatMinimizedMeta(opts.minimized)}`));
 
 	if (parts.length === 0) return undefined;
 	return new Text(`\n${parts.join("\n")}`, 1, 0);

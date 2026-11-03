@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Changed
+
+- Tool cards retain their normal layout instead of squeezing into one-line rows when the transcript fills the terminal.
+- Tool cards paint only settled results: a running tool's partial output no longer appears as a collapsed results preview, and focusing a subagent no longer replays it.
+- A backgrounded bash call keeps its own shell lane but runs `python`/`node`/`bun` cells in the session's kernel, so it no longer starts a fresh kernel per job.
+- Dependencies upgraded to their latest releases: Babel 8, OpenTelemetry 3.0 metrics/logs, Biome 2.5, Puppeteer 25.14 (with the main-world patch ported forward), Anthropic SDK 0.135, MCP SDK 1.32, and TypeBox 1.4. The Node.js kernel baseline is now Node.js 24, and the repository pins Bun 1.4.4 (Node 26.12.1 in `.node-version`).
+- Prefer Haiku 5.5 for the smol role and GPT-6 Luna for hosted Codex search while retaining supported fallbacks.
+- Keep Google append-only and native Codex prompt caches warm; share sibling cache keys only after resolving a verified child route.
+- Keep worker reports inline up to the delivery limit and show recoverable command minimizer reductions.
+- Read large sources at line boundaries and use compact directory metadata without truncating complete artifacts.
+- Improve composer/model/session search responsiveness and release render-only transcript caches.
+- Load large bundled JSON from compressed assets and reuse isolated development startup and verified shell setup.
+
+
+### Fixed
+
+- Cancelling a subagent's memory compaction no longer crashes the main session and the rest of the agent fleet.
+- Preserve settled transcript rows through streamed Markdown, tables, math, links, image conversion and transcript rebuild failures.
+- Preserve editor drafts, pasted attachments, focused dialog input, side-question images and option notes alongside custom Ask input.
+- Keep complete expanded tool output, safe local links, sanitized extension status and background-result cards readable within their columns.
+- Recover browser worker/renderer crashes promptly without replaying possibly executed input; preserve the same page when safe.
+- Keep browser ownership session-scoped, borrowed tabs open and fresh owned tabs in the background; clean up cancelled opens safely.
+- Make browser clicks, fills, dropdowns, screenshots and navigation cancellation-aware, including clipped, shadow and iframe controls.
+- Invalidate stale browser refs, preserve extracted layout, upload file bytes to connected browsers and avoid disturbing browser-owned listeners.
+- Keep browser sign-in compatible with Google SSO and mask passwords in ARIA snapshots without changing page state.
+- Preserve URL bytes, charsets, selected ranges, empty responses and complete artifacts through page refetches and transport retries.
+- Read selected PDF archive members, lazy Office/EPUB members and SQLite generated columns while preserving screenshots, row identities and long spreadsheet identifiers.
+- Preserve skill provenance, advertised MCP resources, in-memory artifacts and workers whose transcripts are not written yet.
+- Keep shell invocation identities, cancellation outcomes, deferred receipts and session-owned state-loss notices accurate across persistent-shell transitions.
+- Keep Python/JavaScript cells reliable across broken pipes, cancellation and concurrent teardown; preserve exact output formatting and original syntax-error locations.
+- Bootstrap missing Python pip safely and honor canonical tool availability, output queries and reasoning selectors across kernel fallbacks.
+- Preserve queued prompts, aborted receipts, background deliveries and prompt-cache prefixes through retries, compaction, branches and cold revival.
+- Bound account recovery, continue rejected Codex steering without replaying visible text and retain transcript-pinned child accounts.
+- Harden saved resets against cross-process double-spending and revalidate accounts and grants before adoption.
+- Recover corrupt or interrupted session storage, preserve date/workspace reminders and retry waiting titles without reviving cancelled requests.
+- Keep ACP/RPC prompt ownership, protocol handles, startup dialogs and background-tool completion stable through cancellation and session replacement.
+- Honor saved model roles, explicit empty fallback chains and provider-qualified selectors; warn on stderr when headless startup falls back.
+- Keep discovery credential-scoped and token-safe, respect advertised limits and capabilities and prewarm the resolved Codex model with its service tier.
+- Preserve newer broker tokens during migration and keep dry-balance probes from persisting throwaway account affinity.
+- Keep user/project plugin discovery isolated across symlinks and worktrees; preserve safe upgrades, development links and other projects’ caches.
+- Refresh changed plugin registries and extension tools, support non-GitHub Git installs and keep plugin settings owner-only.
+- Do not replay uncertain MCP calls; propagate stdio cancellation and honor advertised OAuth resource scopes and authorization servers.
+- Keep auto-learn capture isolated while preserving the main prompt prefix, request headers and required tool schemas.
+- Keep subagent jobs, cancellation, budgets, revival restrictions and async delivery within their owning SDK root.
+- Preserve isolated-worker submodules, Git objects and parent changes; retain live mounted workspaces after failed teardown.
+- Redact complete advisor secrets before preview shortening and preserve bounded retry limits and signed-replay correctness.
+- Reuse authenticated SSH masters without closing user-owned connections or skipping socket-directory safety checks.
+- Validate desktop targets and malformed input before dispatch, preserve background focus and show bounded app-grouped window candidates.
+- Avoid incomplete document attachments on cancellation, honor profiled source-line ranges and stop cancelled installers cleanly.
+- Preserve linked skill roots and configured shell environments without leaking shared kernel ownership into logs.
+- Keep compiled extensions and compressed assets resolvable, use valid baseline-musl release targets and finish guarded startup/shutdown safely.
+
+
+### Added
+
+- Use DeepSeek web search and target X posts or accounts through xAI search.
+- Query JSON, JSONL and NDJSON with jq filters and paging while retaining query diagnostics.
+- Disable automatic context discovery with --no-context-files or extend instruction filenames with contextFiles.extra.
+- Hide and restore pending questions with configurable Alt+h without losing answers or drafts.
+- Use ACP mid-turn steering and MCP progress with explicit cancellation and automatic-compaction lifecycle notifications.
+- Use RPC tree navigation, labels, queue restoration, secret extension inputs and manual-compaction events.
+- Configure per-worker request budgets, advisor targets and continuation severity; observe live worker request, cost, context and activity progress.
+- Configure assistant prose color, collapsed advisor-note limits, image-count budgets, cl100k tokenization and protolens notice visibility.
+- Wait for newly opened desktop windows and use chained accessibility refs and double-clicks.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Added

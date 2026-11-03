@@ -4,7 +4,8 @@ import { buildBedrockCompat } from "./compat/bedrock";
 import { buildDevinCompat } from "./compat/devin";
 import { buildOpenAICompat, buildOpenAIResponsesCompat, buildOpenRouterCompat } from "./compat/openai";
 import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
-import { isClaudeModelId } from "./identity/family";
+import { hasOpus47ApiRestrictions, isClaudeModelId, isOpenAISamplingRestrictedModelId } from "./identity/family";
+import { applyModelPolicy } from "./model-policy";
 import { resolveModelThinking, upgradeNeutralReasoning } from "./model-thinking";
 import { resolveModelTokenizer } from "./model-tokenizer";
 import type { Api, CompatOf, Model, ModelSpec, ThinkingConfig } from "./types";
@@ -50,7 +51,7 @@ function supportsOpenAIGAComputerUse(spec: ModelSpec<Api>, explicitSupport: bool
 }
 
 export function buildModel<TApi extends Api>(sourceSpec: ModelSpec<TApi>): Model<TApi> {
-	const spec = upgradeNeutralReasoning(sourceSpec);
+	const spec = upgradeNeutralReasoning(applyModelPolicy(sourceSpec));
 	const builtCompat = buildCompat(spec) as CompatOf<TApi>;
 	const compatKey = JSON.stringify(builtCompat);
 	const internedCompat = compatInternCache.get(compatKey);
@@ -113,4 +114,34 @@ export function buildCompat(spec: ModelSpec<Api>): CompatOf<Api> {
 		default:
 			return undefined;
 	}
+}
+
+/** Sampling restrictions follow a model across providers, not just its native API. */
+export function modelAcceptsSamplingParams(model: Pick<Model<Api>, "id" | "requestModelId" | "compat">): boolean {
+	const compat = model.compat as { supportsSamplingParams?: boolean } | undefined;
+	if (compat?.supportsSamplingParams === false) return false;
+	const id = model.requestModelId ?? model.id;
+	return (
+		!isOpenAISamplingRestrictedModelId(id) &&
+		!hasOpus47ApiRestrictions(id) &&
+		!/^minimax-m3\.1-flash$/i.test(bareModelId(id))
+	);
+}
+
+/** Native Messages limits also apply when Antigravity wraps Claude. */
+export function modelImageLimits(model: Pick<Model<Api>, "id" | "requestModelId" | "provider" | "api" | "compat">): {
+	maxImageDimension?: number;
+	maxImagePayloadBytes?: number;
+} {
+	if (model.provider === "google-antigravity" && isClaudeModelId(model.requestModelId ?? model.id)) {
+		return { maxImageDimension: 8000, maxImagePayloadBytes: 5 * 1024 * 1024 };
+	}
+	if (model.api === "anthropic-messages") {
+		const compat = model.compat as { maxImageDimension?: number; maxImagePayloadBytes?: number } | undefined;
+		return {
+			maxImageDimension: compat?.maxImageDimension ?? 8000,
+			maxImagePayloadBytes: compat?.maxImagePayloadBytes ?? 10 * 1024 * 1024,
+		};
+	}
+	return {};
 }

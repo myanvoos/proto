@@ -243,3 +243,27 @@ test("Antigravity generation still fails over to the next endpoint after model d
 	expect(result.details?.provider).toBe("antigravity");
 	expect(result.details?.model).toBe("gemini-3.1-flash-image");
 });
+
+test("image inputs reject unbounded special files before reading bytes or sending provider requests", async () => {
+	let fetched = false;
+	const fetchMock = (async () => {
+		fetched = true;
+		throw new Error("must not fetch");
+	}) as unknown as typeof fetch;
+	const model = {
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		id: "gpt-5.5",
+		name: "GPT",
+		baseUrl: "https://example.invalid/backend-api",
+	} as Model;
+	await expect(
+		imageGenTool.execute(
+			"special-file",
+			{ subject: "edit", input: [{ path: "/dev/zero" }] },
+			undefined,
+			codexContext(model, fetchMock, provider => (provider === "openai-codex" ? "key" : undefined)),
+		),
+	).rejects.toThrow("not a regular file");
+	expect(fetched).toBe(false);
+});

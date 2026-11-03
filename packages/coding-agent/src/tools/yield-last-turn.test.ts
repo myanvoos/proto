@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { initThemeSync, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
-import { resetYieldTurnState, resolveYieldReportText, YieldTool } from "./yield";
+import { resetYieldTurnState, resolveYieldReportText, YieldTool, yieldToolRenderer } from "./yield";
 
 function session(overrides: Partial<ToolSession> = {}): ToolSession {
 	return { ...overrides } as unknown as ToolSession;
@@ -109,4 +110,22 @@ describe("schema retries", () => {
 			/does not match schema/,
 		);
 	});
+});
+
+it("yield cards display submitted payloads instead of only the submission receipt", () => {
+	initThemeSync();
+	const rendered = yieldToolRenderer
+		.renderResult(
+			{
+				content: [{ type: "text", text: "Result submitted." }],
+				details: { data: { finding: "race resolved" }, status: "success" },
+			},
+			{ expanded: true, isPartial: false },
+			theme,
+		)
+		.render(80)
+		.map(line => Bun.stripANSI(line))
+		.join("\n");
+	expect(rendered).toContain("race resolved");
+	expect(rendered).not.toContain("Result submitted.");
 });

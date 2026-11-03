@@ -109,6 +109,8 @@ function supportsAnthropicServerCompaction(parsed: AnthropicModel | null): boole
 		case "fable":
 		case "mythos":
 			return semverGte(parsed.version, "5");
+		case "haiku":
+			return semverGte(parsed.version, "5.5");
 		default:
 			return false;
 	}
@@ -128,8 +130,13 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
 	const parsed = parseAnthropicModel(bareModelId(spec.id));
 	const controlProvider = ANTHROPIC_CONTROL_PROVIDERS[spec.provider] === true;
-	const midConversationControls = controlProvider && claudeRevisionAtLeast(parsed, "4.8", "5");
+	const haiku55 = parsed?.kind === "haiku" && semverGte(parsed.version, "5.5") && !semverGte(parsed.version, "6");
+	const opus55 = parsed?.kind === "opus" && semverGte(parsed.version, "5.5") && !semverGte(parsed.version, "6");
+	const midConversationControls = controlProvider && (claudeRevisionAtLeast(parsed, "4.8", "5") || haiku55);
 	const compat: ResolvedAnthropicCompat = {
+		disabledThinking: haiku55 ? "disabled" : undefined,
+		maxImageDimension: 8000,
+		maxImagePayloadBytes: 10 * 1024 * 1024,
 		officialEndpoint: official,
 		signingEndpoint,
 		supportsContextManagement: CONTEXT_MANAGEMENT_UNSUPPORTED_PROVIDERS[spec.provider] !== true,
@@ -140,15 +147,18 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 		allowAnthropicHeaderOverrides: false,
 		supportsEagerToolInputStreaming: official,
 
-		supportsLongCacheRetention: official,
+		supportsLongCacheRetention: official || isVertexAnthropicRoute(baseUrl),
 
 		supportsMidConversationSystem:
 			midConversationControls ||
 			(official && parsed?.kind !== "sonnet" && supportsMidConversationSystemMessages(spec.id)),
 		supportsTurnScopedSystem: midConversationControls,
 		supportsMidConversationToolChanges: midConversationControls,
-		supportsPerMessageEffort: controlProvider && claudeRevisionAtLeast(parsed, "5", "5.1"),
-		supportsThinkingBindingControls: controlProvider && parsed?.kind === "fable" && semverGte(parsed.version, "5.1"),
+		supportsPerMessageEffort: controlProvider && (claudeRevisionAtLeast(parsed, "5", "5.1") || haiku55),
+		supportsThinkingBindingControls:
+			controlProvider &&
+			spec.provider !== "google-vertex" &&
+			(haiku55 || opus55 || (parsed?.kind === "fable" && semverGte(parsed.version, "5.1"))),
 		supportsForcedToolChoice:
 			!requiresThinkingEnabled &&
 			!isAnthropicFableOrMythosModel(spec.id) &&
@@ -158,6 +168,7 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 
 		requiresToolResultId: isZai,
 		requiresThinkingEnabled,
+		requiresThinkingPresence: false,
 
 		replayUnsignedThinking: !signingEndpoint && (Boolean(spec.reasoning) || modelMatchesHost(spec, "deepseekFamily")),
 		escapeBuiltinToolNames: modelMatchesHost(spec, "umans"),

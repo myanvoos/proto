@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as os from "node:os";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { Settings } from "../config/settings";
 import { flushGrievances } from "./report-tool-issue";
@@ -105,4 +106,22 @@ describe("flushGrievances", () => {
 		expect(prose.startsWith(sent[0]!.tool)).toBe(true);
 		expect(sent[0]!.report).toBe(`${prose}\ndetails`);
 	});
+});
+
+it("redacts home paths and identity forms from older queued reports without hiding ordinary prose", async () => {
+	const home = os.homedir();
+	const user = os.userInfo().username;
+	insert("read", `${home.toUpperCase()}/secret ${user}@host com.${user}.app ordinary-${user}`);
+	let sent = "";
+	const { fetch } = collector(entries => {
+		sent = entries[0]!.report;
+		return new Response("", { status: 200 });
+	});
+	await flushGrievances(db, settings, { fetch, bypassConsent: true });
+	expect(sent).toContain("~/secret");
+	if (user !== "root") {
+		expect(sent).toContain("<user>@host");
+		expect(sent).toContain("com.<user>.app");
+	}
+	expect(sent).toContain(`ordinary-${user}`);
 });

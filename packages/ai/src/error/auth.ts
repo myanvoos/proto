@@ -11,6 +11,20 @@ export class MissingApiKeyError extends Error {
 	}
 }
 
+export class OAuthRefreshUnavailableError extends Error {
+	readonly provider: string;
+
+	constructor(provider: string, cause: unknown) {
+		super(
+			`OAuth token refresh failed for provider ${provider}: ${cause instanceof Error ? cause.message : String(cause)}`,
+			{ cause },
+		);
+		this.name = "OAuthRefreshUnavailableError";
+		this.provider = provider;
+		attach(this, create(Flag.Transient));
+	}
+}
+
 export class OnPromptRequiredError extends Error {
 	constructor(providerLabel: string) {
 		super(`${providerLabel} login requires onPrompt callback`);

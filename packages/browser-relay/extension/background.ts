@@ -1,10 +1,26 @@
 
-import type { ExtToRelayMessage, RelayToExtMessage, TabSnapshot } from "../../coding-agent/src/tools/browser/relay/protocol";
+import { DISCARDED_TABS_PROTOCOL_VERSION, EXTENSION_RELOAD_PROTOCOL_VERSION, type ExtToRelayMessage, type RelayToExtMessage, type TabSnapshot } from "../../coding-agent/src/tools/browser/relay/protocol";
+import { ownedDebuggerTabs } from "./debugger-ownership";
+
+declare const PROTO_INSTALL_VERSION: string | undefined;
+const relayDetaches = new Set<number>();
 
 const DEFAULT_PORT = 9224;
 const PING_INTERVAL_MS = 20_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
+
+let browserSession: Promise<string> | null = null;
+function ensureBrowserSession(): Promise<string> {
+	browserSession ??= (async () => {
+		const stored = await chrome.storage.session.get({ relayBrowserSession: "" });
+		if (typeof stored.relayBrowserSession === "string" && stored.relayBrowserSession) return stored.relayBrowserSession;
+		const created = crypto.randomUUID();
+		await chrome.storage.session.set({ relayBrowserSession: created });
+		return created;
+	})();
+	return browserSession;
+}
 
 let ws: WebSocket | null = null;
 let reconnectDelay = RECONNECT_MIN_MS;
@@ -31,6 +47,7 @@ function snapshot(tab: ChromeTab): TabSnapshot | null {
 		url: tab.url ?? tab.pendingUrl ?? "",
 		title: tab.title ?? "",
 		active: tab.active,
+		discarded: tab.discarded === true,
 		windowId: tab.windowId,
 		pinned: tab.pinned,
 		groupId: tab.groupId,
@@ -123,27 +140,33 @@ async function buildHello(): Promise<ExtToRelayMessage> {
 		const snap = snapshot(tab);
 		if (snap) snapshots.push(snap);
 	}
-	const attachedTabIds: number[] = [];
-	for (const target of targets) {
-		if (target.attached && target.tabId !== undefined) attachedTabIds.push(target.tabId);
-	}
+	const attachedTabIds = await ownedDebuggerTabs(targets, tabId => chrome.debugger.sendCommand({ tabId }, "Target.getTargetInfo"));
 	const versionMatch = /Chrome\/[\d.]+/.exec(navigator.userAgent);
 	return {
 		t: "hello",
+		browserSession: await ensureBrowserSession(),
 		userAgent: navigator.userAgent,
 		browserVersion: versionMatch?.[0] ?? "Chrome/unknown",
+		discardedTabsProtocol: DISCARDED_TABS_PROTOCOL_VERSION,
+		protoVersion: typeof PROTO_INSTALL_VERSION === "string" ? PROTO_INSTALL_VERSION : undefined,
+		reloadProtocol: EXTENSION_RELOAD_PROTOCOL_VERSION,
 		tabs: snapshots,
 		attachedTabIds,
 	};
 }
 
-async function runRpc(msg: Extract<RelayToExtMessage, { t: "rpc" }>): Promise<unknown> {
+async function runRpc(msg: Extract<RelayToExtMessage, { t: "rpc" }>, origin: WebSocket): Promise<unknown> {
 	switch (msg.op) {
 		case "attach":
 			await chrome.debugger.attach({ tabId: msg.tabId }, "1.3");
 			return {};
 		case "detach":
-			await chrome.debugger.detach({ tabId: msg.tabId });
+			relayDetaches.add(msg.tabId);
+			try {
+				await chrome.debugger.detach({ tabId: msg.tabId });
+			} finally {
+				relayDetaches.delete(msg.tabId);
+			}
 			return {};
 		case "send":
 			return await chrome.debugger.sendCommand(
@@ -152,13 +175,14 @@ async function runRpc(msg: Extract<RelayToExtMessage, { t: "rpc" }>): Promise<un
 				msg.params,
 			);
 		case "createTab": {
-			const tab = await chrome.tabs.create({ url: msg.url });
+			const tab = await chrome.tabs.create({ url: msg.url, active: msg.active ?? true });
 			const snap = snapshot(tab);
 			if (!snap) throw new Error("created tab has no id");
+			if (origin !== ws || origin.readyState !== WebSocket.OPEN) void removeTab(snap.tabId).catch(() => {});
 			return { tab: snap };
 		}
 		case "removeTab":
-			await chrome.tabs.remove(msg.tabId);
+			await removeTab(msg.tabId);
 			return {};
 		case "activateTab": {
 			const tab = await chrome.tabs.get(msg.tabId);
@@ -174,19 +198,40 @@ async function runRpc(msg: Extract<RelayToExtMessage, { t: "rpc" }>): Promise<un
 	}
 }
 
-function handleRelayMessage(raw: string): void {
+async function removeTab(tabId: number): Promise<void> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			await chrome.tabs.remove(tabId);
+			return;
+		} catch (error) {
+			if (/No tab with id/.test(String(error))) return;
+			if (attempt >= 3) throw error;
+			const pause = Promise.withResolvers<void>();
+			setTimeout(pause.resolve, 500);
+			await pause.promise;
+		}
+	}
+}
+
+function handleRelayMessage(socket: WebSocket, raw: string): void {
 	let msg: RelayToExtMessage;
 	try {
 		msg = JSON.parse(raw) as RelayToExtMessage;
 	} catch {
 		return;
 	}
+	if (socket !== ws) return;
 	if (msg.t === "pong") return;
-	void runRpc(msg)
-		.then(result => post({ t: "rpcResult", id: msg.id, ok: true, result }))
-		.catch((err: unknown) => {
-			post({ t: "rpcResult", id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) });
-		});
+	if (msg.t === "reload") {
+		chrome.runtime.reload();
+		return;
+	}
+	const answer = (reply: ExtToRelayMessage): void => {
+		if (socket === ws && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(reply));
+	};
+	void runRpc(msg, socket)
+		.then(result => answer({ t: "rpcResult", id: msg.id, ok: true, result }))
+		.catch((err: unknown) => answer({ t: "rpcResult", id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) }));
 }
 
 function scheduleReconnect(): void {
@@ -204,12 +249,14 @@ async function connect(): Promise<void> {
 	socket.onopen = () => {
 		reconnectDelay = RECONNECT_MIN_MS;
 		void setBadge(true);
-		void buildHello().then(hello => post(hello));
+		void buildHello().then(hello => {
+			if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(hello));
+		}).catch(() => socket.close());
 		clearInterval(pingTimer ?? undefined);
 		pingTimer = setInterval(() => post({ t: "ping" }), PING_INTERVAL_MS);
 	};
 	socket.onmessage = event => {
-		if (typeof event.data === "string") handleRelayMessage(event.data);
+		if (typeof event.data === "string") handleRelayMessage(socket, event.data);
 	};
 	socket.onclose = () => {
 		if (ws !== socket) return;
@@ -236,7 +283,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 
 chrome.debugger.onDetach.addListener((source, reason) => {
 	if (source.tabId === undefined) return;
-	post({ t: "detached", tabId: source.tabId, reason });
+	post({ t: "detached", tabId: source.tabId, reason, relayInitiated: relayDetaches.delete(source.tabId) || undefined });
 });
 
 chrome.tabs.onCreated.addListener(tab => {
@@ -247,6 +294,13 @@ chrome.tabs.onCreated.addListener(tab => {
 chrome.tabs.onUpdated.addListener((_tabId, _changeInfo, tab) => {
 	const snap = snapshot(tab);
 	if (snap) post({ t: "tabUpdated", tab: snap });
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+	void chrome.tabs.get(tabId).then(tab => {
+		const snap = snapshot(tab);
+		if (snap) post({ t: "tabUpdated", tab: snap });
+	}).catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {

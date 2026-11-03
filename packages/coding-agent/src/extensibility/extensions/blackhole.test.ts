@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import {
@@ -26,8 +27,9 @@ test("memory candidates use existing role resolution and preserve an active role
 test("compact options preserve extension-provided instructions", async () => {
 	let receivedInstructions: string | undefined;
 	const session = {
-		async compact(instructions?: string): Promise<void> {
+		async compact(instructions?: string): Promise<CompactionResult> {
 			receivedInstructions = instructions;
+			return { summary: "Retained context", firstKeptEntryId: "", tokensBefore: 1_000 };
 		},
 	};
 
@@ -41,8 +43,9 @@ test("an advisory compaction request the session declines is cancelled, not run"
 	const errors: string[] = [];
 	const session = {
 		advisoryCompactionAllowed: () => false,
-		async compact(): Promise<void> {
+		async compact(): Promise<CompactionResult> {
 			compactions++;
+			return { summary: "Retained context", firstKeptEntryId: "", tokensBefore: 1_000 };
 		},
 	};
 
@@ -57,8 +60,9 @@ test("a user-invoked compaction request runs even when the session would decline
 	let compactions = 0;
 	const session = {
 		advisoryCompactionAllowed: () => false,
-		async compact(): Promise<void> {
+		async compact(): Promise<CompactionResult> {
 			compactions++;
+			return { summary: "Retained context", firstKeptEntryId: "", tokensBefore: 1_000 };
 		},
 	};
 
@@ -102,11 +106,13 @@ const extension = created.extensionsResult.extensions.find(item => item.path ===
 if (!extension) throw new Error("built-in memory extension was not loaded");
 const handler = extension.handlers.get("session_before_compact")?.[0];
 if (!handler) throw new Error("memory compaction hook was not registered");
-const message = (id, role, content) => ({ id, type: "message", message: { role, content } });
+const message = (id, role, content, extra = {}) => ({ id, type: "message", message: { role, content, ...extra } });
 const branchEntries = [
   message("m1", "user", "Fix the authentication bug"),
   message("m2", "assistant", "I will update src/auth.ts"),
-  message("m3", "toolResult", "updated file"),
+  message("m3", "toolResult", [{ type: "text", text: "updated file" }], {
+    toolName: "bash", toolCallId: "call-1", isError: false,
+  }),
   message("m4", "assistant", "Tests pass"),
 ];
 const notices = [];

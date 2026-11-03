@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
-import { analyzeAuthError, discoverOAuthEndpoints, fetchResourceMetadataScopes } from "./oauth-discovery";
+import {
+	analyzeAuthError,
+	discoverOAuthEndpoints,
+	fetchResourceMetadataScopes,
+	OAuthIssuerMismatchError,
+} from "./oauth-discovery";
 import { MCPOAuthNetworkTimeoutError } from "./oauth-flow";
 
 afterEach(() => vi.useRealTimers());
@@ -177,5 +182,102 @@ describe("OAuth discovery for path-scoped resources", () => {
 		expect(challenge.resourceMetadataUrl).toBe(
 			"https://mcp.example.test/.well-known/oauth-protected-resource/tenant/mcp",
 		);
+	});
+});
+
+describe("OAuth resource authority", () => {
+	test("ignores an unlisted auth-server hint and its supported-scope catalogue", async () => {
+		const calls: string[] = [];
+		const result = await discoverOAuthEndpoints(
+			"https://mcp.example.test/rpc",
+			"https://unlisted.example.test",
+			"https://mcp.example.test/meta",
+			{
+				fetch: async input => {
+					const url = inputUrl(input);
+					calls.push(url);
+					if (url.endsWith("/meta"))
+						return Response.json({
+							authorization_servers: ["https://auth.example.test"],
+							scopes_supported: ["resource:read"],
+						});
+					if (url === "https://auth.example.test/.well-known/oauth-authorization-server")
+						return Response.json({
+							issuer: "https://auth.example.test",
+							authorization_endpoint: "https://auth.example.test/authorize",
+							token_endpoint: "https://auth.example.test/token",
+							scopes_supported: ["admin", "all"],
+						});
+					return new Response(null, { status: 404 });
+				},
+			},
+		);
+		expect(result?.scopes).toBe("resource:read");
+		expect(calls.some(url => url.includes("unlisted"))).toBe(false);
+	});
+
+	test("does not request authorization-server catalogue scopes without resource requirements", async () => {
+		const result = await discoverOAuthEndpoints(
+			"https://mcp.example.test/rpc",
+			"https://auth.example.test",
+			undefined,
+			{
+				fetch: async () =>
+					Response.json({
+						issuer: "https://auth.example.test",
+						authorization_endpoint: "https://auth.example.test/authorize",
+						token_endpoint: "https://auth.example.test/token",
+						scopes_supported: ["admin"],
+					}),
+			},
+		);
+		expect(result?.authorizationUrl).toBe("https://auth.example.test/authorize");
+		expect(result?.scopes).toBeUndefined();
+	});
+
+	test("reports advertised issuer mismatch without falling back to an unrelated origin issuer", async () => {
+		const calls: string[] = [];
+		const result = discoverOAuthEndpoints(
+			"https://mcp.example.test/rpc",
+			undefined,
+			"https://mcp.example.test/meta",
+			{
+				fetch: async input => {
+					const url = inputUrl(input);
+					calls.push(url);
+					if (url.endsWith("/meta"))
+						return Response.json({ authorization_servers: ["https://auth.example.test/tenant"] });
+					if (url.includes("oauth-authorization-server") || url.includes("openid-configuration"))
+						return Response.json({
+							issuer: "https://auth.example.test/other",
+							authorization_endpoint: "https://auth.example.test/authorize",
+							token_endpoint: "https://auth.example.test/token",
+						});
+					return new Response(null, { status: 404 });
+				},
+			},
+		);
+		await expect(result).rejects.toBeInstanceOf(OAuthIssuerMismatchError);
+		expect(calls.filter(url => url.startsWith("https://mcp.example.test"))).toEqual([
+			"https://mcp.example.test/meta",
+		]);
+	});
+
+	test("revisits a self-advertised resource as an authorization server", async () => {
+		const result = await discoverOAuthEndpoints("https://mcp.example.test/rpc", undefined, undefined, {
+			fetch: async input => {
+				const url = inputUrl(input);
+				if (url.includes("oauth-protected-resource"))
+					return Response.json({ authorization_servers: ["https://mcp.example.test/rpc"] });
+				if (url.includes("oauth-authorization-server"))
+					return Response.json({
+						issuer: "https://mcp.example.test/rpc",
+						authorization_endpoint: "https://mcp.example.test/authorize",
+						token_endpoint: "https://mcp.example.test/token",
+					});
+				return new Response(null, { status: 404 });
+			},
+		});
+		expect(result?.tokenUrl).toBe("https://mcp.example.test/token");
 	});
 });

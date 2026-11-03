@@ -1,5 +1,3 @@
-
-
 use std::io::Write;
 
 use crate::{
@@ -8,34 +6,17 @@ use crate::{
 };
 
 impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
-
 	pub const fn funcs(&self) -> &functions::FunctionEnv {
 		&self.funcs
 	}
-
-
 
 	pub const fn funcs_mut(&mut self) -> &mut functions::FunctionEnv {
 		&mut self.funcs
 	}
 
-
-
-
-
-
-
 	pub fn undefine_func(&mut self, name: &str) -> bool {
 		self.funcs.remove(name).is_some()
 	}
-
-
-
-
-
-
-
-
 
 	pub fn define_func(
 		&mut self,
@@ -47,22 +28,9 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		self.funcs.update(name.into(), reg);
 	}
 
-
-
-
-
-
-
 	pub fn func_mut(&mut self, name: &str) -> Option<&mut functions::Registration> {
 		self.funcs.get_mut(name)
 	}
-
-
-
-
-
-
-
 
 	pub fn define_func_from_str(
 		&mut self,
@@ -83,14 +51,6 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 
 		Ok(())
 	}
-
-
-
-
-
-
-
-
 
 	pub async fn invoke_function<N: AsRef<str>, I: IntoIterator<Item = A>, A: AsRef<str>>(
 		&mut self,
@@ -128,7 +88,6 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 					jobs::JobState::Stopped,
 				));
 				let formatted = job.to_string();
-
 
 				writeln!(params.stderr(self), "\r{formatted}")?;
 

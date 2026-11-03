@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { writeArchive } from "@oh-my-pi/pi-utils/ar";
+import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { DEFAULT_MAX_BYTES } from "../session/streaming-output";
 import type { ToolSession } from ".";
 import { formatOutputNotice, wrapToolWithMetaNotice } from "./output-meta";
@@ -79,7 +81,9 @@ for (const source of ["buffered", "bridge"] as const) {
 			for (const selector of [":2", "", ":raw", ":2:raw"]) {
 				const result = await read.execute(`empty-${source}-${selector}`, { path: `empty.txt${selector}` });
 				const line = selector.startsWith(":2") ? 2 : 1;
-				expect(textOf(result)).toBe(`Line ${line} is beyond end of file (0 lines total). The file is empty.`);
+				expect(textOf(result)).toBe(
+					selector === ":raw" ? "" : `Line ${line} is beyond end of file (0 lines total). The file is empty.`,
+				);
 				expect(result.details?.totalLines).toBe(0);
 				expect(result.details?.displayContent).toBeUndefined();
 			}
@@ -87,8 +91,9 @@ for (const source of ["buffered", "bridge"] as const) {
 			for (const selector of [":1-1,3-3", ":1-1,3-3:raw"]) {
 				const result = await read.execute(`empty-ranges-${source}-${selector}`, { path: `empty.txt${selector}` });
 				expect(textOf(result)).toBe(
-					"[Range 1-1 is beyond end of file (0 lines total); skipped]\n" +
-						"[Range 3-3 is beyond end of file (0 lines total); skipped]",
+					selector.endsWith(":raw")
+						? ""
+						: "[Range 1-1 is beyond end of file (0 lines total); skipped]\n[Range 3-3 is beyond end of file (0 lines total); skipped]",
 				);
 			}
 		});
@@ -121,13 +126,15 @@ test("multi-range reads surface the same truncation boundary as single-range rea
 		const result = await read.execute("multi-range-truncation", { path: "large.txt:1-4000,49999-50000" });
 		const text = textOf(result);
 
+		const single = await read.execute("single-page-boundary", { path: "large.txt:1-4000" });
+		const end = single.details?.displayContent?.lineNumbers?.filter((line): line is number => line !== null).at(-1);
+		if (end === undefined) throw new Error("expected bounded first page");
 		expect(text).toContain("0001-");
-		expect(text).toContain("3000-");
-		expect(text).not.toContain("3001-");
-		expect(text).toContain("Use :3001 to continue");
-		expect(result.details?.truncation?.truncated).toBe(true);
-		expect(result.details?.meta?.truncation?.truncatedBy).toBe("lines");
-		expect(result.details?.meta?.truncation?.shownRange).toEqual({ start: 1, end: 3000 });
+		expect(text).toContain(`${String(end).padStart(5, "0")}-`);
+		expect(text).not.toContain(`${String(end + 1).padStart(5, "0")}-`);
+		expect(text).toContain(`Use :${end + 1} to continue`);
+		expect(text).toContain("49999-");
+		expect(result.details?.meta?.truncation?.shownRange).toEqual({ start: 1, end });
 
 		const controller = new AbortController();
 		controller.abort();
@@ -341,10 +348,9 @@ for (const source of ["buffered", "bridge"] as const) {
 			expect(textOf(tail)).toMatch(/\n\n\[(Showing lines 6-6 of 10|4 more lines in file)\. Use :7 to continue\]$/);
 
 			const raw = await read.execute(`code-range-raw-${source}`, { path: "sample.ts:2-3:raw" });
-			expect(textOf(raw)).toStartWith(
-				"export function dist(a: Point, b: Point): number {\n  return Math.hypot(a.x - b.x, a.y - b.y);\n\n[",
+			expect(textOf(raw)).toBe(
+				"export function dist(a: Point, b: Point): number {\n  return Math.hypot(a.x - b.x, a.y - b.y);",
 			);
-			expect(textOf(raw)).toMatch(/\n\n\[(Showing lines 2-3 of 10|7 more lines in file)\. Use :4 to continue\]$/);
 		});
 	});
 }
@@ -369,3 +375,158 @@ test("a FIFO with a SQLite name is refused instead of blocking the SQLite sniff"
 		await expect(read.execute("read-fifo-db", { path: fifoPath })).rejects.toThrow(/FIFO/);
 	});
 }, 5000);
+
+test("JSON tool reads preserve output selectors and in-memory artifact queries", async () => {
+	await withReadSession(async (read, root) => {
+		await Bun.write(path.join(root, "response"), '{"items":[1,2,3]}');
+		expect(textOf(await read.execute("json-file", { path: "response?q=.items[]:2-2:raw" }))).toBe("2");
+		const session = readSession(root);
+		session.sessionManager = {
+			getArtifactContent: (id: string) => (id === "7" ? '{"items":[1,2,3]}' : null),
+		} as unknown as NonNullable<ToolSession["sessionManager"]>;
+		const virtual = new ReadTool(session);
+		expect(textOf(await virtual.execute("json-artifact", { path: "artifact://7?q=.items[1]:raw" }))).toBe("2");
+		session.sessionManager = { getArtifactContent: () => "one\ntwo\nthree\n" } as unknown as NonNullable<
+			ToolSession["sessionManager"]
+		>;
+		expect(textOf(await virtual.execute("page-artifact", { path: "artifact://7:2-2:raw" }))).toBe("two");
+	});
+});
+
+test("tail lists merge repeated selector colons without dropping explicit ranges", async () => {
+	await withReadSession(async (read, root) => {
+		await Bun.write(path.join(root, "lines.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n");
+		const output = textOf(await read.execute("tail-list", { path: "lines.txt:1-1,:-2:raw" }));
+		expect(output).toBe("one\nfive\nsix");
+		expect(textOf(await read.execute("tail", { path: "lines.txt:-2:raw" }))).toBe("five\nsix");
+		await Bun.write(path.join(root, "lines.txt:1-1,"), "literal\nsecond\n");
+		expect(textOf(await read.execute("literal-tail", { path: "lines.txt:1-1,:-1:raw" }))).toBe("second");
+	});
+});
+
+test("column-capped pages charge shown widths and name the raw recovery cap", async () => {
+	await withReadSession(async (_read, root) => {
+		const session = readSession(root);
+		const base = session.settings.get.bind(session.settings);
+		session.settings = {
+			...session.settings,
+			get: (key: string) => (key === "tools.outputMaxColumns" ? 80 : base(key as never)),
+		} as ToolSession["settings"];
+		const read = new ReadTool(session);
+		const lines = ["head", "W".repeat(80_000), "requested", "end", "F".repeat(4 * 1024 * 1024)];
+		await Bun.write(path.join(root, "wide.txt"), `${lines.join("\n")}\n`);
+		const first = textOf(await read.execute("cut-page", { path: "wide.txt:1-4" }));
+		expect(first).toContain("requested");
+		expect(first).toContain(`${"W".repeat(80)}…`);
+		expect(first).toContain("Use :raw:2-2 to read line 2 uncut, byte-capped at 50.0KB");
+		const ranges = textOf(await read.execute("cut-ranges", { path: "wide.txt:1-2,4-4" }));
+		expect(ranges).toContain(`${"W".repeat(80)}…`);
+		expect(ranges).toContain("end");
+	});
+});
+
+test("oversized preceding block context cannot consume a selected source line", async () => {
+	await withReadSession(async (read, root) => {
+		await Bun.write(
+			path.join(root, "context.ts"),
+			`function outer(${"x".repeat(80_000)}) {\n const selected = 42;\n}\n`,
+		);
+		const result = await read.execute("context-priority", { path: "context.ts:2-2" });
+		expect(textOf(result)).toContain("const selected = 42");
+	});
+});
+
+test("archive member reads see same-size in-place rewrites and preserve open raw ranges", async () => {
+	await withReadSession(async (read, root) => {
+		const file = path.join(root, "members.zip");
+		await writeArchive(file, "zip", [["first.txt", "one\ntwo\nthree\n"]]);
+		expect(textOf(await read.execute("archive-before", { path: "members.zip:first.txt:1-1,3-:raw" }))).toBe(
+			"one\nthree\n",
+		);
+		await writeArchive(file, "zip", [["other.txt", "four\nfive\nsix\n"]]);
+		const listed = textOf(await read.execute("archive-after", { path: "members.zip" }));
+		expect(listed).toContain("other.txt");
+		expect(listed).not.toContain("first.txt");
+		expect(textOf(await read.execute("archive-tail", { path: "members.zip:other.txt:-2:raw" }))).toBe("five\nsix");
+	});
+});
+
+test("pages capped by the configured spill threshold preserve every shown row", async () => {
+	await withReadSession(async (_read, root) => {
+		const session = readSession(root);
+		const base = session.settings.get.bind(session.settings);
+		session.settings = {
+			...session.settings,
+			get: (key: string) => (key === "tools.artifactSpillThreshold" ? 1 : base(key as never)),
+		} as ToolSession["settings"];
+		const read = new ReadTool(session);
+		await Bun.write(
+			path.join(root, "rows.txt"),
+			Array.from({ length: 100 }, (_, i) => `row-${i + 1}: ${"x".repeat(100)}`).join("\n"),
+		);
+		const result = await read.execute("bounded-page", { path: "rows.txt:1-100" });
+		expect(result.details?.meta?.pagedSource).toBe(true);
+		const end = result.details?.meta?.truncation?.shownRange?.end;
+		if (end === undefined) throw new Error("expected page continuation");
+		for (let i = 1; i <= end; i++) expect(textOf(result)).toContain(`row-${i}: ${"x".repeat(100)}`);
+		expect(textOf(result)).not.toContain(`row-${end + 1}:`);
+		expect(result.details?.meta?.truncation?.nextOffset).toBe(end + 1);
+	});
+});
+
+test("local and file-backed artifact URIs retain JSON queries through path promotion", async () => {
+	await withReadSession(async (_read, root) => {
+		const session = readSession(root);
+		session.localProtocolOptions = { getArtifactsDir: () => root };
+		await Bun.write(path.join(root, "local", "data.json"), '{"answer":42}');
+		await Bun.write(path.join(root, "12.json"), '{"answer":84}');
+		const unregister = registerArtifactsDir(root);
+		try {
+			const read = new ReadTool(session);
+			expect(textOf(await read.execute("local-json", { path: "local://data.json?q=.answer:raw" }))).toBe("42");
+			expect(textOf(await read.execute("artifact-json", { path: "artifact://12?q=.answer:raw" }))).toBe("84");
+		} finally {
+			unregister();
+		}
+	});
+});
+
+test("PDF archive members are converted as documents instead of rejected as binary", async () => {
+	await withReadSession(async (read, root) => {
+		const stream = "BT /F1 12 Tf 72 720 Td (Archive member text) Tj ET";
+		const objects = [
+			"<< /Type /Catalog /Pages 2 0 R >>",
+			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+			`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+			"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		];
+		let pdf = "%PDF-1.4\n";
+		const offsets = [0];
+		for (const [i, object] of objects.entries()) {
+			offsets.push(Buffer.byteLength(pdf));
+			pdf += `${i + 1} 0 obj\n${object}\nendobj\n`;
+		}
+		const xref = Buffer.byteLength(pdf);
+		pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+			.slice(1)
+			.map(offset => `${String(offset).padStart(10, "0")} 00000 n `)
+			.join("\n")}\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+		await writeArchive(path.join(root, "documents.zip"), "zip", [["nested/report.pdf", pdf]]);
+		const result = await read.execute("pdf-member", { path: "documents.zip:nested/report.pdf" });
+		expect(textOf(result)).toContain("Archive member text");
+		expect(textOf(result)).not.toContain("binary archive entry");
+		expect(result.details?.resolvedPath).toBe(`${path.join(root, "documents.zip")}:nested/report.pdf`);
+	});
+});
+
+test("an overlong explicit path list fans out after literal-file admission fails", async () => {
+	await withReadSession(async (read, root) => {
+		await Bun.write(path.join(root, "item.txt"), "listed value");
+		const result = await read.execute("long-list", {
+			path: Array.from({ length: 40 }, () => "item.txt:1-1").join(";"),
+		});
+		expect(result.details?.displayReadTargets).toHaveLength(40);
+		expect(textOf(result)).toContain("listed value");
+	});
+});

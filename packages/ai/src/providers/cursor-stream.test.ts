@@ -7,6 +7,7 @@ import {
 	type InteractionUpdate,
 	InteractionUpdateSchema,
 	ReadArgsSchema,
+	StepCompletedUpdateSchema,
 	TextDeltaUpdateSchema,
 	TurnEndedUpdateSchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
@@ -32,9 +33,9 @@ function cursorModel(baseUrl: string): Model<"cursor-agent"> {
 	} satisfies ModelSpec<"cursor-agent">);
 }
 
-function connectFrame(payload: Uint8Array): Buffer {
+function connectFrame(payload: Uint8Array, flag = 0): Buffer {
 	const frame = Buffer.alloc(5 + payload.byteLength);
-	frame[0] = 0;
+	frame[0] = flag;
 	frame.writeUInt32BE(payload.byteLength, 1);
 	frame.set(payload, 5);
 	return frame;
@@ -180,4 +181,37 @@ describe("Cursor abort listener cleanup", () => {
 			).toBe(true);
 		}
 	});
+});
+
+it("Cursor accepts a final answer step cut before usage but rejects unfinished text without step completion", async () => {
+	const completed = interactionFrame({ case: "stepCompleted", value: create(StepCompletedUpdateSchema, {}) });
+	const done = await runCursorFrames([textFrame("answer"), completed]);
+	expect(done.stopReason).toBe("stop");
+	expect(done.content).toMatchObject([{ type: "text", text: "answer" }]);
+	const truncated = await runCursorFrames([textFrame("partial")]);
+	expect(truncated.stopReason).toBe("error");
+	expect(truncated.errorMessage).toContain("before turnEnded");
+});
+
+it("Cursor retries a trusted typed outage verdict but ignores lookalike Connect detail types", async () => {
+	for (const [type, retryable] of [
+		["aiserver.v1.ErrorDetails", true],
+		["other.ErrorDetails", false],
+	] as const) {
+		const trailer = connectFrame(
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						code: "invalid_argument",
+						message: "Error",
+						details: [{ type, debug: { details: { isRetryable: true } } }],
+					},
+				}),
+			),
+			2,
+		);
+		const result = await runCursorFrames([trailer]);
+		expect(result.stopReason).toBe("error");
+		expect(AIError.retriable(result.errorId)).toBe(retryable);
+	}
 });

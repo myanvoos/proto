@@ -43,6 +43,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		"summary" => compact_summary_output(&cleaned, exit_code),
 		"err" => compact_err_output(&cleaned),
 		"test" => compact_test_output(&cleaned),
+		"diff" if git::keeps_patch_whole(ctx, ctx.program, input, &cleaned, exit_code) => cleaned,
 		"diff" => git::compact_diff_output(&cleaned),
 		"format" => compact_format_output(&cleaned),
 		"pipe" => compact_pipe_like_output(&cleaned, exit_code),
@@ -891,12 +892,12 @@ fn compact_ssh_output(input: &str) -> String {
 		if is_ssh_noise(line) {
 			continue;
 		}
-		out.push_str(&truncate_chars(line, 120));
+		out.push_str(line);
 		out.push('\n');
 	}
-	if out.lines().count() > 200 {
+	if input.len() > primitives::WHOLE_OUTPUT_BYTES && out.lines().count() > 200 {
 		primitives::head_tail_lines(&out, 100, 80)
-	} else if out.is_empty() {
+	} else if out.trim().is_empty() {
 		input.to_string()
 	} else {
 		out
@@ -905,8 +906,7 @@ fn compact_ssh_output(input: &str) -> String {
 
 fn is_ssh_noise(line: &str) -> bool {
 	let trimmed = line.trim();
-	trimmed.is_empty()
-		|| trimmed.starts_with("Warning: Permanently added")
+	trimmed.starts_with("Warning: Permanently added")
 		|| trimmed.starts_with("Connection to ") && trimmed.ends_with(" closed.")
 		|| trimmed.starts_with("Authenticated to ")
 		|| trimmed.starts_with("debug1:")

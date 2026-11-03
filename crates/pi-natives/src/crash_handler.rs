@@ -193,7 +193,12 @@ fn persist(report: &str, kind: CrashKind, echo_stderr: bool) {
 }
 
 fn crash_log_path(kind: CrashKind) -> Option<PathBuf> {
-	let dir = logs_dir()?;
+	let dir = if cfg!(test) {
+		// SAFETY: getuid has no arguments and cannot fail.
+		std::env::temp_dir().join(format!("proto-natives-test-logs-{}", unsafe { libc::getuid() }))
+	} else {
+		logs_dir()?
+	};
 	Some(build_crash_log_path(&dir, kind, process::id(), unix_millis()))
 }
 

@@ -9,8 +9,8 @@ import {
 	type ClientModelConfig,
 	DisplayOption,
 	GetCliModelConfigsRequestSchema,
+	type GetCliModelConfigsResponse,
 	GetCliModelConfigsResponseSchema,
-	type Metadata,
 	MetadataSchema,
 	ModelDimensionKind,
 } from "./devin-proto";
@@ -266,83 +266,43 @@ export interface DevinModelDiscoveryOptions {
 export async function fetchDevinModels(
 	options: DevinModelDiscoveryOptions,
 ): Promise<ModelSpec<"devin-agent">[] | null> {
-	const timeoutMs = options.timeoutMs ?? 5_000;
+	const timeoutMs = options.timeoutMs ?? 15_000;
 	const resolvedBaseUrl = options.baseUrl ?? DEVIN_DEFAULT_BASE_URL;
 	const requestUrl = `${resolvedBaseUrl.replace(/\/+$/, "")}${DEVIN_GET_CLI_MODEL_CONFIGS_PATH}`;
-
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
-	const fetchImpl = discoveryFetch(options.fetch);
-
-	const fetchCatalog = async (metadata: Metadata): Promise<ModelSpec<"devin-agent">[] | null> => {
-		try {
-			const request = create(GetCliModelConfigsRequestSchema, { metadata });
-			const response = await fetchImpl(requestUrl, {
-				method: "POST",
-				headers: {
-					"content-type": "application/proto",
-					"connect-protocol-version": "1",
-					accept: "*/*",
-				},
-				body: toBinary(GetCliModelConfigsRequestSchema, request),
-				signal,
-			});
-			if (!response.ok) return null;
-
-			const decoded = decodeDevinUnaryMessage(
-				GetCliModelConfigsResponseSchema,
-				new Uint8Array(await response.arrayBuffer()),
-			);
-			return decoded ? normalizeDevinModels(decoded.clientModelConfigs, options.baseUrl) : null;
-		} catch {
-			return null;
-		}
-	};
-
+	const request = create(GetCliModelConfigsRequestSchema, {
+		metadata: create(MetadataSchema, {
+			...devinDiscoveryMetadata(options.apiKey),
+			supportedModelDisplays: [...DEVIN_SUPPORTED_MODEL_DISPLAYS],
+		}),
+	});
+	let payload: Uint8Array;
 	try {
-		const nativeModels = await fetchCatalog(
-			create(MetadataSchema, {
-				...devinDiscoveryMetadata(options.apiKey),
-				supportedModelDisplays: [...DEVIN_SUPPORTED_MODEL_DISPLAYS],
-			}),
-		);
-		const nativeIsSeedOnly =
-			nativeModels !== null &&
-			nativeModels.length > 0 &&
-			nativeModels.every(model => model.id === "swe-1-6" || model.id === "swe-1-6-fast");
-		if (nativeModels !== null && nativeModels.length > 0 && !nativeIsSeedOnly) {
-			return nativeModels;
-		}
-
-		// Legacy Windsurf Enterprise seats expose their full credential-scoped roster only to the
-		// editor identity with the raw key; native chisel discovery returns just the SWE-1.6 seed.
-		const legacyModels = await fetchCatalog(
-			create(MetadataSchema, {
-				apiKey: options.apiKey ?? "",
-				ideName: "windsurf",
-				ideVersion: "3.2.23",
-				extensionName: "windsurf",
-				extensionVersion: "1.48.2",
-				locale: "en",
-			}),
-		);
-		const models =
-			legacyModels !== null && (nativeModels === null || legacyModels.length > nativeModels.length)
-				? legacyModels
-				: nativeModels;
-		if (models === null || models.length === 0) {
-			// An empty-but-200 catalog is the failure signature of a stale pinned client identity;
-			// failing discovery keeps the static seed instead of pruning the provider.
-			logger.warn("Devin returned an empty model catalog; the pinned client identities may be stale", {
-				metadata: devinDiscoveryMetadata(undefined),
-			});
-			return null;
-		}
-		return models;
+		const response = await discoveryFetch(options.fetch)(requestUrl, {
+			method: "POST",
+			headers: { "content-type": "application/proto", "connect-protocol-version": "1", accept: "*/*" },
+			body: toBinary(GetCliModelConfigsRequestSchema, request),
+			signal,
+		});
+		if (!response.ok) return null;
+		payload = new Uint8Array(await response.arrayBuffer());
+	} catch {
+		return null;
 	} finally {
 		clearTimeout(timer);
 	}
+	const decoded = decodeDevinUnaryMessage(GetCliModelConfigsResponseSchema, payload);
+	if (!decoded) return null;
+	const models = normalizeDevinModels(decoded, options.baseUrl);
+	if (models.length === 0) {
+		logger.warn("Devin returned an empty model catalog; the pinned client identity may be stale", {
+			metadata: devinDiscoveryMetadata(undefined),
+		});
+		return null;
+	}
+	return models;
 }
 
 // SWE-1.6 configs advertise `supports_images`, but the backend silently drops
@@ -373,7 +333,7 @@ function devinModelSpec(
 		// Router configs ship no features; Cascade only serves tool-calling models.
 		supportsTools: features !== undefined ? features.supportsToolCalls : true,
 		cost: devinModelCost(config),
-		contextWindow: config.maxTokens > 0 ? config.maxTokens : DEFAULT_CONTEXT_WINDOW,
+		contextWindow: config.maxTokens > 0 ? config.maxTokens : config.modelInfo?.maxTokens || DEFAULT_CONTEXT_WINDOW,
 		maxTokens: maxOutputTokens > 0 ? maxOutputTokens : DEFAULT_MAX_TOKENS,
 		...(Object.keys(compat).length > 0 ? { compat } : {}),
 	};
@@ -423,9 +383,11 @@ function routeDevinFusionLead(spec: ModelSpec<"devin-agent">, lead: ModelSpec<"d
 }
 
 function normalizeDevinModels(
-	configs: readonly ClientModelConfig[],
+	response: GetCliModelConfigsResponse,
 	baseUrlOverride: string | undefined,
 ): ModelSpec<"devin-agent">[] {
+	const configs = response.clientModelConfigs;
+	const accountDefaultUid = response.defaultOverrideModelConfig?.modelUid.trim();
 	const baseUrl = baseUrlOverride ?? DEVIN_DEFAULT_BASE_URL;
 	const specs: ModelSpec<"devin-agent">[] = [];
 	const seen = new Set<string>();
@@ -462,6 +424,7 @@ function normalizeDevinModels(
 		const leadConfig = lead === undefined ? undefined : liveConfigs.get(lead);
 		if (lead !== undefined && leadConfig)
 			routeDevinFusionLead(spec, devinModelSpec(leadConfig, lead, baseUrl, false));
+		if (uid === accountDefaultUid) spec.isProviderDefault = true;
 		specs.push(spec);
 		// A router is a dispatcher, not an effort tier: it stays standalone even when filed
 		// under a family.
@@ -475,7 +438,15 @@ function normalizeDevinModels(
 	const families = devinDynamicFamilies(lanes.values());
 	const dynamic = families.length > 0 ? collapseEffortVariants(specs, { families }) : specs;
 	const now = Date.now();
-	return collapseEffortVariants(dynamic, DEVIN_VARIANT_COLLAPSE_TABLE)
-		.map(spec => applyDevinCostFallback(spec, now))
-		.sort((a, b) => a.id.localeCompare(b.id));
+	const collapsed = collapseEffortVariants(dynamic, DEVIN_VARIANT_COLLAPSE_TABLE);
+	const accountFamily = collapsed.find(spec => spec.isProviderDefault && spec.thinking?.effortRouting);
+	const accountEffort = THINKING_EFFORTS.find(
+		effort => accountFamily?.thinking?.effortRouting?.[effort] === accountDefaultUid,
+	);
+	if (accountFamily?.thinking && accountEffort !== undefined) {
+		accountFamily.thinking = { ...accountFamily.thinking, defaultLevel: accountEffort };
+		if (accountFamily.id === accountDefaultUid) delete accountFamily.requestModelId;
+		else accountFamily.requestModelId = accountDefaultUid;
+	}
+	return collapsed.map(spec => applyDevinCostFallback(spec, now)).sort((a, b) => a.id.localeCompare(b.id));
 }

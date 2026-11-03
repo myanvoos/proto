@@ -2,6 +2,7 @@ import { $env } from "@oh-my-pi/pi-utils";
 import type { ResponseInput, ResponseInputItem } from "./providers/openai-responses-wire";
 import { isMalformedToolCallName, redactSensitiveCredentials } from "./providers/transform-messages";
 import type { CacheRetention, OpenAIResponsesHistoryPayload, ProviderPayload } from "./types";
+import { invalidToolCallArguments } from "./utils/tool-call-arguments";
 
 type OpenAIResponsesReplayItem = ResponseInput[number];
 const NON_WHITESPACE_RE = /\S/;
@@ -99,6 +100,16 @@ export function stripOpenAIResponsesOutputOnlyStatusesForReplay<TItem extends { 
 		sanitized.push(withoutStatus);
 	}
 	return sanitized ?? items;
+}
+
+export function stripOpenAIResponsesInternalMetadataForReplay<
+	TItem extends { id?: unknown; internal_chat_message_metadata_passthrough?: unknown },
+>(item: TItem, mode: "preserve" | "copy" | "drop-id" = "preserve"): TItem {
+	if (mode === "preserve" && !Object.hasOwn(item, "internal_chat_message_metadata_passthrough")) return item;
+	const sanitized = { ...item };
+	delete sanitized.internal_chat_message_metadata_passthrough;
+	if (mode === "drop-id") delete sanitized.id;
+	return sanitized;
 }
 
 function clampReplayItemImageDetail(
@@ -500,27 +511,40 @@ export function dropMalformedOpenAIResponsesToolCalls<
 	return kept;
 }
 
+// Caller-owned replay history may be frozen; cache without mutating it.
+const replayArgumentsCache = new WeakMap<object, { raw: unknown; replay: string }>();
+
+function replayFunctionCallArguments(item: Record<string, unknown>): string {
+	const raw = item.arguments;
+	const cached = replayArgumentsCache.get(item);
+	if (cached && cached.raw === raw) return cached.replay;
+	let replay = "{}";
+	if (typeof raw === "string" && raw.trim()) {
+		try {
+			JSON.parse(raw);
+			replay = raw;
+		} catch (error) {
+			replay = JSON.stringify(invalidToolCallArguments(raw, error));
+		}
+	}
+	replayArgumentsCache.set(item, { raw, replay });
+	return replay;
+}
+
 function sanitizeOpenAIResponsesHistoryItemForReplay(
 	item: Record<string, unknown>,
 	supportsImageDetailOriginal: boolean,
 	preserveReasoningItemIds: boolean,
 ): OpenAIResponsesReplayItem | undefined {
 	if (isMalformedOpenAIResponsesToolCall(item)) return undefined;
-	if (item.type === "function_call") {
-		if (typeof item.arguments !== "string" || item.arguments.trim().length === 0) return undefined;
-		try {
-			JSON.parse(item.arguments);
-		} catch {
-			return undefined;
-		}
-	}
 	if (item.type === "item_reference") return undefined;
 	if (item.type === "image_generation_call") return sanitizeOpenAIResponsesImageGenerationCallForReplay(item);
 	if (item.type === "reasoning") {
 		return sanitizeOpenAIResponsesReasoningItemForReplay(item, preserveReasoningItemIds);
 	}
-	const { id: _id, ...sanitizedItem } = item;
+	const sanitizedItem = stripOpenAIResponsesInternalMetadataForReplay(item, "drop-id");
 	if (item.type === "computer_call" && typeof item.id === "string") sanitizedItem.id = item.id;
+	if (item.type === "function_call") sanitizedItem.arguments = replayFunctionCallArguments(item);
 
 	return clampReplayItemImageDetail(
 		sanitizedItem,

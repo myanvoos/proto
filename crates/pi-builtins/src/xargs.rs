@@ -1,6 +1,3 @@
-
-
-
 use std::{
 	collections::HashMap,
 	error::Error,
@@ -36,7 +33,7 @@ mod options {
 struct Options {
 	arg_file:                Option<String>,
 	delimiter:               Option<u8>,
-	interactive:            bool,
+	interactive:             bool,
 	exit_if_pass_char_limit: bool,
 	max_args:                Option<usize>,
 	max_chars:               Option<usize>,
@@ -47,7 +44,6 @@ struct Options {
 	verbose:                 bool,
 }
 
-
 pub(crate) struct Xargs {
 	matches: ArgMatches,
 }
@@ -56,7 +52,6 @@ matches_parser!(Xargs, app);
 
 #[derive(Debug, PartialEq, Eq)]
 enum ArgumentKind {
-
 	Initial,
 
 	HardTerminated,
@@ -75,7 +70,6 @@ struct ExhaustedCommandSpace {
 	out_of_chars: bool,
 }
 
-
 trait CommandSizeLimiter {
 	fn try_arg(
 		&mut self,
@@ -84,7 +78,6 @@ trait CommandSizeLimiter {
 	) -> Result<Argument, ExhaustedCommandSpace>;
 	fn dyn_clone(&self) -> Box<dyn CommandSizeLimiter>;
 }
-
 
 struct LimiterCursor<'collection> {
 	limiters: &'collection mut [Box<dyn CommandSizeLimiter>],
@@ -132,7 +125,6 @@ impl Clone for LimiterCollection {
 	}
 }
 
-
 #[cfg(unix)]
 fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
 	use std::os::unix::ffi::OsStrExt;
@@ -142,29 +134,38 @@ fn count_osstr_chars_for_exec(s: &OsStr) -> usize {
 
 #[derive(Clone)]
 struct MaxCharsCommandSizeLimiter {
-	current_size: usize,
-	max_chars:    usize,
+	current_size:     usize,
+	max_chars:        usize,
+	per_arg_overhead: usize,
 }
 
 impl MaxCharsCommandSizeLimiter {
 	fn new(max_chars: usize) -> Self {
-		Self { current_size: 0, max_chars }
+		Self { current_size: 0, max_chars, per_arg_overhead: 0 }
 	}
-
 
 	#[cfg(unix)]
 	fn new_system(env: &HashMap<OsString, OsString>) -> Self {
-
-
 		const ARG_HEADROOM: usize = 2048;
 		let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) } as usize;
 
+		let pointer_size = std::mem::size_of::<*const libc::c_char>();
 		let env_size: usize = env
 			.iter()
-			.map(|(var, value)| count_osstr_chars_for_exec(var) + count_osstr_chars_for_exec(value))
+			.map(|(var, value)| {
+				count_osstr_chars_for_exec(var) + count_osstr_chars_for_exec(value) + pointer_size
+			})
 			.sum();
 
-		Self::new(arg_max - ARG_HEADROOM - env_size)
+		let mut limiter = Self::new(
+			arg_max
+				.saturating_sub(ARG_HEADROOM)
+				.saturating_sub(env_size)
+				.max(1),
+		);
+		// ARG_MAX covers argv pointers as well as strings. Keep -s string-only.
+		limiter.per_arg_overhead = pointer_size;
+		limiter
 	}
 }
 
@@ -174,7 +175,7 @@ impl CommandSizeLimiter for MaxCharsCommandSizeLimiter {
 		arg: Argument,
 		cursor: LimiterCursor<'_>,
 	) -> Result<Argument, ExhaustedCommandSpace> {
-		let chars = count_osstr_chars_for_exec(&arg.arg);
+		let chars = count_osstr_chars_for_exec(&arg.arg) + self.per_arg_overhead;
 		if self.current_size + chars <= self.max_chars {
 			let arg = cursor.try_next(arg)?;
 			self.current_size += chars;
@@ -244,7 +245,6 @@ impl CommandSizeLimiter for MaxLinesCommandSizeLimiter {
 		if self.current_line <= self.max_lines {
 			let arg = cursor.try_next(arg)?;
 
-
 			if arg.kind == ArgumentKind::HardTerminated {
 				self.current_line += 1;
 			}
@@ -275,7 +275,6 @@ impl CommandResult {
 #[allow(dead_code, reason = "`Killed` is never constructed on Windows")]
 #[derive(Debug)]
 enum CommandExecutionError {
-
 	UrgentlyFailed,
 	Killed { signal: i32 },
 	CannotRun(io::Error),
@@ -354,8 +353,6 @@ impl CommandBuilder<'_> {
 		};
 
 		let final_args: Vec<OsString> = if let Some(replace_str) = &self.options.replace {
-
-
 			let replacement = self.extra_args[0].to_string_lossy();
 			initial_args
 				.iter()
@@ -365,7 +362,6 @@ impl CommandBuilder<'_> {
 				})
 				.collect()
 		} else {
-
 			initial_args
 				.iter()
 				.cloned()
@@ -393,7 +389,6 @@ impl CommandBuilder<'_> {
 				return Ok(CommandResult::Success);
 			}
 		} else if self.options.verbose {
-
 			let _ = writeln!(host.stderr, "{line}");
 		}
 
@@ -693,7 +688,6 @@ fn process_input(
 	let mut result = CommandResult::Success;
 
 	while let Some(arg) = args.next(host)? {
-
 		if host.is_cancelled() {
 			return Ok(result);
 		}
@@ -768,13 +762,7 @@ fn normalize_options<'a>(
 ) -> (Option<usize>, Option<usize>, &'a Option<String>, Option<u8>) {
 	let (max_args, max_lines, replace) =
 		match (options.max_args, options.max_lines, &options.replace) {
-
-
-			(None | Some(1), None, Some(_)) => {
-
-
-				(Some(1), None, &options.replace)
-			},
+			(None | Some(1), None, Some(_)) => (Some(1), None, &options.replace),
 			(Some(_), None, None) | (None, Some(_), None) | (None, None, None) => {
 				(options.max_args, options.max_lines, &None)
 			},
@@ -816,7 +804,6 @@ fn normalize_options<'a>(
 		},
 		(Some(delimiter), false) => Some(delimiter),
 		(None, true) => Some(b'\0'),
-
 
 		(None, false) => replace.as_ref().map(|_| b'\n'),
 	};
@@ -946,7 +933,6 @@ fn app() -> clap::Command {
 }
 
 fn do_xargs(matches: &ArgMatches, host: &mut Host) -> Result<CommandResult, XargsError> {
-
 	let options = Options {
 		arg_file:                matches
 			.get_one::<String>(options::ARG_FILE)
@@ -996,8 +982,8 @@ fn do_xargs(matches: &ArgMatches, host: &mut Host) -> Result<CommandResult, Xarg
 	}
 	limiters.add(MaxCharsCommandSizeLimiter::new_system(&env));
 
-	let mut builder_options =
-		CommandBuilderOptions::new(action, limiters, replace.clone()).map_err(|_| {
+	let mut builder_options = CommandBuilderOptions::new(action, limiters, replace.clone())
+		.map_err(|_| {
 			"Base command and environment are too large to fit into one command execution"
 		})?;
 
@@ -1006,12 +992,14 @@ fn do_xargs(matches: &ArgMatches, host: &mut Host) -> Result<CommandResult, Xarg
 
 	let args: Box<dyn ArgumentReader> = match (&options.arg_file, delimiter) {
 		(Some(path), Some(delimiter)) => {
-			let file = host.open_read(path)
+			let file = host
+				.open_read(path)
 				.map_err(|e| format!("Failed to open {path}: {e}"))?;
 			Box::new(ByteDelimitedArgumentReader::new(file, delimiter))
 		},
 		(Some(path), None) => {
-			let file = host.open_read(path)
+			let file = host
+				.open_read(path)
 				.map_err(|e| format!("Failed to open {path}: {e}"))?;
 			Box::new(WhitespaceDelimitedArgumentReader::new(file))
 		},
@@ -1058,9 +1046,24 @@ impl Utility for Xargs {
 	}
 }
 
-
 pub(crate) fn xargs_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Xargs, SE>()
 }
 
-
+#[cfg(all(test, unix))]
+mod exec_budget_tests {
+	use super::*;
+	#[test]
+	fn an_environment_exhausting_arg_max_rejects_the_base_command() {
+		let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) } as usize;
+		let env = (0..arg_max / 20)
+			.map(|i| (format!("XARGS_{i:08}").into(), OsString::new()))
+			.collect();
+		let mut limiters = LimiterCollection::new();
+		limiters.add(MaxCharsCommandSizeLimiter::new_system(&env));
+		assert!(
+			CommandBuilderOptions::new(ExecAction::Command(vec!["/bin/echo".into()]), limiters, None)
+				.is_err()
+		);
+	}
+}

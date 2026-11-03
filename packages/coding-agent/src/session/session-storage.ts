@@ -7,6 +7,15 @@ import { overlayTitleSlotContent, type SessionTitleUpdate } from "./session-titl
 
 const utf8Decoder = new TextDecoder("utf-8");
 
+/** Rewrites must replace a symlink's transcript, not the symlink itself. */
+function sessionPublishTarget(file: string): string {
+	try {
+		return fs.lstatSync(file).isSymbolicLink() ? fs.realpathSync(file) : file;
+	} catch {
+		return file;
+	}
+}
+
 export interface SessionStorageStat {
 	size: number;
 	mtimeMs: number;
@@ -67,9 +76,14 @@ export class SessionStorageLockError extends Error {
 }
 
 export interface SessionStorage {
+	/** Sync writes enqueue publication instead of making it durable before returning. */
+	readonly defersSyncPublish?: boolean;
+	existsConfirmedSync?(path: string): boolean;
+	confirmWrites?(path: string): Promise<void>;
 	ensureDirSync(dir: string): void;
 	existsSync(path: string): boolean;
 	writeTextSync(path: string, content: string, options?: SessionStorageWriteOptions): void;
+	writeLinesSync?(path: string, lines: readonly string[], options?: SessionStorageWriteOptions): void;
 
 	updateSessionTitle(path: string, update: SessionTitleUpdate): Promise<void>;
 	statSync(path: string): SessionStorageStat;
@@ -84,6 +98,7 @@ export interface SessionStorage {
 	readBytesRange(path: string, start: number, end: number): Promise<Uint8Array>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
+	writeLinesAtomic?(path: string, lines: readonly string[], options?: WriteTextAtomicOptions): Promise<void>;
 	appendTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	rename(path: string, nextPath: string): Promise<void>;
 	unlink(path: string): Promise<void>;
@@ -115,6 +130,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 	#onError: ((err: Error) => void) | undefined;
 
 	constructor(fpath: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }) {
+		fpath = sessionPublishTarget(fpath);
 		this.#onError = options?.onError;
 		const flags = options?.flags ?? "a";
 
@@ -232,6 +248,19 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	writeTextSync(fpath: string, content: string, options?: SessionStorageWriteOptions): void {
+		this.#writeSync(fpath, content, options);
+	}
+
+	writeLinesSync(fpath: string, lines: readonly string[], options?: SessionStorageWriteOptions): void {
+		if (this.writeTextSync !== FileSessionStorage.prototype.writeTextSync) {
+			this.writeTextSync(fpath, lines.join(""), options);
+			return;
+		}
+		this.#writeSync(fpath, lines, options);
+	}
+
+	#writeSync(fpath: string, content: string | readonly string[], options?: SessionStorageWriteOptions): void {
+		fpath = sessionPublishTarget(fpath);
 		const lock = tryAcquireFileLockSync(fpath);
 		if (!lock) throw new SessionStorageLockError(fpath);
 		try {
@@ -254,12 +283,20 @@ export class FileSessionStorage implements SessionStorage {
 		if (actualSize !== expectedSize) throw new SessionWriteConflictError(fpath, expectedSize, actualSize);
 	}
 
-	#writeTextSyncLocked(fpath: string, content: string, expectedSize?: number | null): void {
+	#writeTextSyncLocked(fpath: string, content: string | readonly string[], expectedSize?: number | null): void {
 		const dir = path.dirname(fpath);
 		this.ensureDirSync(dir);
 		const tempPath = path.join(dir, `.${path.basename(fpath)}.${Snowflake.next()}.tmp`);
 		try {
-			fs.writeFileSync(tempPath, content);
+			if (typeof content === "string") fs.writeFileSync(tempPath, content);
+			else {
+				const fd = fs.openSync(tempPath, "wx");
+				try {
+					for (const line of content) fs.writeFileSync(fd, line);
+				} finally {
+					fs.closeSync(fd);
+				}
+			}
 			this.#assertExpectedSize(fpath, expectedSize);
 		} catch (err) {
 			this.#discardTemp(tempPath, fpath);
@@ -282,6 +319,7 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	async updateSessionTitle(fpath: string, update: SessionTitleUpdate): Promise<void> {
+		fpath = sessionPublishTarget(fpath);
 		const lock = tryAcquireFileLockSync(fpath);
 		if (!lock) throw new SessionStorageLockError(fpath);
 		try {
@@ -299,7 +337,9 @@ export class FileSessionStorage implements SessionStorage {
 
 	listFilesSync(dir: string, pattern: string): string[] {
 		try {
-			return Array.from(new Bun.Glob(pattern).scanSync(dir)).map(name => path.join(dir, name));
+			return Array.from(new Bun.Glob(pattern).scanSync({ cwd: dir, followSymlinks: true })).map(name =>
+				path.join(dir, name),
+			);
 		} catch {
 			return [];
 		}
@@ -338,7 +378,23 @@ export class FileSessionStorage implements SessionStorage {
 		await Bun.write(path, content, { createPath: true });
 	}
 
-	async writeTextAtomic(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+	writeTextAtomic(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		return this.#writeAtomic(fpath, content, options);
+	}
+
+	writeLinesAtomic(fpath: string, lines: readonly string[], options?: WriteTextAtomicOptions): Promise<void> {
+		if (this.writeTextAtomic !== FileSessionStorage.prototype.writeTextAtomic) {
+			return this.writeTextAtomic(fpath, lines.join(""), options);
+		}
+		return this.#writeAtomic(fpath, lines, options);
+	}
+
+	async #writeAtomic(
+		fpath: string,
+		content: string | readonly string[],
+		options?: WriteTextAtomicOptions,
+	): Promise<void> {
+		fpath = sessionPublishTarget(fpath);
 		const lock = tryAcquireFileLockSync(fpath);
 		if (!lock) throw new SessionStorageLockError(fpath);
 		try {
@@ -349,6 +405,7 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	async appendTextAtomic(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		fpath = sessionPublishTarget(fpath);
 		const lock = tryAcquireFileLockSync(fpath);
 		if (!lock) throw new SessionStorageLockError(fpath);
 		let fd: number | undefined;
@@ -400,7 +457,11 @@ export class FileSessionStorage implements SessionStorage {
 		}
 	}
 
-	async #writeTextAtomicLocked(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+	async #writeTextAtomicLocked(
+		fpath: string,
+		content: string | readonly string[],
+		options?: WriteTextAtomicOptions,
+	): Promise<void> {
 		const dir = path.resolve(fpath, "..");
 		const tempPath = path.join(dir, `.${path.basename(fpath)}.${Snowflake.next()}.tmp`);
 		await fs.promises.mkdir(dir, { recursive: true });
@@ -408,13 +469,24 @@ export class FileSessionStorage implements SessionStorage {
 			if (options?.durable) {
 				const handle = await fs.promises.open(tempPath, "w");
 				try {
-					await handle.writeFile(content);
+					if (typeof content === "string") await handle.writeFile(content);
+					else for (const line of content) await handle.writeFile(line);
 					await handle.sync();
 				} finally {
 					await handle.close();
 				}
-			} else {
+			} else if (typeof content === "string") {
 				await fs.promises.writeFile(tempPath, content);
+			} else {
+				const sink = Bun.file(tempPath).writer({ highWaterMark: 1 << 20 });
+				try {
+					for (const line of content) {
+						const written = sink.write(line);
+						if (typeof written !== "number") await written;
+					}
+				} finally {
+					await sink.end();
+				}
 			}
 		} catch (err) {
 			this.#discardTemp(tempPath, fpath);

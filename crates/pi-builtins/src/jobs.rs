@@ -3,30 +3,22 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, jobs};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct JobsCommand {
-
 	#[arg(short = 'l')]
 	also_show_pids: bool,
-
 
 	#[arg(short = 'n')]
 	list_changed_only: bool,
 
-
 	#[arg(short = 'p')]
 	show_pids_only: bool,
-
 
 	#[arg(short = 'r')]
 	running_jobs_only: bool,
 
-
 	#[arg(short = 's')]
 	stopped_jobs_only: bool,
-
-
 
 	job_specs: Vec<String>,
 }
@@ -99,12 +91,15 @@ impl JobsCommand {
 	}
 }
 
-fn resolve_job_spec<'a>(job_manager: &'a jobs::JobManager, job_spec: &str) -> Option<&'a jobs::Job> {
+fn resolve_job_spec<'a>(
+	job_manager: &'a jobs::JobManager,
+	job_spec: &str,
+) -> Option<&'a jobs::Job> {
 	match job_manager.resolve_job_spec_selector(job_spec)? {
 		jobs::JobSelector::JobId(id) => job_manager.jobs.iter().find(|job| job.id == id),
-		jobs::JobSelector::ProcessId(pid) => job_manager
-			.jobs
-			.iter()
-			.find(|job| job.representative_pid().is_some_and(|job_pid| job_pid == pid)),
+		jobs::JobSelector::ProcessId(pid) => job_manager.jobs.iter().find(|job| {
+			job.representative_pid()
+				.is_some_and(|job_pid| job_pid == pid)
+		}),
 	}
 }

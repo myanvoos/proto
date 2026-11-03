@@ -1,8 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { Agent, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
+import { shouldInlineToolDescriptors } from "../config/inline-tool-descriptors-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString } from "../config/model-resolver";
 import type { Settings, SkillsSettings } from "../config/settings";
@@ -21,8 +22,16 @@ import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { supportsExternalThinking } from "../tools/think";
-import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
+import {
+	isMountableUnderXdev,
+	listXdevTools,
+	planXdevPromptDocs,
+	type XdevState,
+	xdevDocsFor,
+	xdevEntries,
+} from "../tools/xdev";
 import type { CustomMessage } from "./messages";
+import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 export interface SessionToolsHost {
@@ -140,6 +149,11 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 
 const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
+const SYSTEM_PROMPT_CUSTOM_TYPE = "system-prompt";
+
+function samePromptBlocks(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((block, index) => block === right[index]);
+}
 
 interface XdevMountNoticeDetails {
 	added: string[];
@@ -172,6 +186,13 @@ export class SessionTools {
 	#baseSystemPrompt: string[];
 
 	#turnSystemPromptOverride: string[] | undefined;
+	#lastTurnSystemPromptOverride: { prompt: string[]; base: string[] } | undefined;
+	#restoredTranscript: { reply: AgentMessage; blocks: readonly string[] } | undefined;
+	#capturedBasePrompt: readonly string[] | undefined;
+	#replyBasePrompts = new WeakMap<AgentMessage, readonly string[]>();
+	#recordedPromptScan:
+		| { branch: readonly SessionEntry[]; scanned: number; blocks: readonly string[] | undefined }
+		| undefined;
 	#lastAppliedToolSignature: string | undefined;
 
 	#enabledToolNames = new Set<string>();
@@ -232,6 +253,10 @@ export class SessionTools {
 		}
 		this.#setActiveToolNames = options.setActiveToolNames;
 		this.#baseSystemPrompt = options.baseSystemPrompt;
+		const restoredReply = this.#latestReply();
+		const recordedBlocks = restoredReply && this.recordedPromptBlocks();
+		this.#restoredTranscript =
+			restoredReply && recordedBlocks ? { reply: restoredReply, blocks: recordedBlocks } : undefined;
 		this.#skills = options.skills ?? [];
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
@@ -255,9 +280,15 @@ export class SessionTools {
 		this.#host.agent.setSystemPrompt(this.#turnSystemPromptOverride ?? base);
 	}
 
-	setTurnSystemPromptOverride(prompt: string[]): void {
+	setTurnSystemPromptOverride(prompt: string[], base: string[]): void {
 		this.#turnSystemPromptOverride = prompt;
+		this.#lastTurnSystemPromptOverride = { prompt, base };
 		this.#host.agent.setSystemPrompt(prompt);
+	}
+
+	/** The base given to a hook, not the hook's per-turn effective override. */
+	baseOfSystemPrompt(prompt: string[]): string[] {
+		return prompt === this.#lastTurnSystemPromptOverride?.prompt ? this.#lastTurnSystemPromptOverride.base : prompt;
 	}
 
 	clearTurnSystemPromptOverride(): void {
@@ -305,13 +336,15 @@ export class SessionTools {
 	}
 
 	getToolForEvalBridge(name: string): AgentTool | undefined {
+		const tool = this.getToolByName(name);
+		if (!tool) return undefined;
 		if (
-			!this.getEnabledToolNames().includes(name) &&
-			!(name in DISABLED_TOOL_NAMES && this.#toolRegistry.has(name))
+			!this.getEnabledToolNames().includes(tool.name) &&
+			!(tool.name in DISABLED_TOOL_NAMES && this.#toolRegistry.has(tool.name))
 		) {
 			return undefined;
 		}
-		return this.#toolRegistry.get(name);
+		return tool;
 	}
 
 	getEvalBridgeToolNames(): string[] {
@@ -398,7 +431,12 @@ export class SessionTools {
 				scope: "temporary",
 				origin: "top-level",
 			};
-			return { name, description: tool.description, parameters: tool.parameters, sourceInfo };
+			const info: ToolInfo = { name, description: tool.description, parameters: tool.parameters, sourceInfo };
+			const mcp = tool as { mcpServerName?: unknown; mcpToolName?: unknown; mcpReadOnlyHint?: unknown };
+			if (typeof mcp.mcpServerName === "string") info.mcpServerName = mcp.mcpServerName;
+			if (typeof mcp.mcpToolName === "string") info.mcpToolName = mcp.mcpToolName;
+			if (typeof mcp.mcpReadOnlyHint === "boolean") info.mcpReadOnlyHint = mcp.mcpReadOnlyHint;
+			return info;
 		});
 	}
 
@@ -412,7 +450,8 @@ export class SessionTools {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
 		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
-		return usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
+		const taskPolicy = usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
+		return `${taskPolicy}|inline-descriptors:${shouldInlineToolDescriptors(this.#host.settings.get("inlineToolDescriptors"), activeModel?.id)}`;
 	}
 
 	#logComputerState(message: string, enabled: boolean): void {
@@ -425,9 +464,9 @@ export class SessionTools {
 		});
 	}
 
-	async syncAfterModelChange(): Promise<void> {
+	async syncAfterModelChange(options?: { retryFallback?: boolean }): Promise<void> {
 		const modelChanged = this.#currentPromptModelKey() !== this.#promptModelKey;
-		if (modelChanged) {
+		if (modelChanged && !options?.retryFallback) {
 			await this.refreshBaseSystemPrompt();
 		}
 		const computerExpected = this.#host.settings.get("computer.enabled");
@@ -512,6 +551,7 @@ export class SessionTools {
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
 		let frozenSignature: string | undefined;
+		let implicitRebuild = false;
 		let rebuiltXdevCatalogNames: readonly string[] | undefined;
 		try {
 			if (this.#rebuildSystemPrompt) {
@@ -519,14 +559,13 @@ export class SessionTools {
 				const freezeImplicitPromptRefresh =
 					!forcePromptRefresh &&
 					signature !== this.#lastAppliedToolSignature &&
-					this.#lastAppliedToolSignature !== undefined &&
-					this.#host.model()?.thinking?.prefixBinding === true &&
-					this.#host.agent.state.messages.some(message => message.role === "assistant");
+					this.#implicitRebuildBinding() === "frozen";
 				if (freezeImplicitPromptRefresh) {
 					frozenSignature = signature;
 				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(signal, this.#rebuildSystemPrompt(appliedNames, this.#toolRegistry));
 					rebuiltSystemPrompt = built.systemPrompt;
+					implicitRebuild = !forcePromptRefresh;
 					rebuiltSignature = signature;
 					rebuiltXdevCatalogNames = built.xdevCatalogNames;
 				}
@@ -550,8 +589,23 @@ export class SessionTools {
 
 		this.#notifyXdevMountDelta(previousMounted);
 		this.#host.agent.setTools(appliedTools);
+		let restoresTranscriptPrompt = false;
+		if (rebuiltSystemPrompt && implicitRebuild) {
+			const binding = this.#implicitRebuildBinding();
+			restoresTranscriptPrompt =
+				typeof binding === "object" && samePromptBlocks(rebuiltSystemPrompt, binding.blocks);
+			if (binding !== "free" && !restoresTranscriptPrompt) {
+				rebuiltSystemPrompt = undefined;
+				frozenSignature = rebuiltSignature;
+			}
+		}
 		if (rebuiltSystemPrompt && rebuiltSignature) {
-			if (this.#lastAppliedToolSignature !== undefined) this.#host.clearInheritedProviderPromptCacheKey();
+			if (
+				this.#lastAppliedToolSignature !== undefined &&
+				!restoresTranscriptPrompt &&
+				!samePromptBlocks(this.#baseSystemPrompt, rebuiltSystemPrompt)
+			)
+				this.#host.clearInheritedProviderPromptCacheKey();
 			this.#baseSystemPrompt = rebuiltSystemPrompt;
 			this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 			this.#lastAppliedToolSignature = rebuiltSignature;
@@ -561,6 +615,77 @@ export class SessionTools {
 			this.#notifyToolRosterDelta(previousActiveToolNames, appliedNames);
 			this.#lastAppliedToolSignature = frozenSignature;
 		}
+	}
+
+	#latestReply(): AgentMessage | undefined {
+		return this.#host.agent.state.messages.findLast(message => message.role === "assistant");
+	}
+
+	/** Exact blocks, not a lossy/hash-only identity: boundaries are part of the provider prefix. */
+	recordedPromptBlocks(): readonly string[] | undefined {
+		const branch = this.#host.sessionManager.getBranchForStats();
+		const previous = this.#recordedPromptScan;
+		const scan =
+			previous?.branch === branch
+				? previous
+				: { branch, scanned: 0, blocks: undefined as readonly string[] | undefined };
+		for (let index = scan.scanned; index < branch.length; index++) {
+			const entry = branch[index];
+			if (entry.type !== "custom" || entry.customType !== SYSTEM_PROMPT_CUSTOM_TYPE) continue;
+			const hydrated = this.#host.sessionManager.getEntry(entry.id);
+			const data = hydrated?.type === "custom" ? hydrated.data : undefined;
+			scan.blocks = Array.isArray(data) && data.every(block => typeof block === "string") ? data : undefined;
+		}
+		scan.scanned = branch.length;
+		this.#recordedPromptScan = scan;
+		return scan.blocks;
+	}
+
+	/** Capture at the primary request boundary; an aborted/preflight-only call records no provenance. */
+	recordPrimaryModelCall(prompt: string[]): void {
+		this.#restoredTranscript = undefined;
+		this.#capturedBasePrompt = [...this.baseOfSystemPrompt(prompt)];
+	}
+
+	bindReplyToCapturedPrompt(reply: AgentMessage): void {
+		const blocks = this.#capturedBasePrompt;
+		this.#capturedBasePrompt = undefined;
+		if (
+			blocks &&
+			reply.role === "assistant" &&
+			reply.content.some(block => block.type !== "text" || block.text.length > 0)
+		) {
+			this.#replyBasePrompts.set(reply, blocks);
+		}
+	}
+
+	/** Persist ahead of the reply, so every branch path to it carries its actual prompt prefix. */
+	recordReplyPrompt(reply: AgentMessage): void {
+		this.recordPromptBlocks(this.#replyBasePrompts.get(reply));
+	}
+
+	recordPromptBlocks(blocks: readonly string[] | undefined): void {
+		if (!blocks) return;
+		const recorded = this.recordedPromptBlocks();
+		if (!recorded || !samePromptBlocks(recorded, blocks)) {
+			this.#host.sessionManager.appendCustomEntry(SYSTEM_PROMPT_CUSTOM_TYPE, [...blocks]);
+		}
+	}
+
+	releasePromptBindings(): void {
+		this.#replyBasePrompts = new WeakMap();
+		this.#restoredTranscript = undefined;
+		this.#recordedPromptScan = undefined;
+		this.#capturedBasePrompt = undefined;
+		this.#lastTurnSystemPromptOverride = undefined;
+	}
+
+	#implicitRebuildBinding(): "free" | "frozen" | { blocks: readonly string[] } {
+		if (this.#lastAppliedToolSignature === undefined || this.#host.model()?.thinking?.prefixBinding !== true)
+			return "free";
+		const latest = this.#latestReply();
+		if (!latest) return "free";
+		return latest === this.#restoredTranscript?.reply ? this.#restoredTranscript : "frozen";
 	}
 
 	#notifyToolRosterDelta(previousActiveToolNames: readonly string[], appliedNames: readonly string[]): void {
@@ -601,7 +726,7 @@ export class SessionTools {
 			if (!pending.added.delete(name)) pending.removed.add(name);
 		}
 		this.#pendingXdevMountDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
-		if (this.#host.settings.get("startup.quiet")) return;
+		if (this.#host.settings.get("startup.quiet") || !this.#host.settings.get("tools.xdevNotices")) return;
 		const parts: string[] = [];
 		if (addedNames.length > 0) parts.push(`mounted ${addedNames.join(", ")}`);
 		if (removedNames.length > 0) parts.push(`unmounted ${removedNames.join(", ")}`);
@@ -684,8 +809,21 @@ export class SessionTools {
 		this.#ensureAnnouncedMountsSeeded();
 
 		if (baseCatalogDelivered) {
+			let routedSummaries: Set<string> | undefined;
+			if (this.#xdev) {
+				const docs = planXdevPromptDocs(
+					this.#xdev,
+					this.#host.settings.get("tools.xdevDocs"),
+					this.#host.settings.get("tools.xdevInlineDevices"),
+				);
+				routedSummaries = new Set(
+					projectMountedMCPXdevGuidance(collectMountedMCPToolRoutes(listXdevTools(this.#xdev)))
+						.mappings.filter(mapping => docs.catalog.has(mapping.name))
+						.map(mapping => mapping.name),
+				);
+			}
 			for (const name of pending.added) {
-				if (this.#basePromptXdevNames.has(name)) this.#announcedMounts.add(name);
+				if (this.#basePromptXdevNames.has(name) || routedSummaries?.has(name)) this.#announcedMounts.add(name);
 			}
 		}
 

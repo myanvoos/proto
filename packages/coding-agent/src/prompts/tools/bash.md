@@ -11,7 +11,7 @@ Runs commands in the agent shell{{#if hasKernelBridge}}; bare {{#if py}}`python`
 - Set `cwd` instead of `cd`; every call{{#if hasKernelBridge}}, kernel cells included,{{/if}} starts there (default: session directory).
 - `lane` defaults to `"main"`. Calls in one lane run one at a time in issue order and share shell variables, functions, and aliases{{#if hasKernelBridge}}, plus kernel state{{/if}}. Different lanes run concurrently with separate state.
 - Dependent steps → one call chained with `&&`; a failed call does not stop calls already queued behind it.
-{{#if asyncEnabled}}- `async: true` without `lane` runs in its own fresh lane: none of `main`'s shell{{#if hasKernelBridge}} or kernel{{/if}} state. Needs that state → pass `lane:"main"` (later `main` calls queue behind it). `async` does not extend `timeout`.
+{{#if asyncEnabled}}- `async: true` without `lane` runs in its own fresh lane: none of `main`'s shell{{#if hasKernelBridge}} or kernel{{/if}} state. Needs that state → pass `lane:"main"` (later `main` calls queue behind it). `async` keeps the command deadline (default {{defaultTimeoutSec}}s); `timeout: 0` disables it.
 {{/if}}{{#if autoBackgroundEnabled}}- Foreground calls still running after {{autoBackgroundThresholdSeconds}}s become background jobs whose results arrive later. `timeout` bounds the job (`0` = no deadline), not the foreground wait.
 {{/if}}{{#if hasLaunch}}- Services, dev servers, watchers, debuggers, REPLs MUST run under {{#if launchViaProtolens}}`protolens jobs --op start`{{else}}`jobs` (`op:"start"`){{/if}}, not `&` or `async`.
 {{/if}}- `<shell> state lost`{{#if hasKernelBridge}} / `<kernel> state lost`{{/if}} notice → earlier state in that lane is gone; rebuild it before reuse.

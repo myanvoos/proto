@@ -25,6 +25,8 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	VISUAL: "true",
 	EDITOR: "true",
 	GIT_TERMINAL_PROMPT: "0",
+	// Configured sequence editors otherwise block interactive rebases.
+	GIT_SEQUENCE_EDITOR: "true",
 	SSH_ASKPASS: REJECT_PROMPT_COMMAND,
 	CI: "true",
 	AGENT: "1",

@@ -37,6 +37,11 @@ const repoRootCache = new LRUCache<string, Promise<string | null>>({
 
 let settings: Settings | null = null;
 
+/** Discovery's explicitly bound settings; never consult the process singleton implicitly. */
+export function boundSettings(): Settings | undefined {
+	return settings ?? undefined;
+}
+
 export function defineCapability<T>(def: Omit<Capability<T>, "providers">): Capability<T> {
 	if (capabilities.has(def.id)) {
 		throw new Error(`Capability "${def.id}" is already defined`);

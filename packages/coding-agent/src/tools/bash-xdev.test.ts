@@ -818,7 +818,9 @@ test("protolens mixed with other commands renders the device card and a shell ca
 		expect(result.isError).not.toBe(true);
 		const rendered = renderBashResult(result, command, false, session);
 		const lines = rendered.split("\n").map(line => line.trim());
-		const device = lines.indexOf("▪ protolens://probe: --value one");
+		const headers = lines.filter(line => line.includes("protolens://probe: --value one"));
+		expect(headers).toHaveLength(1);
+		const device = lines.indexOf(headers[0]!);
 		expect(lines[device + 1]).toBe("probe:one");
 		// The shell card is the ordinary bash card: the whole command, and only what the rest printed.
 		expect(lines.slice(device + 2)).toContain(`▏  $ ${command}`);
@@ -934,7 +936,7 @@ test("failed protolens dispatches are flagged in composite cards", async () => {
 test("a backgrounded command renders as pending, not failed", () => {
 	const jobId = "bg_1";
 	const result = {
-		content: [{ type: "text", text: formatBackgroundNotice(jobId) }],
+		content: [{ type: "text", text: formatBackgroundNotice(jobId, undefined) }],
 		details: {
 			execution: { state: "running", collector: { state: "complete" }, output: { disposition: "unavailable" } },
 			async: { state: "running", jobId, type: "bash" },

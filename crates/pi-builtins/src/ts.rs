@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use std::{
 	io::{self, BufRead, BufReader, Write},
 	sync::atomic::Ordering,
@@ -30,9 +19,7 @@ const ARG_FORMAT: &str = "format";
 const DEFAULT_ABSOLUTE_FORMAT: &str = "%b %d %H:%M:%S";
 const DEFAULT_ELAPSED_FORMAT: &str = "%H:%M:%S";
 
-
 const SYSLOG_LEN: usize = 15;
-
 
 pub(crate) struct Ts {
 	matches: ArgMatches,
@@ -55,7 +42,6 @@ impl Utility for Ts {
 		}
 	}
 }
-
 
 fn command() -> Command {
 	Command::new(Ts::NAME)
@@ -91,14 +77,17 @@ fn command() -> Command {
 				.action(ArgAction::SetTrue),
 		)
 		.arg(Arg::new("help").long("help").action(ArgAction::Help))
-		.arg(Arg::new("version").long("version").action(ArgAction::Version))
+		.arg(
+			Arg::new("version")
+				.long("version")
+				.action(ArgAction::Version),
+		)
 		.arg(
 			Arg::new(ARG_FORMAT)
 				.value_name("FORMAT")
 				.help("strftime format string"),
 		)
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -135,8 +124,8 @@ fn timestamp_lines(matches: &ArgMatches, host: &mut Host) -> io::Result<i32> {
 		return Ok(130);
 	}
 	let cancel = host.cancel_flag();
+	let mut out = host.stdout_writer();
 	let mut reader = BufReader::new(&mut host.stdin);
-	let out = &mut host.stdout;
 	let start_wall = Timestamp::now();
 	let start_mono = Instant::now();
 	let mut last_wall = start_wall;
@@ -157,7 +146,7 @@ fn timestamp_lines(matches: &ArgMatches, host: &mut Host) -> io::Result<i32> {
 
 		match mode {
 			Mode::Relative => {
-				write_relative_line(out, content, Timestamp::now(), &tz)?;
+				write_relative_line(&mut out, content, Timestamp::now(), &tz)?;
 			},
 			Mode::Absolute => {
 				let zoned = Timestamp::now().to_zoned(tz.clone());
@@ -169,12 +158,20 @@ fn timestamp_lines(matches: &ArgMatches, host: &mut Host) -> io::Result<i32> {
 			Mode::SinceLast | Mode::SinceStart => {
 				let nanos = if monotonic {
 					let now = Instant::now();
-					let anchor = if mode == Mode::SinceLast { last_mono } else { start_mono };
+					let anchor = if mode == Mode::SinceLast {
+						last_mono
+					} else {
+						start_mono
+					};
 					last_mono = now;
 					i128::try_from(now.duration_since(anchor).as_nanos()).unwrap_or(i128::MAX)
 				} else {
 					let now = Timestamp::now();
-					let anchor = if mode == Mode::SinceLast { last_wall } else { start_wall };
+					let anchor = if mode == Mode::SinceLast {
+						last_wall
+					} else {
+						start_wall
+					};
 					last_wall = now;
 					now.duration_since(anchor).as_nanos().max(0)
 				};
@@ -187,18 +184,15 @@ fn timestamp_lines(matches: &ArgMatches, host: &mut Host) -> io::Result<i32> {
 		if had_newline {
 			out.write_all(b"\n")?;
 		}
-
-		out.flush()?;
 	}
+	out.flush()?;
 	Ok(0)
 }
-
 
 fn format_elapsed(nanos: i128, format: &str) -> Result<String, String> {
 	let stamp = Timestamp::from_nanosecond(nanos).map_err(|err| err.to_string())?;
 	strtime::format(format, &stamp.to_zoned(TimeZone::UTC)).map_err(|err| err.to_string())
 }
-
 
 fn local_timezone(tz: Option<&str>) -> TimeZone {
 	if let Some(tz) = tz
@@ -208,7 +202,6 @@ fn local_timezone(tz: Option<&str>) -> TimeZone {
 	}
 	TimeZone::try_system().unwrap_or(TimeZone::UTC)
 }
-
 
 fn expand_subseconds(format: &str) -> String {
 	let mut out = String::with_capacity(format.len());
@@ -247,7 +240,6 @@ fn expand_subseconds(format: &str) -> String {
 	out
 }
 
-
 const fn utf8_len(first: u8) -> usize {
 	match first {
 		0xc0..=0xdf => 2,
@@ -256,7 +248,6 @@ const fn utf8_len(first: u8) -> usize {
 		_ => 1,
 	}
 }
-
 
 fn parse_leading_timestamp(line: &[u8], year: i16, tz: &TimeZone) -> Option<(usize, Timestamp)> {
 	let token_len = line
@@ -274,7 +265,8 @@ fn parse_leading_timestamp(line: &[u8], year: i16, tz: &TimeZone) -> Option<(usi
 		}
 	}
 
-	if line.len() < SYSLOG_LEN || (line.len() > SYSLOG_LEN && !line[SYSLOG_LEN].is_ascii_whitespace())
+	if line.len() < SYSLOG_LEN
+		|| (line.len() > SYSLOG_LEN && !line[SYSLOG_LEN].is_ascii_whitespace())
 	{
 		return None;
 	}
@@ -287,7 +279,6 @@ fn parse_leading_timestamp(line: &[u8], year: i16, tz: &TimeZone) -> Option<(usi
 	let zoned = tm.to_datetime().ok()?.to_zoned(tz.clone()).ok()?;
 	Some((SYSLOG_LEN, zoned.timestamp()))
 }
-
 
 fn write_relative_line(
 	out: &mut impl Write,
@@ -303,7 +294,6 @@ fn write_relative_line(
 		out.write_all(line)
 	}
 }
-
 
 fn render_relative(then: Timestamp, now: Timestamp) -> String {
 	let secs = now.duration_since(then).as_secs();
@@ -324,9 +314,6 @@ fn render_relative(then: Timestamp, now: Timestamp) -> String {
 	}
 }
 
-
 pub(crate) fn ts_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ts, SE>()
 }
-
-

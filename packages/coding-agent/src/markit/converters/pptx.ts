@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { archiveEntryText, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
+import { ZipPackage } from "@oh-my-pi/pi-utils/ar";
 import { XMLParser } from "@oh-my-pi/pi-utils/xml";
 import type { ConversionResult, Converter, StreamInfo } from "../types";
 
@@ -104,7 +104,7 @@ export class PptxConverter implements Converter {
 	}
 
 	async convert(input: Buffer, streamInfo: StreamInfo): Promise<ConversionResult> {
-		const entries = await readArchiveEntries({ bytes: input, format: "zip" });
+		const zip = await ZipPackage.open(input);
 		const parser = new XMLParser({
 			ignoreAttributes: false,
 			attributeNamePrefix: "@_",
@@ -112,13 +112,13 @@ export class PptxConverter implements Converter {
 			processEntities: { maxTotalExpansions: 1_000_000 },
 		});
 
-		const presXml = archiveEntryText(entries, "ppt/presentation.xml");
+		const presXml = await zip.readText("ppt/presentation.xml");
 		if (!presXml) throw new Error("Invalid PPTX: missing presentation.xml");
 		const pres = parser.parse(presXml) as PresentationDoc;
 		const sldIdList = pres["p:presentation"]?.["p:sldIdLst"]?.["p:sldId"];
 		const sldIds = Array.isArray(sldIdList) ? sldIdList : sldIdList ? [sldIdList] : [];
 
-		const relsXml = archiveEntryText(entries, "ppt/_rels/presentation.xml.rels");
+		const relsXml = await zip.readText("ppt/_rels/presentation.xml.rels");
 		const rels = relsXml ? (parser.parse(relsXml) as RelationshipsDoc) : null;
 		const relList = rels?.Relationships?.Relationship;
 		const relArray = Array.isArray(relList) ? relList : relList ? [relList] : [];
@@ -135,7 +135,7 @@ export class PptxConverter implements Converter {
 		}
 
 		if (slidePaths.length === 0) {
-			const slideFiles = Object.keys(entries)
+			const slideFiles = [...zip.members]
 				.filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f))
 				.sort((a, b) => {
 					const na = parseInt(a.match(/slide(\d+)/)?.[1] || "0", 10);
@@ -148,14 +148,14 @@ export class PptxConverter implements Converter {
 		const sections: string[] = [];
 		let imageCount = 0;
 		for (let i = 0; i < slidePaths.length; i++) {
-			const slideXml = archiveEntryText(entries, slidePaths[i]);
+			const slideXml = await zip.readText(slidePaths[i]);
 			if (!slideXml) continue;
 			const slide = parser.parse(slideXml) as SlideDoc;
 			const spTree = slide["p:sld"]?.["p:cSld"]?.["p:spTree"];
 			if (!spTree) continue;
 
 			const slideRelsPath = `${slidePaths[i].replace("slides/slide", "slides/_rels/slide")}.rels`;
-			const slideRelsXml = archiveEntryText(entries, slideRelsPath);
+			const slideRelsXml = await zip.readText(slideRelsPath);
 			const slideRelMap = new Map<string, string>();
 			if (slideRelsXml) {
 				const slideRels = parser.parse(slideRelsXml) as RelationshipsDoc;
@@ -197,8 +197,7 @@ export class PptxConverter implements Converter {
 						return parts;
 					}, [])
 					.join("/");
-				const buf = entries.get(normalizedPath);
-				if (!buf) continue;
+				if (!zip.members.has(normalizedPath)) continue;
 				imageCount++;
 				const name =
 					pic["p:nvSpPr"]?.["p:cNvPr"]?.["@_name"] ||
@@ -209,6 +208,8 @@ export class PptxConverter implements Converter {
 						const ext = normalizedPath.split(".").pop() || "png";
 						const filename = `slide${i + 1}_${imageCount}.${ext}`;
 						const filepath = path.join(imageDir, filename);
+						const buf = await zip.readBytes(normalizedPath);
+						if (!buf) throw new Error(`Missing image ${normalizedPath}`);
 						await Bun.write(filepath, buf);
 						slideLines.push(`![${name}](${filepath})`);
 					} catch {
@@ -227,7 +228,7 @@ export class PptxConverter implements Converter {
 			}
 
 			const noteFile = slidePaths[i].replace("slides/slide", "notesSlides/notesSlide");
-			const noteXml = archiveEntryText(entries, noteFile);
+			const noteXml = await zip.readText(noteFile);
 			if (noteXml) {
 				const note = parser.parse(noteXml) as NotesDoc;
 				const noteSpTree = note["p:notes"]?.["p:cSld"]?.["p:spTree"];

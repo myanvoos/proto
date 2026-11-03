@@ -230,7 +230,8 @@ describe("StdinBuffer deferred flush and UTF-8 mode boundaries", () => {
 			buffer.process("\x1b]52;c;");
 			vi.advanceTimersByTime(5);
 			buffer.process("\x1b[A");
-			expect(received).toEqual(["\x1b]52;c;", "\x1b[A"]);
+			// The interrupted protocol head is never typed into the focused editor.
+			expect(received).toEqual(["\x1b[A"]);
 		} finally {
 			setKittyProtocolActive(false);
 			vi.useRealTimers();
@@ -299,5 +300,81 @@ describe("StdinBuffer raw-paste stall probe", () => {
 		buffer.process("aaa\rbbb\rccc");
 		expect(keys).toEqual([]);
 		expect(pastes).toEqual(["aaa\rbbb\rccc"]);
+	});
+});
+
+describe("StdinBuffer grammar-based string recovery", () => {
+	it("keeps a slow clipboard reply intact instead of typing its chunk-split base64", () => {
+		vi.useFakeTimers();
+		const { buffer, received } = collect();
+		try {
+			buffer.process("\x1b]5522;type=read:status=DATA;YW");
+			vi.advanceTimersByTime(1000);
+			buffer.process("Jj");
+			vi.advanceTimersByTime(1000);
+			buffer.process("ZA==\x1b");
+			buffer.process("\\");
+			expect(received).toEqual(["\x1b]5522;type=read:status=DATA;YWJjZA==\x1b\\"]);
+		} finally {
+			buffer.destroy();
+			vi.useRealTimers();
+		}
+	});
+
+	it("replays lone typed keys before the key that interrupts an abandoned reply", () => {
+		vi.useFakeTimers();
+		const { buffer, received } = collect();
+		try {
+			buffer.process("\x1b]5522;type=read:status=DATA;YW");
+			vi.advanceTimersByTime(10);
+			buffer.process("q");
+			buffer.process("\x7f");
+			expect(received).toEqual(["q", "\x7f"]);
+		} finally {
+			buffer.destroy();
+			vi.useRealTimers();
+		}
+	});
+
+	it("accepts DCS format effectors without mistaking their payload for key presses", () => {
+		const { buffer, received } = collect();
+		try {
+			buffer.process("\x1bP1$r0\t\r");
+			buffer.process("m\x1b\\");
+			expect(received).toEqual(["\x1bP1$r0\t\rm\x1b\\"]);
+		} finally {
+			buffer.destroy();
+		}
+	});
+
+	it("completes a dormant reply after replaying typing without leaking its late tail", () => {
+		vi.useFakeTimers();
+		const { buffer, received } = collect();
+		try {
+			buffer.process("\x1b]5522;type=read:status=DATA;YW");
+			vi.advanceTimersByTime(10);
+			buffer.process("q");
+			vi.advanceTimersByTime(5000);
+			expect(received).toEqual(["q"]);
+			buffer.process("JjZA==\x1b\\");
+			expect(received).toEqual(["q", "\x1b]5522;type=read:status=DATA;YWJjZA==\x1b\\"]);
+		} finally {
+			buffer.destroy();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not revive an abandoned head after its dormant window expires", () => {
+		vi.useFakeTimers();
+		const { buffer, received } = collect();
+		try {
+			buffer.process("\x1b]11;rgb:ffff");
+			vi.advanceTimersByTime(15001);
+			buffer.process("hello");
+			expect(received.join("")).toBe("hello");
+		} finally {
+			buffer.destroy();
+			vi.useRealTimers();
+		}
 	});
 });

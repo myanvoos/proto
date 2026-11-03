@@ -116,10 +116,11 @@ export const readToolRenderer = {
 
 	renderResult(
 		result: { content: Array<{ type: string; text?: string }>; details?: ReadToolDetails; isError?: boolean },
-		options: RenderResultOptions,
+		options: RenderResultOptions & { renderContext?: Record<string, unknown> },
 		uiTheme: Theme,
 		args?: ReadRenderArgs,
 	): Component {
+		const rawDetails = (options.renderContext?.rawDetails ?? result.details) as ReadToolDetails | undefined;
 		const urlDetails = result.details as ReadUrlToolDetails | undefined;
 		const baseRawPathForKind =
 			typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
@@ -141,7 +142,7 @@ export const readToolRenderer = {
 			const rawPath =
 				typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
 			const filePath =
-				formatReadPathLink(rawPath, { offset: args?.offset, sourcePath: readSourceFsPath(result.details) }) ||
+				formatReadPathLink(rawPath, { offset: args?.offset, sourcePath: readSourceFsPath(rawDetails) }) ||
 				sanitizeSingleLine(shortenPath(rawPath));
 			let title = filePath ? `Read ${filePath}` : "Read";
 			if (args?.offset !== undefined || args?.limit !== undefined) {
@@ -236,8 +237,8 @@ export const readToolRenderer = {
 		const suffix = details?.suffixResolution;
 
 		const displayPath = formatReadPathLink(rawPath, {
-			resolvedPath: details?.resolvedPath,
-			sourcePath: readSourceFsPath(details),
+			resolvedPath: rawDetails?.resolvedPath,
+			sourcePath: readSourceFsPath(rawDetails),
 			suffixResolution: suffix,
 			offset: args?.offset,
 		});

@@ -98,7 +98,7 @@ export interface TtsrInjectionEntry extends SessionEntryBase {
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
 
-	systemPrompt: string;
+	systemPrompt: string | string[];
 
 	task: string;
 

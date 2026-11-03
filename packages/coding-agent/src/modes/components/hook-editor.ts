@@ -130,6 +130,11 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		};
 	}
 
+	setText(text: string): void {
+		if (this.#disposed) return;
+		this.#editor.setText(text);
+	}
+
 	pasteText(text: string): void {
 		if (this.#disposed) return;
 		this.#editor.pasteText(text);

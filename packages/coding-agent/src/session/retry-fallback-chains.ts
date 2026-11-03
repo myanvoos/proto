@@ -66,7 +66,7 @@ export function parseRetryFallbackSelector(
 	if (!trimmed) return undefined;
 	const parsed = parseModelString(trimmed, {
 		allowMaxSuffix: true,
-		isLiteralModelId: (provider, id) => modelLookup?.find(provider, id) !== undefined,
+		isLiteralModelId: (provider, id) => provider !== undefined && modelLookup?.find(provider, id) !== undefined,
 	});
 	if (!parsed) return undefined;
 	return {
@@ -99,7 +99,7 @@ export function formatRetryFallbackSelector(model: Model, thinkingLevel: Thinkin
 	return formatModelSelectorValue(formatModelStringWithRouting(model), thinkingLevel);
 }
 
-function formatRetryFallbackBaseSelector(selector: RetryFallbackSelector): string {
+export function formatRetryFallbackBaseSelector(selector: RetryFallbackSelector): string {
 	return `${selector.provider}/${selector.id}`;
 }
 
@@ -135,7 +135,7 @@ export interface RetryFallbackRole {
 export function getRetryFallbackRole(settings: Settings, role: string): RetryFallbackRole | undefined {
 	const primary = settings.getModelRole(role);
 	const chain = settings.get("retry.fallbackChains")?.[role];
-	if (!primary || !Array.isArray(chain) || chain.length === 0) return undefined;
+	if (!primary || !Array.isArray(chain)) return undefined;
 	return { primary, chain };
 }
 

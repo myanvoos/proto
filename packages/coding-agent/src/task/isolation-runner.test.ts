@@ -132,7 +132,7 @@ test("backend metadata survives disk pressure even when the workspace cannot be 
 	vi.spyOn(git.repo, "resolve").mockResolvedValue(null);
 	vi.spyOn(git, "detachGitDir").mockResolvedValue("detached");
 	vi.spyOn(utils, "getWorktreeDir").mockReturnValue(base);
-	vi.spyOn(natives, "isoResolve").mockReturnValue({
+	vi.spyOn(natives, "isoResolve").mockResolvedValue({
 		kind: natives.IsoBackendKind.Overlayfs,
 		candidates: [natives.IsoBackendKind.Overlayfs],
 		fellBack: false,

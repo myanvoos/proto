@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	io::Write,
@@ -75,11 +71,7 @@ impl UNameOutput {
 		let machine = (opts.machine || opts.all).then(|| uname.machine().to_owned());
 		let os = (opts.os || opts.all).then(|| uname.osname().to_owned());
 
-
-
 		let processor = opts.processor.then(|| "unknown".into());
-
-
 
 		let hardware_platform = opts.hardware_platform.then(|| "unknown".into());
 
@@ -107,7 +99,6 @@ struct Options {
 	hardware_platform: bool,
 	os:                bool,
 }
-
 
 pub(crate) struct Uname {
 	matches: ArgMatches,
@@ -142,7 +133,8 @@ impl Utility for Uname {
 			let lossy = display.to_string_lossy();
 			host.error(
 				format!(
-					"invalid UTF-8 input {} encountered when converting to bytes on a platform that doesn't expose byte arguments",
+					"invalid UTF-8 input {} encountered when converting to bytes on a platform that \
+					 doesn't expose byte arguments",
 					lossy.quote()
 				),
 				1,
@@ -240,9 +232,6 @@ fn uu_app() -> Command {
 		)
 }
 
-
 pub(crate) fn uname_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Uname, SE>()
 }
-
-

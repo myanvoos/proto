@@ -37,7 +37,7 @@ pub fn is_supported_file(file_path: &Path, explicit_lang: Option<&str>) -> bool 
 	if explicit_lang.is_some() {
 		return true;
 	}
-	resolve_language(None, file_path).is_ok()
+	SupportLang::from_path(file_path).is_some()
 }
 
 pub fn compile_pattern(
@@ -136,8 +136,11 @@ const fn next_char_boundary(bytes: &[u8], index: usize) -> usize {
 	end
 }
 
-pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
-	let mut sorted: Vec<&Edit<String>> = edits.iter().collect();
+pub fn apply_edits<'e>(
+	content: &str,
+	edits: impl IntoIterator<Item = &'e Edit<String>>,
+) -> Result<String> {
+	let mut sorted: Vec<&Edit<String>> = edits.into_iter().collect();
 	sorted.sort_by(|a, b| {
 		a.position
 			.cmp(&b.position)
@@ -160,20 +163,24 @@ pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 		prev_end = edit.position.saturating_add(edit.deleted_length);
 	}
 
-	let mut output = content.to_string();
-	for edit in sorted.into_iter().rev() {
+	let mut output = String::with_capacity(content.len());
+	let mut cursor = 0;
+	for edit in sorted {
 		let start = edit.position;
-		let end = edit.position.saturating_add(edit.deleted_length);
-		if end > output.len() || start > end {
+		let end = start.saturating_add(edit.deleted_length);
+		if end > content.len() || start > end {
 			return Err(anyhow!("Computed edit range is out of bounds"));
 		}
-		if !output.is_char_boundary(start) || !output.is_char_boundary(end) {
+		if !content.is_char_boundary(start) || !content.is_char_boundary(end) {
 			return Err(anyhow!("Computed edit range is not on a UTF-8 character boundary"));
 		}
 		let replacement = std::str::from_utf8(&edit.inserted_text)
 			.map_err(|err| anyhow!("Replacement text is not valid UTF-8: {err}"))?;
-		output.replace_range(start..end, replacement);
+		output.push_str(&content[cursor..start]);
+		output.push_str(replacement);
+		cursor = end;
 	}
+	output.push_str(&content[cursor..]);
 	Ok(output)
 }
 

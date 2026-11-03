@@ -2,11 +2,13 @@ import * as path from "node:path";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import type { Component, ImageBudget } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText, sanitizeTextDeep } from "@oh-my-pi/pi-utils";
 import { InternalUrlRouter, PROTOLENS_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
+import { isRawSelector, parseSel } from "../../tools/read-selector";
 import { PREVIEW_LIMITS, sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
-import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
+import { fileHyperlink, renderCodeCell, renderMarkdownCell, tryResolveInternalUrlSync } from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
 import { ToolResultImagesComponent } from "./tool-result-images";
@@ -86,6 +88,7 @@ type ReadToolSuffixResolution = {
 };
 
 type ReadToolResultDetails = {
+	contentType?: string;
 	resolvedPath?: string;
 	suffixResolution?: {
 		from?: string;
@@ -124,6 +127,7 @@ function getSuffixResolution(details: ReadToolResultDetails | undefined): ReadTo
 type ReadDisplayPathSpec = { path: string; linkPath?: string };
 
 type ReadEntry = {
+	contentType?: string;
 	toolCallId: string;
 	path: string;
 	displayPaths?: ReadDisplayPathSpec[];
@@ -169,9 +173,12 @@ const READ_STATUS_RANK: Record<ReadEntry["status"], number> = {
 
 const URL_LIKE_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
-function getDisplayReadTargets(details: ReadToolResultDetails | undefined): ReadDisplayPathSpec[] | undefined {
+function getDisplayReadTargets(
+	details: ReadToolResultDetails | undefined,
+	rawDetails: ReadToolResultDetails | undefined,
+): ReadDisplayPathSpec[] | undefined {
 	if (!Array.isArray(details?.displayReadTargets)) return undefined;
-	const links = Array.isArray(details.displayReadTargetLinks) ? details.displayReadTargetLinks : undefined;
+	const links = Array.isArray(rawDetails?.displayReadTargetLinks) ? rawDetails.displayReadTargetLinks : undefined;
 	const targets: ReadDisplayPathSpec[] = [];
 	for (const [index, raw] of details.displayReadTargets.entries()) {
 		if (typeof raw !== "string") continue;
@@ -409,7 +416,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			path: rawPath,
 			status: "pending",
 		};
-		entry.path = rawPath;
+		entry.path = sanitizeText(rawPath);
+		entry.linkPath = path.isAbsolute(rawPath) ? rawPath : undefined;
 		this.#entries.set(toolCallId, entry);
 		this.#updateDisplay();
 	}
@@ -466,10 +474,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const entry = this.#entries.get(toolCallId);
 		if (!entry) return;
 		if (isPartial) return;
-		const details = result.details as ReadToolResultDetails | undefined;
+		const rawDetails = result.details as ReadToolResultDetails | undefined;
+		const details = sanitizeTextDeep(rawDetails) as ReadToolResultDetails | undefined;
+		entry.contentType = details?.contentType;
 		const suffixResolution = getSuffixResolution(details);
-		const displayPaths = getDisplayReadTargets(details);
-		entry.linkPath = readResultLinkPath(details);
+		const displayPaths = getDisplayReadTargets(details, rawDetails);
+		entry.linkPath = readResultLinkPath(rawDetails) ?? entry.linkPath;
 		if (suffixResolution) {
 			entry.path = displayPathWithSuffixResolution(entry.path, suffixResolution);
 			entry.correctedFrom = suffixResolution.from;
@@ -839,25 +849,42 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const component: Component = {
 			render: (width: number) => {
 				if (cachedLines && cachedWidth === width) return cachedLines;
-				cachedLines = renderCodeCell(
-					{
-						code: entry.contentText ?? "",
-						language: lang,
-						title,
-						outputTrusted: true,
-						status: entry.status === "success" ? "complete" : entry.status,
-						expanded,
-						codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,
-						codeStartLine: entry.codeStartLine,
-						codeLineNumbers: entry.codeLineNumbers,
-						width,
-					},
-					theme,
-				);
+				const markdown = entry.contentType === "text/markdown" && !isRawSelector(parseSel(split.sel));
+				cachedLines = markdown
+					? renderMarkdownCell(
+							{
+								content: entry.contentText ?? "",
+								title,
+								status: entry.status === "success" ? "complete" : entry.status,
+								expanded,
+								contentMaxLines: COLLAPSED_PREVIEW_LINES,
+								width,
+							},
+							theme,
+						)
+					: renderCodeCell(
+							{
+								code: entry.contentText ?? "",
+								language: lang,
+								title,
+								outputTrusted: true,
+								status: entry.status === "success" ? "complete" : entry.status,
+								expanded,
+								codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,
+								codeStartLine: entry.codeStartLine,
+								codeLineNumbers: entry.codeLineNumbers,
+								width,
+							},
+							theme,
+						);
 				cachedWidth = width;
 				return cachedLines;
 			},
 			invalidate: () => {
+				cachedWidth = undefined;
+				cachedLines = undefined;
+			},
+			releaseRenderCaches: () => {
 				cachedWidth = undefined;
 				cachedLines = undefined;
 			},
@@ -905,7 +932,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#formatStatus(status: ReadEntry["status"]): string {
 		if (status === "success") {
-			return theme.fg("text", theme.status.enabled);
+			return theme.fg("success", theme.status.success);
 		}
 		if (status === "warning") {
 			return theme.fg("warning", theme.status.warning);

@@ -1,64 +1,42 @@
-
-
 use std::borrow::Cow;
 
 use brush_parser::ast;
 
 use crate::{ExecutionParameters, Shell, env, expansion, extensions, variables};
 
-
-
 const MAX_VARIABLE_DEREF_DEPTH: u32 = 1024;
-
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
-
 	#[error("division by zero")]
 	DivideByZero,
-
 
 	#[error("exponent less than 0")]
 	NegativeExponent,
 
-
 	#[error("failed to tokenize expression")]
 	FailedToTokenizeExpression,
-
 
 	#[error("failed to expand expression: {0}")]
 	FailedToExpandExpression(String),
 
-
 	#[error("failed to access array")]
 	FailedToAccessArray,
-
 
 	#[error("failed to update environment")]
 	FailedToUpdateEnvironment,
 
-
 	#[error("failed to parse expression: {0}")]
 	ParseError(String),
 
-
 	#[error("expanding unset variable: {0}")]
 	ExpandingUnsetVariable(String),
-
 
 	#[error("expression recursion level exceeded")]
 	RecursionLimitExceeded,
 }
 
-
 pub(crate) trait ExpandAndEvaluate {
-
-
-
-
-
-
 	async fn eval(
 		&self,
 		shell: &mut Shell<impl extensions::ShellExtensions>,
@@ -78,30 +56,19 @@ impl ExpandAndEvaluate for ast::UnexpandedArithmeticExpr {
 	}
 }
 
-
-
-
-
-
-
-
-
 pub(crate) async fn expand_and_eval(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	expr: &str,
 	trace_if_needed: bool,
 ) -> Result<i64, EvalError> {
-
 	let options = expansion::ExpanderOptions { tilde_expand: false, ..Default::default() };
 	let expanded_self = expansion::basic_expand_word_with_options(shell, params, expr, &options)
 		.await
 		.map_err(|_e| EvalError::FailedToExpandExpression(expr.to_owned()))?;
 
-
 	let expr = brush_parser::arithmetic::parse(&expanded_self)
 		.map_err(|_e| EvalError::ParseError(expanded_self))?;
-
 
 	if trace_if_needed && shell.options().print_commands_and_arguments {
 		shell
@@ -109,18 +76,10 @@ pub(crate) async fn expand_and_eval(
 			.await;
 	}
 
-
 	expr.eval(shell)
 }
 
-
 pub trait Evaluatable {
-
-
-
-
-
-
 	fn eval(&self, shell: &mut Shell<impl extensions::ShellExtensions>) -> Result<i64, EvalError>;
 }
 
@@ -144,7 +103,6 @@ fn eval_expr_impl(
 		},
 		ast::ArithmeticExpr::Conditional(condition, then_expr, else_expr) => {
 			let conditional_eval = eval_expr_impl(condition, shell, depth)?;
-
 
 			if conditional_eval != 0 {
 				eval_expr_impl(then_expr, shell, depth)?
@@ -215,9 +173,6 @@ fn deref_lvalue(
 	let parsed_value = brush_parser::arithmetic::parse(value_str.as_ref())
 		.map_err(|_err| EvalError::ParseError(value_str.to_string()))?;
 
-
-
-
 	if matches!(parsed_value, ast::ArithmeticExpr::Literal(_)) {
 		return eval_expr_impl(&parsed_value, shell, depth);
 	}
@@ -253,10 +208,6 @@ fn apply_binary_op(
 	right: &ast::ArithmeticExpr,
 	depth: u32,
 ) -> Result<i64, EvalError> {
-
-
-
-
 	match op {
 		ast::BinaryOperator::LogicalAnd => {
 			let left = eval_expr_impl(left, shell, depth)?;
@@ -278,7 +229,6 @@ fn apply_binary_op(
 		},
 		_ => (),
 	}
-
 
 	let left = eval_expr_impl(left, shell, depth)?;
 	let right = eval_expr_impl(right, shell, depth)?;
@@ -401,9 +351,6 @@ fn assign(
 const fn bool_to_i64(value: bool) -> i64 {
 	if value { 1 } else { 0 }
 }
-
-
-
 
 const fn wrapping_pow_u64(mut base: i64, mut exponent: u64) -> i64 {
 	let mut result: i64 = 1;

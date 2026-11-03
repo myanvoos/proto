@@ -1,9 +1,9 @@
-import { bareModelId, parseKnownModel } from "../identity/classify";
+import { bareModelId, parseAnthropicModel, parseKnownModel, semverGte } from "../identity/classify";
 import { isClaude55ForcedToolChoiceRestricted, supportsAdaptiveThinkingDisplay } from "../identity/family";
 import type { ModelSpec, ResolvedBedrockCompat } from "../types";
 import { applyCompatOverrides } from "./apply";
 
-type BedrockCachePolicy = Omit<ResolvedBedrockCompat, "supportsForcedToolChoice">;
+type BedrockCachePolicy = Omit<ResolvedBedrockCompat, "supportsForcedToolChoice" | "supportsThinkingBindingControls">;
 
 const NO_EXPLICIT_CHECKPOINTS: BedrockCachePolicy = {
 	promptCacheMode: "none",
@@ -140,8 +140,14 @@ const BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS = 600_000;
 const BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS = 900_000;
 
 export function buildBedrockCompat(spec: ModelSpec<"bedrock-converse-stream">): ResolvedBedrockCompat {
+	const parsed = parseAnthropicModel(bareModelId(spec.requestModelId ?? spec.id));
 	const compat: ResolvedBedrockCompat = {
 		...detectedBedrockCompat(spec.id),
+		disabledThinking:
+			parsed?.kind === "haiku" && semverGte(parsed.version, "5.5") && !semverGte(parsed.version, "6")
+				? "disabled"
+				: undefined,
+		supportsThinkingBindingControls: true,
 		supportsForcedToolChoice: !isClaude55ForcedToolChoiceRestricted(spec.id),
 	};
 	if (requiresToolResultImageHoisting(spec.id)) compat.requiresToolResultImageHoisting = true;

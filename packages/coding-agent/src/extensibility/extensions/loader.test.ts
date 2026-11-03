@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { EventBus } from "../../utils/event-bus";
 import {
 	bindPreparedExtensions,
@@ -51,6 +52,39 @@ test("a declared extension manifest stays authoritative when its entries are mis
 	});
 
 	expect(discovered).toEqual([]);
+});
+
+test("an external extension can import the host catalog and register its derived provider models", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-extension-catalog-"));
+	tempDirs.push(tempDir);
+	const extensionPath = path.join(tempDir, "catalog.ts");
+	await Bun.write(
+		extensionPath,
+		`import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+export default function(api: ExtensionAPI) {
+ api.registerProvider("catalog-probe", {
+  api: "openai-completions", apiKey: "no-network", baseUrl: "https://fixture.invalid/v1",
+  models: getBundledModels("coralbricks").map(model => ({
+   id: "host-" + model.id.replaceAll("/", "--"), name: model.name, reasoning: false,
+   input: ["text"], cost: model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
+  })),
+ });
+}
+`,
+	);
+	const loaded = await loadExtensions([extensionPath], tempDir);
+	expect(
+		loaded.runtime.pendingProviderRegistrations.map(({ name, config }) => ({
+			name,
+			ids: config.models?.map(model => model.id),
+		})),
+	).toEqual([
+		{
+			name: "catalog-probe",
+			ids: getBundledModels("coralbricks").map(model => `host-${model.id.replaceAll("/", "--")}`),
+		},
+	]);
 });
 
 test("extension API methods keep their binding when destructured", async () => {

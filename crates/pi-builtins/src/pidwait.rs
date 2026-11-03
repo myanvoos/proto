@@ -1,10 +1,7 @@
-
-
 use brush_core::builtins;
 use clap::Parser;
 
 use crate::proc_match;
-
 
 #[derive(Parser)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
@@ -23,5 +20,3 @@ impl builtins::Command for PidwaitCommand {
 		proc_match::run(proc_match::ProcMatchMode::Wait, self.argv.clone(), context).await
 	}
 }
-
-

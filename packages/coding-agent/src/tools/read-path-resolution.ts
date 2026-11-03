@@ -15,15 +15,18 @@ export function isNotFoundError(error: unknown): boolean {
 
 /**
  * Named pipes and sockets stat like files but block (or fail obscurely) on open, so a read of one
- * never returns. Character devices such as `/dev/zero` and `/dev/null` do return, so they are left
- * alone.
+ * never returns. Devices can produce unbounded output or block on terminal input.
  */
 export function describeUnreadableFileType(stat: {
 	isFIFO?: () => boolean;
 	isSocket?: () => boolean;
+	isCharacterDevice?: () => boolean;
+	isBlockDevice?: () => boolean;
 }): string | undefined {
 	if (stat.isFIFO?.()) return "a named pipe (FIFO), which blocks until another process writes to it";
 	if (stat.isSocket?.()) return "a socket, which cannot be opened for reading";
+	if (stat.isCharacterDevice?.()) return "a character device, which may block or produce unbounded output";
+	if (stat.isBlockDevice?.()) return "a block device, not a regular file";
 	return undefined;
 }
 

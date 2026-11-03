@@ -11,6 +11,9 @@ export interface ContextFile {
 
 	depth?: number;
 
+	/** Extra filenames coexist with built-in context files at the same depth. */
+	additive?: boolean;
+
 	_source: SourceMeta;
 }
 
@@ -19,7 +22,10 @@ export const contextFileCapability = defineCapability<ContextFile>({
 	displayName: "Context Files",
 	description: "Persistent instruction files (CLAUDE.md, AGENTS.md, etc.) that guide agent behavior",
 
-	key: file => (file.level === "user" ? "user" : `project:${Math.max(0, file.depth ?? 0)}`),
+	key: file => {
+		const scope = file.level === "user" ? "user" : `project:${Math.max(0, file.depth ?? 0)}`;
+		return file.additive ? `${scope}:additive:${path.resolve(file.path)}` : scope;
+	},
 	toExtensionId: file => `context-file:${file.level}:${path.basename(file.path)}`,
 	validate: file => {
 		if (!file.path) return "Missing path";

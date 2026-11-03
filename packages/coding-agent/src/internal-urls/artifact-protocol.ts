@@ -89,6 +89,17 @@ export class ArtifactProtocolHandler implements ProtocolHandler {
 	readonly immutable = true;
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		const inMemory = !context?.localProtocolOptions?.getArtifactsDir?.()
+			? context?.getArtifactContent?.(parseArtifactId(url))
+			: null;
+		if (inMemory !== undefined && inMemory !== null) {
+			return {
+				url: url.href,
+				content: inMemory,
+				contentType: "text/plain",
+				size: Buffer.byteLength(inMemory, "utf8"),
+			};
+		}
 		const artifact = await resolveArtifactFile(url, context);
 
 		if (context?.pathOnly) {

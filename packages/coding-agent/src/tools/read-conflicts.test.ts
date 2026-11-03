@@ -75,3 +75,43 @@ test("conflict ids surfaced by a read resolve to their recorded block", async ()
 	expect(await readText(tool, "conflict://1/theirs")).toBe("theirs line");
 	await expect(readText(tool, "conflict://*")).rejects.toThrow("`<path>:conflicts` read selector");
 });
+
+test("registered conflicts follow moved blocks and retire after resolution", async () => {
+	const tool = readTool(["read", "bash"]);
+	await readText(tool, "merge.txt:conflicts");
+	const file = path.join(root, "merge.txt");
+	const original = await Bun.file(file).text();
+	await Bun.write(file, `preface\n${original}`);
+	expect(await readText(tool, "conflict://1/theirs:1-1:raw")).toBe("theirs line");
+	await Bun.write(file, "resolved\n");
+	await expect(readText(tool, "conflict://1/theirs")).rejects.toThrow("was resolved");
+});
+
+test("a changed conflict never inherits a stale id at the same source line", async () => {
+	const tool = readTool(["read"]);
+	await readText(tool, "merge.txt:conflicts");
+	const file = path.join(root, "merge.txt");
+	await Bun.write(file, (await Bun.file(file).text()).replace("ours line", "new ours"));
+	expect(await readText(tool, "merge.txt:conflicts")).toContain("#2");
+	await expect(readText(tool, "conflict://1")).rejects.toThrow("#2 in merge.txt");
+});
+
+test("raw conflict reads return only selected source lines without synthetic conflict notices", async () => {
+	const tool = readTool(["read"]);
+	expect(await readText(tool, "merge.txt:2-6:raw")).toBe(
+		"<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> feature",
+	);
+	expect(await readText(tool, "conflict://1/ours:raw")).toBe("ours line");
+});
+
+test("column-capped streamed conflict sides do not overwrite registered complete sides", async () => {
+	const tool = readTool(["read"]);
+	const file = path.join(root, "merge.txt");
+	const ours = "O".repeat(80_000);
+	await Bun.write(file, `<<<<<<< HEAD\n${ours}\n=======\ntheirs\n>>>>>>> feature\n${"F".repeat(4 * 1024 * 1024)}\n`);
+	await readText(tool, "merge.txt:conflicts");
+	// Default output columns are capped; the displayed side is only a retained prefix.
+	const display = await readText(tool, "merge.txt:1-5");
+	expect(display).toContain("…");
+	expect(await readText(tool, "conflict://1/ours:1-1:raw")).toBe(ours.slice(0, 50 * 1024));
+});

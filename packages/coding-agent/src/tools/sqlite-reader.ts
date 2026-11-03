@@ -1,4 +1,4 @@
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 import { isHeldSqliteStore } from "@oh-my-pi/pi-natives";
 import { formatBytes, replaceTabs, truncateToWidth } from "./render-utils";
 import { ToolError } from "./tool-errors";
@@ -112,7 +112,7 @@ type SqliteSelector =
 	| { kind: "schema"; table: string; sampleLimit: number }
 	| { kind: "row"; table: string; key: string }
 	| { kind: "query"; table: string; limit: number; offset: number; order?: string; where?: string }
-	| { kind: "raw"; sql: string };
+	| { kind: "raw"; sql: string; page?: { limit: number; offset: number } };
 
 type SqliteRowLookup = { kind: "pk"; column: string; type: string } | { kind: "rowid" };
 
@@ -306,6 +306,17 @@ function getPrimaryKeyColumns(db: Database, table: string): SqliteTableInfoRow[]
 	return getTableInfoRows(db, table)
 		.filter(column => column.pk > 0)
 		.sort((left, right) => left.pk - right.pk);
+}
+
+function resolveRowIdColumn(db: Database, table: string): string {
+	const columns = new Set(
+		db
+			.prepare<Pick<SqliteTableInfoRow, "name">, []>(`PRAGMA table_xinfo(${quoteSqliteIdentifier(table)})`)
+			.all()
+			.map(column => column.name.toLowerCase()),
+	);
+	for (const alias of ["rowid", "_rowid_", "oid"]) if (!columns.has(alias)) return quoteSqliteIdentifier(alias);
+	throw new ToolError(`SQLite table '${table}' shadows all ROWID aliases; row-key access is unavailable`);
 }
 
 function coerceIntegerKey(key: string, label: string): number | bigint {
@@ -521,14 +532,26 @@ export function parseSqliteSelector(subPath: string, queryString: string): Sqlit
 	const rawQuery = params.get("q");
 
 	if (rawQuery !== null) {
-		const otherKeys = [...params.keys()].filter(key => key !== "q");
-		if (normalizedSubPath || otherKeys.length > 0) {
-			throw new ToolError("SQLite raw queries cannot be combined with table selectors or pagination");
+		if (normalizedSubPath)
+			throw new ToolError(
+				`SQLite ?q= queries run against the whole database; drop ':${normalizedSubPath}' from the path`,
+			);
+		for (const keyName of params.keys()) {
+			if (!["q", "limit", "offset"].includes(keyName))
+				throw new ToolError(`SQLite ?q= queries take only limit and offset; put '${keyName}' into the SQL`);
 		}
-		if (!rawQuery.trim()) {
-			throw new ToolError("SQLite query parameter 'q' cannot be empty");
-		}
-		return { kind: "raw", sql: rawQuery };
+		if (!rawQuery.trim()) throw new ToolError("SQLite query parameter 'q' cannot be empty");
+		return {
+			kind: "raw",
+			sql: rawQuery,
+			page:
+				params.has("limit") || params.has("offset")
+					? {
+							limit: parseLimit(params.get("limit"), DEFAULT_QUERY_LIMIT),
+							offset: parseOffset(params.get("offset")),
+						}
+					: undefined,
+		};
 	}
 
 	if (!normalizedSubPath) {
@@ -655,7 +678,8 @@ export function queryRows(
 	table: string,
 	opts: { limit: number; offset: number; order?: string; where?: string },
 ): { columns: string[]; rows: Record<string, unknown>[]; totalCount: number } {
-	const columns = getTableColumns(db, table);
+	getTableMasterRow(db, table);
+	const columns = [...db.prepare<SqliteRow, []>(`SELECT * FROM ${quoteSqliteIdentifier(table)} LIMIT 0`).columnNames];
 	const validatedWhere = validateWhereClause(opts.where);
 	const whereClause = validatedWhere ? ` WHERE ${validatedWhere}` : "";
 	const orderClause = resolveOrderClause(opts.order, columns);
@@ -691,23 +715,43 @@ export function getRowByRowId(db: Database, table: string, key: string): Record<
 	getTableMasterRow(db, table);
 	const binding = coerceIntegerKey(key, "SQLite ROWID");
 	return db
-		.prepare<SqliteRow, SQLQueryBindings[]>(`SELECT * FROM ${quoteSqliteIdentifier(table)} WHERE rowid = ? LIMIT 1`)
+		.prepare<SqliteRow, SQLQueryBindings[]>(
+			`SELECT * FROM ${quoteSqliteIdentifier(table)} WHERE ${resolveRowIdColumn(db, table)} = ? LIMIT 1`,
+		)
 		.get(binding);
 }
 
 export function executeReadQuery(
 	db: Database,
 	sql: string,
+	page?: { limit: number; offset: number },
 ): { columns: string[]; rows: Record<string, unknown>[]; truncated: boolean } {
 	const statement = db.prepare<SqliteRow, []>(sql);
 	if (statement.paramsCount > 0) {
 		throw new ToolError("SQLite raw queries do not support bound parameters");
 	}
 	const columns = [...statement.columnNames];
+	if (page && new Set(columns).size === columns.length) {
+		let paged: Statement<SqliteRow, [number, number]> | undefined;
+		try {
+			paged = db.prepare(`SELECT * FROM (\n${sql.replace(/[\s;]+$/, "")}\n) LIMIT ? OFFSET ?`);
+		} catch {}
+		if (paged) {
+			const rows = paged.all(page.limit + 1, page.offset);
+			const truncated = rows.length > page.limit;
+			return { columns, rows: truncated ? rows.slice(0, page.limit) : rows, truncated };
+		}
+	}
+	const limit = page?.limit ?? MAX_RAW_QUERY_ROWS;
+	let skip = page?.offset ?? 0;
 	const rows: SqliteRow[] = [];
 	let truncated = false;
 	for (const row of statement.iterate()) {
-		if (rows.length >= MAX_RAW_QUERY_ROWS) {
+		if (skip > 0) {
+			skip--;
+			continue;
+		}
+		if (rows.length >= limit) {
 			truncated = true;
 			break;
 		}
@@ -766,7 +810,7 @@ export function updateRowByRowId(db: Database, table: string, key: string, data:
 	const bindings = entries.map(([, value]) => value);
 	bindings.push(coerceIntegerKey(key, "SQLite ROWID"));
 	const statement = db.prepare<SqliteRow, SQLQueryBindings[]>(
-		`UPDATE ${quoteSqliteIdentifier(table)} SET ${assignments} WHERE rowid = ?`,
+		`UPDATE ${quoteSqliteIdentifier(table)} SET ${assignments} WHERE ${resolveRowIdColumn(db, table)} = ?`,
 	);
 	return statement.run(...bindings).changes;
 }
@@ -789,7 +833,7 @@ export function deleteRowByRowId(db: Database, table: string, key: string): numb
 	getTableMasterRow(db, table);
 	const binding = coerceIntegerKey(key, "SQLite ROWID");
 	const statement = db.prepare<SqliteRow, SQLQueryBindings[]>(
-		`DELETE FROM ${quoteSqliteIdentifier(table)} WHERE rowid = ?`,
+		`DELETE FROM ${quoteSqliteIdentifier(table)} WHERE ${resolveRowIdColumn(db, table)} = ?`,
 	);
 	return statement.run(binding).changes;
 }
@@ -842,7 +886,15 @@ export function renderRow(row: Record<string, unknown>): string {
 export function renderTable(
 	columns: string[],
 	rows: Record<string, unknown>[],
-	meta: { totalCount: number; offset: number; limit: number; table: string; dbPath: string },
+	meta: {
+		totalCount: number;
+		offset: number;
+		limit: number;
+		table: string;
+		dbPath: string;
+		where?: string;
+		order?: string;
+	},
 ): string {
 	const parts = [buildAsciiTable(columns, rows)];
 	const shown = Math.min(meta.totalCount, meta.offset + rows.length);
@@ -850,14 +902,10 @@ export function renderTable(
 		const remaining = meta.totalCount - shown;
 		const nextOffset = meta.offset + rows.length;
 		const rowCount = remaining === 1 && rows.length === meta.limit ? "More rows" : `${remaining} more rows`;
-		parts.push(
-			truncateToWidth(
-				replaceTabs(
-					`[${rowCount}; append :${meta.table}?limit=${meta.limit}&offset=${nextOffset} to the database path to continue]`,
-				),
-				MAX_RENDER_WIDTH,
-			),
-		);
+		const params = new URLSearchParams({ limit: String(meta.limit), offset: String(nextOffset) });
+		if (meta.where !== undefined) params.set("where", meta.where);
+		if (meta.order !== undefined) params.set("order", meta.order);
+		parts.push(replaceTabs(`[${rowCount}; append :${meta.table}?${params} to the database path to continue]`));
 	}
 	return parts.join("\n");
 }

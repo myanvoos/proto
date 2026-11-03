@@ -56,6 +56,10 @@ export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): b
 	return severity === "concern" || severity === "blocker";
 }
 
+export function meetsAdvisorSeverity(severity: AdvisorSeverity | undefined, minimum: AdvisorSeverity): boolean {
+	return advisorSeverityRank(severity) >= advisorSeverityRank(minimum);
+}
+
 type AdvisorDeliveryChannel = "aside" | "steer" | "preserve";
 
 export function isAdvisorInterruptImmuneTurnActive(opts: {
@@ -69,6 +73,7 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
 
 export function resolveAdvisorDeliveryChannel(opts: {
 	severity: AdvisorSeverity | undefined;
+	continueSeverity: AdvisorSeverity;
 	autoResumeSuppressed: boolean;
 	streaming: boolean;
 	aborting: boolean;
@@ -77,11 +82,12 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	preserveOnly?: boolean;
 }): AdvisorDeliveryChannel {
 	if (opts.preserveOnly && !opts.streaming) return "preserve";
-	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)
-		return "preserve";
-	if (!isInterruptingSeverity(opts.severity)) return "aside";
+	const terminalIdle = opts.terminalAnswerNoQueuedWork === true && !opts.streaming && !opts.aborting;
+	if (terminalIdle) {
+		if (!meetsAdvisorSeverity(opts.severity, opts.continueSeverity)) return "preserve";
+	} else if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
-	if (opts.interruptImmuneTurnActive && opts.severity !== "blocker") return "aside";
+	if (opts.interruptImmuneTurnActive && opts.severity !== "blocker") return terminalIdle ? "preserve" : "aside";
 	return "steer";
 }
 

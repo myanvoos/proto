@@ -1,5 +1,6 @@
 import { isRetryableError, isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils";
 import {
+	ALIYUN_MM_GATEWAY_PATTERN,
 	CODEX_HTTP_BODY_READ_ERROR_PATTERN,
 	isRetryableStreamEnvelopeError,
 	isTransientStreamDropError,
@@ -26,7 +27,7 @@ export function isProviderRetryableError(error: unknown): boolean {
 	if (isUsageLimit(error)) return false;
 	const httpStatus = status(error);
 	if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429) {
-		return false;
+		return httpStatus === 400 && ALIYUN_MM_GATEWAY_PATTERN.test(error.message);
 	}
 	const msg = error.message.toLowerCase();
 	if (

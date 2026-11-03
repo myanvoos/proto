@@ -3,10 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, callstack};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct CallerCommand {
-
 	expr: Option<usize>,
 }
 
@@ -19,16 +17,12 @@ impl builtins::Command for CallerCommand {
 	) -> Result<ExecutionResult, Self::Error> {
 		let stack = context.shell.call_stack();
 
-
-
 		let expr = self.expr.unwrap_or(0);
-
 
 		let frames: Vec<_> = stack
 			.iter()
 			.filter(|frame| frame.frame_type.is_function() || frame.frame_type.is_script())
 			.collect();
-
 
 		let Some(calling_frame) = frames.get(expr + 1) else {
 			return Ok(ExecutionResult::general_error());
@@ -36,8 +30,6 @@ impl builtins::Command for CallerCommand {
 
 		let line = calling_frame.current_line().unwrap_or(1);
 		let filename = &calling_frame.source_info.source;
-
-
 
 		if self.expr.is_some() {
 			let function_name = match &calling_frame.frame_type {

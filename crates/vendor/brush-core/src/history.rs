@@ -1,5 +1,3 @@
-
-
 use std::{
 	io::{BufRead, Read, Write},
 	path::Path,
@@ -9,11 +7,7 @@ use chrono::Utc;
 
 use crate::error;
 
-
 type ItemId = i64;
-
-
-
 
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -24,15 +18,6 @@ pub struct History {
 }
 
 impl History {
-
-
-
-
-
-
-
-
-
 	pub fn import(reader: impl Read) -> Result<Self, error::Error> {
 		let mut history = Self::default();
 
@@ -43,19 +28,15 @@ impl History {
 			let line = match line_result {
 				Ok(line) => line,
 
-
-
 				Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
 					tracing::warn!("unreadable history line; {err}");
 					continue;
 				},
 
-
 				Err(err) => {
 					return Err(err.into());
 				},
 			};
-
 
 			if let Some(comment) = line.strip_prefix("#") {
 				if let Ok(seconds_since_epoch) = comment.trim().parse() {
@@ -80,22 +61,9 @@ impl History {
 		Ok(history)
 	}
 
-
-
-
-
-
-
 	pub fn get_by_id(&self, id: ItemId) -> Result<Option<&Item>, error::Error> {
 		Ok(self.id_map.get(&id))
 	}
-
-
-
-
-
-
-
 
 	pub fn update_by_id(&mut self, id: ItemId, item: Item) -> Result<(), error::Error> {
 		let existing_item = self
@@ -105,8 +73,6 @@ impl History {
 		*existing_item = item;
 		Ok(())
 	}
-
-
 
 	pub fn remove_nth_item(&mut self, n: usize) -> bool {
 		if let Some(id) = self.items.get(n).copied() {
@@ -126,12 +92,6 @@ impl History {
 		}
 	}
 
-
-
-
-
-
-
 	pub fn add(&mut self, mut item: Item) -> Result<ItemId, error::Error> {
 		let id = self.next_id;
 
@@ -143,12 +103,6 @@ impl History {
 
 		Ok(id)
 	}
-
-
-
-
-
-
 
 	pub fn delete_item_by_id(&mut self, id: ItemId) -> Result<(), error::Error> {
 		self.id_map.remove_mut(&id);
@@ -162,21 +116,11 @@ impl History {
 		Ok(())
 	}
 
-
 	pub fn clear(&mut self) -> Result<(), error::Error> {
 		self.id_map = rpds::HashTrieMapSync::new_sync();
 		self.items = rpds::VectorSync::new_sync();
 		Ok(())
 	}
-
-
-
-
-
-
-
-
-
 
 	pub fn flush(
 		&mut self,
@@ -185,7 +129,6 @@ impl History {
 		unsaved_items_only: bool,
 		write_timestamps: bool,
 	) -> Result<(), error::Error> {
-
 		let mut file_options = std::fs::File::options();
 
 		if append {
@@ -219,26 +162,13 @@ impl History {
 		Ok(())
 	}
 
-
-
-
-
-
 	pub fn search(&self, query: Query) -> Result<impl Iterator<Item = &self::Item>, error::Error> {
 		Ok(Search::new(self, query))
 	}
 
-
 	pub fn iter(&self) -> impl Iterator<Item = &self::Item> {
 		Search::all(self)
 	}
-
-
-
-
-
-
-
 
 	pub fn get(&self, index: usize) -> Option<&Item> {
 		if let Some(id) = self.items.get(index) {
@@ -248,36 +178,26 @@ impl History {
 		}
 	}
 
-
 	pub fn count(&self) -> usize {
 		self.items.len()
 	}
 }
 
-
 pub type ItemTimestamp = chrono::DateTime<Utc>;
-
 
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Item {
-
-	pub id:           ItemId,
+	pub id: ItemId,
 
 	pub command_line: String,
 
-	pub timestamp:    Option<ItemTimestamp>,
+	pub timestamp: Option<ItemTimestamp>,
 
-
-	pub dirty:        bool,
+	pub dirty: bool,
 }
 
 impl Item {
-
-
-
-
-
 	pub fn new(command_line: impl Into<String>) -> Self {
 		Self {
 			id:           0,
@@ -288,33 +208,25 @@ impl Item {
 	}
 }
 
-
 #[derive(Default)]
 pub struct Query {
-
-	pub direction:             Direction,
+	pub direction: Direction,
 
 	pub not_at_or_before_time: Option<ItemTimestamp>,
 
-	pub not_at_or_after_time:  Option<ItemTimestamp>,
+	pub not_at_or_after_time: Option<ItemTimestamp>,
 
-	pub not_at_or_before_id:   Option<ItemId>,
+	pub not_at_or_before_id: Option<ItemId>,
 
-	pub not_at_or_after_id:    Option<ItemId>,
+	pub not_at_or_after_id: Option<ItemId>,
 
-	pub max_items:             Option<i64>,
+	pub max_items: Option<i64>,
 
-	pub command_line_filter:   Option<CommandLineFilter>,
+	pub command_line_filter: Option<CommandLineFilter>,
 }
 
 impl Query {
-
-
-
-
-
 	pub fn includes(&self, item: &Item) -> bool {
-
 		if let Some(not_at_or_before_time) = &self.not_at_or_before_time {
 			if item
 				.timestamp
@@ -324,13 +236,11 @@ impl Query {
 			}
 		}
 
-
 		if let Some(not_at_or_after_time) = &self.not_at_or_after_time {
 			if item.timestamp.is_some_and(|ts| ts >= *not_at_or_after_time) {
 				return false;
 			}
 		}
-
 
 		if self
 			.not_at_or_before_id
@@ -339,14 +249,12 @@ impl Query {
 			return false;
 		}
 
-
 		if self
 			.not_at_or_after_id
 			.is_some_and(|query_id| item.id >= query_id)
 		{
 			return false;
 		}
-
 
 		if let Some(command_line_filter) = &self.command_line_filter {
 			match command_line_filter {
@@ -377,19 +285,15 @@ impl Query {
 	}
 }
 
-
 #[derive(Default)]
 pub enum Direction {
-
 	#[default]
 	Forward,
 
 	Backward,
 }
 
-
 pub enum CommandLineFilter {
-
 	Prefix(String),
 
 	Suffix(String),
@@ -399,35 +303,20 @@ pub enum CommandLineFilter {
 	Exact(String),
 }
 
-
 pub struct Search<'a> {
+	history: &'a History,
 
-	history:    &'a History,
-
-	query:      Query,
+	query: Query,
 
 	next_index: Option<usize>,
 
-	count:      usize,
+	count: usize,
 }
 
 impl<'a> Search<'a> {
-
-
-
-
-
-
 	pub fn all(history: &'a History) -> Self {
 		Self::new(history, Query::default())
 	}
-
-
-
-
-
-
-
 
 	pub fn new(history: &'a History, query: Query) -> Self {
 		let next_index = match query.direction {
@@ -466,7 +355,7 @@ impl<'a> Iterator for Search<'a> {
 	fn next(&mut self) -> Option<Self::Item> {
 		loop {
 			{
-       let index = self.next_index?;
+				let index = self.next_index?;
 
 				if index >= self.history.items.len() {
 					return None;
@@ -476,8 +365,6 @@ impl<'a> Iterator for Search<'a> {
 				self.increment_next_index();
 
 				if let Some(item) = self.history.id_map.get(&id) {
-
-
 					#[expect(clippy::cast_possible_truncation)]
 					#[expect(clippy::cast_sign_loss)]
 					if self
@@ -487,8 +374,6 @@ impl<'a> Iterator for Search<'a> {
 					{
 						return None;
 					}
-
-
 
 					if self.query.includes(item) {
 						self.count += 1;

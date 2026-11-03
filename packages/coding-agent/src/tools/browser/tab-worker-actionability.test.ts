@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { Browser, ElementHandle, Page } from "puppeteer-core";
 import { ensureChromiumExecutable, launchHeadlessBrowser, removeUserDataDir } from "./launch";
 import type { ObservationEntry } from "./tab-protocol";
-import { collectObservationEntries, type WorkerCore, waitForActionableHandle } from "./tab-worker";
+import { clickElement, collectObservationEntries, type WorkerCore, waitForActionableHandle } from "./tab-worker";
 
 const chromium = await ensureChromiumExecutable();
 const browserTest = chromium ? test : test.skip;
@@ -23,7 +23,7 @@ const STALL_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>stal
 <button id="go" style="display:inline-block">Go</button>
 </body></html>`;
 
-let server: ReturnType<typeof Bun.serve> | undefined;
+let server: Bun.Server<undefined> | undefined;
 let browser: Browser | undefined;
 let userDataDir: string | undefined;
 /** Swaps the viewport probe used by the code under test; the page and handles stay real. */
@@ -125,7 +125,7 @@ browserTest(
 				15_000,
 				"waitForActionableHandle",
 			);
-			await handle.click();
+			await clickElement(handle, "test click", AbortSignal.timeout(4_000));
 			expect(await page.title()).toBe("clicked");
 		} finally {
 			probeOverride = null;
@@ -136,7 +136,7 @@ browserTest(
 );
 
 browserTest(
-	"a viewport probe that never settles fails at the actionability deadline",
+	"clicking does not wait for a background tab viewport observer that never settles",
 	async () => {
 		const page = await openFixture("/");
 		const never = Promise.withResolvers<boolean>();
@@ -144,13 +144,14 @@ browserTest(
 			installProbeSwitch((await page.$("#go")) as ElementHandle);
 			probeOverride = () => never.promise;
 			const started = Date.now();
-			await expect(
-				guard(
-					waitForActionableHandle(page, "#go", 700, AbortSignal.timeout(700), "clicking", true),
-					15_000,
-					"waitForActionableHandle",
-				),
-			).rejects.toThrow(/Timed out clicking "#go" after 700ms/);
+			const handle = await guard(
+				waitForActionableHandle(page, "#go", 700, AbortSignal.timeout(700), "clicking", true),
+				15_000,
+				"waitForActionableHandle",
+			);
+			await clickElement(handle, "test click", AbortSignal.timeout(4_000));
+			expect(await page.title()).toBe("clicked");
+			await handle.dispose();
 			expect(Date.now() - started).toBeLessThan(5_000);
 		} finally {
 			probeOverride = null;

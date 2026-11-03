@@ -127,3 +127,18 @@ describe("AuthGatewaySessionStateStore", () => {
 		rotated.release();
 	});
 });
+
+it("shared tool serialization retains keyless conversation learning without changing existing conversation keys", () => {
+	const store = new AuthGatewaySessionStateStore();
+	const context = { ...turn("hi"), tools: [{ name: "read", description: "Read", parameters: { type: "object" } }] };
+	const first = store.acquire(keyless(context));
+	first.states.set("learned", trackedState());
+	first.release();
+	const continued = store.acquire({
+		...keyless({ ...context, messages: turn("hi", "hello", "next").messages }),
+		toolsJson: JSON.stringify(context.tools),
+	});
+	expect(continued.states.has("learned")).toBe(true);
+	continued.release();
+	store.close();
+});

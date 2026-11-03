@@ -2,7 +2,7 @@ import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 
 import { isValidNameSegment } from "./types";
 
@@ -45,14 +45,27 @@ export async function cachePlugin(
 
 	await fs.mkdir(cacheDir, { recursive: true });
 
-	const stagingPath = `${targetPath}.staging-${Date.now()}`;
+	const stagingPath = await fs.mkdtemp(`${targetPath}.staging-`);
+	const previousPath = `${stagingPath}.previous`;
+	let movedAside = false;
 	try {
 		await fs.cp(sourcePath, stagingPath, { recursive: true });
-		await fs.rm(targetPath, { recursive: true, force: true });
+		try {
+			await fs.rename(targetPath, previousPath);
+			movedAside = true;
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
 		await fs.rename(stagingPath, targetPath);
 	} catch (err) {
+		if (movedAside) await fs.rename(previousPath, targetPath).catch(() => {});
 		await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {});
 		throw err;
+	}
+	if (movedAside) {
+		await fs.rm(previousPath, { recursive: true, force: true }).catch(error => {
+			logger.warn("Could not remove the previous plugin cache copy", { path: previousPath, error });
+		});
 	}
 
 	return targetPath;

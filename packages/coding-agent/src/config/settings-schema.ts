@@ -48,6 +48,8 @@ import {
 	SERVICE_TIER_OPENAI_VALUES,
 } from "./service-tier";
 
+const EMPTY_AGENT_SOFT_REQUEST_BUDGET: Record<string, number | null> = {};
+
 const BUILTIN_BLOB_DESTINATION_METADATA: readonly BlobDestinationMetadata<BlobDestinationId>[] =
 	Object.values(BUILTIN_BLOB_DESTINATIONS);
 
@@ -272,7 +274,8 @@ const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["jobs"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	{
-		pattern: "^\\s*(cat|head|tail|less|more)\\s+",
+		pattern:
+			"^\\s*(?:(?:head|tail|less|more)\\s+|cat\\s+(?!\\s|(?:[02-9]>{1,2}\\|?\\s*[^\\s>|]\\S*\\s+)*(?:<<|1?>(?!&)|&>)))",
 		tool: "read",
 		message: "Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.",
 	},
@@ -339,7 +342,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Power (macOS)",
 			label: "Sleep Prevention",
 			description:
-				"Prevent macOS sleep during active sessions. Each level is cumulative — it adds the flags of all lower levels.",
+				"Prevent macOS sleep during active turns. Each level is cumulative — it adds the flags of all lower levels.",
 			options: [
 				{
 					value: "off",
@@ -349,7 +352,7 @@ export const SETTINGS_SCHEMA = {
 				{
 					value: "idle",
 					label: "Prevent Idle Sleep",
-					description: "Keep the system awake while a session is open (caffeinate -i)",
+					description: "Keep the system awake while a turn is in flight (caffeinate -i)",
 				},
 				{
 					value: "display",
@@ -396,6 +399,19 @@ export const SETTINGS_SCHEMA = {
 			label: "Advisor Sync Backlog",
 			description:
 				"Pause the main agent for up to 30 seconds if the advisor falls behind by this many turns. Off disables catch-up delays.",
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.continueSeverity": {
+		type: "enum",
+		values: ["nit", "concern", "blocker"] as const,
+		default: "concern",
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Continue Severity",
+			description:
+				"Minimum severity that continues a finished run. Lower-severity notes wait for your next message.",
 			condition: "advisorEnabled",
 		},
 	},
@@ -996,6 +1012,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.advisorCollapsedLines": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Advisor Collapsed Lines",
+			description: "Maximum rows below a collapsed advisor header; 0 shows the full preview",
+		},
+	},
+
 	"display.cacheMissMarker": {
 		type: "boolean",
 		default: false,
@@ -1485,6 +1512,29 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Retry Model Fallback",
 			description: "Allow retry recovery to switch to configured fallback models",
+		},
+	},
+	"retry.fallbackOn": {
+		type: "enum",
+		values: ["any", "usage-limit"] as const,
+		default: "any",
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Fallback On",
+			description:
+				"Walk configured fallback chains for any provider error, or only when coding-plan usage is exhausted.",
+		},
+	},
+	"retry.rateLimitWalksChain": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Rate Limit Walks Chain",
+			description:
+				"On rate limits, allow fallback chains to switch away from the model that signed replayed thinking before its retry budget is exhausted.",
 		},
 	},
 	"retry.usageAwareFallback": {
@@ -3086,6 +3136,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tools.xdevNotices": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Discovery & MCP",
+			label: "protolens:// Mount Notices",
+			description:
+				"Show device mount and unmount notices. The model still receives tool roster changes with its next prompt.",
+		},
+	},
+
 	"tools.xdevInlineDevices": {
 		type: "array",
 		default: EMPTY_STRING_ARRAY,
@@ -3358,6 +3420,11 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"orchestrator.agentSoftRequestBudget": {
+		type: "record",
+		default: EMPTY_AGENT_SOFT_REQUEST_BUDGET,
+	},
+
 	"orchestrator.softRequestBudgetNotice": {
 		type: "boolean",
 		default: true,
@@ -3379,7 +3446,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Workers",
 			label: "Maximum Per-Spawn Effort",
 			description:
-				"Maximum reasoning effort allowed for the fleet per-worker effort hint. Lower values prevent callers from escalating workers above this ceiling; the default preserves the model's full range.",
+				"Maximum reasoning effort allowed for per-worker effort hints and explicit per-call model selections. Lower values prevent callers from escalating workers above this ceiling; the default preserves the model's full range.",
 			options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 		},
 	},
@@ -3443,6 +3510,8 @@ export const SETTINGS_SCHEMA = {
 			description: "Display the actual model ID used by each worker in the worker widget status line",
 		},
 	},
+
+	"contextFiles.extra": { type: "array", default: EMPTY_STRING_ARRAY },
 
 	"skills.enabled": { type: "boolean", default: true },
 
@@ -4268,6 +4337,8 @@ export interface RetrySettings {
 	maxDelayMs: number;
 	waitForUsageReset: boolean;
 	modelFallback: boolean;
+	fallbackOn: "any" | "usage-limit";
+	rateLimitWalksChain: boolean;
 	usageAwareFallback: boolean;
 	usageReservePct: number;
 	usageReservePolicy: "confirm" | "auto" | "fail-closed";

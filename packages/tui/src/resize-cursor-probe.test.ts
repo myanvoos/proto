@@ -690,7 +690,7 @@ for (const answersCursorPosition of [true, false]) {
 
 /** Writes that restore the saved bottom anchor before erasing the live region. */
 function savedAnchorErases(writes: string[]): string[] {
-	return writes.filter(write => write.startsWith("\x1b[?25l\x1b8"));
+	return writes.filter(write => write.includes("\x1b[?25l\x1b8"));
 }
 
 test("a host that names itself through the identity probe keeps its saved anchor untouched", async () => {

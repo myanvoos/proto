@@ -56,10 +56,9 @@ import type { CompactionEntry, SessionEntry } from "./entries";
 import { NativeCompactionError } from "./errors";
 import {
 	type ConvertToLlm,
-	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
-	createCustomMessage,
 	defaultConvertToLlm,
+	getMessageFromEntry,
 } from "./messages";
 import {
 	assertRemoteCompactionInputFits,
@@ -88,6 +87,7 @@ import {
 	extractFileOpsFromMessage,
 	extractSelfSummaries,
 	type FileOperations,
+	incompleteOutputError,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
 	stripReadSelector,
@@ -128,26 +128,7 @@ function extractFileOperations(
 	return fileOps;
 }
 
-function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "message") {
-		return entry.message;
-	}
-	if (entry.type === "custom_message") {
-		return createCustomMessage(
-			entry.customType,
-			entry.content,
-			entry.display,
-			entry.details,
-			entry.timestamp,
-			entry.attribution,
-		);
-	}
-	if (entry.type === "branch_summary") {
-		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
-	}
-	return undefined;
-}
-
+/** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
 
@@ -158,6 +139,7 @@ export interface CompactionResult<T = unknown> {
 	details?: T;
 
 	preserveData?: Record<string, unknown>;
+	providerReplayThroughEntryId?: string;
 }
 
 export interface CompactionSettings {
@@ -175,6 +157,8 @@ export interface CompactionSettings {
 	remoteStreamingV2Enabled?: boolean;
 	v2RetainedMessageBudget?: number;
 }
+
+export const COMPACTION_RECOVERY_BAND = 0.8;
 
 export const DEFAULT_RESERVE_TOKENS = 16384;
 
@@ -283,13 +267,14 @@ export function compactionContextTokens(providerContextTokens: number, storedCon
 	return Math.max(Math.max(0, providerContextTokens), Math.max(0, storedConversationEstimate));
 }
 
-function windowThresholdCeiling(contextWindow: number, settings: CompactionSettings): number {
+export function promptBudgetTokens(contextWindow: number, settings: CompactionSettings): number {
 	return Math.max(0, Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)));
 }
 
 export function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
 	const thresholdTokens = settings.thresholdTokens;
 	if (typeof thresholdTokens === "number" && Number.isFinite(thresholdTokens) && thresholdTokens > 0) {
+		if (thresholdTokens >= contextWindow) return promptBudgetTokens(contextWindow, settings);
 		return Math.min(contextWindow - 1, Math.max(1, thresholdTokens));
 	}
 
@@ -300,7 +285,7 @@ export function resolveThresholdTokens(contextWindow: number, settings: Compacti
 	}
 
 	// Preserve working context until the reserve is needed; large windows are not a reason to discard more.
-	return windowThresholdCeiling(contextWindow, settings);
+	return promptBudgetTokens(contextWindow, settings);
 }
 
 function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
@@ -495,6 +480,7 @@ export interface SummaryOptions {
 	sessionId?: string;
 
 	promptCacheKey?: string;
+	remotePromptCacheKey?: string;
 
 	providerSessionState?: Map<string, ProviderSessionState>;
 
@@ -797,6 +783,7 @@ export async function generateHandoffFromContext(
 	if (response.stopReason === "error") {
 		throw createSummarizationError("Handoff generation failed", response);
 	}
+	if (response.stopReason === "length") throw new Error(incompleteOutputError("Handoff generation failed"));
 	if (options.requireComplete && response.stopReason !== "stop") {
 		throw new Error(`Self-memory consolidation did not finish (${response.stopReason})`);
 	}
@@ -984,6 +971,7 @@ export interface CompactionPreparation {
 	fileOps: FileOperations;
 
 	settings: CompactionSettings;
+	lastSummarizedEntryId?: string;
 }
 
 /**
@@ -1096,9 +1084,27 @@ export function prepareCompaction(
 		compactionMessages.push(message);
 	}
 
-	const lastUsage = getLastAssistantUsage(pathEntries);
+	const postCompactionStart = Math.max(prevCompactionIndex, resetBoundaryIndex) + 1;
+	const lastUsage = getLastAssistantUsage(
+		postCompactionStart > 0 ? pathEntries.slice(postCompactionStart) : pathEntries,
+	);
 	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
 	let keepRecentTokens = settings.keepRecentTokens;
+	if (activeModel?.contextWindow && activeModel.contextWindow > 0) {
+		// The compacted context (kept tail + summary/prompt overhead) must land in
+		// the recovery band under the configured trigger, or it fires again at once.
+		// The trigger is the user's choice, so the kept tail gives way, not the trigger:
+		// it gets what the band leaves after the reserve floor (an upper bound on the
+		// summary), or half the band when the floor alone fills it.
+		const contextWindow = activeModel.contextWindow;
+		const recoveryBand = Math.floor(resolveThresholdTokens(contextWindow, settings) * COMPACTION_RECOVERY_BAND);
+		const reserveFloor = Math.min(
+			resolveBudgetReserveTokens(contextWindow, settings),
+			settings.reserveTokens ?? DEFAULT_RESERVE_TOKENS,
+		);
+		const tailBudget = recoveryBand > reserveFloor ? recoveryBand - reserveFloor : Math.floor(recoveryBand / 2);
+		keepRecentTokens = Math.min(keepRecentTokens, Math.max(1, tailBudget));
+	}
 	if (lastUsage) {
 		const estimatedTokens = tokenizer.countMessages(compactionMessages);
 		const promptTokens = calculatePromptTokens(lastUsage);
@@ -1144,6 +1150,7 @@ export function prepareCompaction(
 		messagesToSummarize,
 		turnPrefixMessages,
 		recentMessages,
+		lastSummarizedEntryId: compactionEntries[cutPoint.firstKeptEntryIndex - 1]?.id,
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,
@@ -1225,6 +1232,35 @@ export async function compact(
 	signal?: AbortSignal,
 	options?: SummaryOptions,
 ): Promise<CompactionResult> {
+	const canCompactPrefix = preparation.lastSummarizedEntryId !== undefined && preparation.recentMessages.length > 0;
+	try {
+		return await compactPrepared(preparation, model, apiKey, customInstructions, signal, options, !canCompactPrefix);
+	} catch (error) {
+		const failure = error instanceof NativeCompactionError ? error.cause : error;
+		if (signal?.aborted || !canCompactPrefix || !AIError.is(AIError.classify(failure), AIError.Flag.ContextOverflow))
+			throw error;
+		const prefix = await compactPrepared(
+			{ ...preparation, recentMessages: [] },
+			model,
+			apiKey,
+			customInstructions,
+			signal,
+			options,
+			true,
+		);
+		return { ...prefix, providerReplayThroughEntryId: preparation.lastSummarizedEntryId };
+	}
+}
+
+async function compactPrepared(
+	preparation: CompactionPreparation,
+	model: Model,
+	apiKey: ApiKey,
+	customInstructions: string | undefined,
+	signal: AbortSignal | undefined,
+	options: SummaryOptions | undefined,
+	rewriteOutputs: boolean,
+): Promise<CompactionResult> {
 	const {
 		firstKeptEntryId,
 		messagesToSummarize,
@@ -1257,6 +1293,10 @@ export async function compact(
 		thinkingLevel: options?.thinkingLevel,
 		sessionId: options?.sessionId,
 		promptCacheKey: options?.promptCacheKey,
+		remotePromptCacheKey:
+			options && Object.hasOwn(options, "remotePromptCacheKey")
+				? options.remotePromptCacheKey
+				: options?.promptCacheKey,
 		providerSessionState: options?.providerSessionState,
 		preferWebsockets: options?.preferWebsockets,
 		codexCompaction: options?.codexCompaction,
@@ -1297,7 +1337,16 @@ export async function compact(
 			previousRemoteCompaction?.provider === model.provider
 				? previousRemoteCompaction.replacementHistory
 				: undefined;
-		const messages = (summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages);
+		const convertToLlm = summaryOptions.convertToLlm ?? defaultConvertToLlm;
+		const messages = convertToLlm(remoteMessages);
+		// Replacement history keeps what the user wrote. Summaries, archive
+		// migrations, and custom/hook messages can serialize as user-role items
+		// too, so pick the user's own messages before serialization erases that,
+		// then serialize each one exactly as the request does.
+		const userMessages = convertToLlm(
+			[...messagesToSummarize, ...turnPrefixMessages, ...recentMessages].filter(message => message.role === "user"),
+		);
+		const retainedUserItems: unknown[] = [...(previousReplacementHistory ?? [])];
 		const remoteSystemPrompt = summaryOptions.remoteSystemPrompt ?? [nativeCompactionPrompt];
 		let codexBody: OpenAICodexCompactionBody | undefined;
 		let remoteHistory: Array<Record<string, unknown>>;
@@ -1319,7 +1368,7 @@ export async function compact(
 					forceReasoningOff: summaryOptions.thinkingLevel === ThinkingLevel.Off,
 					responsesLite: model.useResponsesLite,
 					sessionId: summaryOptions.sessionId,
-					promptCacheKey: summaryOptions.promptCacheKey,
+					promptCacheKey: summaryOptions.remotePromptCacheKey,
 					providerSessionState: summaryOptions.providerSessionState,
 					codexCompaction: createOpenAICodexCompactionRequestContext({
 						context: summaryOptions.codexCompaction,
@@ -1339,8 +1388,19 @@ export async function compact(
 			}
 			remoteHistory = stripOpenAIResponsesOutputOnlyStatusesForReplay(nativeInput);
 			codexBody.input = remoteHistory;
+			for (const message of userMessages) {
+				const userBody = await buildTransformedCodexRequestBody(
+					model,
+					{ messages: [message] },
+					{ responsesLite: model.useResponsesLite },
+				);
+				retainedUserItems.push(...(userBody.input ?? []));
+			}
 		} else {
 			remoteHistory = buildOpenAiResponsesCompactionInput(messages, model, previousReplacementHistory);
+			for (const message of userMessages) {
+				retainedUserItems.push(...buildOpenAiResponsesCompactionInput([message], model, undefined));
+			}
 		}
 		if (remoteHistory.length > 0) {
 			try {
@@ -1362,6 +1422,7 @@ export async function compact(
 					model.contextWindow,
 					instructions,
 					tools,
+					{ rewriteOutputs },
 				);
 				if (trimmed.rewrittenOutputs > 0) {
 					logger.info("Rewrote trailing tool outputs before OpenAI V2 remote compaction", {
@@ -1376,8 +1437,9 @@ export async function compact(
 				assertRemoteCompactionInputFits(trimmed, model);
 				const requestOptions = {
 					sessionId: summaryOptions.sessionId,
-					promptCacheKey: summaryOptions.promptCacheKey,
+					promptCacheKey: summaryOptions.remotePromptCacheKey,
 					retainedMessageBudget: settings.v2RetainedMessageBudget,
+					retainedUserItems,
 				};
 				const request = codexBody
 					? buildCompactionV2RequestFromBody(model, { ...codexBody, input: trimmed.input }, requestOptions)
@@ -1402,11 +1464,18 @@ export async function compact(
 			} catch (err) {
 				if (signal?.aborted) throw err;
 				nativeCompactionError = selectNativeCompactionError(nativeCompactionError, err);
-				logger.warn("OpenAI V2 remote compaction failed, falling back to V1 remote compaction", {
-					error: err instanceof Error ? err.message : String(err),
-					model: model.id,
-					provider: model.provider,
-				});
+				// Codex has no V1 `/responses/compact` endpoint unless one is
+				// configured, so only claim the fallback when it will actually run.
+				logger.warn(
+					shouldUseOpenAiRemoteCompaction(model)
+						? "OpenAI V2 remote compaction failed, falling back to V1 remote compaction"
+						: "OpenAI V2 remote compaction failed",
+					{
+						error: err instanceof Error ? err.message : String(err),
+						model: model.id,
+						provider: model.provider,
+					},
+				);
 			}
 		}
 	}
@@ -1439,14 +1508,16 @@ export async function compact(
 							signal,
 							{
 								fetch: summaryOptions.fetch,
+								rewriteOutputs,
 								sessionId: summaryOptions.sessionId,
+								promptCacheKey: summaryOptions.remotePromptCacheKey,
 								providerSessionState: summaryOptions.providerSessionState,
 								codexCompaction: summaryOptions.codexCompaction,
 							},
 						),
 					{ signal },
 				);
-				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+				preserveData = withOpenAiRemoteCompactionPreserveData(preserveData, remote);
 				usedRemoteCompaction = true;
 			} catch (err) {
 				if (signal?.aborted) throw err;

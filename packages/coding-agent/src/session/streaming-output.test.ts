@@ -692,3 +692,15 @@ test("column clipping alone never reports a byte limit", async () => {
 	expect(notice).toContain("Showing lines 1-2 of 2");
 	expect(notice).not.toContain("limit)");
 });
+
+test("replacement summaries obey the same column cap as streamed output", async () => {
+	const sink = new OutputSink({ maxColumns: 20 });
+	sink.push("old output");
+	sink.replace(`${"x".repeat(100)}\nshort`, { summarized: true });
+	const result = await sink.dump();
+	expect(result.output).toContain("short");
+	expect(result.output).not.toContain("x".repeat(21));
+	expect(result.columnMax).toBe(20);
+	expect(result.columnTruncatedLines).toBe(1);
+	expect(result.totalBytes).toBe(106);
+});

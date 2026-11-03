@@ -1,5 +1,3 @@
-
-
 use std::{io::Read, path::Path};
 
 use crate::{
@@ -9,7 +7,6 @@ use crate::{
 };
 
 impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
-
 	pub fn default_exec_params(&self) -> ExecutionParameters {
 		let mut params = ExecutionParameters::default();
 
@@ -39,13 +36,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		}
 	}
 
-
-
-
-
-
-
-
 	pub async fn source_script<S: Into<String>, P: AsRef<Path>, I: Iterator<Item = S>>(
 		&mut self,
 		path: P,
@@ -61,15 +51,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			)
 			.await
 	}
-
-
-
-
-
-
-
-
-
 
 	async fn parse_and_execute_script_file<
 		S: Into<String>,
@@ -90,6 +71,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 		let opened_file: openfiles::OpenFile = self
 			.open_file(&options, path, params)
+			.await
 			.map_err(|e| error::ErrorKind::FailedSourcingFile(path.to_owned(), e))?;
 
 		if opened_file.is_dir() {
@@ -108,24 +90,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			.source_file(opened_file, &source_info, args, params, call_type)
 			.await?;
 
-
-
-
 		if matches!(result.next_control_flow, ExecutionControlFlow::ReturnFromFunctionOrScript) {
 			result.next_control_flow = ExecutionControlFlow::Normal;
 		}
 
 		Ok(result)
 	}
-
-
-
-
-
-
-
-
-
 
 	async fn source_file<F: Read, S: Into<String>, I: Iterator<Item = S>>(
 		&mut self,
@@ -135,11 +105,14 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		params: &ExecutionParameters,
 		call_type: callstack::ScriptCallType,
 	) -> Result<ExecutionResult, error::Error> {
-		let mut reader = std::io::BufReader::new(file);
-		let mut parser = brush_parser::Parser::new(&mut reader, &self.parser_options());
-
-		tracing::debug!(target: trace_categories::PARSE, "Parsing sourced file: {}", source_info.source);
-		let parse_result = parser.parse_program();
+		// The parser reads the whole script; the file closes before the script
+		// runs, so a nested `source` does not hold one descriptor per level.
+		let parse_result = {
+			let mut reader = std::io::BufReader::new(file);
+			let mut parser = brush_parser::Parser::new(&mut reader, &self.parser_options());
+			tracing::debug!(target: trace_categories::PARSE, "Parsing sourced file: {}", source_info.source);
+			parser.parse_program()
+		};
 
 		let script_positional_args = args.map(Into::into);
 
@@ -156,14 +129,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		result
 	}
 
-
-
-
-
-
-
-
-
 	pub async fn run_string<S: Into<String>>(
 		&mut self,
 		command: S,
@@ -176,22 +141,11 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			.await
 	}
 
-
-
-
-
-
-
-
-
-
-
 	pub async fn run_dash_c_command<S: Into<String>>(
 		&mut self,
 		command: S,
 	) -> Result<ExecutionResult, error::Error> {
 		self.start_command_string_mode();
-
 
 		let params = self.default_exec_params();
 		let source_info = SourceInfo::from("-c");
@@ -199,21 +153,10 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 		self.end_command_string_mode()?;
 
-
 		let _ = self.on_exit().await;
 
 		Ok(result)
 	}
-
-
-
-
-
-
-
-
-
-
 
 	pub async fn run_script<S: Into<String>, P: AsRef<Path>, I: Iterator<Item = S>>(
 		&mut self,
@@ -230,7 +173,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			)
 			.await?;
 
-
 		let _ = self.on_exit().await;
 
 		Ok(result)
@@ -242,8 +184,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		source_info: &crate::SourceInfo,
 		params: &ExecutionParameters,
 	) -> Result<ExecutionResult, error::Error> {
-
-
 		let result = match parse_result {
 			Ok(prog) => self.run_program(prog, params).await,
 			Err(parse_err) => Err(
@@ -252,11 +192,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			),
 		};
 
-
 		match result {
 			Ok(result) => Ok(result),
 			Err(err) => {
-				let _ = self.display_error(&mut params.stderr(self), &err);
+				if params.reports_errors() {
+					let _ = self.display_error(&mut params.stderr(self), &err);
+				}
 
 				let result = err.into_result(self);
 				self.set_last_exit_status(result.exit_code.into());
@@ -266,13 +207,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		}
 	}
 
-
-
-
-
-
-
-
 	pub async fn run_program(
 		&mut self,
 		program: brush_parser::ast::Program,
@@ -280,7 +214,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	) -> Result<ExecutionResult, error::Error> {
 		program.execute(self, params).await
 	}
-
 
 	pub fn eval_arithmetic(
 		&mut self,

@@ -7,7 +7,7 @@ import { initializeWithSettings } from "../../capability";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import { Settings } from "../../config/settings";
 import { clearClaudePluginRootsCache } from "../../discovery/helpers";
-import { discoverCustomToolPaths } from "./loader";
+import { discoverCustomToolPaths, loadCustomTools } from "./loader";
 
 let root: string;
 let project: string;
@@ -64,4 +64,47 @@ test("automatic discovery returns executable modules only, without metadata shad
 		path.join("project", ".proto", "tools", "nested", "index.ts"),
 		path.join("project", ".proto", "tools", "project-module.ts"),
 	]);
+});
+
+test("custom tool modules evaluate once while each session invokes the factory with its own API", async () => {
+	const toolPath = path.join(root, "once.mjs");
+	const countPath = path.join(root, "evaluations.txt");
+	await Bun.write(
+		toolPath,
+		`
+const countPath = ${JSON.stringify(countPath)};
+const count = Number(await Bun.file(countPath).text().catch(() => "0")) + 1;
+await Bun.write(countPath, String(count));
+export default api => [{
+	name: api.cwd.endsWith("first") ? "first_session" : "second_session",
+	description: "Module evaluation probe",
+	parameters: api.arktype({}),
+	execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+}];
+`,
+	);
+	const first = await loadCustomTools([{ path: toolPath }], path.join(root, "first"), []);
+	const second = await loadCustomTools([{ path: toolPath }], path.join(root, "second"), []);
+	expect(first.errors).toEqual([]);
+	expect(second.errors).toEqual([]);
+	expect(first.tools.map(entry => entry.tool.name)).toEqual(["first_session"]);
+	expect(second.tools.map(entry => entry.tool.name)).toEqual(["second_session"]);
+	expect(await Bun.file(countPath).text()).toBe("1");
+});
+
+test("transpiled CommonJS default factories load as tools rather than failing the default-function check", async () => {
+	const toolPath = path.join(root, "transpiled.cjs");
+	await Bun.write(
+		toolPath,
+		`
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.default = api => [{
+	name: "commonjs_tool", description: "CommonJS tool", parameters: api.arktype({}),
+	execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+}];
+`,
+	);
+	const loaded = await loadCustomTools([{ path: toolPath }], project, []);
+	expect(loaded.errors).toEqual([]);
+	expect(loaded.tools.map(entry => entry.tool.name)).toEqual(["commonjs_tool"]);
 });

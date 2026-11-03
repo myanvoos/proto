@@ -359,18 +359,22 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 			let toolConfig = toolPlan.toolConfig;
 			const sentinelInjected = toolPlan.sentinelInjected;
 			let additionalModelRequestFields = buildAdditionalModelRequestFields(model, options);
-			const prefixMismatchBehavior = model.thinking?.prefixBinding
-				? (options.anthropicPrefixMismatchBehavior ?? "drop_block")
-				: undefined;
+			const thinkingDisabled =
+				isRecord(additionalModelRequestFields?.thinking) &&
+				additionalModelRequestFields.thinking.type === "disabled";
+			const prefixMismatchBehavior =
+				!thinkingDisabled && model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls !== false
+					? (options.anthropicPrefixMismatchBehavior ?? "drop_block")
+					: undefined;
 
 			const forcedChoice = toolConfig?.toolChoice?.any || toolConfig?.toolChoice?.tool;
 			if (toolConfig && forcedChoice && model.compat.supportsForcedToolChoice === false) {
 				// Some models (Opus/Sonnet 5.5) reject forced tool use outright; keep the tools offered under `auto`.
 				toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
-			} else if (toolConfig && forcedChoice && additionalModelRequestFields) {
+			} else if (toolConfig && forcedChoice && additionalModelRequestFields && !thinkingDisabled) {
 				// Bedrock rejects thinking + forced tool_choice. Prefix-bound (Fable) adaptive thinking cannot be
 				// disabled, so its forced choice is downgraded to auto instead.
-				if (prefixMismatchBehavior) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
+				if (model.thinking?.prefixBinding) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
 				else additionalModelRequestFields = undefined;
 			}
 			if (prefixMismatchBehavior) {
@@ -1128,7 +1132,12 @@ function buildAdditionalModelRequestFields(
 	options: BedrockOptions,
 ): Record<string, unknown> | undefined {
 	const reasoning = options.reasoning;
-	if (!reasoning || !model.reasoning) return undefined;
+	if (!model.reasoning) return undefined;
+	if (!reasoning) {
+		return model.compat.disabledThinking === "disabled"
+			? { thinking: { type: "disabled" }, output_config: { effort: "low" } }
+			: undefined;
+	}
 
 	const mode = model.thinking?.mode;
 	if (mode === "anthropic-adaptive") {

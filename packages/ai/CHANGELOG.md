@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Breaking Changes
+
+- OpenAI-compatible request setup now requires the model API so route-specific cache policies cannot silently fall back.
+
+### Added
+
+- Sign in to CoralBricks, SambaNova, Inception, Modular and Scaleway with validated API keys.
+- Configure broker provider/account visibility and reclaim recovered higher-priority accounts.
+- Show Codex workspace spend caps and distinguish Cursor subscription usage from prepaid credit.
+
+### Changed
+
+- Reuse AWS credential probes, prepared Cloudflare routes and serialized gateway tools without retaining stale configuration.
+- Support 12-hour Responses prompt caching and explicit stateful replay on compatible custom endpoints.
+
+### Fixed
+
+- Preserve reasoning, tool arguments, served tiers and costs across Responses/Codex replay, retries and concurrent turns.
+- Preserve Cursor multi-step replay, session rules and one-off cleanup while retrying trusted provider outages.
+- Preserve Gemini thinking signatures and parallel tool-result order; keep provider streams bounded without premature fixed timeouts.
+- Recover rejected Anthropic cache controls, derive beta headers from the sent payload and honor strict schemas and image limits.
+- Honor Bedrock Haiku thinking-off, explicitly configured strict Anthropic thinking replay and verified Go cache affinity.
+- Preserve explicit case-insensitive header overrides and keep LiteLLM conversation labels separate from shared cache keys.
+- Preserve durable credential identities, explicit pins and rotated tokens through ranking, refresh and child-session inheritance.
+- Honor reserve boundaries and account priority; distinguish temporary refresh outages from missing credentials without disabling valid usage-probe logins.
+- Scope broker usage invalidation and lookups, retain quota only within its observation window and flush final observed usage before exit.
+- Keep broker refresh sweeps and live snapshot subscribers coherent through transient failures and burst updates.
+- Report Copilot billing units and Claude, Muse, MiniMax, Go and Antigravity quota windows accurately.
+- Recognize structured Google quota details and retryable stream/network failures without retrying terminal client errors or hiding cancellation reasons.
+- Clamp gateway effort while preserving thinking budgets, disabled providers and credentialed route priority.
+- Preserve frozen tool history, reject ambiguous argument rescue and remove malformed DeepSeek markup without damaging quoted prose.
+- Normalize provider tool schemas, escaped glyphs, streamed runaway detection and malformed image base64 without losing valid payloads.
+- Redact credential headers in debug dumps, avoid duplicate error bodies and retain capped-request permits through terminal drains.
+- Preserve safe OAuth callback text, refresh Cursor sessions reliably and retain account identity for GitHub and Google sign-ins.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Fixed

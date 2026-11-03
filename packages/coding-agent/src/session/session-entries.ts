@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent, Usage } from "@oh-my-pi/pi-ai";
+import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { CompactionMethod } from "./compaction-methods";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
@@ -55,11 +56,31 @@ export interface SessionEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	/** Replay leaf after an off-branch append; null preserves a cleared branch. */
+	activeLeafId?: string | null;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+}
+
+/** Leaf selected by a journal record; off-branch work preserves its captured active branch. */
+export function sessionEntryLeafId(entry: SessionEntry): string | null {
+	return entry.activeLeafId !== undefined ? entry.activeLeafId : entry.id;
+}
+
+/** Resolve a replay marker, falling back safely when rollback removed its target. */
+export function resolveSessionLeafId(entries: readonly SessionEntry[]): string | null {
+	const last = entries.at(-1);
+	if (!last) return null;
+	const leaf = sessionEntryLeafId(last);
+	if (leaf === null || entries.some(entry => entry.id === leaf)) return leaf;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (sessionEntryLeafId(entry) === entry.id) return entry.id;
+	}
+	return null;
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
@@ -164,11 +185,14 @@ export interface CredentialPinEntry extends SessionEntryBase {
 export interface SessionInitEntry extends SessionEntryBase {
 	type: "session_init";
 
-	systemPrompt: string;
+	systemPrompt: string | string[];
 
 	task: string;
 
 	tools: string[];
+	/** Tools mounted as protolens devices rather than exposed at the top level. */
+	mountedTools?: string[];
+	thinkingLevelCeiling?: Effort;
 
 	agent?: string;
 

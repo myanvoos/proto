@@ -4,12 +4,13 @@ import * as natives from "@oh-my-pi/pi-natives";
 import { materializeString, stringifyJson } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { isEstimateCacheable, messageEstimateVersion } from "./compaction/message-cache";
+import { estimateImageContentTokens, estimateImageTokens } from "./image-tokens";
 import type { AgentMessage } from "./types";
 
 const testEnv = Bun.env.NODE_ENV === "test";
-const accurate = process.env.PI_TOKENIZER_ACCURATE === "1" && !testEnv;
 
 const NATIVE_ENCODING: Record<ModelTokenizer, natives.Encoding> = {
+	cl100k: natives.Encoding.Cl100kBase,
 	"claude-v3": natives.Encoding.ClaudeV3,
 	"claude-v47": natives.Encoding.ClaudeV47,
 	"claude-v5": natives.Encoding.ClaudeV5,
@@ -107,7 +108,7 @@ export interface TokenBudgetCheck {
 	exact: boolean;
 }
 
-const IMAGE_TOKEN_ESTIMATE = 1200;
+const IMAGE_TOKEN_ESTIMATE = estimateImageTokens(null);
 
 const PROVIDER_PAYLOAD_METADATA_KEYS: Record<string, true> = {
 	call_id: true,
@@ -155,11 +156,8 @@ export class Tokenizer {
 	}
 
 	countTokens(text: string | string[], mode: TokenCountMode = "approximate"): number {
-		if (mode === "strict") return countTokensNat(text, this.#encoding, mode, this.#nativeCounts).tokens;
-		if (!testEnv && this.#encoding !== null)
-			return countTokensNat(text, this.#encoding, mode, this.#nativeCounts).tokens;
-		if (accurate) return countTokensNat(text, undefined, mode, this.#nativeCounts).tokens;
-		return sumFragments(text, mode === "upperbound" ? byteLength : byteEstimate);
+		if (testEnv && mode !== "strict") return sumFragments(text, mode === "upperbound" ? byteLength : byteEstimate);
+		return countTokensNat(text, this.#encoding, mode, this.#nativeCounts).tokens;
 	}
 
 	checkTokenBudget(text: string | string[], budget: number): TokenBudgetCheck {
@@ -194,7 +192,7 @@ export class Tokenizer {
 
 	#countCollected(content: CollectedContent): number {
 		const textTokens = content.fragments.length === 0 ? 0 : this.countTokens(content.fragments);
-		return textTokens + content.images * IMAGE_TOKEN_ESTIMATE;
+		return textTokens + content.images;
 	}
 
 	#collectContent(content: string | readonly UserContent[]): CollectedContent {
@@ -207,7 +205,7 @@ export class Tokenizer {
 					collected.fragments.push(block.text);
 					break;
 				case "image":
-					collected.images++;
+					collected.images += estimateImageContentTokens(block);
 					break;
 				case "audio":
 				case "video":
@@ -288,7 +286,7 @@ export class Tokenizer {
 		const record = value as Record<string, unknown>;
 		const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
 		const isImage = type.includes("image") || "image_url" in record;
-		if (isImage) collected.images++;
+		if (isImage) collected.images += IMAGE_TOKEN_ESTIMATE;
 		for (const [childKey, child] of Object.entries(record)) {
 			if (isImage && (childKey === "data" || childKey === "file_data" || childKey === "image_url")) continue;
 			this.#collectUnknownValue(child, collected, excludeEncryptedReasoning, seen, childKey);
@@ -344,7 +342,7 @@ export class Tokenizer {
 							collected.fragments.push(block.from.model, block.to.model);
 							break;
 						case "image":
-							collected.images++;
+							collected.images += estimateImageContentTokens(block);
 							break;
 						default:
 							this.#collectUnknownBlock(block, collected, excludeEncryptedReasoning);

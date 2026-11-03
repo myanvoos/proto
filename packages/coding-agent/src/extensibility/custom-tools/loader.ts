@@ -9,8 +9,8 @@ import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
-
 import type * as PiCodingAgent from "../../index";
+import { installHostModuleResolution, loadHostModule } from "../plugins/host-module-compat";
 import { createNoOpUIContext, resolvePath, withHostGuard } from "../utils";
 import type { CustomToolAPI, CustomToolFactory, LoadedCustomTool, ToolLoadError } from "./types";
 
@@ -64,14 +64,19 @@ async function loadTool(
 	}
 
 	try {
-		const module = await withHostGuard(() => import(resolvedPath));
-		const factory = (module.default ?? module) as CustomToolFactory;
+		installHostModuleResolution();
+		const module = (await withHostGuard(() => loadHostModule(resolvedPath, { reload: false }))) as {
+			default?: unknown;
+		};
+		const candidate: unknown = module.default ?? module;
+		const factory =
+			typeof candidate === "object" && candidate !== null && "default" in candidate ? candidate.default : candidate;
 
 		if (typeof factory !== "function") {
 			return { tools: [], errors: [{ path: toolPath, error: "Tool must export a default function", source }] };
 		}
 
-		const toolResult: unknown = await withHostGuard(async () => factory(sharedApi));
+		const toolResult: unknown = await withHostGuard(async () => (factory as CustomToolFactory)(sharedApi));
 		const toolsArray = Array.isArray(toolResult) ? toolResult : [toolResult];
 
 		const loadedTools: LoadedCustomTool[] = [];

@@ -30,7 +30,9 @@ export function registerLogSink(sink: LogSink): () => void {
 
 function emitToSinks(level: LogLevel, message: string, context: Record<string, unknown> | undefined): void {
 	if (logSinks.size === 0) return;
-	const event: LogEvent = { level, message, context, timestamp: new Date() };
+	const scoped = logContextStorage.getStore();
+	const merged = scoped ? { ...scoped, ...context } : context;
+	const event: LogEvent = { level, message, context: merged, timestamp: new Date() };
 	for (const sink of logSinks) {
 		try {
 			sink(event);
@@ -221,6 +223,18 @@ function formatLocalTimestamp(date: Date): string {
 
 const FORMAT_TOKEN_PATTERN = /%[scdjifoO%]/;
 
+const logContextStorage = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
+
+/** Scope log fields to this async execution; nested sessions replace parent context. */
+export function withContext<T>(context: Readonly<Record<string, unknown>>, fn: () => T): T {
+	return logContextStorage.run(context, fn);
+}
+
+/** Run process-wide work outside the caller's session context. */
+export function withoutContext<T>(fn: () => T): T {
+	return logContextStorage.exit(fn);
+}
+
 function normalizeLogInfo(
 	level: LogLevel,
 	message: string,
@@ -228,7 +242,16 @@ function normalizeLogInfo(
 ): NormalizedLogInfo {
 	const metadata =
 		!FORMAT_TOKEN_PATTERN.test(message) && context !== null && typeof context === "object" ? context : undefined;
-	const info = Object.assign({}, metadata, { level, message }) as NormalizedLogInfo;
+	const info: NormalizedLogInfo = { level, message };
+	const scoped = logContextStorage.getStore();
+	if (scoped) {
+		for (const key of Object.keys(scoped)) info[key] = scoped[key];
+	}
+	if (metadata) {
+		for (const key of Object.keys(metadata)) info[key] = metadata[key];
+	}
+	info.level = level;
+	info.message = message;
 	if (metadata?.message) info.message = `${message} ${metadata.message}`;
 	if (metadata?.stack) info.stack = metadata.stack;
 	if (metadata?.cause) info.cause = metadata.cause;

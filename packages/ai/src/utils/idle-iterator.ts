@@ -324,6 +324,8 @@ export interface TerminalGraceIteratorOptions {
 	graceMs: number;
 
 	onGraceEnd?: () => void;
+	/** Hold capped-request permits until the bounded transport drain finishes. */
+	awaitDrainOnReturn?: boolean;
 }
 
 export async function* iterateWithTerminalGrace<T>(
@@ -331,43 +333,71 @@ export async function* iterateWithTerminalGrace<T>(
 	options: TerminalGraceIteratorOptions,
 ): AsyncGenerator<T> {
 	const iterator = iterable[Symbol.asyncIterator]();
+	// Set only while suspended at `yield`: `finally` then runs because the
+	// consumer stopped early, not because the source ended or failed.
+	let consumerStopped = false;
 	try {
 		while (true) {
-			const finishedAtMs = options.finishedAtMs();
-			if (finishedAtMs === undefined) {
-				const result = await iterator.next();
-				if (result.done) return;
-				yield result.value;
-				continue;
-			}
-			const remainingMs = finishedAtMs + options.graceMs - Date.now();
-			if (remainingMs <= 0) {
-				options.onGraceEnd?.();
-				return;
-			}
-			const nextPromise = iterator.next();
-			let timer: NodeJS.Timeout | undefined;
-			const timeoutPromise = new Promise<"timeout">(resolve => {
-				timer = setTimeout(() => resolve("timeout"), remainingMs);
-			});
-			try {
-				const outcome = await Promise.race([nextPromise, timeoutPromise]);
-				if (outcome === "timeout") {
-					nextPromise.catch(() => {});
-					options.onGraceEnd?.();
-					return;
-				}
-				if (outcome.done) return;
-				yield outcome.value;
-			} finally {
-				if (timer !== undefined) clearTimeout(timer);
-			}
+			const result = await nextWithinGrace(iterator, options);
+			if (result.done) return;
+			consumerStopped = true;
+			yield result.value;
+			consumerStopped = false;
 		}
 	} finally {
-		const returnPromise = iterator.return?.();
-		if (returnPromise) {
-			void Promise.resolve(returnPromise).catch(() => {});
+		if (consumerStopped && options.finishedAtMs() !== undefined) {
+			if (options.awaitDrainOnReturn) await drainWithinGrace(iterator, options);
+			else void drainWithinGrace(iterator, options);
+		} else {
+			releaseIterator(iterator);
 		}
+	}
+}
+
+const GRACE_ENDED: IteratorReturnResult<undefined> = { done: true, value: undefined };
+
+async function nextWithinGrace<T>(
+	iterator: AsyncIterator<T>,
+	options: TerminalGraceIteratorOptions,
+): Promise<IteratorResult<T, unknown>> {
+	const finishedAtMs = options.finishedAtMs();
+	if (finishedAtMs === undefined) return iterator.next();
+	const remainingMs = finishedAtMs + options.graceMs - Date.now();
+	if (remainingMs <= 0) {
+		options.onGraceEnd?.();
+		return GRACE_ENDED;
+	}
+	const nextPromise = iterator.next();
+	const timeout = Promise.withResolvers<"timeout">();
+	const timer = setTimeout(() => timeout.resolve("timeout"), remainingMs);
+	try {
+		const outcome = await Promise.race([nextPromise, timeout.promise]);
+		if (outcome !== "timeout") return outcome;
+		// The abandoned read settles (likely rejects) once onGraceEnd aborts
+		// the transport — mark it handled so it cannot surface as an
+		// unhandled rejection.
+		nextPromise.catch(() => {});
+		options.onGraceEnd?.();
+		return GRACE_ENDED;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function drainWithinGrace<T>(iterator: AsyncIterator<T>, options: TerminalGraceIteratorOptions): Promise<void> {
+	try {
+		while (!(await nextWithinGrace(iterator, options)).done) {}
+	} catch {
+		// Transport errors after the consumer finished cannot change its result.
+	} finally {
+		releaseIterator(iterator);
+	}
+}
+
+function releaseIterator<T>(iterator: AsyncIterator<T>): void {
+	const returnPromise = iterator.return?.();
+	if (returnPromise) {
+		void Promise.resolve(returnPromise).catch(() => {});
 	}
 }
 

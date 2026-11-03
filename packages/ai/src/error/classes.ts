@@ -1,5 +1,6 @@
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { AbortError } from "./abort";
+import { networkFailureMessage } from "./network-cause";
 
 export const STREAM_ENVELOPE_ERROR_PREFIX = "Anthropic stream envelope error:";
 
@@ -183,8 +184,8 @@ function parseAnthropicErrorCode(detail: string): string | undefined {
 }
 
 export class AnthropicConnectionError extends Error {
-	constructor(cause: unknown) {
-		super("Connection error.", { cause });
+	constructor(cause: unknown, requestUrl?: string) {
+		super(networkFailureMessage(cause, requestUrl) ?? "Connection error.", { cause });
 		this.name = "AnthropicConnectionError";
 	}
 }

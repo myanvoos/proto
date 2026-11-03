@@ -12,7 +12,10 @@ mod types;
 use std::{
 	collections::HashMap,
 	panic::AssertUnwindSafe,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
 	thread::{self, JoinHandle},
 	time::Duration,
 };
@@ -224,11 +227,14 @@ struct Worker {
 	backend:      CoreResult<Box<dyn Backend>>,
 	registry:     AxRegistry,
 	frames:       HashMap<String, FrameGeometry>,
-	capabilities: Arc<Mutex<DesktopCapabilities>>,
+	capabilities: Arc<Mutex<Option<DesktopCapabilities>>>,
 }
 
 impl Worker {
-	fn new(selector: DisplaySelector, capabilities: Arc<Mutex<DesktopCapabilities>>) -> Self {
+	fn new(
+		selector: DisplaySelector,
+		capabilities: Arc<Mutex<Option<DesktopCapabilities>>>,
+	) -> Self {
 		let backend = create_backend(selector);
 		Self { backend, registry: AxRegistry::default(), frames: HashMap::new(), capabilities }
 	}
@@ -291,7 +297,7 @@ impl Worker {
 					Ok(backend) => backend.capabilities(),
 					Err(_) => DesktopCapabilities::unavailable(),
 				};
-				*self.capabilities.lock() = caps.clone();
+				*self.capabilities.lock() = Some(caps.clone());
 				Ok(Response::Capabilities(caps))
 			},
 			Request::ListDisplays { .. } => Ok(Response::Displays(self.backend()?.displays()?)),
@@ -327,7 +333,7 @@ impl Worker {
 				let png = encode_png(image)?;
 				self.frames.insert(target.key().to_string(), geometry);
 				let capabilities = self.backend()?.capabilities();
-				*self.capabilities.lock() = capabilities.clone();
+				*self.capabilities.lock() = Some(capabilities.clone());
 				Ok(Response::Capture(DesktopCapture {
 					data: Uint8Array::from(png),
 					width,
@@ -608,7 +614,8 @@ struct Lifecycle {
 struct SessionCore {
 	selector:     DisplaySelector,
 	lifecycle:    Mutex<Lifecycle>,
-	capabilities: Arc<Mutex<DesktopCapabilities>>,
+	capabilities: Arc<Mutex<Option<DesktopCapabilities>>>,
+	in_flight:    AtomicUsize,
 }
 impl SessionCore {
 	fn new(selector: DisplaySelector) -> Arc<Self> {
@@ -620,7 +627,8 @@ impl SessionCore {
 				join:   None,
 				closed: false,
 			}),
-			capabilities: Arc::new(Mutex::new(DesktopCapabilities::unavailable())),
+			capabilities: Arc::default(),
+			in_flight: AtomicUsize::new(0),
 		})
 	}
 
@@ -664,13 +672,18 @@ impl SessionCore {
 
 	fn call(&self, make: impl FnOnce(Reply) -> Request) -> CoreResult<Response> {
 		let (txr, rxr) = flume::bounded(1);
-		self
-			.ensure_started()?
+		let tx = self.ensure_started()?;
+		self.in_flight.fetch_add(1, Ordering::AcqRel);
+		let response = tx
 			.send(make(txr))
-			.map_err(|_| DesktopError::internal("native desktop worker stopped unexpectedly"))?;
-		rxr.recv_timeout(OPERATION_TIMEOUT).map_err(|e| {
-			DesktopError::timeout(format!("native desktop operation did not complete: {e}"))
-		})?
+			.map_err(|_| DesktopError::internal("native desktop worker stopped unexpectedly"))
+			.and_then(|()| {
+				rxr.recv_timeout(OPERATION_TIMEOUT).map_err(|e| {
+					DesktopError::timeout(format!("native desktop operation did not complete: {e}"))
+				})
+			});
+		self.in_flight.fetch_sub(1, Ordering::AcqRel);
+		response?
 	}
 
 	fn close(&self) -> CoreResult<()> {
@@ -722,6 +735,10 @@ pub struct DesktopSession {
 	core: Arc<SessionCore>,
 }
 #[napi]
+#[allow(
+	clippy::unnecessary_wraps,
+	reason = "N-API catch_unwind requires Result exports to convert panics into JavaScript errors"
+)]
 impl DesktopSession {
 	#[napi(catch_unwind, constructor)]
 	pub fn new(options: Option<DesktopSessionOptions>) -> Result<Self> {
@@ -730,9 +747,19 @@ impl DesktopSession {
 
 	#[napi(catch_unwind, getter)]
 	pub fn capabilities(&self) -> DesktopCapabilities {
+		if self.core.in_flight.load(Ordering::Acquire) > 0
+			&& let Some(snapshot) = self.core.capabilities.lock().clone()
+		{
+			return snapshot;
+		}
 		match self.core.call(|reply| Request::Capabilities { reply }) {
 			Ok(Response::Capabilities(c)) => c,
-			_ => self.core.capabilities.lock().clone(),
+			_ => self
+				.core
+				.capabilities
+				.lock()
+				.clone()
+				.unwrap_or_else(DesktopCapabilities::unavailable),
 		}
 	}
 
@@ -1063,5 +1090,64 @@ impl DesktopSession {
 			}
 			.map_err(Into::into)
 		})
+	}
+}
+
+#[cfg(test)]
+mod capabilities_tests {
+	use super::*;
+
+	#[test]
+	fn capabilities_do_not_wait_behind_input_but_refresh_when_idle() {
+		let core = SessionCore::new(DisplaySelector::All);
+		let cached = DesktopCapabilities::unavailable();
+		*core.capabilities.lock() = Some(cached);
+		let (tx, rx) = flume::unbounded::<Request>();
+		core.lifecycle.lock().tx = Some(tx);
+		let (entered_tx, entered_rx) = flume::bounded(1);
+		let (release_tx, release_rx) = flume::bounded(1);
+		let worker = thread::spawn(move || {
+			while let Ok(request) = rx.recv() {
+				match request {
+					Request::ListWindows { reply } => {
+						entered_tx.send(()).unwrap();
+						release_rx.recv().unwrap();
+						let _ = reply.send(Ok(Response::Windows(Vec::new())));
+					},
+					Request::Capabilities { reply } => {
+						let mut fresh = DesktopCapabilities::unavailable();
+						fresh.input = true;
+						let _ = reply.send(Ok(Response::Capabilities(fresh)));
+					},
+					Request::Close { reply } => {
+						let _ = reply.send(Ok(Response::Unit));
+						break;
+					},
+					_ => unreachable!(),
+				}
+			}
+		});
+		let call = thread::spawn({
+			let core = Arc::clone(&core);
+			move || core.call(|reply| Request::ListWindows { reply })
+		});
+		entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+		let (result_tx, result_rx) = flume::bounded(1);
+		let reading = thread::spawn({
+			let core = Arc::clone(&core);
+			move || {
+				let _ = result_tx.send(DesktopSession { core }.capabilities());
+			}
+		});
+		let snapshot = result_rx.recv_timeout(Duration::from_secs(1));
+		// Release even on regression so no blocked test thread leaks.
+		release_tx.send(()).unwrap();
+		call.join().unwrap().unwrap();
+		reading.join().unwrap();
+		let fresh = DesktopSession { core: Arc::clone(&core) }.capabilities();
+		core.close().unwrap();
+		worker.join().unwrap();
+		assert!(!snapshot.expect("capabilities blocked behind input").input);
+		assert!(fresh.input, "idle reads must observe newly granted input permission");
 	}
 }

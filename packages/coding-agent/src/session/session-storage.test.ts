@@ -223,7 +223,7 @@ test("writeTextSync keeps open readers on the original file when replacement ini
 		expect(fs.readFileSync(reader, "utf8")).toBe("original snapshot\n");
 		expect(fs.statSync(sessionPath).ino).not.toBe(original.ino);
 		expect(await Bun.file(sessionPath).text()).toBe("replacement snapshot\n");
-		expect(fs.readdirSync(tempDir)).toEqual(["session.jsonl"]);
+		expect(fs.readdirSync(tempDir).filter(name => !name.endsWith(".lock"))).toEqual(["session.jsonl"]);
 	} finally {
 		fs.closeSync(reader);
 	}
@@ -250,7 +250,7 @@ test("writeTextSync restores the original identity and content when the EPERM re
 	expect(() => storage.writeTextSync(sessionPath, "replacement\n")).toThrow("retry failed");
 	expect(fs.statSync(sessionPath).ino).toBe(original.ino);
 	expect(await Bun.file(sessionPath).text()).toBe("original\n");
-	expect(fs.readdirSync(tempDir)).toEqual(["session.jsonl"]);
+	expect(fs.readdirSync(tempDir).filter(name => !name.endsWith(".lock"))).toEqual(["session.jsonl"]);
 });
 
 test("writeTextSync preserves the original when staging the replacement fails with EPERM", async () => {
@@ -270,7 +270,7 @@ test("writeTextSync preserves the original when staging the replacement fails wi
 	expect(() => storage.writeTextSync(sessionPath, "replacement\n")).toThrow("staging denied");
 	expect(fs.statSync(sessionPath).ino).toBe(original.ino);
 	expect(await Bun.file(sessionPath).text()).toBe("original\n");
-	expect(fs.readdirSync(tempDir)).toEqual(["session.jsonl"]);
+	expect(fs.readdirSync(tempDir).filter(name => !name.endsWith(".lock"))).toEqual(["session.jsonl"]);
 });
 
 test("title update failure leaves the previous complete slot intact", async () => {

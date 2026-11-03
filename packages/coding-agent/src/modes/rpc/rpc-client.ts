@@ -6,6 +6,7 @@ import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { LogoutAccount } from "../../slash-commands/helpers/logout";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
@@ -14,6 +15,7 @@ import {
 	type RpcMessagesPageOptions,
 } from "./rpc-messages";
 import type {
+	RpcAbortAndRestoreQueueResult,
 	RpcAvailableCommandsUpdateFrame,
 	RpcAvailableSlashCommand,
 	RpcCommand,
@@ -24,6 +26,7 @@ import type {
 	RpcHostToolDefinition,
 	RpcHostToolResult,
 	RpcHostToolUpdate,
+	RpcNavigateTreeResult,
 	RpcResponse,
 	RpcSessionState,
 	RpcSubagentEventFrame,
@@ -110,6 +113,8 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	...agentEventTypes,
 	"auto_compaction_start",
 	"auto_compaction_end",
+	"manual_compaction_start",
+	"manual_compaction_end",
 	"auto_retry_start",
 	"auto_retry_end",
 	"retry_fallback_applied",
@@ -403,7 +408,11 @@ export class RpcClient {
 
 		const error = new Error("Client stopped");
 		const child = this.#process;
-		child.kill(undefined, this.options.terminationGraceMs);
+		try {
+			child.kill(undefined, this.options.terminationGraceMs);
+		} catch {
+			// An already-exited process must not prevent local cleanup.
+		}
 		this.#abortController.abort(error);
 		this.#process = null;
 		for (const request of this.#pendingRequests.values()) request.reject(error);
@@ -499,6 +508,34 @@ export class RpcClient {
 
 	async abortAndPrompt(message: string, images?: ImageContent[]): Promise<void> {
 		await this.#send({ type: "abort_and_prompt", message, images });
+	}
+
+	async abortAndRestoreQueue(): Promise<RpcAbortAndRestoreQueueResult> {
+		return this.#getData(await this.#send({ type: "abort_and_restore_queue" }));
+	}
+
+	async navigateTree(
+		entryId: string,
+		options: { summarize?: boolean; customInstructions?: string } = {},
+	): Promise<RpcNavigateTreeResult> {
+		return this.#getData(await this.#send({ type: "navigate_tree", entryId, ...options }, 600_000));
+	}
+
+	async abortBranchSummary(): Promise<void> {
+		this.#getData(await this.#send({ type: "abort_branch_summary" }));
+	}
+
+	async setLabel(entryId: string, label?: string): Promise<void> {
+		this.#getData(await this.#send({ type: "set_label", entryId, label }));
+	}
+
+	async getLogoutAccounts(providerId: string): Promise<LogoutAccount[]> {
+		return this.#getData<{ accounts: LogoutAccount[] }>(await this.#send({ type: "get_logout_accounts", providerId }))
+			.accounts;
+	}
+
+	async logout(providerId: string, credentialId: number): Promise<{ remainingSource?: string }> {
+		return this.#getData(await this.#send({ type: "logout", providerId, credentialId }));
 	}
 
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
@@ -700,22 +737,20 @@ export class RpcClient {
 							onOpenUrl?.(req.url, req.instructions, req.launchUrl);
 							return;
 						}
-						if (req.method !== "input" || !onManualCodeInput) return;
-						void Promise.resolve(onManualCodeInput({ title: req.title, placeholder: req.placeholder }))
-							.then(value => {
-								this.#writeFrame({
-									type: "extension_ui_response",
-									id: req.id,
-									value,
-								});
-							})
-							.catch(() => {
-								this.#writeFrame({
-									type: "extension_ui_response",
-									id: req.id,
-									cancelled: true,
-								});
-							});
+						if (req.method !== "input" || req.secret || !onManualCodeInput) return;
+						const child = this.#process;
+						void Promise.resolve()
+							.then(() => onManualCodeInput({ title: req.title, placeholder: req.placeholder }))
+							.then(
+								value => {
+									if (child && this.#process === child)
+										this.#writeFrame({ type: "extension_ui_response", id: req.id, value });
+								},
+								() => {
+									if (child && this.#process === child)
+										this.#writeFrame({ type: "extension_ui_response", id: req.id, cancelled: true });
+								},
+							);
 					}
 				: undefined;
 		if (listener) this.#extensionUiListeners.add(listener);
@@ -745,52 +780,57 @@ export class RpcClient {
 	}
 
 	waitForIdle(timeout = 60000): Promise<void> {
-		const { promise, resolve, reject } = Promise.withResolvers<void>();
-		let settled = false;
-		const unsubscribe = this.onEvent(event => {
-			if (event.type === "agent_end") {
-				settled = true;
-				unsubscribe();
-				clearTimeout(timeoutId);
-				resolve();
-			}
-		});
-
-		const timeoutId = this.#startTimeout(timeout, () => {
-			if (settled) return;
-			settled = true;
-			unsubscribe();
-			reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.#process?.peekStderr() ?? ""}`));
-		});
-		return promise;
+		return this.collectEvents(timeout).then(() => {});
 	}
 
-	collectEvents(timeout = 60000): Promise<AgentEvent[]> {
+	collectEvents(timeout = 60000, signal?: AbortSignal): Promise<AgentEvent[]> {
 		const { promise, resolve, reject } = Promise.withResolvers<AgentEvent[]>();
 		const events: AgentEvent[] = [];
+		const transportSignal = this.#abortController.signal;
 		let settled = false;
+		const cleanup = () => {
+			unsubscribe();
+			clearTimeout(timeoutId);
+			transportSignal.removeEventListener("abort", onTransportAbort);
+			signal?.removeEventListener("abort", onCancel);
+		};
+		const fail = (reason: unknown) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(reason instanceof Error ? reason : new Error(String(reason)));
+		};
+		const onTransportAbort = () => fail(transportSignal.reason);
+		const onCancel = () => fail(signal?.reason);
 		const unsubscribe = this.onEvent(event => {
 			events.push(event);
 			if (event.type === "agent_end") {
 				settled = true;
-				unsubscribe();
-				clearTimeout(timeoutId);
+				cleanup();
 				resolve(events);
 			}
 		});
-
 		const timeoutId = this.#startTimeout(timeout, () => {
-			if (settled) return;
-			settled = true;
-			unsubscribe();
-			reject(new Error(`Timeout collecting events. Stderr: ${this.#process?.peekStderr() ?? ""}`));
+			fail(new Error(`Timeout collecting events. Stderr: ${this.#process?.peekStderr() ?? ""}`));
 		});
+		transportSignal.addEventListener("abort", onTransportAbort, { once: true });
+		signal?.addEventListener("abort", onCancel, { once: true });
+		if (transportSignal.aborted) onTransportAbort();
+		else if (signal?.aborted) onCancel();
 		return promise;
 	}
 
 	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<AgentEvent[]> {
-		const eventsPromise = this.collectEvents(timeout);
-		await this.prompt(message, images);
+		const controller = new AbortController();
+		const eventsPromise = this.collectEvents(timeout, controller.signal);
+		// Observe a transport failure even while the prompt acknowledgement is still pending.
+		void eventsPromise.catch(() => {});
+		try {
+			await this.prompt(message, images);
+		} catch (error) {
+			controller.abort(error);
+			throw error;
+		}
 		return eventsPromise;
 	}
 
@@ -896,13 +936,18 @@ export class RpcClient {
 			},
 		});
 
-		this.#writeFrame(fullCommand, err => {
+		const fail = (err: Error) => {
 			this.#pendingRequests.delete(id);
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeoutId);
 			reject(err);
-		});
+		};
+		try {
+			this.#writeFrame(fullCommand, fail);
+		} catch (err) {
+			fail(err instanceof Error ? err : new Error(String(err)));
+		}
 		return promise;
 	}
 
@@ -968,13 +1013,23 @@ export class RpcClient {
 		if (!this.#process?.stdin) {
 			throw new Error("Client not started");
 		}
-		const stdin = this.#process.stdin as FileSink;
-		stdin.write(`${JSON.stringify(frame)}\n`);
-		const flushResult = stdin.flush();
-		if (isPromise(flushResult)) {
-			flushResult.catch((err: Error) => {
-				onError?.(err);
-			});
+		const child = this.#process;
+		const stdin = child.stdin;
+		if (typeof stdin === "number" || !stdin) throw new Error("Client not started");
+		// A serialization failure belongs to this caller, not to the transport.
+		const line = `${JSON.stringify(frame)}\n`;
+		const failed = (err: unknown) => {
+			onError?.(err instanceof Error ? err : new Error(String(err)));
+			if (this.#process === child) void this.stop();
+		};
+		try {
+			const write = stdin.write(line);
+			if (isPromise(write)) write.catch(failed);
+			if (!("flush" in stdin)) return;
+			const flushed = (stdin as FileSink).flush();
+			if (isPromise(flushed)) flushed.catch(failed);
+		} catch (err) {
+			failed(err);
 		}
 	}
 

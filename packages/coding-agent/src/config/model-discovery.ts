@@ -1,6 +1,7 @@
 import { type ApiKey, type FetchImpl, withAuth } from "@oh-my-pi/pi-ai";
 import type { Api, Model, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import {
 	getBundledModelReferenceIndex,
 	inheritReferenceThinking,
@@ -16,7 +17,8 @@ import {
 	OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS,
 	resolveLiteLLMApi,
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import type { ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import type { ModelSpec, OpenAICompat, ThinkingConfig } from "@oh-my-pi/pi-catalog/types";
+import { parseServiceTierIds } from "@oh-my-pi/pi-catalog/utils";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ProviderDiscovery } from "./models-config-schema";
 
@@ -126,6 +128,7 @@ export interface DiscoveryProviderConfig {
 	remoteCompaction?: RemoteCompactionConfig<Api>;
 	discovery: ProviderDiscovery;
 	optional?: boolean;
+	fallbackBaseUrls?: string[];
 }
 
 export interface DiscoveryContext {
@@ -172,6 +175,11 @@ function toPositiveNumberOrUndefined(value: unknown): number | undefined {
 		}
 	}
 	return undefined;
+}
+
+function toTokenLimitOrUndefined(value: unknown): number | undefined {
+	const parsed = toPositiveNumberOrUndefined(value);
+	return parsed !== undefined && Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function isLlamaCppUnlimitedSentinel(value: unknown): boolean {
@@ -512,15 +520,36 @@ export function applyLlamaCppQwenThinking(model: Model<Api>): Model<Api> {
 	} as unknown as ModelSpec<Api>);
 }
 
+export const LLAMA_CPP_DEFAULT_BASE_URLS = ["http://127.0.0.1:8080", "http://127.0.0.1:9931"] as const;
+
 export async function discoverLlamaCppModels(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
-	const baseUrl = normalizeLlamaCppBaseUrl(providerConfig.baseUrl);
+	try {
+		return await discoverLlamaCppModelsAt(providerConfig, providerConfig.baseUrl, ctx);
+	} catch (primaryError) {
+		if (primaryError instanceof DiscoveryHttpError) throw primaryError;
+		for (const baseUrl of providerConfig.fallbackBaseUrls ?? []) {
+			try {
+				return await discoverLlamaCppModelsAt(providerConfig, baseUrl, ctx);
+			} catch (error) {
+				if (error instanceof DiscoveryHttpError) throw error;
+			}
+		}
+		throw primaryError;
+	}
+}
+
+async function discoverLlamaCppModelsAt(
+	providerConfig: DiscoveryProviderConfig,
+	configuredBaseUrl: string | undefined,
+	ctx: DiscoveryContext,
+): Promise<Model<Api>[]> {
+	const baseUrl = normalizeLlamaCppBaseUrl(configuredBaseUrl);
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
-	let headers = baseHeaders;
 	const customTimeoutMs = providerConfig.discovery.timeoutMs;
 	const attempt = async (h: Record<string, string>) => {
 		const [payload, metadata] = await Promise.all([
@@ -532,7 +561,7 @@ export async function discoverLlamaCppModels(
 				if (!response.ok) {
 					throw new DiscoveryHttpError(response.status, modelsUrl);
 				}
-				headers = h;
+
 				return (await response.json()) as unknown;
 			}),
 			discoverLlamaCppServerMetadata(ctx, baseUrl, h, customTimeoutMs),
@@ -569,7 +598,7 @@ export async function discoverLlamaCppModels(
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow,
 					maxTokens: resolveLlamaCppMaxTokens(contextWindow, serverMetadata?.maxTokens),
-					headers,
+					headers: baseHeaders,
 					compat: {
 						supportsStore: false,
 						supportsDeveloperRole: false,
@@ -678,6 +707,7 @@ function extractOpenAIModelsListInputCapabilities(item: {
 	input?: unknown;
 	input_modalities?: unknown;
 	architecture?: unknown;
+	metadata?: unknown;
 }): ("text" | "image")[] | undefined {
 	const modalities = new Set<string>();
 	const collect = (value: unknown): void => {
@@ -689,8 +719,254 @@ function extractOpenAIModelsListInputCapabilities(item: {
 	collect(item.input);
 	collect(item.input_modalities);
 	if (isRecord(item.architecture)) collect(item.architecture.input_modalities);
+	if (isRecord(item.metadata)) collect(item.metadata.input_modalities);
 	if (modalities.size === 0) return undefined;
 	return modalities.has("image") ? ["text", "image"] : ["text"];
+}
+
+const ADVERTISED_REASONING_EFFORTS: readonly Effort[] = [
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+	Effort.Max,
+];
+
+function advertisedReasoningEffort(value: unknown): Effort | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.toLowerCase();
+	return (ADVERTISED_REASONING_EFFORTS as readonly string[]).includes(normalized) ? (normalized as Effort) : undefined;
+}
+
+/**
+ * Parse the requested side of an advertised alias. Any omp level can be
+ * requested, `minimal` included, so this reads the full thinking vocabulary;
+ * the served side stays on the ladder vocabulary ({@link advertisedReasoningEffort}).
+ */
+function requestedReasoningEffort(value: string): Effort | undefined {
+	const normalized = value.toLowerCase();
+	return THINKING_EFFORTS.find(effort => effort === normalized);
+}
+
+function extractReasoningLevels(value: unknown): Effort[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const efforts: Effort[] = [];
+	for (const entry of value) {
+		const effort = isRecord(entry) ? advertisedReasoningEffort(entry.effort) : advertisedReasoningEffort(entry);
+		if (effort !== undefined && !efforts.includes(effort)) efforts.push(effort);
+	}
+	if (efforts.length === 0) return undefined;
+	// Report the canonical least-to-most order regardless of wire order.
+	efforts.sort(
+		(left, right) => ADVERTISED_REASONING_EFFORTS.indexOf(left) - ADVERTISED_REASONING_EFFORTS.indexOf(right),
+	);
+	return efforts;
+}
+
+/**
+ * Discovery reads a `/v1/models` row's own reasoning ladder unless the provider
+ * opts out with `discovery.advertisedReasoning: false`. An endpoint that
+ * advertises tiers its route does not actually accept would otherwise get a
+ * picker the wire rejects; opting out falls back to the bundled reference.
+ */
+function advertisedReasoningEnabled(providerConfig: DiscoveryProviderConfig): boolean {
+	return providerConfig.discovery.advertisedReasoning !== false;
+}
+
+/** What a `/v1/models` row says about its own reasoning surface. */
+type AdvertisedReasoning =
+	/** The row states it does not reason. */
+	| { kind: "none" }
+	/**
+	 * The row advertises an effort ladder, whether it also accepts `none`, and
+	 * the aliases/lock facts that describe how requests land on it.
+	 */
+	| {
+			kind: "ladder";
+			efforts: Effort[];
+			acceptsNone: boolean;
+			defaultLevel?: Effort;
+			effortMap?: Partial<Record<Effort, Effort>>;
+			requiresEffort?: boolean;
+	  };
+
+/**
+ * Read server-advertised reasoning support from an OpenAI-compatible
+ * `/v1/models` row. codex-lb nests the Codex registry fields under `metadata`
+ * (`supported_reasoning_levels: [{ effort }]`, `default_reasoning_level`);
+ * other gateways may advertise the same fields top-level. A gateway that serves
+ * a reduced tier set can also name where an unserved request lands
+ * (`reasoning_effort_map: { medium: "high" }`) and state that reasoning cannot
+ * be turned off (`reasoning_required: true`). Returns undefined when the row
+ * says nothing usable about reasoning.
+ *
+ * An explicit non-reasoning declaration is reported as `{ kind: "none" }`
+ * rather than `undefined`: the caller must be able to tell "this endpoint says
+ * the model does not reason" (which outranks a reasoning-enabled bundled
+ * reference) from "the endpoint is silent" (which leaves the reference in
+ * charge). A stray ladder beside `reasoning: false` is ignored.
+ */
+function extractAdvertisedReasoning(item: {
+	metadata?: unknown;
+	supported_reasoning_levels?: unknown;
+	default_reasoning_level?: unknown;
+	reasoning?: unknown;
+	reasoning_effort_map?: unknown;
+	reasoning_required?: unknown;
+}): AdvertisedReasoning | undefined {
+	const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+	// codex-lb nests every reasoning field under `metadata`; read the denial from
+	// the same place the ladder below comes from, or a nested `reasoning: false`
+	// would keep the reference dial alive.
+	if ((metadata?.reasoning ?? item.reasoning) === false) return { kind: "none" };
+	const raw = metadata?.supported_reasoning_levels ?? item.supported_reasoning_levels;
+	const efforts = extractReasoningLevels(raw);
+	if (efforts === undefined) return undefined;
+	const rawDefault = metadata?.default_reasoning_level ?? item.default_reasoning_level;
+	const defaultLevel = advertisedReasoningEffort(rawDefault);
+	const effortMap = extractReasoningEffortMap(metadata?.reasoning_effort_map ?? item.reasoning_effort_map);
+	const requiresEffort = metadata?.reasoning_required ?? item.reasoning_required;
+	return {
+		kind: "ladder",
+		efforts,
+		// `none` is the wire off-switch rather than a tier, so it never enters
+		// `efforts`; remembering that the endpoint listed it is what lets a
+		// thinking-off request send `reasoning_effort: "none"` instead of being
+		// clamped to the lowest tier.
+		acceptsNone: advisoryEffortEntries(raw).includes("none"),
+		...(defaultLevel !== undefined && efforts.includes(defaultLevel) ? { defaultLevel } : {}),
+		...(effortMap !== undefined ? { effortMap } : {}),
+		// Whether the endpoint rejects disabled or omitted thinking. `true` makes a
+		// thinking-off request clamp to a real tier instead of dropping the field;
+		// an explicit `false` is kept as well, so it outranks an identity default
+		// (thinking-variant ids) that would otherwise lock reasoning on.
+		...(typeof requiresEffort === "boolean" ? { requiresEffort } : {}),
+	};
+}
+
+/** Raw effort strings a row lists, before the `Effort` vocabulary filters them. */
+function advisoryEffortEntries(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap(entry => {
+		const raw = isRecord(entry) ? entry.effort : entry;
+		return typeof raw === "string" ? [raw.toLowerCase()] : [];
+	});
+}
+
+/**
+ * Read a row's requested-effort → served-effort aliases. A gateway that serves a
+ * reduced tier set states where an unsupported request lands (`{"medium":
+ * "high"}` for a route that only accepts low/high/max), which is news neither
+ * the ladder nor numeric clamping can produce. Requested keys use the full omp
+ * vocabulary (`minimal` included); served values must be ladder tiers. `none` is
+ * the off-switch rather than a tier and unknown names (`ultra`) have no omp
+ * equivalent, so entries naming them are dropped.
+ */
+function extractReasoningEffortMap(value: unknown): Partial<Record<Effort, Effort>> | undefined {
+	if (!isRecord(value)) return undefined;
+	const effortMap: Partial<Record<Effort, Effort>> = {};
+	for (const [rawRequested, rawServed] of Object.entries(value)) {
+		const requested = requestedReasoningEffort(rawRequested);
+		const served = advertisedReasoningEffort(rawServed);
+		if (requested !== undefined && served !== undefined) effortMap[requested] = served;
+	}
+	return Object.keys(effortMap).length > 0 ? effortMap : undefined;
+}
+
+/**
+ * Apply what the endpoint advertises for one of its own rows. The endpoint
+ * states what it accepts on the wire, so its declaration outranks the reference
+ * guess: a cross-provider reference carries no thinking at all, and a custom
+ * provider's generic ladder drops provider-scoped tiers.
+ *
+ * OpenAI-shaped rows take the ladder in `effort` mode and drop a borrowed
+ * `reasoningEffortMap` / `omitReasoningEffort`, since those describe another
+ * host's wire (a reference that omits `reasoning_effort` would otherwise
+ * suppress the advertised tier). An advertised `none` sets `none-effort` so a
+ * thinking-off request sends the off-switch the endpoint listed rather than
+ * the lowest tier.
+ *
+ * Anthropic-shaped rows keep their identity-derived mode — adaptive vs budget
+ * is an Anthropic wire choice — and replace only the tiers.
+ */
+function withAdvertisedEfforts(
+	spec: ModelSpec<Api>,
+	advertised: AdvertisedReasoning | undefined,
+	isAnthropic: boolean,
+): ModelSpec<Api> {
+	if (advertised === undefined) return spec;
+	if (advertised.kind === "none") return withoutReasoning(spec, isAnthropic);
+	// `defaultLevel` is not decoration: `pickInitialThinkingLevel` (sdk.ts) and
+	// the model switcher read it ahead of the user's `defaultThinkingLevel`
+	// setting, so pinning it to the ladder's first tier would start every gateway
+	// model at its lowest effort and reset it on each model switch. Keep a
+	// default the ladder actually contains — the row's own, else whatever the
+	// catalog rule resolved — and only fall back when it falls outside the ladder.
+	// `resolveModelPolicy` already folds the catalog rule's default in, so an
+	// absent `advertised.defaultLevel` can still honor a rule default — but only
+	// when the ladder contains it. The value is always set, because an absent one
+	// would let `fillExplicitThinking` backfill the very level the ladder excludes.
+	const inheritedDefault = buildModel(spec).thinking?.defaultLevel;
+	const preferredDefault = advertised.defaultLevel ?? inheritedDefault;
+	const defaultLevel =
+		preferredDefault !== undefined && advertised.efforts.includes(preferredDefault)
+			? preferredDefault
+			: advertised.efforts[0];
+	// `effortMap` / `requiresEffort` travel with the ladder because they are also
+	// facts about this row's wire: the map says where an effort the endpoint does
+	// not serve lands (a route that only accepts low/high/max answers `medium` as
+	// `high`), and the flag says whether the endpoint rejects a thinking-off request.
+	// `clampThinkingLevelForModel` reads the map before clamping by distance, and
+	// the stream honours the flag.
+	const thinking: ThinkingConfig = {
+		mode: "effort",
+		efforts: advertised.efforts,
+		defaultLevel,
+		...(advertised.effortMap !== undefined ? { effortMap: advertised.effortMap } : {}),
+		...(advertised.requiresEffort !== undefined ? { requiresEffort: advertised.requiresEffort } : {}),
+	};
+	if (isAnthropic) {
+		const mode = buildModel({ ...spec, reasoning: true }).thinking?.mode ?? "budget";
+		return { ...spec, reasoning: true, thinking: { ...thinking, mode } };
+	}
+	return {
+		...spec,
+		reasoning: true,
+		thinking,
+		compat: {
+			...stripBorrowedEffortCompat(spec),
+			supportsReasoningEffort: true,
+			...(advertised.acceptsNone ? { reasoningDisableMode: "none-effort" as const } : {}),
+		},
+	} as ModelSpec<Api>;
+}
+
+/**
+ * Drop transport facts a bundled reference lent this row, because they describe
+ * another host's wire: its `reasoningEffortMap` would rewrite tiers this
+ * endpoint declared, and its `omitReasoningEffort` would suppress the very
+ * field an advertised ladder enables.
+ */
+function stripBorrowedEffortCompat(spec: ModelSpec<Api>): OpenAICompat {
+	const { reasoningEffortMap: _map, omitReasoningEffort: _omit, ...compat } = (spec.compat ?? {}) as OpenAICompat;
+	return compat;
+}
+
+/**
+ * Drop the reasoning surface for a row whose endpoint declares it does not
+ * reason, overriding a reasoning-enabled bundled reference. The row's identity
+ * still comes from the reference, but the dial it implied must not survive:
+ * a model the deployment cannot reason with must not receive
+ * `reasoning_effort`.
+ */
+function withoutReasoning(spec: ModelSpec<Api>, isAnthropic: boolean): ModelSpec<Api> {
+	if (isAnthropic) return { ...spec, reasoning: false, thinking: undefined };
+	return {
+		...spec,
+		reasoning: false,
+		thinking: undefined,
+		compat: { ...stripBorrowedEffortCompat(spec), supportsReasoningEffort: false },
+	} as ModelSpec<Api>;
 }
 
 async function discoverOpenAIModelsList(
@@ -706,7 +982,6 @@ async function discoverOpenAIModelsList(
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
-	let headers = baseHeaders;
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) => {
 		const nativeMetadataPromise =
@@ -724,7 +999,7 @@ async function discoverOpenAIModelsList(
 				if (!res.ok) {
 					throw new DiscoveryHttpError(res.status, modelsUrl);
 				}
-				headers = h;
+
 				return (await res.json()) as {
 					data?: Array<{
 						id?: string;
@@ -735,6 +1010,17 @@ async function discoverOpenAIModelsList(
 						input_modalities?: unknown;
 						architecture?: unknown;
 						mode?: unknown;
+						metadata?: unknown;
+						max_tokens?: unknown;
+						max_output_tokens?: unknown;
+						max_completion_tokens?: unknown;
+						top_provider?: unknown;
+						supported_reasoning_levels?: unknown;
+						default_reasoning_level?: unknown;
+						reasoning?: unknown;
+						reasoning_effort_map?: unknown;
+						reasoning_required?: unknown;
+						service_tiers?: unknown;
 					}>;
 				};
 			}),
@@ -761,9 +1047,11 @@ async function discoverOpenAIModelsList(
 			providerConfig.discovery.type === "litellm"
 				? resolveLiteLLMApi(undefined, id, providerConfig.api)
 				: providerConfig.api;
+		const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+		const advertisedName = typeof metadata?.display_name === "string" ? metadata.display_name.trim() : "";
 		const limits = isRecord(item.limits) ? item.limits : undefined;
-		const maxInputTokens = toPositiveNumberOrUndefined(limits?.max_input_tokens);
-		const maxOutputTokens = toPositiveNumberOrUndefined(limits?.max_output_tokens);
+		const maxInputTokens = toTokenLimitOrUndefined(limits?.max_input_tokens);
+		const maxOutputTokens = toTokenLimitOrUndefined(limits?.max_output_tokens);
 		const reportedLimitsContextWindow =
 			maxInputTokens !== undefined &&
 			maxOutputTokens !== undefined &&
@@ -772,49 +1060,62 @@ async function discoverOpenAIModelsList(
 			Number.isSafeInteger(maxInputTokens + maxOutputTokens)
 				? maxInputTokens + maxOutputTokens
 				: undefined;
+		const topProvider = isRecord(item.top_provider) ? item.top_provider : undefined;
 		const reportedMaxTokens =
-			maxOutputTokens !== undefined && Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : undefined;
+			maxOutputTokens ??
+			toTokenLimitOrUndefined(topProvider?.max_completion_tokens) ??
+			toTokenLimitOrUndefined(item.max_output_tokens) ??
+			toTokenLimitOrUndefined(item.max_completion_tokens) ??
+			toTokenLimitOrUndefined(item.max_tokens);
 		const contextWindow =
 			toPositiveNumberOrUndefined(item.max_model_len) ??
 			toPositiveNumberOrUndefined(item.context_length) ??
+			toPositiveNumberOrUndefined(metadata?.context_window) ??
 			reportedLimitsContextWindow ??
 			nativeMetadataForModel?.contextWindow ??
 			reference?.contextWindow ??
 			DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 		discovered.push(
-			buildModel({
-				id,
-				name: reference?.name ?? id,
-				api,
-				provider: providerConfig.provider,
-				baseUrl,
-				reasoning: reference?.reasoning ?? true,
-				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
-				input: nativeMetadataForModel?.input ??
-					extractOpenAIModelsListInputCapabilities(item) ??
-					reference?.input ?? ["text"],
-				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
+			buildModel(
+				withAdvertisedEfforts(
+					{
+						id,
+						name: advertisedName || reference?.name || id,
+						serviceTiers: parseServiceTierIds(item.service_tiers) ?? parseServiceTierIds(metadata?.service_tiers),
+						api,
+						provider: providerConfig.provider,
+						baseUrl,
+						reasoning: reference?.reasoning ?? true,
+						thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
+						input: nativeMetadataForModel?.input ??
+							extractOpenAIModelsListInputCapabilities(item) ??
+							reference?.input ?? ["text"],
+						...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow,
 
-				maxTokens: Math.min(
-					reportedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
-					contextWindow,
+						maxTokens: Math.min(
+							reportedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
+							contextWindow,
+						),
+						headers: baseHeaders,
+						compat: {
+							supportsStore: false,
+							supportsDeveloperRole: false,
+							supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? true,
+							...(referenceCompat?.reasoningEffortMap
+								? { reasoningEffortMap: referenceCompat.reasoningEffortMap }
+								: {}),
+							...(referenceCompat?.omitReasoningEffort !== undefined
+								? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
+								: {}),
+						},
+					} as ModelSpec<Api>,
+					advertisedReasoningEnabled(providerConfig) ? extractAdvertisedReasoning(item) : undefined,
+					api === "anthropic-messages",
 				),
-				headers,
-				compat: {
-					supportsStore: false,
-					supportsDeveloperRole: false,
-					supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? true,
-					...(referenceCompat?.reasoningEffortMap
-						? { reasoningEffortMap: referenceCompat.reasoningEffortMap }
-						: {}),
-					...(referenceCompat?.omitReasoningEffort !== undefined
-						? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
-						: {}),
-				},
-			} as ModelSpec<Api>),
+			),
 		);
 	}
 	return discovered;
@@ -828,10 +1129,8 @@ export async function discoverLiteLLMModels(
 	const references = getBundledModelReferenceIndex();
 	const resolveReference = (id: string) => resolveModelReference(id, references) as ModelSpec<Api> | undefined;
 	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
-	let headers = baseHeaders;
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) => {
-		headers = h;
 		let authError: DiscoveryHttpError | undefined;
 		const authAwareFetch: FetchImpl = async (input, init) => {
 			const response = await ctx.fetch(input, init);
@@ -871,7 +1170,7 @@ export async function discoverLiteLLMModels(
 	if (richModels === null) {
 		return discoverOpenAIModelsList({ ...providerConfig, baseUrl }, ctx);
 	}
-	return richModels.map(spec => buildModel({ ...spec, headers }));
+	return richModels.map(spec => buildModel({ ...spec, headers: baseHeaders }));
 }
 
 async function discoverProxyModels(
@@ -882,7 +1181,6 @@ async function discoverProxyModels(
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
-	let headers = baseHeaders;
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) =>
 		withTimeoutSignal(timeoutMs, async signal => {
@@ -893,9 +1191,20 @@ async function discoverProxyModels(
 			if (!res.ok) {
 				throw new DiscoveryHttpError(res.status, modelsUrl);
 			}
-			headers = h;
+
 			return (await res.json()) as {
-				data?: Array<{ id?: string; name?: string; supported_endpoint_types?: string[]; context_length?: number }>;
+				data?: Array<{
+					id?: string;
+					name?: string;
+					supported_endpoint_types?: string[];
+					context_length?: number;
+					metadata?: unknown;
+					supported_reasoning_levels?: unknown;
+					default_reasoning_level?: unknown;
+					reasoning?: unknown;
+					reasoning_effort_map?: unknown;
+					reasoning_required?: unknown;
+				}>;
 			};
 		});
 	const apiKey = await ctx.getBearerApiKeyResolver(providerConfig.provider);
@@ -923,33 +1232,39 @@ async function discoverProxyModels(
 			stripBracketedModelIdAffixes(id) ??
 			id;
 		discovered.push(
-			buildModel({
-				id,
-				name: displayName,
-				api,
-				provider: providerConfig.provider,
-				baseUrl,
-				reasoning: reference?.reasoning ?? true,
-				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
-				input: reference?.input ?? ["text"],
+			buildModel(
+				withAdvertisedEfforts(
+					{
+						id,
+						name: displayName,
+						api,
+						provider: providerConfig.provider,
+						baseUrl,
+						reasoning: reference?.reasoning ?? true,
+						thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
+						input: reference?.input ?? ["text"],
 
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 
-				contextWindow:
-					toPositiveNumberOrUndefined(item.context_length) ??
-					reference?.contextWindow ??
-					DISCOVERY_DEFAULT_CONTEXT_WINDOW,
-				maxTokens: reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
-				headers,
+						contextWindow:
+							toPositiveNumberOrUndefined(item.context_length) ??
+							reference?.contextWindow ??
+							DISCOVERY_DEFAULT_CONTEXT_WINDOW,
+						maxTokens: reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
+						headers: baseHeaders,
 
-				compat: isAnthropic
-					? undefined
-					: {
-							supportsStore: false,
-							supportsDeveloperRole: false,
-							supportsReasoningEffort: true,
-						},
-			} as ModelSpec<Api>),
+						compat: isAnthropic
+							? undefined
+							: {
+									supportsStore: false,
+									supportsDeveloperRole: false,
+									supportsReasoningEffort: true,
+								},
+					} as ModelSpec<Api>,
+					advertisedReasoningEnabled(providerConfig) ? extractAdvertisedReasoning(item) : undefined,
+					isAnthropic,
+				),
+			),
 		);
 	}
 	return discovered;

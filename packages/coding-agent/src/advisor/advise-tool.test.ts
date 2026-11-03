@@ -3,7 +3,7 @@
  * flush, a dropped note is never described as delivered, and blockers always interrupt.
  */
 import { describe, expect, it } from "bun:test";
-import { AdviseTool, type AdvisorSeverity } from "./advise-tool";
+import { AdviseTool, type AdvisorSeverity, resolveAdvisorDeliveryChannel } from "./advise-tool";
 
 function harness() {
 	const delivered: { note: string; severity?: AdvisorSeverity }[] = [];
@@ -67,5 +67,47 @@ describe("AdviseTool admission", () => {
 		expect(await advise("tests never ran", "blocker")).toBe("Delivered.");
 		tool.beginUpdate(false);
 		expect(delivered).toEqual([{ note: "tests never ran", severity: "blocker" }]);
+	});
+});
+
+describe("advisor continuation severity", () => {
+	const base = { autoResumeSuppressed: false, streaming: false, aborting: false, terminalAnswerNoQueuedWork: true };
+	it("continues finished work only when advice meets the configured threshold", () => {
+		expect(resolveAdvisorDeliveryChannel({ ...base, severity: "concern", continueSeverity: "concern" })).toBe(
+			"steer",
+		);
+		expect(resolveAdvisorDeliveryChannel({ ...base, severity: "concern", continueSeverity: "blocker" })).toBe(
+			"preserve",
+		);
+		expect(resolveAdvisorDeliveryChannel({ ...base, severity: undefined, continueSeverity: "nit" })).toBe("steer");
+	});
+	it("never bypasses user-stop, preserve-only or cooldown gates", () => {
+		expect(
+			resolveAdvisorDeliveryChannel({
+				...base,
+				severity: "nit",
+				continueSeverity: "nit",
+				autoResumeSuppressed: true,
+			}),
+		).toBe("preserve");
+		expect(
+			resolveAdvisorDeliveryChannel({ ...base, severity: "blocker", continueSeverity: "nit", preserveOnly: true }),
+		).toBe("preserve");
+		expect(
+			resolveAdvisorDeliveryChannel({
+				...base,
+				severity: "concern",
+				continueSeverity: "nit",
+				interruptImmuneTurnActive: true,
+			}),
+		).toBe("preserve");
+		expect(
+			resolveAdvisorDeliveryChannel({
+				...base,
+				severity: "blocker",
+				continueSeverity: "blocker",
+				interruptImmuneTurnActive: true,
+			}),
+		).toBe("steer");
 	});
 });

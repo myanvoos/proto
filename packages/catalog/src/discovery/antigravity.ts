@@ -1,12 +1,12 @@
 import { type } from "@oh-my-pi/omptype";
-import type { FetchImpl, ModelSpec } from "../types";
+import type { AntigravityModelWireProfile, FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch, toPositiveNumber } from "../utils";
 import {
 	ANTIGRAVITY_VARIANT_COLLAPSE_TABLE,
 	collapseEffortVariants,
 	type VariantCollapseTable,
 } from "../variant-collapse";
-import { ensureAntigravityVersion, getAntigravityUserAgent } from "../wire/gemini-headers";
+import { ensureAntigravityVersion, getAntigravityHeaders } from "../wire/gemini-headers";
 
 export const ANTIGRAVITY_PRIMARY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -15,13 +15,23 @@ const FETCH_AVAILABLE_MODELS_PATH = "/v1internal:fetchAvailableModels";
 
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
-const ANTIGRAVITY_DISCOVERY_DENYLIST = new Set(["chat_20706", "chat_23310", "gemini-2.5-pro"]);
+const ANTIGRAVITY_DISCOVERY_DENYLIST = new Set([
+	"chat_20706",
+	"chat_23310",
+	"gemini-2.5-pro",
+	"gemini-3.5-flash-extra-low",
+	"gemini-3.5-flash-low",
+	"gemini-3-flash-agent",
+	"gemini-3-flash",
+	"gemini-3.5-flash",
+]);
 
 export interface AntigravityDiscoveryApiModel {
 	displayName?: string;
 	supportsImages?: boolean;
 	supportsThinking?: boolean;
 	thinkingBudget?: number;
+	thinkingLevel?: number;
 	recommended?: boolean;
 	maxTokens?: number;
 	maxOutputTokens?: number;
@@ -29,6 +39,7 @@ export interface AntigravityDiscoveryApiModel {
 	apiProvider?: string;
 	modelProvider?: string;
 	isInternal?: boolean;
+	disabled?: boolean;
 	supportsVideo?: boolean;
 }
 
@@ -52,6 +63,10 @@ const AntigravityDiscoveryApiModelSchema = type({
 	"thinkingBudget?": type("unknown").pipe(value =>
 		typeof value === "number" && Number.isFinite(value) ? value : undefined,
 	),
+	"thinkingLevel?": type("unknown").pipe(value =>
+		typeof value === "number" && Number.isFinite(value) ? value : undefined,
+	),
+	"disabled?": type("unknown").pipe(value => (typeof value === "boolean" ? value : undefined)),
 	"recommended?": type("unknown").pipe(value => (typeof value === "boolean" ? value : undefined)),
 	"maxTokens?": type("unknown").pipe(value =>
 		typeof value === "number" && Number.isFinite(value) ? value : undefined,
@@ -126,7 +141,7 @@ export interface FetchAntigravityDiscoveryModelsOptions {
 
 	endpoint?: string;
 
-	project?: string;
+	projectId?: string;
 
 	userAgent?: string;
 
@@ -150,11 +165,23 @@ export async function fetchAntigravityDiscoveryModels(
 		if (ANTIGRAVITY_DISCOVERY_DENYLIST.has(modelId)) {
 			continue;
 		}
-		if (model.isInternal === true) {
+		if (model.isInternal === true || model.disabled === true) {
 			continue;
 		}
 
 		const supportsImages = model.supportsImages === true;
+		const profile: AntigravityModelWireProfile = {};
+		if (model.model) profile.modelEnum = model.model;
+		if (model.maxOutputTokens !== undefined && model.maxOutputTokens > 0)
+			profile.maxOutputTokens = model.maxOutputTokens;
+		const levels: Readonly<Record<number, AntigravityModelWireProfile["thinkingLevel"]>> = {
+			1: "LOW",
+			2: "MEDIUM",
+			3: "HIGH",
+		};
+		if (model.thinkingLevel !== undefined && levels[model.thinkingLevel] !== undefined)
+			profile.thinkingLevel = levels[model.thinkingLevel];
+		if (model.thinkingBudget !== undefined) profile.thinkingBudget = model.thinkingBudget;
 		models.push({
 			id: modelId,
 			name: model.displayName || modelId,
@@ -171,6 +198,7 @@ export async function fetchAntigravityDiscoveryModels(
 			},
 			contextWindow: toPositiveNumber(model.maxTokens, DEFAULT_CONTEXT_WINDOW),
 			maxTokens: toPositiveNumber(model.maxOutputTokens, DEFAULT_MAX_TOKENS),
+			...(Object.keys(profile).length > 0 ? { antigravityWireProfiles: { [modelId]: profile } } : {}),
 		});
 	}
 
@@ -213,9 +241,9 @@ async function fetchAntigravityDiscoveryResponse(
 				headers: {
 					Authorization: `Bearer ${options.token}`,
 					"Content-Type": "application/json",
-					"User-Agent": options.userAgent ?? getAntigravityUserAgent(),
+					...getAntigravityHeaders(options.userAgent),
 				},
-				body: JSON.stringify({}),
+				body: JSON.stringify(options.projectId ? { project: options.projectId } : {}),
 				signal: options.signal,
 			});
 		} catch {

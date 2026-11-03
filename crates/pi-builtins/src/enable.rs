@@ -4,33 +4,25 @@ use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 use itertools::Itertools;
 
-
 #[derive(Parser)]
 pub(crate) struct EnableCommand {
-
 	#[arg(short = 'a')]
 	print_list: bool,
-
 
 	#[arg(short = 'n')]
 	disable: bool,
 
-
 	#[arg(short = 'p')]
 	print_reusably: bool,
-
 
 	#[arg(short = 's')]
 	special_only: bool,
 
-
 	#[arg(short = 'f', value_name = "PATH")]
 	shared_object_path: Option<String>,
 
-
 	#[arg(short = 'd')]
 	remove_loaded_builtin: bool,
-
 
 	names: Vec<String>,
 }

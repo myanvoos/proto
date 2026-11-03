@@ -174,3 +174,46 @@ test("automatic search stops slow providers at one shared deadline", async () =>
 		setExcludedSearchProviders([]);
 	}
 });
+
+test("Anthropic citation-fragmented text preserves whitespace before uppercase continuations", () => {
+	const fixture = anthropicFixture();
+	fixture.content = [
+		{ type: "text", text: "The project uses " },
+		{ type: "text", text: "TypeScript" },
+		{ type: "text", text: " for its API." },
+		{ type: "server_tool_use", name: "web_search", input: { query: "API" } },
+		{ type: "text", text: "Another paragraph." },
+	];
+	expect(parseAnthropicResponse(fixture).answer).toBe("Another paragraph.");
+	fixture.content.unshift({ type: "server_tool_use", name: "web_search", input: { query: "project" } });
+	expect(parseAnthropicResponse(fixture).answer).toBe(
+		"The project uses TypeScript for its API.\n\nAnother paragraph.",
+	);
+});
+
+test("successful provider fallback exposes bounded normalized failures with the serving provider", async () => {
+	const providerSpy = spyOn(providerModule, "getSearchProvider").mockImplementation(async id => ({
+		id,
+		label: id,
+		isAvailable: () => id === "perplexity" || id === "deepseek",
+		isExplicitlyAvailable: () => true,
+		search: async () => {
+			if (id === "perplexity") throw new Error(`temporary\n outage ${"x".repeat(1000)}`);
+			return { provider: "deepseek", answer: "Grounded answer", sources: [] };
+		},
+	}));
+	setSearchProviderOrder(["perplexity", "deepseek"]);
+	setExcludedSearchProviders([]);
+	try {
+		const result = await runSearchQuery({ query: "news", provider: "auto" }, { authStorage: {} as AuthStorage });
+		const text = result.content[0]?.text ?? "";
+		expect(text).toContain("perplexity: temporary outage");
+		expect(text).toContain("Served by deepseek");
+		expect(text).toContain("Grounded answer");
+		expect(text.length).toBeLessThan(350);
+	} finally {
+		providerSpy.mockRestore();
+		setSearchProviderOrder([]);
+		setExcludedSearchProviders([]);
+	}
+});

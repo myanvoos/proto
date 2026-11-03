@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock, vi } from "bun:test";
 import { MacOSSpellingProvider, type SpellingBackend } from "./macos-spelling";
 
 const misspelled: SpellingBackend = {
@@ -41,4 +41,40 @@ describe("macOS spelling typo marks", () => {
 		};
 		expect(await paintTypo(false, overlapping)).toBe("\x1b[4mrecieved\x1b[24m");
 	});
+});
+
+it("checks a whole logical word when the cursor splits its render segments", async () => {
+	const checkSpelling = mock(misspelled.checkSpelling);
+	const provider = new MacOSSpellingProvider({ ...misspelled, checkSpelling }, false);
+	provider.setFeatures({ typoDetection: true, autocomplete: false, autocorrect: false });
+	const context = { editorText: "recieved", lines: ["recieved"], line: 0, startCol: 0 };
+	const updated = Promise.withResolvers<void>();
+	provider.onUpdate = updated.resolve;
+	provider.decorateTypos("rec", context);
+	await updated.promise;
+	expect(checkSpelling).toHaveBeenCalledWith("recieved");
+	expect(provider.decorateTypos("rec", context)).toBe("\x1b[4mrec\x1b[24m");
+	expect(provider.decorateTypos("ieved", { ...context, startCol: 3 })).toBe("\x1b[4mieved\x1b[24m");
+	expect(provider.decorateTypos("recieved", { ...context, typing: { line: 0, start: 0, end: 8 } })).toBe("recieved");
+	expect(provider.decorateTypos("recieved", context)).toBe("\x1b[4mrecieved\x1b[24m");
+});
+
+it("disables spelling assistance when a native backend call never settles", async () => {
+	vi.useFakeTimers();
+	try {
+		const pending = Promise.withResolvers<readonly { start: number; length: number }[]>();
+		const checkSpelling = mock(() => pending.promise);
+		const provider = new MacOSSpellingProvider({ ...misspelled, checkSpelling });
+		provider.setFeatures({ typoDetection: true, autocomplete: true, autocorrect: true });
+		const context = { editorText: "recieved", lines: ["recieved"], line: 0, startCol: 0 };
+		provider.decorateTypos("recieved", context);
+		vi.advanceTimersByTime(5000);
+		for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+		expect(provider.decorateTypos("recieved", context)).toBe("recieved");
+		expect(await provider.getWordReplacements(["recieved"], 0, 4)).toBeNull();
+		expect(await provider.tryAutocorrect(["recieved "], 0, 9)).toBeNull();
+		expect(checkSpelling).toHaveBeenCalledTimes(1);
+	} finally {
+		vi.useRealTimers();
+	}
 });

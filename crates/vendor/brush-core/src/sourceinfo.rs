@@ -1,16 +1,11 @@
-
-
 use std::{path::PathBuf, sync::Arc};
-
 
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceInfo {
-
 	pub source: String,
 
-
-	pub start:  Option<Arc<crate::SourcePosition>>,
+	pub start: Option<Arc<crate::SourcePosition>>,
 }
 
 impl From<&str> for SourceInfo {

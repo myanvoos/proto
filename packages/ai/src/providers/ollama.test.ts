@@ -221,3 +221,9 @@ describe("Ollama stream timeouts", () => {
 		}
 	});
 });
+
+it("reports an Ollama HTTP-200 in-band runtime error instead of incomplete success", async () => {
+	const result = await runChunks([{ message: { content: "partial" } }, { error: "model runner crashed" }]);
+	expect(result.stopReason).toBe("error");
+	expect(result.errorMessage).toContain("model runner crashed");
+});

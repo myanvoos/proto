@@ -4,6 +4,8 @@ export interface InferenceHeaderOptions {
 	provider: string;
 	protocol: "anthropic" | "google" | "openai";
 	sessionId?: string;
+	/** Go shared prompt-cache family; other session headers retain the conversation id. */
+	cacheAffinity?: string;
 }
 
 /** Set a header unless the map already contains that field under any casing. */
@@ -13,6 +15,41 @@ export function setHeaderIfAbsent(headers: Record<string, string>, name: string,
 		if (existingName.toLowerCase() === normalizedName) return;
 	}
 	headers[name] = value;
+}
+
+/**
+ * Label a request with the conversation id under the model's resolved
+ * `compat.sessionHeader` (KDL `session-header`). A header the caller or config
+ * already set wins; without a conversation id nothing is sent.
+ */
+export function applySessionHeader(
+	headers: Record<string, string> | Headers,
+	compat: object | undefined,
+	sessionId: string | undefined,
+): void {
+	const name = compat && "sessionHeader" in compat ? compat.sessionHeader : undefined;
+	if (typeof name !== "string" || !sessionId) return;
+	if (headers instanceof Headers) {
+		if (!headers.has(name)) headers.set(name, sessionId);
+		return;
+	}
+	setHeaderIfAbsent(headers, name, sessionId);
+}
+
+export function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
+	const merged: Record<string, string> = {};
+	const keyByLower = new Map<string, string>();
+	for (const headers of headerSources) {
+		if (!headers) continue;
+		for (const [key, value] of Object.entries(headers)) {
+			const lower = key.toLowerCase();
+			const existing = keyByLower.get(lower);
+			if (existing !== undefined && existing !== key) delete merged[existing];
+			keyByLower.set(lower, key);
+			merged[key] = value;
+		}
+	}
+	return merged;
 }
 
 function setHeader(headers: Record<string, string>, name: string, value: string): void {
@@ -40,7 +77,17 @@ export function applyInferenceHeaders(headers: Record<string, string>, options: 
 	// OpenCode Go/Zen reject requests without a per-conversation session header.
 	if (options.provider === "opencode-go" || options.provider === "opencode-zen") {
 		setHeaderIfAbsent(headers, "User-Agent", USER_AGENT);
-		setHeader(headers, "x-opencode-session", sessionId);
+		setHeader(
+			headers,
+			"x-opencode-session",
+			options.provider === "opencode-go" ? (options.cacheAffinity ?? sessionId) : sessionId,
+		);
+	}
+
+	// LiteLLM groups request logs into sessions by this header. It only affects
+	// log grouping, so a configured value (e.g. a run id) wins.
+	if (options.provider === "litellm") {
+		setHeaderIfAbsent(headers, "x-litellm-session-id", sessionId);
 	}
 }
 

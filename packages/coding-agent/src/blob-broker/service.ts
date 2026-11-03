@@ -21,8 +21,14 @@ import { BlobBrokerSavingsJournal, type BlobBrokerSavingsRecord, blobBrokerSavin
 import type { LazyBlobFetcher } from "./store";
 import type { DestinationOptionValue } from "./uploader-runtime";
 
-function contentHash(data: string, mimeType: string): string {
-	return new Bun.CryptoHasher("sha256").update(mimeType).update("\n").update(data).digest("hex");
+const contentHashByBlock = new WeakMap<ImageContent, { data: string; mimeType: string; hash: string }>();
+
+function blockContentHash(block: ImageContent): string {
+	const memo = contentHashByBlock.get(block);
+	if (memo?.data === block.data && memo.mimeType === block.mimeType) return memo.hash;
+	const hash = new Bun.CryptoHasher("sha256").update(block.mimeType).update("\n").update(block.data).digest("hex");
+	contentHashByBlock.set(block, { data: block.data, mimeType: block.mimeType, hash });
+	return hash;
 }
 
 export class FallbackBlobBackend implements BlobBackend {
@@ -308,7 +314,7 @@ export class ImageUrlService {
 			if (!Array.isArray(message.content)) continue;
 			for (const block of message.content) {
 				if (block.type !== "image" || block.url || block.providerFile || block.data.length === 0) continue;
-				const hash = contentHash(block.data, block.mimeType);
+				const hash = blockContentHash(block);
 				const group = byHash.get(hash);
 				if (group) group.push(block);
 				else byHash.set(hash, [block]);

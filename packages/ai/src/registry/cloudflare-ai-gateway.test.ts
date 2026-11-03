@@ -82,6 +82,24 @@ describe("Cloudflare AI Gateway", () => {
 		expect(JSON.parse(captured.body ?? "{}").model).toBe("gpt-5.4");
 	});
 
+	it("does not send stale headers or wire model IDs after a cached source is edited in place", async () => {
+		const source = { ...OPENAI_MODEL, headers: { "x-route-version": "first" } };
+		const requests: { headers: Headers; body: { model: string } }[] = [];
+		const fetchImpl: FetchImpl = async (_input, init) => {
+			requests.push({ headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+			return Response.json({ error: { message: "captured" } }, { status: 400 });
+		};
+		const context = { messages: [{ role: "user" as const, content: "hello", timestamp: 0 }] };
+		await stream(source, context, { apiKey: CREDENTIAL, fetch: fetchImpl, maxTokens: 16 }).result();
+		source.headers = { "x-route-version": "second" };
+		source.id = "openai/gpt-5.5";
+		await stream(source, context, { apiKey: CREDENTIAL, fetch: fetchImpl, maxTokens: 16 }).result();
+		expect(requests.map(request => [request.headers.get("x-route-version"), request.body.model])).toEqual([
+			["first", "gpt-5.4"],
+			["second", "gpt-5.5"],
+		]);
+	});
+
 	it("stores routing IDs with the token and replaces them when the same token logs in again", async () => {
 		const store = new SqliteAuthCredentialStore(new Database(":memory:"));
 		const authStorage = new AuthStorage(store);

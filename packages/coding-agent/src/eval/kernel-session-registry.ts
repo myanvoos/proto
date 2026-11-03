@@ -268,7 +268,9 @@ export function createKernelSessionRegistry<
 		if (!sessions.has(sessionKey)) return;
 		const session = sessions.get(sessionKey)!;
 		const leaseRemaining = (metadata.get(session)?.keepAliveUntil ?? 0) - Date.now();
-		const timer = setTimeout(() => void reapFire(sessionKey), Math.max(delayMs, leaseRemaining));
+		const timer = logger.withoutContext(() =>
+			setTimeout(() => void reapFire(sessionKey), Math.max(delayMs, leaseRemaining)),
+		);
 		timer.unref?.();
 		reapTimers.set(sessionKey, timer);
 	}
@@ -342,7 +344,7 @@ export function createKernelSessionRegistry<
 			reapShutdownRetries.set(sessionKey, retries);
 			logger.warn(`${descriptor.languageLabel} kernel idle-reap shutdown not confirmed`, {
 				sessionKey,
-				sessionId: session.sessionId,
+				kernelSessionId: session.sessionId,
 				cwd: session.cwd,
 				reason: shutdown.error ?? "not confirmed",
 			});
@@ -353,7 +355,7 @@ export function createKernelSessionRegistry<
 		}
 		logger.info(`${descriptor.languageLabel} kernel released after idle timeout`, {
 			sessionKey,
-			sessionId: session.sessionId,
+			kernelSessionId: session.sessionId,
 			idleReapMs,
 		});
 		reapedNotes.set(sessionKey, { idleMs: idleReapMs, reapedAt: Date.now() });
@@ -411,7 +413,7 @@ export function createKernelSessionRegistry<
 			lastActivityAt: now,
 		};
 		let startingSession!: StartingKernelSession<TSession>;
-		const startup = (async () => {
+		const startup = logger.withoutContext(async () => {
 			let kernel: TKernel;
 			try {
 				kernel = await descriptor.startKernel(cwd, startupOptions);
@@ -435,7 +437,7 @@ export function createKernelSessionRegistry<
 				sessions.set(sessionKey, session);
 			}
 			return session;
-		})();
+		});
 		startingSession = {
 			ownerIds: new Set(),
 			hasFallbackOwner: false,
@@ -453,8 +455,9 @@ export function createKernelSessionRegistry<
 	}
 
 	async function replaceSessionKernel(session: TSession, cwd: string, options: TOptions): Promise<TKernel> {
-		if (descriptor.replaceSessionKernel) {
-			return await descriptor.replaceSessionKernel(session, cwd, options, context);
+		const replace = descriptor.replaceSessionKernel;
+		if (replace) {
+			return await logger.withoutContext(() => replace(session, cwd, options, context));
 		}
 		if (descriptor.logBeforeReplacement) {
 			logger.warn(`${descriptor.languageLabel} subprocess died or is unresponsive; spawning fresh process`, {
@@ -470,7 +473,7 @@ export function createKernelSessionRegistry<
 			throw new descriptor.cancelledErrorClass(false);
 		}
 		requireRemainingKernelTimeoutMs(options.deadlineMs, descriptor.cancelledErrorClass);
-		const next = await descriptor.startKernel(cwd, options);
+		const next = await logger.withoutContext(() => descriptor.startKernel(cwd, options));
 		if (sessions.get(session.sessionKey) !== session) {
 			await next.shutdown().catch(() => undefined);
 			throw new descriptor.cancelledErrorClass(false);
@@ -592,7 +595,7 @@ export function createKernelSessionRegistry<
 			if (result.status === "fulfilled" && result.value?.confirmed !== false) continue;
 			const reason = result.status === "rejected" ? result.reason : "not confirmed";
 			logger.warn(`${descriptor.languageLabel} kernel shutdown not confirmed`, {
-				sessionId: session.sessionId,
+				kernelSessionId: session.sessionId,
 				sessionKey: id,
 				cwd: session.cwd,
 				reason,
@@ -646,7 +649,7 @@ export function createKernelSessionRegistry<
 			}
 			const reason = result.status === "rejected" ? result.reason : "not confirmed";
 			logger.warn(`${descriptor.languageLabel} kernel shutdown not confirmed`, {
-				sessionId: session.sessionId,
+				kernelSessionId: session.sessionId,
 				sessionKey: session.sessionKey,
 				cwd: session.cwd,
 				reason,

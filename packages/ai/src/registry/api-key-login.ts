@@ -11,6 +11,7 @@ type ChatCompletionsValidation = {
 	provider: string;
 	baseUrl: string;
 	model: string;
+	maxTokensField?: "max_tokens" | "max_completion_tokens";
 	tolerateModelDenied?: boolean;
 	/** Only a real auth rejection (401/403) fails login; any other probe failure trusts the supplied key. */
 	optional?: boolean;
@@ -103,6 +104,7 @@ export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthCon
 						apiKey: trimmed,
 						baseUrl: config.validation.baseUrl,
 						model: config.validation.model,
+						maxTokensField: config.validation.maxTokensField,
 						signal: options.signal,
 						fetch: options.fetch,
 						tolerateModelDenied: config.validation.tolerateModelDenied,

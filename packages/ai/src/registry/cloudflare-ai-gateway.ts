@@ -10,10 +10,23 @@ import {
 import { $env } from "@oh-my-pi/pi-utils";
 import { NO_AUTH_SENTINEL } from "../auth-retry";
 import * as AIError from "../error";
+import type { Api, Model } from "../types";
 import type { OAuthController, OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
 
 const AUTH_URL = "https://developers.cloudflare.com/ai-gateway/configuration/authentication/";
+
+// Cache the expensive compat rebuild, invalidating when a source field is replaced.
+const compatRouteModels = new WeakMap<Model<Api>, { source: Model<Api>; prepared: Model<Api> }>();
+
+function sameOwnFields(a: object, b: object): boolean {
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	for (const key of keys) {
+		if ((a as Record<string, unknown>)[key] !== (b as Record<string, unknown>)[key]) return false;
+	}
+	return true;
+}
 
 export async function loginCloudflareAiGateway(options: OAuthController): Promise<string> {
 	if (!options.onPrompt) {
@@ -83,13 +96,17 @@ export const cloudflareAiGatewayProvider = {
 			) {
 				return model;
 			}
-			return buildModel({
+			const cached = compatRouteModels.get(model);
+			if (cached && sameOwnFields(cached.source, model)) return cached.prepared;
+			const prepared = buildModel({
 				...model,
 				api: "openai-completions",
 				baseUrl,
 				compat: model.compatConfig,
 				requestModelId,
 			});
+			compatRouteModels.set(model, { source: { ...model }, prepared });
+			return prepared;
 		}
 		return model;
 	},

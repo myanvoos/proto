@@ -9,6 +9,7 @@ import type { FileMentionMessage } from "../session/messages";
 import { generateFileMentionMessages } from "./file-mentions";
 import {
 	ImageDecodeError,
+	imageDecodeFailureReason,
 	loadImageAttachmentInput,
 	loadImageInput,
 	normalizeModelContextImages,
@@ -236,4 +237,23 @@ test("an image growing after admission reads only the reserved bytes plus one be
 		expect(allocatedBytes).toBe(bytes.length + 1);
 		expect(metadata).not.toHaveBeenCalled();
 	});
+});
+
+test("shared attachment validation rejects malformed padding before decoding", async () => {
+	for (const data of [
+		VALID_PNG_BASE64.slice(0, -1),
+		`${VALID_PNG_BASE64}=`,
+		`${VALID_PNG_BASE64.slice(0, 8)}=${VALID_PNG_BASE64.slice(8)}`,
+	]) {
+		expect(await imageDecodeFailureReason({ type: "image", data, mimeType: "image/png" })).toBe(
+			"invalid base64 image data",
+		);
+	}
+	expect(
+		await imageDecodeFailureReason({
+			type: "image",
+			data: VALID_PNG_BASE64.replace(/=+$/, ""),
+			mimeType: "image/png",
+		}),
+	).toBeNull();
 });

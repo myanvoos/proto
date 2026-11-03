@@ -63,7 +63,10 @@ mod imp {
 		os::unix::ffi::OsStrExt,
 		path::{Path, PathBuf},
 		process::{Command, Stdio},
-		sync::LazyLock,
+		sync::{
+			LazyLock,
+			atomic::{AtomicBool, Ordering},
+		},
 	};
 
 	use parking_lot::Mutex;
@@ -79,11 +82,24 @@ mod imp {
 	static ACTIVE_MOUNTS: LazyLock<Mutex<BTreeMap<PathBuf, MountFlavor>>> =
 		LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+	/// Set once `fuse-overlayfs` has run; a host that has it keeps it, so later
+	/// probes skip the spawn. A failure is not cached: it can be installed while
+	/// a long-running session is up, so the next probe spawns again.
+	static FUSE_OVERLAYFS: AtomicBool = AtomicBool::new(false);
+
 	pub fn probe() -> ProbeResult {
-		if kernel_overlay_supported() {
+		if kernel_overlay_supported() || FUSE_OVERLAYFS.load(Ordering::Relaxed) {
 			return ProbeResult::available();
 		}
-		if fuse_overlayfs_available() {
+		let fuse_runs = Command::new("fuse-overlayfs")
+			.arg("--version")
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.status()
+			.is_ok();
+		if fuse_runs {
+			FUSE_OVERLAYFS.store(true, Ordering::Relaxed);
 			return ProbeResult::available();
 		}
 		ProbeResult::unavailable(
@@ -239,24 +255,51 @@ mod imp {
 		))
 	}
 
+	/// Unmount helpers in preference order: libfuse3's `fusermount3`, then the
+	/// libfuse2 `fusermount` older hosts ship instead.
+	const FUSERMOUNT: [&str; 2] = ["fusermount3", "fusermount"];
+
 	fn fuse_umount(merged: &Path) -> IsoResult<()> {
-		for binary in ["fusermount3", "fusermount"] {
-			let result = Command::new(binary)
-				.arg("-u")
-				.arg(merged)
-				.stdin(Stdio::null())
-				.stdout(Stdio::null())
-				.stderr(Stdio::piped())
-				.output();
-			match result {
-				Ok(out) if out.status.success() => return Ok(()),
-				Ok(_) => {},
-				Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
-				Err(err) => return Err(IsoError::other(format!("spawn {binary}: {err}"))),
+		fuse_umount_with(&FUSERMOUNT, merged)
+	}
+
+	/// Unmount the FUSE mount at `merged` via the first of `programs` that
+	/// succeeds.
+	///
+	/// A plain `-u` right after the session ends can fail with a transient
+	/// `EBUSY` while the kernel still holds references to the mount; the lazy
+	/// `-u -z` then detaches it anyway and the daemon exits once those drop.
+	/// The final `umount2` is `EPERM` for the unprivileged users that use
+	/// fuse-overlayfs, so a fusermount failure (with its stderr) is what gets
+	/// reported when every attempt fails.
+	fn fuse_umount_with(programs: &[&str], merged: &Path) -> IsoResult<()> {
+		let mut fuse_err = None;
+		'programs: for program in programs {
+			for args in [&["-u"][..], &["-u", "-z"]] {
+				let result = Command::new(program)
+					.args(args)
+					.arg(merged)
+					.stdin(Stdio::null())
+					.stdout(Stdio::null())
+					.stderr(Stdio::piped())
+					.output();
+				match result {
+					Ok(out) if out.status.success() => return Ok(()),
+					Ok(out) => {
+						fuse_err = Some(command_failed(
+							format_args!("{program} {}", args.join(" ")),
+							out.status.code().unwrap_or(-1),
+							&out.stderr,
+						));
+					},
+					Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue 'programs,
+					Err(err) => return Err(IsoError::other(format!("spawn {program}: {err}"))),
+				}
 			}
 		}
-
-		kernel_umount(merged)
+		// Last resort — the lazy kernel umount works for both kernel overlay and
+		// any fuse mount the caller is privileged to detach.
+		kernel_umount(merged).map_err(|err| fuse_err.unwrap_or(err))
 	}
 
 	fn kernel_overlay_supported() -> bool {
@@ -266,16 +309,6 @@ mod imp {
 		text
 			.lines()
 			.any(|line| line.split_whitespace().any(|word| word == "overlay"))
-	}
-
-	fn fuse_overlayfs_available() -> bool {
-		Command::new("fuse-overlayfs")
-			.arg("--version")
-			.stdin(Stdio::null())
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.status()
-			.is_ok()
 	}
 
 	fn canonical_existing_dir(path: &Path) -> IsoResult<PathBuf> {

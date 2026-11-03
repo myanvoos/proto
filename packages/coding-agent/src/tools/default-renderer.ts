@@ -12,7 +12,10 @@ import {
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
 } from "./json-tree";
-import { formatExpandHint, replaceTabs, sanitizeSingleLine, truncateToWidth } from "./render-utils";
+import { formatExpandHint, replaceTabs, sanitizeSingleLine, truncateToWidth, wrapTextWithAnsi } from "./render-utils";
+
+const JSON_TREE_MAX_CHARS = 64 * 1024;
+const UNSAFE_INTEGER_RE = /(?<![\w.])-?\d{16,}(?![\w.])/;
 
 interface DefaultToolRenderInput {
 	label: string;
@@ -96,20 +99,22 @@ export function formatDefaultToolExecution(
 		return lines.join("\n");
 	}
 
-	if (textContent.startsWith("{") || textContent.startsWith("[")) {
+	if (
+		textContent.length <= JSON_TREE_MAX_CHARS &&
+		!UNSAFE_INTEGER_RE.test(textContent) &&
+		(textContent.startsWith("{") || textContent.startsWith("["))
+	) {
 		try {
 			const parsed = JSON.parse(textContent);
 			const maxDepth = options.expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 			const maxLines = options.expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
 			const maxScalarLen = options.expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-			const tree = renderJsonTreeLines(parsed, uiTheme, maxDepth, maxLines, maxScalarLen, contentWidth);
+			const tree = renderJsonTreeLines(parsed, uiTheme, maxDepth, maxLines, maxScalarLen, contentWidth, []);
 
-			if (tree.lines.length > 0) {
+			if (tree.lines.length > 0 && !(options.expanded && tree.truncated)) {
 				lines.push(...tree.lines);
 				if (!options.expanded) {
 					lines.push(formatExpandHint(uiTheme, options.expanded, true));
-				} else if (tree.truncated) {
-					lines.push(uiTheme.fg("dim", "…"));
 				}
 				return lines.join("\n");
 			}
@@ -123,7 +128,11 @@ export function formatDefaultToolExecution(
 	for (const line of displayLines) {
 		// Tool result text is externally controlled (devices, extensions):
 		// sanitize before styling/truncation.
-		lines.push(uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(sanitizeText(line)), contentWidth)));
+		const safeLine = replaceTabs(sanitizeText(line));
+		const rows = options.expanded
+			? wrapTextWithAnsi(safeLine, contentWidth)
+			: [truncateToWidth(safeLine, contentWidth)];
+		lines.push(...rows.map(row => uiTheme.fg("toolOutput", row)));
 	}
 
 	if (outputLines.length > maxOutputLines) {

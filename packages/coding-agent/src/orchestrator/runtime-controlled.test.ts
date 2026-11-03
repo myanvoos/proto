@@ -1566,7 +1566,7 @@ test("a cold revived worker restores its own grandchildren and can continue thei
 				expectedAgentRef: expectedRef,
 				toolNames: init.tools,
 				spawns: init.spawns,
-				systemPrompt: () => [init.systemPrompt],
+				systemPrompt: () => [...init.systemPrompt],
 				requireYieldTool: true,
 				hasUI: false,
 				enableMCP: false,

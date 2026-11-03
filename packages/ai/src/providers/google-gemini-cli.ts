@@ -1,10 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
+import { modelImageLimits } from "@oh-my-pi/pi-catalog/build";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
+	ensureAntigravityVersion,
+	getAntigravityHeaders,
 	getAntigravityModelWireProfile,
-	getAntigravityUserAgent,
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
@@ -29,6 +31,7 @@ import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTim
 
 import { normalizeSchemaForCCA } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
+import { prepareAnthropicImageContext } from "./anthropic-images";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
 import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./google-shared";
 import {
@@ -297,6 +300,7 @@ export interface AntigravityProviderSessionState extends ProviderSessionState {
 	trajectoryId?: string;
 	sessionId?: string;
 	stepIndex?: number;
+	requestCount?: number;
 	lastExecutionId?: string;
 }
 
@@ -483,7 +487,7 @@ interface CloudCodeAssistResponseChunk {
 		promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
 	};
 
-	error?: { code?: number; message?: string; status?: string };
+	error?: { code?: number; message?: string; status?: string; details?: unknown[] };
 	traceId?: string;
 }
 
@@ -582,18 +586,20 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				endpoints = baseUrl ? [baseUrl] : [DEFAULT_ENDPOINT];
 			}
 
-			let requestBody = buildRequest(model, context, projectId, options, isAntigravity);
+			const requestContext = modelImageLimits(model) ? await prepareAnthropicImageContext(context, model) : context;
+			let requestBody = buildRequest(model, requestContext, projectId, options, isAntigravity);
 			const replacementPayload = await options?.onPayload?.(requestBody, model);
 			if (replacementPayload !== undefined) {
 				requestBody = replacementPayload as typeof requestBody;
 			}
-			const headers = isAntigravity ? { "User-Agent": getAntigravityUserAgent() } : getGeminiCliHeaders(model.id);
+			if (isAntigravity) await ensureAntigravityVersion(options?.fetch ?? fetch, options?.signal);
 
 			const requestHeaders = {
 				Authorization: `Bearer ${accessToken}`,
 				"Content-Type": "application/json",
-				Accept: "text/event-stream",
-				...headers,
+				...(isAntigravity
+					? getAntigravityHeaders()
+					: { Accept: "text/event-stream", ...getGeminiCliHeaders(model.id) }),
 				...(needsClaudeThinkingBetaHeader(model) ? { "anthropic-beta": CLAUDE_THINKING_BETA_HEADER } : {}),
 				...(options?.headers ?? {}),
 			};
@@ -768,7 +774,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				for await (const chunk of chunks) {
 					if (chunk.error) {
 						const detail = chunk.error.message || chunk.error.status || "unknown error";
-						const message = `Cloud Code Assist stream error: ${detail}`;
+						const residue =
+							Array.isArray(chunk.error.details) && chunk.error.details.length > 0
+								? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
+								: "";
+						const message = `Cloud Code Assist stream error: ${detail}${residue}`;
 						throw typeof chunk.error.code === "number" && chunk.error.code >= 400
 							? new AIError.GeminiCliApiError(message, chunk.error.code)
 							: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "runtime" });
@@ -1192,26 +1202,34 @@ function buildAntigravityRequestEnvelope(
 	wireModelId: string,
 	state: AntigravityProviderSessionState | undefined,
 ): AntigravityRequestEnvelope {
+	const contextSteps = Math.max(1, context.messages.length);
+	let requestIndex = 0;
 	if (state) {
 		state.agentId ??= randomUUID();
 		state.trajectoryId ??= randomUUID();
 		state.sessionId ??= randomSignedDecimalSessionId();
-		state.stepIndex = (state.stepIndex ?? 1) + 1;
+		state.stepIndex = Math.max(contextSteps, (state.stepIndex ?? 0) + 1);
+		requestIndex = state.requestCount ?? 0;
+		state.requestCount = requestIndex + 1;
 	}
 	const agentId = state?.agentId ?? randomUUID();
 	const trajectoryId = state?.trajectoryId ?? randomUUID();
 	const sessionId = state?.sessionId ?? deriveAntigravitySessionId(context);
-	const step = state?.stepIndex ?? 2;
+	const step = state?.stepIndex ?? contextSteps;
 	const requestId = `agent/${agentId}/${Date.now()}/${trajectoryId}/${step}`;
 	const isClaude = isClaudeModel(model.id);
-	const profile = getAntigravityModelWireProfile(wireModelId);
+	const profile = getAntigravityModelWireProfile(wireModelId, model.antigravityWireProfiles);
 	const labels: Record<string, string> = {};
+	labels.cascade_id = agentId;
 	if (state?.lastExecutionId) labels.last_execution_id = state.lastExecutionId;
 	labels.last_step_index = String(step - 1);
 	if (profile?.modelEnum !== undefined) labels.model_enum = profile.modelEnum;
+	labels.request_id = `${trajectoryId}-${requestIndex}`;
+	labels.root_cascade_id = agentId;
 	labels.trajectory_id = trajectoryId;
 	labels.used_claude = String(isClaude);
 	labels.used_claude_conservative = String(isClaude);
+	labels.used_non_gemini_model = String(!model.id.toLowerCase().includes("gemini"));
 	return { sessionId, requestId, labels };
 }
 
@@ -1316,9 +1334,19 @@ export function buildRequest(
 	const wireModelId = options.requestModelId ?? model.requestModelId ?? model.id;
 
 	if (isAntigravity) {
-		const profile = getAntigravityModelWireProfile(wireModelId);
-		if (profile) {
-			generationConfig.maxOutputTokens = profile.maxOutputTokens;
+		const profile = getAntigravityModelWireProfile(wireModelId, model.antigravityWireProfiles);
+		if (profile?.maxOutputTokens !== undefined) generationConfig.maxOutputTokens = profile.maxOutputTokens;
+		if (profile && generationConfig.thinkingConfig && options.thinking?.enabled) {
+			if (profile.thinkingLevel !== undefined)
+				generationConfig.thinkingConfig = {
+					includeThoughts: generationConfig.thinkingConfig.includeThoughts,
+					thinkingLevel: profile.thinkingLevel,
+				};
+			else if (profile.thinkingBudget !== undefined)
+				generationConfig.thinkingConfig = {
+					includeThoughts: generationConfig.thinkingConfig.includeThoughts,
+					thinkingBudget: profile.thinkingBudget,
+				};
 		}
 		const state = getAntigravityProviderSessionState(options.providerSessionState);
 		const envelope = buildAntigravityRequestEnvelope(model, context, wireModelId, state);

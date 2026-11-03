@@ -1,6 +1,5 @@
 use brush_core::{ExecutionResult, builtins};
 
-
 pub(crate) struct TrueCommand {}
 
 const MAN_PAGE: &str = "\

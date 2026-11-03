@@ -27,11 +27,13 @@ import {
 	type AnthropicOptions,
 	applyAnthropicUsageExtras,
 	convertAnthropicMessages,
+	isEmptyAnthropicContentDelta,
 	mapAnthropicStopReason,
 	normalizeAnthropicBaseUrl,
 	resolveAnthropicCustomHeadersForBaseUrl,
 	resolveEagerToolInputStreamingSupport,
 } from "./anthropic";
+import { prepareAnthropicImageContext } from "./anthropic-images";
 import continuePrompt from "./claude-agent-continue.md" with { type: "text" };
 import { claudeAgentExecutable } from "./claude-agent-executable";
 
@@ -72,6 +74,7 @@ async function runClaudeAgentSdk(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 	};
+	const signatureDeltasStarted = new Set<number>();
 	const controller = new AbortController();
 	const abort = (): void => controller.abort(options?.signal?.reason);
 	options?.signal?.addEventListener("abort", abort, { once: true });
@@ -107,6 +110,7 @@ async function runClaudeAgentSdk(
 			},
 		};
 		// Middleware receives the SDK adapter request, never credentials or executable callbacks.
+		context = await prepareAnthropicImageContext(context, model);
 		const replayContext = new Map<AnthropicMessageParam, SessionStoreEntry[]>();
 		let request = {
 			model: options?.requestModelId ?? model.id,
@@ -369,8 +373,11 @@ async function runClaudeAgentSdk(
 			abortSignal: controller.signal,
 			onIdle: () => controller.abort(),
 			onFirstItemTimeout: () => controller.abort(),
-			isProgressItem: item =>
-				isRecord(item) && (item.type === "stream_event" || item.type === "assistant" || item.type === "result"),
+			isProgressItem: item => {
+				if (!isRecord(item)) return false;
+				if (item.type === "stream_event") return !isEmptyAnthropicContentDelta(item.event);
+				return item.type === "assistant" || item.type === "result";
+			},
 		})) {
 			if (message.type === "system" && message.subtype === "mirror_error") {
 				throw new Error(`Claude Agent SDK context replay failed: ${message.error}`);
@@ -487,7 +494,10 @@ async function runClaudeAgentSdk(
 					block.thinking += delta.thinking;
 					stream.push({ type: "thinking_delta", contentIndex, delta: delta.thinking, partial: output });
 				} else if (delta.type === "signature_delta" && block.type === "thinking") {
-					block.thinkingSignature = (block.thinkingSignature ?? "") + delta.signature;
+					block.thinkingSignature = signatureDeltasStarted.has(event.index)
+						? (block.thinkingSignature ?? "") + delta.signature
+						: delta.signature;
+					signatureDeltasStarted.add(event.index);
 				} else if (delta.type === "input_json_delta" && block.type === "toolCall") {
 					block[kStreamingPartialJson] = (block[kStreamingPartialJson] ?? "") + delta.partial_json;
 					const partial = block as ToolCall & { [kStreamingLastParseLen]?: number };
@@ -520,6 +530,7 @@ async function runClaudeAgentSdk(
 					stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
 				}
 				indices.delete(event.index);
+				signatureDeltasStarted.delete(event.index);
 			} else if (event.type === "message_delta") {
 				output.usage.output = event.usage.output_tokens;
 				if (event.usage.input_tokens != null) output.usage.input = event.usage.input_tokens;

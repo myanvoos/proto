@@ -280,6 +280,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#alive = true;
 	#disposed = false;
 	#shutdownConfirmed = false;
+	#shutdownInFlight: Promise<KernelShutdownResult> | null = null;
 	#exitedPromise: Promise<number> | null = null;
 	#targetTerminate?: () => Promise<boolean>;
 	#targetInterrupt?: () => Promise<void>;
@@ -330,6 +331,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 
 		const msgId = options?.id ?? Snowflake.next();
+		// Serialization failures belong to the caller, not the kernel transport.
+		const payload = this.#options.buildPayload(code, msgId, options);
 		const { promise, resolve } = Promise.withResolvers<KernelExecuteResult>();
 		const pending: PendingExecution = {
 			input: new KernelInputReader(options?.stdin),
@@ -457,25 +460,13 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		pending.finalize = finalize;
 
-		const payload = this.#options.buildPayload(code, msgId, options);
-
 		if (pending.settled) {
 			return promise;
 		}
 
 		requestWritten = true;
-		try {
-			await this.#writeLine(payload);
-		} catch (err) {
-			pending.status = "error";
-			pending.cancelled = true;
-			pending.error = {
-				name: "TransportError",
-				value: err instanceof Error ? err.message : String(err),
-				traceback: [],
-			};
-			finalize();
-		}
+		// Do not hold the execution result behind a wedged pipe; cancellation must still settle it.
+		void this.#writeLine(payload).catch(() => {});
 
 		return promise;
 	}
@@ -494,11 +485,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			if (this.#controlPending.delete(msgId)) resolve(undefined);
 		}, timeoutMs);
 		timer.unref?.();
-		try {
-			await this.#writeLine(JSON.stringify({ type: "status", id: msgId }));
-		} catch {
+		void this.#writeLine(JSON.stringify({ type: "status", id: msgId })).catch(() => {
 			if (this.#controlPending.delete(msgId)) resolve(undefined);
-		}
+		});
 		try {
 			return await promise;
 		} finally {
@@ -526,9 +515,20 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 	}
 
-	async shutdown(options?: KernelShutdownOptions): Promise<KernelShutdownResult> {
-		if (this.#shutdownConfirmed) return { confirmed: true };
+	shutdown(options?: KernelShutdownOptions): Promise<KernelShutdownResult> {
+		if (this.#shutdownConfirmed) return Promise.resolve({ confirmed: true });
+		if (this.#shutdownInFlight) return this.#shutdownInFlight;
+		const shutdown = this.#performShutdown(options);
+		this.#shutdownInFlight = shutdown;
+		void shutdown
+			.finally(() => {
+				if (this.#shutdownInFlight === shutdown) this.#shutdownInFlight = null;
+			})
+			.catch(() => {});
+		return shutdown;
+	}
 
+	async #performShutdown(options?: KernelShutdownOptions): Promise<KernelShutdownResult> {
 		this.#alive = false;
 		this.#abortPendingExecutions(`${this.#options.languageName} kernel shutdown`, { kernelKilled: true });
 		this.#clearControlPending();
@@ -543,9 +543,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			return { confirmed: true };
 		}
 
-		try {
-			await this.#writeLine(this.#options.exitPayload).catch(() => {});
-		} catch {}
+		// Shutdown escalation must not wait for stdin backpressure to clear.
+		void this.#writeLine(this.#options.exitPayload).catch(() => {});
 
 		try {
 			this.#stdin?.end();
@@ -629,8 +628,24 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		if (this.#options.traceIpc) {
 			logger.debug(`${this.#options.languageName}Kernel send`, { preview: line.slice(0, 120) });
 		}
-		this.#stdin.write(`${line}\n`);
-		await this.#stdin.flush();
+		try {
+			await this.#stdin.write(`${line}\n`);
+			await this.#stdin.flush();
+		} catch (error) {
+			if (this.#alive) {
+				const message = error instanceof Error ? error.message : String(error);
+				for (const pending of this.#pending.values()) {
+					pending.error = { name: "TransportError", value: message, traceback: [] };
+				}
+				this.#alive = false;
+				this.#abortPendingExecutions(message, { kernelKilled: true });
+				this.#clearControlPending();
+				void this.shutdown().catch(shutdownError => {
+					logger.warn("Failed to retire kernel after stdin failure", { error: String(shutdownError) });
+				});
+			}
+			throw error;
+		}
 	}
 
 	#startReader(stream: ReadableStream<Uint8Array>): void {

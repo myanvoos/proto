@@ -13,6 +13,9 @@ export function createTurndown(): TurndownService {
 		bulletListMarker: "-",
 	});
 	turndown.use(gfm);
+	const escape = turndown.escape.bind(turndown);
+	turndown.escape = text =>
+		escape(text).replace(/(?<=[\p{L}\p{N}])(?:\\_)+(?=[\p{L}\p{N}])/gu, run => run.replaceAll("\\_", "_"));
 
 	turndown.addRule("strikethrough", {
 		filter: ["del", "s", "strike"],

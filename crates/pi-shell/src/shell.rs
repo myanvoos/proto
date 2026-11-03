@@ -604,7 +604,7 @@ impl Shell {
 		};
 		let jobs = core.shell.jobs_mut();
 
-		if jobs.poll().is_err() {
+		if jobs.poll_preserving_completed().is_err() {
 			return 0;
 		}
 		u32::try_from(
@@ -742,13 +742,11 @@ async fn run_shell_session(
 	let _ = process_cancel_bridge.await;
 	abort_state.clear().await;
 
-	let keepalive = res
-		.as_ref()
-		.is_ok_and(|outcome| session_keepalive(&outcome.exec));
-	if !keepalive {
+	// Control flow ends this command, not the persistent session.
+	if res.is_err() {
 		*session.lock().await = None;
 	}
-	Ok(res?.into_result(!keepalive))
+	Ok(res?.into_result(false))
 }
 
 async fn run_shell_oneshot(
@@ -966,7 +964,7 @@ async fn create_session_for_run(
 				"rm" => rm_disabled,
 				"mv" => mv_disabled,
 
-				"ln" => destructive_disabled,
+				"ln" | "dd" => destructive_disabled,
 				_ => false,
 			};
 			if !disabled {
@@ -1035,8 +1033,9 @@ enum CommandCaptureMode {
 }
 
 struct CommandRunOutput {
-	result:   ExecutionResult,
-	buffered: Option<BufferedOutput>,
+	reported_error: bool,
+	result:         ExecutionResult,
+	buffered:       Option<BufferedOutput>,
 }
 
 struct ChainCapture {
@@ -1150,6 +1149,7 @@ async fn run_shell_command_single(
 	if let Some(buffered) = command_run.buffered
 		&& let Some(config) = options.minimizer.as_ref()
 		&& !buffered.exceeded
+		&& !command_run.reported_error
 	{
 		let minimized = match minimizer_mode {
 			minimizer::engine::MinimizerMode::WholeCommand => {
@@ -1272,13 +1272,17 @@ async fn run_shell_command_segmented_chain(
 				if next_input_bytes > max_capture_bytes {
 					aggregate = None;
 				} else {
-					let minimized = minimizer::engine::apply_with_runtime_status(
-						&segment.command,
-						&buffered.text,
-						exit,
-						config,
-						false,
-					);
+					let minimized = if command_run.reported_error {
+						minimizer::MinimizerOutput::passthrough(&buffered.text)
+					} else {
+						minimizer::engine::apply_with_runtime_status(
+							&segment.command,
+							&buffered.text,
+							exit,
+							config,
+							false,
+						)
+					};
 					capture.push(
 						&buffered.text,
 						buffered.input_bytes,
@@ -1291,7 +1295,7 @@ async fn run_shell_command_segmented_chain(
 			aggregate = None;
 		}
 
-		let keep_running = session_keepalive(&command_run.result) && !cancel_token.is_cancelled();
+		let keep_running = continues_command(&command_run.result) && !cancel_token.is_cancelled();
 		last_result = Some(command_run.result);
 		if !keep_running {
 			break;
@@ -1346,6 +1350,11 @@ async fn run_shell_command_once(
 	params.set_cancel_token(cancel_token.clone());
 	params.set_spawn_observer(spawn_registry.clone());
 	params.command_observer = Some(Arc::new(session.trace.clone()));
+	let reported_error = matches!(capture_mode, CommandCaptureMode::Buffered { .. })
+		.then(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+	if let Some(flag) = &reported_error {
+		params.set_reported_error(Arc::clone(flag));
+	}
 	let reader_cancel = CancellationToken::new();
 	let (activity_tx, activity_rx) = flume::bounded::<()>(1);
 	let reader_callback = on_chunk;
@@ -1373,7 +1382,7 @@ async fn run_shell_command_once(
 		}
 	});
 
-	const CANCEL_READER_GRACE: Duration = Duration::from_millis(500);
+	const CANCEL_READER_GRACE: Duration = Duration::from_millis(1250);
 	let cancel_bridge = tokio::spawn({
 		let cancel_token = cancel_token.clone();
 		let reader_cancel = reader_cancel.clone();
@@ -1444,7 +1453,12 @@ async fn run_shell_command_once(
 		Some(OutputRead::Buffered(output)) => Some(output),
 		Some(OutputRead::Streaming) | None => None,
 	};
-	Ok(CommandRunOutput { result, buffered })
+	Ok(CommandRunOutput {
+		result,
+		buffered,
+		reported_error: reported_error
+			.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)),
+	})
 }
 
 async fn run_shell_command_streams(
@@ -1497,6 +1511,7 @@ async fn run_shell_command_streams(
 		let reader_cancel = reader_cancel.clone();
 		async move {
 			cancel_token.cancelled().await;
+			time::sleep(Duration::from_millis(1250)).await;
 			reader_cancel.cancel();
 		}
 	});
@@ -1665,7 +1680,7 @@ async fn terminate_run(registry: &process::SpawnRegistry) {
 		}
 		if wave + 1 < WAVES {
 			let pause = if wave == 0 {
-				Duration::from_millis(75)
+				Duration::from_secs(1)
 			} else {
 				Duration::from_millis(150)
 			};
@@ -1703,7 +1718,7 @@ fn terminate_background_jobs(shell: &mut BrushShell<ProtolensShellExtensions>) {
 
 	targets.signal(process::TERM_SIGNAL);
 	tokio::spawn(async move {
-		time::sleep(Duration::from_millis(150)).await;
+		time::sleep(Duration::from_secs(1)).await;
 		targets.signal(process::KILL_SIGNAL);
 	});
 }
@@ -1967,7 +1982,7 @@ fn has_unquoted_heredoc_operator(command: &str) -> bool {
 	false
 }
 
-const fn session_keepalive(result: &ExecutionResult) -> bool {
+const fn continues_command(result: &ExecutionResult) -> bool {
 	match result.next_control_flow {
 		ExecutionControlFlow::Normal => true,
 		ExecutionControlFlow::BreakLoop { .. } => false,
@@ -2059,7 +2074,7 @@ async fn read_output(
 	}
 }
 
-fn decode_utf8_read(bytes: &[u8], end_of_input: bool) -> (String, usize) {
+pub fn decode_utf8_read(bytes: &[u8], end_of_input: bool) -> (String, usize) {
 	let mut text = String::with_capacity(bytes.len());
 	let mut previous_was_invalid = false;
 	let mut trailing = 0usize;
@@ -2212,7 +2227,9 @@ async fn read_output_buffered(
 #[cfg(unix)]
 fn register_nonblocking_pipe(reader: fs::File) -> io::Result<tokio::io::unix::AsyncFd<fs::File>> {
 	set_nonblocking(&reader)?;
-	tokio::io::unix::AsyncFd::new(reader)
+	// SAFETY: the owned pipe descriptor is never closed or replaced while
+	// registered.
+	Ok(unsafe { tokio::io::unix::AsyncFd::register(reader) }?)
 }
 
 #[cfg(unix)]

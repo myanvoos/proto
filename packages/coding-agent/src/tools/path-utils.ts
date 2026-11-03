@@ -10,7 +10,8 @@ import { ToolAbortError, ToolError } from "./tool-errors";
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 const RANGE_CHUNK_SRC = String.raw`L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?`;
-const RANGE_LIST_SRC = `${RANGE_CHUNK_SRC}(?:,${RANGE_CHUNK_SRC})*`;
+const LIST_CHUNK_SRC = `(?:${RANGE_CHUNK_SRC}|-\\d+)`;
+const RANGE_LIST_SRC = `${LIST_CHUNK_SRC}(?:,${LIST_CHUNK_SRC})*`;
 const FILE_LINE_RANGE_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|raw|conflicts)$`, "i");
 const FILE_LINE_RANGE_ONLY_RE = new RegExp(`^${RANGE_LIST_SRC}$`, "i");
 const FILE_RAW_ONLY_RE = /^raw$/i;
@@ -219,7 +220,22 @@ export function selectorLineRanges(sel: string | undefined): [LineRange, ...Line
 	return undefined;
 }
 
-export function splitPathAndSel(rawPath: string): { path: string; sel?: string } {
+function foldRepeatedListColons(basePath: string, list: string, minColon: number): { basePath: string; list: string } {
+	const chunks = [list];
+	while (basePath.endsWith(",")) {
+		const colon = basePath.lastIndexOf(":");
+		const chunk = basePath.slice(colon + 1, -1);
+		if (colon < minColon || !FILE_LINE_RANGE_ONLY_RE.test(chunk)) break;
+		chunks.push(chunk);
+		basePath = basePath.slice(0, colon);
+	}
+	return { basePath, list: chunks.reverse().join(",") };
+}
+
+export function splitPathAndSel(
+	rawPath: string,
+	options?: { foldListColons?: boolean },
+): { path: string; sel?: string } {
 	const colon = rawPath.lastIndexOf(":");
 	if (colon <= 0) return { path: rawPath };
 
@@ -227,22 +243,33 @@ export function splitPathAndSel(rawPath: string): { path: string; sel?: string }
 	if (!FILE_LINE_RANGE_RE.test(candidate)) return { path: rawPath };
 
 	let basePath = rawPath.slice(0, colon);
-	let sel = candidate;
-
-	const innerColon = basePath.lastIndexOf(":");
-	if (innerColon > 0) {
+	// Allow a compound trailing selector: `path:1-50:raw`, `path:raw:1-50`, or
+	// `path:raw:-60`. The two chunks must be one line list (ranges and tails)
+	// plus one `raw`, in either order.
+	let list: string | undefined;
+	let rawSuffix = "";
+	if (FILE_LINE_RANGE_ONLY_RE.test(candidate)) {
+		list = candidate;
+	} else if (FILE_RAW_ONLY_RE.test(candidate)) {
+		const innerColon = basePath.lastIndexOf(":");
 		const innerCandidate = basePath.slice(innerColon + 1);
-		const innerIsRaw = FILE_RAW_ONLY_RE.test(innerCandidate);
-		const outerIsRaw = FILE_RAW_ONLY_RE.test(candidate);
-		const innerIsRange = FILE_LINE_RANGE_ONLY_RE.test(innerCandidate);
-		const outerIsRange = FILE_LINE_RANGE_ONLY_RE.test(candidate);
-		if ((innerIsRaw && outerIsRange) || (innerIsRange && outerIsRaw)) {
-			sel = `${innerCandidate}:${candidate}`;
+		if (innerColon > 0 && FILE_LINE_RANGE_ONLY_RE.test(innerCandidate)) {
+			list = innerCandidate;
+			rawSuffix = `:${candidate}`;
 			basePath = basePath.slice(0, innerColon);
 		}
 	}
+	if (list === undefined) return { path: basePath, sel: candidate };
 
-	return { path: basePath, sel };
+	if (options?.foldListColons !== false) ({ basePath, list } = foldRepeatedListColons(basePath, list, 1));
+	if (!rawSuffix) {
+		const innerColon = basePath.lastIndexOf(":");
+		const innerCandidate = basePath.slice(innerColon + 1);
+		if (innerColon > 0 && FILE_RAW_ONLY_RE.test(innerCandidate)) {
+			return { path: basePath.slice(0, innerColon), sel: `${innerCandidate}:${list}` };
+		}
+	}
+	return { path: basePath, sel: `${list}${rawSuffix}` };
 }
 
 export async function probeLiteralPathExists(filePath: string, cwd: string): Promise<"exists" | "missing" | "unknown"> {
@@ -263,7 +290,11 @@ export async function splitPathAndSelPreferringLiteral(
 	const strict = splitPathAndSel(rawPath);
 	if (strict.sel === undefined) return strict;
 	const probe = await probeLiteralPathExists(rawPath, cwd);
-	return probe === "missing" ? strict : { path: rawPath };
+	if (probe !== "missing") return { path: rawPath };
+	const unfolded = splitPathAndSel(rawPath, { foldListColons: false });
+	if (unfolded.path !== strict.path && (await probeLiteralPathExists(unfolded.path, cwd)) === "exists")
+		return unfolded;
+	return strict;
 }
 
 export function splitInternalUrlSel(rawPath: string): { path: string; sel?: string } {
@@ -286,9 +317,16 @@ export function splitInternalUrlSel(rawPath: string): { path: string; sel?: stri
 
 		if (colon < schemeEnd) break;
 		const tail = path.slice(colon + 1);
-		if (!INTERNAL_URL_SELECTOR_PART_RE.test(tail)) break;
-		chunks.unshift(tail);
-		path = path.slice(0, colon);
+		if (INTERNAL_URL_SELECTOR_PART_RE.test(tail)) {
+			chunks.unshift(tail);
+			path = path.slice(0, colon);
+			continue;
+		}
+		if (!chunks.length || !FILE_LINE_RANGE_ONLY_RE.test(chunks[0])) break;
+		const folded = foldRepeatedListColons(path, chunks[0], schemeEnd);
+		if (folded.basePath === path) break;
+		chunks[0] = folded.list;
+		path = folded.basePath;
 	}
 	if (chunks.length === 0) return { path: rawPath };
 	return { path, sel: chunks.join(":") };

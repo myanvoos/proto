@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
 	type AuthCredential,
 	type AuthCredentialStore,
+	type ServiceTier,
 	SqliteAuthCredentialStore,
 	type StoredAuthCredential,
 } from "@oh-my-pi/pi-ai";
@@ -65,6 +66,11 @@ export interface ModelPerfStats {
 const MODEL_PERF_DECAY_AT = 256;
 
 const MODEL_PERF_FLUSH_DELAY_MS = 100;
+
+/** Non-default serving paths must not contaminate the standard model's speed aggregate. */
+export function modelPerfKey(modelKey: string, serviceTier?: ServiceTier | null): string {
+	return serviceTier && serviceTier !== "auto" && serviceTier !== "default" ? `${modelKey}@${serviceTier}` : modelKey;
+}
 
 function normalizeModelPerfSample(modelKey: string, sample: ModelPerfSample): ModelPerfInsert | null {
 	const { outputTokens, durationMs } = sample;
@@ -160,7 +166,7 @@ ON CONFLICT(model_key) DO UPDATE SET
 	updated_at = ${SQLITE_NOW_EPOCH}`,
 		);
 		this.#listModelPerfStmt = this.#db.prepare(
-			"SELECT model_key, samples, output_tokens, gen_ms, ttft_samples, ttft_ms FROM model_perf",
+			"SELECT model_key, samples, output_tokens, gen_ms, ttft_samples, ttft_ms FROM model_perf WHERE model_key IS NOT NULL",
 		);
 		this.#upsertCommandUsageStmt = this.#db.prepare(
 			`INSERT INTO command_usage (name, count, last_used_at) VALUES (?, 1, ${SQLITE_NOW_EPOCH})
@@ -445,8 +451,8 @@ FROM model_usage_legacy
 		}
 	}
 
-	recordModelPerf(modelKey: string, sample: ModelPerfSample): Promise<void> {
-		const row = normalizeModelPerfSample(modelKey, sample);
+	recordModelPerf(modelKey: string, sample: ModelPerfSample, serviceTier?: ServiceTier | null): Promise<void> {
+		const row = normalizeModelPerfSample(modelPerfKey(modelKey, serviceTier), sample);
 		if (!row) return Promise.resolve();
 		return this.#perfDrain.push(row, rows => this.#flushModelPerf(rows));
 	}

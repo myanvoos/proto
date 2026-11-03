@@ -264,7 +264,7 @@ describe("Cursor external tool handoff", () => {
 
 describe("Cursor shell exec display blocks", () => {
 	it.each(["shellArgs", "shellStreamArgs", "miniSweAgentBashArgs"] as const)(
-		"records a %s millisecond timeout in bash-tool seconds",
+		"does not turn a %s background wait into a bash kill deadline",
 		async frameCase => {
 			const harness = createHarness();
 			const h2Request = { write: () => true } as unknown as http2.ClientHttp2Stream;
@@ -301,7 +301,7 @@ describe("Cursor shell exec display blocks", () => {
 			const blocks = harness.output.content.filter((block): block is ToolCallState => block.type === "toolCall");
 			expect(blocks).toHaveLength(1);
 			expect(blocks[0]).toMatchObject({ id: `call-${frameCase}`, name: "bash" });
-			expect(blocks[0].arguments.timeout).toBe(15);
+			expect(blocks[0].arguments.timeout).toBeUndefined();
 		},
 	);
 });

@@ -78,6 +78,10 @@ export class Text implements Component {
 		this.#cachedLines = undefined;
 	}
 
+	releaseRenderCaches(): void {
+		this.invalidate();
+	}
+
 	render(width: number): readonly string[] {
 		if (
 			this.#cachedLines &&

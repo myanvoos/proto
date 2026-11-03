@@ -370,7 +370,7 @@ function wrapNetworkError(error: unknown): Error {
 			return new Error("Request was aborted");
 		}
 		if (error.message === "fetch failed" && error.cause instanceof Error) {
-			return new Error(`Network error: ${error.cause.message}`);
+			return new Error(`Network error: ${error.cause.message}`, { cause: error });
 		}
 		return error;
 	}

@@ -5,10 +5,8 @@ use clap::Parser;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DirError {
-
 	#[error("directory stack is empty")]
 	DirStackEmpty,
-
 
 	#[error(transparent)]
 	ShellError(#[from] brush_core::Error),
@@ -25,26 +23,19 @@ impl From<&DirError> for brush_core::ExecutionExitCode {
 
 impl brush_core::BuiltinError for DirError {}
 
-
 #[derive(Default, Parser)]
 pub(crate) struct DirsCommand {
-
 	#[arg(short = 'c')]
 	clear: bool,
-
 
 	#[arg(short = 'l')]
 	tilde_long: bool,
 
-
 	#[arg(short = 'p')]
 	print_one_per_line: bool,
 
-
 	#[arg(short = 'v')]
 	print_one_per_line_with_index: bool,
-
-
 }
 
 impl builtins::Command for DirsCommand {

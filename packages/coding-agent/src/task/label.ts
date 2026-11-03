@@ -40,7 +40,7 @@ export async function generateTaskLabel(
 		return label;
 	} catch (err) {
 		logger.debug("worker-label: generation failed", {
-			sessionId,
+			titleSessionId: sessionId,
 			error: err instanceof Error ? err.message : String(err),
 		});
 		return null;

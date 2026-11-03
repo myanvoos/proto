@@ -67,15 +67,11 @@ pub(crate) fn get_user_group_ids() -> Result<Vec<u32>, error::Error> {
 }
 
 pub(crate) fn get_all_users() -> Result<Vec<String>, error::Error> {
-
-
 	let user = get_current_username()?;
 	Ok(vec![user])
 }
 
 pub(crate) fn get_all_groups() -> Result<Vec<String>, error::Error> {
-
-
 	let groups = get_current_user_groups()?;
 	let group_names = groups
 		.into_iter()

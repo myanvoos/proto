@@ -3,10 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct SuspendCommand {
-
 	#[arg(short = 'f')]
 	force: bool,
 }

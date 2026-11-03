@@ -4,7 +4,7 @@ import type { ProviderDefinition } from "./types";
 
 export const googleAntigravityProvider = {
 	id: "google-antigravity",
-	name: "Antigravity (Gemini 3, Claude, GPT-OSS)",
+	name: "Google Antigravity (Gemini, Claude, GPT-OSS)",
 	login: async (cb: OAuthLoginCallbacks) => {
 		const { loginAntigravity } = await import("./oauth/google-antigravity");
 		return loginAntigravity(cb);

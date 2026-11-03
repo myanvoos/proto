@@ -1,6 +1,8 @@
-import { expect, test } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { expect, spyOn, test } from "bun:test";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import { ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import * as imageLoading from "../../utils/image-loading";
 import { initThemeSync, theme } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
 
@@ -323,5 +325,117 @@ test("hidden thinking renders like a fresh component across emptiness transition
 		expect(revealed).toContain("Visible answer");
 	} finally {
 		reused.dispose();
+	}
+});
+
+test("assistant prose colors paint both live and retired rows and follow theme invalidation", () => {
+	const color = "\x1b[38;2;18;52;86m";
+	const oldHasColor = theme.hasColor.bind(theme);
+	const oldFg = theme.fg.bind(theme);
+	let enabled = true;
+	const hasColor = spyOn(theme, "hasColor").mockImplementation(token =>
+		token === "assistantMessageText" ? enabled : oldHasColor(token),
+	);
+	const fg = spyOn(theme, "fg").mockImplementation((token, text) =>
+		token === "assistantMessageText" ? `${color}${text}\x1b[39m` : oldFg(token, text),
+	);
+	const reply = new AssistantMessageComponent(undefined, false);
+	try {
+		reply.updateContent(
+			{ ...message, content: [{ type: "text", text: "First prose paragraph.\n\nStill streaming" }] },
+			{ transient: true },
+		);
+		expect(reply.render(60).join("\n")).toContain(`${color}First prose`);
+		expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+		expect(expectStablePrefix(reply, 60).join("\n")).toContain(`${color}First prose`);
+		const identities = reply.getTranscriptStableRows().map(row => row.key);
+		reply.releaseRenderCaches();
+		expect(reply.getTranscriptStableRows().map(row => row.key)).toEqual(identities);
+		expect(expectStablePrefix(reply, 60).join("\n")).toContain(`${color}First prose`);
+		enabled = false;
+		reply.invalidate();
+		expect(reply.render(60).join("\n")).not.toContain(color);
+		expect(expectStablePrefix(reply, 60).join("\n")).not.toContain(color);
+	} finally {
+		reply.dispose();
+		hasColor.mockRestore();
+		fg.mockRestore();
+	}
+});
+
+test("stable snapshots compare expanded tabs in both the live prefix and closed content blocks", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	try {
+		const first = "First\tparagraph.\n\nStill streaming";
+		reply.updateContent({ ...message, content: [{ type: "text", text: first }] }, { transient: true });
+		reply.render(50);
+		const stable = expectStablePrefix(reply, 50);
+		expect(Bun.stripANSI(stable.join("\n"))).toContain("First   paragraph.");
+		const count = reply.getTranscriptStableRows().length;
+		reply.updateContent(
+			{
+				...message,
+				content: [
+					{ type: "text", text: first },
+					{ type: "text", text: "Second complete paragraph.\n\nNew streaming tail" },
+				],
+			},
+			{ transient: true },
+		);
+		reply.render(50);
+		expect(reply.getTranscriptStableRows().length).toBeGreaterThan(count);
+		expect(expectStablePrefix(reply, 50).slice(0, stable.length)).toEqual(stable);
+	} finally {
+		reply.dispose();
+	}
+});
+
+test("a partial thinking sentinel cannot retire the line that its completed fold will rewrite", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	try {
+		for (const tail of ["<", "<!", "<!-", "<!--", "<!-- ", "<!-- -->", "after comment"]) {
+			reply.updateContent(
+				{ ...message, content: [{ type: "thinking", thinking: `Plan above.\n\n${tail}` }] },
+				{ transient: true },
+			);
+			reply.render(50);
+			expectStablePrefix(reply, 50);
+			if (tail !== "after comment") expect(reply.getTranscriptStableRows()).toEqual([]);
+		}
+		expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+	} finally {
+		reply.dispose();
+	}
+});
+
+test("Kitty image conversions hold final retirement and request a render when they settle", async () => {
+	const oldProtocol = TERMINAL.imageProtocol;
+	setTerminalImageProtocol(ImageProtocol.Kitty);
+	try {
+		for (const success of [true, false]) {
+			const conversion = Promise.withResolvers<ImageContent>();
+			const updated = Promise.withResolvers<void>();
+			const converter = spyOn(imageLoading, "convertImageToPng").mockReturnValue(conversion.promise);
+			const reply = new AssistantMessageComponent(undefined, false, () => updated.resolve());
+			try {
+				reply.updateContent({ ...message, content: [{ type: "image", data: "fixture", mimeType: "image/jpeg" }] });
+				reply.markTranscriptBlockFinalized();
+				expect(reply.isTranscriptBlockFinalized()).toBe(false);
+				if (success)
+					conversion.resolve({
+						type: "image",
+						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=",
+						mimeType: "image/png",
+					});
+				else conversion.reject(new Error("conversion failed"));
+				await updated.promise;
+				expect(reply.isTranscriptBlockFinalized()).toBe(true);
+			} finally {
+				reply.dispose();
+				converter.mockRestore();
+			}
+		}
+	} finally {
+		setTerminalImageProtocol(oldProtocol);
 	}
 });

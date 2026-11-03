@@ -12,6 +12,7 @@ interface ChromeTab {
 	pendingUrl?: string;
 	title?: string;
 	active: boolean;
+	discarded: boolean;
 	windowId: number;
 	pinned: boolean;
 	
@@ -50,6 +51,7 @@ declare const chrome: {
 		ungroup(tabIds: number[]): Promise<void>;
 		onCreated: ChromeEvent<(tab: ChromeTab) => void>;
 		onUpdated: ChromeEvent<(tabId: number, changeInfo: ChromeTabChangeInfo, tab: ChromeTab) => void>;
+		onActivated: ChromeEvent<(info: { tabId: number; windowId: number }) => void>;
 		onRemoved: ChromeEvent<(tabId: number, removeInfo: { windowId: number }) => void>;
 	};
 	tabGroups: {
@@ -92,6 +94,7 @@ declare const chrome: {
 		onClicked: ChromeEvent<(tab: ChromeTab) => void>;
 	};
 	runtime: {
+		reload(): void;
 		openOptionsPage(): Promise<void>;
 		onInstalled: ChromeEvent<() => void>;
 		onStartup: ChromeEvent<() => void>;

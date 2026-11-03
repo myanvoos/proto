@@ -118,6 +118,8 @@ interface RuntimeType<T> extends OmpType<T> {
 	atMostLength(bound: number): RuntimeType<T>;
 	atLeast(bound: number): RuntimeType<T>;
 	atMost(bound: number): RuntimeType<T>;
+	moreThan(bound: number): RuntimeType<T>;
+	lessThan(bound: number): RuntimeType<T>;
 	narrow<N extends T>(predicate: (value: T, ctx: NarrowContext) => value is N): RuntimeType<N>;
 	narrow(predicate: (value: T, ctx: NarrowContext) => boolean): RuntimeType<T>;
 }
@@ -255,17 +257,16 @@ function tNumber(opts?: NumberOpts, integer = false): TNumber {
 	}
 	const keyword = integer ? "number.integer" : "number";
 
-	let src: string;
-	if (lower && upper) {
-		src = `${lower.value} ${lower.exclusive ? "<" : "<="} ${keyword} ${upper.exclusive ? "<" : "<="} ${upper.value}`;
-	} else if (lower) {
-		src = `${keyword} ${lower.exclusive ? ">" : ">="} ${lower.value}`;
-	} else if (upper) {
-		src = `${keyword} ${upper.exclusive ? "<" : "<="} ${upper.value}`;
-	} else {
-		src = keyword;
+	if (
+		lower &&
+		upper &&
+		(lower.value > upper.value || (lower.value === upper.value && (lower.exclusive || upper.exclusive)))
+	) {
+		throw new OmpTypeError("numeric range is unsatisfiable");
 	}
-	let schema = asRuntime<number>(type.raw(src));
+	let schema = asRuntime<number>(type.raw(keyword));
+	if (lower) schema = lower.exclusive ? schema.moreThan(lower.value) : schema.atLeast(lower.value);
+	if (upper) schema = upper.exclusive ? schema.lessThan(upper.value) : schema.atMost(upper.value);
 	if (opts?.multipleOf !== undefined) {
 		const divisor = opts.multipleOf;
 		schema = schema.narrow((value, ctx) => {

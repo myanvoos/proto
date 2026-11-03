@@ -16,15 +16,21 @@ import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { getDebugLogPath } from "@oh-my-pi/pi-utils/dirs";
 import { $flag } from "@oh-my-pi/pi-utils/env";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
+import { cropSixelTop } from "./sixel";
 import { refreshTerminalHostIdentity, STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import {
+	directPlacementLift,
 	encodeKittyDeleteImage,
+	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
+	getCellDimensions,
+	getTerminalBackgroundColor,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideHerdr,
@@ -35,8 +41,9 @@ import {
 	shouldEnableSynchronizedOutputByDefault,
 	synchronizedOutputUserOverride,
 	TERMINAL,
+	withDirectPlacementLift,
 } from "./terminal-capabilities";
-import { unwrapTmuxPassthrough } from "./tmux";
+import { isInsideTmux, tmuxClientRendersSixel, unwrapTmuxPassthrough } from "./tmux";
 import {
 	Ellipsis,
 	extractSegments,
@@ -280,6 +287,8 @@ export interface Component {
 	 * Called when theme changes or when component needs to re-render from scratch.
 	 */
 	invalidate?(): void;
+	/** Drop derived rows without changing semantic state or tearing down resources. */
+	releaseRenderCaches?(): void;
 	/**
 	 * Optional hook to set whether this component ignores tight layout mode.
 	 */
@@ -506,6 +515,7 @@ export class Container implements Component {
 	clear(): void {
 		this.children = [];
 		this.#memoLines = undefined;
+		this.#memoChildLines = [];
 	}
 
 	/** Dispose every child, then detach it from this container. */
@@ -516,9 +526,16 @@ export class Container implements Component {
 
 	invalidate(): void {
 		this.#memoLines = undefined;
+		this.#memoChildLines = [];
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
+	}
+
+	releaseRenderCaches(): void {
+		this.#memoLines = undefined;
+		this.#memoChildLines = [];
+		for (const child of this.children) child.releaseRenderCaches?.();
 	}
 
 	/**
@@ -937,6 +954,7 @@ export class TUI extends Container {
 	// shrink-then-regrow that never exceeds the pre-burst height (see the
 	// CPR-timeout fallback in #resolveResizeAnchor).
 	#resizeBurstPull = 0;
+	#resizeBurstWidthChanged = false;
 	// Geometry epoch: bumped on every resize transaction entry, so each CSI 6n
 	// request records the geometry it was parked under.
 	#geometryEpoch = 0;
@@ -958,6 +976,8 @@ export class TUI extends Container {
 	#focusedComponent: Component | null = null;
 	#inputListeners = new Set<InputListener>();
 	#startListeners = new Set<StartListener>();
+	#started = false;
+	#appearanceReportUnsubscribe: (() => void) | undefined;
 	#paintListener: ((paint: TuiPaint) => void) | null;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -1118,6 +1138,12 @@ export class TUI extends Container {
 	// Holds an alternate-screen exit until its replacement full paint can emit it
 	// atomically. It must survive a deferred Ghostty image frame.
 	#pendingAltExit = "";
+	#pendingAltEnter = "";
+	#resizeAltExitFused = false;
+	#screenImagePlacements = new Map<number, { imageId: number; placementId: number; line: string }>();
+	#altImagePlacements = new Map<number, { imageId: number; placementId: number; line: string }>();
+	#nextImagePlacementId = 1;
+	#sixelCrop: { source: string; pixels: number; maxHeightPixels: number; output: string } | undefined;
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -1180,6 +1206,8 @@ export class TUI extends Container {
 	}
 
 	#purgeInlineImages(): void {
+		this.#screenImagePlacements.clear();
+		this.#altImagePlacements.clear();
 		const transmittedIds = this.#imageBudget.takeAllForProtocolReset();
 		// Tracked ids came from Kitty transmissions, even if the current protocol changed.
 		for (const id of transmittedIds) {
@@ -1225,6 +1253,9 @@ export class TUI extends Container {
 	setFocus(component: Component | null): void {
 		const topVisibleOverlay = this.#getTopmostVisibleOverlay();
 		if (topVisibleOverlay && !isOverlayFocusTarget(topVisibleOverlay.component, component)) {
+			if (!topVisibleOverlay.component.handleInput && this.#focusedComponent === topVisibleOverlay.component) {
+				topVisibleOverlay.preFocus = component;
+			}
 			const currentFocus = this.#focusedComponent;
 			component = isOverlayFocusTarget(topVisibleOverlay.component, currentFocus)
 				? currentFocus
@@ -1367,6 +1398,23 @@ export class TUI extends Container {
 
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#appearanceReportUnsubscribe?.();
+		let backgroundRgb: number | undefined;
+		let subscribed = true;
+		const repaintForBackgroundChange = (): void => {
+			if (!subscribed || this.#stopped) return;
+			const next = getTerminalBackgroundColor();
+			if (next === backgroundRgb) return;
+			backgroundRgb = next;
+			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel) return;
+			this.invalidate();
+			this.requestRender(true);
+		};
+		const unsubscribe = this.terminal.onAppearanceReport?.(repaintForBackgroundChange);
+		this.#appearanceReportUnsubscribe = () => {
+			subscribed = false;
+			unsubscribe?.();
+		};
 		this.#inputDeferred = options?.deferInput === true;
 		this.#watchdog.start();
 		this.#ghosttyInitialImageDelayDone = false;
@@ -1378,6 +1426,12 @@ export class TUI extends Container {
 		// implementing DECRQM, so retain the statically detected default instead of
 		// exposing destructive full paints. An explicit user opt-out/force still
 		// wins, so skip every probe result in that case.
+		this.terminal.onSixelSupport?.(supported => {
+			if (!supported || this.#stopped || isImageProtocolForced()) return;
+			if (isInsideTmux() && !tmuxClientRendersSixel()) return;
+			// A requested graphics reply must still be drained after DA1 succeeds.
+			this.#enableSixelProtocol();
+		});
 		this.terminal.onPrivateModeReport?.((mode, supported, confirmed = true, status) => {
 			if (mode !== 2026 || !confirmed || synchronizedOutputUserOverride() !== null) return;
 			// Herdr's Ghostty VTE honors DEC 2026 even when DECRQM reports it
@@ -1452,13 +1506,8 @@ export class TUI extends Container {
 		// Fatal reports run cleanup before writing, so the cursor is parked below the frame before the report lands.
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
-		for (const listener of this.#startListeners) {
-			try {
-				listener();
-			} catch {
-				// Startup listeners are feature hooks; one broken hook must not prevent rendering.
-			}
-		}
+		for (const listener of this.#startListeners) this.#runStartListener(listener);
+		this.#started = !this.#stopped;
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
@@ -1516,6 +1565,7 @@ export class TUI extends Container {
 		if (this.terminal.rows > burstLastHeight) this.#resizeBurstGrew = true;
 		this.#resizeBurstLastHeight = this.terminal.rows;
 		this.#resizeBurstPull += Math.max(0, this.terminal.rows - burstLastHeight);
+		if (this.terminal.columns !== this.#previousWidth) this.#resizeBurstWidthChanged = true;
 		this.#geometryEpoch++;
 	}
 
@@ -1536,7 +1586,9 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#forgetHardwareCursorState();
 		this.#recordHardwareCursorHidden();
-		if (this.#eraseLiveViewportForResize()) {
+		const erase = this.#liveViewportResizeErase();
+		if (erase !== "") {
+			this.terminal.write(erase);
 			// The erase parked the hardware cursor on the viewport's top row;
 			// snapshot the parked offset so the settled probe anchors there.
 			this.#parkedViewportOffset = 0;
@@ -1570,9 +1622,9 @@ export class TUI extends Container {
 	 * when it erased (multiplexers skip it: an immediate erase races the pane
 	 * re-layout and blanks pulled-back committed rows).
 	 */
-	#eraseLiveViewportForResize(): boolean {
+	#liveViewportResizeErase(): string {
 		if (!this.#hasEverRendered || this.#providerWindow.length === 0 || isInsideTerminalMultiplexer()) {
-			return false;
+			return "";
 		}
 		if (this.terminal.rows < this.#previousHeight) {
 			const staleRows = this.#reflowedRowCount(
@@ -1582,7 +1634,7 @@ export class TUI extends Container {
 				this.terminal.columns,
 			);
 			const top = Math.max(0, Math.min(this.#providerViewportTop, this.terminal.rows - staleRows));
-			this.terminal.write(`\x1b[?25l${this.#eraseBelowRow(top, this.terminal.rows)}`);
+			return `\x1b[?25l${this.#eraseBelowRow(top, this.terminal.rows)}`;
 		} else {
 			// A width change rewraps the viewport: xterm may add rows above the live
 			// cursor without moving its screen row (narrowing), or remove them
@@ -1592,9 +1644,8 @@ export class TUI extends Container {
 			const offset = restoreBottom ? this.#providerWindow.length - 1 : this.#parkedViewportOffset;
 			const up = this.#reflowedRowCount(this.#providerWindow, 0, offset, this.terminal.columns);
 			const eraseBelow = this.#eraseBelowCursorRow(this.terminal.columns, this.terminal.rows);
-			this.terminal.write(`\x1b[?25l${restoreBottom ? "\x1b8" : ""}${up > 0 ? `\x1b[${up}A` : ""}${eraseBelow}`);
+			return `\x1b[?25l${restoreBottom ? "\x1b8" : ""}${up > 0 ? `\x1b[${up}A` : ""}${eraseBelow}`;
 		}
-		return true;
 	}
 
 	/**
@@ -1610,7 +1661,11 @@ export class TUI extends Container {
 			return;
 		}
 		this.#trackResizeBurst();
-		if (!this.#resizeAltActive) {
+		if (!this.#resizeAltActive && this.#resizeAltExitFused) {
+			this.#resizeAltActive = true;
+			this.#pendingAltExit = "";
+			this.#resizeAltExitFused = false;
+		} else if (!this.#resizeAltActive) {
 			this.#resizeAltActive = true;
 			setAltScreenActive(true);
 			this.#altPreviousLines = [];
@@ -1628,7 +1683,8 @@ export class TUI extends Container {
 				this.#resizeProbeWindow = this.#providerWindow;
 				this.#resizeProbeOffset = this.#parkedViewportOffset;
 			}
-			if (this.#eraseLiveViewportForResize()) {
+			const erase = this.#liveViewportResizeErase();
+			if (erase !== "") {
 				// The erase parked the cursor on the viewport's top row, so the
 				// parked offset no longer applies; carrying a stale nonzero offset
 				// into the probe would anchor the settled repaint above the real
@@ -1652,7 +1708,7 @@ export class TUI extends Container {
 				this.#parkedViewportOffset = 0;
 			}
 			this.#noteAltBufferToggle();
-			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}`);
+			this.#pendingAltEnter = `${erase}\x1b[?1049h${this.#keyboardEnhancementEnter()}`;
 		}
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = this.#renderScheduler.scheduleRender(() => {
@@ -1664,8 +1720,23 @@ export class TUI extends Container {
 				columns: this.terminal.columns,
 				rows: this.terminal.rows,
 			};
+			const exit = `${this.#pendingAltEnter}${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+			this.#pendingAltEnter = "";
+			if (
+				this.#hasEverRendered &&
+				this.#resizeBurstWidthChanged &&
+				this.#frameProvider?.beginHistoryReplay &&
+				this.#pendingAltExit === ""
+			) {
+				this.#altPreviousLines = [];
+				this.#altPreparedRows = [];
+				this.#pendingAltExit = exit;
+				this.#resizeAltExitFused = true;
+				this.#replayForWidthChange();
+				return;
+			}
 			this.#noteAltBufferToggle();
-			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(exit);
 			setAltScreenActive(false);
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
@@ -1712,6 +1783,7 @@ export class TUI extends Container {
 				.then(position => {
 					const probe = this.#resizeProbe;
 					if (probe === undefined || probe.epoch !== epoch) return;
+					if (position && (position.row < 0 || position.row >= this.terminal.rows)) return;
 					this.#resolveResizeAnchor(position?.row);
 				})
 				.catch(() => {
@@ -1722,7 +1794,7 @@ export class TUI extends Container {
 
 	#replayForWidthChange(): boolean {
 		if (!this.#hasEverRendered || this.#frameProvider?.beginHistoryReplay === undefined) return false;
-		if (this.terminal.columns === this.#previousWidth) return false;
+		if (!this.#resizeBurstWidthChanged && this.terminal.columns === this.#previousWidth) return false;
 		this.#resizeInPlaceActive = false;
 		this.#resizeErasedLiveViewport = false;
 		this.invalidate();
@@ -1965,13 +2037,23 @@ export class TUI extends Container {
 		this.terminal.enableInput?.();
 		this.#querySixelSupport();
 		this.#queryCellSize();
+		this.requestRender(true);
 	}
 
 	addStartListener(listener: StartListener): () => void {
 		this.#startListeners.add(listener);
+		if (this.#started) this.#runStartListener(listener);
 		return () => {
 			this.#startListeners.delete(listener);
 		};
+	}
+
+	#runStartListener(listener: StartListener): void {
+		try {
+			listener();
+		} catch {
+			// Optional feature hooks cannot prevent terminal startup.
+		}
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -2084,7 +2166,11 @@ export class TUI extends Container {
 
 	#finishSixelProbe(supported: boolean): void {
 		this.#clearSixelProbeState();
-		if (!supported || TERMINAL.imageProtocol) return;
+		if (supported) this.#enableSixelProtocol();
+	}
+
+	#enableSixelProtocol(): void {
+		if (TERMINAL.imageProtocol) return;
 
 		setTerminalImageProtocol(ImageProtocol.Sixel);
 		this.#queryCellSize();
@@ -2099,6 +2185,7 @@ export class TUI extends Container {
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
 		this.terminal.write("\x1b[16t");
+		if (TERMINAL.imageProtocol === ImageProtocol.Iterm2) this.terminal.write("\x1b]1337;ReportCellSize\x1b\\");
 	}
 
 	/**
@@ -2152,6 +2239,8 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#appearanceReportUnsubscribe?.();
+		this.#appearanceReportUnsubscribe = undefined;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
 		this.#resizeSettleTimer?.cancel();
@@ -2169,7 +2258,8 @@ export class TUI extends Container {
 		this.#cancelResizeProbe();
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
-			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(`${this.#pendingAltEnter}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.#pendingAltEnter = "";
 			setAltScreenActive(false);
 		}
 		if (this.#altActive || this.#pendingAltExit) {
@@ -2209,6 +2299,7 @@ export class TUI extends Container {
 		this.#clearSixelProbeState();
 		this.#savedViewportBottom = false;
 		this.#stopped = true;
+		this.#started = false;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -2344,6 +2435,7 @@ export class TUI extends Container {
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
 			this.#renderTimer = undefined;
+			this.#renderRequested = false;
 		}
 	}
 
@@ -2465,7 +2557,7 @@ export class TUI extends Container {
 		// Opted-in components only dirty their focused subtree. Unregistered
 		// components retain the legacy full compose because their callbacks may
 		// mutate siblings; focus changes also require the new surface to paint.
-		const focused = this.#focusedComponent;
+		const focused = this.#inputTarget();
 		if (focused?.handleInput) {
 			// Filter out key release events unless component opts in
 			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
@@ -2476,15 +2568,32 @@ export class TUI extends Container {
 		}
 	}
 
-	#consumeCellSizeResponse(data: string): boolean {
-		// Response format: ESC [ 6 ; height ; width t
-		const match = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
-		if (!match) {
-			return false;
+	#inputTarget(): Component | null {
+		let target = this.#focusedComponent;
+		for (let index = this.overlayStack.length - 1; index >= 0 && target && !target.handleInput; index--) {
+			const overlay = this.overlayStack[index]!;
+			if (overlay.component === target) target = overlay.preFocus;
 		}
+		return target;
+	}
 
-		const heightPx = parseInt(match[1], 10);
-		const widthPx = parseInt(match[2], 10);
+	#consumeCellSizeResponse(data: string): boolean {
+		let heightPx: number;
+		let widthPx: number;
+		const pixels = /^\x1b\[6;(\d+);(\d+)t$/.exec(data);
+		if (pixels) {
+			heightPx = Number(pixels[1]);
+			widthPx = Number(pixels[2]);
+		} else {
+			const points =
+				/^\x1b\]1337;ReportCellSize=(\d+(?:\.\d+)?);(\d+(?:\.\d+)?)(?:;(\d+(?:\.\d+)?))?(?:\x07|\x1b\\)$/.exec(
+					data,
+				);
+			if (!points) return false;
+			const scale = points[3] ? Number(points[3]) : 1;
+			heightPx = Math.round(Number(points[1]) * scale);
+			widthPx = Math.round(Number(points[2]) * scale);
+		}
 		if (heightPx <= 0 || widthPx <= 0) {
 			return true;
 		}
@@ -2749,35 +2858,78 @@ export class TUI extends Container {
 		return sliceByColumn(result, 0, totalWidth, true);
 	}
 
-	/**
-	 * Rewrite a Kitty direct-placement line for the viewport row it is written
-	 * at, clipping to the visible slice (see {@link encodeKittyPlacementLine})
-	 * under the placement id resolved by the budget's epoch tracking (see
-	 * {@link ImageBudget.resolvePlacementEmit}). `screenRow` -1 (write position
-	 * unknown) and non-placement image lines (placeholder grids, sixel, iTerm2,
-	 * tmux-wrapped) pass through verbatim.
-	 */
-	#imageLineSequence(line: string, screenRow: number, frameRow: number, committedTo: number): string {
+	/** Delete only live viewport placements; committed history owns its own IDs. */
+	#retireImagePlacements(
+		placements: Map<number, { imageId: number; placementId: number; line: string }>,
+		lines: readonly string[],
+		top: number,
+		repaint: boolean,
+	): string {
+		let output = "";
+		for (const [row, placement] of placements) {
+			if (!repaint && lines[row - top] === placement.line) continue;
+			output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
+			placements.delete(row);
+		}
+		return output;
+	}
+
+	/** Clip graphics to the frame-owned rows, never the history above them. */
+	#imageLineSequence(
+		line: string,
+		screenRow: number,
+		frameRow: number,
+		placements?: Map<number, { imageId: number; placementId: number; line: string }>,
+	): string {
 		if (screenRow < 0) return line;
+		const visibleRow = frameRow >= 0 ? frameRow : screenRow;
 		const parsed = parseKittyDirectPlacementLine(line);
-		if (!parsed) return line;
-		// The emitted placement attaches from the block's first *visible* row
-		// (the clip drops the rows above the viewport), so epoch tracking keys
-		// on that row — not the block origin, which may be long committed.
-		const placement = this.#imageBudget.resolvePlacementEmit(
-			parsed.imageId,
-			frameRow >= 0 ? frameRow - Math.min(parsed.rows - 1, screenRow) : -1,
-			committedTo,
+		if (!parsed) {
+			const requestedLift = directPlacementLift(line);
+			const lift = Math.min(requestedLift, visibleRow);
+			if (requestedLift > lift) {
+				const cellHeight = getCellDimensions().heightPx;
+				const pixels = Math.round((requestedLift - lift) * cellHeight);
+				const maxHeightPixels = Math.floor((visibleRow + 1) * cellHeight);
+				const clipped = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, source =>
+					this.#cropSixel(source, pixels, maxHeightPixels),
+				);
+				if (clipped === line) return "";
+				line = withDirectPlacementLift(clipped, lift);
+			}
+			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
+		}
+		const previous = placements?.get(screenRow);
+		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
+		const erase = previous ? encodeKittyDeletePlacement(previous.imageId, previous.placementId) : "";
+		placements?.set(screenRow, { imageId: parsed.imageId, placementId, line });
+		return (
+			erase +
+			encodeKittyPlacementLine({
+				imageId: parsed.imageId,
+				placementId,
+				columns: parsed.columns,
+				rows: parsed.rows,
+				screenRow: visibleRow,
+				imageHeightPx: this.#imageBudget.getPlacementGeometry(parsed.imageId, parsed.placementId)?.heightPx ?? 0,
+			})
 		);
-		if (!placement) return line;
-		return encodeKittyPlacementLine({
-			imageId: parsed.imageId,
-			placementId: placement.placementId,
-			columns: parsed.columns,
-			rows: parsed.rows,
-			screenRow,
-			imageHeightPx: placement.heightPx,
-		});
+	}
+
+	#cropSixel(source: string, pixels: number, maxHeightPixels: number): string {
+		const cached = this.#sixelCrop;
+		if (cached?.source === source && cached.pixels === pixels && cached.maxHeightPixels === maxHeightPixels) {
+			return cached.output;
+		}
+		let output: string;
+		try {
+			output = cropSixelTop(source, pixels, maxHeightPixels);
+		} catch (err) {
+			logger.warn("Dropping top-clipped SIXEL image that cannot be cropped", { err });
+			output = "";
+		}
+		this.#sixelCrop = { source, pixels, maxHeightPixels, output };
+		return output;
 	}
 
 	#terminalLine(line: PreparedLine): string {
@@ -3004,6 +3156,7 @@ export class TUI extends Container {
 			this.#providerWindow.length > 0;
 		// A diff that rewrites nothing leaves the frame, and the cursor parked on
 		// it, exactly where the last paint put them.
+		buffer += this.#retireImagePlacements(this.#screenImagePlacements, prepared.lines, newTop, !diffable);
 		let untouched = diffable;
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
@@ -3023,8 +3176,8 @@ export class TUI extends Container {
 					prepared.rows[index]!,
 					width,
 					newTop + index,
-					-1,
-					-1,
+					index,
+					this.#screenImagePlacements,
 					this.#osc66SpacerGlyphWidth(prepared.lines, index),
 				)}`;
 			}
@@ -3096,7 +3249,7 @@ export class TUI extends Container {
 					width,
 					Math.min(screenRow, height - 1),
 					-1,
-					-1,
+					undefined,
 					this.#osc66SpacerGlyphWidth(preparedHistory.lines, index),
 				);
 				screenRow++;
@@ -3107,8 +3260,8 @@ export class TUI extends Container {
 					prepared.rows[index]!,
 					width,
 					Math.min(screenRow, height - 1),
-					-1,
-					-1,
+					index < replayViewportRows ? -1 : index,
+					index < replayViewportRows ? undefined : this.#screenImagePlacements,
 					this.#osc66SpacerGlyphWidth(prepared.lines, index),
 				);
 				screenRow++;
@@ -3167,6 +3320,7 @@ export class TUI extends Container {
 		if (pendingAltExit) {
 			this.#noteAltBufferToggle();
 			this.#pendingAltExit = "";
+			this.#resizeAltExitFused = false;
 			setAltScreenActive(false);
 		}
 		if (target) this.#recordHardwareCursorState(target);
@@ -3193,6 +3347,7 @@ export class TUI extends Container {
 		this.#resizeBurstGrew = false;
 		this.#resizeBurstLastHeight = undefined;
 		this.#resizeBurstPull = 0;
+		this.#resizeBurstWidthChanged = false;
 		this.#previousFrameLength = mutablePreparedLines.length;
 		this.#clearScrollbackOnNextRender = false;
 		this.#forceViewportRepaintOnNextRender = false;
@@ -3254,14 +3409,20 @@ export class TUI extends Container {
 			// modified-key reporting sequence on the freshly entered alternate
 			// screen, or Esc/modified keys revert to legacy encoding inside
 			// fullscreen overlays (Ghostty/kitty/iTerm2).
-			this.#noteAltBufferToggle();
-			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}`);
+			if (this.#resizeAltExitFused) {
+				this.#pendingAltExit = "";
+				this.#resizeAltExitFused = false;
+			} else {
+				this.#noteAltBufferToggle();
+				this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}`);
+			}
 			this.#setMouseTracking(wantMouse);
 			setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
 			this.#recordHardwareCursorHidden();
 			this.#altActive = true;
+			this.#altImagePlacements.clear();
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
 			this.#altEnterWidth = width;
@@ -3719,7 +3880,7 @@ export class TUI extends Container {
 		width: number,
 		screenRow = -1,
 		frameRow = -1,
-		committedTo = -1,
+		placements: Map<number, { imageId: number; placementId: number; line: string }> | undefined = undefined,
 		spacerGlyphWidth = -1,
 	): string {
 		// End every rewrite at column zero. ConPTY can materialize a pending
@@ -3737,7 +3898,7 @@ export class TUI extends Container {
 		if (spacerGlyphWidth >= 0) {
 			rewrite = spacerGlyphWidth >= width ? "" : `${SEGMENT_RESET}\x1b[${spacerGlyphWidth}C${ERASE_TO_END_OF_LINE}`;
 		} else if (line.isImage) {
-			rewrite = ERASE_LINE + this.#imageLineSequence(line.line, screenRow, frameRow, committedTo);
+			rewrite = ERASE_LINE + this.#imageLineSequence(line.line, screenRow, frameRow, placements);
 		} else {
 			const terminalLine = this.#terminalLine(line);
 			if (line.asciiWidth !== undefined) {
@@ -3838,15 +3999,11 @@ export class TUI extends Container {
 		// fullscreen overlay (e.g. the settings shape preview) would render as
 		// blank placeholder cells until the overlay closed.
 		const purgeIds = this.#imageBudget.takePurgeIds();
-		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
-			for (const id of purgeIds) this.terminal.write(encodeKittyDeleteImage(id));
-		}
+		let graphics =
+			TERMINAL.imageProtocol === ImageProtocol.Kitty ? purgeIds.map(encodeKittyDeleteImage).join("") : "";
 		const paintedIds = imageIdsInRows(prepared.lines);
 		const imageTransmits = this.#imageBudget.takeTransmitBatch(id => paintedIds.has(id));
-		if (imageTransmits.sequences.length > 0) {
-			this.terminal.write(imageTransmits.sequences.join(""));
-			this.#imageBudget.markTransmitWritten(imageTransmits.ids);
-		}
+		graphics += imageTransmits.sequences.join("");
 		// A forced repaint (resetDisplay, requestRender(true)) rewrites every row
 		// even when the cached frame is byte-identical: the redraw gesture must
 		// repair a corrupted modal. So does a changed frame with OSC 66 text in
@@ -3863,7 +4020,7 @@ export class TUI extends Container {
 				prepared.rows.some((_row, r) =>
 					this.#rowNeedsRewrite(this.#altPreviousLines, this.#altPreparedRows, prepared.lines, prepared.rows, r),
 				));
-		let rowsBuffer = "";
+		let rowsBuffer = this.#retireImagePlacements(this.#altImagePlacements, prepared.lines, 0, full);
 		for (let r = 0; r < height; r++) {
 			if (full) {
 				if (r > 0) rowsBuffer += "\n";
@@ -3878,15 +4035,19 @@ export class TUI extends Container {
 				prepared.rows[r]!,
 				width,
 				r,
-				-1,
-				-1,
+				r,
+				this.#altImagePlacements,
 				this.#osc66SpacerGlyphWidth(prepared.lines, r),
 			);
 		}
 		this.#altPreviousLines = prepared.lines;
 		this.#altPreparedRows = prepared.rows;
-		if (rowsBuffer === "") return;
-		this.terminal.write(`${this.#paintBeginSequence}${full ? "\x1b[H" : ""}${rowsBuffer}${this.#paintEndSequence}`);
+		if (rowsBuffer === "" && graphics === "" && this.#pendingAltEnter === "") return;
+		this.terminal.write(
+			`${this.#paintBeginSequence}${this.#pendingAltEnter}${graphics}${full ? "\x1b[H" : ""}${rowsBuffer}${this.#paintEndSequence}`,
+		);
+		this.#pendingAltEnter = "";
+		this.#imageBudget.markTransmitWritten(imageTransmits.ids);
 		if (notifyPaint) {
 			this.#notifyPaint({
 				history: [],

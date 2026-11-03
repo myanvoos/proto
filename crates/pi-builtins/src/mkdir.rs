@@ -1,6 +1,3 @@
-
-
-
 use std::{
 	ffi::OsString,
 	fmt,
@@ -10,10 +7,9 @@ use std::{
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, parser::ValuesRef};
-use uucore::{display::Quotable, fs};
-use uucore::mode;
 #[cfg(all(unix, target_os = "linux"))]
 use uucore::fsxattr;
+use uucore::{display::Quotable, fs, mode};
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
@@ -34,13 +30,11 @@ struct Config {
 	verbose:   bool,
 }
 
-
-fn get_mode(matches: &ArgMatches) -> Result<u32, String> {
+fn get_mode(matches: &ArgMatches, umask: u32) -> Result<u32, String> {
 	if let Some(mode_arg) = matches.get_one::<String>(options::MODE) {
-		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, mode::get_umask())
+		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, umask)
 	} else {
-
-		Ok(!mode::get_umask() & DEFAULT_PERM)
+		Ok(!umask & DEFAULT_PERM)
 	}
 }
 
@@ -81,9 +75,9 @@ fn normalized_io_message(error: &io::Error) -> String {
 	}
 
 	use io::ErrorKind::{
-		AddrInUse, AddrNotAvailable, AlreadyExists, BrokenPipe, ConnectionAborted,
-		ConnectionRefused, ConnectionReset, Interrupted, InvalidData, InvalidInput, NotConnected,
-		NotFound, PermissionDenied, TimedOut, UnexpectedEof, WouldBlock, WriteZero,
+		AddrInUse, AddrNotAvailable, AlreadyExists, BrokenPipe, ConnectionAborted, ConnectionRefused,
+		ConnectionReset, Interrupted, InvalidData, InvalidInput, NotConnected, NotFound,
+		PermissionDenied, TimedOut, UnexpectedEof, WouldBlock, WriteZero,
 	};
 	match error.kind() {
 		NotFound => "No such file or directory".into(),
@@ -110,7 +104,6 @@ fn normalized_io_message(error: &io::Error) -> String {
 	}
 }
 
-
 pub(crate) struct Mkdir {
 	matches: ArgMatches,
 }
@@ -125,7 +118,7 @@ impl Utility for Mkdir {
 			.matches
 			.get_many::<OsString>(options::DIRS)
 			.unwrap_or_default();
-		let config = match get_mode(&self.matches) {
+		let config = match get_mode(&self.matches, host.umask()) {
 			Ok(mode) => Config {
 				recursive: self.matches.get_flag(options::PARENTS),
 				mode,
@@ -205,7 +198,6 @@ fn exec(dirs: ValuesRef<'_, OsString>, config: &Config, host: &mut Host) {
 	}
 }
 
-
 fn mkdir(path: &Path, config: &Config, host: &mut Host) -> Result<(), MkdirError> {
 	if path.as_os_str().is_empty() {
 		return Err(MkdirError::Message(
@@ -232,67 +224,61 @@ fn chmod(fs_path: &Path, display_path: &Path, mode: u32) -> Result<(), MkdirErro
 	})
 }
 
-
 fn create_dir(
 	path: &Path,
 	is_parent: bool,
 	config: &Config,
 	host: &mut Host,
 ) -> Result<(), MkdirError> {
-	let path_exists = host.resolve(path).exists();
-	if path_exists && !config.recursive {
-		return Err(MkdirError::Message(format!("{}: File exists", path.maybe_quote())));
-	}
-	if path == Path::new("") {
-		return Ok(());
-	}
-
-	if config.recursive {
-		let mut dirs_to_create = Vec::with_capacity(16);
-		let mut current = path;
-		while let Some(parent) = current.parent() {
-			if parent == Path::new("") {
-				break;
-			}
-			dirs_to_create.push(parent);
-			current = parent;
+	if !config.recursive {
+		if host.resolve(path).exists() {
+			return Err(MkdirError::Message(format!("{}: File exists", path.maybe_quote())));
 		}
+		return create_single_dir(path, is_parent, config, host);
+	}
 
-		for dir in dirs_to_create.iter().rev() {
-			if !host.resolve(dir).exists() {
-				create_single_dir(dir, true, config, host)?;
-			}
+	// A `..` component names a directory only once the one before it exists,
+	// and Windows folds it away before looking, so such a path is created
+	// ancestor by ancestor, as GNU does.
+	let has_parent_dir = path
+		.components()
+		.any(|component| matches!(component, std::path::Component::ParentDir));
+	if !has_parent_dir {
+		// `mkdir -p` of a directory that exists, the common case, takes one
+		// stat; GNU prints nothing for it, even with -v.
+		if path == Path::new("") || host.resolve(path).is_dir() {
+			return Ok(());
+		}
+		// The leaf is tried first; its ancestors are looked at only when it
+		// reports one missing.
+		match create_single_dir(path, is_parent, config, host) {
+			Err(MkdirError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {},
+			result => return result,
 		}
 	}
 
+	// Iterative rather than recursive, so deep nesting cannot overflow the
+	// stack.
+	let mut dirs_to_create = Vec::with_capacity(16);
+	let mut current = path;
+	while let Some(parent) = current.parent() {
+		if parent == Path::new("") {
+			break;
+		}
+		dirs_to_create.push(parent);
+		current = parent;
+	}
+	for dir in dirs_to_create.iter().rev() {
+		if !host.resolve(dir).exists() {
+			create_single_dir(dir, true, config, host)?;
+		}
+	}
 	create_single_dir(path, is_parent, config, host)
-}
-
-
-#[cfg(unix)]
-struct UmaskGuard(rustix::fs::Mode);
-
-#[cfg(unix)]
-impl UmaskGuard {
-	fn set(new_mask: rustix::fs::Mode) -> Self {
-		let old_mask = rustix::process::umask(new_mask);
-		Self(old_mask)
-	}
-}
-
-#[cfg(unix)]
-impl Drop for UmaskGuard {
-	fn drop(&mut self) {
-		rustix::process::umask(self.0);
-	}
 }
 
 #[cfg(unix)]
 fn create_dir_with_mode(path: &Path, mode: u32) -> io::Result<()> {
 	use std::os::unix::fs::DirBuilderExt;
-
-
-	let _guard = UmaskGuard::set(rustix::fs::Mode::empty());
 	std::fs::DirBuilder::new().mode(mode).create(path)
 }
 
@@ -313,8 +299,7 @@ fn create_single_dir(
 
 	#[cfg(unix)]
 	let create_mode = if is_parent {
-
-		(!mode::get_umask() & 0o777) | 0o300
+		(!host.umask() & 0o777) | 0o300
 	} else {
 		config.mode
 	};
@@ -323,13 +308,24 @@ fn create_single_dir(
 
 	match create_dir_with_mode(&fs_path, create_mode) {
 		Ok(()) => {
+			#[cfg(unix)]
+			if create_mode & crate::host::process_umask() != 0 {
+				std::fs::set_permissions(
+					&fs_path,
+					std::os::unix::fs::PermissionsExt::from_mode(create_mode),
+				)
+				.map_err(|source| MkdirError::Io {
+					context: Some(format!("cannot set permissions {}", path.quote())),
+					source,
+				})?;
+			}
 			if config.verbose {
 				writeln!(host.stdout, "mkdir: created directory {}", path.quote())
 					.map_err(MkdirError::io)?;
 			}
 
 			#[cfg(all(unix, target_os = "linux"))]
-			if !path_exists {
+			{
 				let acl_perm_bits = fsxattr::get_acl_perm_bits_from_xattr(&fs_path);
 				if acl_perm_bits != 0 {
 					chmod(&fs_path, path, create_mode | acl_perm_bits)?;
@@ -338,7 +334,7 @@ fn create_single_dir(
 
 			Ok(())
 		},
-		Err(_) if fs_path.is_dir() => {
+		Err(source) if source.kind() != io::ErrorKind::NotFound && fs_path.is_dir() => {
 			let ends_with_parent_dir =
 				matches!(path.components().next_back(), Some(std::path::Component::ParentDir));
 			if config.verbose && is_parent && config.recursive && !ends_with_parent_dir {
@@ -351,9 +347,6 @@ fn create_single_dir(
 	}
 }
 
-
 pub(crate) fn mkdir_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Mkdir, SE>()
 }
-
-

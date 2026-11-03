@@ -9,6 +9,7 @@ interface ToolUpdate {
 	sessionUpdate: string;
 	content?: unknown;
 	rawOutput?: unknown;
+	status?: string;
 	locations?: { path: string }[];
 }
 
@@ -78,4 +79,22 @@ describe("ACP event mapper", () => {
 		} as AgentSessionEvent);
 		expect(update.locations).toEqual([{ path: path.join(dir, "file.ts") }]);
 	});
+});
+
+test("background job terminal updates settle ACP tool calls instead of leaving them in progress", () => {
+	for (const [state, expected] of [
+		["running", "in_progress"],
+		["completed", "completed"],
+		["failed", "failed"],
+		["cancelled", "failed"],
+	]) {
+		const update = mapOne({
+			type: "tool_execution_update",
+			toolCallId: "background-job",
+			toolName: "bash",
+			args: {},
+			partialResult: { content: [], details: { async: { state } } },
+		} as AgentSessionEvent);
+		expect(update.status).toBe(expected);
+	}
 });

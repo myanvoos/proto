@@ -1,6 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $ } from "bun";
+import {
+	stampRelayExtensionManifest,
+	stampRelayExtensionScript,
+} from "../../coding-agent/src/tools/browser/relay/protocol";
 
 const root = path.resolve(import.meta.dir, "..");
 const repoRoot = path.resolve(root, "../..");
@@ -22,12 +26,22 @@ if (!bundle.success) {
 	process.exit(1);
 }
 
-for (const file of ["manifest.json", "options.html", "options.js"]) {
+for (const file of ["options.html", "options.js"]) {
 	await Bun.write(path.join(distExtension, file), Bun.file(path.join(root, "extension", file)));
 }
 for (const file of ["LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
 	await Bun.write(path.join(distExtension, file), Bun.file(path.join(repoRoot, file)));
 }
+
+const sourceManifest = path.join(root, "extension/manifest.json");
+const distScript = path.join(distExtension, "background.js");
+const unstampedScript = await Bun.file(distScript).text();
+const { version: protoVersion } = await Bun.file(path.join(root, "../coding-agent/package.json")).json();
+await Bun.write(distScript, stampRelayExtensionScript(unstampedScript, protoVersion));
+await Bun.write(
+	path.join(distExtension, "manifest.json"),
+	stampRelayExtensionManifest(await Bun.file(sourceManifest).text(), protoVersion),
+);
 
 const zip = await $`zip -qr ../proto-browser-relay-extension.zip .`.cwd(distExtension).nothrow();
 if (zip.exitCode !== 0) {
@@ -36,9 +50,9 @@ if (zip.exitCode !== 0) {
 }
 
 await fs.rm(assetsDir, { recursive: true, force: true });
+await Bun.write(path.join(assetsDir, "background.js.txt"), unstampedScript);
+await Bun.write(path.join(assetsDir, "manifest.json.txt"), Bun.file(sourceManifest));
 const embeddedAssets = [
-	["background.js", "background.js.txt"],
-	["manifest.json", "manifest.json.txt"],
 	["options.html", "options.html.txt"],
 	["options.js", "options.js.txt"],
 	["LICENSE", "LICENSE.txt"],

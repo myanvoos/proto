@@ -330,13 +330,14 @@ function buildQuotaSummaryReport(
 			counterKeys.length > 1
 				? `${bucket.bucketId ?? group?.displayName ?? "third-party"}:${window?.id ?? bucket.window ?? "default"}`
 				: undefined;
+		const bucketLabel = bucket.bucketId?.toLowerCase().startsWith("gemini-argon-") ? "Gemini (Argon)" : undefined;
 		const windowId = window?.id ?? bucket.window ?? bucket.bucketId ?? "default";
 		for (const counterKey of counterKeys) {
 			const label =
 				sharedGroup !== undefined
 					? "Claude & GPT (shared)"
 					: counterKey === "google"
-						? "Gemini"
+						? (bucketLabel ?? "Gemini")
 						: (group?.displayName ?? bucket.displayName ?? "Usage");
 			limits.push({
 				id: `${params.provider}:${counterKey}:default:${bucket.bucketId ?? windowId}`,

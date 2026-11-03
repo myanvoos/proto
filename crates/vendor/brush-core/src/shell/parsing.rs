@@ -1,12 +1,8 @@
-
-
 use std::io::Read;
 
 use crate::{Shell, extensions, trace_categories};
 
 impl<SE: extensions::ShellExtensions> Shell<SE> {
-
-
 	pub fn parse<R: Read>(
 		&self,
 		reader: R,
@@ -17,21 +13,12 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 		parser.parse_program()
 	}
 
-
-
-
-
-
-
 	pub fn parse_string<S: Into<String>>(
 		&self,
 		s: S,
 	) -> Result<brush_parser::ast::Program, brush_parser::ParseError> {
 		parse_string_impl(s.into(), self.parser_options())
 	}
-
-
-
 
 	pub const fn parser_options(&self) -> brush_parser::ParserOptions {
 		brush_parser::ParserOptions {

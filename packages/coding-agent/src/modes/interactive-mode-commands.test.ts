@@ -12,6 +12,7 @@ import { AgentSession } from "../session/agent-session";
 import { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
 import { EventBus } from "../utils/event-bus";
+import { CustomEditor } from "./components/custom-editor";
 import { InteractiveMode } from "./interactive-mode";
 import { initTheme } from "./theme/theme";
 
@@ -66,6 +67,21 @@ describe("InteractiveMode composer commands and affordances", () => {
 		await session.dispose().catch(() => {});
 		authStorage.close();
 		tempDir.removeSync();
+	});
+
+	it("restores an extension editor factory after a temporary replacement without losing its draft", () => {
+		class UppercaseEditor extends CustomEditor {
+			override handleInput(input: string): void {
+				super.handleInput(input.toUpperCase());
+			}
+		}
+		mode.setEditorComponent((_ui, editorTheme) => new UppercaseEditor(editorTheme));
+		mode.editor.setText("draft");
+		const restore = mode.getEditorComponent();
+		mode.setEditorComponent(undefined);
+		mode.setEditorComponent(restore);
+		mode.editor.handleInput("x");
+		expect(mode.editor.getText()).toBe("draftX");
 	});
 
 	async function completionsFor(text: string): Promise<string[]> {

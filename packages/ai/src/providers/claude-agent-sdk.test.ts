@@ -476,3 +476,91 @@ describe("Anthropic Claude Agent SDK backend", () => {
 		expect(result.errorMessage).toContain("forced tool choice");
 	});
 });
+
+test("SDK recovers a refused latest assistant tool loop without mutating stored history", async () => {
+	await using cwd = await TempDir.create("@proto-sdk-thinking-recovery-");
+	const requests: RequestBody[] = [];
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			if (!new URL(request.url).pathname.endsWith("/messages")) return Response.json({});
+			const body = (await request.json()) as RequestBody;
+			requests.push(body);
+			if (requests.length === 1)
+				return response(
+					[
+						{ type: "thinking", thinking: "Refused reasoning", signature: "refused-signature" },
+						{ type: "tool_use", id: "sdk-call", name: "mcp__proto__read", input: {} },
+					],
+					"tool_use",
+				);
+			if (
+				body.messages.some(
+					message =>
+						Array.isArray(message.content) &&
+						message.content.some(block => block.type === "thinking" && block.signature === "refused-signature"),
+				)
+			) {
+				return Response.json(
+					{
+						type: "error",
+						error: {
+							type: "invalid_request_error",
+							message:
+								"messages.1.content.0: thinking blocks in the latest assistant message cannot be modified",
+						},
+					},
+					{ status: 400 },
+				);
+			}
+			return response([{ type: "text", text: "Recovered" }], "end_turn");
+		},
+	});
+	try {
+		const model = buildModel({ ...spec, baseUrl: server.url.origin });
+		const options = { apiKey: "sdk-thinking-recovery", cwd: cwd.path(), thinkingEnabled: true };
+		const initial: Context = {
+			messages: [{ role: "user", content: "Read", timestamp: 0 }],
+			tools: [{ name: "read", description: "Read", parameters: { type: "object", properties: {} } }],
+		};
+		const first = await streamAnthropic(model, initial, options).result();
+		expect(first.stopReason).toBe("toolUse");
+		const continued: Context = {
+			...initial,
+			messages: [
+				...initial.messages,
+				first,
+				{
+					role: "toolResult",
+					toolCallId: "sdk-call",
+					isError: false,
+					toolName: "read",
+					content: [{ type: "text", text: "Result" }],
+					timestamp: 2,
+				},
+			],
+		};
+		const result = await streamAnthropic(model, continued, options).result();
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toEqual([{ type: "text", text: "Recovered" }]);
+		expect(requests).toHaveLength(3);
+		expect(first.content[0]).toEqual({
+			type: "thinking",
+			thinking: "Refused reasoning",
+			thinkingSignature: "refused-signature",
+		});
+		expect((await streamAnthropic(model, continued, options).result()).stopReason).toBe("stop");
+		expect(
+			requests.map(body =>
+				body.messages.flatMap(message =>
+					Array.isArray(message.content)
+						? message.content.filter(block => block.type === "thinking").map(block => block.signature)
+						: [],
+				),
+			),
+		).toEqual([[], ["refused-signature"], [], ["refused-signature"], []]);
+	} finally {
+		server.stop(true);
+	}
+}, 30_000);

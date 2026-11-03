@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	error::Error,
 	ffi::{OsStr, OsString},
@@ -21,223 +17,157 @@ use uucore::{
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
 mod number {
-use num_traits::Zero;
-use uucore::extendedbigdecimal::ExtendedBigDecimal;
+	use num_traits::Zero;
+	use uucore::extendedbigdecimal::ExtendedBigDecimal;
 
+	#[derive(Debug)]
+	pub struct PreciseNumber {
+		pub number:                ExtendedBigDecimal,
+		pub num_integral_digits:   usize,
+		pub num_fractional_digits: Option<usize>,
+	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-#[derive(Debug)]
-pub struct PreciseNumber {
-	pub number:                ExtendedBigDecimal,
-	pub num_integral_digits:   usize,
-	pub num_fractional_digits: Option<usize>,
-}
-
-impl PreciseNumber {
+	impl PreciseNumber {
 		pub fn one() -> Self {
+			Self {
+				number:                ExtendedBigDecimal::one(),
+				num_integral_digits:   1,
+				num_fractional_digits: Some(0),
+			}
+		}
 
-
-
-		Self {
-			number:                ExtendedBigDecimal::one(),
-			num_integral_digits:   1,
-			num_fractional_digits: Some(0),
+		pub fn is_zero(&self) -> bool {
+			self.number.is_zero()
 		}
 	}
-
-
-	pub fn is_zero(&self) -> bool {
-
-
-
-		self.number.is_zero()
-	}
-}
 }
 
 mod numberparse {
 
+	use std::str::FromStr;
 
-
-
-use std::str::FromStr;
-
-use uucore::{
-	extendedbigdecimal::ExtendedBigDecimal,
-	parser::num_parser::{ExtendedParser, ExtendedParserError},
-};
-
-use super::number::PreciseNumber;
-
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum ParseNumberError {
-	Float,
-	Nan,
-}
-
-
-
-
-
-fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
-	let input = input.to_lowercase();
-	let input = input.trim_start();
-
-
-	let input = input.strip_prefix('+').unwrap_or(input);
-
-
-
-
-
-	if input.starts_with("0x") || input.starts_with("-0x") {
-		return PreciseNumber {
-			number:                ebd,
-			num_integral_digits:   0,
-			num_fractional_digits: if input.contains('.') || input.contains('p') {
-				None
-			} else {
-				Some(0)
-			},
-		};
-	}
-
-
-	let parts: Vec<&str> = input.split('e').collect();
-	debug_assert!(parts.len() <= 2);
-
-
-	let (mut int_digits, mut frac_digits) = match parts[0].find('.') {
-		Some(i) => {
-
-
-			let int_digits = match i {
-				0 => 1,
-				1 if parts[0].starts_with('-') => 2,
-				_ => i,
-			};
-
-			(int_digits, parts[0].len() - i - 1)
-		},
-		None => (parts[0].len(), 0),
+	use uucore::{
+		extendedbigdecimal::ExtendedBigDecimal,
+		parser::num_parser::{ExtendedParser, ExtendedParserError},
 	};
 
+	use super::number::PreciseNumber;
 
-
-	if parts.len() == 2 {
-		let exp = parts[1].parse::<i64>().unwrap_or(0);
-
-
-		if exp > 0 {
-			int_digits += exp.try_into().unwrap_or(0);
-		}
-		frac_digits = if exp < frac_digits as i64 {
-
-			(frac_digits as i128 - exp as i128).try_into().unwrap_or(0)
-		} else {
-			0
-		}
+	#[derive(Debug, PartialEq, Eq)]
+	pub enum ParseNumberError {
+		Float,
+		Nan,
 	}
 
-	PreciseNumber {
-		number:                ebd,
-		num_integral_digits:   int_digits,
-		num_fractional_digits: Some(frac_digits),
-	}
-}
+	fn compute_num_digits(input: &str, ebd: ExtendedBigDecimal) -> PreciseNumber {
+		let input = input.to_lowercase();
+		let input = input.trim_start();
 
+		let input = input.strip_prefix('+').unwrap_or(input);
 
-
-impl FromStr for PreciseNumber {
-	type Err = ParseNumberError;
-
-	fn from_str(input: &str) -> Result<Self, Self::Err> {
-		let ebd = match ExtendedBigDecimal::extended_parse(input) {
-			Ok(ebd) => match ebd {
-
-				ExtendedBigDecimal::BigDecimal(_) | ExtendedBigDecimal::MinusZero => {
-
-
-					ebd
+		if input.starts_with("0x") || input.starts_with("-0x") {
+			return PreciseNumber {
+				number:                ebd,
+				num_integral_digits:   0,
+				num_fractional_digits: if input.contains('.') || input.contains('p') {
+					None
+				} else {
+					Some(0)
 				},
-				ExtendedBigDecimal::Infinity | ExtendedBigDecimal::MinusInfinity => {
-					return Ok(Self {
-						number:                ebd,
-						num_integral_digits:   0,
-						num_fractional_digits: Some(0),
-					});
-				},
-				ExtendedBigDecimal::Nan | ExtendedBigDecimal::MinusNan => {
-					return Err(ParseNumberError::Nan);
-				},
+			};
+		}
+
+		let parts: Vec<&str> = input.split('e').collect();
+		debug_assert!(parts.len() <= 2);
+
+		let (mut int_digits, mut frac_digits) = match parts[0].find('.') {
+			Some(i) => {
+				let int_digits = match i {
+					0 => 1,
+					1 if parts[0].starts_with('-') => 2,
+					_ => i,
+				};
+
+				(int_digits, parts[0].len() - i - 1)
 			},
-			Err(ExtendedParserError::Underflow(ebd)) => ebd,
-			Err(_) => return Err(ParseNumberError::Float),
+			None => (parts[0].len(), 0),
 		};
 
-		Ok(compute_num_digits(input, ebd))
+		if parts.len() == 2 {
+			let exp = parts[1].parse::<i64>().unwrap_or(0);
+
+			if exp > 0 {
+				int_digits += exp.try_into().unwrap_or(0);
+			}
+			frac_digits = if exp < frac_digits as i64 {
+				(frac_digits as i128 - exp as i128).try_into().unwrap_or(0)
+			} else {
+				0
+			}
+		}
+
+		PreciseNumber {
+			number:                ebd,
+			num_integral_digits:   int_digits,
+			num_fractional_digits: Some(frac_digits),
+		}
 	}
-}
 
+	impl FromStr for PreciseNumber {
+		type Err = ParseNumberError;
 
+		fn from_str(input: &str) -> Result<Self, Self::Err> {
+			let ebd = match ExtendedBigDecimal::extended_parse(input) {
+				Ok(ebd) => match ebd {
+					ExtendedBigDecimal::BigDecimal(_) | ExtendedBigDecimal::MinusZero => ebd,
+					ExtendedBigDecimal::Infinity | ExtendedBigDecimal::MinusInfinity => {
+						return Ok(Self {
+							number:                ebd,
+							num_integral_digits:   0,
+							num_fractional_digits: Some(0),
+						});
+					},
+					ExtendedBigDecimal::Nan | ExtendedBigDecimal::MinusNan => {
+						return Err(ParseNumberError::Nan);
+					},
+				},
+				Err(ExtendedParserError::Underflow(ebd)) => ebd,
+				Err(_) => return Err(ParseNumberError::Float),
+			};
+
+			Ok(compute_num_digits(input, ebd))
+		}
+	}
 }
 
 mod error {
 
+	use thiserror::Error;
+	use uucore::display::Quotable;
 
+	use super::numberparse::ParseNumberError;
 
+	#[derive(Debug, Error)]
+	pub enum SeqError {
+		#[error("invalid {} argument: {}", parse_error_type(.1), .0.quote())]
+		ParseError(String, ParseNumberError),
 
+		#[error("invalid Zero increment value: {}", .0.quote())]
+		ZeroIncrement(String),
 
-use thiserror::Error;
-use uucore::display::Quotable;
+		#[error("missing operand")]
+		NoArguments,
 
-use super::numberparse::ParseNumberError;
-
-#[derive(Debug, Error)]
-pub enum SeqError {
-
-
-
-
-	#[error("invalid {} argument: {}", parse_error_type(.1), .0.quote())]
-	ParseError(String, ParseNumberError),
-
-
-
-
-
-	#[error("invalid Zero increment value: {}", .0.quote())]
-	ZeroIncrement(String),
-
-
-	#[error("missing operand")]
-	NoArguments,
-
-
-	#[error("format string may not be specified when printing equal width strings")]
-	FormatAndEqualWidth,
-}
-
-fn parse_error_type(e: &ParseNumberError) -> &'static str {
-	match e {
-		ParseNumberError::Float => "floating point",
-		ParseNumberError::Nan => "'not-a-number'",
+		#[error("format string may not be specified when printing equal width strings")]
+		FormatAndEqualWidth,
 	}
-}
 
+	fn parse_error_type(e: &ParseNumberError) -> &'static str {
+		match e {
+			ParseNumberError::Float => "floating point",
+			ParseNumberError::Nan => "'not-a-number'",
+		}
+	}
 }
 
 use self::{error::SeqError, number::PreciseNumber};
@@ -249,7 +179,6 @@ const OPT_FORMAT: &str = "format";
 
 const ARG_NUMBERS: &str = "numbers";
 
-
 const CANCEL_POLL_INTERVAL: u64 = 4096;
 
 #[derive(Clone)]
@@ -260,12 +189,7 @@ struct SeqOptions<'a> {
 	format:      Option<&'a str>,
 }
 
-
-
-
 type RangeFloat = (ExtendedBigDecimal, ExtendedBigDecimal, ExtendedBigDecimal);
-
-
 
 fn split_short_args_with_value(args: Vec<OsString>) -> Vec<OsString> {
 	let mut v: Vec<OsString> = Vec::new();
@@ -277,8 +201,6 @@ fn split_short_args_with_value(args: Vec<OsString>) -> Vec<OsString> {
 			&& (bytes.starts_with(b"-f") || bytes.starts_with(b"-s") || bytes.starts_with(b"-t"))
 		{
 			let (short_arg, value) = bytes.split_at(2);
-
-
 
 			v.push(unsafe { OsString::from_encoded_bytes_unchecked(short_arg.to_vec()) });
 			v.push(unsafe { OsString::from_encoded_bytes_unchecked(value.to_vec()) });
@@ -302,7 +224,6 @@ fn select_precision(
 		_ => None,
 	}
 }
-
 
 pub(crate) struct Seq {
 	matches: ArgMatches,
@@ -374,17 +295,12 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 		return Err(SeqError::ZeroIncrement(numbers[1].to_owned()).into());
 	}
 	let last: PreciseNumber = {
-
-
-
 		let n: usize = numbers.len();
 		match numbers[n - 1].parse() {
 			Ok(num) => num,
 			Err(e) => return Err(SeqError::ParseError(numbers[n - 1].to_owned(), e).into()),
 		}
 	};
-
-
 
 	let (format, padding, fast_allowed) = if let Some(str) = options.format {
 		(Format::<num_format::Float, &ExtendedBigDecimal>::parse(str)?, 0, false)
@@ -407,7 +323,6 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 		};
 
 		let formatter = match precision {
-
 			Some(precision) => num_format::Float {
 				variant: FloatVariant::Decimal,
 				width: padding,
@@ -418,7 +333,6 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 
 			None => num_format::Float { variant: FloatVariant::Shortest, ..Default::default() },
 		};
-
 
 		(Format::from_formatter(formatter), padding, precision == Some(0))
 	};
@@ -436,7 +350,6 @@ fn seq_main(matches: &ArgMatches, host: &mut Host) -> Result<(), Box<dyn Error>>
 	match result {
 		Ok(()) => Ok(()),
 		Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {
-
 			let _ = writeln!(host.stderr, "seq: write error: {err}");
 			Ok(())
 		},
@@ -481,16 +394,12 @@ fn uu_app() -> Command {
 				.help("use printf style floating-point FORMAT"),
 		)
 		.arg(
-
-
 			Arg::new(ARG_NUMBERS)
 				.allow_hyphen_values(true)
 				.action(ArgAction::Append)
 				.num_args(1..=3),
 		)
 }
-
-
 
 fn fast_print_seq(
 	host: &Host,
@@ -502,30 +411,15 @@ fn fast_print_seq(
 	terminator: &OsStr,
 	padding: usize,
 ) -> std::io::Result<()> {
-
 	if last < first {
 		return Ok(());
 	}
 
-
-
-
-
 	let loop_cnt = ((last - first) / increment).to_u64().unwrap_or(u64::MAX);
-
 
 	let first_str = first.to_string();
 
-
 	let last_length = last.to_string().len();
-
-
-
-
-
-
-
-
 
 	let size = last_length.max(padding) + separator.len();
 
@@ -535,20 +429,15 @@ fn fast_print_seq(
 	let num_end = buf.len() - separator.len();
 	let mut start = num_end - first_str.len();
 
-
 	buf[start..num_end].copy_from_slice(first_str.as_bytes());
 	buf[num_end..].copy_from_slice(separator.as_encoded_bytes());
 
-
-
 	start = start.min(num_end - padding);
-
 
 	let inc_str = increment.to_string();
 	let inc_str = inc_str.as_bytes();
 
 	for i in 0..loop_cnt {
-
 		if i % CANCEL_POLL_INTERVAL == 0 && host.is_cancelled() {
 			return Ok(());
 		}
@@ -570,7 +459,6 @@ fn done_printing<T: Zero + PartialOrd>(next: &T, increment: &T, last: &T) -> boo
 	}
 }
 
-
 fn print_seq(
 	host: &Host,
 	range: RangeFloat,
@@ -584,8 +472,6 @@ fn print_seq(
 	let (first, increment, last) = range;
 
 	if fast_allowed {
-
-
 		let (first_bui, increment_u64, last_bui) =
 			(first.to_biguint(), increment.to_biguint().and_then(|x| x.to_u64()), last.to_biguint());
 		if let (Some(first_bui), Some(increment_u64), Some(last_bui)) =
@@ -609,7 +495,6 @@ fn print_seq(
 	let mut is_first_iteration = true;
 	let mut iterations: u64 = 0;
 	while !done_printing(&value, &increment, &last) {
-
 		if iterations.is_multiple_of(CANCEL_POLL_INTERVAL) && host.is_cancelled() {
 			return Ok(());
 		}
@@ -632,5 +517,3 @@ fn print_seq(
 pub(crate) fn seq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Seq, SE>()
 }
-
-

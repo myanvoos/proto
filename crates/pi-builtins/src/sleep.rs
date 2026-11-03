@@ -1,5 +1,3 @@
-
-
 use std::{future::Future, io::Write, time::Duration};
 
 use brush_core::{ExecutionContext, ExecutionExitCode, ExecutionResult, builtins};
@@ -8,12 +6,9 @@ use tokio::time;
 
 use crate::host::parse_duration;
 
-
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 pub(crate) struct SleepCommand {
-
-
 	#[arg(required = true, allow_hyphen_values = true)]
 	durations: Vec<String>,
 }
@@ -53,5 +48,3 @@ impl builtins::Command for SleepCommand {
 		}
 	}
 }
-
-

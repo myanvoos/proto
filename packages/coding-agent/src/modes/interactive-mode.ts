@@ -344,6 +344,7 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
 	session: AgentSession;
+	refreshScopedModelsAfterLogin?: () => Promise<void>;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: Agent;
@@ -353,6 +354,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	ui: TUI;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
+	pendingShellContainer: Container;
 	statusContainer: Container;
 	checklistContainer: Container;
 	subagentContainer: Container;
@@ -380,6 +382,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	goalModePaused = false;
 	#checklistAutoClearTimer: NodeJS.Timeout | undefined;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
+	#editorComponentFactory:
+		| ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor)
+		| undefined;
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
 	checklistPhases: ChecklistPhase[] = [];
@@ -556,6 +561,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.statusContainer.disposeChildren();
 		this.pendingMessagesContainer.disposeChildren();
+		this.pendingShellContainer.disposeChildren();
 		this.#cancelModelCycleClearTimer();
 		this.modelCycleContainer.disposeChildren();
 		this.deferredCommandContainer.disposeChildren();
@@ -665,6 +671,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.chatContainer = new TranscriptContainer();
 
 		this.pendingMessagesContainer = new Container();
+		this.pendingShellContainer = new Container();
 		this.statusContainer = new Container();
 		this.checklistContainer = new Container();
 		this.subagentContainer = new Container();
@@ -695,6 +702,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.historyStorage = HistoryStorage.open();
 			this.editor.setHistoryStorage(this.historyStorage);
 			this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
+			this.historyStorage.setErrorListener(() => {
+				this.showWarning("Prompt history could not be saved; this prompt may be unavailable after restart.");
+			});
 		} catch (error) {
 			logger.warn("History storage unavailable", { error: String(error) });
 		}
@@ -859,6 +869,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setRuntimeChildren(
 			[
 				this.chatContainer,
+				this.pendingShellContainer,
 				this.pendingMessagesContainer,
 				this.checklistContainer,
 				this.subagentContainer,
@@ -1489,6 +1500,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	finishPendingSubmission(input: SubmittedUserInput): void {
+		if (input.customType === "goal-continuation" && input.started && !input.dispatched) {
+			this.#pendingGoalContinuationTurns = Math.max(0, this.#pendingGoalContinuationTurns - 1);
+		}
 		const wasPendingSubmission = this.#pendingSubmittedInput === input;
 		const pendingSubmissionDispose = this.#pendingSubmissionDispose;
 		if (wasPendingSubmission) {
@@ -1563,7 +1577,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#agentRegistryUnsubscribe?.();
 			this.#agentRegistrySubscriptionTarget = registry;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
-				this.syncRunningSubagentBadge();
+				this.#scheduleObserverUiSync("progress");
 			});
 		}
 		const count = countRunningSubagentBadgeAgents(registry, this.session.getAgentId() ?? MAIN_AGENT_ID);
@@ -2553,19 +2567,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#shutdown({ updateRestart: true });
 	}
 
+	async #quitHostOwned(code: number): Promise<void> {
+		try {
+			await postmortem.quit(code);
+		} catch {
+			// Extension loading may guard process.exit after cleanup has completed.
+			postmortem.exitProcess(code);
+		}
+	}
+
 	async #shutdown(options: { updateRestart: boolean }): Promise<void> {
 		if (this.#isShuttingDown) return;
 		// Session disposal is memoized and has already latched its write failure,
 		// so retrying teardown cannot make progress. Exit without touching the
 		// session log; 130 matches the Ctrl-C hard-abort path.
 		if (this.#teardownFailed) {
-			try {
-				await postmortem.quit(130);
-			} catch {
-				// A guarded process.exit can reject while an extension or hook loads.
-				// Cleanup already failed once, so bypass that guard for the escape.
-				postmortem.exitProcess(130);
-			}
+			await this.#quitHostOwned(130);
 			return;
 		}
 		this.#isShuttingDown = true;
@@ -2613,7 +2630,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (options.updateRestart) {
 			try {
 				await updateAndRelaunch({
-					sessionFile: this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined,
+					sessionFile: this.sessionManager.isSessionConfirmedOnDisk()
+						? this.sessionManager.getSessionFile()
+						: undefined,
 					cwd: this.sessionManager.getCwd(),
 				});
 			} catch {
@@ -2624,11 +2643,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Cleanup callbacks no longer need the live UI/session. Start them before
 		// the synchronous resume hint so their independent I/O can overlap it.
-		const quitPromise = postmortem.quit(0);
+		const quitPromise = this.#quitHostOwned(0);
 
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile && this.sessionManager.isSessionOnDisk()) {
+		if (sessionId && sessionFile && this.sessionManager.isSessionConfirmedOnDisk()) {
 			// Command on its own line so a triple-click selects just the command.
 			process.stderr.write(`\n${chalk.dim("Resume this session with")}\n${chalk.dim(resumeCommand(sessionId))}\n`);
 		}
@@ -2682,6 +2701,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const nextEditor = factory
 			? factory(this.ui, getEditorTheme(), this.keybindings)
 			: new CustomEditor(getEditorTheme());
+		this.#editorComponentFactory = factory;
 
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
@@ -2720,6 +2740,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
+	}
+
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined {
+		return this.#editorComponentFactory;
 	}
 
 	present(content: Component | readonly Component[]): void {
@@ -3242,9 +3266,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#inputController.handleQueueCommand(message, detached);
 	}
 
-	handleSideCommand(mode: SideCommandMode, text: string): Promise<void> {
-		if (mode === "agent") return this.#sideAgentController.start(text);
-		return this.#sideQuestionController.start(text);
+	handleSideCommand(mode: SideCommandMode, text: string, images?: ImageContent[]): Promise<void> {
+		if (mode === "agent") return this.#sideAgentController.start(text, images);
+		return this.#sideQuestionController.start(text, images);
 	}
 
 	hasActiveSideQuestion(): boolean {
@@ -3280,9 +3304,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		assistantMessage: AssistantMessage,
 		leafId: string,
 		sessionId: string,
+		images?: ImageContent[],
 	): Promise<void> {
 		try {
-			const result = await this.session.branchFromSideQuestion(question, assistantMessage, leafId, sessionId);
+			const result = await this.session.branchFromSideQuestion(
+				question,
+				assistantMessage,
+				leafId,
+				sessionId,
+				images,
+			);
 			if (result.cancelled) {
 				this.showStatus("/side branch cancelled", { dim: true });
 				return;

@@ -37,6 +37,11 @@ class SummaryDividerComponent implements Component {
 		this.#detail = undefined;
 	}
 
+	releaseRenderCaches(): void {
+		this.#cache = undefined;
+		this.#detail?.releaseRenderCaches();
+	}
+
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
 		if (this.#cache?.width === width) {
@@ -118,6 +123,10 @@ export class CompactionSummaryMessageComponent implements Component {
 		this.#divider.invalidate();
 	}
 
+	releaseRenderCaches(): void {
+		this.#divider.releaseRenderCaches();
+	}
+
 	render(width: number): readonly string[] {
 		return this.#divider.render(width);
 	}
@@ -152,6 +161,10 @@ export class BranchSummaryMessageComponent implements Component {
 
 	invalidate(): void {
 		this.#divider.invalidate();
+	}
+
+	releaseRenderCaches(): void {
+		this.#divider.releaseRenderCaches();
 	}
 
 	render(width: number): readonly string[] {

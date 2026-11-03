@@ -1,5 +1,6 @@
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
+import { getOAuthCredentialProvider } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthPrompt, OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import {
 	type Component,
@@ -55,6 +56,10 @@ class CopyablePromptInput implements Component, Focusable {
 			return;
 		}
 		this.#input.handleInput(data);
+	}
+
+	pasteText(text: string): void {
+		this.#input.pasteText(text);
 	}
 
 	invalidate(): void {
@@ -223,7 +228,8 @@ export class SignInTab implements SetupTab {
 					this.#showPrompt({ message: "Paste the authorization code (or full redirect URL):" }),
 			});
 
-			await this.host.ctx.session.modelRegistry.refreshProvider(providerId, "online");
+			await this.host.ctx.session.modelRegistry.refreshProvider(getOAuthCredentialProvider(providerId), "online");
+			await this.host.ctx.refreshScopedModelsAfterLogin?.();
 			if (this.#disposed) return;
 			this.#statusLines = [
 				theme.fg("success", `${theme.status.success} Signed in to ${providerId}`),

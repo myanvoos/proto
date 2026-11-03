@@ -6,6 +6,6 @@
 		"emitDeclarationOnly": false,
 		"allowImportingTsExtensions": true
 	},
-	"include": ["scripts"],
+	"include": ["scripts", "packages/*/src", "packages/*/scripts", "packages/*/native", "packages/*/test", "packages/*/tests", "packages/browser-relay/extension"],
 	"exclude": ["node_modules"]
 }

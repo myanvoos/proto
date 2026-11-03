@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { isProviderEnabled } from "../capability";
 import { invalidModelSelectorReason, resolveAgentSpawnModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -100,6 +101,7 @@ interface EffectiveSubagentPolicy {
 
 	modelRole?: string;
 	parentActiveModelPattern?: string;
+	modelRequested?: boolean;
 	schema: StructuredSubagentSchemaResolution;
 	isIsolated: boolean;
 	mergeMode: "patch" | "branch";
@@ -174,6 +176,23 @@ function resolveSchema(request: StructuredSubagentRequest, agent: AgentDefinitio
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
 }
 
+const inflightDiscovery = new Map<string, { fn: typeof discoverAgents; promise: Promise<DiscoveryResult> }>();
+
+function discoverAgentsShared(cwd: string): Promise<DiscoveryResult> {
+	const fn = discoverAgents;
+	const key = `${path.resolve(cwd)}\0${isProviderEnabled("proto-plugins")}\0${isProviderEnabled("claude-plugins")}`;
+	const existing = inflightDiscovery.get(key);
+	if (existing?.fn === fn) return existing.promise;
+	const promise = fn(cwd);
+	const entry = { fn, promise };
+	inflightDiscovery.set(key, entry);
+	const clear = () => {
+		if (inflightDiscovery.get(key) === entry) inflightDiscovery.delete(key);
+	};
+	promise.then(clear, clear);
+	return promise;
+}
+
 export async function resolveEffectiveSubagentPolicy(
 	request: StructuredSubagentRequest,
 ): Promise<EffectiveSubagentPolicy> {
@@ -188,7 +207,7 @@ export async function resolveEffectiveSubagentPolicy(
 	const agentName = preflight.agentName;
 	if (preflight.error) throw new StructuredSubagentError("preflight", preflight.error);
 
-	const discovery = await discoverAgents(request.session.cwd);
+	const discovery = await discoverAgentsShared(request.session.cwd);
 	const agent = getAgent(discovery.agents, agentName);
 	if (!agent) {
 		throw new StructuredSubagentError("preflight", describeUnknownAgent(agentName, discovery));
@@ -249,6 +268,7 @@ export async function resolveEffectiveSubagentPolicy(
 		modelRole,
 		// A requested model that cannot run fails instead of silently running on the parent's model.
 		parentActiveModelPattern: modelRequested ? undefined : parentActiveModelPattern,
+		modelRequested,
 		schema,
 		isIsolated,
 		mergeMode: request.isolation?.merge ?? request.session.settings.get("orchestrator.isolation.merge"),
@@ -340,6 +360,7 @@ function buildExecutorOptions(
 		modelOverride: policy.modelOverride,
 		modelRole: policy.modelRole,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
+		modelRequested: policy.modelRequested,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,
 		...(policy.schema.source === "none"
@@ -365,7 +386,10 @@ function buildExecutorOptions(
 		settings: session.settings,
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		enableMCP,
-		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+		contextFiles: session.contextFiles,
+		noContextFiles: session.noContextFiles,
+		parentPromptCacheKey: session.getPromptCacheKey?.(),
+		asyncJobManager: session.asyncJobManager,
 		skills,
 		autoloadSkills,
 		workspaceTree: session.workspaceTree,
@@ -475,6 +499,10 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
+		const requestedSkills = policy.agent.autoloadSkills;
+		if (requestedSkills?.some(name => !request.session.skills?.some(skill => skill.name === name))) {
+			await request.session.refreshSkills?.();
+		}
 		const baseOptions = buildExecutorOptions(request, policy, lease, id);
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;

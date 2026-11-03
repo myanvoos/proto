@@ -62,11 +62,15 @@ function emptyInstalledPluginsRegistry(): InstalledPluginsRegistry {
 	return { version: 2, plugins: {} };
 }
 
-export async function readInstalledPluginsRegistry(filePath: string): Promise<InstalledPluginsRegistry> {
+export async function readInstalledPluginsRegistry(
+	filePath: string,
+	options: { strict?: boolean } = {},
+): Promise<InstalledPluginsRegistry> {
 	try {
 		const content = await Bun.file(filePath).text();
 		const data: unknown = tryParseJson<unknown>(content);
 		if (!data || typeof data !== "object" || Array.isArray(data)) {
+			if (options.strict) throw new Error(`Invalid installed plugins registry: ${filePath}`);
 			logger.warn("Invalid installed plugins registry, returning empty", { path: filePath });
 			return emptyInstalledPluginsRegistry();
 		}
@@ -77,6 +81,7 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 			typeof candidate.plugins !== "object" ||
 			Array.isArray(candidate.plugins)
 		) {
+			if (options.strict) throw new Error(`Invalid installed plugins registry: ${filePath}`);
 			logger.warn("Invalid installed plugins registry, returning empty", { path: filePath });
 			return emptyInstalledPluginsRegistry();
 		}
@@ -84,6 +89,7 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 		const plugins: Record<string, InstalledPluginEntry[]> = {};
 		for (const [pluginId, entries] of Object.entries(candidate.plugins as Record<string, unknown>)) {
 			if (!Array.isArray(entries)) {
+				if (options.strict) throw new Error(`Invalid plugin entries in registry: ${filePath}`);
 				logger.warn("Invalid installed plugin registry entries, skipping", {
 					path: filePath,
 					pluginId,
@@ -96,6 +102,7 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 			for (const [index, entry] of entries.entries()) {
 				const checked = installedPluginEntrySchema(entry);
 				if (checked instanceof OmpErrors) {
+					if (options.strict) throw new Error(`Invalid plugin entry in registry ${filePath}: ${checked.summary}`);
 					logger.warn("Invalid installed plugin registry entry, skipping", {
 						path: filePath,
 						pluginId,
@@ -120,6 +127,34 @@ export async function readInstalledPluginsRegistry(filePath: string): Promise<In
 
 export async function writeInstalledPluginsRegistry(filePath: string, reg: InstalledPluginsRegistry): Promise<void> {
 	await atomicWriteJson(filePath, reg);
+}
+
+/** Project installs share the user cache even when they belong to another working directory. */
+export function getProjectRegistriesIndexPath(userRegistryPath: string): string {
+	return path.join(path.dirname(userRegistryPath), "project_registries.json");
+}
+
+export async function readProjectRegistriesIndex(filePath: string): Promise<string[]> {
+	try {
+		const data: unknown = await Bun.file(filePath).json();
+		if (
+			!data ||
+			typeof data !== "object" ||
+			!("registries" in data) ||
+			!Array.isArray(data.registries) ||
+			data.registries.some(entry => typeof entry !== "string" || !path.isAbsolute(entry))
+		) {
+			throw new Error(`Invalid project registries index: ${filePath}`);
+		}
+		return data.registries as string[];
+	} catch (err) {
+		if (isEnoent(err)) return [];
+		throw err;
+	}
+}
+
+export async function writeProjectRegistriesIndex(filePath: string, registries: readonly string[]): Promise<void> {
+	await atomicWriteJson(filePath, { version: 1, registries });
 }
 
 export function addMarketplaceEntry(reg: MarketplacesRegistry, entry: MarketplaceRegistryEntry): MarketplacesRegistry {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveProviderModels } from "./model-manager";
+import { fingerprintStaticModels, resolveProviderModels } from "./model-manager";
 import type { ModelCost, ModelSpec } from "./types";
 
 function modelSpec(cost: ModelCost): ModelSpec<"openai-completions"> {
@@ -103,6 +103,57 @@ describe("model source resolution", () => {
 		const second = await resolveProviderModels(options, "online");
 		expect(second.models.map(model => model.id).sort()).toEqual(["bundled", "catalog-added"]);
 		expect(second.stale).toBe(true);
+	});
+
+	it("preserves discovered limits on warm additive catalog reads", async () => {
+		const cacheDbPath = await tempCacheDb();
+		const bundled = { ...chatSpec("bundled"), contextWindow: 1_000_000 };
+		const options = {
+			providerId: "venice",
+			staticModels: [bundled],
+			cacheDbPath,
+			fetchDynamicModels: async () => [{ ...bundled, contextWindow: 128_000, maxTokens: 4096 }],
+			modelsDev: { additiveOnly: true, fetch: async () => null, map: () => [bundled] },
+		};
+		await resolveProviderModels(options, "online");
+		for (const strategy of ["online-if-uncached", "offline"] as const) {
+			const result = await resolveProviderModels(options, strategy);
+			expect(result.models[0]).toMatchObject({ contextWindow: 128_000, maxTokens: 4096 });
+		}
+	});
+
+	it("never resurrects retired bundled models after repeated failed authoritative refreshes", async () => {
+		const cacheDbPath = await tempCacheDb();
+		let online = true;
+		const options = {
+			providerId: "venice",
+			staticModels: [chatSpec("served"), chatSpec("retired")],
+			cacheDbPath,
+			dynamicModelsAuthoritative: true,
+			fetchDynamicModels: async () => (online ? [chatSpec("served")] : null),
+			modelsDev: {
+				additiveOnly: true,
+				fetch: async () => {
+					if (!online) throw Error("offline");
+					return null;
+				},
+				map: () => [],
+			},
+		};
+		await resolveProviderModels(options, "online");
+		online = false;
+		for (const strategy of ["online", "offline", "online", "online-if-uncached"] as const) {
+			const result = await resolveProviderModels(options, strategy);
+			expect(result.models.map(model => model.id)).toEqual(["served"]);
+		}
+	});
+
+	it("keeps authoritative and additive policies distinct even for empty catalogs", () => {
+		const plain = fingerprintStaticModels([]);
+		const authoritative = fingerprintStaticModels([], { authoritative: true });
+		const additive = fingerprintStaticModels([], { additive: true });
+		const both = fingerprintStaticModels([], { authoritative: true, additive: true });
+		expect(new Set([plain, authoritative, additive, both]).size).toBe(4);
 	});
 
 	it("does not persist an empty failed discovery, so the next launch retries immediately", async () => {

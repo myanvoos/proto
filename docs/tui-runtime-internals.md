@@ -186,7 +186,8 @@ and is the only way to request a rebuilt historical layout.
 - `agent_start`: starts loader in `statusContainer`.
 - `message_start` assistant: creates `streamingComponent` and mounts it.
 - `message_update`: updates streaming assistant content; creates/updates tool execution components as tool calls appear.
-- `tool_execution_update/end`: updates tool result components and completion state.
+- `tool_execution_update`: records a running tool's partial result for session consumers; the card paints nothing for it.
+- `tool_execution_end`: paints the settled result and completion state.
 - `message_end`: finalizes assistant stream, handles aborted/error annotations, marks pending tool args complete on normal stop.
 - `agent_end`: stops loaders, clears transient stream state, flushes deferred model switch, issues completion notification if backgrounded.
 

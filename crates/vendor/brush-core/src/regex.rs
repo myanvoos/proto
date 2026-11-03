@@ -11,10 +11,8 @@ thread_local! {
 		  RefCell::new(cached::SizedCache::with_size(64));
 }
 
-
 #[derive(Clone, Debug)]
 pub(crate) enum RegexPiece {
-
 	Pattern(String),
 
 	Literal(String),
@@ -31,7 +29,6 @@ impl RegexPiece {
 
 type RegexWord = Vec<RegexPiece>;
 
-
 #[derive(Clone, Debug)]
 pub struct Regex {
 	pieces:           RegexWord,
@@ -46,32 +43,15 @@ impl From<RegexWord> for Regex {
 }
 
 impl Regex {
-
-
-
-
-
 	pub const fn set_case_insensitive(mut self, value: bool) -> Self {
 		self.case_insensitive = value;
 		self
 	}
 
-
-
-
-
-
-
-
 	pub const fn set_multiline(mut self, value: bool) -> Self {
 		self.multiline = value;
 		self
 	}
-
-
-
-
-
 
 	pub fn matches(&self, value: &str) -> Result<Option<Vec<Option<String>>>, error::Error> {
 		let regex_pattern: String = self
@@ -96,7 +76,6 @@ pub(crate) fn compile_regex(
 	case_insensitive: bool,
 	multiline: bool,
 ) -> Result<fancy_regex::Regex, error::Error> {
-
 	let key = (regex_str, case_insensitive, multiline);
 
 	let cached_regex = REGEX_CACHE.with(|cache| cache.borrow_mut().cache_get(&key).cloned());
@@ -104,15 +83,9 @@ pub(crate) fn compile_regex(
 		return Ok(re);
 	}
 
-
-
 	let mut regex_str = add_missing_escape_chars_to_regex(key.0.as_str());
 
-
 	if multiline {
-
-
-
 		let updated_str = std::format!("(?ms){regex_str}");
 		regex_str = updated_str.into();
 	}
@@ -125,7 +98,6 @@ pub(crate) fn compile_regex(
 		Err(e) => return Err(error::ErrorKind::InvalidRegexError(e, regex_str.to_string()).into()),
 	};
 
-
 	drop(regex_str);
 
 	REGEX_CACHE.with(|cache| {
@@ -136,8 +108,6 @@ pub(crate) fn compile_regex(
 }
 
 fn add_missing_escape_chars_to_regex(s: &str) -> Cow<'_, str> {
-
-
 	let mut in_escape = false;
 	let mut in_brackets = false;
 	let mut insertion_positions = vec![];
@@ -151,7 +121,6 @@ fn add_missing_escape_chars_to_regex(s: &str) -> Cow<'_, str> {
 				in_brackets = true;
 			},
 			'[' if !in_escape && in_brackets && !next_is_colon => {
-
 				insertion_positions.push(byte_offset);
 			},
 			']' if !in_escape && in_brackets => {
@@ -194,5 +163,3 @@ fn escape_literal_regex_piece(s: &str) -> Cow<'_, str> {
 pub(crate) const fn regex_char_is_special(c: char) -> bool {
 	matches!(c, '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}')
 }
-
-

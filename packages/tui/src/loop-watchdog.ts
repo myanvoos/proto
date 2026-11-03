@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { takeRecentLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
+import { resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils/loop-phase";
 
 export interface LoopWatchdogOptions {
 	intervalMs?: number;
@@ -68,12 +68,15 @@ export class LoopWatchdog {
 	}
 
 	stop(): void {
+		// Attribution state is process-global: a watchdog that is not running must not disarm another's window.
+		if (!this.#running) return;
 		this.#running = false;
 		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		this.#generation++;
 		this.#handle?.cancel?.();
 		this.#handle = undefined;
+		resetLoopPhaseWindow();
 	}
 
 	/**
@@ -100,6 +103,7 @@ export class LoopWatchdog {
 	#armTick(): void {
 		const generation = this.#generation;
 		this.#expected = this.#now() + this.#intervalMs;
+		resetLoopPhaseWindow(this.#expected, this.#now);
 		this.#expectedCpu = this.#cpuNow();
 		this.#handle = this.#schedule(() => this.#tick(generation), this.#intervalMs);
 		this.#handle.unref?.();
@@ -110,8 +114,9 @@ export class LoopWatchdog {
 		const now = this.#now();
 		const blockedMs = now - this.#expected;
 		const cpuMs = this.#cpuNow() - this.#expectedCpu;
-
-		const phase = takeRecentLoopPhase();
+		// Consume every valid tick, even without a warning, so no phase carries
+		// forward into a later, phase-less block.
+		const phase = takeLoopPhaseAttribution(now);
 		if (blockedMs > this.#thresholdMs) {
 			if (this.#isSuspension(blockedMs, cpuMs)) {
 				this.#wasBlocked = false;
@@ -122,7 +127,8 @@ export class LoopWatchdog {
 					logger.warn("ui.loop-blocked", {
 						blockedMs: Math.round(blockedMs),
 						cpuMs: Math.round(cpuMs),
-						phase: phase ?? "unknown",
+						phase: phase?.label ?? "unknown",
+						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
 					});
 				}
 			}

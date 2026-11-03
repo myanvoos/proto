@@ -313,7 +313,10 @@ export async function runInteractiveBashPty(
 	const settings = await Settings.init();
 
 	const XtermTerminal = await loadXtermTerminal();
-	const { shell: resolvedShell } = settings.getShellConfig();
+	const { shell: resolvedShell, env: shellEnv } = settings.getShellConfig();
+	// Native PTYs inherit the C environment, not Bun's runtime env changes.
+	// Interactive children keep their launch defaults for non-interactive guards.
+	const { GIT_EDITOR: _gitEditor, GPG_TTY: _gpgTty, CI: _ci, NO_COLOR: _noColor, ...interactiveShellEnv } = shellEnv;
 	const sink = new OutputSink({
 		artifactPath: options.artifactPath,
 		artifactId: options.artifactId,
@@ -412,6 +415,7 @@ export async function runInteractiveBashPty(
 							timeoutMs: options.timeoutMs,
 
 							env: {
+								...interactiveShellEnv,
 								TERM: "xterm-256color",
 								...options.env,
 							},

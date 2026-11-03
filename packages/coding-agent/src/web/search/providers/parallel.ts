@@ -11,13 +11,14 @@ import {
 	parseParallelSearchPayload,
 } from "../../parallel";
 import { formatQuery, parseSearchQuery, type StructuredQuery } from "../query";
-import { clampNumResults } from "../utils";
+import { clampNumResults, recencyAfterDate } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import {
 	classifyProviderHttpError,
 	readProviderErrorText,
 	readProviderResponseText,
+	siteHosts,
 	toSearchSources,
 	withHardTimeout,
 } from "./utils";
@@ -33,31 +34,15 @@ interface ParallelSourcePolicy {
 	after_date?: string;
 }
 
-const RECENCY_DAYS: Record<NonNullable<SearchParams["recency"]>, number> = {
-	day: 1,
-	week: 7,
-	month: 30,
-	year: 365,
-};
-
-function toHosts(sites: readonly string[]): string[] {
-	const hosts = new Set<string>();
-	for (const site of sites) {
-		const host = site.split("/", 1)[0];
-		if (host) hosts.add(host);
-	}
-	return [...hosts];
-}
-
 function toSourcePolicy(parsed: StructuredQuery, recency?: SearchParams["recency"]): ParallelSourcePolicy | undefined {
 	const policy: ParallelSourcePolicy = {};
-	const include = toHosts(parsed.sites);
-	const exclude = toHosts(parsed.excludedSites);
+	const include = siteHosts(parsed.sites);
+	const exclude = siteHosts(parsed.excludedSites);
 	if (include.length) policy.include_domains = include;
 	else if (exclude.length) policy.exclude_domains = exclude;
 	if (parsed.after) policy.after_date = parsed.after;
 	else if (recency) {
-		policy.after_date = new Date(Date.now() - RECENCY_DAYS[recency] * 86_400_000).toISOString().slice(0, 10);
+		policy.after_date = recencyAfterDate(recency);
 	}
 	return policy.include_domains || policy.exclude_domains || policy.after_date ? policy : undefined;
 }

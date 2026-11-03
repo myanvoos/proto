@@ -19,6 +19,7 @@ const ALLOWED_OPTION_KEYS: ReadonlySet<keyof SimpleStreamOptions> = new Set([
 	"repetitionPenalty",
 	"stopSequences",
 	"maxTokens",
+	"maxHttpAttempts",
 	"cacheRetention",
 	"cachedContent",
 	"headers",
@@ -106,6 +107,8 @@ export function parseRequest(body: unknown, _headers?: Headers): PiNativeParsedR
 
 const SSE_ENCODER = new TextEncoder();
 const SSE_DONE = SSE_ENCODER.encode("data: [DONE]\n\n");
+const SSE_KEEPALIVE = SSE_ENCODER.encode(": keepalive\n\n");
+const STREAM_KEEPALIVE_INTERVAL_MS = 15_000;
 
 export function encodeStream(
 	events: AssistantMessageEventStream,
@@ -114,8 +117,16 @@ export function encodeStream(
 	control?: AuthGatewayStreamControl,
 ): ReadableStream<Uint8Array> {
 	let cancelled = control?.signal?.aborted === true;
+	let keepaliveTimer: NodeJS.Timeout | undefined;
+	const stopKeepalive = () => {
+		if (keepaliveTimer !== undefined) {
+			clearInterval(keepaliveTimer);
+			keepaliveTimer = undefined;
+		}
+	};
 	const markCancelled = () => {
 		cancelled = true;
+		stopKeepalive();
 	};
 	control?.signal?.addEventListener("abort", markCancelled, { once: true });
 	return new ReadableStream<Uint8Array>({
@@ -125,6 +136,19 @@ export function encodeStream(
 					controller.close();
 					return;
 				}
+				controller.enqueue(SSE_KEEPALIVE);
+				keepaliveTimer = setInterval(() => {
+					try {
+						if (cancelled) {
+							stopKeepalive();
+							return;
+						}
+						controller.enqueue(SSE_KEEPALIVE);
+					} catch {
+						// Controller already closed/errored (client gone); stop the timer.
+						stopKeepalive();
+					}
+				}, STREAM_KEEPALIVE_INTERVAL_MS);
 				for await (const event of events) {
 					if (cancelled) return;
 					controller.enqueue(SSE_ENCODER.encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -146,11 +170,12 @@ export function encodeStream(
 					controller.close();
 				}
 			} finally {
+				stopKeepalive();
 				control?.signal?.removeEventListener("abort", markCancelled);
 			}
 		},
 		cancel(reason) {
-			cancelled = true;
+			markCancelled();
 			control?.signal?.removeEventListener("abort", markCancelled);
 			control?.onCancel?.(reason);
 		},

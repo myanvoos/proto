@@ -66,7 +66,7 @@ interface WorkerSpawnCommand {
  * A package manager can prune the running binary's version directory mid-upgrade, leaving
  * `process.execPath` dangling; re-resolve the compiled binary from PATH so workers still spawn.
  */
-function resolveExecutablePath(): string {
+export function resolveExecutablePath(): string {
 	const executable = process.execPath;
 	if (!isCompiledBinary() || isExecutable(executable)) return executable;
 	// Never resolve against the cwd: a relative launcher path or a relative PATH entry could pick up a binary planted

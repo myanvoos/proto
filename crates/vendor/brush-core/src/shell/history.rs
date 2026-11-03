@@ -1,5 +1,3 @@
-
-
 use std::path::PathBuf;
 
 use crate::{error, openfiles};
@@ -15,21 +13,22 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		let mut options = std::fs::File::options();
 		options.read(true);
 
-		let mut history_file = self.open_file(&options, history_path, &self.default_exec_params())?;
-
+		let history_path = self.absolute_path(history_path);
+		// History import only accepts regular files; a FIFO must not block shell
+		// construction.
+		if !std::fs::metadata(&history_path).is_ok_and(|metadata| metadata.is_file()) {
+			return Ok(None);
+		}
+		let mut history_file =
+			openfiles::OpenFile::from(crate::heldfiles::open(history_path, &options)?);
 
 		if let openfiles::OpenFile::File(file) = &mut history_file {
 			let file_metadata = file.metadata()?;
 			let file_size = file_metadata.len();
 
-
-
-
 			if file_size == 0 {
 				return Ok(None);
 			}
-
-
 
 			if file_size > MAX_FILE_SIZE_FOR_HISTORY_IMPORT {
 				return Err(error::ErrorKind::HistoryFileTooLargeToImport.into());
@@ -39,50 +38,35 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(Some(crate::history::History::import(history_file)?))
 	}
 
-
 	pub fn history_file_path(&self) -> Option<PathBuf> {
 		self
 			.env_str("HISTFILE")
 			.map(|s| PathBuf::from(s.into_owned()))
 	}
 
-
 	pub fn history_time_format(&self) -> Option<String> {
 		self.env_str("HISTTIMEFORMAT").map(|s| s.into_owned())
 	}
-
 
 	pub fn save_history(&mut self) -> Result<(), error::Error> {
 		if let Some(history_file_path) = self.history_file_path()
 			&& let Some(history) = &mut self.history
 		{
-
-
 			let write_timestamps = self.env.is_set("HISTTIMEFORMAT");
 
-
-			history.flush(
-				history_file_path,
-				true,
-				true,
-				write_timestamps,
-			)?;
+			history.flush(history_file_path, true, true, write_timestamps)?;
 		}
 
 		Ok(())
 	}
 
-
 	pub fn add_to_history(&mut self, command: &str) -> Result<(), error::Error> {
 		if let Some(history) = &mut self.history {
-
 			let command = command.trim();
-
 
 			if command.is_empty() {
 				return Ok(());
 			}
-
 
 			history.add(crate::history::Item {
 				id:           0,

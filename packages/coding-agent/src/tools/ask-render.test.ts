@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { type AgentToolContext, TOOL_INTERRUPT_ABORT_REASON } from "@oh-my-pi/pi-agent-core";
 import { initThemeSync, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
 import { AskTool, askToolRenderer } from "./ask";
@@ -196,4 +196,73 @@ test("ask strips injected carriage returns from dialog prose but keeps option la
 		.map(strip)
 		.join("\n");
 	expect(rendered).toContain("Which one?");
+});
+
+test("RPC multi-question multi-select can finish and retains selected options beside custom text", async () => {
+	const tool = new AskTool({ hasUI: false, settings: { get: () => 0 } } as unknown as ToolSession);
+	let step = 0;
+	const context = {
+		hasUI: true,
+		abort: () => {
+			throw new Error("Unexpected abort");
+		},
+		ui: {
+			select: async (_prompt: string, options: Array<string | { label: string }>) => {
+				const labels = options.map(option => (typeof option === "string" ? option : option.label));
+				step++;
+				if (step === 1) return "One";
+				if (step === 2) {
+					expect(labels.some(label => label.endsWith("Done selecting"))).toBe(true);
+					return labels.find(label => label.startsWith("Other"));
+				}
+				return "Two";
+			},
+			editor: async () => "also custom",
+		},
+	} as unknown as AgentToolContext;
+	const result = await tool.execute(
+		"rpc-multi",
+		{
+			questions: [
+				{ id: "q1", question: "Choose several", multi: true, options: [{ label: "One" }] },
+				{ id: "q2", question: "Choose one", options: [{ label: "Two" }] },
+			],
+		},
+		undefined,
+		undefined,
+		context,
+	);
+	const text = result.content
+		.filter(block => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
+	expect(text).toContain('[One] + "also custom"');
+	expect(text).toContain("q2: Two");
+});
+
+test.each([true, false])("queued steering interrupts rich=%s ask without aborting the agent run", async rich => {
+	const signal = new AbortController();
+	let aborted = false;
+	const interrupt = async () => {
+		signal.abort(TOOL_INTERRUPT_ABORT_REASON);
+		return undefined;
+	};
+	const context = {
+		hasUI: true,
+		abort: () => {
+			aborted = true;
+		},
+		ui: { ...(rich ? { askDialog: interrupt } : {}), select: interrupt, editor: async () => undefined },
+	} as unknown as AgentToolContext;
+	const tool = new AskTool({ hasUI: false, settings: { get: () => 0 } } as unknown as ToolSession);
+	await expect(
+		tool.execute(
+			"steered-ask",
+			{ questions: [{ id: "q", question: "Choose", options: [{ label: "One" }] }] },
+			signal.signal,
+			undefined,
+			context,
+		),
+	).rejects.toThrow("Ask interrupted by message");
+	expect(aborted).toBe(false);
 });

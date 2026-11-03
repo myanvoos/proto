@@ -42,9 +42,30 @@ const TOOL_RESULT_IMAGE_OMISSION: TextContent = {
 	text: "[image omitted: provider image limit]",
 };
 
-function countImages(context: Context): number {
+function sendsComputerScreenshotMetadata(model: Model): boolean {
+	return (
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		(model.api === "openai-codex-responses" && model.supportsComputerUse === true)
+	);
+}
+
+function hasSentScreenshot(message: Message, model: Model): boolean {
+	return (
+		sendsComputerScreenshotMetadata(model) &&
+		message.role === "toolResult" &&
+		message.providerMetadata?.type === "computer"
+	);
+}
+
+function countImages(context: Context, model: Model): number {
 	let count = 0;
 	for (const message of context.messages) {
+		if (message.role === "assistant") continue;
+		if (hasSentScreenshot(message, model)) {
+			count++;
+			continue;
+		}
 		if (!Array.isArray(message.content)) continue;
 		for (const part of message.content) {
 			if (part.type === "image") count++;
@@ -67,7 +88,7 @@ function clampContent(
 		}
 		clamped.push(part);
 	}
-	return changed ? clamped : undefined;
+	return changed ? (clamped.length > 0 ? clamped : [TOOL_RESULT_IMAGE_OMISSION]) : undefined;
 }
 
 function clampUserMessage(message: UserMessage, state: { remainingDrops: number }): UserMessage {
@@ -82,8 +103,21 @@ function clampDeveloperMessage(message: DeveloperMessage, state: { remainingDrop
 	return content ? { ...message, content, providerPayload: undefined } : message;
 }
 
-function clampToolResultMessage(message: ToolResultMessage, state: { remainingDrops: number }): ToolResultMessage {
+function clampToolResultMessage(
+	message: ToolResultMessage,
+	state: { remainingDrops: number },
+	model: Model,
+): ToolResultMessage {
 	if (state.remainingDrops <= 0) return message;
+	if (hasSentScreenshot(message, model)) {
+		state.remainingDrops--;
+		const content = message.content.filter(part => part.type !== "image");
+		return {
+			...message,
+			content: content.length > 0 ? content : [TOOL_RESULT_IMAGE_OMISSION],
+			providerMetadata: undefined,
+		};
+	}
 	const content = clampContent(message.content, state);
 	if (!content) return message;
 	return {
@@ -95,7 +129,7 @@ function clampToolResultMessage(message: ToolResultMessage, state: { remainingDr
 export function clampProviderContextImages(context: Context, model: Model): Context {
 	if (!model.input.includes("image")) return context;
 	const limit = providerImageBudget(model.provider);
-	const totalImages = countImages(context);
+	const totalImages = countImages(context, model);
 	if (totalImages <= limit) return context;
 
 	const state = { remainingDrops: totalImages - limit };
@@ -106,7 +140,7 @@ export function clampProviderContextImages(context: Context, model: Model): Cont
 			case "developer":
 				return clampDeveloperMessage(message, state);
 			case "toolResult":
-				return clampToolResultMessage(message, state);
+				return clampToolResultMessage(message, state, model);
 			case "assistant":
 				return message;
 		}

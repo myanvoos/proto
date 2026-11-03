@@ -3,13 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct UnaliasCommand {
-
 	#[arg(short = 'a')]
 	remove_all: bool,
-
 
 	aliases: Vec<String>,
 }

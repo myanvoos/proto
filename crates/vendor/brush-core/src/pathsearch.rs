@@ -1,12 +1,9 @@
-
-
 use std::{
 	collections::VecDeque,
 	path::{Path, PathBuf},
 };
 
 use crate::{sys, sys::fs::PathExt};
-
 
 pub struct ExecutablePathSearch<PI, N> {
 	paths:    VecDeque<PI>,
@@ -23,10 +20,6 @@ where
 	fn next(&mut self) -> Option<Self::Item> {
 		while let Some(path) = self.paths.pop_front() {
 			let path = PathBuf::from(path.as_ref()).join(self.filename.as_ref());
-
-
-
-
 
 			if path.is_dir() {
 				continue;
@@ -53,7 +46,6 @@ where
 	type Item = PathBuf;
 
 	fn next(&mut self) -> Option<Self::Item> {
-
 		if let Some(item) = self.queued_items.pop_front() {
 			return Some(item);
 		}
@@ -93,12 +85,6 @@ where
 		None
 	}
 }
-
-
-
-
-
-
 
 pub fn search_for_executable<P, PI, N>(paths: P, filename: N) -> ExecutablePathSearch<PI, N>
 where

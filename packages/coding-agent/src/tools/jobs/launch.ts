@@ -221,7 +221,9 @@ function boundedTimeoutMs(value: number | undefined, fallbackMs: number): number
 function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
 	const name = requiredName(params);
 	if (!params.application) throw new ToolError("start requires application");
-	const ready = params.ready;
+	const ready = params.ready
+		? { ...params.ready, port: params.ready.port === 0 ? undefined : params.ready.port }
+		: undefined;
 	const detached = params.detached ?? false;
 	if (ready?.port !== undefined && (!Number.isInteger(ready.port) || ready.port < 1 || ready.port > 65_535)) {
 		throw new ToolError("ready.port must be an integer from 1 to 65535");

@@ -3,10 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionControlFlow, ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct ReturnCommand {
-
 	code: Option<i32>,
 }
 

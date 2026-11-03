@@ -20,6 +20,7 @@ export default class DryBalance extends Command {
 				concurrency: flags.concurrency,
 				json: flags.json,
 				bench: flags.bench,
+				config: flags.config,
 			},
 		});
 	}

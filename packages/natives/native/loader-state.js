@@ -22,6 +22,10 @@ function startupMarker(text) {
 }
 
 function getNativesDir() {
+	const override = process.env.PROTO_NATIVES_DIR?.trim();
+	if (override === "~") return os.homedir();
+	if (override?.startsWith("~/")) return path.join(os.homedir(), override.slice(2));
+	if (override && path.isAbsolute(override)) return path.normalize(override);
 	const xdgDataHome = process.env.XDG_DATA_HOME;
 	if (xdgDataHome && fs.existsSync(path.join(xdgDataHome, "proto"))) {
 		return path.join(xdgDataHome, "proto", "natives");

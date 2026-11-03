@@ -6,6 +6,7 @@ import {
 	type ChecklistPhase,
 	ChecklistTool,
 	getLatestChecklistPhasesFromEntries,
+	selectCollapsedChecklist,
 	USER_CHECKLIST_EDIT_CUSTOM_TYPE,
 } from "./checklist";
 
@@ -111,4 +112,17 @@ test("done acknowledgement names only the completed and next tasks", async () =>
 	expect(text).toContain("(1/3 done)");
 	expect(text).toContain('in progress: "second task"');
 	expect(text).not.toContain("third task");
+});
+
+test("collapsed checklist spends a summary row on the lone remaining task instead", () => {
+	const tasks = [
+		{ content: "active", status: "in_progress" as const },
+		{ content: "next", status: "pending" as const },
+		{ content: "last", status: "pending" as const },
+	];
+	const result = selectCollapsedChecklist(tasks, () => false, 2);
+	expect(result.items.map(task => task.content)).toEqual(["active", "next", "last"]);
+	expect(result.summary).toBe("");
+	const crowded = selectCollapsedChecklist([...tasks, { content: "another", status: "in_progress" }], () => true, 2);
+	expect(crowded.summary).toContain("more active");
 });

@@ -14,22 +14,27 @@
 			"input": 3,
 			"output": 15,
 			"cacheRead": 0.3,
-			"cacheWrite": 0
+			"cacheWrite": 3
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
-				"medium",
-				"high"
-			]
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -37,7 +42,12 @@
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
 			"supportsPenaltyAndStopParams": true,
-			"reasoningEffortMap": {},
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
 			"clampOutputToModelMax": false,
@@ -101,22 +111,27 @@
 			"input": 3,
 			"output": 15,
 			"cacheRead": 0.3,
-			"cacheWrite": 0
+			"cacheWrite": 3
 		},
 		"contextWindow": 262144,
 		"maxTokens": 131072,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
-				"medium",
-				"high"
-			]
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -124,7 +139,12 @@
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
 			"supportsPenaltyAndStopParams": true,
-			"reasoningEffortMap": {},
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
 			"clampOutputToModelMax": false,
@@ -209,6 +229,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -297,6 +318,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -380,6 +402,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -458,6 +481,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -511,7 +535,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "kimi-k2.5",
+		"name": "Kimi K2.5",
 		"api": "openai-completions",
 		"provider": "kimi-code",
 		"baseUrl": "https://api.kimi.com/coding/v1",
@@ -547,6 +571,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

@@ -95,6 +95,10 @@ const RPC_COMMAND_FIELDS: Readonly<Record<string, Readonly<Record<string, RpcFie
 	set_session_name: { name: "string" },
 	get_messages_page: { cursor: "string?", limit: "number?" },
 	login: { providerId: "string" },
+	get_logout_accounts: { providerId: "string" },
+	logout: { providerId: "string", credentialId: "number" },
+	navigate_tree: { entryId: "string", summarize: "boolean?", customInstructions: "string?" },
+	set_label: { entryId: "string", label: "string?" },
 };
 
 function rpcValueKind(value: unknown): string {

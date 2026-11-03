@@ -7,6 +7,7 @@ import { ToolAbortError, ToolError } from "./tool-errors";
 const PDF_IMAGE_MEMBER_RE = /^(.*\.pdf):(.*)$/i;
 const PDF_PAGE_MEMBER_RE = /^(?:p|page[-_]?)(\d+)(?:[-_].*)?\.png$/i;
 const PDF_RENDER_TIMEOUT_MS = 30_000;
+const PDF_VIEWPORT = { width: 874, height: 874, deviceScaleFactor: 1 };
 
 const PDF_SCREENSHOT_CODE = `
 let viewerFrame;
@@ -54,6 +55,15 @@ export interface PdfImageReadTarget {
 	member: string;
 
 	page: number;
+}
+
+export interface PdfPageReadOptions {
+	readPath: string;
+	absolutePdfPath: string;
+	page: number;
+	pdfFileSize: number;
+	suffixResolution?: { from: string; to: string };
+	signal?: AbortSignal;
 }
 
 export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | null {
@@ -113,11 +123,12 @@ export async function renderPdfPageScreenshot(
 		await untilAborted(renderSignal, () =>
 			acquireTab(tabName, acquiredBrowser, {
 				url: pdfUrl.href,
+				viewport: PDF_VIEWPORT,
 				waitUntil: "load",
 				timeoutMs: PDF_RENDER_TIMEOUT_MS,
 				deadlineStartMs: deadlineStart,
 				signal: renderSignal,
-				ownerSessionId: session.getSessionId?.() ?? undefined,
+				ownerSessionId: session.getEvalKernelOwnerId?.() ?? undefined,
 			}),
 		);
 		tabOpened = true;

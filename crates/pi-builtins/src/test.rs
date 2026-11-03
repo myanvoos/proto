@@ -5,7 +5,6 @@ use brush_core::{
 };
 use clap::Parser;
 
-
 #[derive(Parser)]
 #[clap(disable_help_flag = true, disable_version_flag = true)]
 pub(crate) struct TestCommand {
@@ -15,10 +14,6 @@ pub(crate) struct TestCommand {
 
 impl builtins::Command for TestCommand {
 	type Error = brush_core::Error;
-
-
-
-
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where

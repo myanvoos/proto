@@ -77,7 +77,7 @@ Mounted tools run as `protolens <tool> [flags]` inside `{{toolRefs.bash}}` (synt
 - Resolve prerequisites first; NEVER accept first plausible answer when another call reduces uncertainty. Parallelize independent calls.
 {{#has tools "fleet"}}- User says `parallel`/`parallelize` → MUST use `{{toolRefs.fleet}} --op spawn` workers; parallel ordinary tool calls insufficient.{{/has}}
 - Prefer relative `path`-like fields.
-{{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
+{{#if intentTracing}}- Most tools take `{{intentField}}`: {{#if intentGuidance}}{{intentGuidance}}{{else}}capitalized 2–6-word present-participle intent; no period.{{/if}}{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}

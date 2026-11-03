@@ -1,5 +1,3 @@
-
-
 use std::{
 	io::Write,
 	sync::{Arc, Mutex},
@@ -16,22 +14,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::host::{parse_duration, quote_arg};
 
-
 const EXIT_TIMEOUT_FAILURE: u8 = 125;
 
 const EXIT_TIMED_OUT: u8 = 124;
 
 const EXIT_KILLED: u8 = 137;
 
-
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 struct TimeoutArgs {
-
-
 	#[arg(short = 's', long = "signal", value_name = "SIGNAL")]
 	signal: Option<String>,
-
 
 	#[arg(short = 'k', long = "kill-after", value_name = "DURATION")]
 	kill_after: Option<String>,
@@ -39,14 +32,11 @@ struct TimeoutArgs {
 	#[arg(long)]
 	preserve_status: bool,
 
-
 	#[arg(long)]
 	foreground: bool,
 
 	#[arg(short = 'v', long)]
 	verbose: bool,
-
-
 
 	#[arg(required = true, allow_hyphen_values = true)]
 	duration: String,
@@ -54,9 +44,6 @@ struct TimeoutArgs {
 	#[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
 	command: Vec<String>,
 }
-
-
-
 
 pub(crate) struct TimeoutCommand {
 	argv: Vec<String>,
@@ -84,12 +71,6 @@ impl clap::CommandFactory for TimeoutCommand {
 
 impl clap::Parser for TimeoutCommand {}
 
-
-
-
-
-
-
 #[derive(Default)]
 struct SpawnRecorder(Mutex<Vec<(i32, Option<i32>)>>);
 
@@ -102,8 +83,6 @@ impl SpawnObserver for SpawnRecorder {
 }
 
 impl SpawnRecorder {
-
-
 	fn signal(&self, signal: TrapSignal, group: bool) -> bool {
 		let spawns = match self.0.lock() {
 			Ok(spawns) => spawns.clone(),
@@ -123,8 +102,6 @@ impl SpawnRecorder {
 	}
 }
 
-
-
 fn parse_signal(spec: &str) -> Option<TrapSignal> {
 	let parsed = if let Ok(number) = spec.trim().parse::<i32>() {
 		TrapSignal::try_from(number).ok()?
@@ -134,7 +111,6 @@ fn parse_signal(spec: &str) -> Option<TrapSignal> {
 
 	matches!(parsed, TrapSignal::Signal(_)).then_some(parsed)
 }
-
 
 fn signal_display(signal: TrapSignal) -> &'static str {
 	let name = signal.as_str();
@@ -161,8 +137,6 @@ impl builtins::Command for TimeoutCommand {
 		let args = match TimeoutArgs::try_parse_from(&self.argv) {
 			Ok(args) => args,
 			Err(err) => {
-
-
 				let rendered = err.to_string();
 				if err.use_stderr() {
 					let _ = write!(context.stderr(), "{rendered}");
@@ -173,19 +147,14 @@ impl builtins::Command for TimeoutCommand {
 			},
 		};
 		let Some(limit) = parse_duration(&args.duration) else {
-			let _ = writeln!(
-				context.stderr(),
-				"timeout: invalid time interval '{}'",
-				args.duration
-			);
+			let _ = writeln!(context.stderr(), "timeout: invalid time interval '{}'", args.duration);
 			return Ok(ExecutionResult::new(EXIT_TIMEOUT_FAILURE));
 		};
 		let kill_after = match &args.kill_after {
 			Some(spec) => match parse_duration(spec) {
 				Some(duration) => Some(duration),
 				None => {
-					let _ =
-						writeln!(context.stderr(), "timeout: invalid time interval '{spec}'");
+					let _ = writeln!(context.stderr(), "timeout: invalid time interval '{spec}'");
 					return Ok(ExecutionResult::new(EXIT_TIMEOUT_FAILURE));
 				},
 			},
@@ -206,14 +175,13 @@ impl builtins::Command for TimeoutCommand {
 		let spawns = Arc::new(SpawnRecorder::default());
 		let mut params = context.params.clone();
 
-
-
 		params.process_group_policy = if args.foreground {
 			ProcessGroupPolicy::SameProcessGroup
 		} else {
 			ProcessGroupPolicy::NewProcessGroup
 		};
 		params.set_cancel_token(child_cancel.clone());
+		params.set_quiet_cancellation(true);
 		params.set_spawn_observer(Arc::clone(&spawns) as Arc<dyn SpawnObserver>);
 
 		let mut command_line = String::new();
@@ -224,12 +192,12 @@ impl builtins::Command for TimeoutCommand {
 			command_line.push_str(&quote_arg(arg));
 		}
 
-
-
 		let mut stderr = context.stderr();
 		let outer_cancel = context.cancel_token();
 		let source_info = SourceInfo::from("pi-natives:timeout");
-		let run_future = context.shell.run_string(command_line, &source_info, &params);
+		let run_future = context
+			.shell
+			.run_string(command_line, &source_info, &params);
 		tokio::pin!(run_future);
 
 		let outer_cancelled = async {
@@ -239,7 +207,6 @@ impl builtins::Command for TimeoutCommand {
 			}
 		};
 		tokio::pin!(outer_cancelled);
-
 
 		let deadline = async {
 			if limit.is_zero() {
@@ -259,7 +226,6 @@ impl builtins::Command for TimeoutCommand {
 			() = &mut deadline => {},
 		}
 
-
 		if args.verbose {
 			let _ = writeln!(
 				stderr,
@@ -270,18 +236,9 @@ impl builtins::Command for TimeoutCommand {
 		}
 		let signalled = spawns.signal(signal, !args.foreground);
 		if !signalled {
-
-
-
 			child_cancel.cancel();
 		}
 		let mut killed = signal.as_str() == "SIGKILL";
-
-
-
-
-
-
 
 		let reap = |result: Result<ExecutionResult, brush_core::Error>| match result {
 			Ok(result) => Ok(Some(result)),
@@ -325,16 +282,10 @@ impl builtins::Command for TimeoutCommand {
 			},
 		};
 
-
-
 		if args.preserve_status {
 			if signalled {
 				return Ok(child_result.unwrap_or_else(|| ExecutionResult::new(EXIT_KILLED)));
 			}
-
-
-
-
 
 			let number = i32::try_from(signal).unwrap_or(15);
 			let code = if killed {
@@ -350,5 +301,3 @@ impl builtins::Command for TimeoutCommand {
 		Ok(ExecutionResult::new(EXIT_TIMED_OUT))
 	}
 }
-
-

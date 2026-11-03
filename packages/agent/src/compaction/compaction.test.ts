@@ -582,6 +582,52 @@ function nativeOpenAiModel(): Model {
 	} as Model;
 }
 
+test("native compaction falls back before an oversized kept tail without rewriting its tool output", async () => {
+	const requests: string[] = [];
+	const target = { ...nativeOpenAiModel(), contextWindow: 2000 };
+	const call: AssistantMessage = {
+		...RESPONSE,
+		api: "openai-responses",
+		provider: "openai",
+		model: target.id,
+		content: [{ type: "toolCall", id: "kept-call", name: "read", arguments: { path: "large.txt" } }],
+		stopReason: "toolUse",
+	};
+	const preparation: CompactionPreparation = {
+		firstKeptEntryId: "kept-call-entry",
+		lastSummarizedEntryId: "prefix-end",
+		messagesToSummarize: [user("Prior decision", 0)],
+		turnPrefixMessages: [],
+		recentMessages: [
+			call,
+			{
+				role: "toolResult",
+				toolCallId: "kept-call",
+				toolName: "read",
+				content: [{ type: "text", text: "retained-answer\n".repeat(6000) }],
+				isError: false,
+				timestamp: 1,
+			},
+		],
+		isSplitTurn: false,
+		tokensBefore: 0,
+		fileOps: createFileOps(),
+		settings: { ...DEFAULT_COMPACTION_SETTINGS, remoteStreamingV2Enabled: false },
+	};
+	const result = await compact(preparation, target, "test-key", undefined, undefined, {
+		fetch: async (_url, init) => {
+			requests.push(String(init?.body));
+			return new Response(JSON.stringify({ output: [{ type: "compaction", encrypted_content: "opaque" }] }), {
+				headers: { "content-type": "application/json" },
+			});
+		},
+	});
+	expect(result.providerReplayThroughEntryId).toBe("prefix-end");
+	expect(requests).toHaveLength(1);
+	expect(requests[0]).toContain("Prior decision");
+	expect(requests[0]).not.toContain("retained-answer");
+});
+
 describe("entering native replay from a local summary", () => {
 	test("the first native request carries the local summary once and later requests replay only native history", async () => {
 		const requests: string[] = [];

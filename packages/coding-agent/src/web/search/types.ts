@@ -42,6 +42,7 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		description: "Uses Firecrawl API when FIRECRAWL_API_KEY is set; falls back to keyless mode",
 	},
 	{ value: "brave", label: "Brave", description: "Requires BRAVE_API_KEY" },
+	{ value: "deepseek", label: "DeepSeek", description: "Requires DEEPSEEK_API_KEY" },
 	{
 		value: "kimi",
 		label: "Kimi",

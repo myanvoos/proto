@@ -73,6 +73,7 @@ test("the forced final reminder ends the run at the first accepted section", asy
 	const session = {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		baseSystemPrompt: ["test"],
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -108,6 +109,7 @@ test("the forced final reminder ends the run at the first accepted section", asy
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},

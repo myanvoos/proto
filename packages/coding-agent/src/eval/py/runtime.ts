@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $env, $which, getPythonEnvDir } from "@oh-my-pi/pi-utils";
+import { $env, $whichAll, getPythonEnvDir } from "@oh-my-pi/pi-utils";
 
 const DEFAULT_ENV_ALLOWLIST = new Set([
 	"PATH",
@@ -182,8 +182,10 @@ export function enumeratePythonRuntimes(cwd: string, baseEnv: Record<string, str
 		});
 	}
 
-	const systemPath = $which("python") ?? $which("python3");
-	if (systemPath) {
+	for (const systemPath of [
+		...$whichAll("python", { PATH: baseEnv.PATH, cwd }),
+		...$whichAll("python3", { PATH: baseEnv.PATH, cwd }),
+	]) {
 		push({ pythonPath: systemPath, env: { ...baseEnv } });
 	}
 

@@ -21,6 +21,7 @@
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -94,6 +95,7 @@
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -177,6 +179,7 @@
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -260,6 +263,7 @@
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -333,6 +337,7 @@
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -386,7 +391,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "kimi-k2.5",
+		"name": "Kimi K2.5",
 		"api": "openai-completions",
 		"provider": "moonshot",
 		"baseUrl": "https://api.moonshot.ai/v1",
@@ -417,6 +422,7 @@
 		"int": 23.5,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -487,8 +493,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 27,
-		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -503,6 +507,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -574,8 +579,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 25.8,
-		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -590,6 +593,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -674,6 +678,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -740,12 +745,11 @@
 			"input": 3,
 			"output": 15,
 			"cacheRead": 0.3,
-			"cacheWrite": 0
+			"cacheWrite": 3
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 1048576,
-		"int": 43.6,
-		"tps": 35.6,
+		"maxTokens": 131072,
+		"int": 17.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -764,6 +768,196 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": true,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"toolSchemaFlavor": "moonshot-mfjs",
+			"streamIdleTimeoutMs": 300000,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "kimi",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"kimi-k3.1-pro": {
+		"id": "kimi-k3.1-pro",
+		"name": "Kimi K3.1 Pro",
+		"api": "openai-completions",
+		"provider": "moonshot",
+		"baseUrl": "https://api.moonshot.ai/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"int": 46,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": true,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"toolSchemaFlavor": "moonshot-mfjs",
+			"streamIdleTimeoutMs": 300000,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "kimi",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"kimi-k3.1-pro-highspeed": {
+		"id": "kimi-k3.1-pro-highspeed",
+		"name": "Kimi K3.1 Pro Highspeed",
+		"api": "openai-completions",
+		"provider": "moonshot",
+		"baseUrl": "https://api.moonshot.ai/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 4
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -842,6 +1036,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -916,6 +1111,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -989,6 +1185,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1063,6 +1260,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1136,6 +1334,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1210,6 +1409,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1283,6 +1483,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

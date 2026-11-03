@@ -4,6 +4,7 @@ import {
 	normalizeAnthropicBaseUrl,
 	resolveAnthropicCustomHeadersForBaseUrl,
 } from "../providers/anthropic";
+import { mergeHeaders } from "../providers/inference-headers";
 import { isFoundryEnabled } from "./foundry";
 
 export interface AnthropicAuthConfig {
@@ -32,22 +33,39 @@ export function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
 
-export function buildAnthropicAuthConfig(apiKey: string, baseUrl?: string): AnthropicAuthConfig {
+export interface AnthropicAuthOptions {
+	isOAuth?: boolean;
+}
+
+export function buildAnthropicAuthConfig(
+	apiKey: string,
+	baseUrl?: string,
+	options: AnthropicAuthOptions = {},
+): AnthropicAuthConfig {
 	return {
 		apiKey,
 		baseUrl: normalizeBaseUrl(baseUrl) ?? resolveAnthropicBaseUrlFromEnv() ?? DEFAULT_BASE_URL,
-		isOAuth: isOAuthToken(apiKey),
+		isOAuth: options.isOAuth ?? isOAuthToken(apiKey),
 	};
 }
 
-export function buildAnthropicSearchHeaders(auth: AnthropicAuthConfig): Record<string, string> {
+export interface AnthropicSearchHeaderOptions {
+	modelHeaders?: Record<string, string>;
+	allowAnthropicHeaderOverrides?: boolean;
+}
+
+export function buildAnthropicSearchHeaders(
+	auth: AnthropicAuthConfig,
+	options: AnthropicSearchHeaderOptions = {},
+): Record<string, string> {
 	return buildProviderAnthropicHeaders({
 		apiKey: auth.apiKey,
 		baseUrl: auth.baseUrl,
 		isOAuth: auth.isOAuth,
 		extraBetas: ["web-search-2025-03-05"],
 		stream: false,
-		modelHeaders: resolveAnthropicCustomHeadersForBaseUrl(auth.baseUrl),
+		modelHeaders: mergeHeaders(options.modelHeaders, resolveAnthropicCustomHeadersForBaseUrl(auth.baseUrl)),
+		allowAnthropicHeaderOverrides: options.allowAnthropicHeaderOverrides,
 	});
 }
 

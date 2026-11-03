@@ -1,10 +1,8 @@
 use brush_core::{ExecutionControlFlow, ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct ExitCommand {
-
 	#[arg(allow_hyphen_values = true)]
 	code: Option<i64>,
 }

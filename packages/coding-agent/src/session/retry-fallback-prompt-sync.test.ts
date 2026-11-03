@@ -1,6 +1,6 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, vi } from "bun:test";
 import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -8,6 +8,7 @@ import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
+import { convertToLlm } from "./messages";
 import { SessionManager } from "./session-manager";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 
@@ -15,15 +16,16 @@ let session: AgentSession | undefined;
 let authStorage: AuthStorage | undefined;
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await session?.dispose();
 	session = undefined;
 	authStorage?.close();
 	authStorage = undefined;
 });
 
-// Retry fallbacks swap the model without going through setModel(), so model-dependent
-// base-prompt policy stayed pinned to the chain-head model for the rest of the session.
-it("re-syncs the model-dependent base prompt after a retry-fallback swap", async () => {
+// Automatic retries retain their primary request's cache prefix; explicit model
+// selection, rather than recovery, owns a new model-dependent base prefix.
+it("preserves the primary request's cache prefix after an automatic retry-fallback swap", async () => {
 	const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 	const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 	if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
@@ -32,10 +34,12 @@ it("re-syncs the model-dependent base prompt after a retry-fallback swap", async
 	authStorage.setRuntimeApiKey("openai", "openai-test-key");
 
 	const mock = createMockModel();
+	const requestPrompts: string[][] = [];
 	const agent = new Agent({
 		getApiKey: model => `${model.provider}-test-key`,
 		initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
 		streamFn: (model, context, options) => {
+			requestPrompts.push([...(context.systemPrompt ?? [])]);
 			if (model.provider === primaryModel.provider) {
 				mock.push({ throw: "overloaded_error: provider returned error 503" });
 			} else {
@@ -68,7 +72,7 @@ it("re-syncs the model-dependent base prompt after a retry-fallback swap", async
 	await session.waitForIdle();
 
 	expect(session.model?.id).toBe(fallbackModel.id);
-	expect(session.agent.state.systemPrompt).toEqual([`model:${fallbackModel.id}`]);
+	expect(requestPrompts).toEqual([[`model:${primaryModel.id}`], [`model:${primaryModel.id}`]]);
 	expect(session.servingModel?.contextWindow).toBe(fallbackModel.contextWindow);
 });
 
@@ -181,49 +185,184 @@ it.each([
 	expect(session.getLastAssistantMessage()?.stopReason).toBe("stop");
 });
 
-it("continues a Cursor stream missing turnEnded only after all tool calls have results", async () => {
-	const model = createMockModel();
-	const message: AssistantMessage = {
-		role: "assistant",
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "file" } }],
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "error",
-		errorMessage: "Cursor stream ended before turnEnded",
-		errorId: AIError.create(AIError.Flag.Transient),
-		timestamp: 1,
-	};
-	const agent = new Agent({ initialState: { model, messages: [message] } });
+it.each([1, 5])(
+	"continues committed Codex steering rejections without replay, bounded across %s rejected turns",
+	async rejections => {
+		const bundled = getBundledModel("openai", "gpt-4o-mini");
+		if (!bundled) throw new Error("Missing fixture model");
+		const primary: Model = { ...bundled, api: "openai-codex-responses", provider: "openai-codex" };
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey(primary.provider, "test-key");
+		const requests: string[][] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+			convertToLlm,
+			streamFn: (_model, context) => {
+				requests.push(context.messages.map(message => message.role));
+				const failed = requests.length <= rejections;
+				const text = failed ? `committed text ${requests.length}` : "continued after steer";
+				const message: AssistantMessage = {
+					role: "assistant",
+					api: primary.api,
+					provider: primary.provider,
+					model: primary.id,
+					content: [{ type: "text", text }],
+					stopReason: failed ? "error" : "stop",
+					timestamp: Date.now(),
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					...(failed ? { errorMessage: "Codex rejection code=unsupported_native_inflight_message" } : {}),
+				};
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: message });
+					stream.push({ type: "text_start", contentIndex: 0, partial: message });
+					stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+					stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+					if (failed) stream.push({ type: "error", reason: "error", error: message });
+					else stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			},
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"retry.modelFallback": false,
+				"retry.baseDelayMs": 1,
+			}),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		await session.prompt("continue without repeating rendered output");
+		await session.waitForIdle();
+		expect(requests[1]).toEqual(["user", "assistant", "developer"]);
+		expect(requests).toHaveLength(rejections === 1 ? 2 : 4);
+		expect(session.getLastAssistantMessage()?.stopReason).toBe(rejections === 1 ? "stop" : "error");
+	},
+);
+
+it.each(["Cursor stream ended before turnEnded", "Anthropic stream envelope error: stream ended before message_stop"])(
+	"continues %s only after all tool calls have results",
+	async errorMessage => {
+		const model = createMockModel();
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "file" } }],
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			errorId: AIError.create(AIError.Flag.Transient),
+			timestamp: 1,
+		};
+		const agent = new Agent({ initialState: { model, messages: [message] } });
+		authStorage = await AuthStorage.create(":memory:");
+		const host = {
+			agent,
+			settings: Settings.isolated({}),
+			modelRegistry: new ModelRegistry(authStorage),
+			configWarnings: [],
+			model: () => model,
+			abortInProgress: () => false,
+			isDisposed: () => false,
+			deadlineExceeded: () => false,
+			toolCallLoopStopped: () => false,
+		} as unknown as TurnRecoveryHost;
+		const recovery = new TurnRecovery(host);
+		expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
+		agent.appendMessage({
+			role: "toolResult",
+			toolName: "read",
+			toolCallId: "read-1",
+			content: [{ type: "text", text: "file contents" }],
+			isError: false,
+			timestamp: 2,
+		});
+		expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBe("stream-stall");
+	},
+);
+
+it("stops rotating primary credentials after every stored account has been tried", async () => {
+	const primary = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!primary) throw new Error("Missing fixture model");
 	authStorage = await AuthStorage.create(":memory:");
-	const host = {
-		agent,
-		settings: Settings.isolated({}),
-		modelRegistry: new ModelRegistry(authStorage),
-		configWarnings: [],
-		model: () => model,
-		abortInProgress: () => false,
-		isDisposed: () => false,
-		deadlineExceeded: () => false,
-		toolCallLoopStopped: () => false,
-	} as unknown as TurnRecoveryHost;
-	const recovery = new TurnRecovery(host);
-	expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
-	agent.appendMessage({
-		role: "toolResult",
-		toolName: "read",
-		toolCallId: "read-1",
-		content: [{ type: "text", text: "file contents" }],
-		isError: false,
-		timestamp: 2,
+	await authStorage.set(
+		primary.provider,
+		["first", "second"].map(accountId => ({
+			type: "oauth" as const,
+			access: accountId,
+			refresh: accountId,
+			accountId,
+			expires: Date.now() + 3_600_000,
+		})),
+	);
+	authStorage.setRuntimeApiKey(primary.provider, "test-key");
+	const rotate = vi.spyOn(authStorage, "rotateSessionCredential").mockResolvedValue(true);
+	let requests = 0;
+	const agent = new Agent({
+		getApiKey: () => "test-key",
+		initialState: { model: primary, messages: [], tools: [] },
+		streamFn: () => {
+			requests++;
+			const stream = createAssistantMessageEventStream();
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: primary.api,
+				provider: primary.provider,
+				model: primary.id,
+				content: [],
+				stopReason: "error",
+				errorStatus: 403,
+				errorMessage: "403 oauth_not_allowed_for_organization",
+				timestamp: Date.now(),
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			};
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "error", reason: "error", error: message });
+			});
+			return stream;
+		},
 	});
-	expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBe("stream-stall");
+	session = new AgentSession({
+		agent,
+		sessionManager: SessionManager.inMemory(),
+		settings: Settings.isolated({
+			"compaction.enabled": false,
+			"retry.modelFallback": false,
+			"retry.maxRetries": 0,
+			"retry.baseDelayMs": 1,
+		}),
+		modelRegistry: new ModelRegistry(authStorage),
+	});
+	await session.prompt("use an account eligible for this model");
+	await session.waitForIdle();
+	expect(requests).toBe(2);
+	expect(rotate).toHaveBeenCalledTimes(1);
+	expect(session.getLastAssistantMessage()?.stopReason).toBe("error");
 });

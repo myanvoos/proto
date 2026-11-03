@@ -9,6 +9,7 @@ type OpenAICompatibleValidationOptions = {
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
 	tolerateModelDenied?: boolean;
+	maxTokensField?: "max_tokens" | "max_completion_tokens";
 };
 type AnthropicCompatibleValidationOptions = {
 	provider: string;
@@ -89,7 +90,7 @@ export async function validateOpenAICompatibleApiKey(options: OpenAICompatibleVa
 		body: JSON.stringify({
 			model: options.model,
 			messages: [{ role: "user", content: "ping" }],
-			max_tokens: 1,
+			[options.maxTokensField ?? "max_tokens"]: 1,
 			temperature: 0,
 		}),
 		signal,

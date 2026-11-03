@@ -17,8 +17,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 18.6,
-		"tps": 97.6,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -37,6 +35,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -56,6 +56,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -78,8 +79,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 20.9,
-		"tps": 102.8,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -98,6 +97,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -117,6 +118,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -139,8 +141,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.8,
-		"tps": 103.6,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -159,6 +159,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -178,6 +180,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -195,7 +198,7 @@
 		"cost": {
 			"input": 0.6,
 			"output": 2.4,
-			"cacheRead": 0.06,
+			"cacheRead": 0.03,
 			"cacheWrite": 0.375
 		},
 		"contextWindow": 204800,
@@ -218,6 +221,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -237,6 +242,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -276,6 +282,8 @@
 		},
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -295,6 +303,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		},
@@ -318,8 +327,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.8,
-		"tps": 57.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -338,6 +345,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -357,6 +366,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -397,6 +407,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -416,6 +428,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}
@@ -435,12 +448,18 @@
 			"input": 0.3,
 			"output": 1.2,
 			"cacheRead": 0.06,
-			"cacheWrite": 0
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 512000,
+				"input": 0.6,
+				"output": 2.4,
+				"cacheRead": 0.12,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 29.2,
-		"tps": 87.6,
+		"int": 18.7,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -458,6 +477,8 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -477,6 +498,75 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"MiniMax-M3.1-Flash": {
+		"id": "MiniMax-M3.1-Flash",
+		"name": "MiniMax-M3.1-Flash",
+		"api": "anthropic-messages",
+		"provider": "minimax",
+		"baseUrl": "https://api.minimax.io/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.015,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 524288,
+		"int": 28.9,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"requiresEffort": true,
+			"effortMap": {
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": false
 		}

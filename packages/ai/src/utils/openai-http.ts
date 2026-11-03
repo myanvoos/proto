@@ -33,6 +33,7 @@ export interface OpenAIStreamRequestInit {
 	shouldRetryResponse?: (response: Response, bodyText: string) => boolean | Promise<boolean>;
 
 	onSseEvent?: SseEventObserver;
+	maxAttempts?: number;
 }
 
 export interface OpenAIStreamHandle<TEvent> {
@@ -43,20 +44,25 @@ export interface OpenAIStreamHandle<TEvent> {
 }
 
 export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): Promise<OpenAIStreamHandle<TEvent>> {
-	const response = await fetchWithRetry(init.url, {
-		method: "POST",
-		headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...init.headers },
-		body: JSON.stringify(init.body),
-		signal: init.signal,
-		fetch: init.fetch,
-		maxAttempts: DEFAULT_MAX_ATTEMPTS,
+	let response: Response;
+	try {
+		response = await fetchWithRetry(init.url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...init.headers },
+			body: JSON.stringify(init.body),
+			signal: init.signal,
+			fetch: init.fetch,
+			maxAttempts: init.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
 
-		shouldRetryResponse: async (response, bodyText) =>
-			!isConcurrencyAdmissionRejection(response, bodyText) &&
-			(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
+			shouldRetryResponse: async (response, bodyText) =>
+				!isConcurrencyAdmissionRejection(response, bodyText) &&
+				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 
-		timeout: false,
-	});
+			timeout: false,
+		});
+	} catch (error) {
+		throw AIError.networkFailureError(error, init.url);
+	}
 	if (!response.ok) {
 		throw await captureOpenAIHttpError(response);
 	}

@@ -30,7 +30,7 @@ import {
 	formatAdvisorBatchContent,
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
-	isInterruptingSeverity,
+	meetsAdvisorSeverity,
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
@@ -124,6 +124,7 @@ interface SessionAdvisorsOptions {
 	configWarnings?: string[];
 	streamFn?: StreamFn;
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+	createAdvisorTransformProviderContext?: () => (context: Context, model: Model) => Context | Promise<Context>;
 
 	initialCosts?: ReadonlyMap<string, number>;
 }
@@ -189,6 +190,7 @@ export interface SessionAdvisorsHost {
 		phase: CodexCompactionContext["phase"];
 	}): CodexCompactionContext;
 	sessionId(): string;
+	agentKind?(): "main" | "sub";
 }
 
 export class SessionAdvisors {
@@ -202,6 +204,7 @@ export class SessionAdvisors {
 	#advisorContextPrompt: string | undefined;
 	#advisorStreamFn: StreamFn | undefined;
 	#transformProviderContext: ((context: Context, model: Model) => Context | Promise<Context>) | undefined;
+	#createAdvisorTransformProviderContext: SessionAdvisorsOptions["createAdvisorTransformProviderContext"];
 	#advisors: ActiveAdvisor[] = [];
 	#advisorConfigs: AdvisorConfig[] | undefined;
 	#advisorConfigWarnings: string[];
@@ -233,6 +236,7 @@ export class SessionAdvisors {
 		this.#advisorConfigWarnings = options.configWarnings ?? [];
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
+		this.#createAdvisorTransformProviderContext = options.createAdvisorTransformProviderContext;
 		if (options.initialCosts) this.#advisorCosts = new Map(options.initialCosts);
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 	}
@@ -343,8 +347,8 @@ export class SessionAdvisors {
 		for (const advisor of this.#advisors) this.#refreshAdvisorProviderIdentity(advisor);
 	}
 
-	resetAllRuntimes(reason?: string): void {
-		this.#resetAllAdvisorRuntimes(reason);
+	resetAllRuntimes(reason?: string, options?: { compacted?: boolean }): void {
+		this.#resetAllAdvisorRuntimes(reason, options);
 	}
 
 	rebaseDeliveredPrefixes(reason: string): void {
@@ -455,7 +459,13 @@ export class SessionAdvisors {
 		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
 		const descriptors: AdvisorRuntimeDescriptor[] = [];
 		const usedSlugs = new Set<string>();
+		const sessionKind = this.#host.agentKind?.() ?? "main";
 		for (const config of roster) {
+			if (
+				(config.scope === "main" && sessionKind !== "main") ||
+				(config.scope === "subagent" && sessionKind !== "sub")
+			)
+				continue;
 			let slug = legacy ? "" : slugifyAdvisorName(config.name);
 			if (slug) {
 				let candidate = slug;
@@ -522,9 +532,16 @@ export class SessionAdvisors {
 	#advisorRuntimeSignature(config: AdvisorConfig, slug: string, model: Model, thinkingLevel: ThinkingLevel): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
-		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions].join(
-			"\u001f",
-		);
+		return [
+			config.name,
+			slug,
+			formatModelStringWithRouting(model),
+			thinkingLevel,
+			tools,
+			instructions,
+			config.scope ?? "all",
+			config.includeReasoning !== false,
+		].join("\u001f");
 	}
 
 	#advisorRuntimeMatchesCurrentConfig(): boolean {
@@ -599,7 +616,7 @@ export class SessionAdvisors {
 				providerSessionIds: this.#advisorProviderSessionIds,
 				resolveProviderSessionId: getOrCreateAdvisorProviderSessionId,
 				streamFn: this.#advisorStreamFn,
-				transformProviderContext: this.#transformProviderContext,
+				transformProviderContext: this.#createAdvisorTransformProviderContext?.() ?? this.#transformProviderContext,
 				serviceTierResolver: advisorServiceTierResolver,
 
 				recorderClosed: this.#advisorRecorderClosed,
@@ -609,6 +626,7 @@ export class SessionAdvisors {
 						snapshotMessages: () => this.#host.agent.state.messages,
 						maintainContext: (incoming, signal) => advisorRef.instance.maintainContext(incoming, signal),
 						obfuscator: this.#host.obfuscator,
+						includeReasoning: descriptor.config.includeReasoning,
 						getModelIdentity: () => formatModelString(advisorRef.instance.agent.state.model),
 						beginAdvisorUpdate: inProgress => {
 							advisorRef.instance.recorder.beginTurn();
@@ -631,7 +649,10 @@ export class SessionAdvisors {
 								role: fallback.role,
 							});
 						},
-						onTurnAbandoned: () => advisorRef.instance.recorder.abandonTurn(),
+						onTurnAbandoned: () => {
+							advisorRef.instance.recorder.abandonTurn();
+							advisorRef.instance.noteTurnAbandoned();
+						},
 						notifyFailure: error => {
 							this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
 							const message = error instanceof Error ? error.message : String(error);
@@ -696,20 +717,22 @@ export class SessionAdvisors {
 
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
 		const source = advisor.slug ? advisor.name : undefined;
-		const interrupting = isInterruptingSeverity(severity);
+		const continueSeverity = this.#host.settings.get("advisor.continueSeverity");
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
 		// The terminal turn's loop is unwinding: a steer would sit unconsumed until the next run.
-		const terminalUnwindPreserve = this.#terminalUnwindActive && severity !== "blocker" && terminalAnswerNoQueuedWork;
+		const terminalUnwind = this.#terminalUnwindActive && terminalAnswerNoQueuedWork;
+		const terminalUnwindPreserve = terminalUnwind && !meetsAdvisorSeverity(severity, continueSeverity);
 		const channel = resolveAdvisorDeliveryChannel({
 			severity,
+			continueSeverity,
 			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
 			preserveOnly: this.#preserveAdvisorAdvice || terminalUnwindPreserve,
 
 			// A terminal yield aborts the loop, so a steer queued during its unwind would never be consumed.
-			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice && !terminalUnwindPreserve,
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice && !terminalUnwind,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork,
-			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
+			interruptImmuneTurnActive: this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		if (channel === "aside") {
 			this.#host.yieldQueue.enqueue("advisor", { note, severity, advisor: source });
@@ -757,8 +780,8 @@ export class SessionAdvisors {
 			.catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
 	}
 
-	#resetAllAdvisorRuntimes(reason?: string): void {
-		for (const a of this.#advisors) a.instance.resetRuntime(reason);
+	#resetAllAdvisorRuntimes(reason?: string, options?: { compacted?: boolean }): void {
+		for (const a of this.#advisors) a.instance.resetRuntime(reason, options);
 	}
 
 	#stopAdvisorRuntime(): void {
@@ -810,6 +833,7 @@ export class SessionAdvisors {
 
 	/** Restore normal advisor routing when a kept-alive subagent starts new work after its yield. */
 	onPrimaryTurnStart(): void {
+		this.#terminalUnwindActive = false;
 		if (!this.#preserveTerminalYieldAdvice) return;
 		this.#preserveTerminalYieldAdvice = false;
 		this.#preserveAdvisorAdvice = false;

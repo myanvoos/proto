@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { buildSkillPromptMessage, getSkillSlashCommandName, parseSkillInvocation } from "../extensibility/skills";
 import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../session/messages";
@@ -24,6 +25,7 @@ type SkillPromptOptions = {
 interface InvokeSkillCommandOptions {
 	propagateErrors?: boolean;
 	queueOnly?: boolean;
+	onPromptQueued?: (queued: readonly AgentMessage[]) => void;
 	images?: ImageContent[];
 }
 
@@ -74,7 +76,9 @@ export async function invokeSkillCommandFromText(
 	try {
 		const built = await buildSkillCommandPrompt(ctx, text, streamingBehavior, options?.images);
 		if (!built) return false;
-		const promptOptions = options?.queueOnly ? { ...built.options, queueOnly: true } : built.options;
+		const promptOptions = options?.queueOnly
+			? { ...built.options, queueOnly: true, onPromptQueued: options.onPromptQueued }
+			: built.options;
 		await ctx.session.promptCustomMessage(built.message, promptOptions);
 		return true;
 	} catch (err) {

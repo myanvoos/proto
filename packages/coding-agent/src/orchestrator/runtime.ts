@@ -2213,6 +2213,10 @@ export class OrchestratorRuntime {
 			modelOverride: record.modelOverride,
 			modelRole: record.modelRole,
 			parentActiveModelPattern: record.modelRequested ? undefined : session.getActiveModelString?.(),
+			modelRequested: record.modelRequested,
+			parentPromptCacheKey: session.getPromptCacheKey?.(),
+			asyncJobManager: session.asyncJobManager,
+			noContextFiles: session.noContextFiles,
 			thinkingLevel: agent.thinkingLevel,
 			effort: record.effort,
 			outputSchema: record.outputSchema,
@@ -2268,6 +2272,11 @@ export class OrchestratorRuntime {
 		return (progress: AgentProgress): void => {
 			if (record.state === "dead" || record.terminal) return;
 			mergeTrace(turn, progress);
+			const manager = this.#toolSessionByScope.get(scopeKey(record, ""))?.asyncJobManager;
+			const job = manager?.getJob(turn.jobId);
+			if (job?.status === "running" && job.ownerId === record.jobOwnerId && record.turn === turn) {
+				job.latestDetails = { ...job.latestDetails, progress: [progress] };
+			}
 			record.resolvedModel = progress.resolvedModel ?? record.resolvedModel;
 
 			record.live = {
@@ -2352,9 +2361,14 @@ export class OrchestratorRuntime {
 			return undefined;
 		}
 		const { promise, resolve } = Promise.withResolvers<ExternalTurnOutcome>();
+		const externalAbort = new AbortController();
 		let onProgress: ((progress: AgentProgress) => void) | undefined;
 		try {
-			this.#registerTurnJob(session, this.#manager(session), record, task, { first: false, external: promise });
+			this.#registerTurnJob(session, this.#manager(session), record, task, {
+				first: false,
+				external: promise,
+				externalAbort,
+			});
 			this.#pendingWakeScopes.add(scopeKey(scope, ""));
 			const turn = record.turn;
 			if (turn) onProgress = this.#turnProgressHandler(record, turn);
@@ -2374,6 +2388,7 @@ export class OrchestratorRuntime {
 			this.#retireScopeIfUnused(wakeScopeKey);
 		};
 		return {
+			signal: externalAbort.signal,
 			progress: progress => onProgress?.(progress),
 			settle: result => {
 				finishWake();
@@ -2395,6 +2410,7 @@ export class OrchestratorRuntime {
 			first: boolean;
 			admission?: AsyncJobAdmission;
 			external?: Promise<ExternalTurnOutcome>;
+			externalAbort?: AbortController;
 			/** Registers the job now but keeps it behind the active turn until `#finishTurn` starts it. */
 			queuedTurn?: number;
 		},
@@ -2450,9 +2466,17 @@ export class OrchestratorRuntime {
 						if (record.childSessionFile && !turnStartedPersisted) {
 							throw new ToolError(`Worker "${record.id}" changed parent scope before its turn started.`);
 						}
-						const result = options.external
-							? await this.#awaitExternalTurn(options.external, signal)
-							: await this.#runOwnTurn(session, record, message, signal, onProgress, options.first);
+						const forwardAbort = (): void => options.externalAbort?.abort(signal.reason);
+						if (signal.aborted) forwardAbort();
+						signal.addEventListener("abort", forwardAbort, { once: true });
+						let result: SingleResult;
+						try {
+							result = options.external
+								? await this.#awaitExternalTurn(options.external, signal)
+								: await this.#runOwnTurn(session, record, message, signal, onProgress, options.first);
+						} finally {
+							signal.removeEventListener("abort", forwardAbort);
+						}
 						return await this.#settleTurn(session, record, turn, ownJobId, turnIndex, result);
 					} catch (error) {
 						if (error instanceof WorkerTurnError) throw error;

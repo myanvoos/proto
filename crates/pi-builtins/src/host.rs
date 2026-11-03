@@ -1,29 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #![allow(dead_code, reason = "consumed by the feature-gated utility modules")]
 
 use std::{
@@ -34,14 +8,12 @@ use std::{
 	marker::PhantomData,
 	panic::{AssertUnwindSafe, catch_unwind},
 	path::{Path, PathBuf},
-	time::Duration,
 	sync::{
 		Arc, LazyLock,
 		atomic::{AtomicBool, Ordering},
 	},
+	time::Duration,
 };
-
-use parking_lot::Mutex;
 
 use brush_core::{
 	Error, ExecutionContext, ExecutionResult, ShellExtensions,
@@ -50,59 +22,31 @@ use brush_core::{
 	heldfiles::HeldFiles,
 	openfiles::{self, OpenFile, OpenFiles},
 };
-
-
-
-
-
+use parking_lot::Mutex;
 
 pub(crate) trait Utility: clap::Parser + Send + Sync + 'static {
-
 	const NAME: &'static str;
 
-
-
 	const USAGE_ERROR: u8 = 1;
-
-
-
-
-
-
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
 		Ok(argv)
 	}
 
-
-
-
-
-
 	fn run(self, host: &mut Host) -> i32;
 }
-
-
-
-
-
-
 
 pub(crate) struct Host {
 	pub command_observation: Option<brush_core::CommandObservation>,
 
-
-	pub stdin:  Stdin,
-
+	pub stdin: Stdin,
 
 	pub stdout: OpenFile,
 
-
-
-
-
-	pub stderr: StreamWriter,
+	pub stderr:      StreamWriter,
 	stdout_identity: Option<(u64, u64)>,
+	stdout_is_file:  bool,
+	umask:           u32,
 
 	name:                  String,
 	cwd:                   PathBuf,
@@ -114,15 +58,17 @@ pub(crate) struct Host {
 	observations:          FsObservationLog,
 	held_files:            LazyLock<HeldFiles>,
 
-	merged_out: Option<Arc<Mutex<StreamWriter>>>,
-	sigpipe:    Arc<Sigpipe>,
+	merged_out:     Option<Arc<Mutex<StreamWriter>>>,
+	sigpipe:        Arc<Sigpipe>,
+	reported_error: Option<Arc<AtomicBool>>,
 }
 
-const SIGPIPE_EXIT_CODE: i32 = 141;
+pub(crate) const SIGPIPE_EXIT_CODE: i32 = 141;
 
 #[derive(Default)]
 struct Sigpipe {
-	hit: AtomicBool,
+	hit:    AtomicBool,
+	cancel: Arc<AtomicBool>,
 }
 
 impl Sigpipe {
@@ -163,17 +109,26 @@ impl Read for SigpipeGuard {
 
 impl Write for SigpipeGuard {
 	fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+		if self.sigpipe.cancel.load(Ordering::Relaxed) {
+			return Ok(buf.len());
+		}
 		if matches!(self.stream, GuardedStream::Stderr) && self.sigpipe.is_hit() {
 			return Ok(buf.len());
 		}
-		self.inner.write(buf).inspect_err(|error| self.sigpipe.record(error))
+		self
+			.inner
+			.write(buf)
+			.inspect_err(|error| self.sigpipe.record(error))
 	}
 
 	fn flush(&mut self) -> io::Result<()> {
 		if matches!(self.stream, GuardedStream::Stderr) && self.sigpipe.is_hit() {
 			return Ok(());
 		}
-		self.inner.flush().inspect_err(|error| self.sigpipe.record(error))
+		self
+			.inner
+			.flush()
+			.inspect_err(|error| self.sigpipe.record(error))
 	}
 }
 
@@ -205,7 +160,36 @@ impl Drop for CancelOnDrop {
 	}
 }
 
+#[cfg(unix)]
+pub(crate) fn process_umask() -> u32 {
+	use std::sync::LazyLock;
+
+	use nix::sys::stat::{Mode, umask};
+
+	#[allow(clippy::useless_conversion, reason = "`mode_t` is u16 on some targets")]
+	static TOGGLED: LazyLock<u32> = LazyLock::new(|| {
+		let mask = umask(Mode::empty());
+		umask(mask);
+		u32::from(mask.bits())
+	});
+	cfg_if::cfg_if! {
+		if #[cfg(any(target_os = "linux", target_os = "android"))] {
+			procfs::process::Process::myself()
+				.ok()
+				.and_then(|me| me.status().ok())
+				.and_then(|status| status.umask)
+				.unwrap_or_else(|| *TOGGLED)
+		} else {
+			*TOGGLED
+		}
+	}
+}
+
 impl Host {
+	pub const fn umask(&self) -> u32 {
+		self.umask
+	}
+
 	pub fn path_is_stdout(&self, path: &Path) -> bool {
 		#[cfg(unix)]
 		{
@@ -222,17 +206,14 @@ impl Host {
 		}
 	}
 
-
-
 	pub fn name(&self) -> &str {
 		&self.name
 	}
 
-
-	/// True once a write to guarded stdout/stderr failed with `BrokenPipe`: the consumer
-	/// on the other end of the pipe has exited. `SigpipeGuard` records this on every write,
-	/// so a long-running builtin can poll it and stop early the way `SIGPIPE` would kill a
-	/// real process.
+	/// True once a write to guarded stdout/stderr failed with `BrokenPipe`: the
+	/// consumer on the other end of the pipe has exited. `SigpipeGuard` records
+	/// this on every write, so a long-running builtin can poll it and stop
+	/// early the way `SIGPIPE` would kill a real process.
 	pub(crate) fn sigpipe_hit(&self) -> bool {
 		self.sigpipe.is_hit()
 	}
@@ -240,11 +221,6 @@ impl Host {
 	pub fn cwd(&self) -> &Path {
 		&self.cwd
 	}
-
-
-
-
-
 
 	pub fn resolve(&self, path: impl AsRef<Path>) -> PathBuf {
 		let normalized_path = brush_core::sys::fs::normalize_shell_path(path.as_ref());
@@ -274,8 +250,12 @@ impl Host {
 		self.observations.record_read(self.resolve(path));
 	}
 
-	/// Content writers use this before mutation; metadata-only writers use note_write.
-	pub fn prepare_write(&self, path: impl AsRef<Path>) -> io::Result<Option<brush_core::fsobserve::FsObservation>> {
+	/// Content writers use this before mutation; metadata-only writers use
+	/// note_write.
+	pub fn prepare_write(
+		&self,
+		path: impl AsRef<Path>,
+	) -> io::Result<Option<brush_core::fsobserve::FsObservation>> {
 		self.observations.prepare_write(&self.resolve(path))
 	}
 
@@ -283,7 +263,11 @@ impl Host {
 		self.observations.commit_write(observation);
 	}
 
-	pub fn open_write(&self, path: impl AsRef<Path>, options: &std::fs::OpenOptions) -> io::Result<std::fs::File> {
+	pub fn open_write(
+		&self,
+		path: impl AsRef<Path>,
+		options: &std::fs::OpenOptions,
+	) -> io::Result<std::fs::File> {
 		let resolved = self.resolve(path);
 		let observation = self.prepare_write(&resolved)?;
 		let file = brush_core::heldfiles::open(&resolved, options)?;
@@ -299,45 +283,33 @@ impl Host {
 		&self.observations
 	}
 
-
-
-
-
 	pub fn var(&self, key: &str) -> Option<&str> {
-		self.env
+		self
+			.env
 			.get(key)
 			.or_else(|| self.private_env.get(key))
 			.map(String::as_str)
 	}
 
-
-
 	pub fn env(&self) -> impl Iterator<Item = (&str, &str)> {
 		self.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))
 	}
-
-
-
-
 
 	pub fn is_cancelled(&self) -> bool {
 		self.cancel.load(Ordering::Relaxed)
 	}
 
-
+	pub fn reported_error_flag(&self) -> Option<Arc<AtomicBool>> {
+		self.reported_error.clone()
+	}
 
 	pub fn cancel_flag(&self) -> Arc<AtomicBool> {
 		Arc::clone(&self.cancel)
 	}
 
-
-
-
 	pub const fn stdin_is_search_input(&self) -> bool {
 		self.stdin_is_search_input
 	}
-
-
 
 	pub const fn fail(&mut self, code: i32) {
 		if code != 0 {
@@ -345,48 +317,46 @@ impl Host {
 		}
 	}
 
-
 	pub const fn exit_code(&self) -> i32 {
 		self.exit_code
 	}
-
 
 	pub fn error(&mut self, message: impl std::fmt::Display, code: i32) {
 		let _ = writeln!(self.stderr, "{}: {message}", self.name);
 		self.fail(code);
 	}
 
+	pub fn usage_error(&mut self, message: impl std::fmt::Display, code: i32) -> i32 {
+		let _ =
+			writeln!(self.stderr, "{0}: {message}\nTry '{0} --help' for more information.", self.name);
+		self.fail(code);
+		code
+	}
+
+	pub fn try_help(&mut self, code: i32) -> i32 {
+		let _ = writeln!(self.stderr, "Try '{} --help' for more information.", self.name);
+		self.fail(code);
+		code
+	}
 
 	pub fn stdout_clone(&self) -> OpenFile {
 		self.stdout.clone()
 	}
 
-
-
-
 	pub fn stderr_clone(&self) -> OpenFile {
 		self.stderr.dup_file()
 	}
 
-
-
-
-
-
-
-
+	pub const fn stdout_is_regular_file(&self) -> bool {
+		self.stdout_is_file
+	}
 
 	pub fn stdout_writer(&self) -> StreamWriter {
 		match &self.merged_out {
 			Some(shared) => StreamWriter::Shared(Arc::clone(shared)),
-			None => StreamWriter::new(self.stdout.clone()),
+			None => StreamWriter::new(self.stdout.clone(), self.stdout_is_file),
 		}
 	}
-
-
-
-
-
 
 	pub fn child_env(&self) -> ChildEnv {
 		ChildEnv {
@@ -401,17 +371,6 @@ impl Host {
 			stderr: self.stderr.dup_file(),
 		}
 	}
-
-
-
-
-
-
-
-
-
-
-
 
 	pub fn run_captured(
 		&mut self,
@@ -443,30 +402,10 @@ impl Host {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 pub(crate) enum StreamWriter {
-
 	Block(BufWriter<OpenFile>),
 
-
 	Line(LineWriter<OpenFile>),
-
-
-
 
 	Shared(Arc<Mutex<StreamWriter>>),
 }
@@ -475,24 +414,21 @@ impl StreamWriter {
 	const BLOCK_CAPACITY: usize = 64 * 1024;
 	const LINE_CAPACITY: usize = 16 * 1024;
 
-
-	pub fn new(file: OpenFile) -> Self {
-		if is_regular_file(&file) { Self::block(file) } else { Self::line(file) }
+	pub fn new(file: OpenFile, regular_file: bool) -> Self {
+		if regular_file {
+			Self::block(file)
+		} else {
+			Self::line(file)
+		}
 	}
-
 
 	pub fn line(file: OpenFile) -> Self {
 		Self::Line(LineWriter::with_capacity(Self::LINE_CAPACITY, file))
 	}
 
-
 	pub fn block(file: OpenFile) -> Self {
 		Self::Block(BufWriter::with_capacity(Self::BLOCK_CAPACITY, file))
 	}
-
-
-
-
 
 	pub fn dup_file(&self) -> OpenFile {
 		match self {
@@ -501,8 +437,6 @@ impl StreamWriter {
 			Self::Shared(shared) => shared.lock().dup_file(),
 		}
 	}
-
-
 
 	pub fn is_terminal(&self) -> bool {
 		match self {
@@ -537,14 +471,29 @@ impl Write for StreamWriter {
 			Self::Shared(shared) => shared.lock().write_vectored(bufs),
 		}
 	}
+
+	// `write_all` and `write_fmt` must reach the inner writer's own versions:
+	// the defaults loop over `write`, and `LineWriter::write` flushes a
+	// buffered prefix before writing the newline-terminated rest, so a line
+	// written in pieces (`cat -n`'s number, then the content) would cost two
+	// syscalls instead of one. Under one lock, a `Shared` line also stays
+	// whole against concurrent stderr writes.
+	fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+		match self {
+			Self::Block(w) => w.write_all(buf),
+			Self::Line(w) => w.write_all(buf),
+			Self::Shared(shared) => shared.lock().write_all(buf),
+		}
+	}
+
+	fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+		match self {
+			Self::Block(w) => w.write_fmt(args),
+			Self::Line(w) => w.write_fmt(args),
+			Self::Shared(shared) => shared.lock().write_fmt(args),
+		}
+	}
 }
-
-
-
-
-
-
-
 
 pub(crate) fn is_regular_file(file: &OpenFile) -> bool {
 	match file {
@@ -552,15 +501,6 @@ pub(crate) fn is_regular_file(file: &OpenFile) -> bool {
 		_ => false,
 	}
 }
-
-
-
-
-
-
-
-
-
 
 #[cfg(unix)]
 fn same_destination(a: &OpenFile, b: &OpenFile) -> bool {
@@ -585,18 +525,6 @@ fn same_destination(_a: &OpenFile, _b: &OpenFile) -> bool {
 	false
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Clone)]
 pub(crate) struct ChildEnv {
 	cwd:    PathBuf,
@@ -605,11 +533,6 @@ pub(crate) struct ChildEnv {
 }
 
 impl ChildEnv {
-
-
-
-
-
 	pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
 		let mut command = std::process::Command::new(program);
 		command
@@ -619,13 +542,6 @@ impl ChildEnv {
 			.stderr(std::process::Stdio::piped());
 		command
 	}
-
-
-
-
-
-
-
 
 	pub fn forward_stderr(
 		&self,
@@ -638,13 +554,6 @@ impl ChildEnv {
 	}
 }
 
-
-
-
-
-
-
-
 pub(crate) struct Stdin {
 	file:   OpenFile,
 	#[cfg_attr(not(unix), allow(dead_code, reason = "readiness polling is unix-only"))]
@@ -653,35 +562,43 @@ pub(crate) struct Stdin {
 }
 
 impl Stdin {
+	pub fn try_clone(&self) -> io::Result<Self> {
+		Ok(Self { file: self.file.clone(), fd: self.fd, cancel: Arc::clone(&self.cancel) })
+	}
 
+	pub fn is_cancelled(&self) -> bool {
+		self.cancel.load(Ordering::Relaxed)
+	}
 
 	pub const fn lock(&mut self) -> &mut Self {
 		self
 	}
 
-
-
 	pub const fn file(&self) -> &OpenFile {
 		&self.file
 	}
 
-	/// True when fd 0 carries bytes the invoked program is expected to read itself:
-	/// a pipe (`cmd | prog`), a redirected file (`prog < f`), or a socket. A
-	/// terminal or `/dev/null` carries nothing, so a builtin may take stdin's place.
+	/// True when fd 0 carries bytes the invoked program is expected to read
+	/// itself: a pipe (`cmd | prog`), a redirected file (`prog < f`), or a
+	/// socket. A terminal or `/dev/null` carries nothing, so a builtin may take
+	/// stdin's place.
 	#[cfg(unix)]
 	pub fn carries_program_input(&self) -> bool {
 		let Some(fd) = self.fd else {
 			return false;
 		};
 		let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
-		// SAFETY: `fd` is an open descriptor owned by this Stdin for the duration of the call.
+		// SAFETY: `fd` is an open descriptor owned by this Stdin for the duration of
+		// the call.
 		if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
 			return false;
 		}
 		// SAFETY: fstat returned 0, so the struct is initialized.
 		let status = unsafe { status.assume_init() };
 		let mode = u32::from(status.st_mode) & u32::from(libc::S_IFMT);
-		mode == u32::from(libc::S_IFIFO) || mode == u32::from(libc::S_IFREG) || mode == u32::from(libc::S_IFSOCK)
+		mode == u32::from(libc::S_IFIFO)
+			|| mode == u32::from(libc::S_IFREG)
+			|| mode == u32::from(libc::S_IFSOCK)
 	}
 
 	#[cfg(not(unix))]
@@ -690,31 +607,40 @@ impl Stdin {
 	}
 }
 
+#[cfg(unix)]
+pub(crate) fn fd_reads_can_block(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+	use std::os::fd::AsRawFd;
+	// Nonblocking descriptors must retain their immediate WouldBlock behavior.
+	let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+	!(flags >= 0 && flags & libc::O_NONBLOCK != 0) && brush_core::sys::poll::fd_reads_can_block(fd)
+}
+
+#[cfg(unix)]
+pub(crate) fn wait_readable(
+	fd: std::os::fd::BorrowedFd<'_>,
+	is_cancelled: &dyn Fn() -> bool,
+) -> io::Result<()> {
+	if !fd_reads_can_block(fd) {
+		return Ok(());
+	}
+	brush_core::sys::poll::wait_readable(fd, is_cancelled)
+}
+
 impl Read for Stdin {
 	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-		if self.cancel.load(Ordering::Relaxed) {
+		if buf.is_empty() {
 			return Ok(0);
 		}
+		if self.is_cancelled() {
+			return Err(io::Error::other("operation cancelled"));
+		}
 		#[cfg(unix)]
-		if let Some(fd) = self.fd {
-			loop {
-				if self.cancel.load(Ordering::Relaxed) {
-					return Ok(0);
+		if let Ok(fd) = self.file.try_borrow_as_fd() {
+			if let Err(error) = wait_readable(fd, &|| self.is_cancelled()) {
+				if self.is_cancelled() {
+					return Err(io::Error::other("operation cancelled"));
 				}
-				let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-
-
-				let ready = unsafe { libc::poll(&mut pfd, 1, 200) };
-				if ready < 0 {
-					let err = io::Error::last_os_error();
-					if err.kind() == io::ErrorKind::Interrupted {
-						continue;
-					}
-					return Err(err);
-				}
-				if ready > 0 {
-					break;
-				}
+				return Err(error);
 			}
 		}
 		self.file.read(buf)
@@ -730,11 +656,6 @@ thread_local! {
 	static PANIC_SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-
-
-
-
-
 #[must_use]
 pub fn panic_scope_active() -> bool {
 	PANIC_SCOPE_DEPTH.with(|depth| depth.get() > 0)
@@ -742,19 +663,21 @@ pub fn panic_scope_active() -> bool {
 
 static RAYON_GLOBAL_POOL_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
-
-
 pub fn set_rayon_global_pool_available(available: bool) {
 	RAYON_GLOBAL_POOL_AVAILABLE.store(available, Ordering::SeqCst);
 }
-
 
 #[must_use]
 pub fn rayon_global_pool_available() -> bool {
 	RAYON_GLOBAL_POOL_AVAILABLE.load(Ordering::SeqCst)
 }
 
-
+pub(crate) fn strip_errno(error: &io::Error) -> String {
+	let message = error.to_string();
+	message
+		.split_once(" (os error ")
+		.map_or(message.clone(), |(text, _)| text.to_owned())
+}
 
 pub(crate) fn format_usage(usage: &str) -> String {
 	debug_assert!(
@@ -763,11 +686,6 @@ pub(crate) fn format_usage(usage: &str) -> String {
 	);
 	usage.replace('\n', "\n       ")
 }
-
-
-
-
-
 
 pub(crate) fn os_bytes(value: &std::ffi::OsStr) -> Option<&[u8]> {
 	#[cfg(unix)]
@@ -781,21 +699,12 @@ pub(crate) fn os_bytes(value: &std::ffi::OsStr) -> Option<&[u8]> {
 	}
 }
 
-
-
 pub(crate) fn os_bytes_lossy(value: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
 	match os_bytes(value) {
 		Some(bytes) => std::borrow::Cow::Borrowed(bytes),
 		None => std::borrow::Cow::Owned(value.to_string_lossy().into_owned().into_bytes()),
 	}
 }
-
-
-
-
-
-
-
 
 pub(crate) fn parse_duration(input: &str) -> Option<Duration> {
 	let trimmed = input.trim();
@@ -825,12 +734,6 @@ pub(crate) fn parse_duration(input: &str) -> Option<Duration> {
 	Duration::try_from_secs_f64(value * multiplier).map_or(Some(Duration::MAX), Some)
 }
 
-
-
-
-
-
-
 pub(crate) fn quote_arg(arg: &str) -> String {
 	if arg.is_empty() {
 		return "''".to_string();
@@ -845,21 +748,9 @@ pub(crate) fn quote_arg(arg: &str) -> String {
 	format!("'{escaped}'")
 }
 
-
-
-
-
-
 pub(crate) fn util<U: Utility, SE: ShellExtensions>() -> Registration<SE> {
 	builtins::builtin::<Util<U>, SE>()
 }
-
-
-
-
-
-
-
 
 pub(crate) struct Util<U: Utility> {
 	argv:    Vec<String>,
@@ -906,16 +797,12 @@ impl<U: Utility> builtins::Command for Util<U> {
 	}
 }
 
-
 async fn run_utility<U: Utility, SE: ShellExtensions>(
 	context: ExecutionContext<'_, SE>,
 	argv: Vec<String>,
 ) -> Result<ExecutionResult, Error> {
-
-
-
 	#[cfg_attr(not(unix), expect(unused_mut, reason = "rewritten only on unix"))]
-let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
+	let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 	#[cfg(unix)]
 	let process_substitution_fds = materialize_process_substitution_fds(&context, &mut argv)?;
 
@@ -930,8 +817,6 @@ let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 	let parsed = match U::try_parse_from(&argv) {
 		Ok(parsed) => parsed,
 		Err(err) => {
-
-
 			let rendered = err.to_string();
 			if err.use_stderr() {
 				let _ = write!(context.stderr(), "{rendered}");
@@ -953,11 +838,6 @@ let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 		let _process_substitution_fds = process_substitution_fds;
 		run_caught::<U>(parsed, &mut host)
 	});
-
-
-
-
-
 
 	let code = match cancel {
 		Some(token) => {
@@ -982,12 +862,6 @@ let mut argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 	Ok(ExecutionResult::new((code & 0xff) as u8))
 }
 
-
-
-
-
-
-
 pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	struct Guard;
 	impl Drop for Guard {
@@ -999,6 +873,9 @@ pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	let _guard = Guard;
 
 	let outcome = catch_unwind(AssertUnwindSafe(|| parsed.run(host)));
+	if host.is_cancelled() {
+		return 130;
+	}
 	if host.sigpipe.is_hit() {
 		return SIGPIPE_EXIT_CODE;
 	}
@@ -1011,14 +888,11 @@ pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	}
 }
 
-
-
 fn build_host<SE: ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
 	name: &str,
 ) -> Result<Host, Error> {
 	let stdin = context.try_fd(OpenFiles::STDIN_FD);
-
 
 	#[cfg(unix)]
 	let stdin_fd: Option<i32> = {
@@ -1056,35 +930,45 @@ fn build_host<SE: ShellExtensions>(
 		context.command_name.clone()
 	};
 
-
-
 	let cancel = Arc::new(AtomicBool::new(false));
 
 	let stdout = or_null(context.try_fd(OpenFiles::STDOUT_FD))?;
-	let stdout_identity = context.params.stdout_identity.or_else(|| stdout.regular_file_identity());
+	let stdout_identity = context
+		.params
+		.stdout_identity
+		.or_else(|| stdout.regular_file_identity());
+	let stdout_is_file = is_regular_file(&stdout);
 	let stderr_file = or_null(context.try_fd(OpenFiles::STDERR_FD))?;
-	let sigpipe = Arc::new(Sigpipe::default());
+	let stderr_is_file = is_regular_file(&stderr_file);
+	let sigpipe = Arc::new(Sigpipe { hit: AtomicBool::new(false), cancel: Arc::clone(&cancel) });
 
 	let (merged_out, stderr) = if same_destination(&stdout, &stderr_file) {
 		let guarded = SigpipeGuard::wrap(stderr_file, GuardedStream::Stdout, &sigpipe);
-		let shared = Arc::new(Mutex::new(StreamWriter::new(guarded)));
+		let shared = Arc::new(Mutex::new(StreamWriter::new(guarded, stdout_is_file)));
 		(Some(Arc::clone(&shared)), StreamWriter::Shared(shared))
 	} else {
 		let guarded = SigpipeGuard::wrap(stderr_file, GuardedStream::Stderr, &sigpipe);
-		(None, StreamWriter::new(guarded))
+		(None, StreamWriter::new(guarded, stderr_is_file))
 	};
 	let stdout = SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe);
 
 	Ok(Host {
 		command_observation: context.params.command_observation.clone(),
-		stdin: Stdin {
-			file:   or_null(stdin)?,
-			fd:     stdin_fd,
-			cancel: Arc::clone(&cancel),
-		},
+		stdin: Stdin { file: or_null(stdin)?, fd: stdin_fd, cancel: Arc::clone(&cancel) },
 		stdout,
 		stderr,
 		stdout_identity,
+		stdout_is_file,
+		umask: {
+			#[cfg(unix)]
+			{
+				context.shell.umask().unwrap_or_else(process_umask)
+			}
+			#[cfg(not(unix))]
+			{
+				0
+			}
+		},
 		name: invoked,
 		cwd: context.shell.working_dir().to_path_buf(),
 		env,
@@ -1096,10 +980,9 @@ fn build_host<SE: ShellExtensions>(
 		held_files: LazyLock::new(HeldFiles::snapshot),
 		merged_out,
 		sigpipe,
+		reported_error: context.params.reported_error().cloned(),
 	})
 }
-
-
 
 fn or_null(file: Option<OpenFile>) -> Result<OpenFile, Error> {
 	match file {
@@ -1108,7 +991,6 @@ fn or_null(file: Option<OpenFile>) -> Result<OpenFile, Error> {
 	}
 }
 
-
 #[cfg(unix)]
 fn process_substitution_fd(arg: &std::ffi::OsStr) -> Option<brush_core::ShellFd> {
 	arg.to_str()?
@@ -1116,12 +998,6 @@ fn process_substitution_fd(arg: &std::ffi::OsStr) -> Option<brush_core::ShellFd>
 		.parse::<brush_core::ShellFd>()
 		.ok()
 }
-
-
-
-
-
-
 
 #[cfg(unix)]
 fn materialize_process_substitution_fds<SE: ShellExtensions>(
@@ -1144,12 +1020,6 @@ fn materialize_process_substitution_fds<SE: ShellExtensions>(
 	}
 	Ok(fds)
 }
-
-
-
-
-
-
 
 #[allow(unused_macros, reason = "used by utility modules, which are feature-gated")]
 macro_rules! matches_parser {
@@ -1185,13 +1055,8 @@ macro_rules! matches_parser {
 #[allow(unused_imports, reason = "used by utility modules, which are feature-gated")]
 pub(crate) use matches_parser;
 
-
-
-
-
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use super::*;
 
 	#[derive(clap::Parser)]
@@ -1212,25 +1077,27 @@ mod tests {
 	}
 
 	#[cfg(unix)]
-	fn test_host(stdout: OpenFile) -> (Host, tempfile::NamedTempFile) {
+	pub(crate) fn test_host(stdout: OpenFile) -> (Host, tempfile::NamedTempFile) {
 		let stderr = tempfile::NamedTempFile::new().expect("stderr file");
-		let sigpipe = Arc::new(Sigpipe::default());
-		let stderr_file = OpenFile::File(stderr.reopen().expect("reopen stderr"));
 		let cancel = Arc::new(AtomicBool::new(false));
+		let sigpipe =
+			Arc::new(Sigpipe { hit: AtomicBool::new(false), cancel: Arc::clone(&cancel) });
+		let stderr_file = OpenFile::from(stderr.reopen().expect("reopen stderr"));
 		let host = Host {
 			command_observation: None,
 			stdin: Stdin {
-				file: openfiles::null().expect("null stdin"),
-				fd: None,
+				file:   openfiles::null().expect("null stdin"),
+				fd:     None,
 				cancel: Arc::clone(&cancel),
 			},
 			stdout_identity: stdout.regular_file_identity(),
+			stdout_is_file: is_regular_file(&stdout),
+			umask: 0o022,
 			stdout: SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe),
-			stderr: StreamWriter::new(SigpipeGuard::wrap(
-				stderr_file,
-				GuardedStream::Stderr,
-				&sigpipe,
-			)),
+			stderr: StreamWriter::new(
+				SigpipeGuard::wrap(stderr_file, GuardedStream::Stderr, &sigpipe),
+				true,
+			),
 			name: "long-writer".to_string(),
 			cwd: PathBuf::from("/"),
 			env: HashMap::new(),
@@ -1242,6 +1109,7 @@ mod tests {
 			held_files: LazyLock::new(HeldFiles::snapshot),
 			merged_out: None,
 			sigpipe,
+			reported_error: None,
 		};
 		(host, stderr)
 	}
@@ -1305,4 +1173,57 @@ mod tests {
 		assert_eq!(code, 1);
 		assert!(diagnostic.contains("device failed"), "{diagnostic:?}");
 	}
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct Capture {
+	stdout: tempfile::NamedTempFile,
+	stderr: tempfile::NamedTempFile,
+}
+#[cfg(all(test, unix))]
+impl Capture {
+	pub fn out(&self) -> String {
+		std::fs::read_to_string(self.stdout.path()).expect("stdout")
+	}
+
+	pub fn err(&self) -> String {
+		std::fs::read_to_string(self.stderr.path()).expect("stderr")
+	}
+}
+#[cfg(all(test, unix))]
+pub(crate) fn run_util<U: Utility>(
+	args: &[&str],
+	stdin: &str,
+	cwd: impl Into<PathBuf>,
+) -> (i32, Capture) {
+	use std::io::Seek;
+	let stdout = tempfile::NamedTempFile::new().expect("stdout");
+	let (mut host, stderr) =
+		tests::test_host(OpenFile::from(stdout.reopen().expect("stdout handle")));
+	let mut input = tempfile::tempfile().expect("stdin");
+	input.write_all(stdin.as_bytes()).expect("stdin bytes");
+	input.rewind().expect("stdin offset");
+	host.stdin =
+		Stdin { file: OpenFile::from(input), fd: None, cancel: Arc::clone(&host.cancel) };
+	host.name = U::NAME.to_string();
+	host.cwd = cwd.into();
+	let argv: Vec<OsString> = std::iter::once(U::NAME)
+		.chain(args.iter().copied())
+		.map(OsString::from)
+		.collect();
+	let code = match U::rewrite_argv(argv) {
+		Ok(argv) => match U::try_parse_from(argv) {
+			Ok(command) => run_caught(command, &mut host),
+			Err(error) => {
+				let _ = write!(host.stderr, "{error}");
+				i32::from(U::USAGE_ERROR)
+			},
+		},
+		Err(message) => {
+			let _ = writeln!(host.stderr, "{}: {message}", U::NAME);
+			i32::from(U::USAGE_ERROR)
+		},
+	};
+	drop(host);
+	(code, Capture { stdout, stderr })
 }

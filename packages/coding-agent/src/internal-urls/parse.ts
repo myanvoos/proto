@@ -6,7 +6,7 @@ const PATHNAME_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/i;
 const OPAQUE_URI_RE = /^([a-z][a-z0-9+.-]*):(.+)$/is;
 
 const SELECTOR_CHUNK_SRC = String.raw`(?:raw|conflicts|-?\d+(?:[-+]\d+)?(?:,\d+(?:[-+]\d+)?)*)`;
-const SELECTOR_CHAIN_RE = new RegExp(`^${SELECTOR_CHUNK_SRC}(?::${SELECTOR_CHUNK_SRC})*$`, "i");
+const SELECTOR_CHAIN_RE = new RegExp(`^${SELECTOR_CHUNK_SRC}(?::${SELECTOR_CHUNK_SRC})*(?:;|$)`, "i");
 
 export function extractUriScheme(input: string): string | undefined {
 	const hierarchical = input.match(SCHEME_HOST_RE);

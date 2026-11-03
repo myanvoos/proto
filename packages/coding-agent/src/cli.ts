@@ -31,6 +31,7 @@ import { extractProfileFlags } from "./cli/profile-bootstrap";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { SESSION_HOST_WORKER_ARG } from "./session-host/protocol";
+import { PARENT_WATCHDOG_WORKER_ARG, startParentWatchdog } from "./subprocess/parent-watchdog";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -64,6 +65,11 @@ const TAB_WORKER_ARG = "__proto_worker_tab";
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
+	if (arg === PARENT_WATCHDOG_WORKER_ARG) {
+		if (parentPort) installWorkerInbox(parentPort);
+		await import("./subprocess/parent-watchdog-worker");
+		return true;
+	}
 	if (arg === TINY_WORKER_ARG) {
 		await runTinyWorker();
 		return true;
@@ -169,6 +175,7 @@ async function runIpcSubprocessWorker<In, Out>(
 			};
 		},
 	});
+	if (process.ppid > 0) startParentWatchdog(process.ppid);
 	const keepalive = setInterval(() => {}, 2 ** 30);
 	if (options?.unrefKeepalive) keepalive.unref();
 

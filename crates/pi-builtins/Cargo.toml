@@ -304,6 +304,12 @@ base = [
 "util.sponge" = []
 "util.ts" = []
 "util.mv" = []
+"util.fold" = []
+"util.id" = []
+"util.od" = []
+"util.rmdir" = []
+"util.uptime" = []
+"util.nl" = []
 "util.nproc" = []
 "util.paste" = []
 "util.nohup" = ["util.procs"]
@@ -380,6 +386,12 @@ utils = [
   "util.sponge",
   "util.ts",
   "util.mv",
+  "util.fold",
+  "util.id",
+  "util.od",
+  "util.rmdir",
+  "util.uptime",
+  "util.nl",
   "util.nproc",
   "util.paste",
   "util.nohup",

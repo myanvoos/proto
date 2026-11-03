@@ -5,7 +5,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
-import type { Browser } from "puppeteer-core";
+import type { Browser, Connection } from "puppeteer-core";
 import { daemonRuntimeDir } from "../../launch/paths";
 
 /** Identifies one shared-browser daemon's target registry. */
@@ -84,6 +84,18 @@ export async function forgetSharedTarget(scope: SharedTargetScope, targetId: str
 	if (!owned?.delete(targetId)) return;
 	await chain(dir, () => flush(dir)).catch(err =>
 		logger.debug("Failed to update shared-browser target ownership", {
+			error: err instanceof Error ? err.message : String(err),
+		}),
+	);
+}
+
+export async function forgetSharedTargets(scope: SharedTargetScope): Promise<void> {
+	const dir = registryDir(scope);
+	const owned = ownedByDir.get(dir);
+	if (!owned || owned.size === 0) return;
+	owned.clear();
+	await chain(dir, () => flush(dir)).catch(err =>
+		logger.debug("Failed to clear shared-browser target ownership", {
 			error: err instanceof Error ? err.message : String(err),
 		}),
 	);
@@ -174,16 +186,27 @@ export async function collectOrphanTargets(
  * dropped connection or transient protocol failure returns false so durable
  * ownership remains available for a later retry.
  */
-export async function closeCdpTarget(browser: Browser, targetId: string): Promise<boolean> {
+export async function closeCdpTarget(browser: Browser, targetId: string, confirmTimeoutMs = 5_000): Promise<boolean> {
 	const session = await browser
 		.target()
 		.createCDPSession()
 		.catch(() => null);
 	if (!session) return false;
+	const destroyed = Promise.withResolvers<boolean>();
+	const onDestroyed = (event: { targetId: string }): void => {
+		if (event.targetId === targetId) destroyed.resolve(true);
+	};
+	session.on("Target.targetDestroyed", onDestroyed);
+	let timer: NodeJS.Timeout | undefined;
 	try {
 		try {
+			// Discovery is on before the close, so its `targetDestroyed` cannot be missed.
+			await session.send("Target.setDiscoverTargets", { discover: true });
 			const result = await session.send("Target.closeTarget", { targetId });
-			if (result.success) return true;
+			if (result.success) {
+				timer = setTimeout(() => destroyed.resolve(false), confirmTimeoutMs);
+				if (await destroyed.promise) return true;
+			}
 		} catch {
 			// A concurrent reaper or the page itself may already have closed the
 			// target. Confirm absence before treating the cleanup as complete.
@@ -195,7 +218,22 @@ export async function closeCdpTarget(browser: Browser, targetId: string): Promis
 			return false;
 		}
 	} finally {
+		clearTimeout(timer);
+		session.off("Target.targetDestroyed", onDestroyed);
 		await session.detach().catch(() => undefined);
+	}
+}
+
+export async function closeRelayTarget(channel: Pick<Connection, "send">, targetId: string): Promise<boolean> {
+	try {
+		const result = await channel.send("Target.closeTarget", { targetId });
+		if (result.success) return true;
+	} catch {}
+	try {
+		const { targetInfo } = await channel.send("Target.getTargetInfo", { targetId });
+		return targetInfo.targetId !== targetId;
+	} catch {
+		return false;
 	}
 }
 

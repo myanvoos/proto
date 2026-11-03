@@ -126,3 +126,38 @@ describe("Anthropic thinking leaves a capped request its output budget", () => {
 		expect((await promise).inferenceConfig?.maxTokens).toBe(13_107 + 16_384);
 	});
 });
+
+it("Gemini thinking gets headroom in the total output cap while explicit off stays answer-only", async () => {
+	const model = buildModel({
+		id: "gemini-2.5-flash",
+		name: "Gemini",
+		api: "google-generative-ai",
+		provider: "google",
+		baseUrl: "https://google.example.test",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100000,
+		maxTokens: 64000,
+		thinking: { mode: "budget", efforts: [Effort.High] },
+	});
+	const payloads: { generationConfig?: { maxOutputTokens?: number; thinkingConfig?: { thinkingBudget?: number } } }[] =
+		[];
+	const fetch: FetchImpl = async (_url, init) => {
+		payloads.push(JSON.parse(init?.body as string));
+		return new Response("{}", { status: 400 });
+	};
+	await streamSimple(model, context, {
+		apiKey: "test",
+		fetch,
+		maxTokens: 1000,
+		reasoning: Effort.High,
+		thinkingBudgets: { high: 2000 },
+	}).result();
+	await streamSimple(model, context, { apiKey: "test", fetch, maxTokens: 1000, disableReasoning: true }).result();
+	expect(payloads[0]?.generationConfig).toMatchObject({
+		maxOutputTokens: 3000,
+		thinkingConfig: { thinkingBudget: 2000 },
+	});
+	expect(payloads[1]?.generationConfig?.maxOutputTokens).toBe(1000);
+});

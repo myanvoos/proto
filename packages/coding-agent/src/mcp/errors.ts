@@ -16,7 +16,7 @@ interface SanitizedValue {
 function sanitizeDiagnosticValue(value: string): string {
 	return value
 		.replace(/\s*For more information, pass `verbose: true` in the second argument to fetch\(\)\.?/gi, "")
-		.replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, "$1 [redacted]")
+		.replace(/\b(Bearer|Basic)\s+(?![\w.~+/-]+\s*=\s*")[^\s,;]+/gi, "$1 [redacted]")
 		.replace(/([?&](?:access[-_]?token|api[-_]?key|key|token|secret|password)=)[^&#\s]+/gi, "$1[redacted]")
 		.replace(JSON_SECRET_VALUE, '$1"[redacted]"')
 		.replace(DIAGNOSTIC_SECRET_VALUE, "$1[redacted]");
@@ -115,6 +115,12 @@ export class MCPTransportError extends Error {
 		this.data = options.data;
 		this.traceId = safeTraceId(options.traceId);
 	}
+}
+
+/** A lost dispatched request must never be replayed automatically. */
+export function nonRetryableMCPTransportError(error: MCPTransportError): MCPTransportError {
+	if (!error.retryable) return error;
+	return new MCPTransportError({ ...error, message: error.message, retryable: false, cause: error });
 }
 
 function safeTraceId(value: unknown): string | undefined {
@@ -218,7 +224,7 @@ export function normalizeMCPTransportError(
 		failure = "closed";
 		retryable = true;
 	} else if (
-		/ECONNREFUSED|ConnectionRefused|ENETUNREACH|EHOSTUNREACH|fetch failed|network error|not connected/i.test(
+		/ECONNREFUSED|ConnectionRefused|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EAI_AGAIN|FailedToOpenSocket|fetch failed|network error|not connected/i.test(
 			signature,
 		)
 	) {

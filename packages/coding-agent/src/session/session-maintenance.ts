@@ -213,6 +213,15 @@ class ManualCompactionNoOpError extends Error {
 	}
 }
 
+/** The provider anchor charges only entries sent before the latest reported prompt. */
+function findUsageAnchorIndex(entries: readonly SessionEntry[], compactionIndex: number): number {
+	for (let index = entries.length - 1; index > compactionIndex; index--) {
+		const entry = entries[index];
+		if (entry.type === "message" && isTranscriptUsageAnchor(entry.message)) return index;
+	}
+	return -1;
+}
+
 export interface SessionMaintenanceHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -271,7 +280,7 @@ export interface SessionMaintenanceHost {
 	closeCodexProviderSessionsForHistoryRewrite(): void;
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
 	syncChecklistPhasesFromBranch(): void;
-	resetAdvisorRuntimes(reason?: string): void;
+	resetAdvisorRuntimes(reason?: string, options?: { compacted?: boolean }): void;
 	/** Re-aligns advisors after an in-place prune their own contexts already cover, without a re-prime. */
 	rebaseAdvisorPrefix(reason: string): void;
 	rebaseAfterCompaction(): void;
@@ -281,8 +290,9 @@ export interface SessionMaintenanceHost {
 		pendingMessages?: AgentMessage[];
 	}): ContextUsageBreakdown | undefined;
 	getContextUsage(options?: { contextWindow?: number }): ContextUsage | undefined;
-	dropImages(): Promise<{ removed: number }>;
+	dropImages(): Promise<{ removed: number; tokensFreed: number }>;
 	removeAssistantMessageFromActiveContext(message: AssistantMessage): void;
+	retainTerminalFailure(message: AssistantMessage): void;
 	dropPersistedAssistantTurn(message: AssistantMessage): Promise<string | undefined>;
 	runRecoveryCompactionWithRollback(
 		reason: "overflow" | "incomplete",
@@ -311,6 +321,7 @@ export class SessionMaintenance {
 	readonly #midTurnCompactionDeadEnds = new WeakSet<AgentMessage[]>();
 
 	#midTurnDeadEndPendingPrePrompt = false;
+	#fixedContextDeadEndNotifiedSessionId: string | undefined;
 
 	#speculation: SpeculationRun | undefined;
 	/**
@@ -465,18 +476,35 @@ export class SessionMaintenance {
 		return result;
 	}
 
-	async dropImages(): Promise<{ removed: number }> {
+	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
 		const branchEntries = this.#maintenanceBranch();
 		const changedEntries = new Set<SessionEntry>();
+		const latestCompaction = getLatestCompactionEntry(branchEntries);
+		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
+		const remoteReplacement = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
+		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+		const countOptions = { excludeEncryptedReasoning: true } as const;
 		let removed = 0;
-		for (const entry of branchEntries) {
+		let tokensFreed = 0;
+		let anchoredTokensRemoved = 0;
+		for (const [index, entry] of branchEntries.entries()) {
+			const anchored = index < anchorIndex && (!remoteReplacement || index > compactionIndex);
 			if (entry.type === "message") {
+				const before = this.#tokenizer.countMessage(entry.message, countOptions);
 				const removedFromMessage = stripImagesFromMessage(entry.message);
-				if (removedFromMessage > 0) changedEntries.add(entry);
+				if (removedFromMessage > 0) {
+					changedEntries.add(entry);
+					const saved = Math.max(0, before - this.#tokenizer.countMessage(entry.message, countOptions));
+					tokensFreed += saved;
+					if (anchored) anchoredTokensRemoved += saved;
+				}
 				removed += removedFromMessage;
 				continue;
 			}
 			if (entry.type === "custom_message" && typeof entry.content !== "string") {
+				const projected = buildSessionContext([entry]).messages[0];
+				if (!projected) continue;
+				const before = this.#tokenizer.countMessage(projected, countOptions);
 				const kept: typeof entry.content = [];
 				let dropped = 0;
 				for (const part of entry.content) {
@@ -491,19 +519,22 @@ export class SessionMaintenance {
 						kept.push({ type: "text", text: "[image removed]" });
 					}
 					entry.content = kept;
+					const after = buildSessionContext([entry]).messages[0];
+					const saved = Math.max(0, before - (after ? this.#tokenizer.countMessage(after, countOptions) : 0));
+					tokensFreed += saved;
+					if (anchored) anchoredTokensRemoved += saved;
 					changedEntries.add(entry);
 					removed += dropped;
 				}
 			}
 		}
-		if (removed === 0) {
-			return { removed: 0 };
-		}
+		if (removed === 0) return { removed: 0, tokensFreed: 0 };
+		this.#host.recordAnchoredHistoryRewrite(anchoredTokensRemoved);
 		this.#rememberModelContextEntries(changedEntries);
 		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("drop-images");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
-		return { removed };
+		return { removed, tokensFreed };
 	}
 
 	async #shakeElide(config: ShakeConfig, options: ShakeElideOptions = {}): Promise<ShakeElideResult> {
@@ -544,13 +575,7 @@ export class SessionMaintenance {
 
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
-		let anchorIndex = -1;
-		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
-			const entry = branchEntries[index];
-			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
-			anchorIndex = index;
-			break;
-		}
+		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
 		const entryIndexes = new Map(branchEntries.map((entry, index) => [entry, index]));
 
 		let toolResultsDropped = 0;
@@ -654,6 +679,9 @@ export class SessionMaintenance {
 		let resumeInterruptedTurn = false;
 		let interruptedTurnGeneration = 0;
 		let inheritedResume = false;
+		let manualStarted = false;
+		let manualResult: CompactionResult | undefined;
+		let manualError: unknown;
 		const compactionAbortController = retryController ?? new AbortController();
 		const manualCompactionCleanup = ownsCompactionController ? Promise.withResolvers<void>() : undefined;
 		if (ownsCompactionController) {
@@ -678,6 +706,11 @@ export class SessionMaintenance {
 					(interruptedActiveTurn || inheritedResume) &&
 					this.#host.settings.get("compaction.autoContinue") !== false;
 				interruptedTurnGeneration = this.#host.promptGeneration();
+				manualStarted = true;
+				await this.#emitLifecycleEvent(
+					{ type: "manual_compaction_start", ...(compactMode ? { mode: compactMode.name } : {}) },
+					false,
+				);
 			}
 			const activeModel = this.#model;
 			if (!activeModel) {
@@ -735,6 +768,7 @@ export class SessionMaintenance {
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
 
 			let summary: string;
+			let providerReplayThroughEntryId: string | undefined;
 			let shortSummary: string | undefined;
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
@@ -747,6 +781,7 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+				providerReplayThroughEntryId = compactionPrep.providerReplayThroughEntryId;
 			} else {
 				codexCompaction = createCodexCompactionContext({
 					trigger: "manual",
@@ -779,6 +814,7 @@ export class SessionMaintenance {
 					tokensBefore = result.tokensBefore;
 					details = result.details;
 					preserveData = mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData);
+					providerReplayThroughEntryId = result.providerReplayThroughEntryId;
 				} catch (err) {
 					if (err instanceof CompactionCancelledError) {
 						if (!compactionAbortController.signal.aborted || err.cause !== undefined) throw err;
@@ -814,6 +850,7 @@ export class SessionMaintenance {
 				details,
 				fromExtension,
 				preserveData,
+				providerReplayThroughEntryId,
 				method: fromExtension ? undefined : "remote",
 				codexCompaction,
 				advisorResetReason: "compact",
@@ -826,10 +863,13 @@ export class SessionMaintenance {
 				tokensBefore,
 				details,
 				preserveData,
+				providerReplayThroughEntryId,
 			};
+			manualResult = compactionResult;
 			options?.onComplete?.(compactionResult);
 			return compactionResult;
 		} catch (error) {
+			manualError = error;
 			const err = error instanceof Error ? error : new Error(String(error));
 			if (error instanceof ManualCompactionNoOpError) rejectedAsNoOp = true;
 			await this.#emitCompactionFailed({
@@ -848,6 +888,21 @@ export class SessionMaintenance {
 					this.#compactionAbortController = undefined;
 				}
 				this.#host.reconnectToAgent();
+				if (manualStarted) {
+					await this.#emitLifecycleEvent(
+						{
+							type: "manual_compaction_end",
+							result: manualResult,
+							aborted:
+								compactionAbortController.signal.aborted || manualError instanceof CompactionCancelledError,
+							...(rejectedAsNoOp ? { skipped: true } : {}),
+							...(manualError === undefined
+								? {}
+								: { errorMessage: manualError instanceof Error ? manualError.message : String(manualError) }),
+						},
+						false,
+					);
+				}
 
 				this.#host.drainStrandedQueuedMessages();
 				if (this.#manualCompactionCleanup === manualCompactionCleanup?.promise) {
@@ -868,6 +923,11 @@ export class SessionMaintenance {
 				}
 			}
 		}
+	}
+
+	/** History replacement and persistence reconnect barrier shared by all idle turn starters. */
+	waitForContextReplacement(): Promise<void> | undefined {
+		return this.#manualCompactionCleanup;
 	}
 
 	abortCompaction(reason?: unknown): Promise<void> | undefined {
@@ -1154,9 +1214,9 @@ export class SessionMaintenance {
 				details: armed.result.details,
 				preserveData: armed.result.preserveData,
 				method: armed.method,
-				providerReplayThroughEntryId: armed.result.preserveData?.openaiRemoteCompaction
-					? armed.snapshotLeafId
-					: undefined,
+				providerReplayThroughEntryId:
+					armed.result.providerReplayThroughEntryId ??
+					(armed.result.preserveData?.openaiRemoteCompaction ? armed.snapshotLeafId : undefined),
 			});
 			const pendingTokens = Math.max(0, pendingContextTokens ?? 0);
 			const projectedWithPending = projected + pendingTokens;
@@ -1236,7 +1296,7 @@ export class SessionMaintenance {
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
-		this.#host.resetAdvisorRuntimes(args.advisorResetReason);
+		this.#host.resetAdvisorRuntimes(args.advisorResetReason, { compacted: true });
 		this.#host.syncChecklistPhasesFromBranch();
 		if (args.codexCompaction) {
 			this.#host.resetCodexProviderAfterCompaction(args.codexCompaction);
@@ -1474,6 +1534,7 @@ export class SessionMaintenance {
 			payloadRejection && contextWindow <= 0 && !ambiguousPayloadRejection && !compactionAvailable;
 		if (unknownWindowDeadEnd || trustedPayloadRejection || (explicitMediaRejection && !usageBackedOverflow)) {
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
+			this.#host.retainTerminalFailure(assistantMessage);
 			this.#host.emitNotice("warning", payloadRejectionNotice(storedTokens, contextWindow), "compaction");
 			logger.debug("Payload-shaped 413 withheld from token compaction", {
 				provider: assistantMessage.provider,
@@ -1501,6 +1562,7 @@ export class SessionMaintenance {
 				const compactionResult = await this.#host.runRecoveryCompactionWithRollback("overflow", assistantMessage, {
 					autoContinue,
 				});
+				if (!compactionResult.continuationScheduled) this.#host.retainTerminalFailure(assistantMessage);
 				// A no-progress attempt restored the failed turn; without a block the next continuation would resend
 				// the same oversized request and loop the 413 silently.
 				if (
@@ -1528,6 +1590,7 @@ export class SessionMaintenance {
 				}
 				return compactionResult;
 			}
+			this.#host.retainTerminalFailure(assistantMessage);
 			if (payloadRejection) {
 				this.#host.emitNotice(
 					"warning",
@@ -1829,7 +1892,7 @@ export class SessionMaintenance {
 						thinkingLevel: this.#host.thinkingLevel(),
 						tools: this.#host.agent.state.tools,
 						sessionId: this.#host.sessionId(),
-						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+						promptCacheKey: this.#host.agent.promptCacheKey,
 						providerSessionState: this.#host.providerSessionState,
 						preferWebsockets: this.#host.preferWebsockets,
 
@@ -1883,7 +1946,7 @@ export class SessionMaintenance {
 			telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
 			thinkingLevel: this.#host.thinkingLevel(),
 			sessionId,
-			promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+			promptCacheKey: this.#host.agent.promptCacheKey,
 			providerSessionState: this.#host.providerSessionState,
 			preferWebsockets: this.#host.preferWebsockets,
 			completeImpl: async (requestModel, requestContext, requestOptions) => {
@@ -1925,6 +1988,7 @@ export class SessionMaintenance {
 	): Promise<
 		| {
 				kind: "fromHook";
+				providerReplayThroughEntryId: string | undefined;
 				summary: string;
 				shortSummary: string | undefined;
 				firstKeptEntryId: string;
@@ -1960,6 +2024,7 @@ export class SessionMaintenance {
 			preserveData ??= hookCompaction.preserveData;
 			return {
 				kind: "fromHook",
+				providerReplayThroughEntryId: hookCompaction.providerReplayThroughEntryId,
 				summary: hookCompaction.summary,
 				shortSummary: hookCompaction.shortSummary,
 				firstKeptEntryId: hookCompaction.firstKeptEntryId,
@@ -2150,6 +2215,28 @@ export class SessionMaintenance {
 		if (reason !== "idle" && !compactionSettings.enabled) return COMPACTION_CHECK_NONE;
 		const methods = resolveCompactionMethodOrder(compactionSettings.methodOrder);
 		if (methods.length === 0) return COMPACTION_CHECK_NONE;
+		if (reason === "threshold") {
+			const contextWindow = this.#model?.contextWindow ?? 0;
+			const recoveryBand = Math.floor(
+				resolveThresholdTokens(contextWindow, compactionSettings) * COMPACTION_RECOVERY_BAND,
+			);
+			if (
+				contextWindow > 0 &&
+				computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer) > recoveryBand
+			) {
+				const sessionId = this.#host.sessionManager.getSessionId();
+				if (this.#fixedContextDeadEndNotifiedSessionId !== sessionId) {
+					this.#host.emitNotice(
+						"warning",
+						"Compaction cannot create headroom — pausing automatic maintenance. The system prompt and always-sent tool schemas alone exceed the recovery band; reduce fixed context or adjust compaction thresholds.",
+						"compaction",
+					);
+					this.#fixedContextDeadEndNotifiedSessionId = sessionId;
+				}
+				return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+			}
+			this.#fixedContextDeadEndNotifiedSessionId = undefined;
+		}
 		const hasCompactionHook = this.#host.extensionRunner?.hasHandlers("session_before_compact") ?? false;
 		const generation = this.#host.promptGeneration();
 		const terminalTextAnswer =
@@ -2197,9 +2284,9 @@ export class SessionMaintenance {
 					fromExtension: false,
 					codexCompaction: armedSpec.codexCompaction,
 					method: armedSpec.method,
-					providerReplayThroughEntryId: armedSpec.result.preserveData?.openaiRemoteCompaction
-						? armedSpec.snapshotLeafId
-						: undefined,
+					providerReplayThroughEntryId:
+						armedSpec.result.providerReplayThroughEntryId ??
+						(armedSpec.result.preserveData?.openaiRemoteCompaction ? armedSpec.snapshotLeafId : undefined),
 					action,
 					reason,
 					willRetry,
@@ -2345,6 +2432,7 @@ export class SessionMaintenance {
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
 
 			let summary: string;
+			let providerReplayThroughEntryId: string | undefined;
 			let shortSummary: string | undefined;
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
@@ -2357,6 +2445,7 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+				providerReplayThroughEntryId = compactionPrep.providerReplayThroughEntryId;
 			} else {
 				if (!method) {
 					throw new Error(
@@ -2418,7 +2507,7 @@ export class SessionMaintenance {
 									thinkingLevel: this.#host.thinkingLevel(),
 									tools: this.#host.agent.state.tools,
 									sessionId: this.#host.sessionId(),
-									promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+									promptCacheKey: this.#host.agent.promptCacheKey,
 									providerSessionState: this.#host.providerSessionState,
 									preferWebsockets: this.#host.preferWebsockets,
 									codexCompaction,
@@ -2485,8 +2574,12 @@ export class SessionMaintenance {
 							const baseDelayMs = retrySettings.baseDelayMs * 2 ** attempt;
 							const delayMs = retryAfterMs !== undefined ? Math.max(baseDelayMs, retryAfterMs) : baseDelayMs;
 
-							const maxAcceptableDelayMs = 30_000;
-							if (delayMs > maxAcceptableDelayMs && hasMoreCandidates) {
+							const maxAcceptableDelayMs = hasMoreCandidates
+								? 30_000
+								: retrySettings.maxDelayMs > 0
+									? retrySettings.maxDelayMs
+									: Number.POSITIVE_INFINITY;
+							if (delayMs > maxAcceptableDelayMs) {
 								if (error instanceof NativeCompactionError) {
 									nativeCompactionFailure ??= { error, provider: candidate.provider };
 									lastError = nativeCompactionFailure.error;
@@ -2533,6 +2626,7 @@ export class SessionMaintenance {
 				tokensBefore = compactResult.tokensBefore;
 				details = compactResult.details;
 				preserveData = mergeLlmCompactionPreserveData(compactionPrep.preserveData, compactResult.preserveData);
+				providerReplayThroughEntryId = compactResult.providerReplayThroughEntryId;
 			}
 
 			return await this.#commitAutoCompactionResult({
@@ -2542,6 +2636,7 @@ export class SessionMaintenance {
 				tokensBefore,
 				details,
 				preserveData,
+				providerReplayThroughEntryId,
 				fromExtension,
 				codexCompaction,
 				method: fromExtension ? undefined : method,

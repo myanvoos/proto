@@ -1,6 +1,3 @@
-
-
-
 #[cfg(not(any(target_os = "freebsd", target_os = "openbsd")))]
 use std::net::ToSocketAddrs;
 use std::{collections::hash_set::HashSet, ffi::OsString, io::Write};
@@ -18,7 +15,6 @@ static OPT_FQDN: &str = "fqdn";
 static OPT_SHORT: &str = "short";
 static OPT_HOST: &str = "host";
 
-
 pub(crate) struct Hostname {
 	matches: ArgMatches,
 }
@@ -29,10 +25,7 @@ impl Utility for Hostname {
 	const NAME: &'static str = "hostname";
 
 	fn run(self, host: &mut Host) -> i32 {
-
 		if self.matches.get_one::<OsString>(OPT_HOST).is_some() {
-
-
 			host.error("setting the hostname is not supported by the in-process builtin", 1);
 			return 1;
 		}
@@ -46,7 +39,6 @@ impl Utility for Hostname {
 		}
 	}
 }
-
 
 fn app() -> Command {
 	Command::new(Hostname::NAME)
@@ -110,7 +102,6 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 				.map_err(|err| format!("failed to resolve socket addresses: {err}"))?;
 		}
 
-
 		#[cfg(any(target_os = "freebsd", target_os = "openbsd"))]
 		{
 			addresses = lookup_host(hostname.as_str())
@@ -120,7 +111,6 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 		let mut hashset = HashSet::new();
 		let mut output = String::new();
 		for addr in addresses {
-
 			if !hashset.contains(&addr) {
 				let mut ip = addr.to_string();
 				if ip.ends_with(":1") {
@@ -134,8 +124,7 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 		}
 		let len = output.len();
 		if len > 0 {
-			writeln!(host.stdout, "{}", &output[0..len - 1])
-				.map_err(|err| err.to_string())?;
+			writeln!(host.stdout, "{}", &output[0..len - 1]).map_err(|err| err.to_string())?;
 		}
 
 		Ok(())
@@ -144,11 +133,9 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 			let mut it = hostname.char_indices().filter(|&ci| ci.1 == '.');
 			if let Some(ci) = it.next() {
 				if matches.get_flag(OPT_SHORT) {
-					writeln!(host.stdout, "{}", &hostname[0..ci.0])
-						.map_err(|err| err.to_string())?;
+					writeln!(host.stdout, "{}", &hostname[0..ci.0]).map_err(|err| err.to_string())?;
 				} else {
-					writeln!(host.stdout, "{}", &hostname[ci.0 + 1..])
-						.map_err(|err| err.to_string())?;
+					writeln!(host.stdout, "{}", &hostname[ci.0 + 1..]).map_err(|err| err.to_string())?;
 				}
 			} else if matches.get_flag(OPT_SHORT) {
 				writeln!(host.stdout, "{hostname}").map_err(|err| err.to_string())?;
@@ -161,9 +148,6 @@ fn display_hostname(matches: &ArgMatches, host: &mut Host) -> Result<(), String>
 	}
 }
 
-
 pub(crate) fn hostname_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Hostname, SE>()
 }
-
-

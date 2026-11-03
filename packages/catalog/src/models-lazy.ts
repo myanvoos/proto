@@ -30,6 +30,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/cloudflare-ai-gateway.json") as Record<string, unknown>;
 		case "commandcode":
 			return require("./models/commandcode.json") as Record<string, unknown>;
+		case "coralbricks":
+			return require("./models/coralbricks.json") as Record<string, unknown>;
 		case "coreweave":
 			return require("./models/coreweave.json") as Record<string, unknown>;
 		case "cursor":
@@ -64,6 +66,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/groq.json") as Record<string, unknown>;
 		case "huggingface":
 			return require("./models/huggingface.json") as Record<string, unknown>;
+		case "inception":
+			return require("./models/inception.json") as Record<string, unknown>;
 		case "kilo":
 			return require("./models/kilo.json") as Record<string, unknown>;
 		case "kimi-code":
@@ -80,6 +84,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/minimax-code-cn.json") as Record<string, unknown>;
 		case "mistral":
 			return require("./models/mistral.json") as Record<string, unknown>;
+		case "modular":
+			return require("./models/modular.json") as Record<string, unknown>;
 		case "moonshot":
 			return require("./models/moonshot.json") as Record<string, unknown>;
 		case "muse-code":
@@ -108,6 +114,10 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/qwen-portal.json") as Record<string, unknown>;
 		case "sakana":
 			return require("./models/sakana.json") as Record<string, unknown>;
+		case "sambanova":
+			return require("./models/sambanova.json") as Record<string, unknown>;
+		case "scaleway":
+			return require("./models/scaleway.json") as Record<string, unknown>;
 		case "stepfun":
 			return require("./models/stepfun.json") as Record<string, unknown>;
 		case "synthetic":

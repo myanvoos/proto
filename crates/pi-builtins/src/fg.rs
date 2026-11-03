@@ -3,11 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, jobs, sys};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct FgCommand {
-
-
 	job_spec: Option<String>,
 }
 
@@ -19,7 +16,6 @@ impl builtins::Command for FgCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
 		let mut stderr = context.stdout();
-
 
 		let is_interactive = context.shell.options().interactive;
 
@@ -34,7 +30,6 @@ impl builtins::Command for FgCommand {
 				}
 
 				if matches!(job.state, jobs::JobState::Stopped) {
-
 					let formatted = job.to_string();
 					writeln!(context.stderr(), "\r{formatted}")?;
 				}
@@ -55,7 +50,6 @@ impl builtins::Command for FgCommand {
 				}
 
 				if matches!(job.state, jobs::JobState::Stopped) {
-
 					let formatted = job.to_string();
 					writeln!(context.stderr(), "\r{formatted}")?;
 				}

@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { RpcInputDispatcher, type RpcInputFrameDeps, RpcShutdownCoordinator } from "./rpc-mode";
+import {
+	fitAbortAndRestoreQueueResponse,
+	RpcInputDispatcher,
+	type RpcInputFrameDeps,
+	RpcShutdownCoordinator,
+} from "./rpc-mode";
 import type { RpcResponse } from "./rpc-types";
 
 function rpcDeps(): RpcInputFrameDeps {
@@ -39,4 +44,42 @@ test("rejected tracked RPC tasks do not create derived unhandled rejections", as
 	await nextTurn.promise;
 
 	expect(cleanupAttempts).toBe(1);
+});
+
+test("withdrawing an oversized queue preserves its text and reports omitted image attachments", () => {
+	const response = fitAbortAndRestoreQueueResponse(
+		"withdraw",
+		{
+			steering: [
+				{ text: "keep steering", images: [{ type: "image", mimeType: "image/png", data: "a".repeat(2000) }] },
+			],
+			followUp: [{ text: "keep follow-up" }],
+		},
+		400,
+	);
+	expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(400);
+	expect(response).toMatchObject({
+		success: true,
+		data: {
+			steering: [{ text: "keep steering" }],
+			followUp: [{ text: "keep follow-up" }],
+			imagesDropped: true,
+		},
+	});
+});
+
+test("withdrawing oversized text returns an oldest-first prefix with an explicit truncation flag", () => {
+	const response = fitAbortAndRestoreQueueResponse(
+		"withdraw",
+		{
+			steering: [{ text: "oldest" }, { text: "newer".repeat(500) }],
+			followUp: [{ text: "latest" }],
+		},
+		200,
+	);
+	expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(200);
+	expect(response).toMatchObject({
+		success: true,
+		data: { steering: [{ text: "oldest" }], followUp: [], truncated: true },
+	});
 });

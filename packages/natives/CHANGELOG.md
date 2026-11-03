@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Breaking Changes
+
+- isoProbe and isoResolve now return Promises; await backend detection before using the result.
+- encodeSixel requires a fourth argument containing the packed 24-bit terminal background color.
+
+### Added
+
+- Add line numbering, folding, identity lookup, byte dumps, empty-directory removal and uptime shell utilities.
+- Add asynchronous parse-cache warming, lightweight parse status and configurable native-addon extraction directories.
+- Select macOS popup options and ISO-8601 dates while rejecting skipped or ambiguous local times.
+
+### Changed
+
+- Reduce tokenizer, search, listing and sort memory overhead and release idle Linux allocator pages.
+- Expand syntax highlighting languages, aliases, interpolations and PowerShell fences.
+
+### Fixed
+
+- Preserve explicit-file search results and center long-line windows on matches with their original columns.
+- Preserve persistent shell state after exit and errexit; cancel jobs and FIFO reads promptly while allowing TERM cleanup.
+- Correct globstar expansion, background redirection, descriptor lifetimes, Unicode reads, mapfile callbacks and sort/tail/jq edge cases.
+- Preserve important diagnostics during output minimization and report unreadable directories instead of empty results.
+- Composite transparent SIXEL against the terminal background, preserve CJK punctuation and recognize Kitty function keys.
+- Preserve collapsed HTML sections when requested.
+- Keep macOS window lookup available without Screen Recording permission and refresh permissions without blocking desktop capabilities.
+- Keep accessibility refs stable and make Chromium/Catalyst actions and permission failures actionable.
+- Preserve background input focus, release failed shortcut modifiers and retain exact pixel-scroll distance.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Changed

@@ -1,5 +1,3 @@
-
-
 pub use std::os::unix::fs::MetadataExt;
 use std::{
 	os::unix::{ffi::OsStringExt, fs::FileTypeExt},
@@ -75,9 +73,6 @@ fn try_get_file_mode(path: &Path) -> Option<u32> {
 	path.metadata().map(|metadata| metadata.mode()).ok()
 }
 
-
-
-
 pub fn split_paths<T: AsRef<std::ffi::OsStr> + ?Sized>(s: &T) -> std::env::SplitPaths<'_> {
 	std::env::split_paths(s)
 }
@@ -89,7 +84,6 @@ pub(crate) fn get_default_executable_search_paths() -> Vec<PathBuf> {
 	}
 	#[cfg(not(target_os = "android"))]
 	{
-
 		vec![
 			"/usr/local/sbin".into(),
 			"/usr/local/bin".into(),
@@ -101,14 +95,7 @@ pub(crate) fn get_default_executable_search_paths() -> Vec<PathBuf> {
 	}
 }
 
-
-
 pub fn get_default_standard_utils_paths() -> Vec<PathBuf> {
-
-
-
-
-
 	if let Ok(Some(cs_path)) = confstr_cs_path()
 		&& !cs_path.as_os_str().is_empty()
 	{
@@ -121,7 +108,6 @@ pub fn get_default_standard_utils_paths() -> Vec<PathBuf> {
 	}
 	#[cfg(not(target_os = "android"))]
 	{
-
 		vec![
 			"/bin".into(),
 			"/usr/bin".into(),
@@ -152,35 +138,15 @@ fn confstr_cs_path() -> Result<Option<PathBuf>, std::io::Error> {
 	}
 }
 
-
-
-
-
-
-
-
 #[cfg(not(target_os = "android"))]
 fn confstr(name: nix::libc::c_int) -> Result<Option<std::ffi::OsString>, std::io::Error> {
-
-
-
-
 	let required_size = unsafe { nix::libc::confstr(name, std::ptr::null_mut(), 0) };
-
-
-
-
 
 	if required_size == 0 {
 		return Ok(None);
 	}
 
 	let mut buffer = Vec::<u8>::with_capacity(required_size);
-
-
-
-
-
 
 	let final_size =
 		unsafe { nix::libc::confstr(name, buffer.as_mut_ptr().cast(), buffer.capacity()) };
@@ -189,21 +155,11 @@ fn confstr(name: nix::libc::c_int) -> Result<Option<std::ffi::OsString>, std::io
 		return Err(std::io::Error::last_os_error());
 	}
 
-
-
-
-
 	if final_size > buffer.capacity() {
 		return Err(std::io::Error::other("confstr needed more space than advertised"));
 	}
 
-
-
-
-
-
 	unsafe { buffer.set_len(final_size) };
-
 
 	if !matches!(buffer.pop(), Some(0)) {
 		return Err(std::io::Error::other("confstr did not null-terminate the returned string"));
@@ -211,7 +167,6 @@ fn confstr(name: nix::libc::c_int) -> Result<Option<std::ffi::OsString>, std::io
 
 	Ok(Some(std::ffi::OsString::from_vec(buffer)))
 }
-
 
 pub fn open_null_file() -> Result<std::fs::File, error::Error> {
 	let f = std::fs::File::options()
@@ -222,69 +177,41 @@ pub fn open_null_file() -> Result<std::fs::File, error::Error> {
 	Ok(f)
 }
 
-
-
 pub const fn try_open_special_file(_path: &Path) -> Option<Result<std::fs::File, std::io::Error>> {
 	None
 }
-
 
 pub fn get_system_profile_path() -> Option<&'static Path> {
 	Some(Path::new("/etc/profile"))
 }
 
-
 pub fn get_system_rc_path() -> Option<&'static Path> {
 	Some(Path::new("/etc/bash.bashrc"))
 }
-
-
-
 
 pub fn contains_path_separator(s: &str) -> bool {
 	s.contains('/')
 }
 
-
-
-
 pub fn ends_with_path_separator(s: &str) -> bool {
 	s.ends_with('/')
 }
-
-
-
 
 pub fn strip_path_separator_suffix(s: &str) -> &str {
 	s.strip_suffix('/').unwrap_or(s)
 }
 
-
-
-
 pub const fn default_case_insensitive_path_expansion() -> bool {
 	false
 }
-
-
-
 
 pub fn rfind_path_separator(s: &str) -> Option<usize> {
 	s.rfind('/')
 }
 
-
-
-
-
 pub fn split_path_for_pattern(s: &str) -> impl Iterator<Item = &str> {
 	s.split('/')
 }
-
-
-
-
-
 
 pub fn pattern_path_root(first_component: &str) -> Option<PathBuf> {
 	if first_component.is_empty() {
@@ -294,27 +221,13 @@ pub fn pattern_path_root(first_component: &str) -> Option<PathBuf> {
 	}
 }
 
-
-
-
 pub fn push_path_for_pattern(path: &mut std::path::PathBuf, component: &str) {
 	path.push(component);
 }
 
-
-
-
 pub const fn normalize_path_separators(s: &str) -> std::borrow::Cow<'_, str> {
 	std::borrow::Cow::Borrowed(s)
 }
-
-
-
-
-
-
-
-
 
 pub fn resolve_executable(path: PathBuf) -> Option<PathBuf> {
 	use crate::sys::fs::PathExt;
@@ -324,5 +237,3 @@ pub fn resolve_executable(path: PathBuf) -> Option<PathBuf> {
 		None
 	}
 }
-
-

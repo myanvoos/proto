@@ -25,13 +25,14 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
 			"supportsLongPromptCacheRetention": false,
 			"supportsPromptCacheBreakpoints": false,
 			"strictResponsesPairing": false,
-			"supportsImageDetailOriginal": true,
+			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
 			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
@@ -107,13 +108,14 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
 			"supportsLongPromptCacheRetention": false,
 			"supportsPromptCacheBreakpoints": false,
 			"strictResponsesPairing": false,
-			"supportsImageDetailOriginal": true,
+			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
 			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
@@ -189,13 +191,14 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
 			"supportsLongPromptCacheRetention": false,
 			"supportsPromptCacheBreakpoints": false,
 			"strictResponsesPairing": false,
-			"supportsImageDetailOriginal": true,
+			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
 			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},

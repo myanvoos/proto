@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import { getOAuthCredentialProvider, getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
@@ -71,7 +71,7 @@ import { readSessionLiveState } from "../../session/session-liveness";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
 import { buildSessionTrajectory } from "../../session/trajectory/session-source";
-import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
+import { type LogoutAccount, listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
 import {
 	describeRedeemOutcome,
 	type ResetUsageAccount,
@@ -108,6 +108,7 @@ import { AssistantMessageComponent } from "../components/assistant-message";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { HistorySearchComponent } from "../components/history-search";
+import { HookEditorComponent } from "../components/hook-editor";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
 import { ModelHubComponent, type ModelRoleSelectionScope } from "../components/model-hub";
@@ -137,7 +138,15 @@ import {
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
+type MenuKind = "settings" | "model-picker" | "model-hub";
+interface OpenMenu {
+	component?: Component;
+	handle?: OverlayHandle;
+	mount?: () => OverlayHandle;
+}
+
 export class SelectorController {
+	#openMenus = new Map<MenuKind, OpenMenu>();
 	#agentsViewState: AgentsViewPersistentState | undefined;
 	/** A committed palette change owes the already-printed transcript a repaint. */
 	#paletteDirty = false;
@@ -157,6 +166,34 @@ export class SelectorController {
 		return handle;
 	}
 
+	#focusOpenMenu(kind: MenuKind): boolean {
+		const menu = this.#openMenus.get(kind);
+		if (!menu) return false;
+		if (menu.component) {
+			const stack = this.ctx.ui.overlayStack;
+			const index = stack?.findIndex(entry => entry.component === menu.component) ?? -1;
+			if (menu.mount && index >= 0 && stack.slice(index + 1).some(entry => !entry.hidden)) {
+				menu.handle?.hide();
+				menu.handle = menu.mount();
+			} else {
+				this.ctx.ui.setFocus(menu.component);
+			}
+		}
+		this.ctx.ui.requestRender();
+		return true;
+	}
+
+	#releaseMenu(kind: MenuKind, menu: OpenMenu): void {
+		if (this.#openMenus.get(kind) === menu) this.#openMenus.delete(kind);
+	}
+
+	#mountMenu(kind: MenuKind, menu: OpenMenu, component: Component, mount: () => OverlayHandle): void {
+		menu.component = component;
+		menu.mount = mount;
+		menu.handle = mount();
+		this.#openMenus.set(kind, menu);
+	}
+
 	#defaultRoleMutationTail = Promise.resolve();
 
 	async #acquireDefaultRoleMutation(): Promise<() => void> {
@@ -172,7 +209,7 @@ export class SelectorController {
 		await Promise.all(
 			oauthProviders.map(provider =>
 				this.ctx.session.modelRegistry
-					.getApiKeyForProvider(provider.id, this.ctx.session.sessionId)
+					.getApiKeyForProvider(getOAuthCredentialProvider(provider.id), this.ctx.session.sessionId)
 					.catch(() => undefined),
 			),
 		);
@@ -204,83 +241,91 @@ export class SelectorController {
 	}
 
 	showSettingsSelector(): void {
-		getAvailableThemes().then(availableThemes => {
-			let overlayHandle: OverlayHandle | undefined;
-			const done = () => {
-				overlayHandle?.hide();
-				this.focusActiveEditorArea();
-				// Deferred to here on purpose: the repaint erases native scrollback and
-				// re-emits the transcript, which must happen once the dialog is down and
-				// the normal buffer owns the screen again.
-				if (this.#paletteDirty) {
-					this.#paletteDirty = false;
-					this.ctx.ui.requestRender(true, { clearScrollback: true });
-					return;
-				}
-				this.ctx.ui.requestRender();
-			};
-			const selector = new SettingsSelectorComponent(
-				{
-					availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
-					thinkingLevel: this.ctx.session.thinkingLevel,
-					availableThemes,
-					providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
-						(a, b) => a.localeCompare(b),
-					),
-					cwd: getProjectDir(),
-					requestRender: () => this.ctx.ui.requestRender(),
-				},
-				{
-					onChange: (id, value) => this.handleSettingChange(id, value),
-					onThemePreview: async themeName => {
-						const result = await previewTheme(themeName);
-						if (result.success) {
-							this.ctx.statusLine.invalidate();
-							this.ctx.ui.invalidate();
+		if (this.#focusOpenMenu("settings")) return;
+		const menu: OpenMenu = {};
+		this.#openMenus.set("settings", menu);
+		getAvailableThemes()
+			.then(availableThemes => {
+				const done = () => {
+					menu.handle?.hide();
+					this.#releaseMenu("settings", menu);
+					this.focusActiveEditorArea();
+					// Deferred to here on purpose: the repaint erases native scrollback and
+					// re-emits the transcript, which must happen once the dialog is down and
+					// the normal buffer owns the screen again.
+					if (this.#paletteDirty) {
+						this.#paletteDirty = false;
+						this.ctx.ui.requestRender(true, { clearScrollback: true });
+						return;
+					}
+					this.ctx.ui.requestRender();
+				};
+				const selector = new SettingsSelectorComponent(
+					{
+						availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
+						thinkingLevel: this.ctx.session.thinkingLevel,
+						availableThemes,
+						providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
+							(a, b) => a.localeCompare(b),
+						),
+						cwd: getProjectDir(),
+						requestRender: () => this.ctx.ui.requestRender(),
+					},
+					{
+						onChange: (id, value) => this.handleSettingChange(id, value),
+						onThemePreview: async themeName => {
+							const result = await previewTheme(themeName);
+							if (result.success) {
+								this.ctx.statusLine.invalidate();
+								this.ctx.ui.invalidate();
+								this.ctx.ui.requestRender();
+							}
+						},
+						onStatusLinePreview: previewSettings => {
+							this.ctx.statusLine.updateSettings({
+								leftSegments: settings.get("statusLine.leftSegments"),
+								rightSegments: settings.get("statusLine.rightSegments"),
+								separator: settings.get("statusLine.separator"),
+								showHookStatus: settings.get("statusLine.showHookStatus"),
+								transparent: settings.get("statusLine.transparent"),
+								compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+								...previewSettings,
+							});
 							this.ctx.ui.requestRender();
-						}
-					},
-					onStatusLinePreview: previewSettings => {
-						this.ctx.statusLine.updateSettings({
-							leftSegments: settings.get("statusLine.leftSegments"),
-							rightSegments: settings.get("statusLine.rightSegments"),
-							separator: settings.get("statusLine.separator"),
-							showHookStatus: settings.get("statusLine.showHookStatus"),
-							transparent: settings.get("statusLine.transparent"),
-							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-							...previewSettings,
-						});
-						this.ctx.ui.requestRender();
-					},
-					getStatusLinePreview: width => {
-						const { locationLine, capabilityLine } = this.ctx.statusLine.renderQuietLines(width);
-						return [locationLine, capabilityLine].filter(line => line !== null);
-					},
-					onPluginsChanged: async () => {
-						const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());
-						clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-						await this.ctx.refreshSkillState();
-						await this.ctx.refreshSlashCommandState();
-						resetCapabilities();
-						this.ctx.ui.requestRender();
-					},
-					onCancel: () => {
-						done();
+						},
+						getStatusLinePreview: width => {
+							const { locationLine, capabilityLine } = this.ctx.statusLine.renderQuietLines(width);
+							return [locationLine, capabilityLine].filter(line => line !== null);
+						},
+						onPluginsChanged: async () => {
+							const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());
+							clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+							await this.ctx.refreshSkillState();
+							await this.ctx.refreshSlashCommandState();
+							resetCapabilities();
+							this.ctx.ui.requestRender();
+						},
+						onCancel: () => {
+							done();
 
-						this.ctx.statusLine.updateSettings({
-							leftSegments: settings.get("statusLine.leftSegments"),
-							rightSegments: settings.get("statusLine.rightSegments"),
-							separator: settings.get("statusLine.separator"),
-							showHookStatus: settings.get("statusLine.showHookStatus"),
-							transparent: settings.get("statusLine.transparent"),
-							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-						});
-						this.ctx.ui.requestRender();
+							this.ctx.statusLine.updateSettings({
+								leftSegments: settings.get("statusLine.leftSegments"),
+								rightSegments: settings.get("statusLine.rightSegments"),
+								separator: settings.get("statusLine.separator"),
+								showHookStatus: settings.get("statusLine.showHookStatus"),
+								transparent: settings.get("statusLine.transparent"),
+								compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+							});
+							this.ctx.ui.requestRender();
+						},
 					},
-				},
-			);
-			overlayHandle = this.#showFullscreenMenu(selector);
-		});
+				);
+				this.#mountMenu("settings", menu, selector, () => this.#showFullscreenMenu(selector));
+			})
+			.catch((error: unknown) => {
+				this.#releaseMenu("settings", menu);
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+			});
 	}
 
 	showAdvisorConfigure(): void {
@@ -366,13 +411,15 @@ export class SelectorController {
 	showHistorySearch(): void {
 		const historyStorage = this.ctx.historyStorage;
 		if (!historyStorage) return;
+		const focused = this.ctx.ui.getFocused();
+		const target = focused instanceof HookEditorComponent ? focused : this.ctx.editor;
 
 		this.showSelector(done => {
 			const component = new HistorySearchComponent(
 				historyStorage,
 				prompt => {
 					done();
-					this.ctx.editor.setText(prompt);
+					target.setText(prompt);
 					this.ctx.ui.requestRender();
 				},
 				() => {
@@ -799,16 +846,18 @@ export class SelectorController {
 	}
 
 	#showModelPicker(): void {
+		if (this.#focusOpenMenu("model-picker")) return;
+		const menu: OpenMenu = {};
 		const currentContextTokens = this.#modelSession.getContextUsage()?.tokens ?? 0;
 		const current = this.#modelSession.model;
 		const quickRoleOrder = this.ctx.settings.get("cycleOrder");
 		const quickRoleCycle = this.#modelSession.getRoleModelCycle(quickRoleOrder);
-		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 		const done = () => {
 			if (closed) return;
 			closed = true;
-			overlayHandle?.hide();
+			menu.handle?.hide();
+			this.#releaseMenu("model-picker", menu);
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
@@ -875,25 +924,31 @@ export class SelectorController {
 				currentQuickRole: quickRoleCycle?.models[quickRoleCycle.currentIndex]?.role,
 			},
 		);
-		overlayHandle = this.ctx.ui.showOverlay(picker, {
-			anchor: "bottom-center",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
+		this.#mountMenu("model-picker", menu, picker, () => {
+			const handle = this.ctx.ui.showOverlay(picker, {
+				anchor: "bottom-center",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			});
+			this.ctx.ui.setFocus(picker);
+			return handle;
 		});
 		this.ctx.ui.setFocus(picker);
 		this.ctx.ui.requestRender();
 	}
 
 	#showModelHub(hubOptions: { initialProviderId?: string }): void {
-		let overlayHandle: OverlayHandle | undefined;
+		if (this.#focusOpenMenu("model-hub")) return;
+		const menu: OpenMenu = {};
 		let hub: ModelHubComponent | undefined;
 		let closed = false;
 		const done = () => {
 			if (closed) return;
 			closed = true;
 			hub?.dispose();
-			overlayHandle?.hide();
+			menu.handle?.hide();
+			this.#releaseMenu("model-hub", menu);
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
@@ -1004,18 +1059,17 @@ export class SelectorController {
 							const fallbackProvenance = this.ctx.settings.getModelRoleProvenance("default");
 							const exposesPersistedFallback =
 								fallbackProvenance === "project" || fallbackProvenance === "global";
-							if (
-								fallbackRoleValue &&
-								fallbackRoleValue !== previousEffectiveRoleValue &&
-								exposesPersistedFallback
-							) {
+							if (fallbackRoleValue && exposesPersistedFallback) {
 								const scopedModels = this.#modelSession.scopedModels.map(sm => sm.model);
 								const availableModels =
 									scopedModels.length > 0 ? scopedModels : this.#modelSession.getAvailableModels();
 								const resolved = resolveModelRoleValue(fallbackRoleValue, availableModels, {
 									settings: this.ctx.settings,
 								});
-								if (resolved.model) {
+								const live = this.#modelSession.model;
+								const liveDiffers =
+									!live || live.provider !== resolved.model?.provider || live.id !== resolved.model.id;
+								if (resolved.model && (fallbackRoleValue !== previousEffectiveRoleValue || liveDiffers)) {
 									let fallbackThinking = resolved.explicitThinkingLevel ? resolved.thinkingLevel : undefined;
 									if (fallbackThinking === undefined) {
 										fallbackThinking = parseThinkingLevel(this.ctx.settings.get("defaultThinkingLevel"));
@@ -1030,6 +1084,7 @@ export class SelectorController {
 									}
 									this.ctx.statusLine.invalidate();
 									this.ctx.updateEditorBorderColor();
+									this.ctx.showStatus(`Default model: ${resolved.model.provider}/${resolved.model.id}`);
 								}
 							}
 						}
@@ -1074,7 +1129,7 @@ export class SelectorController {
 				initialProviderId: hubOptions.initialProviderId,
 			},
 		);
-		overlayHandle = this.#showFullscreenMenu(hub);
+		this.#mountMenu("model-hub", menu, hub, () => this.#showFullscreenMenu(hub!));
 	}
 
 	async #loginThenReopenModelHub(providerId: string): Promise<void> {
@@ -1693,6 +1748,7 @@ export class SelectorController {
 		const parkedTarget = switchingToDifferentSession ? detachedSessionHolder.take(sessionPath) : undefined;
 
 		let swappedIn = false;
+		let modelFallbackWarning: string | undefined;
 		if (parkedTarget) {
 			if (!parkedOurs) await this.ctx.session.dispose();
 			if (!AgentRegistry.global().activateSession(MAIN_AGENT_ID, parkedTarget.session)) {
@@ -1704,6 +1760,9 @@ export class SelectorController {
 		} else if (!parkedOurs) {
 			// AgentSession owns the transaction: a declined or failed cwd change restores the source session.
 			const switched = await this.ctx.session.switchSession(sessionPath, {
+				onModelFallback: warning => {
+					modelFallbackWarning = warning;
+				},
 				onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
 			});
 			if (!switched) return false;
@@ -1761,6 +1820,7 @@ export class SelectorController {
 			status += ` · cannot enter ${shortenPath(inaccessibleProject)}, staying in ${shortenPath(newCwd)}`;
 		}
 		this.ctx.showStatus(`${status}${evictionNote}`);
+		if (modelFallbackWarning) this.ctx.showWarning(modelFallbackWarning);
 		return true;
 	}
 
@@ -1834,7 +1894,12 @@ export class SelectorController {
 				onManualCodeInput: useManualInput ? () => dialog.showManualInput(MANUAL_LOGIN_PROMPT) : undefined,
 			});
 
-			await this.ctx.session.modelRegistry.refreshProvider(providerId, "online");
+			await this.ctx.session.modelRegistry.refreshProvider(getOAuthCredentialProvider(providerId), "online");
+			try {
+				await this.ctx.refreshScopedModelsAfterLogin?.();
+			} catch (error) {
+				logger.warn("Scoped model refresh after login failed", { error: String(error) });
+			}
 			const block = new TranscriptBlock();
 
 			const who = formatLoginIdentity(identity);
@@ -1864,14 +1929,17 @@ export class SelectorController {
 
 	async #handleCredentialLogout(providerId: string, account: LogoutAccount): Promise<void> {
 		try {
-			const authStorage = this.ctx.session.modelRegistry.authStorage;
-			const removed = await authStorage.removeCredential(providerId, account.credentialId);
+			const { removed, remainingSource } = await logoutCredential(
+				this.ctx.session.modelRegistry,
+				providerId,
+				account.credentialId,
+				this.ctx.session.sessionId,
+			);
 			if (!removed) {
 				this.ctx.showError(`Logout skipped: ${account.label} is no longer stored for ${providerId}.`);
 				return;
 			}
 
-			await this.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			const block = new TranscriptBlock();
 			block.addChild(
 				new Text(
@@ -1884,7 +1952,7 @@ export class SelectorController {
 				),
 			);
 			block.addChild(new Text(theme.fg("dim", `Credential removed from ${getAgentDbPath()}`), 1, 0));
-			const remainingSource = authStorage.describeCredentialSource(providerId, this.ctx.session.sessionId);
+
 			if (remainingSource) {
 				block.addChild(
 					new Text(theme.fg("warning", `${providerId} is still authenticated via ${remainingSource}`), 1, 0),
@@ -1898,8 +1966,9 @@ export class SelectorController {
 
 	async #showOAuthLogoutAccountSelector(providerId: string): Promise<void> {
 		const authStorage = this.ctx.session.modelRegistry.authStorage;
+		let accounts: LogoutAccount[];
 		try {
-			await authStorage.reload();
+			accounts = await listLogoutAccounts(authStorage, providerId, this.ctx.session.sessionId);
 		} catch (error: unknown) {
 			this.ctx.showError(
 				`Could not load stored credentials: ${error instanceof Error ? error.message : String(error)}`,
@@ -1907,10 +1976,7 @@ export class SelectorController {
 			return;
 		}
 		const provider = getOAuthProviders().find(candidate => candidate.id === providerId);
-		const accounts = toLogoutAccounts(providerId, authStorage.listStoredCredentials(providerId), {
-			activeIdentity: authStorage.getOAuthAccountIdentity(providerId, this.ctx.session.sessionId),
-			activeApiKey: authStorage.getCredentialOrigin(providerId)?.kind === "api_key",
-		});
+
 		if (accounts.length === 0) {
 			const source = authStorage.describeCredentialSource(providerId, this.ctx.session.sessionId);
 			const suffix = source ? ` Current auth comes from ${source}; remove that source to log out.` : "";

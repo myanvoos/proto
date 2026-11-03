@@ -392,61 +392,83 @@ fn hard_kind_general(c: char) -> HardKind {
 	}
 }
 
-fn push_run(runs: &mut Vec<Run>, s: &str, cls: Class, start: usize, end: usize) {
-	if cls != Class::Hard {
-		runs.push(Run { cls, start, end });
-		return;
-	}
-	let body = &s[start..end];
-	let mut chars = body.char_indices();
-	let Some((_, first)) = chars.next() else {
-		return;
-	};
-	let mut sub_start = start;
-	let mut kind = hard_kind(first);
-	for (off, ch) in chars {
-		if is_variation_selector(ch) || hard_kind(ch) == kind {
-			continue;
-		}
-		runs.push(Run { cls: Class::Hard, start: sub_start, end: start + off });
-		sub_start = start + off;
-		kind = hard_kind(ch);
-	}
-	runs.push(Run { cls: Class::Hard, start: sub_start, end });
+fn hard_sub_end(s: &str, start: usize, end: usize) -> usize {
+	let mut chars = s[start..end].char_indices();
+	let kind = chars.next().map(|(_, first)| hard_kind(first));
+	chars
+		.find(|&(_, ch)| !is_variation_selector(ch) && Some(hard_kind(ch)) != kind)
+		.map_or(end, |(off, _)| start + off)
 }
 
-fn split_runs(s: &str) -> Vec<Run> {
-	let mut runs: Vec<Run> = Vec::with_capacity(s.len() / 3 + 8);
-	let mut chars = s.char_indices();
-	let Some((_, first)) = chars.next() else {
-		return runs;
-	};
-	let mut start = 0usize;
-	let mut cls = classify(first);
-	if cls == Class::Wordy && is_stray_mark(first) {
-		cls = Class::StrayMark;
-	}
-	for (i, ch) in chars {
-		let c = classify(ch);
+/// The text split into maximal same-class runs, with terminal marks as
+/// unmarked separators and HARD runs split where the pretoken kind changes.
+/// Lazy: [`stream_norm`] looks at most two runs back and one ahead, so the
+/// runs are never collected.
+struct Runs<'a> {
+	s:     &'a str,
+	chars: std::str::CharIndices<'a>,
+	/// The open run's start and class; `None` once the text is exhausted.
+	open:  Option<(usize, Class)>,
+	/// A closed HARD run's remainder still to split into sub-runs.
+	hard:  Option<(usize, usize)>,
+}
 
-		if cls == Class::StrayMark && c == Class::Wordy && is_stray_mark(ch) {
-			continue;
-		}
-		if c == cls {
-			continue;
-		}
-		if c == Class::Wordy && cls != Class::Wordy && is_stray_mark(ch) {
-			push_run(&mut runs, s, cls, start, i);
-			start = i;
-			cls = Class::StrayMark;
-			continue;
-		}
-		push_run(&mut runs, s, cls, start, i);
-		start = i;
-		cls = c;
+impl<'a> Runs<'a> {
+	fn new(s: &'a str) -> Self {
+		let mut chars = s.char_indices();
+		let open = chars.next().map(|(_, first)| {
+			let cls = classify(first);
+			// Nothing in front of it, so no letter can be its base.
+			let cls = if cls == Class::Wordy && is_stray_mark(first) {
+				Class::StrayMark
+			} else {
+				cls
+			};
+			(0, cls)
+		});
+		Self { s, chars, open, hard: None }
 	}
-	push_run(&mut runs, s, cls, start, s.len());
-	runs
+
+	/// Emit the closed run `start..end`, splitting a HARD run into sub-runs.
+	fn close(&mut self, cls: Class, start: usize, end: usize) -> Run {
+		if cls != Class::Hard {
+			return Run { cls, start, end };
+		}
+		let sub_end = hard_sub_end(self.s, start, end);
+		self.hard = (sub_end < end).then_some((sub_end, end));
+		Run { cls, start, end: sub_end }
+	}
+}
+
+impl Iterator for Runs<'_> {
+	type Item = Run;
+
+	fn next(&mut self) -> Option<Run> {
+		if let Some((start, end)) = self.hard {
+			return Some(self.close(Class::Hard, start, end));
+		}
+		let (start, cls) = self.open?;
+		while let Some((i, ch)) = self.chars.next() {
+			let c = classify(ch);
+			// Consecutive unattached marks are one regex-style run; an accent
+			// riding a separator run opens a stray word like any other.
+			if cls == Class::StrayMark && c == Class::Wordy && is_stray_mark(ch) {
+				continue;
+			}
+			if c == cls {
+				continue;
+			}
+			let next = if c == Class::Wordy && cls != Class::Wordy && is_stray_mark(ch) {
+				Class::StrayMark
+			} else {
+				c
+			};
+			self.open = Some((i, next));
+			return Some(self.close(cls, start, i));
+		}
+		self.open = None;
+		Some(self.close(cls, start, self.s.len()))
+	}
 }
 
 enum CaseForm {
@@ -534,39 +556,10 @@ fn case_form(span: &str, allcaps_min: Option<usize>, head_mark: bool) -> CaseFor
 	CaseForm::Literal
 }
 
-fn emit_case_body(span: &str, form: &CaseForm, out: &mut Vec<u8>) {
-	match form {
-		CaseForm::Literal => out.extend_from_slice(span.as_bytes()),
-
-		CaseForm::Shift | CaseForm::Caps => {
-			if span.is_ascii() {
-				out.extend(span.bytes().map(|b| b.to_ascii_lowercase()));
-			} else {
-				for c in span.chars() {
-					push_lower(c, out);
-				}
-			}
-		},
-		CaseForm::ShiftKeepDotted => {
-			let mut chars = span.chars();
-			push_lower(chars.next().expect("run bodies are non-empty"), out);
-			for c in chars {
-				if c == 'İ' {
-					push_char(c, out);
-				} else {
-					push_lower(c, out);
-				}
-			}
-		},
-	}
-}
-
-const fn opens_word(s: &str, runs: &[Run], i: usize) -> bool {
-	let r = &runs[i];
+fn opens_word(s: &str, r: &Run, next: Option<&Run>) -> bool {
 	r.end - r.start == 1
 		&& s.as_bytes()[r.start] == b'\''
-		&& i + 1 < runs.len()
-		&& matches!(runs[i + 1].cls, Class::Wordy | Class::StrayMark)
+		&& next.is_some_and(|n| matches!(n.cls, Class::Wordy | Class::StrayMark))
 }
 
 fn takes_right_border(s: &str, run: &Run) -> bool {
@@ -576,19 +569,17 @@ fn takes_right_border(s: &str, run: &Run) -> bool {
 		|| (matches!(run.cls, Class::Digit | Class::Hard) && is_digit_run(body) && digit_eow(body))
 }
 
-fn contraction_seam(s: &str, runs: &[Run], i: usize) -> bool {
-	if i == 0 {
+fn contraction_seam(s: &str, r: &Run, prev: Option<&Run>, prev2: Option<&Run>) -> bool {
+	let Some(prev) = prev else {
 		return false;
-	}
-	let r = &runs[i];
+	};
 	if !is_contraction_suffix(&s.as_bytes()[r.start..r.end]) {
 		return false;
 	}
-	let prev = &runs[i - 1];
 	if prev.cls != Class::Punct || prev.end - prev.start != 1 || s.as_bytes()[prev.start] != b'\'' {
 		return false;
 	}
-	i < 2 || !takes_right_border(s, &runs[i - 2])
+	prev2.is_none_or(|p2| !takes_right_border(s, p2))
 }
 
 pub fn raw_head_space_units<U: Unit>(units: &[U]) -> bool {
@@ -621,33 +612,125 @@ const fn prev_char_start(out: &[u8], at: usize) -> usize {
 	start
 }
 
-fn push_bow(out: &mut Vec<u8>, guard: &mut usize) {
-	let mut case_at = out.len();
-	while case_at >= 1 && matches!(out[case_at - 1], SHIFT | CAPS) {
-		case_at -= 1;
+struct Stream<F: FnMut(&[u8])> {
+	out:     Vec<u8>,
+	/// Stream bytes already handed to `sink`.
+	flushed: usize,
+	/// Stream offset just past the last seam-dropped space's ⟨bow⟩.
+	guard:   usize,
+	sink:    F,
+}
+
+impl<F: FnMut(&[u8])> Stream<F> {
+	/// Large enough that normalization and tiling alternate rarely: at 4 KiB
+	/// their tables evicted each other often enough to cost ~2% of a count.
+	const CHUNK: usize = 128 * 1024;
+	const KEEP: usize = 8;
+
+	/// Write ⟨bow⟩, applying the seam law: in `⟨eow⟩ ' ' [case markers] ⟨bow⟩`
+	/// the space is not written as a character. The character before the
+	/// ⟨eow⟩ has to start at or after `guard`, which is what keeps the
+	/// rewrite non-overlapping and left-to-right, exactly as `re.sub` scans.
+	fn push_bow(&mut self) {
+		let out = &mut self.out;
+		let mut case_at = out.len();
+		while case_at >= 1 && matches!(out[case_at - 1], SHIFT | CAPS) {
+			case_at -= 1;
+		}
+		// `case_at` is where this run's case markers begin: a seam needs ⟨eow⟩
+		// and a space in front of them, plus a character before the ⟨eow⟩
+		// that no earlier seam has consumed. A flush always leaves `KEEP`
+		// bytes, so `case_at >= 3` holds here whenever it does stream-wide.
+		let seam = case_at >= 3
+			&& out[case_at - 1] == b' '
+			&& out[case_at - 2] == EOW
+			&& self.flushed + prev_char_start(out, case_at - 2) >= self.guard;
+		if seam {
+			// Drop the space, sliding this run's case markers down over it.
+			out.copy_within(case_at.., case_at - 1);
+			out.truncate(out.len() - 1);
+		}
+		out.push(BOW);
+		if seam {
+			self.guard = self.flushed + out.len();
+		}
 	}
 
-	let seam = case_at >= 3
-		&& out[case_at - 1] == b' '
-		&& out[case_at - 2] == EOW
-		&& prev_char_start(out, case_at - 2) >= *guard;
-	if seam {
-		out.copy_within(case_at.., case_at - 1);
-		out.truncate(out.len() - 1);
+	/// Append run text; a long run streams straight through to `sink`.
+	fn text(&mut self, body: &[u8]) {
+		if body.len() <= Self::CHUNK {
+			self.out.extend_from_slice(body);
+			return;
+		}
+		(self.sink)(&self.out);
+		let k = body.len() - Self::KEEP;
+		(self.sink)(&body[..k]);
+		self.flushed += self.out.len() + k;
+		self.out.clear();
+		self.out.extend_from_slice(&body[k..]);
 	}
-	out.push(BOW);
-	if seam {
-		*guard = out.len();
+
+	/// Append a word body in its case form. A lowered body is written
+	/// `CHUNK` source bytes at a time with a flush between, so a long word
+	/// never sits whole in `out` any more than a long literal run does.
+	fn case_body(&mut self, span: &str, form: &CaseForm) {
+		// `case_form` never opens a `ShiftKeepDotted` span with İ, so keeping
+		// every İ is keeping all but the first character's: no piece needs to
+		// know whether it holds the span's head.
+		let keep_dotted = match form {
+			CaseForm::Literal => return self.text(span.as_bytes()),
+			CaseForm::Shift | CaseForm::Caps => false,
+			CaseForm::ShiftKeepDotted => true,
+		};
+		let mut rest = span;
+		while !rest.is_empty() {
+			let (piece, tail) = rest.split_at(rest.floor_char_boundary(Self::CHUNK));
+			if piece.is_ascii() {
+				self
+					.out
+					.extend(piece.bytes().map(|b| b.to_ascii_lowercase()));
+			} else {
+				// Per-char lowering never applies Final_Sigma, so Σ lowers to
+				// σ everywhere — exactly the oracle's ⟨caps⟩ body spelling.
+				for c in piece.chars() {
+					if keep_dotted && c == 'İ' {
+						push_char(c, &mut self.out);
+					} else {
+						push_lower(c, &mut self.out);
+					}
+				}
+			}
+			self.settle();
+			rest = tail;
+		}
+	}
+
+	/// Flush all but the rewritable tail once the buffer is large.
+	fn settle(&mut self) {
+		if self.out.len() > Self::CHUNK {
+			let k = self.out.len() - Self::KEEP;
+			(self.sink)(&self.out[..k]);
+			self.out.drain(..k);
+			self.flushed += k;
+		}
 	}
 }
 
-pub fn stream_norm(norm: &str, p: &FrameParams, raw_head_space: bool) -> Vec<u8> {
+/// The marked stream over already-normalized text, in the internal marked
+/// form, delivered to `sink` in order as consecutive chunks. A WORDY run is
+/// bracketed by ⟨bow⟩/⟨eow⟩ and case-normalized; the ⟨eow⟩⟨bow⟩ seam encodes
+/// a single space between two such runs; punct, digit, separator and
+/// stray-mark runs receive their measured boundary markers.
+pub fn stream_norm(norm: &str, p: &FrameParams, raw_head_space: bool, sink: impl FnMut(&[u8])) {
 	let mut s = norm;
-
+	// The frame's tail for a ladder family; a "free" family was stripped on
+	// the raw text instead (see `content_token_count`).
 	if p.ladder {
 		s = s.trim_end_matches('\n');
 	}
-
+	// A single leading space is dropped where the frame ends in ⟨bow⟩: that
+	// ⟨bow⟩ is the space (' a' = 1). Two or more are a whitespace-run token
+	// and stay.
 	if p.frame_bow
 		&& raw_head_space
 		&& s.as_bytes().first() == Some(&b' ')
@@ -656,100 +739,123 @@ pub fn stream_norm(norm: &str, p: &FrameParams, raw_head_space: bool) -> Vec<u8>
 		s = &s[1..];
 	}
 
-	let runs = split_runs(s);
-	if runs.is_empty() {
-		return if p.frame_bow { vec![BOW] } else { Vec::new() };
-	}
+	let mut stream = Stream { out: Vec::with_capacity(256), flushed: 0, guard: 0, sink };
+	let mut runs = Runs::new(s);
+	let Some(first) = runs.next() else {
+		// Content that normalizes away entirely still pays for the frame's
+		// ⟨bow⟩; with nothing to attach to it, it tiles as itself.
+		if p.frame_bow {
+			(stream.sink)(&[BOW]);
+		}
+		return;
+	};
 	let bytes = s.as_bytes();
 
-	let borders_space = |i: usize, side: isize| -> bool {
-		let at = i as isize + side;
-		if at < 0 {
-			return p.frame_bow;
-		}
-		let at = at as usize;
-		if at >= runs.len() {
-			return false;
-		}
-		let r = &runs[at];
+	// Whether the neighbor run on side `side` (-1 left, +1 right) supplies a
+	// border space; `None` is the message edge.
+	let borders_space = |neighbor: Option<&Run>, side: isize| -> bool {
+		let Some(r) = neighbor else {
+			// Message start counts: the frame ends in ⟨bow⟩, which is a
+			// space. Message end does not: the trailing frame is not a space.
+			return side < 0 && p.frame_bow;
+		};
 		if r.cls != Class::Space {
 			return false;
 		}
 		if side < 0 {
 			bytes[r.end - 1] == b' '
 		} else {
+			// Run-kills-marker: a right-hand marker is written for the seam
+			// space only, never before a run of two or more spaces.
 			bytes[r.start] == b' ' && (r.end - r.start < 2 || bytes[r.start + 1] != b' ')
 		}
 	};
 
-	let mut out: Vec<u8> = Vec::with_capacity(s.len() + s.len() / 2 + 16);
+	// The window of runs every rule reads: two back, the current one, one ahead.
+	let (mut prev2, mut prev): (Option<Run>, Option<Run>) = (None, None);
+	let mut cur = first;
+	let mut next = runs.next();
 
-	let mut guard = 0usize;
-	let head_quote = opens_word(s, &runs, 0);
-	let first = &runs[0];
-	let first_body = &s[first.start..first.end];
+	let head_quote = opens_word(s, &cur, next.as_ref());
+	let first_body = &s[cur.start..cur.end];
 	let has_own_bow = !head_quote
-		&& (matches!(first.cls, Class::Wordy | Class::Punct | Class::StrayMark)
+		&& (matches!(cur.cls, Class::Wordy | Class::Punct | Class::StrayMark)
 			|| hard_bow(first_body)
-			|| (matches!(first.cls, Class::Digit | Class::Hard) && digit_bow(first_body))
-			|| (first.cls == Class::Space && bytes[first.start] == b' '));
+			|| (matches!(cur.cls, Class::Digit | Class::Hard) && digit_bow(first_body))
+			|| (cur.cls == Class::Space && bytes[cur.start] == b' '));
 	if !has_own_bow && p.frame_bow {
-		if head_quote {
-			out.push(b' ');
-		} else {
-			out.push(BOW);
-		}
+		// The frame ends in ⟨bow⟩, always; a run that supplies none leaves it
+		// to be written here, where it tiles as itself. A word-opening `'`
+		// receives the frame's space as the character it is.
+		stream.out.push(if head_quote { b' ' } else { BOW });
 	}
 
-	for i in 0..runs.len() {
-		let r = &runs[i];
+	loop {
+		let r = &cur;
 		let body = &s[r.start..r.end];
 		match r.cls {
 			Class::Wordy => {
-				let fused = i > 0 && runs[i - 1].cls == Class::StrayMark;
+				// Flanked on both sides, except where a contraction apostrophe
+				// is already its opening boundary or an unattached mark run
+				// already opened this word.
+				let fused = prev.is_some_and(|left| left.cls == Class::StrayMark);
 				let form = case_form(body, p.allcaps_min, fused);
 				match form {
-					CaseForm::Shift | CaseForm::ShiftKeepDotted => out.push(SHIFT),
-					CaseForm::Caps => out.push(CAPS),
+					CaseForm::Shift | CaseForm::ShiftKeepDotted => stream.out.push(SHIFT),
+					CaseForm::Caps => stream.out.push(CAPS),
 					CaseForm::Literal => {},
 				}
-				if !(fused || contraction_seam(s, &runs, i)) {
-					push_bow(&mut out, &mut guard);
+				if !(fused || contraction_seam(s, r, prev.as_ref(), prev2.as_ref())) {
+					stream.push_bow();
 				}
-				emit_case_body(body, &form, &mut out);
-				out.push(EOW);
+				stream.case_body(body, &form);
+				stream.out.push(EOW);
 			},
 			Class::StrayMark => {
-				push_bow(&mut out, &mut guard);
-				out.extend_from_slice(body.as_bytes());
-				let letter_follows = i + 1 < runs.len() && runs[i + 1].cls == Class::Wordy;
-				if !letter_follows {
-					out.push(EOW);
+				// A stray-mark pretoken is a word: ⟨bow⟩ on the left always,
+				// ⟨eow⟩ on the right against everything except a letter, which
+				// is the rest of the same word.
+				stream.push_bow();
+				stream.text(body.as_bytes());
+				if !next.is_some_and(|n| n.cls == Class::Wordy) {
+					stream.out.push(EOW);
 				}
 			},
 			_ if r.cls == Class::Punct || hard_bow(body) || hard_eow(body) => {
-				let takes_bow = borders_space(i, -1)
-					&& !opens_word(s, &runs, i)
+				// A punct span is marked only on the side that borders
+				// whitespace: `a! b` gets `!⟨eow⟩`, `a!b` a bare `!`.
+				let takes_bow = borders_space(prev.as_ref(), -1)
+					&& !opens_word(s, r, next.as_ref())
 					&& (r.cls == Class::Punct || hard_bow(body));
 				if takes_bow {
-					push_bow(&mut out, &mut guard);
+					stream.push_bow();
 				}
-				out.extend_from_slice(body.as_bytes());
-				if borders_space(i, 1) && (r.cls == Class::Punct || hard_eow(body)) {
-					out.push(EOW);
+				stream.text(body.as_bytes());
+				if borders_space(next.as_ref(), 1) && (r.cls == Class::Punct || hard_eow(body)) {
+					stream.out.push(EOW);
 				}
 			},
 			Class::Digit | Class::Hard if is_digit_run(body) => {
-				if digit_bow(body) && borders_space(i, -1) {
-					push_bow(&mut out, &mut guard);
+				// Same border markers as punctuation, decided per border
+				// character; deliberately no lookback across the space.
+				if digit_bow(body) && borders_space(prev.as_ref(), -1) {
+					stream.push_bow();
 				}
-				out.extend_from_slice(body.as_bytes());
-				if digit_eow(body) && borders_space(i, 1) {
-					out.push(EOW);
+				stream.text(body.as_bytes());
+				if digit_eow(body) && borders_space(next.as_ref(), 1) {
+					stream.out.push(EOW);
 				}
 			},
-			_ => out.extend_from_slice(body.as_bytes()),
+			_ => stream.text(body.as_bytes()), // HARD letter scripts and whitespace
 		}
+		stream.settle();
+		let Some(n) = next else {
+			break;
+		};
+		prev2 = prev;
+		prev = Some(cur);
+		cur = n;
+		next = runs.next();
 	}
-	out
+	(stream.sink)(&stream.out);
 }

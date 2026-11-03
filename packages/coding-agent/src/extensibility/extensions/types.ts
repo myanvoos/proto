@@ -129,6 +129,7 @@ export interface ExtensionAskDialogResultItem {
 	selectedOptions: string[];
 	customInput?: string;
 	note?: string;
+	noteOption?: string;
 	timedOut?: boolean;
 }
 
@@ -148,6 +149,8 @@ export function getExtensionUISelectOptionLabel(option: ExtensionUISelectItem): 
 }
 
 export interface ExtensionUIDialogOptions {
+	/** Mask typed input in hosts that support secret entry. */
+	secret?: boolean;
 	signal?: AbortSignal;
 	timeout?: number;
 
@@ -262,6 +265,8 @@ export interface ExtensionUIContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined;
 
 	readonly theme: Theme;
 
@@ -409,6 +414,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	mcpServerName?: string;
 
 	mcpToolName?: string;
+	mcpReadOnlyHint?: boolean;
 
 	execute(
 		toolCallId: string,
@@ -449,6 +455,9 @@ export interface ToolInfo {
 	parameters: TSchema;
 	promptGuidelines?: string[];
 	sourceInfo: SourceInfo;
+	mcpServerName?: string;
+	mcpToolName?: string;
+	mcpReadOnlyHint?: boolean;
 }
 
 export interface ResourcesDiscoverEvent {
@@ -492,6 +501,7 @@ export interface AfterProviderResponseEvent extends ProviderResponseMetadata {
 
 export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
+	reason: "prompt" | "revive";
 	prompt: string;
 	images?: ImageContent[];
 	systemPrompt: string[];

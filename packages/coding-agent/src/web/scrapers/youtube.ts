@@ -150,8 +150,24 @@ export const handleYouTube: SpecialHandler = async (
 		stderr: "full" as const,
 	};
 
+	const tmpBase = path.join(os.tmpdir(), `yt-${yt.videoId}-${Snowflake.next()}`);
 	const metaResult = await ptree.exec(
-		[ytdlp, "--dump-json", "--no-warnings", "--no-playlist", "--skip-download", videoUrl],
+		[
+			ytdlp,
+			"--dump-json",
+			"--write-sub",
+			"--no-simulate",
+			"--sub-lang",
+			"en,en-US,en-GB",
+			"--sub-format",
+			"vtt",
+			"--no-warnings",
+			"--no-playlist",
+			"--skip-download",
+			"-o",
+			tmpBase,
+			videoUrl,
+		],
 		execOptions,
 	);
 
@@ -161,8 +177,14 @@ export const handleYouTube: SpecialHandler = async (
 	let duration = 0;
 	let uploadDate = "";
 	let viewCount = 0;
+	let hasManualSubs = false;
+	let hasAutoSubs = false;
 
-	if (metaResult.ok && metaResult.stdout.trim()) {
+	// The combined spawn exits nonzero when only the subtitle transfer fails
+	// (yt-dlp prints --dump-json before it writes subtitle files), so the JSON
+	// is parsed independently of the exit code. Unusable stdout keeps the
+	// defaults, which also keeps both caption-availability flags false.
+	if (metaResult.stdout.trim()) {
 		try {
 			const meta = JSON.parse(metaResult.stdout) as {
 				title?: string;
@@ -172,6 +194,8 @@ export const handleYouTube: SpecialHandler = async (
 				duration?: number;
 				upload_date?: string;
 				view_count?: number;
+				subtitles?: Record<string, unknown>;
+				automatic_captions?: Record<string, unknown>;
 			};
 			title = meta.title || title;
 			channel = meta.channel || meta.uploader || "";
@@ -179,6 +203,8 @@ export const handleYouTube: SpecialHandler = async (
 			duration = meta.duration || 0;
 			uploadDate = meta.upload_date || "";
 			viewCount = meta.view_count || 0;
+			hasManualSubs = Boolean(meta.subtitles && Object.keys(meta.subtitles).length > 0);
+			hasAutoSubs = Boolean(meta.automatic_captions && Object.keys(meta.automatic_captions).length > 0);
 		} catch {}
 	}
 
@@ -190,45 +216,13 @@ export const handleYouTube: SpecialHandler = async (
 	let transcript = "";
 	let transcriptSource = "";
 
-	const listResult = await ptree.exec(
-		[ytdlp, "--list-subs", "--no-warnings", "--no-playlist", "--skip-download", videoUrl],
-		execOptions,
-	);
-
-	const hasManualSubs = listResult.stdout.includes("[info] Available subtitles");
-	const hasAutoSubs = listResult.stdout.includes("[info] Available automatic captions");
-
-	const tmpDir = os.tmpdir();
-	const tmpBase = path.join(tmpDir, `yt-${yt.videoId}-${Snowflake.next()}`);
-
 	try {
 		if (hasManualSubs) {
-			const subResult = await ptree.exec(
-				[
-					ytdlp,
-					"--write-sub",
-					"--sub-lang",
-					"en,en-US,en-GB",
-					"--sub-format",
-					"vtt",
-					"--skip-download",
-					"--no-warnings",
-					"--no-playlist",
-					"-o",
-					tmpBase,
-					videoUrl,
-				],
-				execOptions,
-			);
-
-			if (subResult.ok) {
-				const subFiles = await Array.fromAsync(new Bun.Glob(`${tmpBase}*.vtt`).scan({ absolute: true }));
-				if (subFiles.length > 0) {
-					const vttContent = await Bun.file(subFiles[0]).text();
-					transcript = cleanVttToText(vttContent);
-					transcriptSource = "manual";
-					notes.push("Using manual subtitles");
-				}
+			const subFiles = await Array.fromAsync(new Bun.Glob(`${tmpBase}*.vtt`).scan({ absolute: true }));
+			if (subFiles.length) {
+				transcript = cleanVttToText(await Bun.file(subFiles[0]).text());
+				transcriptSource = "manual";
+				notes.push("Using manual subtitles");
 			}
 		}
 

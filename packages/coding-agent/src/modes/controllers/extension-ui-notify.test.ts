@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { ExtensionActions, ExtensionUIContext } from "../../extensibility/extensions/types";
 import type { InteractiveModeContext } from "../types";
 import { ExtensionUiController } from "./extension-ui-controller";
 
@@ -89,4 +91,45 @@ test("switching sessions clears the collapse memory", () => {
 	controller.showHookNotify("carried over", "warning");
 
 	expect(rendered).toHaveLength(2);
+});
+
+test("an idle nextTurn extension notice appends once without resetting the existing transcript", async () => {
+	const captured: { actions?: ExtensionActions } = {};
+	const messages: AgentMessage[] = [];
+	const appended: AgentMessage[] = [];
+	let rebuilds = 0;
+	const session = {
+		isStreaming: false,
+		messages,
+		extensionRunner: {
+			initialize: (actions: ExtensionActions) => {
+				captured.actions = actions;
+			},
+		},
+		sendCustomMessage: async (message: { customType: string; content: string | unknown[]; display: boolean }) => {
+			messages.push({ role: "custom", ...message, timestamp: 1 } as AgentMessage);
+		},
+	};
+	const ctx = {
+		session,
+		initialChatRendered: true,
+		addMessageToChat: (message: AgentMessage) => appended.push(message),
+		rebuildChatFromMessages: () => {
+			rebuilds++;
+		},
+		ui: { requestRender: () => {} },
+		showError: (message: string) => {
+			throw new Error(message);
+		},
+	} as unknown as InteractiveModeContext;
+	new ExtensionUiController(ctx).initializeHookRunner({} as ExtensionUIContext, true);
+	captured.actions?.sendMessage(
+		{ customType: "notice", content: "new notice", display: true },
+		{ deliverAs: "nextTurn" },
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(appended).toEqual(messages);
+	expect(appended).toHaveLength(1);
+	expect(rebuilds).toBe(0);
 });

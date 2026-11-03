@@ -85,6 +85,24 @@ async function closeHarness(harness: Harness): Promise<void> {
 	await fs.rm(harness.agentDir, { recursive: true, force: true });
 }
 
+test("switching to an unavailable saved model rejects without adopting its transcript", async () => {
+	const harness = await createHarness(true);
+	try {
+		const previousFile = harness.session.sessionFile;
+		const previousMessages = [...harness.session.messages];
+		const target = SessionManager.create(process.cwd(), path.join(harness.agentDir, "target"));
+		target.appendModelChange("missing-provider/missing-model:high");
+		target.appendMessage(userMessage("must not be sent to another provider"));
+		await target.flush();
+		await target.ensureOnDisk();
+		await expect(harness.session.switchSession(target.getSessionFile()!)).rejects.toThrow("Could not restore model");
+		expect(harness.session.sessionFile).toBe(previousFile);
+		expect(harness.session.messages).toEqual(previousMessages);
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
 test("disposing an AgentSession terminates its persistent bash child", async () => {
 	const harness = await createHarness();
 	const pidFile = path.join(harness.agentDir, "bash-child.pid");
@@ -890,7 +908,8 @@ test("dropping images preserves rewound and sibling history", async () => {
 		if (!sessionFile) throw new Error("Expected a persisted session file");
 		const persistedBefore = await Bun.file(sessionFile).text();
 		const result = await harness.session.dropImages();
-		expect(result).toEqual({ removed: 1 });
+		expect(result.removed).toBe(1);
+		expect(result.tokensFreed).toBeGreaterThan(0);
 		expect(
 			harness.session.messages.some(
 				message =>

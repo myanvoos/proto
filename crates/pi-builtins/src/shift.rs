@@ -1,10 +1,8 @@
 use brush_core::{ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct ShiftCommand {
-
 	n: Option<i32>,
 }
 

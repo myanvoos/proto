@@ -48,6 +48,19 @@ const STRING_DISCARD_MAX_BYTES = 2 * MAX_STRING_SEQ_BYTES;
 const STRING_DISCARD_INACTIVITY_MS = 1000;
 
 const STRING_SEQ_PARTIAL = /^\x1b[\]P_^X]/;
+const STRING_ABANDON_MS = 5000;
+// How long an abandoned head stays dormant waiting for a late tail. Bounded
+// so a stale packet cannot absorb unrelated multi-byte input later on; a
+// resumed head that is abandoned again is dropped for good.
+const STRING_DORMANT_MS = 10_000;
+// Openings of the string replies omp receives, matched while still partial
+// (each alternative accepts any prefix of its opener) so a legacy Alt chord
+// that diverges is recognized as soon as it does:
+// - OSC: numeric command then `;` (`\x1b]11;`, `\x1b]5522;`).
+// - DCS: DECRQSS/XTGETTCAP `\x1bP1$r` / `\x1bP1+r`, XTVERSION `\x1bP>|`, DA3 `\x1bP!|`.
+// - APC: kitty graphics `\x1b_G`, TSP `\x1b_tsp;`, Glyph Protocol `\x1b_25a1;`.
+const LEGACY_STRING_REPLY_OPENER =
+	/^(?:\x1b\]\d+(?:;|$)|\x1bP(?:\d(?:[$+](?:r|$)|$)|[>!](?:\||$))|\x1b_(?:G|t(?:s(?:p(?:;|$)|$)|$)|2(?:5(?:a(?:1(?:;|$)|$)|$)|$)))/;
 
 /**
  * 8-bit C1 introducers that cannot be UTF-8 continuation bytes, normalized to
@@ -105,6 +118,74 @@ function stringDiscardKindFor(sequence: string): StringSequenceKind {
 
 const RAW_PASTE_CLASSIFICATION_TIMEOUT_MS = 10;
 
+// `resolveEscapeEnd` result for an abandoned string sequence; see there.
+const STRING_ABORTED = -3;
+const OSC5522_PREFIX = "\x1b]5522;";
+// Kitty clipboard metadata (`type=read:status=DATA:mime=…:pw=…:id=…`) is
+// short; bounding the `;` search keeps a malformed packet O(n).
+const MAX_OSC5522_METADATA = 1024;
+
+/**
+ * Resolve an OSC/DCS/APC string sequence by its grammar, not by time. A
+ * string ends at ST (`ESC \`), or BEL for OSC. Its payload never contains
+ * another control byte or escape, and an OSC 5522 payload (after the
+ * metadata `;`) is strict base64. So a slow terminal — a clipboard owner
+ * serving a paste lazily — just extends the wait, while a keypress that
+ * cannot be payload (Enter, Backspace, Esc, arrows, space) proves the
+ * terminal abandoned the string: the caller drops the head and parses that
+ * key normally. Neither half of a stalled packet is ever typed as text.
+ *
+ * The scan is bounded to `[searchFrom, scanLimit)`; `resumeSearchFrom - 1`
+ * keeps a one-byte overlap so an `ESC \` split across chunks is still found.
+ */
+function resolveStringEnd(
+	buffer: string,
+	pos: number,
+	length: number,
+	resumeSearchFrom: number,
+	belTerminates: boolean,
+): number {
+	const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
+	const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
+	const base64From = belTerminates ? osc5522PayloadStart(buffer, pos, scanLimit) : -1;
+	// ECMA-48 §8.3.27: a DCS command string may carry BS..CR (0x08-0x0D).
+	const dcs = buffer.charCodeAt(pos + 1) === 0x50; /* P */
+	for (let i = searchFrom; i < scanLimit; i++) {
+		const code = buffer.charCodeAt(i);
+		if (code === 0x1b /* ESC */) {
+			// A lone trailing ESC may open ST; re-examined next call.
+			if (i + 1 === scanLimit) break;
+			if (buffer.charCodeAt(i + 1) === 0x5c /* \ */) return i + 2;
+			return STRING_ABORTED - i;
+		}
+		if (code === 0x07 /* BEL */ && belTerminates) return i + 1;
+		if ((code < 0x20 || code === 0x7f) && !(dcs && code >= 0x08 && code <= 0x0d)) return STRING_ABORTED - i;
+		if (base64From !== -1 && i >= base64From && !isBase64Code(code)) return STRING_ABORTED - i;
+	}
+	return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
+}
+
+/** Index where an OSC 5522 packet's base64 payload starts, or -1 if not (yet) known. */
+function osc5522PayloadStart(buffer: string, pos: number, scanLimit: number): number {
+	if (!buffer.startsWith(OSC5522_PREFIX, pos)) return -1;
+	const metadataEnd = Math.min(scanLimit, pos + OSC5522_PREFIX.length + MAX_OSC5522_METADATA);
+	for (let i = pos + OSC5522_PREFIX.length; i < metadataEnd; i++) {
+		if (buffer.charCodeAt(i) === 0x3b /* ; */) return i + 1;
+	}
+	return -1;
+}
+
+function isBase64Code(code: number): boolean {
+	return (
+		(code >= 0x41 && code <= 0x5a) || // A-Z
+		(code >= 0x61 && code <= 0x7a) || // a-z
+		(code >= 0x30 && code <= 0x39) || // 0-9
+		code === 0x2b || // +
+		code === 0x2f || // /
+		code === 0x3d // =
+	);
+}
+
 function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSearchFrom: number): number {
 	if (pos + 1 >= length) return -1;
 	const next = buffer.charCodeAt(pos + 1);
@@ -144,32 +225,13 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 			}
 			return length - pos >= MAX_CSI_BYTES ? -2 : -1;
 		}
-		case 0x5d: {
-			const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
-			const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
-			for (let i = searchFrom; i < scanLimit; i++) {
-				const code = buffer.charCodeAt(i);
-				if (code === 0x07) return i + 1;
-				if (code === 0x1b) {
-					if (i + 1 < scanLimit && buffer.charCodeAt(i + 1) === 0x5c) return i + 2;
-				}
-			}
-			return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
-		}
-		case 0x50: // DCS
-		case 0x58: // SOS
-		case 0x5e: // PM
-		case 0x5f: {
-			// APC
-			const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
-			const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
-			for (let i = searchFrom; i < scanLimit; i++) {
-				if (buffer.charCodeAt(i) === 0x1b && i + 1 < scanLimit && buffer.charCodeAt(i + 1) === 0x5c) {
-					return i + 2;
-				}
-			}
-			return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
-		}
+		case 0x5d:
+			return resolveStringEnd(buffer, pos, length, resumeSearchFrom, true);
+		case 0x50:
+		case 0x58:
+		case 0x5e:
+		case 0x5f:
+			return resolveStringEnd(buffer, pos, length, resumeSearchFrom, false);
 		case 0x4f:
 			return pos + 3 <= length ? pos + 3 : -1;
 		default:
@@ -194,9 +256,11 @@ function extractCompleteSequences(
 	resumeSearchFrom: number;
 	discardFrom?: number;
 	discardKind?: StringSequenceKind;
+	abortedHead?: boolean;
 } {
 	const sequences: string[] = [];
 	const length = buffer.length;
+	let abortedHead = false;
 	let pos = 0;
 
 	let hint = resumeSearchFrom;
@@ -213,7 +277,7 @@ function extractCompleteSequences(
 
 		if (pos + 1 < length && buffer.charCodeAt(pos + 1) === 0x1b) {
 			if (pos + 2 >= length) {
-				return { sequences, remainder: buffer.slice(pos), resumeSearchFrom: 0 };
+				return { sequences, abortedHead, remainder: buffer.slice(pos), resumeSearchFrom: 0 };
 			}
 			const third = buffer.charCodeAt(pos + 2);
 			if (third !== 0x5b && third !== 0x4f) {
@@ -225,7 +289,7 @@ function extractCompleteSequences(
 
 			const innerEnd = resolveEscapeEnd(buffer, pos + 1, length, 0);
 			if (innerEnd === -1) {
-				return { sequences, remainder: buffer.slice(pos), resumeSearchFrom: 0 };
+				return { sequences, abortedHead, remainder: buffer.slice(pos), resumeSearchFrom: 0 };
 			}
 			if (innerEnd === -2) {
 				const flushEnd = Math.min(length, pos + MAX_CSI_BYTES);
@@ -249,19 +313,26 @@ function extractCompleteSequences(
 		}
 
 		const end = resolveEscapeEnd(buffer, pos, length, pos === 0 ? hint : 0);
+		if (end <= STRING_ABORTED) {
+			if (pos === 0) abortedHead = true;
+			pos = STRING_ABORTED - end;
+			hint = 0;
+			continue;
+		}
 		if (end === -1) {
 			const next = pos + 1 < length ? buffer.charCodeAt(pos + 1) : -1;
 			const nextHint =
 				pos === 0 && (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f)
 					? length
 					: 0;
-			return { sequences, remainder: buffer.slice(pos), resumeSearchFrom: nextHint };
+			return { sequences, abortedHead, remainder: buffer.slice(pos), resumeSearchFrom: nextHint };
 		}
 		if (end === -2) {
 			const next = buffer.charCodeAt(pos + 1);
 			if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
 				return {
 					sequences,
+					abortedHead,
 					remainder: "",
 					resumeSearchFrom: 0,
 					discardFrom: pos,
@@ -279,7 +350,7 @@ function extractCompleteSequences(
 		hint = 0;
 	}
 
-	return { sequences, remainder: "", resumeSearchFrom: 0 };
+	return { sequences, abortedHead, remainder: "", resumeSearchFrom: 0 };
 }
 
 export type StdinBufferOptions = {
@@ -338,6 +409,17 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#stringDiscardEscHeld = false;
 	#stringDiscardWatchdog?: NodeJS.Timeout;
 	#utf8Held: Buffer = Buffer.alloc(0);
+	#stringProgressMs = 0;
+	#stringTypedKeys: string[] = [];
+	// Buffer offset of each typed key, parallel to `#stringTypedKeys`.
+	#stringTypedAt: number[] = [];
+	#stringAbandonTimer?: NodeJS.Timeout;
+	// An abandoned string head, kept so a late terminal-shaped tail still
+	// completes it instead of being typed (see `#resumeDormantString`).
+	#dormantString: string | undefined;
+	#dormantUntilMs = 0;
+	// The pending head was resumed from dormancy; abandoning it again drops it.
+	#stringResumed = false;
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
@@ -346,6 +428,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pasteTimeoutMs = options.pasteTimeout ?? PASTE_INACTIVITY_TIMEOUT_MS;
 		this.#pasteByteLimit = options.pasteByteLimit ?? PASTE_MAX_BYTES;
 		this.#stringDiscardInactivityMs = options.stringDiscardInactivity ?? STRING_DISCARD_INACTIVITY_MS;
+	}
+
+	/** A paste in progress already proves mode 2004 is active. */
+	get pasting(): boolean {
+		return this.#pasteMode;
 	}
 
 	process(data: string | Buffer): void {
@@ -370,6 +457,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			str = this.#consumeStringDiscard(str);
 			if (str.length === 0) return;
 		}
+
+		if (this.#dormantString !== undefined && this.#buffer.length === 0) {
+			if (Date.now() < this.#dormantUntilMs) this.#resumeDormantString(str);
+			else this.#dormantString = undefined;
+		}
+		if (this.#bufferIsStringHead()) this.#trackStringRead(str);
 
 		if (this.#flushDeferral && this.#isFreshEscapeAfterDeferredFlush(str)) {
 			// A fresh escape must not be joined to the deferred partial. Force
@@ -511,15 +604,23 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 		this.#buffer = result.remainder;
 		this.#escapeSearchOffset = result.resumeSearchFrom;
+		if (result.abortedHead) this.#emitStringTypedKeys();
 
 		for (const sequence of result.sequences) {
 			this.#emitDataSequence(sequence);
 		}
 
-		if (this.#buffer.length > 0) {
-			this.#armFlushTimer();
-		} else {
+		if (this.#bufferIsStringHead()) {
+			if (this.#stringProgressMs === 0) {
+				this.#dormantString = undefined;
+				this.#stringResumed = false;
+				this.#noteStringProgress();
+			}
 			this.#partialHoldStartMs = 0;
+		} else {
+			this.#takeStringTypedKeys();
+			if (this.#buffer.length > 0) this.#armFlushTimer();
+			else this.#partialHoldStartMs = 0;
 		}
 	}
 
@@ -616,7 +717,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#materializeHeldUtf8(): void {
 		if (this.#utf8Held.length === 0) return;
 		if (this.#pasteMode) return;
-		if (this.#stringDiscardActive) {
+		if (this.#stringDiscardActive || this.#bufferIsStringHead()) {
 			this.#utf8Held = Buffer.alloc(0);
 			return;
 		}
@@ -953,6 +1054,121 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		return true;
 	}
 
+	#bufferIsStringHead(): boolean {
+		const buffer = this.#buffer;
+		if (!STRING_SEQ_PARTIAL.test(buffer)) return false;
+		if (isKittyProtocolActive() || /^\x1b[X^]/u.test(buffer)) return true;
+		return buffer.length > 2 && LEGACY_STRING_REPLY_OPENER.test(buffer);
+	}
+
+	/**
+	 * Classify a read arriving while a string head is pending. Chunk boundaries
+	 * do not follow terminal writes (SSH, tmux), so no read is ever torn out of
+	 * the string: every byte stays payload until the terminator completes it or
+	 * an impossible byte aborts it, and every read refreshes the abandonment
+	 * bound so a slow transfer is never abandoned while it still streams.
+	 *
+	 * Typing and terminal payload are indistinguishable by their bytes; when in
+	 * doubt the string wins, because typed base64 is the failure this exists
+	 * to prevent. Only a lone printable key arriving after the flush window
+	 * passed without a read — the shape of typing — is remembered: a head that
+	 * completes keeps it as payload, one that is abandoned (aborting byte, or
+	 * {@link STRING_ABANDON_MS} without reads) replays it. Multi-byte reads,
+	 * even keys an event-loop stall batched together, stay protocol data.
+	 */
+	#trackStringRead(str: string): void {
+		const stalled = Date.now() - this.#stringProgressMs >= this.#timeoutMs;
+		this.#noteStringProgress();
+		const code = str.codePointAt(0)!;
+		if (!stalled || str.length !== (code > 0xffff ? 2 : 1) || code < 0x20 || code === 0x7f) return;
+		// Only a key the string would keep as payload: a terminator completes
+		// it, and an impossible byte aborts it and is delivered by the parser.
+		const candidate = this.#buffer + str;
+		const end = resolveStringEnd(
+			candidate,
+			0,
+			candidate.length,
+			this.#buffer.length,
+			this.#buffer.charCodeAt(1) === 0x5d,
+		);
+		if (end !== -1) return;
+		this.#stringTypedKeys.push(str);
+		this.#stringTypedAt.push(this.#buffer.length);
+	}
+
+	#noteStringProgress(): void {
+		this.#stringProgressMs = Date.now();
+		clearTimeout(this.#stringAbandonTimer);
+		this.#stringAbandonTimer = setTimeout(() => {
+			this.#stringAbandonTimer = undefined;
+			if (!this.#bufferIsStringHead()) {
+				this.#takeStringTypedKeys();
+				return;
+			}
+			// The replayed keys are not payload: cut them from the dormant head
+			// so a late tail completes the packet the terminal actually sent.
+			let dormant = this.#buffer;
+			for (let i = this.#stringTypedAt.length - 1; i >= 0; i--) {
+				const at = this.#stringTypedAt[i]!;
+				dormant = dormant.slice(0, at) + dormant.slice(at + this.#stringTypedKeys[i]!.length);
+			}
+			if (this.#stringResumed) {
+				this.#dormantString = undefined;
+			} else {
+				this.#dormantString = dormant;
+				this.#dormantUntilMs = Date.now() + STRING_DORMANT_MS;
+			}
+			this.#buffer = "";
+			this.#escapeSearchOffset = 0;
+			this.#emitStringTypedKeys();
+		}, STRING_ABANDON_MS);
+	}
+
+	/** End string head tracking; returns the keys typed while it stalled. */
+	#takeStringTypedKeys(): string[] {
+		if (this.#stringProgressMs === 0) return [];
+		const keys = this.#stringTypedKeys;
+		this.#stringTypedKeys = [];
+		this.#stringTypedAt = [];
+		this.#stringProgressMs = 0;
+		clearTimeout(this.#stringAbandonTimer);
+		this.#stringAbandonTimer = undefined;
+		return keys;
+	}
+
+	/** End string head tracking and replay the keys typed while it stalled. */
+	#emitStringTypedKeys(): void {
+		for (const keys of this.#takeStringTypedKeys()) {
+			for (const sequence of extractCompleteSequences(keys, 0).sequences) this.#emitDataSequence(sequence);
+		}
+	}
+
+	/**
+	 * Re-attach a late tail to an abandoned string head. A read that completes
+	 * the head (even a lone BEL, or `\` after a held ESC), a lone ESC under the
+	 * kitty keyboard protocol (never a key there, so it opens a split ST), or a
+	 * multi-byte read that continues its grammar (strict base64 for OSC 5522)
+	 * resumes the head, as protocol data like any multi-byte read. Other lone
+	 * printable keys pass through as typing and keep the head dormant;
+	 * anything else means input moved on.
+	 */
+	#resumeDormantString(str: string): void {
+		const head = this.#dormantString!;
+		const candidate = head + str;
+		const end = resolveStringEnd(candidate, 0, candidate.length, head.length, head.charCodeAt(1) === 0x5d);
+		const code = str.codePointAt(0)!;
+		const heldSt = str === ESC && isKittyProtocolActive();
+		if (end <= 0 && !heldSt && str.length === (code > 0xffff ? 2 : 1)) {
+			if (code < 0x20 || code === 0x7f) this.#dormantString = undefined;
+			return;
+		}
+		this.#dormantString = undefined;
+		if (end <= STRING_ABORTED) return;
+		this.#buffer = head;
+		this.#escapeSearchOffset = head.length;
+		this.#stringResumed = true;
+	}
+
 	#shouldHoldPartial(): boolean {
 		return SGR_MOUSE_PARTIAL.test(this.#buffer) || isKittyProtocolActive();
 	}
@@ -970,7 +1186,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			}
 		}
 		this.#partialHoldStartMs = 0;
-		for (const sequence of this.#drainBuffered(fromTimer, force)) {
+		for (const sequence of this.#drainBuffered(fromTimer)) {
 			this.#emitDataSequence(sequence);
 		}
 	}
@@ -980,7 +1196,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		return this.#drainBuffered(false);
 	}
 
-	#drainBuffered(discardTornString: boolean, emitTornString = false): string[] {
+	#drainBuffered(discardTornString: boolean): string[] {
 		this.#clearFlushTimer();
 
 		const rawCandidate = this.#takeRawPasteCandidate();
@@ -991,6 +1207,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			return sequences;
 		}
 
+		const stringHead = this.#bufferIsStringHead();
 		const buffered = this.#buffer;
 		this.#buffer = "";
 		this.#escapeSearchOffset = 0;
@@ -998,9 +1215,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 		if (buffered === `${ESC}${ESC}`) {
 			sequences.push(ESC, ESC);
-		} else if (isKittyProtocolActive() && STRING_SEQ_PARTIAL.test(buffered)) {
-			if (discardTornString) this.#enterStringDiscard(stringDiscardKindFor(buffered));
-			else if (emitTornString) sequences.push(buffered);
+		} else if (stringHead) {
+			this.#takeStringTypedKeys();
+			// Explicitly dropping a reply also consumes its late payload through ST.
+			this.#enterStringDiscard(stringDiscardKindFor(buffered));
 		} else if (buffered.includes(ESC) && !buffered.startsWith(ESC)) {
 			// Mixed buffer: a complete prefix precedes a torn control string.
 			// Re-parse so the prefix emits exactly once and the torn tail is
@@ -1083,7 +1301,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				}
 			}
 		}
-		this.#stringDiscardBytes += str.length;
+		this.#stringDiscardBytes += Buffer.byteLength(str);
 		if (this.#stringDiscardBytes > STRING_DISCARD_MAX_BYTES) {
 			this.#exitStringDiscard();
 			return "";
@@ -1101,6 +1319,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	clear(): void {
+		this.#takeStringTypedKeys();
+		this.#dormantString = undefined;
 		this.#clearFlushTimer();
 		this.#clearPasteWatchdog();
 		this.#clearRawPasteTimer();

@@ -6,6 +6,7 @@ export { AnthropicApiError, AnthropicConnectionError, AnthropicConnectionTimeout
 
 import type { FetchImpl } from "../types";
 import type { MessageCreateParams } from "./anthropic-wire";
+import { mergeHeaders } from "./inference-headers";
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
@@ -127,15 +128,19 @@ export class AnthropicMessages {
 export interface AnthropicMessagesClientLike {
 	messages: { create(params: MessageCreateParams, options?: AnthropicRequestOptions): unknown };
 	beta?: { messages: { create(params: MessageCreateParams, options?: AnthropicRequestOptions): unknown } };
+	/** Endpoint actually targeted by this client, when its transport is not opaque. */
+	baseURL?: string;
 }
 
 export class AnthropicMessagesClient implements AnthropicMessagesClientLike {
 	readonly messages: AnthropicMessages;
 	readonly beta: { readonly messages: AnthropicMessages };
 	#options: AnthropicClientOptions;
+	readonly baseURL: string;
 
 	constructor(options: AnthropicClientOptions) {
 		this.#options = options;
+		this.baseURL = options.baseURL ?? "https://api.anthropic.com";
 		this.messages = new AnthropicMessages(this, "/v1/messages");
 		this.beta = { messages: new AnthropicMessages(this, "/v1/messages?beta=true") };
 	}
@@ -154,9 +159,7 @@ export class AnthropicMessagesClient implements AnthropicMessagesClientLike {
 		if (opts.authToken != null && !hasHeaderCaseInsensitive(defaults, "authorization")) {
 			headers.Authorization = `Bearer ${opts.authToken}`;
 		}
-		Object.assign(headers, defaults);
-		Object.assign(headers, requestHeaders);
-		return headers;
+		return mergeHeaders(headers, defaults, requestHeaders);
 	}
 
 	async #send(path: string, params: MessageCreateParams, options?: AnthropicRequestOptions): Promise<Response> {
@@ -166,7 +169,7 @@ export class AnthropicMessagesClient implements AnthropicMessagesClientLike {
 		const timeoutMs = options?.timeout ?? opts.timeout ?? DEFAULT_TIMEOUT_MS;
 		const maxRetries = Math.max(0, options?.maxRetries ?? opts.maxRetries ?? DEFAULT_MAX_RETRIES);
 		const maxRetryDelayMs = options?.maxRetryDelayMs ?? opts.maxRetryDelayMs ?? 60_000;
-		const url = `${opts.baseURL ?? "https://api.anthropic.com"}${path}`;
+		const url = `${this.baseURL}${path}`;
 		const headers = this.#buildHeaders(options?.headers);
 		const body = JSON.stringify(params);
 
@@ -183,7 +186,7 @@ export class AnthropicMessagesClient implements AnthropicMessagesClientLike {
 					continue;
 				}
 				if (error instanceof AIError.AnthropicConnectionTimeoutError) throw error;
-				throw new AIError.AnthropicConnectionError(error);
+				throw new AIError.AnthropicConnectionError(error, url);
 			}
 
 			if (response.ok) return response;

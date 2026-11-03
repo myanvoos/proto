@@ -21,6 +21,7 @@ import { renderMCPCall, renderMCPResult } from "./render";
 import type {
 	MCPAuthChallenge,
 	MCPContent,
+	MCPProgress,
 	MCPServerConnection,
 	MCPToolCallParams,
 	MCPToolCallResult,
@@ -148,6 +149,7 @@ export interface MCPToolDetails {
 	serverName: string;
 
 	mcpToolName: string;
+	progress?: MCPProgress;
 
 	isError?: boolean;
 
@@ -277,14 +279,40 @@ function getMcpAuthChallenge(result: MCPToolCallResult): MCPAuthChallenge | unde
 	return wwwAuthenticate.length > 0 ? { wwwAuthenticate } : undefined;
 }
 
+function createProgressReporter(
+	serverName: string,
+	toolName: string,
+	onUpdate: AgentToolUpdateCallback<MCPToolDetails> | undefined,
+): ((progress: MCPProgress) => void) | undefined {
+	if (!onUpdate) return undefined;
+	let lastUpdate = -Infinity;
+	return progress => {
+		const now = performance.now();
+		if (now - lastUpdate < 100 && !(progress.total !== undefined && progress.progress >= progress.total)) return;
+		lastUpdate = now;
+		onUpdate({
+			content: [
+				{
+					type: "text",
+					text:
+						progress.message ??
+						`${progress.progress}${progress.total === undefined ? "" : ` / ${progress.total}`}`,
+				},
+			],
+			details: { serverName, mcpToolName: toolName, progress },
+		});
+	};
+}
+
 async function callToolWithAuthRetry(
 	connection: MCPServerConnection,
 	toolName: string,
 	args: MCPToolArgs,
 	reconnect: MCPReconnect | undefined,
 	signal?: AbortSignal,
+	onProgress?: (progress: MCPProgress) => void,
 ): Promise<MCPToolCallAttempt> {
-	const result = await callTool(connection, toolName, args, { signal });
+	const result = await callTool(connection, toolName, args, { signal, onProgress });
 	const authChallenge = getMcpAuthChallenge(result);
 	if (!authChallenge || !reconnect) return { connection, result };
 
@@ -300,7 +328,7 @@ async function callToolWithAuthRetry(
 	try {
 		return {
 			connection: newConnection,
-			result: await callTool(newConnection, toolName, args, { signal }),
+			result: await callTool(newConnection, toolName, args, { signal, onProgress }),
 		};
 	} catch (error) {
 		rethrowIfAborted(error, signal);
@@ -505,6 +533,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly mcpToolName: string;
 
 	readonly mcpServerName: string;
+	readonly mcpReadOnlyHint: boolean | undefined;
 
 	readonly mergeCallAndResult = true;
 
@@ -527,6 +556,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		this.description = tool.description ?? `MCP tool from ${connection.name}`;
 		this.parameters = normalizeSchemaForMCP(tool.inputSchema) as TSchema;
 		this.mcpToolName = tool.name;
+		this.mcpReadOnlyHint = tool.annotations?.readOnlyHint;
 		this.mcpServerName = connection.name;
 	}
 
@@ -549,9 +579,17 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
 		const provider = this.connection._source?.provider;
 		const providerName = this.connection._source?.providerName;
+		const onProgress = createProgressReporter(this.connection.name, this.tool.name, _onUpdate);
 
 		try {
-			const attempt = await callToolWithAuthRetry(this.connection, this.tool.name, args, this.reconnect, signal);
+			const attempt = await callToolWithAuthRetry(
+				this.connection,
+				this.tool.name,
+				args,
+				this.reconnect,
+				signal,
+				onProgress,
+			);
 			if (attempt.error !== undefined) {
 				return buildErrorResult(attempt.error, this.connection.name, this.tool.name, provider, providerName);
 			}
@@ -581,7 +619,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 					const retryProvider = newConn._source?.provider ?? provider;
 					const retryProviderName = newConn._source?.providerName ?? providerName;
 					try {
-						const result = await callTool(newConn, this.tool.name, args, { signal });
+						const result = await callTool(newConn, this.tool.name, args, { signal, onProgress });
 						return buildResult(result, newConn.name, this.tool.name, retryProvider, retryProviderName);
 					} catch (retryError) {
 						rethrowIfAborted(retryError, signal);
@@ -609,6 +647,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	readonly mcpToolName: string;
 
 	readonly mcpServerName: string;
+	readonly mcpReadOnlyHint: boolean | undefined;
 
 	readonly mergeCallAndResult = true;
 
@@ -640,6 +679,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		this.description = tool.description ?? `MCP tool from ${serverName}`;
 		this.parameters = normalizeSchemaForMCP(tool.inputSchema) as TSchema;
 		this.mcpToolName = tool.name;
+		this.mcpReadOnlyHint = tool.annotations?.readOnlyHint;
 		this.mcpServerName = serverName;
 		this.#fallbackProvider = source?.provider;
 		this.#fallbackProviderName = source?.providerName;
@@ -664,12 +704,20 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
 		const provider = this.#fallbackProvider;
 		const providerName = this.#fallbackProviderName;
+		const onProgress = createProgressReporter(this.serverName, this.tool.name, _onUpdate);
 
 		try {
 			const connection = await untilAborted(signal, () => this.getConnection());
 			throwIfAborted(signal);
 			try {
-				const attempt = await callToolWithAuthRetry(connection, this.tool.name, args, this.reconnect, signal);
+				const attempt = await callToolWithAuthRetry(
+					connection,
+					this.tool.name,
+					args,
+					this.reconnect,
+					signal,
+					onProgress,
+				);
 				if (attempt.error !== undefined) {
 					return buildErrorResult(
 						attempt.error,
@@ -703,7 +751,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 						const retryProvider = newConn._source?.provider ?? provider;
 						const retryProviderName = newConn._source?.providerName ?? providerName;
 						try {
-							const result = await callTool(newConn, this.tool.name, args, { signal });
+							const result = await callTool(newConn, this.tool.name, args, { signal, onProgress });
 							return buildResult(result, this.serverName, this.tool.name, retryProvider, retryProviderName);
 						} catch (retryError) {
 							rethrowIfAborted(retryError, signal);
@@ -725,7 +773,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 				const newConn = await reconnectWithAbort(this.reconnect, signal);
 				if (newConn) {
 					try {
-						const result = await callTool(newConn, this.tool.name, args, { signal });
+						const result = await callTool(newConn, this.tool.name, args, { signal, onProgress });
 						return buildResult(
 							result,
 							this.serverName,

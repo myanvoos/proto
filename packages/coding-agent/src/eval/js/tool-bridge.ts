@@ -101,8 +101,11 @@ function unknownToolError(session: ToolSession, name: string): ToolError {
 
 function getTool(session: ToolSession, name: string): AgentTool {
 	const tool = session.getToolForEvalBridge ? session.getToolForEvalBridge(name) : session.getToolByName?.(name);
-	if (!tool) throw unknownToolError(session, name);
-	return tool;
+	if (tool) return tool;
+	if (session.getToolForEvalBridge && session.getToolByName?.(name)) {
+		throw new ToolError(`Tool is registered but not available in this session: ${name}`);
+	}
+	throw unknownToolError(session, name);
 }
 
 function schemaDeclaresIntent(tool: AgentTool): boolean {
@@ -215,12 +218,14 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 	if (name === EVAL_AST_BRIDGE_NAME) {
 		return runEvalAst(args, options);
 	}
+	const tool = getTool(options.session, name);
+	// Aliases must not bypass canonical bridge policies or nested-lane routing.
+	name = tool.name;
 	if (name === "checkpoint" || name === "rewind") {
 		// The session recognizes checkpoint/rewind only as direct toolResult messages
 		// (session/checkpoint-entries.ts); a bridged call would report success without taking effect.
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
-	const tool = getTool(options.session, name);
 	const toolCallId = options.toolCallId ?? `js-${name}-${crypto.randomUUID()}`;
 	let normalizedArgs = validateArgs(tool, toolCallId, normalizeArgs(tool, args), options);
 	let lease: { lane: string; release(): void } | undefined;

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Breaking Changes
+
+- Remove the obsolete aggregate models.json export; use bundled-model helpers and per-provider catalog data.
+
+### Added
+
+- Add CoralBricks, SambaNova, Inception, Modular and Scaleway catalogs with deployment-specific reasoning controls.
+- Add reviewed Haiku 5.5, GPT-6.1 Terra, Mistral Large 4, GLM-5.3 FlashX and Muse Wonder fallbacks.
+
+### Changed
+
+- Update provider model rosters, reasoning ladders, context limits, scheduled Gemini prices and OpenAI/Codex service-tier rates.
+
+### Fixed
+
+- Preserve credential-scoped discovery caches, explicit free prices, live capabilities and effort aliases through refresh failures.
+- Respect discovered token caps, paginate LiteLLM rosters and exclude disabled or retired deployments.
+- Scope image, sampling, thinking-off, replay and shared-cache policies to verified models and routes.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Changed

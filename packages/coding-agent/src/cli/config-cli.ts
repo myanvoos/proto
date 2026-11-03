@@ -19,12 +19,15 @@ import { initXdg } from "./commands/init-xdg";
 
 export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg";
 
+export type ConfigScope = "global" | "project";
+
 export interface ConfigCommandArgs {
 	action: ConfigAction;
 	key?: string;
 	value?: string;
 	flags: {
 		json?: boolean;
+		scope?: ConfigScope;
 		/** `--config` overlays to layer on top of the stored settings for this run. */
 		config?: string[];
 	};
@@ -166,6 +169,7 @@ function parseAndSetValue(path: SettingPath, rawValue: string): unknown {
 }
 
 export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
+	if (cmd.flags.scope !== undefined && cmd.action !== "list") throw new Error("--scope applies to config list only");
 	await Settings.init({ cwd: getProjectDir(), configFiles: cmd.flags.config });
 	for (const issue of settings.getConfigIssues()) {
 		process.stderr.write(`${chalk.yellow(formatConfigIssue(issue))}\n`);
@@ -213,13 +217,23 @@ async function writeStdout(text: string): Promise<void> {
 	await pending.promise;
 }
 
-async function handleList(flags: { json?: boolean }): Promise<void> {
-	const defs = ALL_SETTING_PATHS.map(path => findSettingDef(path)).filter((def): def is CliSettingDef => !!def);
+async function handleList(flags: { json?: boolean; scope?: ConfigScope }): Promise<void> {
+	const layer = flags.scope ? settings.getLayerSettings(flags.scope) : undefined;
+	const readValue = (key: SettingPath): unknown => {
+		if (!layer) return settings.get(key);
+		let value: unknown = layer;
+		for (const segment of key.split("."))
+			value = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[segment] : undefined;
+		return value;
+	};
+	const defs = ALL_SETTING_PATHS.map(path => findSettingDef(path)).filter(
+		(def): def is CliSettingDef => !!def && (!layer || readValue(def.path) !== undefined),
+	);
 
 	if (flags.json) {
 		const result: Record<string, { value?: unknown; redacted?: true; type: string; description: string }> = {};
 		for (const def of defs) {
-			const value = settings.get(def.path);
+			const value = readValue(def.path);
 			result[def.path] =
 				isCredential(def.path) && value
 					? { redacted: true, type: def.type, description: def.description }
@@ -248,7 +262,7 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 	for (const group of sortedGroups) {
 		console.log(chalk.bold.blue(`[${group}]`));
 		for (const def of groups[group]) {
-			const value = settings.get(def.path);
+			const value = readValue(def.path);
 			const valueStr = isCredential(def.path) && value ? REDACTED : formatValue(value);
 			const typeStr = getTypeDisplay(def);
 			console.log(`  ${chalk.white(def.path)} = ${valueStr} ${chalk.dim(typeStr)}`);

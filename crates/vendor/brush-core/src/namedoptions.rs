@@ -1,5 +1,3 @@
-
-
 use std::{collections::HashMap, sync::LazyLock};
 
 use crate::options::RuntimeOptions;
@@ -7,74 +5,44 @@ use crate::options::RuntimeOptions;
 type OptionGetter = fn(shell: &RuntimeOptions) -> bool;
 type OptionSetter = fn(shell: &mut RuntimeOptions, value: bool) -> ();
 
-
 pub struct ShellOptionDef {
-
 	getter: OptionGetter,
 
 	setter: OptionSetter,
 }
 
 impl ShellOptionDef {
-
-
-
-
-
-
 	fn new(getter: OptionGetter, setter: OptionSetter) -> Self {
 		Self { getter, setter }
 	}
 
-
-
-
-
-
-
 	pub fn get(&self, options: &RuntimeOptions) -> bool {
 		(self.getter)(options)
 	}
-
-
-
-
-
-
 
 	pub fn set(&self, options: &mut RuntimeOptions, value: bool) {
 		(self.setter)(options, value);
 	}
 }
 
-
 pub struct ShellOption {
-
-	pub name:       &'static str,
+	pub name: &'static str,
 
 	pub definition: &'static ShellOptionDef,
 }
-
 
 pub struct ShellOptionSet {
 	inner: &'static HashMap<&'static str, ShellOptionDef>,
 }
 
-
 #[derive(Clone, Copy)]
 pub enum ShellOptionKind {
-
 	Set,
 
 	SetO,
 
 	Shopt,
 }
-
-
-
-
-
 
 pub fn options(kind: ShellOptionKind) -> ShellOptionSet {
 	match kind {
@@ -85,18 +53,12 @@ pub fn options(kind: ShellOptionKind) -> ShellOptionSet {
 }
 
 impl ShellOptionSet {
-
 	pub fn iter(&self) -> impl Iterator<Item = ShellOption> {
 		self
 			.inner
 			.iter()
 			.map(|(&name, definition)| ShellOption { name, definition })
 	}
-
-
-
-
-
 
 	pub fn get(&self, name: &str) -> Option<&'static ShellOptionDef> {
 		self.inner.get(name)

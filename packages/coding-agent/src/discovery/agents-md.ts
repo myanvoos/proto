@@ -17,7 +17,11 @@ function isWithin(parent: string, child: string): boolean {
 	return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
+export async function loadStandaloneContextFiles(
+	ctx: LoadContext,
+	providerId: string,
+	filename: string,
+): Promise<LoadResult<ContextFile>> {
 	const items: ContextFile[] = [];
 	const warnings: string[] = [];
 	const home = path.resolve(ctx.home);
@@ -38,7 +42,7 @@ export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<Context
 		const atBoundary = samePath(current, boundary);
 		const atHome = excludeHome && samePath(current, home);
 		if (!(atHome || (atBoundary && !includeBoundary))) {
-			const candidate = path.join(current, "AGENTS.md");
+			const candidate = path.join(current, filename);
 			const content = await readFile(candidate);
 
 			// An empty file must not claim the depth slot and shadow a non-empty sibling.
@@ -55,7 +59,7 @@ export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<Context
 						content,
 						level: "project",
 						depth: calculatedDepth,
-						_source: createSourceMeta(PROVIDER_ID, candidate, "project"),
+						_source: createSourceMeta(providerId, candidate, "project"),
 					});
 				}
 			}
@@ -68,6 +72,10 @@ export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<Context
 	}
 
 	return { items, warnings };
+}
+
+export async function loadAgentsMd(ctx: LoadContext): Promise<LoadResult<ContextFile>> {
+	return loadStandaloneContextFiles(ctx, PROVIDER_ID, "AGENTS.md");
 }
 
 registerProvider(contextFileCapability.id, {

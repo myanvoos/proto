@@ -114,6 +114,10 @@ function titleUpdateForIndex(entry: IndexEntry): SessionTitleUpdate | undefined 
 }
 
 export class IndexedSessionStorage implements SessionStorage {
+	readonly defersSyncPublish = true;
+	readonly #confirmed = new Set<string>();
+	readonly #removing = new Set<string>();
+	readonly #uncertainRemovals = new Set<string>();
 	readonly #backend: SessionStorageBackend;
 	readonly #index = new Map<string, IndexEntry>();
 	readonly #writers = new Set<IndexedSessionStorageWriter>();
@@ -137,7 +141,9 @@ export class IndexedSessionStorage implements SessionStorage {
 		await this.drain();
 		const rows = await this.#backend.loadIndex();
 		this.#index.clear();
+		this.#confirmed.clear();
 		for (const row of rows) {
+			if (!this.#uncertainRemovals.has(row.path)) this.#confirmed.add(row.path);
 			const title = row.titleUpdatedAt
 				? { title: row.title, source: row.titleSource, updatedAt: row.titleUpdatedAt }
 				: null;
@@ -160,6 +166,14 @@ export class IndexedSessionStorage implements SessionStorage {
 		return this.#index.has(path);
 	}
 
+	existsConfirmedSync(path: string): boolean {
+		return this.#confirmed.has(path) && !this.#removing.has(path);
+	}
+
+	confirmWrites(path: string): Promise<void> {
+		return this.#awaitPath(path);
+	}
+
 	/** Index-level freshness check; the backend repeats it atomically for peers sharing the store. */
 	#assertExpectedSize(path: string, expectedSize: number | null | undefined): void {
 		if (expectedSize === undefined) return;
@@ -175,7 +189,11 @@ export class IndexedSessionStorage implements SessionStorage {
 		this.#setIndex(path, byteLength(content), mtimeMs, title ?? null);
 		const write = this.#enqueuePath(
 			path,
-			() => this.#backend.writeFull(path, content, mtimeMs, title, options?.expectedSize),
+			async () => {
+				await this.#backend.writeFull(path, content, mtimeMs, title, options?.expectedSize);
+				this.#confirmed.add(path);
+				this.#uncertainRemovals.delete(path);
+			},
 			{ trackDrain: true },
 		);
 		void write.catch(() => {
@@ -300,9 +318,17 @@ export class IndexedSessionStorage implements SessionStorage {
 		const title = titleUpdateFromSlot(parseTitleSlotFromContent(content));
 		this.#setIndex(path, byteLength(content), mtimeMs, title ?? null);
 		try {
-			await this.#enqueuePath(path, () => this.#backend.writeFull(path, content, mtimeMs, title), {
-				trackDrain: false,
-			});
+			await this.#enqueuePath(
+				path,
+				async () => {
+					await this.#backend.writeFull(path, content, mtimeMs, title);
+					this.#confirmed.add(path);
+					this.#uncertainRemovals.delete(path);
+				},
+				{
+					trackDrain: false,
+				},
+			);
 		} catch (err) {
 			this.#restoreIndex(path, previous);
 			throw toError(err);
@@ -330,13 +356,19 @@ export class IndexedSessionStorage implements SessionStorage {
 						return;
 					}
 					await this.#backend.writeFull(path, content, mtimeMs, title, options?.expectedSize);
+					this.#confirmed.add(path);
+					this.#uncertainRemovals.delete(path);
 				},
 				{ trackDrain: false },
 			);
 		} catch (err) {
 			const error = toError(err);
 			try {
-				if ((await this.#backend.readFull(path)) === content) return;
+				if ((await this.#backend.readFull(path)) === content) {
+					this.#confirmed.add(path);
+					this.#uncertainRemovals.delete(path);
+					return;
+				}
 			} catch {}
 			const current = this.#index.get(path);
 			if (current?.mtimeMs === mtimeMs) this.#restoreIndex(path, previous);
@@ -351,66 +383,107 @@ export class IndexedSessionStorage implements SessionStorage {
 	}
 
 	async rename(src: string, dst: string): Promise<void> {
-		await this.#awaitPath(src);
-		await this.#awaitPath(dst);
-		const entry = this.#index.get(src);
-		if (!entry) throw enoent(src);
-		if (src === dst) {
-			await this.#enqueuePath(src, () => this.#backend.move(src, dst, entry.mtimeMs), { trackDrain: false });
-			return;
-		}
-		const dstPrevious = this.#index.get(dst);
-		this.#index.delete(src);
-		this.#index.set(dst, { ...entry });
+		const sourceConfirmed = this.#confirmed.has(src);
+		this.#removing.add(src);
 		try {
-			await this.#enqueuePaths([src, dst], () => this.#backend.move(src, dst, entry.mtimeMs), { trackDrain: false });
-		} catch (err) {
-			this.#index.delete(dst);
-			this.#restoreIndex(dst, dstPrevious);
-			this.#index.set(src, entry);
-			throw toError(err);
+			await this.#awaitPath(src);
+			await this.#awaitPath(dst);
+			const entry = this.#index.get(src);
+			if (!entry) throw enoent(src);
+			if (src === dst) {
+				await this.#enqueuePath(src, () => this.#backend.move(src, dst, entry.mtimeMs), { trackDrain: false });
+				return;
+			}
+			const dstPrevious = this.#index.get(dst);
+			this.#index.delete(src);
+			this.#index.set(dst, { ...entry });
+			try {
+				await this.#enqueuePaths([src, dst], () => this.#backend.move(src, dst, entry.mtimeMs), {
+					trackDrain: false,
+				});
+				if (sourceConfirmed) {
+					this.#confirmed.add(dst);
+					this.#uncertainRemovals.delete(dst);
+				} else {
+					this.#confirmed.delete(dst);
+					this.#uncertainRemovals.add(dst);
+				}
+			} catch (err) {
+				this.#index.delete(dst);
+				this.#restoreIndex(dst, dstPrevious);
+				this.#index.set(src, entry);
+				throw toError(err);
+			}
+		} catch (error) {
+			this.#uncertainRemovals.add(src);
+			this.#confirmed.delete(src);
+			throw error;
+		} finally {
+			if (src !== dst) this.#confirmed.delete(src);
+			this.#removing.delete(src);
 		}
 	}
 
 	async unlink(path: string): Promise<void> {
-		await this.#awaitPath(path);
-		const previous = this.#index.get(path);
-		if (!previous) throw enoent(path);
-		this.#index.delete(path);
+		this.#removing.add(path);
 		try {
-			await this.#enqueuePath(path, () => this.#backend.remove([path]), { trackDrain: false });
-		} catch (err) {
-			this.#index.set(path, previous);
-			throw toError(err);
+			await this.#awaitPath(path);
+			const previous = this.#index.get(path);
+			if (!previous) throw enoent(path);
+			this.#index.delete(path);
+			try {
+				await this.#enqueuePath(path, () => this.#backend.remove([path]), { trackDrain: false });
+			} catch (err) {
+				this.#index.set(path, previous);
+				throw toError(err);
+			}
+		} catch (error) {
+			this.#uncertainRemovals.add(path);
+			throw error;
+		} finally {
+			this.#confirmed.delete(path);
+			this.#removing.delete(path);
 		}
 	}
 
 	async deleteSessionWithArtifacts(sessionPath: string): Promise<void> {
-		await this.#awaitPath(sessionPath);
-		const sessionEntry = this.#index.get(sessionPath);
-		if (!sessionEntry) throw enoent(sessionPath);
-
-		const artifactsDir = sessionPath.slice(0, -6);
-		const prefix = artifactsDir.endsWith("/") ? artifactsDir : `${artifactsDir}/`;
 		const paths = [sessionPath];
-		for (const key of this.#index.keys()) {
-			if (key.startsWith(prefix)) paths.push(key);
-		}
-
-		for (const path of paths) await this.#awaitPath(path);
-
-		const previous = new Map<string, IndexEntry>();
-		for (const path of paths) {
-			const entry = this.#index.get(path);
-			if (entry) previous.set(path, entry);
-			this.#index.delete(path);
-		}
-
+		this.#removing.add(sessionPath);
 		try {
-			await this.#enqueuePaths(paths, () => this.#backend.remove(paths), { trackDrain: false });
-		} catch (err) {
-			for (const [path, entry] of previous) this.#index.set(path, entry);
-			throw toError(err);
+			await this.#awaitPath(sessionPath);
+			const sessionEntry = this.#index.get(sessionPath);
+			if (!sessionEntry) throw enoent(sessionPath);
+
+			const artifactsDir = sessionPath.slice(0, -6);
+			const prefix = artifactsDir.endsWith("/") ? artifactsDir : `${artifactsDir}/`;
+			for (const key of this.#index.keys()) {
+				if (key.startsWith(prefix)) paths.push(key);
+			}
+
+			for (const path of paths) this.#removing.add(path);
+			for (const path of paths) await this.#awaitPath(path);
+
+			const previous = new Map<string, IndexEntry>();
+			for (const path of paths) {
+				const entry = this.#index.get(path);
+				if (entry) previous.set(path, entry);
+				this.#index.delete(path);
+			}
+
+			try {
+				await this.#enqueuePaths(paths, () => this.#backend.remove(paths), { trackDrain: false });
+			} catch (err) {
+				for (const [path, entry] of previous) this.#index.set(path, entry);
+				throw toError(err);
+			}
+		} catch (error) {
+			for (const path of paths) this.#uncertainRemovals.add(path);
+			throw error;
+		} finally {
+			for (const path of paths) {
+				this.#confirmed.delete(path);
+				this.#removing.delete(path);
+			}
 		}
 	}
 
@@ -456,6 +529,7 @@ export class IndexedSessionStorage implements SessionStorage {
 					if (options?.commitGuard && !options.commitGuard()) return;
 					if (line === null) await this.#backend.truncate(path, mtimeMs);
 					else await this.#backend.append(path, line, mtimeMs, options?.expectedSize);
+					if (line === null || change.previous === undefined) this.#confirmed.add(path);
 					committed = true;
 				} finally {
 					if (!committed) {

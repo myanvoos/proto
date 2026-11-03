@@ -591,8 +591,6 @@ export class Editor implements Component, Focusable {
 	#undoStack: EditorUndoState[] = [];
 	#suspendUndo = false;
 
-	#autocompleteTimeout?: NodeJS.Timeout;
-
 	onSubmit?: (text: string) => void | Promise<void>;
 	onAltEnter?: (text: string) => void;
 	onChange?: (text: string) => void;
@@ -1685,16 +1683,17 @@ export class Editor implements Component, Focusable {
 				const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
 				if (
 					findLeadingSlashCommandStart(textBeforeCursor) !== null &&
+					textBeforeCursor.trim() !== "/" &&
 					this.#isInSubmittedSlashCommandContext() &&
 					this.#autocompleteProvider?.trySyncSlashCompletion
 				) {
 					const syncResult = this.#autocompleteProvider.trySyncSlashCompletion(textBeforeCursor);
+					const selected = syncResult?.items.find(item => item.value !== SKILL_NAMESPACE);
 					// No active selection to accept: a description-only top match
 					// must not replace the typed command on submit.
-					if (syncResult && syncResult.items.length > 0 && !syncResult.items[0]!.weakMatch) {
+					if (syncResult && selected && !selected.weakMatch) {
 						this.#autocompleteRequestId += 1;
 
-						const selected = syncResult.items[0]!;
 						const result = this.#autocompleteProvider.applyCompletion(
 							this.#state.lines.slice(),
 							this.#state.cursorLine,
@@ -1969,6 +1968,11 @@ export class Editor implements Component, Focusable {
 		}
 
 		return layoutLines;
+	}
+
+	/** Monotonic buffer revision for decoration caches. */
+	get textRevision(): number {
+		return this.#linesRevision;
 	}
 
 	getText(): string {
@@ -2433,7 +2437,7 @@ export class Editor implements Component, Focusable {
 				}
 			}
 		} else {
-			this.#debouncedUpdateAutocomplete();
+			this.#refreshAutocomplete();
 		}
 	}
 
@@ -2507,7 +2511,7 @@ export class Editor implements Component, Focusable {
 
 	#retriggerAutocompleteAtCursor(): void {
 		if (this.#autocompleteState) {
-			this.#debouncedUpdateAutocomplete();
+			this.#refreshAutocomplete();
 			return;
 		}
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2696,7 +2700,7 @@ export class Editor implements Component, Focusable {
 				this.#cancelAutocomplete();
 				this.onAutocompleteUpdate?.();
 			} else {
-				this.#debouncedUpdateAutocomplete();
+				this.#refreshAutocomplete();
 			}
 		} else {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2859,7 +2863,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		if (this.#autocompleteState) {
-			this.#debouncedUpdateAutocomplete();
+			this.#refreshAutocomplete();
 		} else {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
@@ -3252,7 +3256,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		if (this.#autocompleteState) {
-			this.#debouncedUpdateAutocomplete();
+			this.#refreshAutocomplete();
 		} else {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
@@ -3536,7 +3540,7 @@ export class Editor implements Component, Focusable {
 		const selected: AutocompleteItem | null | undefined = this.#autocompleteList?.getSelectedItem();
 		return (
 			selected?.weakMatch === true ||
-			// A debounced refresh may leave a strong row for an older slash query.
+			// An async refresh may leave a strong row for an older slash query.
 			// Drop that implicit selection too; the sync submit path resolves the
 			// current query instead of executing an unrelated stale command.
 			(this.#isSlashCommandNameAutocompleteSelection() &&
@@ -3713,7 +3717,6 @@ export class Editor implements Component, Focusable {
 
 	#cancelAutocomplete(notifyCancel: boolean = false): void {
 		const wasAutocompleting = this.#autocompleteState !== null;
-		this.#clearAutocompleteTimeout();
 		this.#invalidateAutocompleteRequests();
 		this.#autocompleteState = null;
 		this.#autocompleteList = undefined;
@@ -3823,26 +3826,34 @@ export class Editor implements Component, Focusable {
 		for (const resolve of waiters) resolve();
 	}
 
-	#debouncedUpdateAutocomplete(): void {
-		if (this.#autocompleteTimeout) {
-			clearTimeout(this.#autocompleteTimeout);
-		}
-		// A mutation makes any in-flight provider I/O stale right now, not in
-		// 100 ms: abort it so the debounced refresh is not serialized behind
-		// uncancelled filesystem work for text the user already replaced.
-		this.#autocompleteAbortController?.abort();
-		this.#autocompleteAbortController = undefined;
-		this.#autocompleteTimeout = setTimeout(() => {
-			void this.#updateAutocomplete();
-			this.#autocompleteTimeout = undefined;
-		}, 100);
+	/** Refresh every edit; the request queue coalesces asynchronous work. */
+	#refreshAutocomplete(): void {
+		if (this.#autocompleteState === "assist") return;
+		if (this.#refreshSlashCommandListSync()) return;
+		void this.#updateAutocomplete();
 	}
 
-	#clearAutocompleteTimeout(): void {
-		if (this.#autocompleteTimeout) {
-			clearTimeout(this.#autocompleteTimeout);
-			this.#autocompleteTimeout = undefined;
+	/** Refresh command names before another key in the same input batch can accept a stale row. */
+	#refreshSlashCommandListSync(): boolean {
+		const provider = this.#autocompleteProvider;
+		if (this.#autocompleteState !== "regular" || !provider?.trySyncSlashCompletion) return false;
+		if (!this.#isInSubmittedSlashCommandContext()) return false;
+		const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
+		const textBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
+		const token = textBeforeCursor.trimStart();
+		if (token.includes(" ")) return false;
+		const suggestions = provider.trySyncSlashCompletion(textBeforeCursor);
+		if (suggestions) {
+			this.#invalidateAutocompleteRequests();
+			this.#autocompletePrefix = suggestions.prefix;
+			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
+			this.onAutocompleteUpdate?.();
+			return true;
 		}
+		if (token.slice(1).includes("/")) return false;
+		this.#cancelAutocomplete();
+		this.onAutocompleteUpdate?.();
+		return true;
 	}
 
 	#getInlineHint(): string | null {

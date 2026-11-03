@@ -231,10 +231,6 @@ function isSearchBlock(block: AnthropicApiResponse["content"][number]): boolean 
 	return block.type === "server_tool_use" || block.type === "web_search_tool_result";
 }
 
-function isPunctuationOnly(text: string): boolean {
-	return /^[^\p{L}\p{N}]+$/u.test(text);
-}
-
 function isInterstitialNarration(text: string): boolean {
 	const normalized = text.trim().replace(/\s+/g, " ");
 	if (!normalized || normalized.length > 320 || !NARRATION_PREFIXES.some(pattern => pattern.test(normalized)))
@@ -243,36 +239,12 @@ function isInterstitialNarration(text: string): boolean {
 	return sentenceCount <= 2;
 }
 
-function joinAnswerParts(parts: readonly string[]): string | undefined {
-	let answer = "";
-	let previousBlock = "";
-	for (const rawPart of parts) {
-		const part = rawPart.trim();
-		if (!part) continue;
-		if (!answer) {
-			if (isPunctuationOnly(part)) continue;
-			answer = part;
-			previousBlock = rawPart;
-			continue;
-		}
-		if (isPunctuationOnly(part)) {
-			answer += part;
-			previousBlock += rawPart;
-			continue;
-		}
-		const previousEndsTerminal = /(?:[.!?]|\n)\s*$/.test(previousBlock);
-		const nextStartsLowerOrPunctuation = /^[\p{Ll}\p{P}]/u.test(part);
-		answer += !previousEndsTerminal && nextStartsLowerOrPunctuation ? ` ${part}` : `\n\n${part}`;
-		previousBlock = rawPart;
-	}
-	return answer.trim() || undefined;
-}
-
 export function parseAnthropicResponse(
 	response: AnthropicApiResponse,
 	constraintApplications: SearchConstraintApplication[] = [],
 ): SearchResponse {
-	const answerParts: string[] = [];
+	let answer = "";
+	let previousTextIndex = -2;
 	const searchQueries: string[] = [];
 	const sources: SearchSource[] = [];
 	const citations: SearchCitation[] = [];
@@ -309,7 +281,9 @@ export function parseAnthropicResponse(
 			(index > 0 && isSearchBlock(response.content[index - 1])) ||
 			(index + 1 < response.content.length && isSearchBlock(response.content[index + 1]));
 		if (adjacentToSearch && isInterstitialNarration(block.text)) continue;
-		answerParts.push(block.text);
+		if (answer && previousTextIndex !== index - 1) answer += "\n\n";
+		answer += block.text;
+		previousTextIndex = index;
 		if (block.citations) {
 			for (const c of block.citations as AnthropicCitation[]) {
 				citations.push({ url: c.url, title: c.title, citedText: c.cited_text });
@@ -319,7 +293,7 @@ export function parseAnthropicResponse(
 
 	return mergeSearchReferences({
 		provider: "anthropic",
-		answer: joinAnswerParts(answerParts),
+		answer: answer.trim() || undefined,
 		sources,
 		citations: citations.length > 0 ? citations : undefined,
 		constraintApplications: constraintApplications.length > 0 ? constraintApplications : undefined,

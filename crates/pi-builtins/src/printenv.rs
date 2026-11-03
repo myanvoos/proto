@@ -1,7 +1,3 @@
-
-
-
-
 use std::io::Write;
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -12,7 +8,6 @@ use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
 const OPT_NULL: &str = "null";
 const ARG_VARIABLES: &str = "variables";
-
 
 pub(crate) struct Printenv {
 	matches: ArgMatches,
@@ -33,8 +28,6 @@ impl Utility for Printenv {
 		let separator = LineEnding::from_zero_flag(self.matches.get_flag(OPT_NULL));
 
 		if variables.len() == 0 {
-
-
 			let mut environment = host
 				.env()
 				.map(|(name, value)| (name.to_owned(), value.to_owned()))
@@ -55,8 +48,6 @@ impl Utility for Printenv {
 
 		let mut error_found = false;
 		for env_var in variables {
-
-
 			if env_var.contains('=') {
 				error_found = true;
 				continue;
@@ -78,7 +69,6 @@ impl Utility for Printenv {
 		i32::from(error_found)
 	}
 }
-
 
 fn app() -> Command {
 	Command::new(Printenv::NAME)
@@ -103,9 +93,6 @@ fn app() -> Command {
 		)
 }
 
-
 pub(crate) fn printenv_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Printenv, SE>()
 }
-
-

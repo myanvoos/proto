@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use std::{future::Future, io::Write};
 
 use brush_core::{
@@ -15,13 +7,11 @@ use clap::Parser;
 
 use crate::host::quote_arg;
 
-
 #[derive(Parser)]
 #[command(disable_help_flag = true)]
 pub(crate) struct NohupCommand {
-
 	#[clap(skip)]
-	help:    bool,
+	help: bool,
 
 	#[clap(skip)]
 	version: bool,
@@ -30,10 +20,6 @@ pub(crate) struct NohupCommand {
 }
 
 impl NohupCommand {
-
-
-
-
 	fn from_argv(mut argv: Vec<String>) -> Self {
 		match argv.first().map(String::as_str) {
 			Some("--help") => {
@@ -54,14 +40,10 @@ impl NohupCommand {
 impl builtins::Command for NohupCommand {
 	type Error = brush_core::Error;
 
-
-
-
 	fn new<I>(args: I) -> std::result::Result<Self, clap::Error>
 	where
 		I: IntoIterator<Item = String>,
 	{
-
 		Ok(Self::from_argv(args.into_iter().skip(1).collect()))
 	}
 
@@ -80,24 +62,13 @@ impl builtins::Command for NohupCommand {
 				return Ok(ExecutionResult::success());
 			}
 			if version {
-				let _ = writeln!(
-					context.stdout(),
-					"nohup (pi-builtins) {}",
-					env!("CARGO_PKG_VERSION")
-				);
+				let _ = writeln!(context.stdout(), "nohup (pi-builtins) {}", env!("CARGO_PKG_VERSION"));
 				return Ok(ExecutionResult::success());
 			}
 
 			if command.is_empty() {
 				return Ok(report_missing_operand(context.stderr()));
 			}
-
-
-
-
-
-
-
 
 			let command_line = rebuild_command_line(&command);
 
@@ -136,5 +107,3 @@ fn rebuild_command_line(command: &[String]) -> String {
 	}
 	command_line
 }
-
-

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { devinCliMetadata } from "../wire/devin";
 import { fetchDevinModels } from "./devin";
 import {
 	type ClientModelConfig,
 	ClientModelConfigSchema,
+	DefaultOverrideModelConfigSchema,
 	GetCliModelConfigsResponseSchema,
 	ModelFeaturesSchema,
 	ModelInfoSchema,
@@ -66,5 +68,43 @@ describe("Devin Fusion pairings", () => {
 		const routed = find("fusion-alpha-lead-sidekick-side");
 		expect(routed?.contextWindow).toBe(400_000);
 		expect(routed?.input).toEqual(["text", "image"]);
+	});
+});
+
+describe("Devin account discovery", () => {
+	it("uses the account startup lane and ModelInfo context instead of the stale 200K fallback", async () => {
+		const model = config("account-lane");
+		if (model.modelInfo) model.modelInfo.maxTokens = 1_000_000;
+		const payload = toBinary(
+			GetCliModelConfigsResponseSchema,
+			create(GetCliModelConfigsResponseSchema, {
+				clientModelConfigs: [model],
+				defaultOverrideModelConfig: create(DefaultOverrideModelConfigSchema, { modelUid: "account-lane" }),
+			}),
+		);
+		const discovered = await fetchDevinModels({ apiKey: "fixture", fetch: async () => new Response(payload) });
+		expect(discovered?.[0]).toMatchObject({ id: "account-lane", isProviderDefault: true, contextWindow: 1_000_000 });
+	});
+
+	it("does not retry an empty native roster under the obsolete Windsurf identity", async () => {
+		let calls = 0;
+		const payload = toBinary(GetCliModelConfigsResponseSchema, create(GetCliModelConfigsResponseSchema, {}));
+		const models = await fetchDevinModels({
+			apiKey: "fixture",
+			fetch: async () => {
+				calls++;
+				return new Response(payload);
+			},
+		});
+		expect(models).toBeNull();
+		expect(calls).toBe(1);
+	});
+
+	it("encodes stored credentials by shape rather than by API-key versus OAuth storage", () => {
+		expect(devinCliMetadata("  eyJ.payload.signature  ").apiKey).toBe("devin-session-token$eyJ.payload.signature");
+		expect(devinCliMetadata("devin-session-token$eyJ.payload.signature").apiKey).toBe(
+			"devin-session-token$eyJ.payload.signature",
+		);
+		expect(devinCliMetadata("sk-ws-enterprise").apiKey).toBe("sk-ws-enterprise");
 	});
 });

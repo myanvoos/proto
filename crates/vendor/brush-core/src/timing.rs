@@ -1,5 +1,3 @@
-
-
 use crate::error;
 
 struct StopwatchTime {
@@ -50,11 +48,6 @@ fn get_current_stopwatch_time() -> Result<StopwatchTime, error::Error> {
 	Ok(StopwatchTime { now, self_user, self_system, children_user, children_system })
 }
 
-
-
-
-
-
 pub fn format_duration_non_posixly(duration: &std::time::Duration) -> String {
 	let minutes = duration.as_secs() / 60;
 	let seconds = duration.as_secs() % 60;
@@ -62,15 +55,8 @@ pub fn format_duration_non_posixly(duration: &std::time::Duration) -> String {
 	format!("{minutes}m{seconds}.{millis:03}s")
 }
 
-
-
-
-
-
 pub fn format_duration_posixly(duration: &std::time::Duration) -> String {
 	let seconds = duration.as_secs();
 	let ten_millis = duration.subsec_millis() / 10;
 	format!("{seconds}.{ten_millis:02}")
 }
-
-

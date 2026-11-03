@@ -31,7 +31,7 @@ preload=$scripts_dir/proto.ts
 timing_preload=$scripts_dir/../../utils/src/module-timer.ts
 
 launch_dir=${PROTO_DEV_LAUNCH_DIR:-${HOME}/.proto/.dev-cwd}
-mkdir -p "$launch_dir"
+[ -d "$launch_dir" ] || mkdir -p "$launch_dir"
 
 PROTO_LAUNCH_CWD=$PWD
 export PROTO_LAUNCH_CWD

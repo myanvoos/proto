@@ -160,6 +160,52 @@ function createContext(
 	return { chatContainer, context: context as unknown as InteractiveModeContext, pendingTools };
 }
 
+test("final provider tool ids reuse streamed cards instead of leaving duplicate previews", async () => {
+	const harness = createContext();
+	const controller = new EventController(harness.context);
+	const streamed = streamedReadOnlyMessage('{"path":"artifact://12"}');
+	const final = {
+		...streamed,
+		content: streamed.content.map(block => ({ ...block, id: "final-id" })),
+	} as AssistantMessage;
+	try {
+		await controller.handleEvent({ type: "message_start", message: { ...streamed, content: [] } });
+		await controller.handleEvent({ type: "message_update", message: streamed } as AgentSessionEvent);
+		const card = harness.pendingTools.get(TOOL_CALL_ID);
+		expect(card).toBeInstanceOf(ToolExecutionComponent);
+		await controller.handleEvent({ type: "message_end", message: final });
+		expect(harness.pendingTools.has(TOOL_CALL_ID)).toBe(false);
+		expect(harness.pendingTools.get("final-id")).toBe(card);
+	} finally {
+		controller.dispose();
+		harness.chatContainer.dispose();
+	}
+});
+
+test("split provider ids leave the shared preview with the call that keeps its id", async () => {
+	const harness = createContext();
+	const controller = new EventController(harness.context);
+	const streamed = streamedReadPairMessage('{"path":"artifact://12"}', '{"path":"artifact://34"}');
+	const first = streamed.content[0];
+	const second = streamed.content[1];
+	if (first?.type !== "toolCall" || second?.type !== "toolCall") throw new Error("Invalid test calls");
+	second.id = first.id;
+	const final = { ...streamed, content: [{ ...first, id: "split-id" }, { ...second }] } as AssistantMessage;
+	try {
+		await controller.handleEvent({ type: "message_start", message: { ...streamed, content: [] } });
+		await controller.handleEvent({ type: "message_update", message: streamed } as AgentSessionEvent);
+		const shared = harness.pendingTools.get(TOOL_CALL_ID);
+		expect(shared).toBeInstanceOf(ToolExecutionComponent);
+		await controller.handleEvent({ type: "message_end", message: final });
+		expect(harness.pendingTools.get(TOOL_CALL_ID)).toBe(shared);
+		expect(harness.pendingTools.get("split-id")).not.toBe(shared);
+		expect(harness.pendingTools.size).toBe(2);
+	} finally {
+		controller.dispose();
+		harness.chatContainer.dispose();
+	}
+});
+
 function rebuiltToolComponent(message: AssistantMessage): ToolExecutionHandle | undefined {
 	const harness = createContext();
 	try {

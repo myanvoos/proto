@@ -284,9 +284,14 @@ where
 }
 
 pub fn invalidate_path(target: &Path) {
+	let now = Instant::now();
+	let ttl = Duration::from_millis(*CACHE_TTL_MS);
 	let keys_to_remove: Vec<CacheKey> = SCAN_CACHE
 		.iter()
-		.filter(|entry| target.starts_with(&entry.key().root))
+		.filter(|entry| {
+			target.starts_with(&entry.key().root)
+				|| now.saturating_duration_since(entry.created_at) >= ttl
+		})
 		.map(|entry| entry.key().clone())
 		.collect();
 	for key in keys_to_remove {

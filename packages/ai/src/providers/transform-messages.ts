@@ -18,13 +18,13 @@ const enum ToolCallStatus {
 	Aborted = 2,
 }
 
-const MAX_TOOL_CALL_ID_LENGTH = 64;
+export const MAX_TOOL_CALL_ID_LENGTH = 64;
 
-function isResponsesFamilyApi(api: Api | undefined): boolean {
+export function isResponsesFamilyApi(api: Api | undefined): boolean {
 	return api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses";
 }
 
-function responsesCallComponent(id: string): string {
+export function responsesCallComponent(id: string): string {
 	const pipe = id.indexOf("|");
 	return pipe <= 0 ? id : id.slice(0, pipe);
 }
@@ -60,7 +60,7 @@ function toolCallPairingKey(id: string, originScope: ToolCallOriginScope): strin
 	return originScope.responsesComponents.has(prefix) ? prefix : id;
 }
 
-function appendDuplicateSuffix(originalId: string, suffix: string, maxLength: number): string {
+export function appendDuplicateSuffix(originalId: string, suffix: string, maxLength: number): string {
 	if (originalId.includes("|")) {
 		return originalId
 			.split("|")
@@ -155,31 +155,40 @@ function deduplicateToolCallIds(
 }
 
 const MAX_TOOL_CALL_NAME_LENGTH = 128;
-const TOOL_CALL_NAME_SEPARATOR_RE = /[\s\p{Cc}]/u;
+const STRICT_TOOL_CALL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+const GOOGLE_TOOL_CALL_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_.:-]*$/;
+const ANY_PROVIDER_TOOL_CALL_NAME_RE = /^[a-zA-Z0-9_.:-]+$/;
 
-export function isMalformedToolCallName(name: unknown): boolean {
-	return (
-		typeof name !== "string" ||
-		name.length === 0 ||
-		name.length > MAX_TOOL_CALL_NAME_LENGTH ||
-		TOOL_CALL_NAME_SEPARATOR_RE.test(name)
-	);
+export function isMalformedToolCallName(
+	name: unknown,
+	allowedName = ANY_PROVIDER_TOOL_CALL_NAME_RE,
+	maxLength = MAX_TOOL_CALL_NAME_LENGTH,
+): boolean {
+	return typeof name !== "string" || name.length === 0 || name.length > maxLength || !allowedName.test(name);
 }
 
 function isMalformedToolCallId(id: string | undefined): boolean {
 	return !id || id.trim().length === 0;
 }
 
-function isMalformedToolCall(block: { id: string; name: string }): boolean {
-	return isMalformedToolCallId(block.id) || isMalformedToolCallName(block.name);
+function isMalformedToolCall(block: { id: string; name: string }, allowedName: RegExp, maxLength: number): boolean {
+	return isMalformedToolCallId(block.id) || isMalformedToolCallName(block.name, allowedName, maxLength);
 }
 
-function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
+function sanitizeMalformedToolCalls(messages: Message[], model: Model): Message[] {
+	const google =
+		model.api === "google-generative-ai" || model.api === "google-gemini-cli" || model.api === "google-vertex";
+	const allowedName = google ? GOOGLE_TOOL_CALL_NAME_RE : STRICT_TOOL_CALL_NAME_RE;
+	const maxLength = google
+		? 64
+		: model.api === "anthropic-messages" || model.api === "bedrock-converse-stream"
+			? 64
+			: MAX_TOOL_CALL_NAME_LENGTH;
 	let hasMalformed = false;
 	outer: for (const msg of messages) {
 		if (msg.role !== "assistant") continue;
 		for (const block of msg.content) {
-			if (block.type === "toolCall" && isMalformedToolCall(block)) {
+			if (block.type === "toolCall" && isMalformedToolCall(block, allowedName, maxLength)) {
 				hasMalformed = true;
 				break outer;
 			}
@@ -195,7 +204,7 @@ function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 			const filtered: AssistantMessage["content"] = [];
 			for (const block of msg.content) {
 				if (block.type === "toolCall") {
-					const malformed = isMalformedToolCall(block);
+					const malformed = isMalformedToolCall(block, allowedName, maxLength);
 					const queue = dropQueues.get(block.id);
 					if (queue) queue.push(malformed);
 					else dropQueues.set(block.id, [malformed]);
@@ -489,7 +498,7 @@ export function transformMessages<TApi extends Api>(
 ): Message[] {
 	messages = redactSensitiveCredentialsInMessages(messages);
 
-	messages = sanitizeMalformedToolCalls(messages);
+	messages = sanitizeMalformedToolCalls(messages, model);
 
 	const toolCallIdMap = new Map<string, string>();
 	const responsesCompositeIdMap = new Map<string, string>();
@@ -666,7 +675,7 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "fallback") {
-					if (isAnthropicTarget && model.compat.officialEndpoint) return block;
+					if (isAnthropicTarget) return block;
 					return [];
 				}
 

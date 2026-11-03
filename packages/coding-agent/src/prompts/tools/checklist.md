@@ -1,3 +1,5 @@
+`checklist` NEVER takes a turn alone: emit it beside the next real tool call; `init` with first work, `done`/`start` with next action or verification. Forced eager initialization is the sole exception.
+
 Tasks: verbatim content strings, NEVER auto-generated IDs. After each state-changing op: earliest `pending` (phase order) auto-promotes to `in_progress`; several `in_progress` → only the earliest stays; blocked NEVER auto-promotes (`unblock` first); out-of-order completion may move the pointer back — expected; completed NEVER revert.
 
 Results: `init` prints one compact tree after its initialization summary; `view` prints the full tree and overall counts; other successful state changes return a compact acknowledgement only. Errors return only the error and `Use op:"view" to see exact task names.`

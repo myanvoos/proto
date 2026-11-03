@@ -103,6 +103,7 @@ export function renderJsonTreeLines(
 	maxLines: number,
 	maxScalarLen: number,
 	width: number,
+	hiddenRootKeys: readonly string[] = Object.keys(HIDDEN_ARG_KEYS),
 ): { lines: string[]; truncated: boolean } {
 	const lines: string[] = [];
 	let truncated = false;
@@ -165,6 +166,7 @@ export function renderJsonTreeLines(
 					const maxStrLines = Math.min(strLines.length, Math.max(1, maxLines - lines.length - 1));
 					const continuePrefix = compact ? "" : `${buildTreePrefix(theme, ancestors)}   `;
 
+					if (strLines.some(line => Bun.stringWidth(line) > maxScalarLen)) truncated = true;
 					const firstLine = truncateToWidth(strLines[0], maxScalarLen);
 					if (!pushScalar(lead, `"${firstLine}`)) return;
 
@@ -185,6 +187,8 @@ export function renderJsonTreeLines(
 					return;
 				}
 
+				if (typeof val === "string" && Bun.stringWidth(sanitizeMultilineValue(val)) > maxScalarLen)
+					truncated = true;
 				const scalar = formatScalar(val, maxScalarLen);
 				pushScalar(lead, scalar);
 				return;
@@ -200,6 +204,7 @@ export function renderJsonTreeLines(
 					return;
 				}
 				if (depth >= maxDepth) {
+					truncated = true;
 					pushLine(
 						`${buildTreePrefix(theme, ancestors)}${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", "…")}`,
 					);
@@ -220,6 +225,7 @@ export function renderJsonTreeLines(
 			const header = key ? theme.fg("muted", sanitizeTreeKey(key)) : theme.fg("muted", "object");
 			pushLine(`${prefix}${iconObject} ${header}`);
 			if (depth >= maxDepth) {
+				truncated = Object.keys(val).length > 0;
 				pushLine(`${buildTreePrefix(theme, ancestors)}${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", "…")}`);
 				return;
 			}
@@ -245,7 +251,7 @@ export function renderJsonTreeLines(
 	};
 
 	if (isRecord(value)) {
-		const keys = Object.keys(value).filter(key => !(key in HIDDEN_ARG_KEYS));
+		const keys = Object.keys(value).filter(key => !hiddenRootKeys.includes(key));
 		for (let i = 0; i < keys.length; i++) {
 			renderNode(value[keys[i]!], keys[i], [], i === keys.length - 1, 1);
 			if (lines.length >= maxLines) {

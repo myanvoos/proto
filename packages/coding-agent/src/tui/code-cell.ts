@@ -7,6 +7,7 @@ import {
 	formatMoreItems,
 	formatStatusIcon,
 	replaceTabs,
+	wrapPrefixedLine,
 } from "../tools/render-utils";
 import { outputBlockContentWidth, renderOutputBlock } from "./output-block";
 import type { State } from "./types";
@@ -156,14 +157,23 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	}
 
 	if (lineNumberWidth > 0 && visibleLineNumbers) {
+		const numbered: string[] = [];
 		for (let i = 0; i < codeLines.length; i++) {
 			const lineNum = visibleLineNumbers[i];
 			const gutter =
 				lineNum !== null && lineNum !== undefined
 					? String(lineNum).padStart(lineNumberWidth, " ")
 					: " ".repeat(lineNumberWidth);
-			codeLines[i] = theme.fg("dim", `${gutter} `) + codeLines[i];
+			numbered.push(
+				...wrapPrefixedLine(
+					theme.fg("dim", `${gutter} `),
+					" ".repeat(lineNumberWidth + 1),
+					codeLines[i]!,
+					outputBlockContentWidth(width),
+				),
+			);
 		}
+		codeLines.splice(0, codeLines.length, ...numbered);
 	}
 
 	if (hiddenCodeLines > 0) {

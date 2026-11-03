@@ -4,7 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import {
 	type Component,
-	fuzzyRank,
+	FuzzyCorpus,
 	Input,
 	matchesKey,
 	replaceTabs,
@@ -186,7 +186,7 @@ export function sortModelItems(items: ModelBrowserItem[], options: SortModelItem
 
 		if (aDate && bDate) return bDate.localeCompare(aDate);
 
-		return aIsLatest ? -1 : bIsLatest ? 1 : a.id.localeCompare(b.id);
+		return a.id.localeCompare(b.id);
 	});
 }
 
@@ -305,6 +305,7 @@ export class ModelBrowser implements Component {
 	#settings: Settings;
 	#searchInput = new Input();
 	#baseItems: ModelBrowserItem[] = [];
+	#searchCorpus = new FuzzyCorpus<ModelBrowserItem>([], modelSearchText);
 	#visibleItems: ModelBrowserItem[] = [];
 	#roles: RoleAssignments = {};
 	#mruOrder: ReadonlyArray<string> = [];
@@ -349,6 +350,7 @@ export class ModelBrowser implements Component {
 	setItems(items: ModelBrowserItem[]): void {
 		const selectedKey = this.getSelected()?.selector;
 		this.#baseItems = items;
+		this.#searchCorpus = new FuzzyCorpus(items, modelSearchText);
 		this.#applyQuery();
 		if (selectedKey) {
 			this.selectSelector(selectedKey);
@@ -520,7 +522,7 @@ export class ModelBrowser implements Component {
 		const query = this.#searchInput.getValue();
 		let items: ModelBrowserItem[];
 		if (query.trim()) {
-			const ranked = fuzzyRank(this.#baseItems, query, modelSearchText);
+			const ranked = this.#searchCorpus.rank(query);
 			const matches = ranked.map(result => result.item);
 			if (this.#preserveQueryOrder) {
 				items = matches;

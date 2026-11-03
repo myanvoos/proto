@@ -42,14 +42,19 @@ async function deadPid(): Promise<number> {
 
 /** Minimal puppeteer Browser stub recording closes and optionally failing selected targets. */
 function makeBrowser(closed: string[], failTargets: ReadonlySet<string> = new Set()): Browser {
+	const listeners = new Set<(event: { targetId: string }) => void>();
 	const session = {
+		on: (_event: string, listener: (event: { targetId: string }) => void) => listeners.add(listener),
+		off: (_event: string, listener: (event: { targetId: string }) => void) => listeners.delete(listener),
 		send: async (method: string, params?: { targetId: string }) => {
+			if (method === "Target.setDiscoverTargets") return {};
 			if (method === "Target.getTargets") {
 				return { targetInfos: [...failTargets].map(targetId => ({ targetId })) };
 			}
 			if (!params) throw new Error(`Missing params for ${method}`);
 			if (failTargets.has(params.targetId)) throw new Error("transient CDP failure");
 			closed.push(params.targetId);
+			for (const listener of listeners) listener({ targetId: params.targetId });
 			return { success: true };
 		},
 		detach: async () => undefined,

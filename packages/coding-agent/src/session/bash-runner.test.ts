@@ -33,6 +33,65 @@ test("idle BashRunner disposal retires its shell owner so late commands cannot s
 	}
 });
 
+test("leaving a session keeps pending bash receipts alive then retires the old shell owner", async () => {
+	const sessionManager = SessionManager.inMemory();
+	const hookStarted = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const register = spyOn(bashExecutor, "registerBashSessionOwner");
+	const host: BashRunnerHost = {
+		agent: { appendMessage: () => {} } as unknown as Agent,
+		sessionManager,
+		settings: Settings.isolated({}),
+		extensionRunner: () =>
+			({
+				hasHandlers: () => true,
+				emitUserBash: async () => {
+					hookStarted.resolve();
+					await release.promise;
+					return {
+						result: {
+							output: "retained receipt",
+							exitCode: 0,
+							cancelled: false,
+							truncated: false,
+							totalLines: 1,
+							totalBytes: 16,
+							outputLines: 1,
+							outputBytes: 16,
+						},
+					};
+				},
+			}) as unknown as ExtensionRunner,
+		isStreaming: () => false,
+	};
+	const runner = new BashRunner(host);
+	try {
+		const owner = register.mock.results[0]!.value as bashExecutor.BashSessionOwner;
+		const pending = runner.executeBash("long running command");
+		await hookStarted.promise;
+		const transition = runner.beginSessionTransition();
+		await sessionManager.newSession();
+		runner.markSessionTransition(transition);
+		runner.finishSessionTransition(transition, true);
+		const oldShell = await bashExecutor.executeBash("printf alive", {
+			cwd: process.cwd(),
+			sessionKey: owner.sessionId,
+			sessionOwner: owner,
+		});
+		expect(oldShell.output).toContain("alive");
+		release.resolve();
+		expect((await pending).output).toBe("retained receipt");
+		await expect(
+			bashExecutor.executeBash("true", { cwd: process.cwd(), sessionKey: owner.sessionId, sessionOwner: owner }),
+		).rejects.toThrow("Bash session is disposed");
+	} finally {
+		release.resolve();
+		register.mockRestore();
+		await runner.dispose();
+		await sessionManager.close();
+	}
+});
+
 test("aborting a user-bash hook rejects its late result without persistence", async () => {
 	const sessionManager = SessionManager.inMemory();
 	const hookStarted = Promise.withResolvers<void>();

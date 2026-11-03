@@ -1,22 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	io::{self, Read, Write},
@@ -44,7 +25,6 @@ enum Verdict {
 	Cancelled,
 }
 
-
 pub(crate) struct Isutf8 {
 	matches: ArgMatches,
 }
@@ -70,19 +50,12 @@ impl Utility for Isutf8 {
 		if files.is_empty() {
 			match validate(&mut host.stdin, &cancel) {
 				Err(err) => {
-				host.error(format!("{STDIN_NAME}: {err}"), 2);
-				io_error = true;
+					host.error(format!("{STDIN_NAME}: {err}"), 2);
+					io_error = true;
 				},
 				Ok(Verdict::Cancelled) => return 130,
 				Ok(verdict) => {
-					any_failed = report_verdict(
-						host,
-						STDIN_NAME,
-						verdict,
-						quiet,
-						list,
-						invert,
-					);
+					any_failed = report_verdict(host, STDIN_NAME, verdict, quiet, list, invert);
 				},
 			}
 		} else {
@@ -91,7 +64,9 @@ impl Utility for Isutf8 {
 				let result = if name == "-" {
 					validate(&mut host.stdin, &cancel)
 				} else {
-					host.open_read(name).and_then(|mut file| validate(&mut file, &cancel))
+					host
+						.open_read(name)
+						.and_then(|mut file| validate(&mut file, &cancel))
 				};
 				let verdict = match result {
 					Err(err) => {
@@ -177,8 +152,6 @@ fn command() -> Command {
 		)
 }
 
-
-
 fn validate(input: &mut impl Read, cancel: &Arc<AtomicBool>) -> io::Result<Verdict> {
 	let mut buf = vec![0u8; CHUNK_SIZE + 3];
 	let mut carry = 0usize;
@@ -208,7 +181,6 @@ fn validate(input: &mut impl Read, cancel: &Arc<AtomicBool>) -> io::Result<Verdi
 					advance(&buf[pos..pos + err.valid_up_to()], &mut line, &mut chars_in_line);
 					pos += err.valid_up_to();
 					if err.error_len().is_some() || eof {
-
 						return Ok(Verdict::Invalid {
 							line,
 							character: chars_in_line + 1,
@@ -228,8 +200,6 @@ fn validate(input: &mut impl Read, cancel: &Arc<AtomicBool>) -> io::Result<Verdi
 		offset += pos as u64;
 	}
 }
-
-
 
 fn advance(text: &[u8], line: &mut u64, chars_in_line: &mut u64) {
 	match memchr::memrchr(b'\n', text) {
@@ -253,9 +223,6 @@ fn display_name(name: &OsStr) -> String {
 	}
 }
 
-
 pub(crate) fn isutf8_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Isutf8, SE>()
 }
-
-

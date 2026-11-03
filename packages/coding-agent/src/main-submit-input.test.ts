@@ -26,7 +26,7 @@ function createMode(skillCommands: Map<string, Skill>) {
 function createSession() {
 	return {
 		prompt: vi.fn(async () => true),
-		promptCustomMessage: vi.fn(async () => {}),
+		promptCustomMessage: vi.fn(async () => true),
 		isStreaming: false,
 	};
 }

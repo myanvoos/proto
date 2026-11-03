@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use std::{
 	ffi::OsString,
 	fs::{File, OpenOptions},
@@ -40,7 +32,6 @@ struct Options {
 	output_error: Option<OutputErrorMode>,
 }
 
-
 pub(crate) struct Tee {
 	matches: ArgMatches,
 }
@@ -62,7 +53,8 @@ impl Utility for Tee {
 				_ => unreachable!("clap validates output-error"),
 			})
 			.or_else(|| {
-				self.matches
+				self
+					.matches
 					.get_flag(options::IGNORE_PIPE_ERRORS)
 					.then_some(OutputErrorMode::WarnNoPipe)
 			});
@@ -71,11 +63,7 @@ impl Utility for Tee {
 			.get_many::<OsString>(options::FILE)
 			.map(|values| values.cloned().collect())
 			.unwrap_or_default();
-		let options = Options {
-			append: self.matches.get_flag(options::APPEND),
-			files,
-			output_error,
-		};
+		let options = Options { append: self.matches.get_flag(options::APPEND), files, output_error };
 
 		match tee(&options, host) {
 			Ok(()) => 0,
@@ -134,7 +122,11 @@ fn tee(options: &Options, host: &mut Host) -> io::Result<()> {
 	}
 }
 
-fn copy(mut input: impl Read, mut output: impl Write, stderr: &mut impl Write) -> io::Result<usize> {
+fn copy(
+	mut input: impl Read,
+	mut output: impl Write,
+	stderr: &mut impl Write,
+) -> io::Result<usize> {
 	const FIRST_BUF_SIZE: usize = 8 * 1024;
 	let mut buffer = [0_u8; FIRST_BUF_SIZE];
 	let mut len = 0;
@@ -192,15 +184,18 @@ impl MultiWriter {
 		let mut errors = 0;
 		let stderr = &mut self.stderr;
 		self.writers.retain_mut(|writer| {
-			let result = if flush { writer.flush() } else { writer.write_all(buf) };
+			let result = if flush {
+				writer.flush()
+			} else {
+				writer.write_all(buf)
+			};
 			match result {
 				Ok(()) => true,
 				Err(err) => {
 					let is_pipe = err.kind() == ErrorKind::BrokenPipe;
-					let report = matches!(
-						mode.as_ref(),
-						Some(OutputErrorMode::Warn | OutputErrorMode::Exit)
-					) || !is_pipe;
+					let report =
+						matches!(mode.as_ref(), Some(OutputErrorMode::Warn | OutputErrorMode::Exit))
+							|| !is_pipe;
 					if report {
 						let _ = writeln!(stderr, "tee: {}: {err}", writer.name.maybe_quote());
 						errors += 1;
@@ -331,9 +326,6 @@ fn app() -> Command {
 		)
 }
 
-
 pub(crate) fn tee_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Tee, SE>()
 }
-
-

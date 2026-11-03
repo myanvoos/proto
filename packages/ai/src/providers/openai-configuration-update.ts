@@ -22,6 +22,7 @@ interface EffortTransition<TEffort extends string> {
 }
 
 export interface OpenAIEffortControlState<TEffort extends string = string> {
+	sessionId: string;
 	baseEffort?: TEffort;
 	currentEffort?: TEffort;
 	transitions: EffortTransition<TEffort>[];
@@ -33,6 +34,7 @@ const MAX_EFFORT_CONTROL_STATES = 16;
 export function getOpenAIEffortControlState<TEffort extends string>(
 	states: Map<string, OpenAIEffortControlState<TEffort>>,
 	key: string,
+	sessionId: string,
 ): OpenAIEffortControlState<TEffort> {
 	const existing = states.get(key);
 	if (existing) {
@@ -40,13 +42,23 @@ export function getOpenAIEffortControlState<TEffort extends string>(
 		states.set(key, existing);
 		return existing;
 	}
-	const created: OpenAIEffortControlState<TEffort> = { transitions: [] };
+	const created: OpenAIEffortControlState<TEffort> = { sessionId, transitions: [] };
 	states.set(key, created);
 	if (states.size > MAX_EFFORT_CONTROL_STATES) {
 		const oldest = states.keys().next().value;
 		if (oldest !== undefined) states.delete(oldest);
 	}
 	return created;
+}
+
+/** Release one conversation's effort state from the Responses and Codex `releaseSession` implementations. */
+export function releaseOpenAIEffortControlSession<TEffort extends string>(
+	states: Map<string, OpenAIEffortControlState<TEffort>>,
+	sessionId: string,
+): void {
+	for (const [key, state] of states) {
+		if (state.sessionId === sessionId) states.delete(key);
+	}
 }
 
 interface AnchorableItem {

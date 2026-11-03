@@ -78,7 +78,7 @@ export async function generateSessionTitle(
 	signal?: AbortSignal,
 ): Promise<string | null> {
 	if (isLowSignalTitleInput(firstMessage)) {
-		logger.debug("title-generator: skipped low-signal input", { sessionId, reason: "low-signal" });
+		logger.debug("title-generator: skipped low-signal input", { titleSessionId: sessionId, reason: "low-signal" });
 		return null;
 	}
 
@@ -99,7 +99,7 @@ export async function generateSessionTitle(
 
 	if (!isTinyTitleLocalModelKey(tinyModel)) {
 		logger.warn("title-generator: unknown local tiny model; skipping title (will not fall back to online)", {
-			sessionId,
+			titleSessionId: sessionId,
 			model: tinyModel,
 			reason: "unknown-local-model",
 		});
@@ -120,7 +120,7 @@ export async function generateSessionTitle(
 		}
 		if (!localTitle) {
 			logger.warn("title-generator: local tiny model produced no title; skipping (no online fallback)", {
-				sessionId,
+				titleSessionId: sessionId,
 				model: tinyModel,
 				reason: "local-no-output",
 			});
@@ -129,7 +129,7 @@ export async function generateSessionTitle(
 		return localTitle;
 	} catch (err) {
 		logger.warn("title-generator: local tiny model errored; skipping (no online fallback)", {
-			sessionId,
+			titleSessionId: sessionId,
 			model: tinyModel,
 			error: err instanceof Error ? err.message : String(err),
 		});
@@ -149,7 +149,7 @@ async function generateTitleOnline(
 ): Promise<string | null> {
 	const models = getTitleModels(registry, settings, currentModel);
 	if (models.length === 0) {
-		logger.warn("title-generator: no title model found", { sessionId, reason: "no-title-model" });
+		logger.warn("title-generator: no title model found", { titleSessionId: sessionId, reason: "no-title-model" });
 		return null;
 	}
 
@@ -159,7 +159,7 @@ async function generateTitleOnline(
 	const userMessage = formatTitleUserMessage(firstMessage);
 	for (const model of models) {
 		const modelContext = {
-			sessionId,
+			titleSessionId: sessionId,
 			provider: model.provider,
 			id: model.id,
 			model: `${model.provider}/${model.id}`,
@@ -534,5 +534,5 @@ export function pushTerminalTitle(): void {
 
 export function popTerminalTitle(): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
-	writeTitleSequence("\x1b[23;2t");
+	writeTitleSequence("\x1b]0;\x07\x1b[23;2t");
 }

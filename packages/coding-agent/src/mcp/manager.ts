@@ -201,6 +201,9 @@ export class MCPManager {
 
 	#pendingNotifications: Array<{ server: string; method: string; params: unknown }> = [];
 	#onToolsChanged?: (tools: CustomTool<TSchema, MCPToolDetails>[]) => void | Promise<void>;
+	#ownerToolsRun?: Promise<void>;
+	#ownerToolsDirty = false;
+	#toolsChangedListeners = new Set<() => void>();
 	#onResourcesChanged?: (serverName: string, uri: string) => void;
 	#onPromptsChanged?: (serverName: string) => void;
 	#notificationsEnabled = false;
@@ -259,6 +262,54 @@ export class MCPManager {
 
 	setOnToolsChanged(handler: (tools: CustomTool<TSchema, MCPToolDetails>[]) => void | Promise<void>): void {
 		this.#onToolsChanged = handler;
+	}
+
+	addToolsChangedListener(listener: () => void): () => void {
+		this.#toolsChangedListeners.add(listener);
+		return () => {
+			this.#toolsChangedListeners.delete(listener);
+		};
+	}
+
+	#emitToolsChanged(): void {
+		for (const listener of this.#toolsChangedListeners) {
+			try {
+				listener();
+			} catch (error) {
+				logger.debug("MCP tools changed listener threw", { error });
+			}
+		}
+	}
+
+	#notifyOwnerToolsChanged(): Promise<void> {
+		if (!this.#onToolsChanged) return Promise.resolve();
+		if (this.#ownerToolsRun) {
+			this.#ownerToolsDirty = true;
+			return this.#ownerToolsRun;
+		}
+		let settled = false;
+		const run = (async () => {
+			try {
+				let failure: unknown;
+				let failed = false;
+				do {
+					this.#ownerToolsDirty = false;
+					try {
+						await this.#onToolsChanged?.(this.#tools);
+						failed = false;
+					} catch (error) {
+						failure = error;
+						failed = true;
+					}
+				} while (this.#ownerToolsDirty);
+				if (failed) throw failure;
+			} finally {
+				settled = true;
+				this.#ownerToolsRun = undefined;
+			}
+		})();
+		if (!settled) this.#ownerToolsRun = run;
+		return run;
 	}
 
 	setOnResourcesChanged(handler: (serverName: string, uri: string) => void): void {
@@ -547,7 +598,9 @@ export class MCPManager {
 						this.reconnectServer(name, options);
 					const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 					this.#replaceServerTools(name, customTools);
-					void this.#onToolsChanged?.(this.#tools);
+					void this.#notifyOwnerToolsChanged().catch(error =>
+						logger.debug("MCP tools-changed handler failed", { error }),
+					);
 					void this.toolCache?.set(name, config, serverTools);
 
 					this.#serverFailures.delete(name);
@@ -646,6 +699,7 @@ export class MCPManager {
 		this.#tools.push(...tools);
 
 		sortMCPToolsByName(this.#tools);
+		this.#emitToolsChanged();
 	}
 
 	#triggerNotificationRefresh(serverName: string, kind: "tools" | "resources" | "prompts"): Promise<void> {
@@ -912,7 +966,11 @@ export class MCPManager {
 			await this.#discardConnection(name, connection);
 		}
 
-		if (hadTools) void this.#onToolsChanged?.(this.#tools);
+		if (hadTools) this.#emitToolsChanged();
+		if (hadTools)
+			void this.#notifyOwnerToolsChanged().catch(error =>
+				logger.debug("MCP tools-changed handler failed", { error }),
+			);
 		if (hadPrompts) this.#onPromptsChanged?.(name);
 	}
 
@@ -1258,7 +1316,9 @@ export class MCPManager {
 			const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 			void this.toolCache?.set(name, config, serverTools);
 			this.#replaceServerTools(name, customTools);
-			void this.#onToolsChanged?.(this.#tools);
+			void this.#notifyOwnerToolsChanged().catch(error =>
+				logger.debug("MCP tools-changed handler failed", { error }),
+			);
 			void this.#loadServerResourcesAndPrompts(name, connection);
 			return connection;
 		} catch (error) {
@@ -1332,7 +1392,7 @@ export class MCPManager {
 		void this.toolCache?.set(name, connection.config, serverTools);
 
 		this.#replaceServerTools(name, customTools);
-		await this.#onToolsChanged?.(this.#tools);
+		await this.#notifyOwnerToolsChanged();
 	}
 
 	async refreshAllTools(): Promise<void> {
@@ -1482,7 +1542,7 @@ export class MCPManager {
 				instructions.set(name, connection.instructions);
 			}
 		}
-		return instructions;
+		return new Map([...instructions].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
 	}
 
 	getNotificationState(): { enabled: boolean; subscriptions: Map<string, ReadonlySet<string>> } {

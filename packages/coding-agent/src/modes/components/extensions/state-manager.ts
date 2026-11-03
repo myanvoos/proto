@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { fuzzyMatch } from "@oh-my-pi/pi-tui";
+import { FuzzyQuery } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, logger } from "@oh-my-pi/pi-utils";
 import type { ContextFile } from "../../../capability/context-file";
 import type { ExtensionModule } from "../../../capability/extension-module";
@@ -320,6 +320,7 @@ export function applyFilter(extensions: Extension[], query: string): Extension[]
 		return extensions;
 	}
 
+	const prepared = tokens.map(token => new FuzzyQuery(token));
 	return extensions.filter(ext => {
 		const searchable = [
 			ext.name,
@@ -330,7 +331,7 @@ export function applyFilter(extensions: Extension[], query: string): Extension[]
 			ext.kind,
 		].join(" ");
 
-		return tokens.every(token => fuzzyMatch(token, searchable).matches);
+		return prepared.every(query => query.match(searchable).matches);
 	});
 }
 

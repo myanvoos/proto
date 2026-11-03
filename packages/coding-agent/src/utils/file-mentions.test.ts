@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { FileMentionMessage } from "../session/messages";
 import { generateFileMentionMessages } from "./file-mentions";
+import * as markit from "./markit";
 
 const ENTRY_COUNT = 2_000;
 const EXPECTED_COUNT = 500;
@@ -97,4 +98,30 @@ describe("image file mentions", () => {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
 	});
+});
+
+test("document mentions expose converted text and drop prior attachments if conversion aborts", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mention-doc-"));
+	const controller = new AbortController();
+	const conversion = spyOn(markit, "convertFileWithMarkit").mockResolvedValue({
+		ok: true,
+		content: "# Converted document\nUseful prose",
+		cache: "skipped",
+	});
+	try {
+		await Bun.write(path.join(directory, "report.pdf"), "%PDF-mock-document");
+		await Bun.write(path.join(directory, "first.txt"), "prior attachment");
+		const result = await generateFileMentionMessages(["report.pdf"], directory);
+		expect((result[0] as FileMentionMessage).files[0]?.content).toContain("Useful prose");
+		conversion.mockImplementation(async () => {
+			controller.abort();
+			return { ok: true, content: "discarded", cache: "skipped" };
+		});
+		expect(
+			await generateFileMentionMessages(["first.txt", "report.pdf"], directory, { signal: controller.signal }),
+		).toEqual([]);
+	} finally {
+		conversion.mockRestore();
+		await fs.rm(directory, { recursive: true, force: true });
+	}
 });

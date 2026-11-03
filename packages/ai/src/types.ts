@@ -249,12 +249,18 @@ export function realizesPriorityServiceTier(
 	return shouldSendServiceTier(serviceTier, model);
 }
 
-export function getPriorityPremiumRequests(
+export function getPremiumServiceTierRequests(
 	serviceTier: ServiceTier | null | undefined,
-	model: Pick<Model, "provider" | "api" | "id">,
+	model: ServiceTierModel,
+	options?: { served?: boolean },
 ): number {
-	if (!realizesPriorityServiceTier(serviceTier, model)) return 0;
 	const provider = model.provider;
+	if (serviceTier === "ultrafast") {
+		if (provider !== "openai" && provider !== "openai-codex") return 0;
+		return options?.served === true || shouldSendServiceTier("ultrafast", model) ? 1 : 0;
+	}
+	if (serviceTier !== "priority") return 0;
+	if (!options?.served && !realizesPriorityServiceTier(serviceTier, model)) return 0;
 	return provider === "openai" ||
 		provider === "openai-codex" ||
 		provider === "anthropic" ||
@@ -262,6 +268,21 @@ export function getPriorityPremiumRequests(
 		provider === "google-vertex"
 		? 1
 		: 0;
+}
+
+/** Ignore unknown provider echoes rather than persisting them as served tiers. */
+export function parseServiceTier(value: unknown): ServiceTier | undefined {
+	switch (value) {
+		case "auto":
+		case "default":
+		case "flex":
+		case "scale":
+		case "priority":
+		case "ultrafast":
+			return value;
+		default:
+			return undefined;
+	}
 }
 
 export function coerceServiceTierByFamily(value: unknown): ServiceTierByFamily | undefined {
@@ -306,6 +327,7 @@ export function coerceServiceTierByFamily(value: unknown): ServiceTierByFamily |
 
 export interface ProviderSessionState {
 	close(): void;
+	releaseSession?(sessionId: string): void;
 }
 
 export interface ProviderResponseMetadata {
@@ -352,7 +374,7 @@ export interface AnthropicCompactionRequest {
 export interface OpenAIPromptCacheOptions {
 	mode: "implicit" | "explicit";
 
-	ttl?: "30m";
+	ttl?: "30m" | "12h";
 
 	breakpoint?: "latest-stable-message" | "none";
 }
@@ -378,6 +400,8 @@ export interface StreamOptions {
 
 	frequencyPenalty?: number;
 	maxTokens?: number;
+	/** Total OpenAI chat-completions HTTP attempt budget, shared with transport retries. */
+	maxHttpAttempts?: number;
 	signal?: AbortSignal;
 	apiKey?: string;
 	cacheRetention?: CacheRetention;
@@ -424,6 +448,8 @@ export interface StreamOptions {
 	toolNamespacesInfo?: unknown;
 
 	maxInFlightRequests?: Record<string, number>;
+	/** @internal Hold the in-flight permit until the bounded terminal drain finishes. */
+	waitForTerminalDrain?: boolean;
 
 	onPayload?: (
 		payload: unknown,
@@ -712,6 +738,8 @@ export interface UserMessage {
 
 export interface DeveloperMessage {
 	role: "developer";
+	/** Agent-generated user-boundary context, such as a date or workspace reminder. */
+	synthetic?: boolean;
 	content: string | UserContent[];
 
 	attribution?: MessageAttribution;
@@ -748,6 +776,8 @@ export type AssistantRetryRecovery =
 export interface ContextSnapshot {
 	promptTokens: number;
 	nonMessageTokens: number;
+	/** Estimated tool-schema tokens included in nonMessageTokens, rebased when models change. */
+	toolSchemaTokens?: number;
 
 	historyRewriteTokensRemoved?: number;
 
@@ -776,6 +806,8 @@ export interface AssistantMessage {
 	upstreamProvider?: string;
 
 	upstreamModel?: string;
+	/** Tier actually served, reported by a trusted provider or inferred from the sent request. */
+	serviceTier?: ServiceTier;
 	usage: Usage;
 	stopReason: StopReason;
 	stopDetails?: StopDetails | null;

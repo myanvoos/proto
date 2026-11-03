@@ -48,7 +48,7 @@ function browserFixture() {
 		return browser as unknown as Browser;
 	};
 	const launch = vi.fn(launchBrowser);
-	vi.spyOn(launchModule, "ensureChromiumExecutable").mockResolvedValue("/fake/chromium");
+	vi.spyOn(launchModule, "ensureSignInChromiumExecutable").mockResolvedValue("/fake/chromium");
 	const load = vi.spyOn(launchModule, "loadPuppeteer").mockResolvedValue({ launch } as unknown as PuppeteerNode);
 	return { browser, page, readCookies, launch, launchBrowser, load };
 }
@@ -63,6 +63,10 @@ describe("browser session capture", () => {
 		await expect(captureBrowserSession(request)).resolves.toBe("secret-session");
 		expect(fixture.readCookies).toHaveBeenCalledWith("Network.getCookies", { urls: [request.url] });
 		expect(fixture.browser.connected).toBe(false);
+		const options = fixture.launch.mock.calls[0]?.[0];
+		expect(options?.ignoreDefaultArgs).toContain("--enable-automation");
+		expect(options?.args).toContain("--disable-blink-features=AutomationControlled");
+		expect(options?.args).not.toContain("--ignore-certificate-errors");
 		await expectProfilesRemoved();
 	});
 

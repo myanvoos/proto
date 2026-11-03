@@ -18,7 +18,7 @@ import { theme } from "../theme/theme";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
-	buildAsyncResultBlock,
+	buildAsyncResultComponent,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
@@ -133,7 +133,7 @@ export class ChatTranscriptBuilder {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.canDisplaceBlock(previous)) {
+		if (nextToolName === "jobs" && previous.isDisplaceableBlock() && this.container.canDisplaceBlock(previous)) {
 			this.container.disposeAndRemoveChild(previous);
 		}
 		previous.seal();
@@ -244,6 +244,7 @@ export class ChatTranscriptBuilder {
 				component.setComplete(message.exitCode, message.cancelled, {
 					output: message.output || undefined,
 					truncation: message.meta?.truncation,
+					minimized: message.meta?.minimized,
 				});
 				this.container.addChild(component);
 				break;
@@ -428,7 +429,7 @@ export class ChatTranscriptBuilder {
 		if (!pending) return;
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
-		if (message.toolName === "fleet" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
+		if (message.toolName === "jobs" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
 		} else if (
 			message.toolName === "checklist" &&
@@ -442,7 +443,8 @@ export class ChatTranscriptBuilder {
 	#appendCustomMessage(message: Extract<AgentMessage, { role: "custom" | "hookMessage" }>): void {
 		if (!message.display) return;
 		if (message.customType === "async-result") {
-			const component = buildAsyncResultBlock(message);
+			const component = buildAsyncResultComponent(message, this.deps.getMessageRenderer?.(message.customType));
+			component.setExpanded(this.#expanded);
 			this.container.addChild(component);
 			return;
 		}

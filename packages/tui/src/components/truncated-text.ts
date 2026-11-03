@@ -20,6 +20,10 @@ export class TruncatedText implements Component {
 		this.#cachedLines = undefined;
 	}
 
+	releaseRenderCaches(): void {
+		this.invalidate();
+	}
+
 	render(width: number): readonly string[] {
 		if (this.#cachedLines && this.#cachedWidth === width && this.#cachedWidthEpoch === getWidthConfigEpoch()) {
 			return this.#cachedLines;

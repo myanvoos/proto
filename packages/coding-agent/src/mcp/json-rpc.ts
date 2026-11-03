@@ -8,12 +8,14 @@ const SENSITIVE_QUERY_PARAM = /key|token|secret|auth/i;
 export function redactUrlForLog(url: string): string {
 	try {
 		const parsed = new URL(url);
+		parsed.username = "";
+		parsed.password = "";
 		for (const name of parsed.searchParams.keys()) {
 			if (SENSITIVE_QUERY_PARAM.test(name)) parsed.searchParams.set(name, "[redacted]");
 		}
 		return parsed.toString();
 	} catch {
-		return url.split("?")[0];
+		return url.split("?")[0]?.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1") ?? "";
 	}
 }
 

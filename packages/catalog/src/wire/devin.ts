@@ -10,9 +10,9 @@ const DEVIN_LOCALE = "en";
 const DEVIN_CLI_METADATA = {
 	ideName: "devin-cli",
 	ideType: "chisel",
-	ideVersion: "3000.11.3",
+	ideVersion: "3000.11.205",
 	extensionName: "chisel",
-	extensionVersion: "3000.11.3",
+	extensionVersion: "3000.11.205",
 	locale: DEVIN_LOCALE,
 	os: DEVIN_OS,
 } as const;
@@ -27,27 +27,21 @@ const DEVIN_DISCOVERY_METADATA = {
 	os: DEVIN_OS,
 } as const;
 
-export function normalizeDevinSessionToken(apiKey: string | undefined): string {
-	if (!apiKey) return "";
-	return apiKey.startsWith(DEVIN_SESSION_TOKEN_PREFIX) ? apiKey : `${DEVIN_SESSION_TOKEN_PREFIX}${apiKey}`;
-}
-
-// Released-CLI metadata with credential bytes already encoded for the wire (legacy Windsurf keys go raw).
-export function devinWireMetadata(apiKey: string | undefined, userJwt = "") {
-	return {
-		apiKey: apiKey ?? "",
-		userJwt,
-		...DEVIN_CLI_METADATA,
-	};
+function encodeDevinCredential(apiKey: string | undefined): string {
+	const key = apiKey?.trim();
+	if (!key) return "";
+	return key.startsWith(DEVIN_SESSION_TOKEN_PREFIX) || key.split(".").length !== 3
+		? key
+		: `${DEVIN_SESSION_TOKEN_PREFIX}${key}`;
 }
 
 export function devinCliMetadata(apiKey: string | undefined, userJwt = "") {
-	return devinWireMetadata(normalizeDevinSessionToken(apiKey), userJwt);
+	return { apiKey: encodeDevinCredential(apiKey), userJwt, ...DEVIN_CLI_METADATA };
 }
 
 export function devinDiscoveryMetadata(apiKey: string | undefined) {
 	return {
-		apiKey: normalizeDevinSessionToken(apiKey),
+		apiKey: encodeDevinCredential(apiKey),
 		...DEVIN_DISCOVERY_METADATA,
 	};
 }

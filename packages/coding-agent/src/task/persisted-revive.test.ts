@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "../config/settings";
 import type { AgentRef } from "../registry/agent-registry";
 import * as sdkModule from "../sdk";
@@ -26,7 +28,11 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
-async function createPersistedSession(cwd: string, retryFallback?: RetryFallbackRole): Promise<string> {
+async function createPersistedSession(
+	cwd: string,
+	retryFallback?: RetryFallbackRole,
+	thinkingLevelCeiling?: Effort,
+): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
@@ -35,6 +41,7 @@ async function createPersistedSession(cwd: string, retryFallback?: RetryFallback
 		task: "persisted task",
 		tools: ["read", "yield"],
 		retryFallback,
+		thinkingLevelCeiling,
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -199,4 +206,37 @@ describe("persisted subagent revival fails closed", () => {
 		await expect(reviver(ref)).rejects.toThrow(/no persisted session contract/);
 		expect(await Bun.file(sessionFile).text()).toBe(withoutInit);
 	});
+});
+
+it("cold revival reinstalls the effort ceiling persisted by the original spawn", async () => {
+	const cwd = await makeTempDir();
+	const sessionFile = await createPersistedSession(cwd, undefined, Effort.Low);
+	const ref = createRef(sessionFile);
+	const reviver = await createReviver(cwd, ref);
+	let restored: Effort | undefined;
+	vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+		restored = options?.thinkingLevelCeiling;
+		throw new Error("captured restored dispatch policy");
+	});
+	await expect(reviver(ref)).rejects.toThrow("captured restored dispatch policy");
+	expect(restored).toBe(Effort.Low);
+});
+
+it("cold revival refuses a model whose current effort floor exceeds its saved ceiling", async () => {
+	const fixture = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!fixture) throw new Error("Missing bundled fixture model");
+	const cwd = await makeTempDir();
+	const ref = createRef(await createPersistedSession(cwd, undefined, Effort.Low));
+	const revive = await createReviver(cwd, ref);
+	let disposed = false;
+	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+		session: {
+			model: { ...fixture, thinking: { ...fixture.thinking, efforts: [Effort.High] } },
+			dispose: async () => {
+				disposed = true;
+			},
+		},
+	} as unknown as sdkModule.CreateAgentSessionResult);
+	await expect(revive(ref)).rejects.toThrow("cannot run at or below the saved effort ceiling");
+	expect(disposed).toBe(true);
 });

@@ -6,7 +6,7 @@ import { getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import {
 	type Component,
 	extractPrintableText,
-	fuzzyFilter,
+	FuzzyCorpus,
 	getKeybindings,
 	Input,
 	matchesKey,
@@ -173,6 +173,7 @@ export class ModelHubComponent implements Component {
 	#browser: ModelBrowser;
 	#roles: RoleAssignments = {};
 	#availableItems: ModelBrowserItem[] = [];
+	#searchCorpus = new FuzzyCorpus<ModelBrowserItem>([], modelSearchText);
 	#recentItems: ModelBrowserItem[] = [];
 	#configError: string | undefined;
 
@@ -323,6 +324,7 @@ export class ModelHubComponent implements Component {
 		const mruOrder = storage?.getModelUsageOrder() ?? [];
 		this.#availableItems = buildBrowserItems(availableModels);
 		sortModelItems(this.#availableItems, { roles: this.#roles, mruOrder });
+		this.#searchCorpus = new FuzzyCorpus(this.#availableItems, modelSearchText);
 		this.#browser.setRoles(this.#roles);
 		this.#browser.setMruOrder(mruOrder);
 		this.#browser.setPerfStats(storage?.getModelPerf() ?? new Map());
@@ -584,7 +586,7 @@ export class ModelHubComponent implements Component {
 			this.#composeEntries();
 			return;
 		}
-		const matches = fuzzyFilter(this.#availableItems, query, modelSearchText);
+		const matches = this.#searchCorpus.rank(query).map(result => result.item);
 		const counts = new Map<string, number>();
 		for (const item of matches) {
 			counts.set(item.provider, (counts.get(item.provider) ?? 0) + 1);
@@ -1323,7 +1325,10 @@ export class ModelHubComponent implements Component {
 
 		if (rolesView) {
 			const printable = extractPrintableText(data);
-			if (this.#focus === "scope" && printable !== undefined && printable.trim().length > 0) {
+			if (
+				(this.#focus === "scope" && printable !== undefined && printable.trim().length > 0) ||
+				(this.#browser.query.length > 0 && (printable !== undefined || matchesKey(data, "backspace")))
+			) {
 				this.#setActiveEntry("all");
 				this.#focus = "list";
 				this.#browser.handleInput(data);

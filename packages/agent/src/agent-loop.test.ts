@@ -10,6 +10,7 @@ import {
 	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { agentLoop, TERMINAL_TOOL_RESULT_ABORT_REASON } from "./agent-loop";
@@ -793,14 +794,125 @@ test("a tool-name miss suggests routable device names and fallback resolution se
 	for (const names of advertisedSeen) expect(names).toEqual(["read"]);
 });
 
-test("intent tracing rejects a payload-sized intent instead of running the tool with the leftover args", async () => {
+test("malformed DSML is stripped before commit and retried only for DSML readers", async () => {
+	const raw =
+		'Before prose.\n<||DSML||invoke name="echo"><||DSML||parameter name="value">payload</||DSML||parameter></||DSML||invoke>\nAfter';
+	for (const dsml of [true, false]) {
+		const target = dsml ? getBundledModel("deepseek", "deepseek-v4-flash") : model;
+		const context: AgentContext = { systemPrompt: [], messages: [], tools: [] };
+		let calls = 0;
+		const messages = await agentLoop(
+			[userMessage("go")],
+			context,
+			loopConfig(context, { model: target }),
+			undefined,
+			current => {
+				const response = createAssistantMessageEventStream();
+				response.end(assistantMessage(current, calls++ === 0 ? raw : "Recovered"));
+				return response;
+			},
+		).result();
+		const text = messages
+			.filter(message => message.role === "assistant")
+			.flatMap(message => message.content.flatMap(block => (block.type === "text" ? [block.text] : [])))
+			.join("\n");
+		expect(calls).toBe(dsml ? 2 : 1);
+		expect(text).toContain("Before");
+		expect(text).toContain("After");
+		expect(text.includes("DSML")).toBe(!dsml);
+	}
+});
+
+test("long deadlines do not abort the next provider request immediately", async () => {
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [] };
+	const messages = await agentLoop(
+		[userMessage("go")],
+		context,
+		loopConfig(context, { deadline: Date.now() + 2 ** 31 + 1000 }),
+		undefined,
+		responseFor(target => assistantMessage(target, "completed")),
+	).result();
+	expect(messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "stop" });
+});
+
+test("user cancellation from an argument transform prevents queued wake-drain execution", async () => {
+	const controller = new AbortController();
+	let ran = false;
+	const tool = {
+		...basicTool("wake", async () => {
+			ran = true;
+			return okToolResult();
+		}),
+		interruptible: true,
+		handlesToolInterrupt: true,
+	};
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
+	let turn = 0;
+	await agentLoop(
+		[userMessage("go")],
+		context,
+		loopConfig(context, {
+			transformToolCallArguments: args => {
+				controller.abort(new Error("user cancelled"));
+				return args;
+			},
+		}),
+		controller.signal,
+		target => {
+			const response = createAssistantMessageEventStream();
+			response.end(
+				turn++ === 0 ? toolMessage(target, [{ id: "wake", name: "wake" }]) : assistantMessage(target, "done"),
+			);
+			return response;
+		},
+	).result();
+	expect(ran).toBe(false);
+});
+
+test("colliding and missing call ids execute their own arguments and remain unique across turns", async () => {
+	const seen: string[] = [];
+	const tool = basicTool("echo", async (_id, args) => {
+		const value = String((args as Record<string, unknown>).value);
+		seen.push(value);
+		return okToolResult(value);
+	});
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
+	let turn = 0;
+	const messages = await agentLoop([userMessage("go")], context, loopConfig(context), undefined, target => {
+		const response = createAssistantMessageEventStream();
+		const message = turn < 2 ? toolMessage(target, []) : assistantMessage(target, "done");
+		if (turn === 0)
+			message.content = [
+				{ type: "toolCall", id: "duplicate", name: "echo", arguments: { value: "first" } },
+				{ type: "toolCall", id: "duplicate", name: "echo", arguments: { value: "second" } },
+				{ type: "toolCall", id: "  ", name: "echo", arguments: { value: "third" } },
+			];
+		if (turn === 1) message.content = [{ type: "toolCall", id: "", name: "echo", arguments: { value: "fourth" } }];
+		turn++;
+		response.end(message);
+		return response;
+	}).result();
+	const results = messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
+	expect(seen.sort()).toEqual(["first", "fourth", "second", "third"]);
+	expect(new Set(results.map(result => result.toolCallId)).size).toBe(4);
+	expect(results.every(result => result.toolCallId.trim().length > 0)).toBe(true);
+	expect(
+		results
+			.map(result => result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join(""))
+			.sort(),
+	).toEqual(seen);
+});
+
+test("intent tracing accepts long labels while retaining a tool-owned i argument", async () => {
 	const ran: string[] = [];
+	let ownedIntent: unknown;
 	const writeTool = basicTool("write", async id => {
 		ran.push(id);
 		return okToolResult();
 	});
 	const ownedTool: AgentTool = {
-		...basicTool("owned", async id => {
+		...basicTool("owned", async (id, args) => {
+			ownedIntent = (args as Record<string, unknown>).i;
 			ran.push(id);
 			return okToolResult();
 		}),
@@ -813,9 +925,6 @@ test("intent tracing rejects a payload-sized intent instead of running the tool 
 	const body = "Explains how the query pipeline is reconstructed. ".repeat(10);
 	const calls: Array<[string, string, Record<string, unknown>]> = [
 		["swapped", "write", { i: body, content: "Writing guide" }],
-		["normal", "write", { i: "Writing notes", content: "hello" }],
-		["at-limit", "write", { i: "x".repeat(200), content: "a" }],
-		["over-limit", "write", { i: "x".repeat(201), content: "b" }],
 		["owned", "owned", { value: "kept", i: body }],
 		["unknown", "nope", { i: body }],
 	];
@@ -843,9 +952,8 @@ test("intent tracing rejects a payload-sized intent instead of running the tool 
 		return result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
 	};
 
-	expect(ran.sort()).toEqual(["at-limit", "normal", "owned"]);
-	expect(resultText("swapped")).toContain("short intent label");
-	expect(resultText("over-limit")).toContain("201 chars");
+	expect(ran.sort()).toEqual(["owned", "swapped"]);
+	expect(ownedIntent).toBe(body);
 	expect(resultText("unknown")).toContain("Tool nope not found");
 });
 
@@ -1024,4 +1132,47 @@ test("records fallback-resolved alias calls under the resolved tool's name", asy
 	expect(replayed?.role === "assistant" ? replayed.content : []).toContainEqual(
 		expect.objectContaining({ type: "toolCall", name: "recall" }),
 	);
+});
+
+test("injected asides reset idle-poll loop detection while tool-only continuations retain repeat counts", async () => {
+	const guard = new ToolCallLoopGuard({ threshold: 2, exemptTools: ["wait"] });
+	const context: AgentContext = {
+		systemPrompt: [],
+		messages: [],
+		tools: [
+			basicTool("echo", async () => okToolResult()),
+			basicTool("wait", async () => ({ ...okToolResult(), useless: true })),
+		],
+	};
+	const detections: number[] = [];
+	let step = 0;
+	let asideDelivered = false;
+	await agentLoop(
+		[userMessage("go")],
+		context,
+		loopConfig(context, {
+			getAsideMessages: async boundary => {
+				if (boundary !== "work" || asideDelivered) return [];
+				asideDelivered = true;
+				return [userMessage("new evidence")];
+			},
+			onTurnEnd: (_messages, _signal, turn) => {
+				if (turn?.message.role !== "assistant") return;
+				const detection = guard.recordTurn({
+					message: turn.message,
+					toolResults: turn.toolResults,
+					injectedContext: turn.additionalMessages.length > 0,
+				});
+				if (detection) detections.push(step);
+			},
+		}),
+		undefined,
+		responseFor(targetModel => {
+			const current = step++;
+			return current < 4
+				? toolMessage(targetModel, [{ name: current === 1 ? "wait" : "echo", id: `call-${current}` }])
+				: assistantMessage(targetModel, "done");
+		}),
+	).result();
+	expect(detections).toEqual([4]);
 });

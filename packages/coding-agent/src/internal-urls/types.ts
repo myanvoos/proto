@@ -15,6 +15,7 @@ export interface InternalResource {
 	notes?: string[];
 
 	immutable?: boolean;
+	unbounded?: boolean;
 
 	isDirectory?: boolean;
 }
@@ -36,6 +37,7 @@ export interface InternalUrl extends URL {
 }
 
 export interface ResolveContext {
+	getArtifactContent?: (id: string) => string | null;
 	cwd?: string;
 
 	settings?: unknown;
@@ -45,6 +47,7 @@ export interface ResolveContext {
 	localProtocolOptions?: LocalProtocolOptions;
 
 	skills?: readonly Skill[];
+	reloadSkills?: () => Promise<readonly Skill[]>;
 
 	protolens?: {
 		read(name: string | null): Promise<string>;

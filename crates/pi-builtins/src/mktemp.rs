@@ -1,8 +1,3 @@
-
-
-
-
-
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -76,13 +71,8 @@ enum MkTempError {
 	Io(#[from] io::Error),
 }
 
-
-
-
-
 #[derive(Clone)]
 struct Options {
-
 	directory: bool,
 
 	dry_run: bool,
@@ -104,13 +94,11 @@ impl Options {
 			.get_one::<Option<PathBuf>>(OPT_TMPDIR)
 			.or_else(|| matches.get_one::<Option<PathBuf>>(OPT_P))
 			.map(|dir| match dir {
-
 				Some(dir) => dir.clone(),
 
 				None => get_tmpdir_env_or_default(host),
 			});
 		let (tmpdir, template) = match matches.get_one::<OsString>(ARG_TEMPLATE) {
-
 			None => (
 				Some(tmpdir.unwrap_or_else(|| get_tmpdir_env_or_default(host))),
 				OsString::from(DEFAULT_TEMPLATE),
@@ -142,9 +130,7 @@ impl Options {
 	}
 }
 
-
 struct Params {
-
 	directory: PathBuf,
 
 	prefix: String,
@@ -153,7 +139,6 @@ struct Params {
 
 	suffix: String,
 }
-
 
 fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 	let bytes = s.as_bytes();
@@ -167,17 +152,13 @@ fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 
 impl Params {
 	fn from(options: Options) -> Result<Self, MkTempError> {
-
-
 		let mut template_str = if options.treat_as_template {
 			options.template.to_string_lossy().into_owned()
 		} else {
 			options
 				.template
 				.to_str()
-				.ok_or_else(|| {
-					MkTempError::InvalidTemplate("template contains invalid UTF-8".into())
-				})?
+				.ok_or_else(|| MkTempError::InvalidTemplate("template contains invalid UTF-8".into()))?
 				.to_string()
 		};
 
@@ -197,8 +178,6 @@ impl Params {
 			None => return Err(MkTempError::TooFewXs(template_str)),
 		};
 
-
-
 		let tmpdir = options.tmpdir;
 		let prefix_from_option = tmpdir.clone().unwrap_or_default();
 		let prefix_from_template = &template_str[..i];
@@ -214,14 +193,15 @@ impl Params {
 			if prefix_str.ends_with(MAIN_SEPARATOR) {
 				(prefix_path, String::new())
 			} else {
-				let directory = prefix_path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+				let directory = prefix_path
+					.parent()
+					.map_or_else(PathBuf::new, Path::to_path_buf);
 				let prefix = prefix_path
 					.file_name()
 					.map_or_else(String::new, |f| f.to_string_lossy().into_owned());
 				(directory, prefix)
 			}
 		};
-
 
 		let suffix_from_option = options
 			.suffix
@@ -236,7 +216,6 @@ impl Params {
 		Ok(Self { directory, prefix, num_rand_chars: j - i, suffix })
 	}
 }
-
 
 #[derive(Clone, Debug)]
 struct OptionalPathBufParser;
@@ -266,7 +245,6 @@ impl ValueParserFactory for OptionalPathBufParser {
 	}
 }
 
-
 pub(crate) struct Mktemp {
 	matches: ArgMatches,
 }
@@ -277,15 +255,12 @@ impl Utility for Mktemp {
 	const NAME: &'static str = "mktemp";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
-
-
 		if let Err(err) = app().try_get_matches_from(&argv)
 			&& err.kind() == clap::error::ErrorKind::TooManyValues
 			&& err.context().any(|(kind, value)| {
 				kind == clap::error::ContextKind::InvalidArg
 					&& value == &clap::error::ContextValue::String("[template]".into())
-			})
-		{
+			}) {
 			return Err(MkTempError::TooManyTemplates.to_string());
 		}
 		Ok(argv)
@@ -293,8 +268,6 @@ impl Utility for Mktemp {
 
 	fn run(self, host: &mut Host) -> i32 {
 		let options = Options::from(&self.matches, host);
-
-
 
 		if host.var("POSIXLY_CORRECT").is_some()
 			&& self.matches.contains_id(ARG_TEMPLATE)
@@ -343,25 +316,15 @@ impl Utility for Mktemp {
 	}
 }
 
-
 fn template_is_last(matches: &ArgMatches) -> bool {
 	let Some(template_index) = matches.index_of(ARG_TEMPLATE) else {
 		return true;
 	};
-	[
-		OPT_DIRECTORY,
-		OPT_DRY_RUN,
-		OPT_QUIET,
-		OPT_SUFFIX,
-		OPT_TMPDIR,
-		OPT_P,
-		OPT_T,
-	]
-	.into_iter()
-	.filter_map(|id| matches.index_of(id))
-	.all(|index| index < template_index)
+	[OPT_DIRECTORY, OPT_DRY_RUN, OPT_QUIET, OPT_SUFFIX, OPT_TMPDIR, OPT_P, OPT_T]
+		.into_iter()
+		.filter_map(|id| matches.index_of(id))
+		.all(|index| index < template_index)
 }
-
 
 fn app() -> Command {
 	Command::new(Mktemp::NAME)
@@ -413,9 +376,9 @@ fn app() -> Command {
 			Arg::new(OPT_TMPDIR)
 				.long(OPT_TMPDIR)
 				.help(
-					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR if set, else /tmp. With this option, TEMPLATE must not be an absolute \
-					 name; unlike with -t, TEMPLATE may contain slashes, but mktemp creates only the \
-					 final component",
+					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR if set, \
+					 else /tmp. With this option, TEMPLATE must not be an absolute name; unlike with \
+					 -t, TEMPLATE may contain slashes, but mktemp creates only the final component",
 				)
 				.value_name("DIR")
 				.num_args(0..=1)
@@ -428,7 +391,8 @@ fn app() -> Command {
 			Arg::new(OPT_T)
 				.short('t')
 				.help(
-					"Generate a template (using the supplied prefix and TMPDIR if set) to create a filename template [deprecated]",
+					"Generate a template (using the supplied prefix and TMPDIR if set) to create a \
+					 filename template [deprecated]",
 				)
 				.action(ArgAction::SetTrue),
 		)
@@ -463,7 +427,6 @@ fn dry_exec(tmpdir: &Path, prefix: &str, rand: usize, suffix: &str) -> PathBuf {
 	tmpdir.join(buf)
 }
 
-
 fn make_temp_dir(
 	dir: &Path,
 	display_dir: &Path,
@@ -479,15 +442,11 @@ fn make_temp_dir(
 		Ok(directory) => Ok(directory.keep()),
 		Err(err) if err.kind() == ErrorKind::NotFound => {
 			let filename = format!("{prefix}{}{suffix}", "X".repeat(rand));
-			Err(MkTempError::NotFound(
-				"directory".to_string(),
-				display_dir.join(filename),
-			))
+			Err(MkTempError::NotFound("directory".to_string(), display_dir.join(filename)))
 		},
 		Err(err) => Err(err.into()),
 	}
 }
-
 
 fn make_temp_file(
 	dir: &Path,
@@ -522,8 +481,6 @@ fn exec(
 	suffix: &str,
 	make_dir: bool,
 ) -> Result<PathBuf, MkTempError> {
-
-
 	let resolved_dir = host.resolve(dir);
 	let created = if make_dir {
 		make_temp_dir(&resolved_dir, dir, prefix, rand, suffix)?
@@ -534,8 +491,6 @@ fn exec(
 	Ok(dir.join(filename))
 }
 
-
-
 fn get_tmpdir_env_or_default(host: &Host) -> PathBuf {
 	match host.var(TMPDIR_ENV_VAR) {
 		Some(value) if value.is_empty() => PathBuf::from(FALLBACK_TMPDIR),
@@ -544,9 +499,6 @@ fn get_tmpdir_env_or_default(host: &Host) -> PathBuf {
 	}
 }
 
-
 pub(crate) fn mktemp_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Mktemp, SE>()
 }
-
-

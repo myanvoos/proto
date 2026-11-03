@@ -57,6 +57,7 @@ export function resolveModelTokenizer(modelId: string): ModelTokenizer | undefin
 	if (cached !== undefined) return cached ?? undefined;
 	const bare = bareModelId(modelId);
 	const tokenizer =
+		(/^(?:gpt-3\.5|gpt-4(?:$|[-.]))/i.test(bare) && !/^gpt-4(?:o|\.1)/i.test(bare) ? "cl100k" : undefined) ??
 		claudeTokenizer(bare) ??
 		qwenTokenizer(bare) ??
 		deepSeekTokenizer(bare) ??

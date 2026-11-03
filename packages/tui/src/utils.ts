@@ -155,7 +155,8 @@ export function truncateToWidth(
 	const ellipsis = (typeof ellipsisKind === "string" ? Ellipsis.Omit : ellipsisKind) ?? Ellipsis.Unicode;
 
 	if (!shouldPad && text.length <= maxWidth && PRINTABLE_ASCII_REGEX.test(text)) return text;
-	if (!shouldPad && text.length * 3 <= maxWidth) return text;
+	// OSC 66 widths come from metadata rather than the number of UTF-16 units.
+	if (!shouldPad && !text.includes("\x1b]66") && text.length * 3 <= maxWidth) return text;
 	if (!shouldPad && !PRINTABLE_ASCII_REGEX.test(text) && visibleWidth(text) <= maxWidth) return text;
 	if (text.length <= TRUNCATE_CACHE_MAX_TEXT_LENGTH) {
 		const key = `${widthConfigEpoch}:${maxWidth}:${ellipsis}:${shouldPad ? 1 : 0}\x00${text}`;

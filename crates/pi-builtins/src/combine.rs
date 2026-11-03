@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use std::{
 	collections::HashSet,
 	ffi::{OsStr, OsString},
@@ -38,7 +27,6 @@ enum Error {
 	Cancelled,
 	Msg(String),
 }
-
 
 pub(crate) struct Combine {
 	matches: ArgMatches,
@@ -72,7 +60,6 @@ impl Utility for Combine {
 		}
 	}
 }
-
 
 fn command() -> Command {
 	Command::new(Combine::NAME)
@@ -114,12 +101,12 @@ fn execute(file1: &OsStr, op: &str, file2: &OsStr, host: &mut Host) -> Result<()
 		return Err(Error::Msg("only one file can be stdin".into()));
 	}
 
-
 	let input1 = open_input(file1, host)?;
 	let input2 = open_input(file2, host)?;
 	let cancel = host.cancel_flag();
 
-	match (input1, input2) {
+	let mut out = host.stdout_writer();
+	let operated = match (input1, input2) {
 		(Some(input1), Some(input2)) => operate(
 			BufReader::new(input1),
 			file1,
@@ -127,7 +114,7 @@ fn execute(file1: &OsStr, op: &str, file2: &OsStr, host: &mut Host) -> Result<()
 			file2,
 			op,
 			&cancel,
-			&mut host.stdout,
+			&mut out,
 		),
 		(None, Some(input2)) => operate(
 			BufReader::new(&mut host.stdin),
@@ -136,7 +123,7 @@ fn execute(file1: &OsStr, op: &str, file2: &OsStr, host: &mut Host) -> Result<()
 			file2,
 			op,
 			&cancel,
-			&mut host.stdout,
+			&mut out,
 		),
 		(Some(input1), None) => operate(
 			BufReader::new(input1),
@@ -145,10 +132,14 @@ fn execute(file1: &OsStr, op: &str, file2: &OsStr, host: &mut Host) -> Result<()
 			file2,
 			op,
 			&cancel,
-			&mut host.stdout,
+			&mut out,
 		),
 		(None, None) => unreachable!("two stdin operands were rejected above"),
-	}
+	};
+	// Output before a failure still lands, ahead of the error message.
+	let flushed = out.flush().map_err(|err| Error::Msg(err.to_string()));
+	operated?;
+	flushed
 }
 
 fn operate(
@@ -162,7 +153,6 @@ fn operate(
 ) -> Result<(), Error> {
 	match op {
 		Op::And | Op::Not => {
-
 			let lines2 = read_lines(&mut input2, file2, cancel)?;
 			let set2: HashSet<&[u8]> = lines2.iter().map(|line| key(line)).collect();
 			let keep_member = op == Op::And;
@@ -202,11 +192,11 @@ fn open_input(name: &OsStr, host: &Host) -> Result<Option<File>, Error> {
 	if name == OsStr::new("-") {
 		return Ok(None);
 	}
-	let file = host.open_read(name).map_err(|err| Error::Msg(input_error(name, &err.to_string())))?;
+	let file = host
+		.open_read(name)
+		.map_err(|err| Error::Msg(input_error(name, &err.to_string())))?;
 	Ok(Some(file))
 }
-
-
 
 fn each_line(
 	reader: &mut dyn BufRead,
@@ -243,8 +233,6 @@ fn read_lines(
 	Ok(lines)
 }
 
-
-
 fn key(line: &[u8]) -> &[u8] {
 	line.strip_suffix(b"\n").unwrap_or(line)
 }
@@ -258,9 +246,6 @@ fn input_error(name: &OsStr, err: &str) -> String {
 	format!("{}: {}", name.to_string_lossy(), err)
 }
 
-
 pub(crate) fn combine_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Combine, SE>()
 }
-
-

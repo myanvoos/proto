@@ -9,6 +9,22 @@ import {
 	trimRemoteCompactionInputToContextWindow,
 } from "./openai";
 
+test("image-only fit uncertainty does not rewrite useful tool output", () => {
+	const output = { type: "function_call_output", call_id: "c", output: "keep this tool result" };
+	const input = [
+		{
+			type: "message",
+			role: "user",
+			content: [{ type: "input_image", image_url: "https://example.invalid/image.png" }],
+		},
+		output,
+	];
+	const result = trimRemoteCompactionInputToContextWindow(input, new Tokenizer(), 1000, "instructions");
+	expect(result.fits).toBe(true);
+	expect(result.rewrittenOutputs).toBe(0);
+	expect(result.input[1].output).toBe("keep this tool result");
+});
+
 const USAGE = {
 	input: 0,
 	output: 1,

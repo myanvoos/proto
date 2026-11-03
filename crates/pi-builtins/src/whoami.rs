@@ -1,6 +1,3 @@
-
-
-
 use std::io::Write;
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -17,13 +14,10 @@ mod platform {
 		use uucore::{entries::uid2usr, process::geteuid};
 
 		pub fn get_username() -> io::Result<OsString> {
-
 			uid2usr(geteuid()).map(Into::into)
 		}
 	}
-
 }
-
 
 pub(crate) struct Whoami {
 	matches: ArgMatches,
@@ -60,7 +54,6 @@ impl Utility for Whoami {
 	}
 }
 
-
 fn app() -> Command {
 	Command::new(Whoami::NAME)
 		.version("0.8.0")
@@ -69,9 +62,6 @@ fn app() -> Command {
 		.infer_long_args(true)
 }
 
-
 pub(crate) fn whoami_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Whoami, SE>()
 }
-
-

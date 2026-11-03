@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 use std::io::Write;
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -15,8 +8,6 @@ use crate::host::{Host, Utility, format_usage, matches_parser, util};
 const OPT_LIST: &str = "list";
 const OPT_SEARCH: &str = "search";
 const ARG_QUERY: &str = "query";
-
-
 
 const ERRNOS: &[(&str, i32)] = &[
 	("EPERM", libc::EPERM),
@@ -102,7 +93,6 @@ const ERRNOS: &[(&str, i32)] = &[
 	("EWOULDBLOCK", libc::EWOULDBLOCK),
 ];
 
-
 pub(crate) struct Errno {
 	matches: ArgMatches,
 }
@@ -140,7 +130,6 @@ impl Utility for Errno {
 	}
 }
 
-
 fn command() -> Command {
 	Command::new(Errno::NAME)
 		.version(concat!("errno (pi-shell) ", env!("CARGO_PKG_VERSION")))
@@ -173,8 +162,6 @@ fn command() -> Command {
 		)
 }
 
-
-
 fn description(number: i32) -> String {
 	let text = std::io::Error::from_raw_os_error(number).to_string();
 	match text.rfind(" (os error ") {
@@ -187,12 +174,8 @@ fn print_entry(host: &mut Host, name: &str, number: i32) {
 	let _ = writeln!(host.stdout, "{name} {number} {}", description(number));
 }
 
-
 fn lookup(host: &mut Host, arg: &str) -> bool {
 	if let Ok(number) = arg.parse::<i32>() {
-
-
-
 		match number
 			.checked_abs()
 			.and_then(|number| ERRNOS.iter().find(|(_, value)| *value == number))
@@ -218,7 +201,6 @@ fn lookup(host: &mut Host, arg: &str) -> bool {
 	}
 }
 
-
 fn list_all(host: &mut Host) -> i32 {
 	let mut entries: Vec<(&str, i32)> = ERRNOS.to_vec();
 	entries.sort_unstable_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(b.0)));
@@ -227,7 +209,6 @@ fn list_all(host: &mut Host) -> i32 {
 	}
 	0
 }
-
 
 fn search(host: &mut Host, words: &[String]) -> i32 {
 	let lowered: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
@@ -242,9 +223,6 @@ fn search(host: &mut Host, words: &[String]) -> i32 {
 	0
 }
 
-
 pub(crate) fn errno_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Errno, SE>()
 }
-
-

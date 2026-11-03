@@ -3,6 +3,12 @@ import { logger } from "@oh-my-pi/pi-utils";
 export class EventBus {
 	readonly #listeners = new Map<string, Set<(data: unknown) => void>>();
 
+	constructor() {
+		this.emit = this.emit.bind(this);
+		this.on = this.on.bind(this);
+		this.clear = this.clear.bind(this);
+	}
+
 	emit(channel: string, data: unknown): void {
 		const handlers = this.#listeners.get(channel);
 		if (handlers) {

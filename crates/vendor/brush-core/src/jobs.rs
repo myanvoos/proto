@@ -1,5 +1,7 @@
+//! Job management
 
-
+#[cfg(windows)]
+use std::os::windows::io::OwnedHandle;
 use std::{
 	collections::VecDeque,
 	fmt::Display,
@@ -8,19 +10,61 @@ use std::{
 };
 
 use futures::FutureExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::{ExecutionResult, error, processes, sys, trace_categories, traps};
 
-pub(crate) type JobJoinHandle = tokio::task::JoinHandle<Result<ExecutionResult, error::Error>>;
+/// Handle to a shell-internal job task. Dropping it aborts the task, as
+/// dropping a [`processes::ChildProcess`] kills its process: a job that leaves
+/// its shell's job table (a subshell exiting, the shell dropping) must not keep
+/// running where no `kill` or `wait` can reach it.
+pub struct JobJoinHandle(tokio::task::JoinHandle<Result<ExecutionResult, error::Error>>);
+
+impl JobJoinHandle {
+	pub(crate) fn new(
+		handle: tokio::task::JoinHandle<Result<ExecutionResult, error::Error>>,
+	) -> Self {
+		Self(handle)
+	}
+
+	pub(crate) fn abort(&self) {
+		self.0.abort();
+	}
+
+	fn is_finished(&self) -> bool {
+		self.0.is_finished()
+	}
+}
+
+impl Drop for JobJoinHandle {
+	fn drop(&mut self) {
+		self.0.abort();
+	}
+}
+
+impl std::future::Future for JobJoinHandle {
+	type Output = Result<Result<ExecutionResult, error::Error>, tokio::task::JoinError>;
+
+	fn poll(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<Self::Output> {
+		std::pin::Pin::new(&mut self.0).poll(cx)
+	}
+}
 pub(crate) type JobResult = (Job, Result<ExecutionResult, error::Error>);
 
 const WAIT_NEXT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// How long `kill %N` waits for an aborted in-shell task to unwind.
+const INTERNAL_TASK_UNWIND_LIMIT: Duration = Duration::from_millis(500);
+
+/// Selects a managed job by shell job ID or child process ID.
 /// Jobs that run entirely inside the shell process (builtins, functions,
 /// subshells, compound commands) have no OS process, but `$!`, `jobs -l`,
-/// `wait PID` and `kill PID` still need a PID to name them. Real PIDs stay below
-/// Linux's `PID_MAX_LIMIT` (2^22) and macOS's 99999, so IDs allocated from here
-/// never name, and can never signal, a real process.
+/// `wait PID` and `kill PID` still need a PID to name them. Real PIDs stay
+/// below Linux's `PID_MAX_LIMIT` (2^22) and macOS's 99999, so IDs allocated
+/// from here never name, and can never signal, a real process.
 const FIRST_SYNTHETIC_PID: sys::process::ProcessId = 1 << 22;
 static NEXT_SYNTHETIC_PID: AtomicI32 = AtomicI32::new(FIRST_SYNTHETIC_PID);
 
@@ -28,25 +72,24 @@ fn allocate_synthetic_pid() -> sys::process::ProcessId {
 	NEXT_SYNTHETIC_PID.fetch_add(1, Ordering::Relaxed)
 }
 
-
 #[derive(Clone, Copy)]
 pub enum JobSelector {
-
+	/// Shell-internal job ID.
 	JobId(usize),
-
+	/// Child process ID.
 	ProcessId(i32),
 }
 
-
+/// Result returned when waiting for a single managed job.
 pub struct WaitedJob {
-
-	pub id: usize,
-
-	pub identifier: String,
-
+	/// Shell-internal job ID.
+	pub id:           usize,
+	/// Process ID when known, otherwise the shell-internal job ID.
+	pub identifier:   String,
+	/// Command line associated with the job.
 	pub command_line: String,
-
-	pub result: ExecutionResult,
+	/// Exit status returned by the job.
+	pub result:       ExecutionResult,
 }
 
 impl WaitedJob {
@@ -55,35 +98,30 @@ impl WaitedJob {
 	}
 }
 
-
+/// Manages the jobs that are currently managed by the shell.
 #[derive(Default)]
 pub struct JobManager {
-
+	/// The jobs that are currently managed by the shell.
 	pub jobs: Vec<Job>,
 }
 
-
+/// Represents a task that is part of a job.
 pub enum JobTask {
-
+	/// An external process.
 	External(processes::ChildProcess),
-
+	/// An internal asynchronous task.
 	Internal(JobJoinHandle),
 }
 
-
+/// Represents the result of waiting on a job task.
 pub enum JobTaskWaitResult {
-
+	/// The task has completed.
 	Completed(ExecutionResult),
-
+	/// The task was stopped.
 	Stopped,
 }
 
 impl JobTask {
-
-	pub const fn is_external(&self) -> bool {
-		matches!(self, Self::External(_))
-	}
-
 	fn is_finished(&self) -> bool {
 		match self {
 			Self::External(_) => false,
@@ -91,7 +129,12 @@ impl JobTask {
 		}
 	}
 
+	/// Returns whether the task is an external process.
+	pub const fn is_external(&self) -> bool {
+		matches!(self, Self::External(_))
+	}
 
+	/// Waits for the task to complete. Returns the result of the wait.
 	pub async fn wait(
 		&mut self,
 		wait_for_terminate: bool,
@@ -114,7 +157,10 @@ impl JobTask {
 		}
 	}
 
-
+	/// Polls the task for completion. Returns `Some(result)` if the task has
+	/// completed, or `None` if it is still running. The result is the execution
+	/// result of the task. Behaves in a best-effort manner; if an internal
+	/// error occurs during polling, it will return `None`.
 	fn poll(&mut self) -> Option<Result<ExecutionResult, error::Error>> {
 		match self {
 			Self::External(process) => {
@@ -130,12 +176,23 @@ impl JobTask {
 }
 
 impl JobManager {
+	/// Whether an external child still needs a wait, including stopped jobs
+	/// that may later be signalled without another shell command.
+	pub fn has_live_external_jobs(&self) -> bool {
+		self.jobs.iter().any(|job| job.external_process_count() > 0)
+	}
 
+	/// Returns a new job manager.
 	pub fn new() -> Self {
 		Self::default()
 	}
 
-
+	/// Adds a job to the job manager and marks it as the current job;
+	/// returns an immutable reference to the job.
+	///
+	/// # Arguments
+	///
+	/// * `job` - The job to add.
 	#[allow(clippy::missing_panics_doc, reason = "push() guarantees the vector length is >= 1")]
 	pub fn add_as_current(&mut self, mut job: Job) -> &Job {
 		for j in &mut self.jobs {
@@ -154,7 +211,7 @@ impl JobManager {
 		self.jobs.last().unwrap()
 	}
 
-
+	/// Returns the current job, if there is one.
 	pub fn current_job(&self) -> Option<&Job> {
 		self
 			.jobs
@@ -162,7 +219,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Current))
 	}
 
-
+	/// Returns a mutable reference to the current job, if there is one.
 	pub fn current_job_mut(&mut self) -> Option<&mut Job> {
 		self
 			.jobs
@@ -170,7 +227,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Current))
 	}
 
-
+	/// Returns the previous job, if there is one.
 	pub fn prev_job(&self) -> Option<&Job> {
 		self
 			.jobs
@@ -178,7 +235,7 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Previous))
 	}
 
-
+	/// Returns a mutable reference to the previous job, if there is one.
 	pub fn prev_job_mut(&mut self) -> Option<&mut Job> {
 		self
 			.jobs
@@ -186,7 +243,11 @@ impl JobManager {
 			.find(|j| matches!(j.annotation, JobAnnotation::Previous))
 	}
 
-
+	/// Tries to resolve the given job specification to a job.
+	///
+	/// # Arguments
+	///
+	/// * `job_spec` - The job specification to resolve.
 	pub fn resolve_job_spec(&mut self, job_spec: &str) -> Option<&mut Job> {
 		let remainder = job_spec.strip_prefix('%')?;
 
@@ -204,7 +265,11 @@ impl JobManager {
 		}
 	}
 
-
+	/// Tries to resolve the given job specification to a wait selector.
+	///
+	/// # Arguments
+	///
+	/// * `job_spec` - The job specification to resolve.
 	pub fn resolve_job_spec_selector(&self, job_spec: &str) -> Option<JobSelector> {
 		let remainder = job_spec.strip_prefix('%')?;
 
@@ -226,22 +291,29 @@ impl JobManager {
 		}
 	}
 
-
+	/// Returns whether a managed job contains the given process ID.
 	pub fn contains_process_id(&self, pid: i32) -> bool {
 		self.jobs.iter().any(|job| job.contains_process_id(pid))
 	}
 
-
+	/// Tries to resolve the given process ID to a managed job.
+	///
+	/// # Arguments
+	///
+	/// * `pid` - The process ID to resolve.
 	pub fn resolve_process_id(&mut self, pid: i32) -> Option<&mut Job> {
-		self.jobs.iter_mut().find(|job| job.contains_process_id(pid))
+		self
+			.jobs
+			.iter_mut()
+			.find(|job| job.contains_process_id(pid))
 	}
 
-
+	/// Waits for all managed jobs to complete.
 	pub async fn wait_all(&mut self) -> Result<Vec<Job>, error::Error> {
 		self.wait_all_with_policy(false).await
 	}
 
-
+	/// Waits for all managed jobs to terminate, ignoring stopped-state changes.
 	pub async fn wait_all_for_termination(&mut self) -> Result<Vec<Job>, error::Error> {
 		self.wait_all_with_policy(true).await
 	}
@@ -257,7 +329,7 @@ impl JobManager {
 		Ok(self.sweep_completed_jobs())
 	}
 
-
+	/// Waits for the next matching managed job to complete.
 	pub async fn wait_next(
 		&mut self,
 		selectors: &[JobSelector],
@@ -282,12 +354,12 @@ impl JobManager {
 					return result.map(|result| Some(WaitedJob::from_job(job, result, identifier)));
 				}
 				if matches!(self.jobs[i].state, JobState::Done) {
+					let result = self.jobs[i]
+						.completed_result
+						.take()
+						.unwrap_or_else(|| Ok(ExecutionResult::success()));
 					let job = self.jobs.remove(i);
-					return Ok(Some(WaitedJob::from_job(
-						job,
-						ExecutionResult::success(),
-						identifier,
-					)));
+					return result.map(|result| Some(WaitedJob::from_job(job, result, identifier)));
 				}
 				i += 1;
 			}
@@ -300,7 +372,7 @@ impl JobManager {
 		}
 	}
 
-
+	/// Polls all managed jobs for completion.
 	pub fn poll(&mut self) -> Result<Vec<JobResult>, error::Error> {
 		let mut results = vec![];
 
@@ -310,15 +382,30 @@ impl JobManager {
 				let job = self.jobs.remove(i);
 				results.push((job, result));
 			} else if matches!(self.jobs[i].state, JobState::Done) {
-
-
-				results.push((self.jobs.remove(i), Ok(ExecutionResult::success())));
+				let result = self.jobs[i]
+					.completed_result
+					.take()
+					.unwrap_or_else(|| Ok(ExecutionResult::success()));
+				results.push((self.jobs.remove(i), result));
 			} else {
 				i += 1;
 			}
 		}
 
 		Ok(results)
+	}
+
+	/// Reaps finished children without consuming their jobs. Their PID and exit
+	/// status remain available for a later explicit `wait` or job selection.
+	pub fn poll_preserving_completed(&mut self) -> Result<(), error::Error> {
+		for job in &mut self.jobs {
+			if !matches!(job.state, JobState::Done) {
+				if let Some(result) = job.poll_done_preserving_process_ids()? {
+					job.completed_result = Some(result);
+				}
+			}
+		}
+		Ok(())
 	}
 
 	fn sweep_completed_jobs(&mut self) -> Vec<Job> {
@@ -337,16 +424,16 @@ impl JobManager {
 	}
 }
 
-
+/// Represents the current execution state of a job.
 #[derive(Clone)]
 pub enum JobState {
-
+	/// Unknown state.
 	Unknown,
-
+	/// The job is running.
 	Running,
-
+	/// The job is stopped.
 	Stopped,
-
+	/// The job has completed.
 	Done,
 }
 
@@ -361,14 +448,14 @@ impl Display for JobState {
 	}
 }
 
-
+/// Represents an annotation for a job.
 #[derive(Clone)]
 pub enum JobAnnotation {
-
+	/// No annotation.
 	None,
-
+	/// The job is the current job.
 	Current,
-
+	/// The job is the previous job.
 	Previous,
 }
 
@@ -382,31 +469,50 @@ impl Display for JobAnnotation {
 	}
 }
 
-
+/// Encapsulates a set of processes managed by the shell as a single unit.
 pub struct Job {
+	/// The tasks that make up the job.
+	tasks:            VecDeque<JobTask>,
+	/// Last status reaped in the background, pending an explicit wait.
+	/// Set once the final pipeline stage has completed, regardless of whether
+	/// earlier stages are still running.
+	completed_result: Option<Result<ExecutionResult, error::Error>>,
 
-	tasks: VecDeque<JobTask>,
+	/// PIDs of children removed from the task queue by polling.
+	completed_process_ids: Vec<sys::process::ProcessId>,
 
+	/// First external stage's PID (the process-group leader), retained after
+	/// that stage has been reaped. Used by `jobs -p`, job display and `wait`.
+	representative_process_id: Option<sys::process::ProcessId>,
 
-	pgid: Option<sys::process::ProcessId>,
+	/// Last external stage's PID, retained after reaping; becomes `$!`.
+	last_process_id: Option<sys::process::ProcessId>,
 
-	/// Stands in for the PID of a job with no external process; see
-	/// [`FIRST_SYNTHETIC_PID`].
-	synthetic_pid: Option<sys::process::ProcessId>,
-
-	/// Signal that terminated an in-shell job via [`Job::signal_in_shell`].
+	/// If available, the process group ID of the job's processes.
+	pgid:                 Option<sys::process::ProcessId>,
+	synthetic_pid:        Option<sys::process::ProcessId>,
 	terminated_by_signal: Option<i32>,
 
+	/// The annotation of the job (e.g., current, previous).
 	annotation: JobAnnotation,
 
-
+	/// The shell-internal ID of the job.
 	pub id: usize,
 
-
+	/// The command line of the job.
 	pub command_line: String,
 
-
+	/// The current operational state of the job.
 	pub state: JobState,
+
+	/// Cancels the job's in-process task at its next cancellation check.
+	///
+	/// `abort()` on the task handle only takes effect where the future yields;
+	/// a backgrounded compound loop of synchronous builtins never does, so it
+	/// would keep spinning after `kill %N` marked the job done. The token is
+	/// wired into the job's execution parameters, which the interpreter polls
+	/// (`ensure_not_cancelled`) on every loop iteration and command.
+	cancellation: Option<CancellationToken>,
 }
 
 impl Display for Job {
@@ -423,28 +529,62 @@ impl Display for Job {
 }
 
 impl Job {
+	pub const fn synthetic_pid(&self) -> Option<sys::process::ProcessId> {
+		self.synthetic_pid
+	}
 
-
+	/// Returns a new job object.
+	///
+	/// # Arguments
+	///
+	/// * `children` - The job's known child processes.
+	/// * `command_line` - The command line of the job.
+	/// * `state` - The current operational state of the job.
 	pub(crate) fn new<I>(tasks: I, command_line: String, state: JobState) -> Self
 	where
 		I: IntoIterator<Item = JobTask>,
 	{
-		let tasks: VecDeque<JobTask> = tasks.into_iter().collect();
-		let synthetic_pid =
-			(!tasks.iter().any(JobTask::is_external)).then(allocate_synthetic_pid);
+		let tasks: VecDeque<_> = tasks.into_iter().collect();
+		// `jobs -p` and job display name the process-group leader (first
+		// stage); `$!` names the last stage, as in bash.
+		let external_pids = || {
+			tasks.iter().filter_map(|task| match task {
+				JobTask::External(process) => process.pid(),
+				JobTask::Internal(_) => None,
+			})
+		};
+		let synthetic_pid = (!tasks.iter().any(JobTask::is_external)).then(allocate_synthetic_pid);
+		let representative_process_id = external_pids().next();
+		let last_process_id = external_pids().last();
+		let pgid = tasks.iter().find_map(|task| match task {
+			JobTask::External(process) => process.pgid().or_else(|| process.pid()),
+			JobTask::Internal(_) => None,
+		});
 		Self {
 			id: 0,
 			tasks,
-			pgid: None,
+			completed_result: None,
+			completed_process_ids: Vec::new(),
+			representative_process_id,
+			last_process_id,
+			pgid,
 			synthetic_pid,
 			terminated_by_signal: None,
 			annotation: JobAnnotation::None,
 			command_line,
 			state,
+			cancellation: None,
 		}
 	}
 
+	/// Attaches a token that ends the job's in-process task at its next
+	/// cancellation check, regardless of whether the task yields.
+	pub(crate) fn with_cancellation(mut self, token: CancellationToken) -> Self {
+		self.cancellation = Some(token);
+		self
+	}
 
+	/// Returns a pid-style string for the job.
 	pub fn to_pid_style_string(&self) -> String {
 		let display_pid = self
 			.representative_pid()
@@ -452,12 +592,12 @@ impl Job {
 		std::format!("[{}]{}\t{}", self.id, self.annotation, display_pid)
 	}
 
-
+	/// Returns the annotation of the job.
 	pub fn annotation(&self) -> JobAnnotation {
 		self.annotation.clone()
 	}
 
-
+	/// Returns the command name of the job.
 	pub fn command_name(&self) -> &str {
 		self
 			.command_line
@@ -466,50 +606,75 @@ impl Job {
 			.unwrap_or_default()
 	}
 
-
+	/// Returns whether the job is the current job.
 	pub const fn is_current(&self) -> bool {
 		matches!(self.annotation, JobAnnotation::Current)
 	}
 
-
+	/// Returns whether the job is the previous job.
 	pub const fn is_prev(&self) -> bool {
 		matches!(self.annotation, JobAnnotation::Previous)
 	}
 
-
+	/// Polls whether the job has completed.
 	pub fn poll_done(
 		&mut self,
 	) -> Result<Option<Result<ExecutionResult, error::Error>>, error::Error> {
-		let mut result: Option<Result<ExecutionResult, error::Error>> = None;
+		self.poll_done_impl(false)
+	}
 
+	fn poll_done_preserving_process_ids(
+		&mut self,
+	) -> Result<Option<Result<ExecutionResult, error::Error>>, error::Error> {
+		self.poll_done_impl(true)
+	}
+
+	fn poll_done_impl(
+		&mut self,
+		preserve_process_ids: bool,
+	) -> Result<Option<Result<ExecutionResult, error::Error>>, error::Error> {
 		tracing::debug!(target: trace_categories::JOBS, "Polling job {} for completion...", self.id);
 
-		while !self.tasks.is_empty() {
-			let task = &mut self.tasks[0];
+		let mut index = 0;
+		while index < self.tasks.len() {
+			let is_final_stage = index + 1 == self.tasks.len() && self.completed_result.is_none();
+			let task = &mut self.tasks[index];
 			match task.poll() {
-				Some(r) => {
-					self.tasks.remove(0);
-					result = Some(r);
+				Some(result) => {
+					if preserve_process_ids
+						&& let JobTask::External(process) = task
+						&& let Some(pid) = process.pid()
+					{
+						self.completed_process_ids.push(pid);
+					}
+					self.tasks.remove(index);
+					if is_final_stage {
+						self.completed_result = Some(result);
+					}
 				},
-				None => {
-					return Ok(None);
-				},
+				None if !preserve_process_ids => return Ok(None),
+				None => index += 1,
 			}
 		}
 
+		if !self.tasks.is_empty() {
+			return Ok(None);
+		}
+
 		tracing::debug!(target: trace_categories::JOBS, "Job {} has completed.", self.id);
-
 		self.state = JobState::Done;
-
-		Ok(result.or_else(|| self.signal_termination_result().map(Ok)))
+		Ok(self
+			.completed_result
+			.take()
+			.or_else(|| self.signal_termination_result().map(Ok)))
 	}
 
-
+	/// Waits for the job to complete.
 	pub async fn wait(&mut self) -> Result<ExecutionResult, error::Error> {
 		self.wait_with_policy(false).await
 	}
 
-
+	/// Waits for the job to terminate, ignoring stopped-state changes.
 	pub async fn wait_for_termination(&mut self) -> Result<ExecutionResult, error::Error> {
 		self.wait_with_policy(true).await
 	}
@@ -518,15 +683,21 @@ impl Job {
 		&mut self,
 		wait_for_terminate: bool,
 	) -> Result<ExecutionResult, error::Error> {
-		let mut result = self.signal_termination_result().unwrap_or_else(ExecutionResult::success);
+		let mut result = self
+			.completed_result
+			.take()
+			.or_else(|| self.signal_termination_result().map(Ok));
 
 		while let Some(task) = self.tasks.back_mut() {
 			match task.wait(wait_for_terminate).await? {
 				JobTaskWaitResult::Completed(execution_result) => {
-					result = execution_result;
+					if result.is_none() {
+						result = Some(Ok(execution_result));
+					}
 					self.tasks.pop_back();
 				},
 				JobTaskWaitResult::Stopped => {
+					self.completed_result = result;
 					self.state = JobState::Stopped;
 					return Ok(ExecutionResult::stopped());
 				},
@@ -534,11 +705,10 @@ impl Job {
 		}
 
 		self.state = JobState::Done;
-
-		Ok(result)
+		result.unwrap_or_else(|| Ok(ExecutionResult::success()))
 	}
 
-
+	/// Moves the job to execute in the background.
 	pub fn move_to_background(&mut self) -> Result<(), error::Error> {
 		match &self.state {
 			JobState::Stopped => {
@@ -554,7 +724,7 @@ impl Job {
 		}
 	}
 
-
+	/// Moves the job to execute in the foreground.
 	pub fn move_to_foreground(&mut self) -> Result<(), error::Error> {
 		if matches!(self.state, JobState::Stopped) {
 			if let Some(pgid) = self.process_group_id() {
@@ -572,7 +742,11 @@ impl Job {
 		Ok(())
 	}
 
-
+	/// Kills the job.
+	///
+	/// # Arguments
+	///
+	/// * `signal` - The signal to send to the job.
 	pub fn kill(&self, signal: traps::TrapSignal) -> Result<(), error::Error> {
 		if let Some(pid) = self.process_group_id() {
 			sys::signal::kill_process(pid, signal)
@@ -581,13 +755,49 @@ impl Job {
 		}
 	}
 
+	/// Aborts shell-internal background tasks and drops their join handles.
+	///
+	/// External process jobs are intentionally left alone; callers that abort
+	/// internal tasks are still responsible for signalling any process trees
+	/// those tasks may have spawned.
+	pub fn abort_internal_tasks(&mut self) {
+		drop(self.take_internal_tasks());
+	}
 
-	/// Delivers `signal` to a job that has a synthetic PID. There is no OS process
-	/// to signal, so the signal's default action is applied to the job itself:
-	/// terminating signals abort its in-shell tasks (dropping them kills any
-	/// external children they spawned) and `wait` then reports `128 + signal`;
-	/// ignored signals are no-ops; stop signals fail because in-shell work
-	/// cannot be suspended.
+	/// Aborts shell-internal background tasks and returns a future that
+	/// resolves once they have unwound and dropped what they held, or after
+	/// [`INTERNAL_TASK_UNWIND_LIMIT`]. `kill %N` awaits it, as a killed
+	/// process is gone once it is reaped: a FIFO open the job was waiting in is
+	/// then released before the next command opens that FIFO.
+	pub fn take_internal_tasks(&mut self) -> impl Future<Output = ()> + Send + 'static {
+		// Flag the execution first: aborting the handle below only lands where the
+		// task yields, and a loop of synchronous builtins may run for a long time
+		// before that.
+		if let Some(token) = &self.cancellation {
+			token.cancel();
+		}
+		let mut aborted = Vec::new();
+		let mut index = 0;
+		while index < self.tasks.len() {
+			if matches!(self.tasks.get(index), Some(JobTask::Internal(_))) {
+				if let Some(JobTask::Internal(handle)) = self.tasks.remove(index) {
+					handle.abort();
+					aborted.push(handle);
+				}
+			} else {
+				index += 1;
+			}
+		}
+		if !aborted.is_empty() && self.tasks.is_empty() {
+			self.state = JobState::Done;
+		}
+		async move {
+			for handle in aborted {
+				let _ = tokio::time::timeout(INTERNAL_TASK_UNWIND_LIMIT, handle).await;
+			}
+		}
+	}
+
 	pub fn signal_in_shell(&mut self, signal: traps::TrapSignal) -> Result<(), error::Error> {
 		let traps::TrapSignal::Signal(os_signal) = signal else {
 			return Err(error::ErrorKind::InvalidSignal(signal.to_string()).into());
@@ -613,21 +823,6 @@ impl Job {
 		Some(ExecutionResult::new(128_u8.saturating_add(signal_number)))
 	}
 
-	pub fn abort_internal_tasks(&mut self) {
-		let mut aborted = false;
-		self.tasks.retain_mut(|task| {
-			if let JobTask::Internal(handle) = task {
-				handle.abort();
-				aborted = true;
-				return false;
-			}
-			true
-		});
-		if aborted && self.tasks.is_empty() {
-			self.state = JobState::Done;
-		}
-	}
-
 	fn matches_selector(&self, selector: JobSelector) -> bool {
 		match selector {
 			JobSelector::JobId(id) => self.id == id,
@@ -637,8 +832,11 @@ impl Job {
 
 	fn contains_process_id(&self, pid: i32) -> bool {
 		self.synthetic_pid == Some(pid)
+			|| self.completed_process_ids.contains(&pid)
 			|| self.tasks.iter().any(|task| match task {
-				JobTask::External(process) => process.pid().is_some_and(|process_pid| process_pid == pid),
+				JobTask::External(process) => {
+					process.pid().is_some_and(|process_pid| process_pid == pid)
+				},
 				JobTask::Internal(_) => false,
 			})
 	}
@@ -649,11 +847,18 @@ impl Job {
 			.map_or_else(|| self.id.to_string(), |pid| pid.to_string())
 	}
 
+	/// Returns whether part of the job runs inside the shell process (a builtin,
+	/// function, or compound command) rather than as an external process.
+	pub fn has_internal_tasks(&self) -> bool {
+		self.tasks.iter().any(|task| !task.is_external())
+	}
+
+	/// Returns the number of external processes retained by this job.
 	pub fn external_process_count(&self) -> usize {
 		self.tasks.iter().filter(|task| task.is_external()).count()
 	}
 
-
+	/// Iterates over the external process IDs that make up this job.
 	pub fn process_ids(&self) -> impl Iterator<Item = sys::process::ProcessId> + '_ {
 		self.tasks.iter().filter_map(|task| match task {
 			JobTask::External(process) => process.pid(),
@@ -661,38 +866,153 @@ impl Job {
 		})
 	}
 
-
-	/// PID reported for the job (`$!`, `jobs -l`, `wait PID`): its first external
-	/// process, or its synthetic PID when it runs inside the shell.
+	/// Returns the first external stage's PID (the process-group leader) for
+	/// `jobs -p` and job display, even after that stage has been reaped.
 	pub fn representative_pid(&self) -> Option<sys::process::ProcessId> {
-		self.external_pid().or(self.synthetic_pid)
+		self.representative_process_id.or(self.synthetic_pid)
 	}
 
-	/// The job's synthetic PID when it runs inside the shell and so names no OS
-	/// process. Signal such jobs with [`Job::signal_in_shell`].
-	pub const fn synthetic_pid(&self) -> Option<sys::process::ProcessId> {
-		self.synthetic_pid
+	/// Returns the last external stage's PID, the value `$!` takes after this
+	/// job is started, even after that stage has been reaped.
+	pub fn last_pid(&self) -> Option<sys::process::ProcessId> {
+		self.last_process_id.or(self.synthetic_pid)
 	}
 
-	fn external_pid(&self) -> Option<sys::process::ProcessId> {
-		for task in &self.tasks {
-			match task {
-				JobTask::External(p) => {
-					if let Some(pid) = p.pid() {
-						return Some(pid);
-					}
-				},
-				JobTask::Internal(_) => (),
-			}
-		}
-		None
-	}
-
-
+	/// Tries to retrieve the process group ID (PGID) of the job.
 	pub fn process_group_id(&self) -> Option<sys::process::ProcessId> {
-
-		self.pgid.or_else(|| self.external_pid())
+		self.pgid
 	}
 
+	/// Duplicates process handles for termination on Windows.
+	#[cfg(windows)]
+	pub fn duplicate_kill_handles(&self) -> Vec<OwnedHandle> {
+		self
+			.tasks
+			.iter()
+			.filter_map(|task| match task {
+				JobTask::External(process) => process.duplicate_kill_handle(),
+				JobTask::Internal(_) => None,
+			})
+			.collect()
+	}
+}
 
+#[cfg(all(test, unix))]
+mod tests {
+	use std::time::Duration;
+
+	use anyhow::Result;
+
+	use super::JobSelector;
+
+	#[tokio::test]
+	async fn reaped_job_remains_waitable_by_original_pid_and_status() -> Result<()> {
+		let mut shell = crate::Shell::builder().build().await?;
+		let params = shell.default_exec_params();
+		shell
+			.run_string("/bin/sh -c 'exit 7' &", &crate::SourceInfo::default(), &params)
+			.await?;
+		let pid = shell.last_background_pid().expect("background process PID");
+
+		tokio::time::timeout(Duration::from_secs(5), async {
+			loop {
+				shell.jobs_mut().poll_preserving_completed()?;
+				if !shell.jobs().has_live_external_jobs() {
+					return Ok::<_, crate::error::Error>(());
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		})
+		.await??;
+
+		assert!(shell.jobs().contains_process_id(pid));
+		assert_eq!(shell.last_background_pid(), Some(pid));
+		let waited = shell
+			.jobs_mut()
+			.wait_next(&[JobSelector::ProcessId(pid)])
+			.await?
+			.expect("completed job still waitable");
+		assert_eq!(u8::from(waited.result.exit_code), 7);
+		assert!(!shell.jobs().contains_process_id(pid));
+		assert_eq!(shell.last_background_pid(), Some(pid));
+		Ok(())
+	}
+	#[tokio::test]
+	async fn reaped_job_direct_wait_returns_original_status() -> Result<()> {
+		let mut shell = crate::Shell::builder().build().await?;
+		shell
+			.run_string(
+				"/bin/sh -c 'exit 9' &",
+				&crate::SourceInfo::default(),
+				&shell.default_exec_params(),
+			)
+			.await?;
+		let pid = shell.last_background_pid().expect("background process PID");
+
+		tokio::time::timeout(Duration::from_secs(5), async {
+			loop {
+				shell.jobs_mut().poll_preserving_completed()?;
+				if !shell.jobs().has_live_external_jobs() {
+					return Ok::<_, crate::error::Error>(());
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		})
+		.await??;
+
+		let job = shell
+			.jobs_mut()
+			.resolve_process_id(pid)
+			.expect("reaped PID remains selectable");
+		let result = job.wait().await?;
+		assert_eq!(u8::from(result.exit_code), 9);
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn later_pipeline_stage_is_reaped_before_earlier_stage_finishes() -> Result<()> {
+		let mut shell = crate::Shell::builder().build().await?;
+		shell
+			.run_string(
+				"/bin/sleep 2 | /bin/sh -c 'exit 7' &",
+				&crate::SourceInfo::default(),
+				&shell.default_exec_params(),
+			)
+			.await?;
+		let job = shell.jobs().current_job().expect("background pipeline");
+		let pids: Vec<_> = job.process_ids().collect();
+		assert_eq!(pids.len(), 2);
+		// `$!` is the last stage; `jobs -p` stays on the group leader.
+		assert_eq!(shell.last_background_pid(), Some(pids[1]));
+		assert_eq!(job.representative_pid(), Some(pids[0]));
+
+		tokio::time::timeout(Duration::from_secs(5), async {
+			loop {
+				shell.jobs_mut().poll_preserving_completed()?;
+				if shell
+					.jobs()
+					.current_job()
+					.expect("background pipeline")
+					.external_process_count()
+					== 1
+				{
+					return Ok::<_, crate::error::Error>(());
+				}
+				tokio::time::sleep(Duration::from_millis(10)).await;
+			}
+		})
+		.await??;
+
+		let job = shell.jobs().current_job().expect("background pipeline");
+		assert_eq!(job.process_ids().collect::<Vec<_>>(), vec![pids[0]]);
+		assert!(shell.jobs().contains_process_id(pids[1]));
+		assert!(shell.jobs().has_live_external_jobs());
+
+		let waited = shell
+			.jobs_mut()
+			.wait_next(&[JobSelector::ProcessId(pids[1])])
+			.await?;
+		assert_eq!(u8::from(waited.expect("pipeline still waitable").result.exit_code), 7);
+		Ok(())
+	}
 }

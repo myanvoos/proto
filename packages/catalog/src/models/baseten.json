@@ -22,6 +22,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -64,7 +65,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -103,6 +104,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -145,7 +147,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -176,6 +178,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -218,7 +221,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -261,6 +264,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -348,6 +352,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -436,6 +441,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -525,6 +531,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -604,6 +611,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -677,6 +685,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -750,6 +759,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -833,6 +843,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -914,6 +925,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -995,6 +1007,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

@@ -219,6 +219,7 @@ async function runPrintModeCore(
 	}
 
 	session.prepareForHeadlessAdvisorDrain();
+	await session.waitForIdle();
 
 	// A run cut short by --max-time is not a successful run: report it on stderr and
 	// exit non-zero, after any partial output has been written.

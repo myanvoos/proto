@@ -447,6 +447,10 @@ export class MCPAddWizard extends OverlayPanel {
 		);
 	}
 
+	pasteText(text: string): void {
+		this.#inputField?.pasteText(text);
+	}
+
 	handleInput(keyData: string): void {
 		if (this.#oauthAbort && (keyData === "\x03" || matchesAppInterrupt(keyData))) {
 			this.#oauthAbort.abort("MCP OAuth flow cancelled by user");

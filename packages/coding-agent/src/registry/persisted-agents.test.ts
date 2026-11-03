@@ -205,3 +205,43 @@ describe("registerPersistedSubagents", () => {
 		expect(registry.get("worker-child")?.parentId).toBe("worker-parent");
 	});
 });
+
+test("parked history retains direct spend from superseded branches and compaction usage records", async () => {
+	const { dir, parentFile, childFile } = makeSessionTree();
+	const original = await Bun.file(childFile).text();
+	const assistant = (id: string, parentId: string | null, cost: number) => ({
+		type: "message",
+		id,
+		parentId,
+		message: {
+			role: "assistant",
+			api: "openai-completions",
+			provider: "fixture",
+			model: "fixture",
+			timestamp: 1,
+			content: [{ type: "text", text: id }],
+			stopReason: "stop",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: cost } },
+		},
+	});
+	await Bun.write(
+		childFile,
+		original +
+			[
+				assistant("old-branch", null, 2),
+				{ type: "model_usage", id: "compacted", parentId: null, usage: { cost: { total: 3 } } },
+				assistant("current", null, 5),
+			]
+				.map(row => JSON.stringify(row))
+				.join("\n") +
+			"\n",
+	);
+	try {
+		const registry = new AgentRegistry();
+		await registerPersistedSubagents(registry, parentFile);
+		expect(registry.get("worker")?.history?.directCost).toBe(10);
+		expect(registry.get("worker")?.history?.metrics?.cost).toBe(5);
+	} finally {
+		await fs.promises.rm(dir, { recursive: true, force: true });
+	}
+});

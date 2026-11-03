@@ -25,14 +25,16 @@ pub struct PipelineDef {
 	pub strip_lines_matching: Vec<String>,
 	#[serde(default)]
 	pub keep_lines_matching:  Vec<String>,
-
+	/// Ordered regex substitutions applied after the strip/keep line filter
+	/// and before `truncate_lines_at`, so substitutions that shorten lines
+	/// (e.g. path compaction) see the full, untruncated text.
 	#[serde(default)]
-	pub replace_after:     Vec<ReplaceDef>,
-	pub truncate_lines_at: Option<usize>,
-	pub head_lines:        Option<usize>,
-	pub tail_lines:        Option<usize>,
-	pub max_lines:         Option<usize>,
-	pub on_empty:          Option<String>,
+	pub replace_after:        Vec<ReplaceDef>,
+	pub truncate_lines_at:    Option<usize>,
+	pub head_lines:           Option<usize>,
+	pub tail_lines:           Option<usize>,
+	pub max_lines:            Option<usize>,
+	pub on_empty:             Option<String>,
 
 	#[serde(default)]
 	pub preserve_if_empty: bool,
@@ -41,7 +43,8 @@ pub struct PipelineDef {
 	pub only_on_exit: Vec<i32>,
 
 	#[serde(default)]
-	pub except_on_exit: Vec<i32>,
+	pub except_on_exit:         Vec<i32>,
+	pub keep_whole_up_to_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,24 +99,25 @@ pub struct CompiledMatchOutput {
 
 #[derive(Debug)]
 pub struct CompiledPipeline {
-	pub name:              String,
-	pub description:       Option<String>,
-	pub match_command:     Regex,
-	pub match_subcommand:  Option<Regex>,
-	pub strip_ansi:        bool,
-	pub replace:           Vec<CompiledReplace>,
-	pub match_output:      Vec<CompiledMatchOutput>,
-	pub strip_lines:       Option<RegexSet>,
-	pub keep_lines:        Option<RegexSet>,
-	pub replace_after:     Vec<CompiledReplace>,
-	pub truncate_lines_at: Option<usize>,
-	pub head_lines:        Option<usize>,
-	pub tail_lines:        Option<usize>,
-	pub max_lines:         Option<usize>,
-	pub on_empty:          Option<String>,
-	pub preserve_if_empty: bool,
-	pub only_on_exit:      Vec<i32>,
-	pub except_on_exit:    Vec<i32>,
+	pub name:                   String,
+	pub description:            Option<String>,
+	pub match_command:          Regex,
+	pub match_subcommand:       Option<Regex>,
+	pub strip_ansi:             bool,
+	pub replace:                Vec<CompiledReplace>,
+	pub match_output:           Vec<CompiledMatchOutput>,
+	pub strip_lines:            Option<RegexSet>,
+	pub keep_lines:             Option<RegexSet>,
+	pub replace_after:          Vec<CompiledReplace>,
+	pub truncate_lines_at:      Option<usize>,
+	pub head_lines:             Option<usize>,
+	pub tail_lines:             Option<usize>,
+	pub max_lines:              Option<usize>,
+	pub on_empty:               Option<String>,
+	pub preserve_if_empty:      bool,
+	pub only_on_exit:           Vec<i32>,
+	pub except_on_exit:         Vec<i32>,
+	pub keep_whole_up_to_bytes: Option<usize>,
 }
 
 fn compile_replaces(rules: Vec<ReplaceDef>, label: &str) -> Result<Vec<CompiledReplace>, String> {
@@ -190,6 +194,7 @@ pub fn compile(name: String, def: PipelineDef) -> Result<CompiledPipeline, Strin
 		preserve_if_empty: def.preserve_if_empty,
 		only_on_exit: def.only_on_exit,
 		except_on_exit: def.except_on_exit,
+		keep_whole_up_to_bytes: def.keep_whole_up_to_bytes,
 	})
 }
 
@@ -219,6 +224,25 @@ impl CompiledPipeline {
 		false
 	}
 
+	/// Whether this pipeline leaves `input_bytes` of output untouched.
+	#[must_use]
+	pub fn skipped_by_size(&self, input_bytes: usize) -> bool {
+		self
+			.keep_whole_up_to_bytes
+			.is_some_and(|max| input_bytes <= max)
+	}
+
+	/// Whether this pipeline, run on `input_bytes` of output from a run that
+	/// exited with `exit_code`, drops whole lines (`max_lines`, `head_lines`,
+	/// `tail_lines`).
+	#[must_use]
+	pub fn caps_lines(&self, exit_code: i32, input_bytes: usize) -> bool {
+		!self.skipped_by_exit(exit_code)
+			&& !self.skipped_by_size(input_bytes)
+			&& (self.max_lines.is_some() || self.head_lines.is_some() || self.tail_lines.is_some())
+	}
+
+	/// Apply the full 10-stage pipeline to `input`.
 	#[must_use]
 	pub fn apply<'a>(&self, input: &'a str) -> Cow<'a, str> {
 		let stage1: Cow<'_, str> = if self.strip_ansi {

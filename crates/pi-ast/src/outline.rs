@@ -1500,8 +1500,8 @@ fn walk_statement(
 	}
 }
 
-fn parse_with(lang: SupportLang, code: &str) -> Result<Option<OutlineResult>> {
-	let Some(tree) = parse_cached(code, lang)? else {
+fn parse_with(lang: SupportLang, code: &str, path: Option<&str>) -> Result<Option<OutlineResult>> {
+	let Some(tree) = parse_cached(code, lang, path)? else {
 		return Ok(None);
 	};
 	let root = tree.root_node();
@@ -1529,10 +1529,11 @@ pub fn code_outline(options: OutlineOptions) -> Result<OutlineResult> {
 
 	// JS cells routinely carry TS syntax (Bun executes both), so fall back to the
 	// TSX grammar — a superset that also covers JSX — when the JS grammar errors.
-	let fallback = parse_with(lang, &source)?;
+	let fallback = parse_with(lang, &source, options.path.as_deref())?;
 	let result = if lang == SupportLang::JavaScript
-		&& parse_cached(&source, lang)?.is_none_or(|tree| tree.root_node().has_error())
-		&& let Ok(Some(tsx_result)) = parse_with(SupportLang::Tsx, &source)
+		&& parse_cached(&source, lang, options.path.as_deref())?
+			.is_none_or(|tree| tree.root_node().has_error())
+		&& let Ok(Some(tsx_result)) = parse_with(SupportLang::Tsx, &source, options.path.as_deref())
 	{
 		Some(tsx_result)
 	} else {

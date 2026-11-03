@@ -61,6 +61,7 @@ export type SubmittedUserInput = {
 	streamingBehavior?: "steer" | "followUp";
 	cancelled: boolean;
 	started: boolean;
+	dispatched?: boolean;
 };
 
 export type ChecklistStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
@@ -97,6 +98,7 @@ export interface InteractiveModeContext {
 	ui: TUI;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
+	pendingShellContainer: Container;
 	statusContainer: Container;
 	checklistContainer: Container;
 	subagentContainer: Container;
@@ -112,6 +114,7 @@ export interface InteractiveModeContext {
 	syncEditorSpelling(): void;
 
 	session: AgentSession;
+	refreshScopedModelsAfterLogin?: () => Promise<void>;
 	sessionManager: SessionManager;
 
 	readonly sessionName: string | undefined;
@@ -217,6 +220,8 @@ export interface InteractiveModeContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined;
 
 	present(content: Component | readonly Component[]): void;
 
@@ -380,7 +385,7 @@ export interface InteractiveModeContext {
 		message: string,
 		detached?: Pick<SubmittedUserInput, "text" | "images" | "imageLinks">,
 	): Promise<void>;
-	handleSideCommand(mode: SideCommandMode, text: string): Promise<void>;
+	handleSideCommand(mode: SideCommandMode, text: string, images?: ImageContent[]): Promise<void>;
 	hasActiveSideQuestion(): boolean;
 	handleSideQuestionEscape(): boolean;
 	handleSideQuestionBranchKey(): Promise<boolean>;
@@ -393,6 +398,7 @@ export interface InteractiveModeContext {
 		assistantMessage: AssistantMessage,
 		leafId: string,
 		sessionId: string,
+		images?: ImageContent[],
 	): Promise<void>;
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;

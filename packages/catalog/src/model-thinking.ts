@@ -103,6 +103,11 @@ const DEEPSEEK_V41_FLASH_CONTRACT_IDS: Record<string, true> = {
 
 // Providers whose discovery or curated seeds pin reviewed per-model ladders the generic rules cannot reproduce.
 const PROVIDER_AUTHORED_THINKING_PROVIDERS: Record<string, true> = {
+	coralbricks: true,
+	sambanova: true,
+	inception: true,
+	scaleway: true,
+	modular: true,
 	abliteration: true,
 	"charm-hyper": true,
 	"cline-pass": true,
@@ -146,6 +151,7 @@ export function resolveModelThinking<TApi extends Api>(
 ): ThinkingConfig | undefined {
 	if (!spec.reasoning) return undefined;
 	if (spec.provider === "cline-pass" && isReasoningEffortUnsupported(compat)) return undefined;
+	if (spec.provider === "opencode-go" && spec.id === "longcat-2.5-preview-free") return undefined;
 	if (omitsWireReasoningEffort(spec.api, compat)) return undefined;
 	if (spec.thinking && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0) {
 		return fillThinkingWireDefaults(spec, compat, spec.thinking);
@@ -166,6 +172,7 @@ export function hasProviderAuthoredThinking<TApi extends Api>(spec: ModelSpec<TA
 	const thinking = spec.thinking;
 	if (!thinking || !Array.isArray(thinking.efforts) || thinking.efforts.length === 0) return false;
 	if (PROVIDER_AUTHORED_THINKING_PROVIDERS[spec.provider] === true) return true;
+	if ((compat as { trustExplicitThinkingOnly?: boolean } | undefined)?.trustExplicitThinkingOnly) return true;
 	return thinking.mode === "effort" && isOpenAICompatReasoningApi(spec.api) && isChatTemplateThinkingFormat(compat);
 }
 
@@ -363,7 +370,18 @@ function getModelDefinedEfforts<TApi extends Api>(
 		return LOW_HIGH_MAX_REASONING_EFFORTS;
 	}
 	const lowerId = spec.id.toLowerCase();
-	if (lowerId === MUSE_SPARK_MAX_MODEL_ID) {
+	if (spec.provider === "opencode-go" && spec.id === "space-bunny-free") return FIVE_TIER_EFFORTS_LOW_TO_MAX;
+	if (spec.provider === "groq" && isQwenModelId(spec.id)) {
+		return spec.id === "qwen/qwen3.6-27b" ? HIGH_ONLY_REASONING_EFFORTS : LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	}
+	if ((spec.provider === "opencode-go" || spec.provider === "opencode-zen") && /(?:^|\/)step-5/.test(lowerId))
+		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	if (/^minimax-m3\.1-flash(?:-preview)?$/i.test(lowerId)) return FIVE_TIER_EFFORTS_LOW_TO_MAX;
+	if (
+		lowerId === MUSE_SPARK_MAX_MODEL_ID ||
+		lowerId === "muse-spark-1.3-contributor" ||
+		lowerId.startsWith("muse-wonder-")
+	) {
 		return THINKING_EFFORTS;
 	}
 	if (MUSE_SPARK_XHIGH_MODEL_IDS[lowerId] === true) {
@@ -505,6 +523,8 @@ function inferDetectedEffortMap<TApi extends Api>(
 	mode: ThinkingConfig["mode"],
 ): EffortMap | undefined {
 	if (mode === "anthropic-adaptive") {
+		if (/^minimax-m3\.1-flash(?:-preview)?$/i.test(bareModelId(spec.id)))
+			return { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
 		if (isMinimaxReasoningModelOnAnthropicEndpoint(spec)) {
 			return MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP;
 		}
@@ -514,6 +534,7 @@ function inferDetectedEffortMap<TApi extends Api>(
 	if (!isOpenAICompatReasoningApi(spec.api)) {
 		return undefined;
 	}
+	if (spec.provider === "groq" && spec.id === "qwen/qwen3.6-27b") return { high: "default" };
 	if (spec.provider === "groq" && spec.id === "qwen/qwen3-32b") {
 		return GROQ_QWEN3_32B_REASONING_EFFORT_MAP;
 	}
@@ -591,6 +612,7 @@ function inferGeminiSupportedEfforts<TApi extends Api>(model: GeminiModel, spec:
 	if (!semverGte(model.version, "3.0")) {
 		return DEFAULT_REASONING_EFFORTS;
 	}
+	if (model.kind === "argon") return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
 	if (model.kind === "pro") {
 		return GEMINI_3_PRO_EFFORTS;
 	}
@@ -687,7 +709,7 @@ function inferThinkingControlMode<TApi extends Api>(
 		case "google-vertex":
 			return parsedModel.family === "gemini" &&
 				semverGte(parsedModel.version, "3.0") &&
-				parsedModel.version.major === 3
+				parsedModel.version.major >= 3
 				? "google-level"
 				: "budget";
 
@@ -775,6 +797,9 @@ export function clampThinkingLevelForModel<TApi extends Api>(
 		return requested;
 	}
 
+	const effortMap = model.thinking?.effortMap;
+	const alias = effortMap?.[requested] as Effort | undefined;
+	if (alias !== undefined && levels.includes(alias) && (effortMap?.[alias] ?? alias) === alias) return alias;
 	const requestedIndex = THINKING_EFFORTS.indexOf(requested);
 	if (requestedIndex === -1) {
 		return undefined;

@@ -35,6 +35,7 @@ import type {
 	RunErrorPayload,
 	ToolReply,
 } from "./protocol";
+import { describeWindowMiss } from "./window-miss";
 
 export interface NativeDesktopSession {
 	readonly capabilities: DesktopCapabilities;
@@ -75,7 +76,10 @@ export interface NativeDesktopSession {
 
 type NativeDesktopSessionFactory = (options: DesktopSessionOptions) => NativeDesktopSession;
 
-type WindowFilter = { app?: string; title?: string };
+type WindowFilter = { id?: string | number; app?: string; title?: string; wait?: number };
+const MAX_LISTED_WINDOWS = 48;
+const MAX_WINDOW_WAIT_MS = 10_000;
+const WINDOW_WAIT_INTERVAL_MS = 100;
 type DeliveryOptions = { delivery?: string };
 type ScreenshotOptions = { silent?: boolean };
 type ClickOptions = DeliveryOptions & { button?: string; count?: number; modifiers?: string[] };
@@ -162,11 +166,34 @@ function chordKeys(chord: string | string[]): string[] {
 		: chord;
 }
 
+function describeArgument(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "an array";
+	return typeof value === "string" ? JSON.stringify(value) : typeof value;
+}
+
+function validateString(value: unknown, call: string, options?: { nonEmpty?: boolean }): asserts value is string {
+	if (typeof value === "string" && (!options?.nonEmpty || value.trim())) return;
+	throw new ToolError(
+		`${call} requires ${options?.nonEmpty ? "a non-empty string" : "a string"}, got ${describeArgument(value)}`,
+	);
+}
+
+function windowWait(wait: unknown): number {
+	if (wait === undefined) return 0;
+	if (typeof wait !== "number" || !Number.isFinite(wait) || wait < 0 || wait > MAX_WINDOW_WAIT_MS) {
+		const got = typeof wait === "number" ? String(wait) : describeArgument(wait);
+		throw new ToolError(`window({ wait }) takes milliseconds from 0 to ${MAX_WINDOW_WAIT_MS}; got ${got}`);
+	}
+	return wait;
+}
+
 function matchesFilter(window: DesktopWindow, filter?: WindowFilter): boolean {
 	if (!filter) return true;
 	const app = filter.app?.toLocaleLowerCase();
 	const title = filter.title?.toLocaleLowerCase();
 	return (
+		(filter.id === undefined || window.id === String(filter.id)) &&
 		(!app || window.app.toLocaleLowerCase().includes(app)) &&
 		(!title || window.title.toLocaleLowerCase().includes(title))
 	);
@@ -251,6 +278,7 @@ class El {
 	async setValue(value: string): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "setValue");
+		validateString(value, "setValue(value)");
 		await nativeCall(context.signal, () => this.#session.axSetValue(this.ref, value));
 	}
 
@@ -275,6 +303,7 @@ class El {
 	async perform(action: string): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
 		await nativeCall(context.signal, () => this.#session.axPerform(this.ref, action));
 	}
 
@@ -284,10 +313,16 @@ class El {
 		await nativeCall(context.signal, () => this.#session.axPerform(this.ref, "press"));
 	}
 
-	async click(options?: DeliveryOptions): Promise<void> {
+	async click(options?: ClickOptions): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "click");
 		await nativeCall(context.signal, () => this.#session.axClick(this.ref, pointerOptions(options)));
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {
+		const context = this.#getContext();
+		guardRun(context, "doubleClick");
+		await nativeCall(context.signal, () => this.#session.axClick(this.ref, pointerOptions({ ...options, count: 2 })));
 	}
 
 	async focus(): Promise<void> {
@@ -307,6 +342,116 @@ class El {
 		return (await nativeCall(signal, () => this.#session.axChildren(this.ref))).map(
 			node => new El(this.#session, this.#getContext, node),
 		);
+	}
+}
+
+function foundElements(elements: El[]): El[] {
+	const pickOne = (member: string): TypeError =>
+		new TypeError(
+			`find() returns an array (length ${elements.length}), not one element, so it has no ${member}; pick one first: const [el] = await win.find(query)`,
+		);
+	for (const method of Object.getOwnPropertyNames(El.prototype)) {
+		if (method === "constructor") continue;
+		Object.defineProperty(elements, method, {
+			value: () => {
+				throw pickOne(`${method}()`);
+			},
+		});
+	}
+	for (const field of ["ref", "role", "nativeRole", "title", "description", "enabled", "focused", "childCount"]) {
+		Object.defineProperty(elements, field, {
+			get: () => {
+				throw pickOne(field);
+			},
+		});
+	}
+	return elements;
+}
+
+class ElRef implements PromiseLike<El> {
+	readonly ref: string;
+	readonly #getContext: RunContextAccessor;
+	readonly #lookup: () => Promise<El>;
+	#element?: Promise<El>;
+
+	constructor(ref: string, getContext: RunContextAccessor, lookup: () => Promise<El>) {
+		this.ref = ref;
+		this.#getContext = getContext;
+		this.#lookup = lookup;
+	}
+
+	#resolve(): Promise<El> {
+		this.#element ??= this.#lookup();
+		return this.#element;
+	}
+
+	then<A = El, B = never>(
+		onFulfilled?: ((element: El) => A | PromiseLike<A>) | null,
+		onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null,
+	): Promise<A | B> {
+		return this.#resolve().then(onFulfilled, onRejected);
+	}
+
+	catch<B = never>(onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<El | B> {
+		return this.#resolve().catch(onRejected);
+	}
+
+	finally(onFinally?: (() => void) | null): Promise<El> {
+		return this.#resolve().finally(onFinally);
+	}
+
+	async value(): Promise<string | undefined> {
+		return (await this.#resolve()).value();
+	}
+
+	async setValue(value: string): Promise<void> {
+		// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.
+		guardRun(this.#getContext(), "setValue");
+		validateString(value, "setValue(value)");
+		await (await this.#resolve()).setValue(value);
+	}
+
+	async bounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+		return (await this.#resolve()).bounds();
+	}
+
+	async attributes(): Promise<Record<string, string>> {
+		return (await this.#resolve()).attributes();
+	}
+
+	async actions(): Promise<string[]> {
+		return (await this.#resolve()).actions();
+	}
+
+	async perform(action: string): Promise<void> {
+		guardRun(this.#getContext(), "perform");
+		validateString(action, "perform(action)", { nonEmpty: true });
+		await (await this.#resolve()).perform(action);
+	}
+
+	async press(): Promise<void> {
+		guardRun(this.#getContext(), "press");
+		await (await this.#resolve()).press();
+	}
+
+	async click(options?: ClickOptions): Promise<void> {
+		await (await this.#resolve()).click(options);
+	}
+
+	async doubleClick(options?: Omit<ClickOptions, "count">): Promise<void> {
+		await (await this.#resolve()).doubleClick(options);
+	}
+
+	async focus(): Promise<void> {
+		await (await this.#resolve()).focus();
+	}
+
+	async parent(): Promise<El | null> {
+		return (await this.#resolve()).parent();
+	}
+
+	async children(): Promise<El[]> {
+		return (await this.#resolve()).children();
 	}
 }
 
@@ -349,10 +494,10 @@ class Win {
 		);
 	}
 
-	async move(x: number, y: number): Promise<void> {
+	async move(x: number, y: number, options?: DeliveryOptions): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "move");
-		await nativeCall(context.signal, () => this.#session.moveMouse(this.id, x, y));
+		await nativeCall(context.signal, () => this.#session.moveMouse(this.id, x, y, pointerOptions(options)));
 	}
 
 	async drag(points: Array<[number, number]>, options?: DragOptions): Promise<void> {
@@ -378,15 +523,20 @@ class Win {
 	async type(text: string, options?: DeliveryOptions): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "type");
+		validateString(text, "type(text)");
 		await nativeCall(context.signal, () => this.#session.typeText(this.id, text, pointerOptions(options)));
 	}
 
 	async press(chord: string | string[], options?: DeliveryOptions): Promise<void> {
 		const context = this.#getContext();
 		guardRun(context, "press");
-		await nativeCall(context.signal, () =>
-			this.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),
-		);
+		const keys = chordKeys(chord);
+		if (!Array.isArray(keys) || keys.length === 0 || keys.some(key => typeof key !== "string" || !key.trim())) {
+			throw new ToolError(
+				`press(chord) requires a key chord such as "cmd+shift+p" or ["cmd", "shift", "p"], got ${describeArgument(chord)}`,
+			);
+		}
+		await nativeCall(context.signal, () => this.#session.keyChord(this.id, keys, pointerOptions(options)));
 	}
 
 	async raise(): Promise<void> {
@@ -402,14 +552,19 @@ class Win {
 
 	async find(query: AxQuery): Promise<El[]> {
 		const { signal } = this.#getContext();
-		return (await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(
-			node => new El(this.#session, this.#getContext, node),
+		return foundElements(
+			(await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(
+				node => new El(this.#session, this.#getContext, node),
+			),
 		);
 	}
 
-	async ref(ref: string): Promise<El> {
-		const { signal } = this.#getContext();
-		return new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));
+	ref(ref: string): ElRef {
+		validateString(ref, "ref(ref)", { nonEmpty: true });
+		return new ElRef(ref, this.#getContext, async () => {
+			const { signal } = this.#getContext();
+			return new El(this.#session, this.#getContext, await nativeCall(signal, () => this.#session.axNode(ref)));
+		});
 	}
 }
 
@@ -661,23 +816,42 @@ export class ComputerWorkerCore {
 			},
 			windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {
 				const { signal } = getContext();
-				return (await nativeCall(signal, () => session.listWindows())).filter(window =>
-					matchesFilter(window, filter),
-				);
+				return (await nativeCall(signal, () => session.listWindows()))
+					.filter(window => matchesFilter(window, filter))
+					.slice(0, MAX_LISTED_WINDOWS);
 			},
 			window: async (selector: string | number | WindowFilter): Promise<Win> => {
 				const { signal } = getContext();
-				const windows = await nativeCall(signal, () => session.listWindows());
-				const matches =
-					typeof selector === "string" || typeof selector === "number"
-						? windows.filter(window => window.id === String(selector))
-						: windows.filter(window => matchesFilter(window, selector));
-				if (matches.length === 0) throw new ToolError(`no window matches ${JSON.stringify(selector)}`);
+				const id = typeof selector === "string" || typeof selector === "number" ? String(selector) : undefined;
+				const wait = typeof selector === "object" && selector !== null ? windowWait(selector.wait) : 0;
+				const deadline = performance.now() + wait;
+				let windows: DesktopWindow[];
+				let matches: DesktopWindow[];
+				for (;;) {
+					windows = await nativeCall(signal, () => session.listWindows());
+					matches = windows.filter(window =>
+						id !== undefined ? window.id === id : matchesFilter(window, selector as WindowFilter),
+					);
+					const remaining = deadline - performance.now();
+					if (matches.length > 0 || remaining <= 0) break;
+					await waitForRun(Math.min(WINDOW_WAIT_INTERVAL_MS, remaining), signal);
+				}
+				const unfiltered =
+					selector == null ||
+					(typeof selector === "object" && selector.id === undefined && !selector.app && !selector.title);
+				if (matches.length === 0) {
+					const reason = unfiltered
+						? "desktop.window(idOrFilter) needs a window id or an app/title filter unless exactly one window is open"
+						: `no window matches ${JSON.stringify(selector)}`;
+					const app = typeof selector === "object" && selector !== null ? selector.app : undefined;
+					throw new ToolError(`${reason}\n${describeWindowMiss(windows, app)}`);
+				}
 				if (matches.length > 1) {
-					const candidates = matches
-						.map(window => `${window.id} ${window.app} ${JSON.stringify(window.title)}`)
-						.join("\n");
-					throw new ToolError(`multiple windows match ${JSON.stringify(selector)}:\n${candidates}`);
+					const reason = unfiltered
+						? "desktop.window() matches every open window; pass a window id or app/title filter to pick one"
+						: `multiple windows match ${JSON.stringify(selector)}`;
+					const app = typeof selector === "object" && selector !== null ? selector.app : undefined;
+					throw new ToolError(`${reason}\n${describeWindowMiss(matches, app)}`);
 				}
 				return makeWin(matches[0]!);
 			},
@@ -715,6 +889,7 @@ export class ComputerWorkerCore {
 				write: async (text: string): Promise<void> => {
 					const context = getContext();
 					guardRun(context, "clipboard.write");
+					validateString(text, "clipboard.write(text)");
 					await copyToClipboard(text);
 					throwIfAborted(context.signal);
 				},

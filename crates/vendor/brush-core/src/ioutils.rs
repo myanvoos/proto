@@ -1,11 +1,7 @@
-
-
 use crate::openfiles;
-
 
 #[derive(Clone, Debug, thiserror::Error)]
 enum ReaderWriterError {
-
 	#[error("I/O read error: {0}")]
 	Read(&'static str),
 
@@ -16,10 +12,15 @@ enum ReaderWriterError {
 	Flush(&'static str),
 }
 
-
-
-
-
+/// Makes a pipe for `construct` (a pipeline, a command substitution, …), so
+/// that failing to make it, as when the process is out of descriptors, names
+/// what the shell was doing.
+pub(crate) fn pipe(
+	construct: &'static str,
+) -> Result<(std::io::PipeReader, std::io::PipeWriter), crate::error::Error> {
+	std::io::pipe()
+		.map_err(|err| crate::error::ErrorKind::PipeCreationFailure(construct, err).into())
+}
 
 #[derive(Clone)]
 pub(crate) struct FailingReaderWriter {
@@ -27,11 +28,6 @@ pub(crate) struct FailingReaderWriter {
 }
 
 impl FailingReaderWriter {
-
-
-
-
-
 	pub const fn new(message: &'static str) -> Self {
 		Self { message }
 	}

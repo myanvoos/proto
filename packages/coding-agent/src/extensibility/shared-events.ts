@@ -156,6 +156,8 @@ export interface AgentEndEvent {
 	messages: AgentMessage[];
 
 	willContinue?: boolean;
+	/** This non-terminal settle is waiting for background work rather than an agent-owned retry. */
+	awaitingAsyncWork?: boolean;
 }
 
 export interface TurnStartEvent {

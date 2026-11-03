@@ -1,12 +1,6 @@
 use crate::BuiltinSet;
 
-
 pub trait ShellBuilderExt {
-
-
-
-
-
 	#[must_use]
 	fn default_builtins(self, set: BuiltinSet) -> Self;
 }

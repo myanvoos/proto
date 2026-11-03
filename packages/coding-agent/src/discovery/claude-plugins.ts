@@ -551,11 +551,18 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 				warnings.push(`[claude-plugins] Skipping MCP server "${serverName}" in ${sourcePath}: malformed env`);
 				continue;
 			}
+			let timeout = raw.timeout;
+			if (timeout !== undefined && (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout < 1000)) {
+				warnings.push(
+					`[claude-plugins] Ignoring invalid timeout ${JSON.stringify(timeout)} for MCP server "${serverName}" in ${sourcePath}: expected a finite number >= 1000ms (Claude Code's minimum)`,
+				);
+				timeout = undefined;
+			}
 			const resolvedEnv = raw.env !== undefined ? resolveMarketplaceEnv(raw.env, root.path) : undefined;
 			const server: MCPServer = {
 				name: namespacedName,
 				...(raw.enabled !== undefined && { enabled: raw.enabled }),
-				...(raw.timeout !== undefined && { timeout: raw.timeout }),
+				...(timeout !== undefined && { timeout }),
 				...(rooted.command !== undefined && { command: rooted.command }),
 				...(raw.args !== undefined && { args: substitutePluginRoot(raw.args, root.path) }),
 				...(resolvedEnv !== undefined && { env: resolvedEnv.env }),

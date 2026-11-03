@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Api } from "./types";
-import { getPriorityPremiumRequests, realizesPriorityServiceTier, shouldSendServiceTier } from "./types";
+import { getPremiumServiceTierRequests, realizesPriorityServiceTier, shouldSendServiceTier } from "./types";
 
 const openai = { provider: "openai", api: "openai-responses" as Api, id: "gpt-5" };
 const codex = { provider: "openai-codex", api: "openai-codex-responses" as Api, id: "gpt-5.5" };
@@ -28,7 +28,7 @@ describe("shouldSendServiceTier", () => {
 		const unlisted = { ...codex, serviceTiers: ["ultrafast"] };
 		expect(shouldSendServiceTier("priority", unlisted)).toBe(false);
 		expect(realizesPriorityServiceTier("priority", unlisted)).toBe(false);
-		expect(getPriorityPremiumRequests("priority", unlisted)).toBe(0);
+		expect(getPremiumServiceTierRequests("priority", unlisted)).toBe(0);
 		expect(shouldSendServiceTier("scale", unlisted)).toBe(false);
 		expect(shouldSendServiceTier("priority", { ...codex, serviceTiers: ["priority"] })).toBe(true);
 		// An empty list means "not reported" (free-plan accounts list [] for every model): Fast stays available.
@@ -43,4 +43,13 @@ describe("shouldSendServiceTier", () => {
 		expect(shouldSendServiceTier("priority", codex)).toBe(true);
 		expect(shouldSendServiceTier("priority", customCodex)).toBe(true);
 	});
+});
+
+it("served premium tiers count without discovery metadata but request-only unsupported tiers do not", () => {
+	const unlisted = { ...codex, serviceTiers: ["default"] };
+	expect(getPremiumServiceTierRequests("priority", unlisted)).toBe(0);
+	expect(getPremiumServiceTierRequests("priority", unlisted, { served: true })).toBe(1);
+	expect(getPremiumServiceTierRequests("ultrafast", codex)).toBe(0);
+	expect(getPremiumServiceTierRequests("ultrafast", codex, { served: true })).toBe(1);
+	expect(getPremiumServiceTierRequests("priority", orOpenAI, { served: true })).toBe(0);
 });

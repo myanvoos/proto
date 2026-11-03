@@ -59,3 +59,25 @@ describe("buildOutputValidator JTD numeric types", () => {
 		expect(validator!.validate(1).success).toBe(false);
 	});
 });
+
+test("tuple normalization removes only optional non-nullable placeholders in each tuple item", () => {
+	const { validator } = buildOutputValidator({
+		type: "array",
+		prefixItems: [{ type: "object", properties: { optional: { type: "string" } }, additionalProperties: false }],
+		items: { type: "object", properties: { required: { type: "string" } }, required: ["required"] },
+	});
+	const normalized = validator!.normalize([{ optional: null }, { required: null }]);
+	expect(normalized).toEqual([{}, { required: null }]);
+	expect(validator!.validate(normalized).success).toBe(false);
+});
+
+test("rebuilding a mutated schema honors the new declaration without changing a prior validator", () => {
+	const schema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+	const first = buildOutputValidator(schema).validator!;
+	schema.properties.value.type = "number";
+	const second = buildOutputValidator(schema).validator!;
+	expect(second.validate({ value: "old" }).success).toBe(false);
+	expect(second.validate({ value: 3 }).success).toBe(true);
+	expect(first.validate({ value: "old" }).success).toBe(true);
+	expect(first.validate({ value: 3 }).success).toBe(false);
+});

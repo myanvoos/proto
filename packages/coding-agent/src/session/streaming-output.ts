@@ -1306,7 +1306,12 @@ export class OutputSink {
 	replace(text: string, options?: { summarized?: boolean }): void {
 		this.#clearPendingChunkTimer();
 		const bytes = Buffer.byteLength(text, "utf-8");
-		this.#buffer.replace(text, bytes);
+		this.#currentLineBytes = 0;
+		this.#columnEllipsisAdded = false;
+		this.#columnDroppedBytes = 0;
+		this.#columnTruncatedLines = 0;
+		const capped = this.#maxColumns > 0 ? this.#applyColumnCap(text) : text;
+		this.#buffer.replace(capped, Buffer.byteLength(capped, "utf-8"));
 		this.#head.clear();
 		this.#headLines = 0;
 		this.#headRetentionDisabled = true;
@@ -1321,10 +1326,6 @@ export class OutputSink {
 		this.#diagnosticSkippingOversized = false;
 		this.#actionableDiagnostics = [];
 		this.#actionableDiagnosticBytes = 0;
-		this.#currentLineBytes = 0;
-		this.#columnEllipsisAdded = false;
-		this.#columnDroppedBytes = 0;
-		this.#columnTruncatedLines = 0;
 		this.#pendingChunk = "";
 		this.#pendingCarriageReturn = false;
 		this.#heldSixelTail = "";

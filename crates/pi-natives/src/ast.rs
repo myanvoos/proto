@@ -1,10 +1,15 @@
 use std::{
 	cmp::Ordering,
-	collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
+	collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet},
 	path::{Path, PathBuf},
 };
 
-use ast_grep_core::{MatchStrictness, matcher::Pattern, source::Edit, tree_sitter::LanguageExt};
+use ast_grep_core::{
+	AstGrep, MatchStrictness,
+	matcher::Pattern,
+	source::Edit,
+	tree_sitter::{LanguageExt, StrDoc},
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use pi_ast::{
@@ -420,7 +425,7 @@ fn collect_candidates(
 		pi_walker::WalkFilter::files_only().node_modules_unless_mentioned(mentions_node_modules);
 	if let Some(glob) = glob.map(str::trim).filter(|value| !value.is_empty()) {
 		let pattern = glob_util::build_glob_pattern(glob, false);
-		let compiled = pi_walker::CompiledWalkGlob::new([pattern])
+		let compiled = pi_walker::CompiledWalkGlob::new(glob_util::search_scope_patterns(pattern))
 			.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
 		filter = filter.glob(compiled);
 	}
@@ -451,6 +456,13 @@ fn collect_candidates(
 	Ok(files)
 }
 
+fn has_parse_error(ast: &AstGrep<StrDoc<SupportLang>>) -> bool {
+	// Recovery can insert missing tokens without producing an ERROR node.
+	ast.root()
+		.dfs()
+		.any(|node| node.is_error() || node.is_missing())
+}
+
 fn compile_pattern(
 	pattern: &str,
 	selector: Option<&str>,
@@ -461,7 +473,42 @@ fn compile_pattern(
 		.map_err(|err| Error::from_reason(err.to_string()))
 }
 
-fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
+fn error_node_warning(pattern: &str, compiled: &Pattern, language: SupportLang) -> Option<String> {
+	compiled.has_error().then(|| {
+		// Keep the pattern diagnostic on one bounded display line; the
+		// original pattern is still used for matching.
+		let mut preview = String::new();
+		let mut width = 0;
+		for ch in pattern.chars() {
+			let escaped = ch.is_control() || (ch.is_whitespace() && ch != ' ');
+			let char_width = if escaped {
+				ch.escape_unicode().count()
+			} else {
+				xutf::width_char(ch).max(1)
+			};
+			if width + char_width > 48 {
+				preview.push('…');
+				break;
+			}
+			if escaped {
+				preview.extend(ch.escape_unicode());
+			} else {
+				preview.push(ch);
+			}
+			width += char_width;
+		}
+		format!(
+			"{preview}: pattern is not valid {} on its own (contains an ERROR node); matches may be \
+			 missing or unexpected",
+			language.canonical_name()
+		)
+	})
+}
+
+fn apply_edits<'e>(
+	content: &str,
+	edits: impl IntoIterator<Item = &'e Edit<String>>,
+) -> Result<String> {
 	shared_ops::apply_edits(content, edits).map_err(|err| Error::from_reason(err.to_string()))
 }
 
@@ -567,9 +614,11 @@ fn compile_find_patterns(
 	languages: &HashMap<String, SupportLang>,
 	selector: Option<&str>,
 	strictness: &MatchStrictness,
+	warnings: &mut Vec<String>,
 	ct: &task::CancelToken,
 ) -> Result<Vec<CompiledFindPattern>> {
 	let mut compiled = Vec::with_capacity(patterns.len());
+	let first_warning = warnings.len();
 
 	for pattern in patterns {
 		ct.heartbeat()?;
@@ -580,6 +629,7 @@ fn compile_find_patterns(
 			ct.heartbeat()?;
 			match compile_pattern(pattern, selector, strictness, language) {
 				Ok(compiled_pattern) => {
+					warnings.extend(error_node_warning(pattern, &compiled_pattern, language));
 					compiled_by_lang.insert(lang_key.clone(), compiled_pattern);
 				},
 				Err(err) => {
@@ -595,6 +645,7 @@ fn compile_find_patterns(
 		});
 	}
 
+	warnings[first_warning..].sort();
 	Ok(compiled)
 }
 
@@ -631,13 +682,19 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 
 		let (resolved_candidates, languages) =
 			resolve_candidates_for_find(candidates, lang_str, &ct)?;
-		let compiled_patterns =
-			compile_find_patterns(&patterns, &languages, selector.as_deref(), &strictness, &ct)?;
+		let mut parse_errors = Vec::new();
+		let compiled_patterns = compile_find_patterns(
+			&patterns,
+			&languages,
+			selector.as_deref(),
+			&strictness,
+			&mut parse_errors,
+			&ct,
+		)?;
 		let files_searched = to_u32(resolved_candidates.len());
 
 		let retained_capacity = retained_find_capacity(normalized_offset, normalized_limit);
 		let mut retained_matches = BinaryHeap::new();
-		let mut parse_errors = Vec::new();
 		let mut total_matches = 0u32;
 		let mut match_sequence = 0u64;
 		let mut files_with_matches = BTreeSet::new();
@@ -685,7 +742,7 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 			}
 
 			let ast = language.ast_grep(source);
-			if ast.root().dfs().any(|node| node.is_error()) {
+			if has_parse_error(&ast) {
 				parse_errors.push(format!(
 					"{}: parse error (syntax tree contains error nodes)",
 					candidate.display_path
@@ -788,7 +845,10 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 		for pattern in &patterns {
 			ct.heartbeat()?;
 			match compile_pattern(pattern, selector.as_deref(), &strictness, language) {
-				Ok(compiled) => compiled_patterns.push(compiled),
+				Ok(compiled) => {
+					parse_errors.extend(error_node_warning(pattern, &compiled, language));
+					compiled_patterns.push(compiled);
+				},
 				Err(err) => parse_errors.push(format!("{pattern}: {err}")),
 			}
 		}
@@ -799,7 +859,7 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 		let mut match_sequence = 0u64;
 		if !compiled_patterns.is_empty() {
 			let ast = language.ast_grep(&source);
-			if ast.root().dfs().any(|node| node.is_error()) {
+			if has_parse_error(&ast) {
 				parse_errors.push("parse error (syntax tree contains error nodes)".to_string());
 			}
 			for pattern in &compiled_patterns {
@@ -942,6 +1002,7 @@ fn ast_edit_blocking(
 			ct.heartbeat()?;
 			match compile_pattern(&pattern, selector.as_deref(), &strictness, language) {
 				Ok(compiled) => {
+					parse_errors.extend(error_node_warning(&pattern, &compiled, language));
 					compiled_by_lang.insert(lang_key.clone(), compiled);
 				},
 				Err(err) => {
@@ -1037,7 +1098,7 @@ fn ast_edit_blocking(
 		};
 
 		let ast = language.ast_grep(&source);
-		if ast.root().dfs().any(|node| node.is_error()) {
+		if has_parse_error(&ast) {
 			let parse_issue =
 				format!("{}: parse error (syntax tree contains error nodes)", candidate.display_path);
 			if fail_on_parse_error {
@@ -1048,18 +1109,17 @@ fn ast_edit_blocking(
 		}
 
 		let mut file_changes = Vec::new();
+		// Spans already staged for this file, to drop repeats in O(1).
+		let mut staged = HashSet::new();
 		let mut reached_max_replacements = false;
 		'patterns: for &(rewrite, compiled) in &runnable_rules {
 			for matched in ast.root().find_all(compiled.clone()) {
 				ct.heartbeat()?;
 				let edit = matched.replace_by(rewrite);
-
-				let duplicate = file_changes.iter().any(|entry: &PendingFileChange| {
-					entry.edit.position == edit.position
-						&& entry.edit.deleted_length == edit.deleted_length
-						&& entry.edit.inserted_text == edit.inserted_text
-				});
-				if duplicate {
+				// Multiple rules matching the same node with the same output are
+				// one deterministic edit; list and count it once instead of
+				// staging a duplicate that trips the apply-time overlap check.
+				if !staged.insert((edit.position, edit.deleted_length, edit.inserted_text.clone())) {
 					continue;
 				}
 				if changes.len() + file_changes.len() >= max_replacements as usize {
@@ -1108,15 +1168,7 @@ fn ast_edit_blocking(
 		file_counts.insert(candidate.display_path.clone(), to_u32(file_changes.len()));
 
 		if !dry_run {
-			let edits: Vec<Edit<String>> = file_changes
-				.iter()
-				.map(|entry| Edit {
-					position:       entry.edit.position,
-					deleted_length: entry.edit.deleted_length,
-					inserted_text:  entry.edit.inserted_text.clone(),
-				})
-				.collect();
-			let output = apply_edits(&source, &edits)?;
+			let output = apply_edits(&source, file_changes.iter().map(|entry| &entry.edit))?;
 			if output != source {
 				pending_writes
 					.push(PendingWrite { absolute_path: candidate.absolute_path.clone(), output });
@@ -1153,4 +1205,26 @@ fn ast_edit_blocking(
 		parse_errors: (!parse_errors.is_empty()).then_some(parse_errors),
 		changes,
 	})
+}
+
+#[cfg(test)]
+mod pattern_regressions {
+	use super::*;
+	#[test]
+	fn error_node_patterns_warn_without_suppressing_valid_patterns() {
+		let languages = HashMap::from([("typescript".to_owned(), SupportLang::TypeScript)]);
+		let mut warnings = Vec::new();
+		let compiled = compile_find_patterns(
+			&["123+".to_owned(), "foo($A)".to_owned()],
+			&languages,
+			None,
+			&MatchStrictness::Smart,
+			&mut warnings,
+			&task::CancelToken::default(),
+		)
+		.unwrap();
+		assert_eq!(compiled.len(), 2);
+		assert_eq!(warnings.len(), 1);
+		assert!(warnings[0].contains("ERROR node"));
+	}
 }

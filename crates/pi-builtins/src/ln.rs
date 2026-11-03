@@ -1,6 +1,3 @@
-
-
-
 #[cfg(any(unix, target_os = "redox"))]
 use std::os::unix::fs::symlink;
 use std::{
@@ -72,7 +69,6 @@ enum LnError {
 	Io(#[from] std::io::Error),
 }
 
-
 mod options {
 	pub const FORCE: &str = "force";
 
@@ -88,7 +84,6 @@ mod options {
 }
 
 static ARG_FILES: &str = "files";
-
 
 pub(crate) struct Ln {
 	matches: ArgMatches,
@@ -146,8 +141,6 @@ impl Utility for Ln {
 }
 
 fn ln_main(matches: &ArgMatches, host: &mut Host) -> LnResult<()> {
-
-
 	let paths: Vec<PathBuf> = matches
 		.get_many::<OsString>(ARG_FILES)
 		.unwrap()
@@ -167,7 +160,6 @@ fn ln_main(matches: &ArgMatches, host: &mut Host) -> LnResult<()> {
 	let backup_mode = backup_control::determine_backup_mode(matches)
 		.map_err(|error| LnError::Message(error.to_string()))?;
 	let backup_suffix = backup_control::determine_backup_suffix(matches);
-
 
 	let logical = matches.get_flag(options::LOGICAL);
 
@@ -208,7 +200,6 @@ fn uu_app() -> Command {
 			 DIRECTORY\nln [OPTION]... -t DIRECTORY TARGET...",
 		))
 		.infer_long_args(true)
-
 		.disable_help_flag(true)
 		.arg(
 			Arg::new("help")
@@ -219,8 +210,6 @@ fn uu_app() -> Command {
 		.after_help(after_help)
 		.arg(backup_control::arguments::backup())
 		.arg(backup_control::arguments::backup_no_args())
-
-
 		.arg(
 			Arg::new(options::FORCE)
 				.short('f')
@@ -240,7 +229,6 @@ fn uu_app() -> Command {
 		.arg(
 			Arg::new(options::NO_DEREFERENCE)
 				.short('n')
-
 				.short_alias('h')
 				.long(options::NO_DEREFERENCE)
 				.help("treat LINK_NAME as a normal file if it is a\nsymbolic link to a directory")
@@ -255,7 +243,6 @@ fn uu_app() -> Command {
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
-
 			Arg::new(options::PHYSICAL)
 				.short('P')
 				.long(options::PHYSICAL)
@@ -267,7 +254,6 @@ fn uu_app() -> Command {
 				.short('s')
 				.long(options::SYMBOLIC)
 				.help("make symbolic links instead of hard links")
-
 				.overrides_with(options::SYMBOLIC)
 				.action(ArgAction::SetTrue),
 		)
@@ -314,30 +300,24 @@ fn uu_app() -> Command {
 		)
 }
 
-
 pub(crate) fn ln_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ln, SE>()
 }
 
 fn exec(host: &mut Host, files: &[PathBuf], settings: &Settings) -> LnResult<()> {
-
 	if let Some(target_path) = &settings.target_dir {
-
 		return link_files_in_dir(host, files, target_path, settings);
 	}
 	if !settings.no_target_dir {
 		if files.len() == 1 {
-
 			return link_files_in_dir(host, files, &PathBuf::from("."), settings);
 		}
 		let last_file = &PathBuf::from(files.last().unwrap());
 
 		if files.len() > 2 || host.resolve(last_file).is_dir() {
-
 			return link_files_in_dir(host, &files[0..files.len() - 1], last_file, settings);
 		}
 	}
-
 
 	if files.len() == 1 {
 		return Err(LnError::MissingDestination(files[0].clone()).into());
@@ -356,7 +336,6 @@ fn link_files_in_dir(
 	target_dir: &Path,
 	settings: &Settings,
 ) -> LnResult<()> {
-
 	let target_dir_fs = host.resolve(target_dir);
 	if !target_dir_fs.is_dir() {
 		return Err(LnError::TargetIsNotADirectory(target_dir.to_owned()).into());
@@ -368,7 +347,6 @@ fn link_files_in_dir(
 	for srcpath in files {
 		let targetpath = if settings.no_dereference && target_dir_fs.is_symlink() {
 			let remove_target = |host: &mut Host| {
-
 				if target_dir_fs.is_file()
 					&& let Err(e) = fs::remove_file(&target_dir_fs)
 				{
@@ -391,22 +369,26 @@ fn link_files_in_dir(
 			match Path::new(name).file_name() {
 				Some(basename) => target_dir.join(basename),
 
-
 				None => target_dir.join(name),
 			}
 		} else {
-			show_error(host, format_args!("cannot stat {}: No such file or directory", srcpath.quote()));
+			show_error(
+				host,
+				format_args!("cannot stat {}: No such file or directory", srcpath.quote()),
+			);
 			all_successful = false;
 			continue;
 		};
 
 		if linked_destinations.contains(&targetpath) {
-
-			show_error(host, format_args!(
-				"will not overwrite just-created {} with {}",
-				targetpath.quote(),
-				srcpath.quote()
-			));
+			show_error(
+				host,
+				format_args!(
+					"will not overwrite just-created {} with {}",
+					targetpath.quote(),
+					srcpath.quote()
+				),
+			);
 			all_successful = false;
 		} else if let Err(e) = link(host, srcpath, &targetpath, settings) {
 			show_error(host, format_args!("{e}"));
@@ -423,7 +405,6 @@ fn link_files_in_dir(
 }
 
 fn relative_path<'a>(host: &Host, src: &'a Path, dst: &Path) -> Cow<'a, Path> {
-
 	if let Ok(src_abs) =
 		canonicalize(host.resolve(src), MissingHandling::Missing, ResolveMode::Physical)
 		&& let Ok(dst_abs) = canonicalize(
@@ -444,15 +425,12 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 		src.into()
 	};
 
-
 	let src_fs = host.resolve(src);
 	let dst_fs = host.resolve(dst);
 
 	if dst_fs.is_symlink() || dst_fs.exists() {
-
 		backup_path = backup_control::get_backup_path(settings.backup, &dst_fs, &settings.suffix);
 		if settings.backup == BackupMode::Existing && !settings.symbolic {
-
 			if paths_refer_to_same_file(&src_fs, &dst_fs, true) {
 				return Err(LnError::SameFile(src.to_owned(), dst.to_owned()).into());
 			}
@@ -469,12 +447,9 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 				}
 
 				let _ = fs::remove_file(&dst_fs);
-
 			},
 			OverwriteMode::Force => {
 				if !dst_fs.is_symlink() && paths_refer_to_same_file(&src_fs, &dst_fs, true) {
-
-
 					let same_entry = match (
 						canonicalize(&src_fs, MissingHandling::Missing, ResolveMode::Physical),
 						canonicalize(&dst_fs, MissingHandling::Missing, ResolveMode::Physical),
@@ -487,7 +462,6 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 					}
 				}
 				let _ = fs::remove_file(&dst_fs);
-
 			},
 		}
 	}
@@ -501,12 +475,10 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 			))
 		})
 	} else {
-
 		let source_fs = host.resolve(&source);
 		let p = if settings.logical && source_fs.is_symlink() {
-			fs::canonicalize(&source_fs).map_err(|e| {
-				LnError::Message(format!("failed to access {}: {e}", source.quote()))
-			})?
+			fs::canonicalize(&source_fs)
+				.map_err(|e| LnError::Message(format!("failed to access {}: {e}", source.quote())))?
 		} else {
 			source_fs
 		};
@@ -534,12 +506,10 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 
 	host.note_write(&dst_fs);
 	if settings.verbose {
-
 		let out = &mut host.stdout;
 		write!(out, "{} -> {}", dst.quote(), source.quote())?;
 		match backup_path {
 			Some(path) => {
-
 				let backup_display = match (dst.parent(), path.file_name()) {
 					(Some(parent), Some(name)) if !parent.as_os_str().is_empty() => parent.join(name),
 					(_, Some(name)) => PathBuf::from(name),
@@ -570,7 +540,6 @@ fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(
 	symlink(src, dst)
 }
 
-
 #[cfg(target_os = "wasi")]
 fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(
 	_host: &Host,
@@ -582,5 +551,3 @@ fn make_symlink<P1: AsRef<Path>, P2: AsRef<Path>>(
 		"symlinks not supported on this platform",
 	))
 }
-
-

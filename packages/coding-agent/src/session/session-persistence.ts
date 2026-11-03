@@ -125,6 +125,32 @@ function needsPersistenceTraversal(obj: unknown, key?: string): boolean {
 	return false;
 }
 
+interface ExternalizedImage {
+	data: string;
+	mimeType: string | undefined;
+	ref: string;
+}
+
+const externalizedImageRefs = new WeakMap<BlobStore, WeakMap<object, ExternalizedImage>>();
+
+function externalizeImagePayloadSync(blobStore: BlobStore, payload: object, data: string, mimeType?: string): string {
+	let refs = externalizedImageRefs.get(blobStore);
+	const cached = refs?.get(payload);
+	if (cached?.data === data && cached.mimeType === mimeType) return cached.ref;
+	const ref = externalizeImageDataSync(blobStore, data, mimeType);
+	if (!refs) {
+		refs = new WeakMap();
+		externalizedImageRefs.set(blobStore, refs);
+	}
+	refs.set(payload, { data, mimeType, ref });
+	return ref;
+}
+
+/** Failed writes leave unreferenced blobs collectible; retry must check that they still exist. */
+export function forgetExternalizedImages(blobStore: BlobStore): void {
+	externalizedImageRefs.delete(blobStore);
+}
+
 function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string): unknown {
 	if (obj === null || obj === undefined) return obj;
 	if (
@@ -136,10 +162,10 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 		!isBlobRef(obj.result) &&
 		obj.result.length >= BLOB_EXTERNALIZE_THRESHOLD
 	) {
-		return { ...obj, result: externalizeImageDataSync(blobStore, obj.result) };
+		return { ...obj, result: externalizeImagePayloadSync(blobStore, obj, obj.result) };
 	}
 	if (shouldExternalizeImagePayload(obj, key)) {
-		return { ...obj, data: externalizeImageDataSync(blobStore, obj.data, obj.mimeType) };
+		return { ...obj, data: externalizeImagePayloadSync(blobStore, obj, obj.data, obj.mimeType) };
 	}
 
 	if (typeof obj === "object" && "type" in obj && obj.type === "anthropicServerTool" && "block" in obj) {
@@ -159,7 +185,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 	// a `providerPayload` and under its preserveData slot (whose object carries no `type` marker).
 	if (
 		typeof obj === "object" &&
-		(("type" in obj && obj.type === "anthropicCompaction") ||
+		(("type" in obj && (obj.type === "anthropicCompaction" || obj.type === "cursorHistory")) ||
 			(key === "anthropicCompaction" && "content" in obj && typeof obj.content === "string"))
 	) {
 		return preserveReplaySubtree(obj, blobStore);

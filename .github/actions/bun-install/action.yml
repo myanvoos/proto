@@ -1,9 +1,9 @@
 name: "bun install (shared cache)"
 description: >
    Ensure bun is on PATH, then run `bun install --frozen-lockfile` with a shared
-   package store. bun setup is skipped when the runner image already ships it
-   (the preloaded proto-kata image), and only fetched on runners that lack it
-   (e.g. GitHub-hosted). Self-hosted proto-kata runners use the mounted Bun store
+   package store. bun setup is skipped when the runner image satisfies the repository
+   pin, and fetched on runners that lack it or ship a mismatched runtime
+   (e.g. an older preloaded proto-kata image). Self-hosted proto-kata runners use the mounted Bun store
    PVC; GitHub-hosted runners use the stock actions/cache backend.
 
 runs:
@@ -13,14 +13,35 @@ runs:
         id: env
         shell: bash
         run: |
-           # bun is baked into the proto-kata runner image — only fetch it when the
-           # runner doesn't already provide it (GitHub-hosted), so we don't
-           # re-download bun from GitHub releases on every job.
+           # Reuse the runner runtime only when it satisfies the repository pin.
+           want="$(sed -n 's/.*"packageManager": *"bun@\([^" ]*\)".*/\1/p' package.json)"
+           if [ -z "$want" ]; then
+             echo "::error::could not read Bun pin from package.json packageManager"
+             exit 1
+           fi
+           case "$want" in
+             '>='*) floor="${want#>=}"; install="" ;;
+             *) floor="$want"; install="bun-v$want" ;;
+           esac
+           echo "bun_install=$install" >> "$GITHUB_OUTPUT"
+           have=""
            if command -v bun >/dev/null 2>&1; then
+             have="$(bun --version)"
+           fi
+           ok=false
+           if [ -n "$have" ]; then
+             if [ -z "$install" ]; then
+               [ "$(printf '%s\n%s\n' "$floor" "$have" | sort -V | head -n1)" = "$floor" ] && ok=true
+             elif [ "$have" = "$want" ]; then
+               ok=true
+             fi
+           fi
+           if [ "$ok" = true ]; then
              echo "setup_bun=false" >> "$GITHUB_OUTPUT"
-             echo "bun present: $(bun --version) (preloaded image)"
+             echo "bun present: $have (satisfies $want)"
            else
              echo "setup_bun=true" >> "$GITHUB_OUTPUT"
+             echo "bun on runner: ${have:-none}; installing $want"
            fi
            # Infra detection keys "are we on can.internal infra?" off
            # $BAZEL_REMOTE_USER — a legacy-named secret that is envFrom-injected
@@ -35,12 +56,22 @@ runs:
              echo "cache=gha" >> "$GITHUB_OUTPUT"
              echo "bun cache backend: GitHub Actions cache"
            fi
-      - name: Install bun when absent
+      - name: Install pinned bun when missing or mismatched
         if: steps.env.outputs.setup_bun == 'true'
         shell: bash
+        env:
+           BUN_INSTALL_TAG: ${{ steps.env.outputs.bun_install }}
         run: |
            export BUN_INSTALL="${HOME}/.bun"
-           curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.0"
+           if ! mkdir -p "${BUN_INSTALL}/bin" 2>/dev/null || [ ! -w "${BUN_INSTALL}/bin" ]; then
+             export BUN_INSTALL="${RUNNER_TEMP:-/tmp}/bun"
+             mkdir -p "${BUN_INSTALL}/bin"
+           fi
+           export BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-${HOME}/.bun/install/cache}"
+           echo "BUN_INSTALL=${BUN_INSTALL}" >> "$GITHUB_ENV"
+           echo "BUN_INSTALL_CACHE_DIR=${BUN_INSTALL_CACHE_DIR}" >> "$GITHUB_ENV"
+           # An empty tag requests latest when the repository declares a floor.
+           curl -fsSL https://bun.sh/install | bash -s -- ${BUN_INSTALL_TAG}
            echo "${BUN_INSTALL}/bin" >> "$GITHUB_PATH"
 
       - name: Restore bun store (GitHub cache)

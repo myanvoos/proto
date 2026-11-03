@@ -1,6 +1,7 @@
 import type { Api } from "../types";
 import type { AbortSourceTracker } from "../utils/abort";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
+import { callerAbortReason } from "./abort";
 import { classify, classifyMessage, status } from "./flags";
 import { formatMessage } from "./format";
 
@@ -38,7 +39,10 @@ export async function finalize(error: unknown, opts: FinalizeOptions = {}): Prom
 	let message: string;
 	try {
 		const localReason = opts.abortTracker?.getLocalAbortReason();
-		message = localReason?.message ?? (await formatMessage(error, opts));
+		const callerReason = opts.abortTracker
+			? opts.abortTracker.getCallerAbortReason()
+			: callerAbortReason(opts.signal);
+		message = localReason?.message ?? callerReason ?? (await formatMessage(error, opts));
 	} catch {
 		message = error instanceof Error ? error.message : String(error);
 	}

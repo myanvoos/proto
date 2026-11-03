@@ -21,6 +21,63 @@ function writtenLines(): string[] {
 	return fs.readFileSync(path.join(logDir, files[0]!), "utf8").split("\n").filter(Boolean);
 }
 
+test("scoped log sessions replace parent fields and read getters at each emission", async () => {
+	let sessionId = "first";
+	await logger.withContext({ parentOnly: true }, async () => {
+		await logger.withContext(
+			{
+				get sessionId() {
+					return sessionId;
+				},
+			},
+			async () => {
+				logger.info("first-record");
+				await Promise.resolve();
+				sessionId = "second";
+				logger.info("second-record");
+				logger.info("explicit-record", { sessionId: "explicit" });
+				logger.withoutContext(() => logger.info("shared-record"));
+			},
+		);
+	});
+	const records = writtenLines().map(line => JSON.parse(line) as Record<string, unknown>);
+	expect(records.map(record => record.sessionId)).toEqual(["first", "second", "explicit", undefined]);
+	expect(records.every(record => record.parentOnly === undefined)).toBe(true);
+});
+
+test("log sinks receive current scoped context, explicit overrides, and context-free shared records", async () => {
+	const events: logger.LogEvent[] = [];
+	const unregister = logger.registerLogSink(event => events.push(event));
+	try {
+		let sessionId = "first";
+		await logger.withContext({ parentOnly: true }, async () => {
+			await logger.withContext(
+				{
+					get sessionId() {
+						return sessionId;
+					},
+				},
+				async () => {
+					logger.info("sink-first");
+					await Promise.resolve();
+					sessionId = "second";
+					logger.info("sink-override", { sessionId: "explicit", detail: 1 });
+					logger.info("sink-second");
+					logger.withoutContext(() => logger.info("sink-shared"));
+				},
+			);
+		});
+		expect(events.map(event => event.context)).toEqual([
+			{ sessionId: "first" },
+			{ sessionId: "explicit", detail: 1 },
+			{ sessionId: "second" },
+			undefined,
+		]);
+	} finally {
+		unregister();
+	}
+});
+
 describe("logger bounded serialization", () => {
 	test("deeply nested context is truncated instead of producing an unbounded line", () => {
 		let deep: Record<string, unknown> = { leaf: "end" };

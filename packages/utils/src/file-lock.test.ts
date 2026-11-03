@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { tryAcquireFileLockSync, withFileLock } from "./file-lock";
+import { acquireFileLock, tryAcquireFileLockSync, withFileLock } from "./file-lock";
 
 test("tryAcquireFileLockSync excludes a second holder and releases for reuse", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-file-lock-sync-"));
@@ -40,6 +40,24 @@ test("withFileLock releases the shared lock when its callback throws", async () 
 		expect(afterError).not.toBeNull();
 		afterError?.release();
 	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("cancelling a contended lock does not acquire or retain a lease", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-file-lock-abort-"));
+	const target = path.join(dir, "profile");
+	const holder = tryAcquireFileLockSync(target);
+	const controller = new AbortController();
+	try {
+		const waiting = acquireFileLock(target, { retries: 10, retryDelayMs: 1000, signal: controller.signal });
+		controller.abort();
+		await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+		holder?.release();
+		const next = await acquireFileLock(target, { retries: 1 });
+		next.release();
+	} finally {
+		holder?.release();
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });

@@ -5,13 +5,19 @@ interruptMode: never
 match:
   if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
   then:
-    regex: "import(?=\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[))"
-    in: code
+    any:
+      - regex: "\\btypeof\\s+import\\("
+        in: code
+      - regex: "\\bimport(?=\\((?:\\s|//.*|/\\*(?:[^*]|\\*(?!/))*\\*/)*(?:\"[^\"\\n]*\"|'[^'\\n]*'|\\x60[^\\x60]*\\x60)(?:\\s|//.*|/\\*(?:[^*]|\\*(?!/))*\\*/)*(?:,[^()]*)?\\)\\s*(?:\\[\\s*[\"']|\\.\\s*(?!(?:then|catch|finally)(?![\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF]))[A-Za-z_$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF][\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF]*(?=[^\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF])))"
+        in: code
   else:
     all:
-      - regex: "(?m)(?:^|[,:=<(\\[|&])\\s*import\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[)"
-        in: [code, string]
-      - llm: "Does this content actually use an inline `import(\"pkg\").Type` reference in a type position, rather than quoting or discussing it?"
+      - any:
+          - regex: "\\btypeof\\s+import\\("
+            in: [code, string]
+          - regex: "\\bimport(?=\\((?:\\s|//.*|/\\*(?:[^*]|\\*(?!/))*\\*/)*(?:\"[^\"\\n]*\"|'[^'\\n]*'|\\x60[^\\x60]*\\x60)(?:\\s|//.*|/\\*(?:[^*]|\\*(?!/))*\\*/)*(?:,[^()]*)?\\)\\s*(?:\\[\\s*[\"']|\\.\\s*(?!(?:then|catch|finally)(?![\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF]))[A-Za-z_$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF][\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF]*(?=[^\\w$\\u00AA-\\u167F\\u1681-\\u1FFF\\u200B-\\u2027\\u202A-\\u202E\\u2030-\\u205E\\u2060-\\u2FFF\\u3001-\\uFEFE\\uFF00-\\uFFFF])))"
+            in: [code, string]
+      - llm: "Does this content actually use an inline import type reference rather than quoting or discussing it?"
 ---
 
 Use top-level `import type` declarations for type-only dependencies. NEVER write `import("pkg").Type` inside source annotations.

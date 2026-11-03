@@ -116,6 +116,8 @@ const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
 	"lang.julia": "#9558b2",
 };
 
+const FOREGROUND_RESET_PATTERN = /\x1b\[(?:0|39)m/g;
+
 const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
 
 /** Symbol groups whose glyphs are positioned with one-column-per-glyph arithmetic. */
@@ -153,6 +155,8 @@ export class Theme {
 			this.#fgColors[key] = fgAnsi(value, mode);
 			this.#hexFgColors[key] = resolveToHex(value, slIsLight);
 		}
+		this.#fgColors.assistantMessageText ??= "\x1b[39m";
+		this.#hexFgColors.assistantMessageText ??= "";
 		this.#bgColors = {} as Record<ThemeBg, string>;
 		this.#hexBgColors = {} as Record<ThemeBg, string>;
 		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
@@ -180,6 +184,7 @@ export class Theme {
 			}
 			this.#symbols[key as SymbolKey] = value;
 		}
+		if (!("status.done" in symbolOverrides)) this.#symbols["status.done"] = this.#symbols["status.success"];
 		this.#spinnerFramesOverrides = spinnerFramesOverrides;
 	}
 
@@ -208,10 +213,16 @@ export class Theme {
 		return this.getColorHex("accent");
 	}
 
+	hasColor(color: ThemeColor): boolean {
+		const ansi = this.#fgColors[color];
+		return ansi !== undefined && ansi !== "\x1b[39m";
+	}
+
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.#fgColors[color];
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
-		return `${ansi}${text}\x1b[39m`;
+		const body = text.includes("\x1b[") ? text.replace(FOREGROUND_RESET_PATTERN, `$&${ansi}`) : text;
+		return `${ansi}${body}\x1b[39m`;
 	}
 
 	bg(color: ThemeBg, text: string): string {

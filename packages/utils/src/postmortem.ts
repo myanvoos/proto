@@ -316,10 +316,10 @@ function escapeFatalHintText(value: string): string {
 	});
 }
 
-function formatFatalRecoveryHints(): string {
+function formatFatalRecoveryHints(providers: Iterable<FatalRecoveryHintProvider>): string {
 	const lines: string[] = [];
 	const seenCommands = new Set<string>();
-	for (const provider of fatalRecoveryHintProviders) {
+	for (const provider of providers) {
 		try {
 			const hint = provider();
 			if (!hint?.command || seenCommands.has(hint.command)) continue;
@@ -341,8 +341,24 @@ function formatFatalError(label: string, err: Error): string {
 	return `\n[${label}] ${name}: ${message}${formattedStack}\n`;
 }
 
+let recoveryHintsWritten = false;
+
+function writeRecoveryHints(providers: readonly FatalRecoveryHintProvider[], heading = ""): void {
+	if (recoveryHintsWritten) return;
+	const hints = formatFatalRecoveryHints(providers);
+	if (!hints) return;
+	recoveryHintsWritten = true;
+	try {
+		fs.writeSync(2, `${heading}${hints}`);
+	} catch {}
+}
+
 async function exitAfterFatal(output: string, logMessage: string, err: Error, reason: Reason): Promise<never> {
-	const forcedExit = setTimeout(() => exitProcess(1), CLEANUP_DEADLINE_MS);
+	const hintProviders = [...fatalRecoveryHintProviders];
+	const forcedExit = setTimeout(() => {
+		writeRecoveryHints(hintProviders);
+		exitProcess(1);
+	}, CLEANUP_DEADLINE_MS);
 	try {
 		// runCleanup invokes callbacks synchronously, so terminal owners hand the display back before the report is
 		// written; slower resource cleanup finishes afterwards.
@@ -354,6 +370,7 @@ async function exitAfterFatal(output: string, logMessage: string, err: Error, re
 		} catch {}
 		logger.error(logMessage, { err });
 		await cleanup;
+		writeRecoveryHints(hintProviders);
 	} finally {
 		clearTimeout(forcedExit);
 		exitProcess(1);
@@ -372,9 +389,9 @@ function handleWorkerSendEpipe(err: Error): boolean {
  */
 export async function fatal(error: unknown, report?: string): Promise<never> {
 	const err = error instanceof Error ? error : new Error(String(error));
-	const output = `${report ?? `${Bun.inspect(error, { colors: process.stderr.isTTY === true })}\n`}${formatFatalRecoveryHints()}`;
+	const output = report ?? `${Bun.inspect(error, { colors: process.stderr.isTTY === true })}\n`;
 	if (!isMainThread) {
-		process.stderr.write(output);
+		process.stderr.write(`${output}${formatFatalRecoveryHints(fatalRecoveryHintProviders)}`);
 		process.exit(1);
 	}
 	return exitAfterFatal(output, "Fatal error", err, Reason.UNHANDLED_REJECTION);
@@ -414,7 +431,7 @@ if (isMainThread) {
 				return;
 			}
 			await exitAfterFatal(
-				`${formatFatalError("Uncaught Exception", err)}${formatFatalRecoveryHints()}`,
+				formatFatalError("Uncaught Exception", err),
 				"Uncaught exception",
 				err,
 				Reason.UNCAUGHT_EXCEPTION,
@@ -437,7 +454,7 @@ if (isMainThread) {
 				}
 			}
 			await exitAfterFatal(
-				`${formatFatalError("Unhandled Rejection", err)}${formatFatalRecoveryHints()}`,
+				formatFatalError("Unhandled Rejection", err),
 				"Unhandled rejection",
 				err,
 				Reason.UNHANDLED_REJECTION,
@@ -447,7 +464,9 @@ if (isMainThread) {
 			void runCleanup(Reason.EXIT);
 		})
 		.on("SIGTERM", async () => {
+			const hintProviders = [...fatalRecoveryHintProviders];
 			await runCleanup(Reason.SIGTERM);
+			writeRecoveryHints(hintProviders, "\n[Stopped by SIGTERM]");
 			exitProcess(143);
 		})
 		.on("SIGHUP", async () => {

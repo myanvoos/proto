@@ -267,7 +267,7 @@ const ZERO_USAGE: Usage = {
 const VALID_SIGNATURE = "QUJDRA==";
 const SKIP_SIGNATURE = "skip_thought_signature_validator";
 
-function wireModel(api: GoogleWireApi, provider: string, id: string): Model<GoogleWireApi> {
+function wireModel<TApi extends GoogleWireApi>(api: TApi, provider: string, id: string): Model<TApi> {
 	return buildModel({
 		id,
 		name: id,
@@ -380,4 +380,94 @@ describe("Google request shaping", () => {
 			expect(generationConfig).not.toHaveProperty("repetitionPenalty");
 		}
 	});
+});
+
+it("Gemini reorders parallel function results and pre-3 image groups by call, not completion", () => {
+	const target = {
+		...wireModel("google-generative-ai", "google", "gemini-2.5-pro"),
+		input: ["text", "image"] as ("text" | "image")[],
+	};
+	const ctx = toolTurn(target, [
+		{ type: "toolCall", id: "first", name: "read", arguments: { path: "a" } },
+		{ type: "toolCall", id: "second", name: "read", arguments: { path: "b" } },
+	]);
+	for (const [id, data] of [
+		["second", "Yg=="],
+		["first", "YQ=="],
+	])
+		ctx.messages.push({
+			role: "toolResult",
+			toolCallId: id!,
+			toolName: "read",
+			isError: false,
+			timestamp: 3,
+			content: [
+				{ type: "text", text: id! },
+				{ type: "image", data: data!, mimeType: "image/png" },
+			],
+		});
+	const contents = convertMessages(target, ctx);
+	const responses = contents
+		.flatMap(content => content.parts ?? [])
+		.flatMap(part => (part.functionResponse ? [part.functionResponse] : []));
+	expect(responses.map(response => response.response)).toEqual([{ output: "first" }, { output: "second" }]);
+	const imageTurn = contents.at(-1);
+	expect(imageTurn?.parts?.flatMap(part => (part.inlineData ? [part.inlineData.data] : []))).toEqual(["YQ==", "Yg=="]);
+});
+
+it("Gemini retains signed trailing text and signature-only thinking without demoting own unsigned thought", async () => {
+	const target = wireModel("google-generative-ai", "google", "gemini-3-pro");
+	const chunks = [
+		{
+			candidates: [
+				{
+					content: {
+						parts: [
+							{ thought: true, text: "reasoning" },
+							{ text: "answer" },
+							{ text: "", thoughtSignature: VALID_SIGNATURE },
+							{ thought: true, text: "", thoughtSignature: "RUZHSA==" },
+						],
+					},
+					finishReason: "STOP",
+				},
+			],
+		},
+	];
+	const result = await streamGoogle(target, context, {
+		apiKey: "test",
+		fetch: fetchForBody(encoder.encode(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join(""))),
+	}).result();
+	expect(result.stopReason).toBe("stop");
+	expect(result.content).toMatchObject([
+		{ type: "thinking", thinking: "reasoning" },
+		{ type: "text", text: "answer", textSignature: VALID_SIGNATURE },
+		{ type: "thinking", thinking: "", thinkingSignature: "RUZHSA==" },
+	]);
+	const replay = convertMessages(target, { messages: [result] }).flatMap(content => content.parts ?? []);
+	expect(replay[0]).toMatchObject({ thought: true, text: "reasoning" });
+	expect(replay.at(-1)).toMatchObject({ thought: true, text: "", thoughtSignature: "RUZHSA==" });
+});
+
+it("in-band Google RPC details distinguish account quota from a transient throttle", async () => {
+	for (const [reason, limited] of [
+		["QUOTA_EXHAUSTED", true],
+		["RATE_LIMIT_EXCEEDED", false],
+	] as const) {
+		const result = await streamGoogle(model, context, {
+			apiKey: "test",
+			fetch: fetchForBody(
+				sseChunk({
+					error: {
+						code: 429,
+						status: "RESOURCE_EXHAUSTED",
+						message: "Limit hit",
+						details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason }],
+					},
+				}),
+			),
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(AIError.is(result.errorId, AIError.Flag.UsageLimit)).toBe(limited);
+	}
 });

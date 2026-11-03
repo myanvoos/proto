@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, Context, Message, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { fitOutputTokensToContextWindow, MIN_FITTED_OUTPUT_TOKENS, OUTPUT_FIT_HEADWAY_TOKENS } from "./output-budget";
+import {
+	fitOutputTokensToContextWindow,
+	MESSAGE_FRAMING_TOKENS,
+	MIN_FITTED_OUTPUT_TOKENS,
+	OUTPUT_FIT_HEADWAY_TOKENS,
+} from "./output-budget";
 import { Tokenizer } from "./tokenizer";
 
 // Prompt plus requested output must never exceed the model's context window, which Chat Completions-style providers
@@ -40,6 +45,18 @@ if (!bundled) throw new Error("Expected bundled deepseek/deepseek-v4-pro");
 const deepseek: Model = { ...bundled, contextWindow: 1_000_000, maxTokens: 384_000 };
 
 describe("fitOutputTokensToContextWindow", () => {
+	test("many locally counted messages reserve framing without charging a provider-anchored prefix twice", () => {
+		const one = fitOutputTokensToContextWindow(deepseek, promptOf(800_000), 200_000, tokenizer)!;
+		const many = { messages: Array.from({ length: 100 }, (_, i) => userOf(8_000, i)) };
+		expect(fitOutputTokensToContextWindow(deepseek, many, 200_000, tokenizer)).toBe(
+			one - 99 * MESSAGE_FRAMING_TOKENS,
+		);
+		const anchored = { messages: [reported(800_000, 100)] };
+		expect(fitOutputTokensToContextWindow(deepseek, anchored, 200_000, tokenizer)).toBe(
+			200_000 - OUTPUT_FIT_HEADWAY_TOKENS,
+		);
+	});
+
 	const tokenizer = new Tokenizer();
 
 	test("leaves the cap alone while prompt plus requested output fits", () => {
@@ -52,12 +69,14 @@ describe("fitOutputTokensToContextWindow", () => {
 
 	test("lowers the model default cap to the room the prompt leaves", () => {
 		const cap = fitOutputTokensToContextWindow(deepseek, promptOf(666_387), undefined, tokenizer);
-		expect(cap).toBe(1_000_000 - (666_387 + Math.ceil(666_387 / 10)) - OUTPUT_FIT_HEADWAY_TOKENS);
+		expect(cap).toBe(
+			1_000_000 - (666_387 + Math.ceil(666_387 / 10)) - OUTPUT_FIT_HEADWAY_TOKENS - MESSAGE_FRAMING_TOKENS,
+		);
 	});
 
 	test("lowers an explicit caller cap that no longer fits", () => {
 		expect(fitOutputTokensToContextWindow(deepseek, promptOf(800_000), 200_000, tokenizer)).toBe(
-			120_000 - OUTPUT_FIT_HEADWAY_TOKENS,
+			120_000 - OUTPUT_FIT_HEADWAY_TOKENS - MESSAGE_FRAMING_TOKENS,
 		);
 	});
 
@@ -76,7 +95,7 @@ describe("fitOutputTokensToContextWindow", () => {
 		const openrouter = { ...deepseek, compat: { isOpenRouterHost: true, alwaysSendMaxTokens: false } } as never;
 		expect(fitOutputTokensToContextWindow(openrouter, promptOf(800_000), undefined, tokenizer)).toBeUndefined();
 		expect(fitOutputTokensToContextWindow(openrouter, promptOf(800_000), 200_000, tokenizer)).toBe(
-			120_000 - OUTPUT_FIT_HEADWAY_TOKENS,
+			120_000 - OUTPUT_FIT_HEADWAY_TOKENS - MESSAGE_FRAMING_TOKENS,
 		);
 	});
 
@@ -84,7 +103,7 @@ describe("fitOutputTokensToContextWindow", () => {
 		// Counting the reported prefix locally would read 900k and floor the cap; the provider measured 500k.
 		const context: Context = { messages: [userOf(900_000, 1), reported(500_000, 2), userOf(200_000, 3)] };
 		expect(fitOutputTokensToContextWindow(deepseek, context, undefined, tokenizer)).toBe(
-			1_000_000 - (500_000 + 220_000) - OUTPUT_FIT_HEADWAY_TOKENS,
+			1_000_000 - (500_000 + 220_000) - OUTPUT_FIT_HEADWAY_TOKENS - MESSAGE_FRAMING_TOKENS,
 		);
 	});
 

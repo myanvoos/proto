@@ -22,6 +22,10 @@ class FakeStartupWorker {
 		return () => this.#errorHandlers.delete(handler);
 	}
 
+	onExit(_handler: (exitCode: number) => void): () => void {
+		return () => {};
+	}
+
 	async terminate(): Promise<void> {}
 
 	emit(msg: WorkerOutbound): void {

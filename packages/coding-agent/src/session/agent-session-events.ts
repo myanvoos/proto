@@ -26,6 +26,14 @@ export type AgentSessionEvent =
 
 			skipped?: boolean;
 	  }
+	| { type: "manual_compaction_start"; mode?: string }
+	| {
+			type: "manual_compaction_end";
+			result?: CompactionResult;
+			aborted: boolean;
+			skipped?: boolean;
+			errorMessage?: string;
+	  }
 	| {
 			type: "auto_retry_start";
 			attempt: number;

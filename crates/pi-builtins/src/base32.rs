@@ -1,10 +1,6 @@
-
-
-
-
 use std::{
-	fmt,
 	ffi::OsString,
+	fmt,
 	io::{self, BufRead, BufReader, Write},
 };
 
@@ -13,8 +9,12 @@ use clap::ArgMatches;
 
 use crate::host::{Host, Utility, matches_parser, util};
 
-const ABOUT: &str = "encode/decode data and print to standard output\nWith no FILE, or when FILE is -, read standard input.\n\nThe data are encoded as described for the base32 alphabet in RFC 4648.\nWhen decoding, the input may contain newlines in addition to the bytes of the formal base32 alphabet. Use --ignore-garbage to attempt to recover from any other non-alphabet bytes in the encoded stream.";
-
+const ABOUT: &str = "encode/decode data and print to standard output\nWith no FILE, or when FILE \
+                     is -, read standard input.\n\nThe data are encoded as described for the \
+                     base32 alphabet in RFC 4648.\nWhen decoding, the input may contain newlines \
+                     in addition to the bytes of the formal base32 alphabet. Use --ignore-garbage \
+                     to attempt to recover from any other non-alphabet bytes in the encoded \
+                     stream.";
 
 pub(crate) struct Base32 {
 	matches: ArgMatches,
@@ -33,7 +33,6 @@ impl Utility for Base32 {
 fn app() -> Command {
 	base_app(Base32::NAME, ABOUT, "base32 [OPTION]... [FILE]")
 }
-
 
 pub(crate) fn base32_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Base32, SE>()
@@ -66,22 +65,14 @@ use clap::{Arg, ArgAction, Command};
 use uucore::{
 	display::Quotable,
 	encoding::{
+		BASE2LSBF, BASE2MSBF, Base32Wrapper, Base58Wrapper, Base64SimdWrapper, EncodingWrapper,
+		Format, SupportsFastDecodeAndEncode, Z85Wrapper,
 		for_base_common::{BASE32, BASE32HEX, BASE64URL, HEXUPPER_PERMISSIVE},
-		Base32Wrapper, Base58Wrapper, Base64SimdWrapper, EncodingWrapper, Format,
-		SupportsFastDecodeAndEncode, Z85Wrapper, BASE2LSBF, BASE2MSBF,
 	},
 };
 const BASE_CMD_PARSE_ERROR: i32 = 1;
 
-
-
-
-
-
-
 const WRAP_DEFAULT: usize = 76;
-
-
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
@@ -121,9 +112,8 @@ impl Config {
 		let wrap_cols = options
 			.get_one::<String>(options::WRAP)
 			.map(|num| {
-				num.parse::<usize>().map_err(|_| {
-					BaseError::new(format!("invalid wrap size: {}", num.quote()))
-				})
+				num.parse::<usize>()
+					.map_err(|_| BaseError::new(format!("invalid wrap size: {}", num.quote())))
 			})
 			.transpose()?;
 
@@ -135,7 +125,6 @@ impl Config {
 		})
 	}
 }
-
 
 pub(crate) fn base_app(name: &'static str, about: &'static str, usage: &'static str) -> Command {
 	Command::new(name)
@@ -166,7 +155,8 @@ pub(crate) fn base_app(name: &'static str, about: &'static str, usage: &'static 
 				.long(options::WRAP)
 				.value_name("COLS")
 				.help(format!(
-					"wrap encoded lines after COLS character (default {WRAP_DEFAULT}, 0 to disable wrapping)"
+					"wrap encoded lines after COLS character (default {WRAP_DEFAULT}, 0 to disable \
+					 wrapping)"
 				))
 				.overrides_with(options::WRAP),
 		)
@@ -178,7 +168,6 @@ pub(crate) fn base_app(name: &'static str, about: &'static str, usage: &'static 
 				.value_hint(clap::ValueHint::FilePath),
 		)
 }
-
 
 pub(crate) fn run_base(matches: &ArgMatches, format: Format, host: &mut Host) -> i32 {
 	let config = match Config::from(matches) {
@@ -217,14 +206,11 @@ fn handle_input<R: BufRead>(
 	format: Format,
 	config: Config,
 ) -> BaseResult<()> {
-
 	let supports_fast_decode_and_encode =
 		get_supports_fast_decode_and_encode(format, config.decode, true);
 
 	let supports_fast_decode_and_encode_ref = supports_fast_decode_and_encode.as_ref();
 	let result = match (format, config.decode) {
-
-
 		(Format::Base58, _) => {
 			let mut buffered = Vec::new();
 			input
@@ -260,8 +246,6 @@ fn handle_input<R: BufRead>(
 			config.wrap_cols,
 		),
 	};
-
-
 
 	match (result, output.flush()) {
 		(res, Ok(())) => res,
@@ -358,13 +342,13 @@ mod fast_encode {
 		print_buffer: Vec<u8>,
 	}
 
-
 	fn encode_in_chunks_to_buffer(
 		supports_fast_decode_and_encode: &dyn SupportsFastDecodeAndEncode,
 		read_buffer: &[u8],
 		encoded_buffer: &mut VecDeque<u8>,
 	) -> BaseResult<()> {
-		supports_fast_decode_and_encode.encode_to_vec_deque(read_buffer, encoded_buffer)
+		supports_fast_decode_and_encode
+			.encode_to_vec_deque(read_buffer, encoded_buffer)
 			.map_err(|err| BaseError::new(err.to_string()))?;
 		Ok(())
 	}
@@ -375,10 +359,6 @@ mod fast_encode {
 		is_cleanup: bool,
 		empty_wrap: bool,
 	) -> io::Result<()> {
-
-
-
-
 		output.write_all(encoded_buffer.make_contiguous())?;
 
 		if is_cleanup {
@@ -415,15 +395,11 @@ mod fast_encode {
 
 		output.write_all(print_buffer)?;
 
-
 		drop(encoded_buffer.drain(..bytes_added_to_print_buffer));
 
 		if is_cleanup {
 			if encoded_buffer.is_empty() {
-
-
 			} else {
-
 				output.write_all(encoded_buffer.make_contiguous())?;
 				output.write_all(b"\n")?;
 			}
@@ -441,7 +417,6 @@ mod fast_encode {
 		is_cleanup: bool,
 		empty_wrap: bool,
 	) -> io::Result<()> {
-
 		if let &mut Some(ref mut li) = line_wrapping {
 			write_with_line_breaks(li, encoded_buffer, output, is_cleanup)?;
 		} else {
@@ -451,15 +426,12 @@ mod fast_encode {
 		Ok(())
 	}
 
-
 	pub(super) fn fast_encode_buffer(
 		input: Vec<u8>,
 		output: &mut dyn Write,
 		supports_fast_decode_and_encode: &dyn SupportsFastDecodeAndEncode,
 		wrap: Option<usize>,
 	) -> BaseResult<()> {
-
-
 		const ENCODE_IN_CHUNKS_OF_SIZE_MULTIPLE: usize = 1_024;
 
 		let encode_in_chunks_of_size =
@@ -467,11 +439,7 @@ mod fast_encode {
 
 		assert!(encode_in_chunks_of_size > 0);
 
-
-
-
 		let mut line_wrapping = match wrap {
-
 			Some(0) => None,
 
 			Some(an) => Some(LineWrapping {
@@ -487,21 +455,15 @@ mod fast_encode {
 
 		let input_size = input.len();
 
-
-
 		let mut leftover_buffer = VecDeque::<u8>::new();
 
-
 		let mut encoded_buffer = VecDeque::<u8>::new();
-
 
 		input
 			.iter()
 			.enumerate()
 			.step_by(encode_in_chunks_of_size)
 			.filter_map(|(idx, _)| {
-
-
 				let buffer = &input[idx..min(input_size, idx + encode_in_chunks_of_size)];
 
 				if buffer.len() < encode_in_chunks_of_size {
@@ -513,7 +475,6 @@ mod fast_encode {
 				}
 			})
 			.for_each(|read_buffer| {
-
 				assert_eq!(read_buffer.len(), encode_in_chunks_of_size);
 				encode_in_chunks_to_buffer(
 					supports_fast_decode_and_encode,
@@ -532,33 +493,15 @@ mod fast_encode {
 				.unwrap();
 			});
 
-
-
-
 		{
-
 			supports_fast_decode_and_encode
 				.encode_to_vec_deque(leftover_buffer.make_contiguous(), &mut encoded_buffer)
 				.map_err(|err| BaseError::new(err.to_string()))?;
-
-
 
 			write_to_output(&mut line_wrapping, &mut encoded_buffer, output, true, wrap == Some(0))?;
 		}
 		Ok(())
 	}
-
-
-
-
-
-
-
-
-
-
-
-
 
 	pub(super) fn fast_encode_stream(
 		input: &mut dyn BufRead,
@@ -584,7 +527,6 @@ mod fast_encode {
 				print_buffer: Vec::<u8>::new(),
 			}),
 		};
-
 
 		let mut encoded_buffer = VecDeque::<u8>::new();
 		let mut leftover_buffer = Vec::<u8>::with_capacity(encode_in_chunks_of_size);
@@ -652,12 +594,11 @@ mod fast_encode {
 
 			input.consume(consumed);
 
-
 			debug_assert!(leftover_buffer.len() < encode_in_chunks_of_size);
 		}
 
-
-		supports_fast_decode_and_encode.encode_to_vec_deque(&leftover_buffer, &mut encoded_buffer)
+		supports_fast_decode_and_encode
+			.encode_to_vec_deque(&leftover_buffer, &mut encoded_buffer)
 			.map_err(|err| BaseError::new(err.to_string()))?;
 
 		write_to_output(&mut line_wrapping, &mut encoded_buffer, output, true, wrap == Some(0))?;
@@ -673,10 +614,7 @@ mod fast_decode {
 
 	use super::{BaseError, BaseResult};
 
-
 	fn alphabet_lookup(alphabet: &[u8]) -> [bool; 256] {
-
-
 		let mut table = [false; 256];
 
 		for &byte in alphabet {
@@ -691,13 +629,13 @@ mod fast_decode {
 		read_buffer_filtered: &[u8],
 		decoded_buffer: &mut Vec<u8>,
 	) -> BaseResult<()> {
-		supports_fast_decode_and_encode.decode_into_vec(read_buffer_filtered, decoded_buffer)
+		supports_fast_decode_and_encode
+			.decode_into_vec(read_buffer_filtered, decoded_buffer)
 			.map_err(|err| BaseError::new(err.to_string()))?;
 		Ok(())
 	}
 
 	fn write_to_output(decoded_buffer: &mut Vec<u8>, output: &mut dyn Write) -> io::Result<()> {
-
 		output.write_all(decoded_buffer.as_slice())?;
 
 		decoded_buffer.clear();
@@ -713,8 +651,6 @@ mod fast_decode {
 		decoded_buffer: &mut Vec<u8>,
 		output: &mut dyn Write,
 	) -> BaseResult<()> {
-
-
 		while buffer.len() >= valid_multiple {
 			let take = buffer.len().min(block_limit);
 			let aligned_take = take - (take % valid_multiple);
@@ -737,7 +673,6 @@ mod fast_decode {
 		Ok(())
 	}
 
-
 	pub(super) fn fast_decode_buffer(
 		input: Vec<u8>,
 		output: &mut dyn Write,
@@ -754,12 +689,7 @@ mod fast_decode {
 		assert!(decode_in_chunks_of_size > 0);
 		assert!(valid_multiple > 0);
 
-
-
-
 		let mut decoded_buffer = Vec::<u8>::new();
-
-
 
 		let mut buffer = Vec::with_capacity(decode_in_chunks_of_size);
 
@@ -779,14 +709,16 @@ mod fast_decode {
 			}
 
 			if supports_partial_decode {
-				flush_ready_chunks(
-					&mut buffer,
-					decode_in_chunks_of_size,
-					valid_multiple,
-					supports_fast_decode_and_encode,
-					&mut decoded_buffer,
-					output,
-				)?;
+				if buffer.len() >= decode_in_chunks_of_size {
+					flush_ready_chunks(
+						&mut buffer,
+						decode_in_chunks_of_size,
+						valid_multiple,
+						supports_fast_decode_and_encode,
+						&mut decoded_buffer,
+						output,
+					)?;
+				}
 			} else if buffer.len() == decode_in_chunks_of_size {
 				decode_in_chunks_to_buffer(
 					supports_fast_decode_and_encode,
@@ -820,7 +752,8 @@ mod fast_decode {
 
 			let final_chunk = owned_chunk.as_deref().unwrap_or(&buffer);
 
-			supports_fast_decode_and_encode.decode_into_vec(final_chunk, &mut decoded_buffer)
+			supports_fast_decode_and_encode
+				.decode_into_vec(final_chunk, &mut decoded_buffer)
 				.map_err(|err| BaseError::new(err.to_string()))?;
 			write_to_output(&mut decoded_buffer, output)?;
 
@@ -896,14 +829,16 @@ mod fast_decode {
 				}
 
 				if supports_partial_decode {
-					flush_ready_chunks(
-						&mut buffer,
-						decode_in_chunks_of_size,
-						valid_multiple,
-						supports_fast_decode_and_encode,
-						&mut decoded_buffer,
-						output,
-					)?;
+					if buffer.len() >= decode_in_chunks_of_size {
+						flush_ready_chunks(
+							&mut buffer,
+							decode_in_chunks_of_size,
+							valid_multiple,
+							supports_fast_decode_and_encode,
+							&mut decoded_buffer,
+							output,
+						)?;
+					}
 				} else if buffer.len() == decode_in_chunks_of_size {
 					decode_in_chunks_to_buffer(
 						supports_fast_decode_and_encode,
@@ -940,7 +875,8 @@ mod fast_decode {
 
 			let final_chunk = owned_chunk.as_deref().unwrap_or(&buffer);
 
-			supports_fast_decode_and_encode.decode_into_vec(final_chunk, &mut decoded_buffer)
+			supports_fast_decode_and_encode
+				.decode_into_vec(final_chunk, &mut decoded_buffer)
 				.map_err(|err| BaseError::new(err.to_string()))?;
 			write_to_output(&mut decoded_buffer, output)?;
 
@@ -956,8 +892,3 @@ mod fast_decode {
 fn format_read_error(error: &io::Error) -> String {
 	format!("read error: {}", error)
 }
-
-
-
-
-

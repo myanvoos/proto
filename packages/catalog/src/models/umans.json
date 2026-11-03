@@ -18,7 +18,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 131071,
+		"maxTokens": 393215,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -28,12 +28,13 @@
 				"high",
 				"xhigh",
 				"max"
-			],
-			"requiresEffort": true
+			]
 		},
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -53,6 +54,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -95,6 +97,8 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -114,6 +118,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -156,6 +161,8 @@
 		"tokenizer": "deepseek-v3",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -175,6 +182,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -183,9 +191,9 @@
 			"escapeBuiltinToolNames": true
 		}
 	},
-	"umans-deepseek-v4.1-flash-lab": {
-		"id": "umans-deepseek-v4.1-flash-lab",
-		"name": "Umans DeepSeek V4.1 Flash (lab)",
+	"umans-deepseek-v4.1-flash-1017": {
+		"id": "umans-deepseek-v4.1-flash-1017",
+		"name": "Umans DeepSeek V4.1 Flash 1017",
 		"api": "anthropic-messages",
 		"provider": "umans",
 		"baseUrl": "https://api.code.umans.ai",
@@ -206,9 +214,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0.028,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -217,6 +225,8 @@
 		"tokenizer": "deepseek-v3",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -236,6 +246,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -278,6 +289,8 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -297,6 +310,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -326,9 +340,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
@@ -337,6 +351,8 @@
 		"tokenizer": "glm5",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -356,6 +372,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -397,6 +414,8 @@
 		"tokenizer": "glm5",
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -416,6 +435,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
@@ -459,6 +479,8 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -478,70 +500,11 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},
 		"supportsComputerUseConfig": false,
-		"compatConfig": {
-			"escapeBuiltinToolNames": true
-		}
-	},
-	"umans-mimo-v2.6-pro-lab": {
-		"id": "umans-mimo-v2.6-pro-lab",
-		"name": "Umans MiMo V2.6 Pro (lab)",
-		"api": "anthropic-messages",
-		"provider": "umans",
-		"baseUrl": "https://api.code.umans.ai",
-		"reasoning": true,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max"
-			]
-		},
-		"input": [
-			"text",
-			"image"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 1048576,
-		"maxTokens": 131071,
-		"requiresGlyphTokenization": false,
-		"supportsAssistantPrefill": false,
-		"compat": {
-			"officialEndpoint": false,
-			"signingEndpoint": false,
-			"supportsContextManagement": true,
-			"supportsServerCompaction": false,
-			"firstPartyProvider": false,
-			"disableStrictTools": false,
-			"disableAdaptiveThinking": false,
-			"allowAnthropicHeaderOverrides": false,
-			"supportsEagerToolInputStreaming": false,
-			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
-			"supportsTurnScopedSystem": false,
-			"supportsMidConversationToolChanges": false,
-			"supportsPerMessageEffort": false,
-			"supportsThinkingBindingControls": false,
-			"supportsForcedToolChoice": true,
-			"supportsSamplingParams": true,
-			"requiresToolResultId": false,
-			"requiresThinkingEnabled": false,
-			"replayUnsignedThinking": true,
-			"escapeBuiltinToolNames": true
-		},
-		"supportsComputerUse": false,
 		"compatConfig": {
 			"escapeBuiltinToolNames": true
 		}
@@ -581,6 +544,8 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
 			"officialEndpoint": false,
 			"signingEndpoint": false,
 			"supportsContextManagement": true,
@@ -600,6 +565,7 @@
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
 			"replayUnsignedThinking": true,
 			"escapeBuiltinToolNames": true
 		},

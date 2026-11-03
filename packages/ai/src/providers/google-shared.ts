@@ -147,9 +147,59 @@ function isGemini3Model(modelId: string): boolean {
 	return modelId.includes("gemini-3");
 }
 
+function sortKnownInPlace<T>(items: T[], keyOf: (item: T) => number | undefined): void {
+	const known: Array<{ position: number; key: number; item: T }> = [];
+	items.forEach((item, position) => {
+		const key = keyOf(item);
+		if (key !== undefined) known.push({ position, key, item });
+	});
+	if (known.length < 2) return;
+	const inOrder = [...known].sort((a, b) => a.key - b.key);
+	known.forEach(({ position }, index) => {
+		items[position] = inOrder[index].item;
+	});
+}
+
+/**
+ * Gemini pairs id-less function responses with calls by position. The agent loop stores
+ * parallel results in call order, but histories can still arrive out of call order (sessions
+ * saved by older versions, contexts built through the SDK), so the converters guard the wire:
+ * record each call as it is emitted and each response with its call, then {@link apply} sorts
+ * every turn's matched responses back into call order within the slots they already occupy.
+ */
+export class FunctionCallOrder {
+	#ordinals = new Map<string, number>();
+	#responses = new Map<Part, number>();
+	#next = 0;
+
+	call(id: string): void {
+		this.#ordinals.set(id, this.#next++);
+	}
+
+	/** The call ordinal of `id`, if that call was recorded. */
+	ordinal(id: string): number | undefined {
+		return this.#ordinals.get(id);
+	}
+
+	response(part: Part, callId: string): void {
+		const ordinal = this.#ordinals.get(callId);
+		if (ordinal !== undefined) this.#responses.set(part, ordinal);
+	}
+
+	apply(contents: readonly { parts?: Part[] }[]): void {
+		for (const content of contents) {
+			if (content.parts) sortKnownInPlace(content.parts, part => this.#responses.get(part));
+		}
+	}
+}
+
+/**
+ * Convert internal messages to Gemini Content[] format.
+ */
 export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
 	const contents: Content[] = [];
 	const emittedToolCallNames = new Map<string, string>();
+	const callOrder = new FunctionCallOrder();
 
 	const normalizeToolCallId = (id: string): string => {
 		return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
@@ -157,11 +207,12 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 
-	let pendingToolImageParts: Part[] = [];
+	let pendingToolImages: Array<{ ordinal: number | undefined; parts: Part[] }> = [];
 	const flushPendingToolImages = () => {
-		if (pendingToolImageParts.length === 0) return;
-		contents.push({ role: "user", parts: pendingToolImageParts });
-		pendingToolImageParts = [];
+		if (pendingToolImages.length === 0) return;
+		sortKnownInPlace(pendingToolImages, group => group.ordinal);
+		contents.push({ role: "user", parts: pendingToolImages.flatMap(group => group.parts) });
+		pendingToolImages = [];
 	};
 
 	for (const msg of transformedMessages) {
@@ -219,14 +270,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						...(thoughtSignature && { thoughtSignature }),
 					});
 				} else if (block.type === "thinking") {
-					if (!block.thinking || block.thinking.trim() === "") continue;
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thinkingSignature);
+					if ((!block.thinking || block.thinking.trim() === "") && !thoughtSignature) continue;
 					if (dropsUnsignedThinking && !thoughtSignature) continue;
-					if (thoughtSignature) {
+					if (isSameProviderAndModel) {
 						parts.push({
 							thought: true,
 							text: block.thinking.toWellFormed(),
-							thoughtSignature,
+							...(thoughtSignature && { thoughtSignature }),
 						});
 					} else {
 						parts.push({
@@ -235,6 +286,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					}
 				} else if (block.type === "toolCall") {
 					emittedToolCallNames.set(block.id, block.name);
+					callOrder.call(block.id);
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
 					const effectiveSignature =
 						thoughtSignature ||
@@ -296,6 +348,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				},
 			};
 
+			callOrder.response(functionResponsePart, msg.toolCallId);
+
 			if (model.provider === "google-vertex" && functionResponsePart.functionResponse?.id) {
 				delete functionResponsePart.functionResponse.id;
 			}
@@ -311,11 +365,15 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			}
 
 			if (hasImages && !modelSupportsMultimodalFunctionResponse) {
-				pendingToolImageParts.push({ text: "Tool result image:" }, ...imageParts);
+				pendingToolImages.push({
+					ordinal: callOrder.ordinal(msg.toolCallId),
+					parts: [{ text: "Tool result image:" }, ...imageParts],
+				});
 			}
 		}
 	}
 	flushPendingToolImages();
+	callOrder.apply(contents);
 
 	return contents;
 }
@@ -456,6 +514,92 @@ export function pushToolCallEvents(
 	stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 }
 
+export class GoogleTextBlocks {
+	readonly #output: AssistantMessage;
+	readonly #stream: AssistantMessageEventStream;
+	#block: TextContent | ThinkingContent | null = null;
+	#contentIndex = -1;
+	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
+	// Gemini thought summaries emit as a between-summary delimiter (#8719). One
+	// stripper per thinking block; created lazily on first thinking delta.
+	#thinkingStripper: ThinkingFenceStripper | null = null;
+
+	constructor(output: AssistantMessage, stream: AssistantMessageEventStream) {
+		this.#output = output;
+		this.#stream = stream;
+	}
+
+	/** Folds one response part; parts without text are ignored. */
+	push(part: Part): void {
+		const { text, thoughtSignature } = part;
+		if (text === undefined) return;
+		const isThinking = isThinkingPart(part);
+		if (text === "") {
+			// A signature-only part: an unmarked one signs the open block (Gemini's
+			// trailing part after a reply), a thought part signs thinking of its own.
+			if (!thoughtSignature || part.functionCall) return;
+			const signed = isThinking && this.#block?.type !== "thinking" ? this.#open(true) : this.#block;
+			if (signed) this.#sign(signed, thoughtSignature);
+			return;
+		}
+		const block =
+			this.#block && (this.#block.type === "thinking") === isThinking ? this.#block : this.#open(isThinking);
+		this.#sign(block, thoughtSignature);
+		if (block.type === "thinking") {
+			this.#thinkingStripper ??= new ThinkingFenceStripper();
+			const delta = this.#thinkingStripper ? this.#thinkingStripper.push(text) : text;
+			if (!delta) return;
+			block.thinking += delta;
+			this.#stream.push({ type: "thinking_delta", contentIndex: this.#contentIndex, delta, partial: this.#output });
+		} else {
+			block.text += text;
+			this.#stream.push({
+				type: "text_delta",
+				contentIndex: this.#contentIndex,
+				delta: text,
+				partial: this.#output,
+			});
+		}
+	}
+
+	/** Ends the open block, releasing thinking text the fence stripper held back. */
+	close(): void {
+		const block = this.#block;
+		if (!block) return;
+		if (block.type === "thinking" && this.#thinkingStripper) {
+			const tail = this.#thinkingStripper.flush();
+			if (tail) {
+				block.thinking += tail;
+				this.#stream.push({
+					type: "thinking_delta",
+					contentIndex: this.#contentIndex,
+					delta: tail,
+					partial: this.#output,
+				});
+			}
+		}
+		this.#thinkingStripper = null;
+		this.#block = null;
+		pushBlockEndEvent(block, this.#contentIndex, this.#output, this.#stream);
+	}
+
+	#open(isThinking: boolean): TextContent | ThinkingContent {
+		this.close();
+		const block = startTextOrThinkingBlock(isThinking, this.#output, this.#stream);
+		this.#block = block;
+		this.#contentIndex = this.#output.content.length - 1;
+		return block;
+	}
+
+	/** Keeps the newest non-empty signature a block's parts carried; an unsigned block gets no signature key. */
+	#sign(block: TextContent | ThinkingContent, signature: string | undefined): void {
+		if (!signature) return;
+		if (block.type === "thinking")
+			block.thinkingSignature = retainThoughtSignature(block.thinkingSignature, signature);
+		else block.textSignature = retainThoughtSignature(block.textSignature, signature);
+	}
+}
+
 export function startTextOrThinkingBlock(
 	isThinking: true,
 	output: AssistantMessage,
@@ -521,32 +665,16 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	model: Model<T>;
 	options: { signal?: AbortSignal } | undefined;
 
-	retainTextSignature?: boolean;
 	onFirstEvent?: () => void;
 	onFirstToken?: () => void;
 }): Promise<void> {
-	const { googleStream, output, stream, model, options, retainTextSignature, onFirstEvent, onFirstToken } = args;
+	const { googleStream, output, stream, model, options, onFirstEvent, onFirstToken } = args;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
-	let currentBlock: TextContent | ThinkingContent | null = null;
-
-	let thinkingStripper: ThinkingFenceStripper | null = null;
+	const textBlocks = new GoogleTextBlocks(output, stream);
 	let firstEventSeen = false;
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
-
-	const flushCurrent = () => {
-		if (!currentBlock) return;
-		if (currentBlock.type === "thinking" && thinkingStripper) {
-			const tail = thinkingStripper.flush();
-			if (tail) {
-				currentBlock.thinking += tail;
-				stream.push({ type: "thinking_delta", contentIndex: blockIndex(), delta: tail, partial: output });
-			}
-		}
-		thinkingStripper = null;
-		pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-	};
 
 	for await (const chunk of googleStream) {
 		if (!firstEventSeen) {
@@ -559,7 +687,11 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 				chunk.error.message && chunk.error.status
 					? `${chunk.error.message} (${chunk.error.status})`
 					: chunk.error.message || chunk.error.status || "unknown error";
-			const message = `Google API stream error: ${detail}`;
+			const residue =
+				Array.isArray(chunk.error.details) && chunk.error.details.length > 0
+					? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
+					: "";
+			const message = `Google API stream error: ${detail}${residue}`;
 			throw typeof chunk.error.code === "number" && chunk.error.code >= 400
 				? new AIError.GoogleApiError(message, chunk.error.code)
 				: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "output" });
@@ -574,70 +706,14 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		const candidate = chunk.candidates?.[0];
 		if (candidate?.content?.parts) {
 			for (const part of candidate.content.parts) {
-				if (part.text !== undefined && part.text !== "") {
-					if (!firstTokenSeen) {
-						firstTokenSeen = true;
-						onFirstToken?.();
-					}
-					const isThinking = isThinkingPart(part);
-					if (
-						!currentBlock ||
-						(isThinking && currentBlock.type !== "thinking") ||
-						(!isThinking && currentBlock.type !== "text")
-					) {
-						flushCurrent();
-						currentBlock = startTextOrThinkingBlock(isThinking, output, stream);
-					}
-					if (currentBlock.type === "thinking") {
-						thinkingStripper ??= new ThinkingFenceStripper();
-						const cleaned = thinkingStripper.push(part.text);
-						currentBlock.thinking += cleaned;
-						currentBlock.thinkingSignature = retainThoughtSignature(
-							currentBlock.thinkingSignature,
-							part.thoughtSignature,
-						);
-						if (cleaned) {
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: blockIndex(),
-								delta: cleaned,
-								partial: output,
-							});
-						}
-					} else {
-						currentBlock.text += part.text;
-						if (retainTextSignature) {
-							currentBlock.textSignature = retainThoughtSignature(
-								currentBlock.textSignature,
-								part.thoughtSignature,
-							);
-						}
-						stream.push({
-							type: "text_delta",
-							contentIndex: blockIndex(),
-							delta: part.text,
-							partial: output,
-						});
-					}
-				} else if (part.text === "" && part.thoughtSignature && currentBlock && !part.functionCall) {
-					if (currentBlock.type === "thinking") {
-						currentBlock.thinkingSignature = retainThoughtSignature(
-							currentBlock.thinkingSignature,
-							part.thoughtSignature,
-						);
-					} else if (retainTextSignature) {
-						currentBlock.textSignature = retainThoughtSignature(
-							currentBlock.textSignature,
-							part.thoughtSignature,
-						);
-					}
+				if (part.text && !firstTokenSeen) {
+					firstTokenSeen = true;
+					onFirstToken?.();
 				}
+				textBlocks.push(part);
 
 				if (part.functionCall) {
-					if (currentBlock) {
-						flushCurrent();
-						currentBlock = null;
-					}
+					textBlocks.close();
 
 					const providedId = part.functionCall.id;
 					const needsNewId = !providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
@@ -677,7 +753,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 		}
 	}
 
-	flushCurrent();
+	textBlocks.close();
 
 	if (options?.signal?.aborted) {
 		throw new AIError.AbortError();
@@ -809,10 +885,9 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 	model: Model<T>;
 	options: GoogleSharedStreamOptions | undefined;
 	api: T;
-	retainTextSignature?: boolean;
 	prepare: () => GoogleGenAIRequestPlan | Promise<GoogleGenAIRequestPlan>;
 }): AssistantMessageEventStream {
-	const { model, options, api, retainTextSignature, prepare } = args;
+	const { model, options, api, prepare } = args;
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
@@ -866,12 +941,14 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 					: responseAbortController.signal;
 				const watchdog = armPreResponseTimeout(responseSignal, firstEventTimeoutMs);
 				try {
-					const response = await fetchImpl(requestUrl, {
+					const init: RequestInit & { timeout: false } = {
 						method: "POST",
 						headers: { ...plan.headers, "Content-Type": "application/json", Accept: "text/event-stream" },
 						body: bodyJson,
 						signal: watchdog.signal,
-					});
+						timeout: false,
+					};
+					const response = await fetchImpl(requestUrl, init);
 					if (!response.ok) {
 						const errorText = await response.text().catch(() => "");
 						throw new AIError.GoogleApiError(
@@ -942,7 +1019,6 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 						stream,
 						model,
 						options,
-						retainTextSignature,
 						onFirstEvent: activeStream.clearFirstEventTimeout,
 						onFirstToken: () => {
 							firstTokenTime = performance.now();

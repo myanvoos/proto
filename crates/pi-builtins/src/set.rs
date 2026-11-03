@@ -64,11 +64,9 @@ pub(crate) struct SetOption {
 	disable: Option<Vec<String>>,
 }
 
-
 #[derive(Parser)]
 #[clap(disable_help_flag = true)]
 pub(crate) struct SetCommand {
-
 	#[clap(long, action = clap::ArgAction::HelpLong)]
 	help: Option<bool>,
 
@@ -126,21 +124,10 @@ impl builtins::Command for SetCommand {
 		true
 	}
 
-
-
-
-
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
 		I: IntoIterator<Item = String>,
 	{
-
-
-
-
-
-
-
 		let mut updated_args = vec![];
 		let mut now_parsing_positional_args = false;
 		let mut next_arg_is_option_value = false;
@@ -383,8 +370,6 @@ impl builtins::Command for SetCommand {
 
 		saw_option = saw_option || !self.positional_args.is_empty();
 
-
-
 		if !saw_option {
 			display_all(&context)?;
 		}
@@ -396,20 +381,14 @@ impl builtins::Command for SetCommand {
 fn display_all(
 	context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 ) -> Result<(), brush_core::Error> {
-
 	for (name, var) in context.shell.env().iter().sorted_by_key(|v| v.0) {
 		if !var.is_enumerable() {
 			continue;
 		}
 
-
-
-
-
 		if matches!(var.value(), variables::ShellValue::Dynamic { .. }) {
 			continue;
 		}
-
 
 		if !var.value().is_set() {
 			continue;
@@ -422,7 +401,6 @@ fn display_all(
 				.format(variables::FormatStyle::Basic, context.shell)?,
 		)?;
 	}
-
 
 	if !context.shell.options().posix_mode {
 		for (_name, registration) in context.shell.funcs().iter().sorted_by_key(|v| v.0) {

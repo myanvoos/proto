@@ -209,7 +209,7 @@ export class AgentLifecycleManager {
 		const session = ref.session;
 		if (!session) return;
 		// Parking disposes the session. A live monitor must retain its owner and wake sink.
-		if (session.hasActiveMonitors()) {
+		if (session.hasActiveMonitors() || session.ircWakesPending) {
 			this.#armTimer(id, adopted);
 			return;
 		}
@@ -241,9 +241,17 @@ export class AgentLifecycleManager {
 				const live = this.#registry.get(id);
 				if (live !== ref || !live.session || live.session !== session) return;
 				if (this.#adopted.get(id)?.ref !== ref) return;
-				if (session.hasActiveMonitors()) {
+				if (session.hasActiveMonitors() || session.ircWakesPending) {
 					this.#armTimer(id, adopted);
 					return;
+				}
+
+				try {
+					const directCost = session.sessionManager.getUsageStatistics().cost;
+					if (Number.isFinite(directCost) && directCost >= 0)
+						this.#registry.setHistory(id, { directCost }, ref.sessionFile ?? undefined);
+				} catch (error) {
+					logger.debug("Agent park cost snapshot failed", { id, error: String(error) });
 				}
 
 				park.detached = true;
@@ -289,9 +297,9 @@ export class AgentLifecycleManager {
 				`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
 			);
 		}
-		if (ref.session) return ref.session;
 		const inflight = this.#revivals.get(id);
 		if (inflight?.ref === ref) return inflight.promise;
+		if (ref.session) return ref.session;
 		const revival = this.#resolveAndRevive(id, ref);
 		const pending: RevivingAgent = { ref, promise: revival };
 		this.#revivals.set(id, pending);

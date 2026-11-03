@@ -168,3 +168,24 @@ test("a usable PI_CODING_AGENT_DIR stays silent", async () => {
 	expect(result.stderr).toBe("");
 	expect(result.stdout.trim()).toBe(path.join(root, "fresh-agent"));
 });
+
+test("config list --scope shows only that stored layer, not defaults or overlays", async () => {
+	const globalConfig = path.join(agentDir, "config.yml");
+	const overlay = path.join(root, "scope-overlay.yml");
+	await Bun.write(globalConfig, "compaction:\n  enabled: false\n");
+	await Bun.write(overlay, "compaction:\n  enabled: true\n");
+	const result = await runCli(["config", "list", "--scope", "global", "--json", "--config", overlay]);
+	expect(result.exitCode).toBe(0);
+	const values = JSON.parse(result.stdout);
+	expect(values["compaction.enabled"]?.value).toBe(false);
+	expect(values["retry.enabled"]).toBeUndefined();
+	const refused = await runCli(["config", "get", "compaction.enabled", "--scope", "global"]);
+	expect(refused.exitCode).not.toBe(0);
+	expect(refused.stderr).toContain("--scope applies to config list only");
+});
+
+test("unsupported plugin dry-runs refuse mutations before creating a plugin runtime", async () => {
+	const result = await runCli(["plugin", "enable", "missing", "--dry-run"]);
+	expect(result.exitCode).not.toBe(0);
+	expect(result.stderr).toContain("Nothing was changed");
+});

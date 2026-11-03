@@ -3,9 +3,14 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { Api, Model } from "@oh-my-pi/pi-catalog/types";
 import {
+	extractExplicitThinkingSelector,
 	parseModelPattern,
+	resolveAgentAdvisorRolePattern,
+	resolveAgentModelSelection,
+	resolveAgentSpawnModelSelection,
 	resolveCliModel,
 	resolveConfiguredModelPatterns,
+	resolveModelOverrideWithAuthFallback,
 	resolveModelRoleValue,
 	resolveProviderModelReference,
 } from "./model-resolver";
@@ -250,4 +255,129 @@ test("built-in smol priorities match `*-mini` ids but not gemini or minimax ids"
 	expect(resolveModelRoleValue("@smol", [...large, chatModel("openai", "o4-mini")], { settings }).model?.id).toBe(
 		"o4-mini",
 	);
+});
+
+test("a child advisor resolves owner aliases before its own advisor role is assigned", () => {
+	const settings = Settings.isolated({ modelRoles: { advisor: "@slow", slow: "openai/gpt-5:high" } });
+	expect(resolveAgentAdvisorRolePattern("@advisor", settings)).toBe("openai/gpt-5:high");
+	expect(resolveAgentAdvisorRolePattern("@advisor,openai/gpt-4.1", settings)).toBe("openai/gpt-5:high,openai/gpt-4.1");
+});
+
+function selectorModel(provider: string, id: string): Model<Api> {
+	return buildModel({
+		id,
+		name: id,
+		provider,
+		api: "openai-completions",
+		baseUrl: "https://models.example/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 64000,
+		maxTokens: 8000,
+	});
+}
+
+test("bare CLI model ids honor configured provider order and recent exact matches", () => {
+	const models = [selectorModel("first", "shared-id"), selectorModel("preferred", "shared-id")];
+	const modelRegistry = { getAll: () => models, getAvailable: () => models };
+	expect(
+		resolveCliModel({
+			cliModel: "shared-id",
+			modelRegistry,
+			settings: Settings.isolated({ modelProviderOrder: ["preferred", "first"] }),
+		}).model?.provider,
+	).toBe("preferred");
+	expect(
+		resolveCliModel({
+			cliModel: "shared-id:high",
+			modelRegistry,
+			preferences: { usageOrder: ["preferred/shared-id"] },
+		}).model?.provider,
+	).toBe("preferred");
+});
+
+test("provider-qualified misses never fuzzy-route but retain a same-provider spelling hint", () => {
+	const models = [selectorModel("custom", "target-model"), selectorModel("gateway", "custom/target-old")];
+	expect(parseModelPattern("custom/target", models).model).toBeUndefined();
+	const resolved = resolveCliModel({
+		cliModel: "custom/target",
+		modelRegistry: { getAll: () => models, getAvailable: () => models },
+	});
+	expect(resolved.error).toContain("custom/target-model");
+	expect(resolved.model).toBeUndefined();
+	const cold = resolveCliModel({
+		cliModel: "pending/missing",
+		modelRegistry: {
+			getAll: () => [selectorModel("gateway", "pending/missing-later")],
+			getAvailable: () => [selectorModel("gateway", "pending/missing-later")],
+			hasProvider: id => id === "pending",
+		},
+	});
+	expect(cold.model).toBeUndefined();
+});
+
+test("provider ids differing only by case remain individually selectable while ambiguous casing is refused", () => {
+	const models = [selectorModel("vendor", "MiMo-V2"), selectorModel("vendor", "mimo-v2")];
+	expect(resolveProviderModelReference("vendor", "MiMo-V2", models)?.id).toBe("MiMo-V2");
+	expect(resolveProviderModelReference("vendor", "mimo-v2", models)?.id).toBe("mimo-v2");
+	expect(resolveProviderModelReference("vendor", "MIMO-V2", models)).toBeUndefined();
+});
+
+test("short selectors retain explicit effort without splitting literal max-suffixed ids", () => {
+	expect(extractExplicitThinkingSelector("x:high")).toBe(Effort.High);
+	expect(
+		extractExplicitThinkingSelector("x:max", undefined, {
+			isLiteralModelId: (provider, id) => provider === undefined && id === "x:max",
+		}),
+	).toBeUndefined();
+});
+
+test("per-call default selects the live parent while agent frontmatter expands the configured default", () => {
+	const options = {
+		settings: Settings.isolated({ modelRoles: { default: "vendor/configured" } }),
+		activeModelPattern: "vendor/live",
+	};
+	expect(resolveAgentSpawnModelSelection({ ...options, requestModel: "@default:high" }).patterns).toEqual([
+		"vendor/live:high",
+	]);
+	expect(resolveAgentModelSelection({ ...options, agentModel: "@default:high" }).patterns).toEqual([
+		"vendor/configured:high",
+	]);
+});
+
+test("auth fallback skips disabled models and tries remaining configured candidates before the parent", async () => {
+	const models = [
+		selectorModel("vendor", "no-key"),
+		selectorModel("vendor", "working"),
+		selectorModel("vendor", "parent"),
+	];
+	const modelRegistry = {
+		getAvailable: () => models,
+		getApiKey: async (model: Model<Api>) => (model.id === "no-key" ? undefined : "working-key"),
+	};
+	const result = await resolveModelOverrideWithAuthFallback(
+		["vendor/no-key", "vendor/working"],
+		"vendor/parent",
+		modelRegistry,
+		Settings.isolated(),
+	);
+	expect(result.model?.id).toBe("working");
+	expect(result.authFallbackUsed).toBe(false);
+	const restricted = await resolveModelOverrideWithAuthFallback(
+		["vendor/no-key", "vendor/working"],
+		"vendor/parent",
+		modelRegistry,
+		Settings.isolated({ enabledModels: ["vendor/no-key"] }),
+	);
+	expect(restricted.model?.id).toBe("no-key");
+	const perCall = await resolveModelOverrideWithAuthFallback(
+		["vendor/no-key", "vendor/working"],
+		undefined,
+		modelRegistry,
+		Settings.isolated(),
+		undefined,
+		{ perCallModel: true },
+	);
+	expect(perCall.model?.id).toBe("working");
 });

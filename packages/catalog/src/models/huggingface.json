@@ -17,7 +17,6 @@
 		},
 		"contextWindow": 64000,
 		"maxTokens": 32768,
-		"int": 13.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -30,6 +29,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -72,7 +72,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -96,7 +96,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 163840,
-		"maxTokens": 163840,
+		"maxTokens": 32768,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -109,6 +109,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -151,7 +152,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -176,12 +177,12 @@
 		},
 		"contextWindow": 64000,
 		"maxTokens": 8192,
-		"int": 8.5,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -224,7 +225,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -249,12 +250,12 @@
 		},
 		"contextWindow": 163840,
 		"maxTokens": 163840,
-		"int": 9.7,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -297,7 +298,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -322,7 +323,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 8192,
-		"int": 13.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -335,6 +335,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -377,7 +378,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -402,7 +403,6 @@
 		},
 		"contextWindow": 163840,
 		"maxTokens": 65536,
-		"int": 16,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -415,6 +415,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -457,7 +458,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -482,8 +483,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
-		"int": 34.3,
-		"tps": 219.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -497,6 +496,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -539,7 +539,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -577,6 +577,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -619,7 +620,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -658,6 +659,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -700,7 +702,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -725,8 +727,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 393216,
-		"int": 36,
-		"tps": 109.2,
+		"int": 23.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -740,6 +741,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -782,7 +784,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -820,6 +822,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -862,7 +865,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -888,8 +891,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
-		"int": 39.5,
-		"tps": 223.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -903,6 +904,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -945,7 +947,90 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+		"id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+		"name": "DeepSeek V4.1 Flash 1017",
+		"api": "openai-completions",
+		"provider": "huggingface",
+		"baseUrl": "https://router.huggingface.co/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.3,
+			"output": 1.2,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 384000,
+		"int": 32.5,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": true,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": true,
+			"allowsSyntheticReasoningContentForToolCalls": false,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -975,6 +1060,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1047,6 +1133,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1119,6 +1206,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1202,6 +1290,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1285,6 +1374,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1356,6 +1446,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1427,6 +1518,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1497,6 +1589,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1547,6 +1640,89 @@
 		},
 		"supportsComputerUse": false
 	},
+	"MiniMaxAI/MiniMax-M1-80k": {
+		"id": "MiniMaxAI/MiniMax-M1-80k",
+		"name": "MiniMax M1 80K",
+		"api": "openai-completions",
+		"provider": "huggingface",
+		"baseUrl": "https://router.huggingface.co/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.55,
+			"output": 2.2,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 80000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": true,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
 	"MiniMaxAI/MiniMax-M2": {
 		"id": "MiniMaxAI/MiniMax-M2",
 		"name": "MiniMax-M2",
@@ -1565,8 +1741,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 18.6,
-		"tps": 97.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1580,6 +1754,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1647,8 +1822,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 20.9,
-		"tps": 102.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1662,6 +1835,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1729,8 +1903,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.8,
-		"tps": 103.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1744,6 +1916,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1811,8 +1984,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.8,
-		"tps": 57.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1826,6 +1997,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1894,8 +2066,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 512000,
-		"int": 29.2,
-		"tps": 87.6,
+		"int": 18.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1911,6 +2082,99 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": true,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"MiniMaxAI/MiniMax-M3.1-Flash": {
+		"id": "MiniMaxAI/MiniMax-M3.1-Flash",
+		"name": "MiniMax-M3.1-Flash",
+		"api": "openai-completions",
+		"provider": "huggingface",
+		"baseUrl": "https://router.huggingface.co/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 0.6,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 512000,
+		"int": 28.9,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"requiresEffort": true,
+			"effortMap": {
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -1983,6 +2247,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2056,6 +2321,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2124,8 +2390,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 22,
-		"tps": 130.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2143,6 +2407,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2212,7 +2477,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 23.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2229,6 +2493,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2298,8 +2563,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 27,
-		"tps": 67.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2316,6 +2579,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2386,8 +2650,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 25.8,
-		"tps": 90.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2404,6 +2666,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2473,8 +2736,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
-		"int": 43.6,
-		"tps": 35.6,
+		"int": 17.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2493,6 +2755,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2566,8 +2829,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
-		"int": 11.6,
-		"tps": 161.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2580,6 +2841,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2647,8 +2909,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
-		"int": 9,
-		"tps": 187.4,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2661,6 +2921,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2728,11 +2989,11 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 8192,
-		"int": 6.7,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2813,6 +3074,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2880,12 +3142,11 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 16384,
-		"int": 12,
-		"tps": 60.5,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2952,7 +3213,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 131072,
+		"maxTokens": 81920,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2967,6 +3228,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3047,6 +3309,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3127,6 +3390,88 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "qwen",
+			"reasoningDisableMode": "qwen-enable-thinking-false",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"Qwen/Qwen3-8B": {
+		"id": "Qwen/Qwen3-8B",
+		"name": "Qwen3 8B",
+		"api": "openai-completions",
+		"provider": "huggingface",
+		"baseUrl": "https://router.huggingface.co/v1",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.07,
+			"output": 0.18,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 40960,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3194,12 +3539,11 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 9.6,
-		"tps": 84.9,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3266,13 +3610,12 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 66536,
-		"int": 11.9,
-		"tps": 53.7,
+		"maxTokens": 65536,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3340,12 +3683,11 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 9.2,
-		"tps": 80.1,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3412,13 +3754,12 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 66536,
-		"int": 9.6,
-		"tps": 169.9,
+		"maxTokens": 32768,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3487,9 +3828,9 @@
 		"contextWindow": 262144,
 		"maxTokens": 131072,
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3537,7 +3878,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"Qwen/Qwen3-VL-235B-A22B-Instruct": {
 		"id": "Qwen/Qwen3-VL-235B-A22B-Instruct",
@@ -3558,12 +3900,11 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
-		"int": 9.9,
-		"tps": 53,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3646,6 +3987,80 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": false,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "qwen",
+			"reasoningDisableMode": "qwen-enable-thinking-false",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": false,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"Qwen/Qwen3-VL-30B-A3B-Instruct": {
+		"id": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+		"name": "Qwen3 VL 30B A3B Instruct",
+		"api": "openai-completions",
+		"provider": "huggingface",
+		"baseUrl": "https://router.huggingface.co/v1",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.2,
+			"output": 0.7,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131072,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3714,8 +4129,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 15.6,
-		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3730,6 +4143,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3798,8 +4212,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 22.9,
-		"tps": 75.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3814,6 +4226,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3882,8 +4295,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 19.3,
-		"tps": 148.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3898,6 +4309,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -3966,8 +4378,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 32768,
-		"int": 18.4,
-		"tps": 87.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -3982,6 +4392,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4050,8 +4461,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 11.2,
-		"tps": 52.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4066,6 +4475,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4134,8 +4544,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 21.4,
-		"tps": 57.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4150,6 +4558,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4218,8 +4627,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"int": 18.2,
-		"tps": 128.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4234,6 +4641,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4301,8 +4709,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 131072,
-		"int": 39.9,
-		"tps": 39.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4317,6 +4723,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4385,8 +4792,7 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 32768,
-		"int": 33.7,
-		"tps": 46.1,
+		"int": 20.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4401,6 +4807,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4468,8 +4875,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 256000,
-		"int": 17,
-		"tps": 131.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4485,6 +4890,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4553,8 +4959,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 256000,
-		"int": 19.5,
-		"tps": 207,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4570,6 +4974,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4637,8 +5042,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 128000,
-		"int": 25.3,
-		"tps": 86.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4654,6 +5057,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4736,6 +5140,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4804,8 +5209,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 1048576,
-		"int": 25,
-		"tps": 169.4,
+		"int": 12.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4821,6 +5225,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4889,8 +5294,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 1048576,
-		"int": 25.7,
-		"tps": 178.8,
+		"int": 12.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -4906,6 +5310,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -4983,9 +5388,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5036,7 +5441,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"XiaomiMiMo/MiMo-V2.5": {
 		"id": "XiaomiMiMo/MiMo-V2.5",
@@ -5068,6 +5474,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5138,8 +5545,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"int": 26,
-		"tps": 35.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5152,6 +5557,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5235,9 +5641,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5285,7 +5691,8 @@
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"zai-org/GLM-4.5-Air": {
 		"id": "zai-org/GLM-4.5-Air",
@@ -5305,8 +5712,6 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 98304,
-		"int": 11.1,
-		"tps": 85.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5322,6 +5727,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5390,8 +5796,6 @@
 		},
 		"contextWindow": 65536,
 		"maxTokens": 16384,
-		"int": 6.7,
-		"tps": 51.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5407,6 +5811,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5474,8 +5879,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 14.9,
-		"tps": 36.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5491,6 +5894,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5574,6 +5978,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5641,8 +6046,6 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
-		"int": 22.2,
-		"tps": 68.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5658,6 +6061,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5725,8 +6129,6 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 128000,
-		"int": 14.9,
-		"tps": 65.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5742,6 +6144,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5809,8 +6212,6 @@
 		},
 		"contextWindow": 202752,
 		"maxTokens": 131072,
-		"int": 27.9,
-		"tps": 78.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5827,6 +6228,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5894,8 +6296,6 @@
 		},
 		"contextWindow": 202752,
 		"maxTokens": 131072,
-		"int": 26.1,
-		"tps": 43.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5912,6 +6312,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -5979,8 +6380,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 131072,
-		"int": 33.7,
-		"tps": 93.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -5996,6 +6395,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -6063,8 +6463,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"int": 44.8,
-		"tps": 74.1,
+		"int": 31.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6080,6 +6479,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -6148,8 +6548,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"int": 41.8,
-		"tps": 54.1,
+		"int": 27.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6165,6 +6564,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

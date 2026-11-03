@@ -419,7 +419,7 @@ test("Enter resolves the current slash text instead of accepting an unnavigated 
 	const { editor, submitted } = await editorWithOpenSlashList("/");
 	for (const char of "help") editor.handleInput(char);
 
-	// Submit before the debounced refresh replaces the list opened for `/`.
+	// Submit in the same input batch, before an async refresh could land.
 	editor.handleInput("\r");
 
 	expect(submitted).toEqual(["/help"]);
@@ -675,4 +675,25 @@ describe("Enter on a slash-command argument completion", () => {
 		editor.handleInput("\r");
 		expect(submitted).toEqual(["/mcp export"]);
 	});
+});
+
+test("Tab completes the live slash query in the same input batch", async () => {
+	const { editor, submitted } = await editorWithOpenSlashList("/");
+	for (const char of "mod") editor.handleInput(char);
+	editor.handleInput("\t");
+	expect(editor.getText()).toBe("/model ");
+	expect(submitted).toEqual([]);
+});
+
+test("Enter never expands a partial skill namespace into a runnable command", () => {
+	const editor = editorWith("/sk");
+	const submitted: string[] = [];
+	editor.onSubmit = value => {
+		submitted.push(value);
+	};
+	editor.setAutocompleteProvider(
+		new CombinedAutocompleteProvider([{ name: "skill:humanizer", description: "Rewrite prose" }], "/tmp"),
+	);
+	editor.handleInput("\r");
+	expect(submitted).toEqual(["/sk"]);
 });

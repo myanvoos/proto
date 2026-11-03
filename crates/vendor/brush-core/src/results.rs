@@ -1,5 +1,3 @@
-
-
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
@@ -7,34 +5,24 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{error, processes};
 
-
 #[derive(Default)]
 pub struct ExecutionResult {
-
 	pub next_control_flow: ExecutionControlFlow,
 
-	pub exit_code:         ExecutionExitCode,
+	pub exit_code: ExecutionExitCode,
 }
 
 impl ExecutionResult {
-
-
-
-
-
 	pub fn new(exit_code: u8) -> Self {
 		Self { exit_code: exit_code.into(), ..Self::default() }
 	}
 
-
 	pub fn stopped() -> Self {
-
 		const SIGTSTP: std::os::raw::c_int = 20;
 
 		#[expect(clippy::cast_possible_truncation)]
 		Self::new(128 + SIGTSTP as u8)
 	}
-
 
 	pub const fn success() -> Self {
 		Self {
@@ -43,7 +31,6 @@ impl ExecutionResult {
 		}
 	}
 
-
 	pub const fn general_error() -> Self {
 		Self {
 			next_control_flow: ExecutionControlFlow::Normal,
@@ -51,29 +38,21 @@ impl ExecutionResult {
 		}
 	}
 
-
 	pub const fn is_success(&self) -> bool {
 		self.exit_code.is_success()
 	}
-
-
 
 	pub const fn is_normal_flow(&self) -> bool {
 		matches!(self.next_control_flow, ExecutionControlFlow::Normal)
 	}
 
-
 	pub const fn is_break(&self) -> bool {
 		matches!(self.next_control_flow, ExecutionControlFlow::BreakLoop { .. })
 	}
 
-
 	pub const fn is_continue(&self) -> bool {
 		matches!(self.next_control_flow, ExecutionControlFlow::ContinueLoop { .. })
 	}
-
-
-
 
 	pub const fn is_return_or_exit(&self) -> bool {
 		matches!(
@@ -117,10 +96,8 @@ impl From<std::process::Output> for ExecutionResult {
 	}
 }
 
-
 #[derive(Clone, Copy, Default)]
 pub enum ExecutionExitCode {
-
 	#[default]
 	Success,
 
@@ -142,7 +119,6 @@ pub enum ExecutionExitCode {
 }
 
 impl ExecutionExitCode {
-
 	pub const fn is_success(&self) -> bool {
 		matches!(self, Self::Success)
 	}
@@ -186,22 +162,16 @@ impl From<&ExecutionExitCode> for u8 {
 	}
 }
 
-
 #[derive(Clone, Copy, Default)]
 pub enum ExecutionControlFlow {
-
 	#[default]
 	Normal,
 
 	BreakLoop {
-
-
 		levels: usize,
 	},
 
 	ContinueLoop {
-
-
 		levels: usize,
 	},
 
@@ -211,9 +181,6 @@ pub enum ExecutionControlFlow {
 }
 
 impl ExecutionControlFlow {
-
-
-
 	#[must_use]
 	pub const fn try_decrement_loop_levels(&self) -> Self {
 		match self {
@@ -225,11 +192,7 @@ impl ExecutionControlFlow {
 	}
 }
 
-
-
-
 pub enum ExecutionSpawnResult {
-
 	Completed(ExecutionResult),
 
 	StartedProcess(processes::ChildProcess),
@@ -244,31 +207,23 @@ impl From<ExecutionResult> for ExecutionSpawnResult {
 }
 
 impl ExecutionSpawnResult {
-
 	pub async fn wait(self) -> Result<ExecutionWaitResult, error::Error> {
 		self.wait_with_cancel(None).await
 	}
-
-
-
 
 	pub async fn wait_with_cancel(
 		self,
 		cancel_token: Option<CancellationToken>,
 	) -> Result<ExecutionWaitResult, error::Error> {
 		let result = match self {
-			Self::StartedProcess(mut child) => {
-
-
-				match child.wait(cancel_token).await? {
-					processes::ProcessWaitResult::Completed(output) => {
-						ExecutionWaitResult::Completed(ExecutionResult::from(output))
-					},
-					processes::ProcessWaitResult::Stopped => ExecutionWaitResult::Stopped(child),
-					processes::ProcessWaitResult::Cancelled => {
-						ExecutionWaitResult::Completed(ExecutionResult::new(130))
-					},
-				}
+			Self::StartedProcess(mut child) => match child.wait(cancel_token).await? {
+				processes::ProcessWaitResult::Completed(output) => {
+					ExecutionWaitResult::Completed(ExecutionResult::from(output))
+				},
+				processes::ProcessWaitResult::Stopped => ExecutionWaitResult::Stopped(child),
+				processes::ProcessWaitResult::Cancelled => {
+					ExecutionWaitResult::Completed(ExecutionResult::new(130))
+				},
 			},
 			Self::Completed(result) => ExecutionWaitResult::Completed(result),
 			Self::StartedTask(join_handle) => {
@@ -279,12 +234,12 @@ impl ExecutionSpawnResult {
 
 		Ok(result)
 	}
+
 	pub(crate) async fn poll(self) -> Result<ExecutionWaitResult, error::Error> {
 		let result = match self {
 			Self::StartedProcess(child) => ExecutionWaitResult::Stopped(child),
 			Self::Completed(result) => ExecutionWaitResult::Completed(result),
 			Self::StartedTask(join_handle) => {
-
 				let result = join_handle.await?;
 				ExecutionWaitResult::Completed(result?)
 			},
@@ -294,9 +249,7 @@ impl ExecutionSpawnResult {
 	}
 }
 
-
 pub enum ExecutionWaitResult {
-
 	Completed(ExecutionResult),
 
 	Stopped(processes::ChildProcess),

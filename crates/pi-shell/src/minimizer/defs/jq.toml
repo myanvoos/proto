@@ -2,9 +2,11 @@
 
 
 [filters.jq]
-description = "Compact jq output — truncate large JSON results"
+description = "Compact jq output — truncate large JSON results (exit 0 only)"
 match_command = "^jq$"
 strip_ansi = true
+only_on_exit = [0]
+keep_whole_up_to_bytes = 16384
 strip_lines_matching = [
   "^\\s*$",
 ]

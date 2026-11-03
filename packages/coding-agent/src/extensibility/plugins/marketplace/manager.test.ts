@@ -239,3 +239,31 @@ test("install validation checks the catalog entry without caching or linking", a
 	await expect(manager.validateInstallPlugin("gone", "Market")).rejects.toThrow(/source directory does not exist/);
 	await expect(manager.validateInstallPlugin("plug", "Market")).rejects.toThrow(/not found in marketplace/);
 });
+
+test("upgrade previews use local manifest versions and reject unsafe cache versions without reinstalling", async () => {
+	const { manager, lockPath } = await setUpCaseMarketplace([{ name: "preview", packageName: "preview" }]);
+	await manager.installPlugin("preview", "Market");
+	const manifest = path.join(path.dirname(path.dirname(lockPath)), "marketplace", "preview", "plugin.json");
+	await Bun.write(manifest, JSON.stringify({ version: "2.0.0" }));
+	expect(await manager.previewUpgradePlugin("preview@Market")).toEqual([
+		{ scope: "user", from: "1.0.0", to: "2.0.0", change: "upgrade" },
+	]);
+	expect((await manager.listInstalledPlugins())[0]?.entries[0]?.version).toBe("1.0.0");
+	await Bun.write(manifest, JSON.stringify({ version: "2/0" }));
+	await expect(manager.previewUpgradePlugin("preview@Market")).rejects.toThrow("Invalid version for cache");
+	expect(await manager.previewUpgradeAllPlugins()).toEqual([]);
+});
+
+test("unversioned local sources do not replace tagged installs with the zero-version fallback", async () => {
+	const { manager, lockPath } = await setUpCaseMarketplace([{ name: "unversioned", packageName: "unversioned" }]);
+	const marketplace = path.join(path.dirname(path.dirname(lockPath)), "marketplace");
+	const catalog = await Bun.file(path.join(marketplace, "marketplace.json")).json();
+	catalog.plugins[0].version = "nightly";
+	await Bun.write(path.join(marketplace, "marketplace.json"), JSON.stringify(catalog));
+	await manager.installPlugin("unversioned", "Market");
+	delete catalog.plugins[0].version;
+	await Bun.write(path.join(marketplace, "marketplace.json"), JSON.stringify(catalog));
+	await Bun.write(path.join(marketplace, "unversioned", "package.json"), JSON.stringify({ name: "unversioned" }));
+	expect(await manager.checkForUpdates()).toEqual([]);
+	expect(await manager.listCatalogVersions()).toMatchObject([{ from: "nightly", to: "0.0.0", declared: false }]);
+});

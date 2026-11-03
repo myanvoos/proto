@@ -3,7 +3,7 @@ import { Markdown } from "@oh-my-pi/pi-tui";
 import { setTerminalHyperlinks, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Settings } from "../config/settings";
 import { getMarkdownTheme, initThemeSync } from "../modes/theme/theme";
-import { fileUriForTerminal, safeHyperlinkUri, urlHyperlinkAlways } from "./hyperlink";
+import { fileUriForTerminal, resolveLocalHyperlink, safeHyperlinkUri, urlHyperlinkAlways } from "./hyperlink";
 
 await Settings.init();
 initThemeSync();
@@ -43,4 +43,17 @@ test("file hyperlink targets keep the location out of file: URIs", () => {
 	expect(fileUriForTerminal("/src/a.ts", { line: 3 }, "vscode")).toBe("vscode://file/src/a.ts:3");
 	expect(fileUriForTerminal("/src/a.ts", { line: 3, col: 4 }, "kitty")).toBe("file:///src/a.ts");
 	expect(fileUriForTerminal("/src/a.ts", { line: 3, col: 4 }, "orca")).toBe("file:///src/a.ts#L3C4");
+});
+
+test("session-local Markdown links resolve to terminal file targets instead of disappearing", () => {
+	const options = { getArtifactsDir: () => "/tmp/proto-link-fixture" };
+	expect(resolveLocalHyperlink("local://note.md:7-9", options)).toBe(
+		fileUriForTerminal("/tmp/proto-link-fixture/local/note.md", { line: 7 }, TERMINAL.id),
+	);
+	expect(resolveLocalHyperlink("local://note.md", undefined)).toBeNull();
+	expect(resolveLocalHyperlink("local://../outside.md", options)).toBeNull();
+});
+
+test("a malformed Unicode file path loses its hyperlink rather than crashing transcript rendering", () => {
+	expect(fileUriForTerminal("/src/\ud800.ts", undefined, "vscode")).toBeUndefined();
 });

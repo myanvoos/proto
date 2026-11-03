@@ -232,12 +232,12 @@ describe("DeepSeek generated pricing policy", () => {
 		}
 	});
 
-	it("switches Pro to Flash prices exactly at the dated cutoff", () => {
+	it("keeps Pro on its own tariff after the historical Flash promotion cutoff", () => {
 		const model = generated(spec("deepseek-v4-pro"));
 		const cutoff = Date.parse("2026-09-14T04:00:00Z");
 		expect(calculateCost(model, usage(), cutoff - 1).total).toBeCloseTo(5.324, 12);
-		expect(calculateCost(model, usage(), cutoff).total).toBeCloseTo(0.753, 12);
-		expect(calculateCost(model, usage(), Date.parse("2026-09-14T06:00:00Z")).total).toBeCloseTo(1.506, 12);
+		expect(calculateCost(model, usage(), cutoff).total).toBeCloseTo(2.662, 12);
+		expect(calculateCost(model, usage(), Date.parse("2026-09-14T06:00:00Z")).total).toBeCloseTo(5.324, 12);
 	});
 });
 
@@ -281,7 +281,7 @@ describe("scheduled pricing through discovery and cache", () => {
 });
 
 describe("applyPricingPeerFallback", () => {
-	it("prices MiniMax Token Plan rows at pay-as-you-go peers, M3.1 Flash Preview at the M3 rate", () => {
+	it("prices MiniMax Token Plan peers without borrowing M3 rates for the distinct Flash model", () => {
 		const m3Cost = { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 };
 		const m27Cost = { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 };
 		const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -299,9 +299,9 @@ describe("applyPricingPeerFallback", () => {
 			row("MiniMax-M3.1-Flash-Preview", "minimax-code-cn"),
 		]);
 
-		expect(result[2]?.cost).toEqual(m3Cost);
+		expect(result[2]?.cost).toEqual(zeroCost);
 		expect(result[3]?.cost).toEqual(m27Cost);
 		expect(result[4]?.cost).toEqual(zeroCost);
-		expect(result[5]?.cost).toEqual(m3Cost);
+		expect(result[5]?.cost).toEqual(zeroCost);
 	});
 });

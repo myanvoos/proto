@@ -46,7 +46,11 @@ export class AdvisorLoopGuard {
 	/** Records one completed advisor turn; injects a corrective or aborts when calls repeat. */
 	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): void {
 		if (context?.message.role !== "assistant") return;
-		const detection = this.#activeGuard()?.recordTurn({ message: context.message, toolResults: context.toolResults });
+		const detection = this.#activeGuard()?.recordTurn({
+			message: context.message,
+			toolResults: context.toolResults,
+			injectedContext: (context.additionalMessages?.length ?? 0) > 0,
+		});
 		if (!detection) return;
 		if (this.#redirectIssued || detection.severity === "stop") {
 			logger.warn("advisor kept repeating a tool call; aborting update", {

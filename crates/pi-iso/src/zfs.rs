@@ -60,14 +60,33 @@ mod imp {
 		fs, io,
 		path::{Path, PathBuf},
 		process::{Command, Output},
+		sync::atomic::{AtomicBool, Ordering},
 	};
 
 	use crate::{IsoError, IsoResult, ProbeResult};
 
 	const SNAP_PREFIX: &str = "pi-iso-";
+	/// `statfs` magic of a ZFS dataset on Linux.
+	#[cfg(target_os = "linux")]
+	const ZFS_SUPER_MAGIC: u32 = 0x2fc1_2fc2;
+
+	/// Whether the zfs CLI runs and can list datasets is a host fact, so it is
+	/// probed once per process.
+	static CLI_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+	fn cli_available() -> bool {
+		if CLI_AVAILABLE.load(Ordering::Relaxed) {
+			return true;
+		}
+		let available = command_available(["version"]) || command_available(["list", "-H"]);
+		if available {
+			CLI_AVAILABLE.store(true, Ordering::Relaxed);
+		}
+		available
+	}
 
 	pub fn probe() -> ProbeResult {
-		if command_available(["version"]) || command_available(["list", "-H"]) {
+		if cli_available() {
 			ProbeResult::available()
 		} else {
 			ProbeResult::unavailable("zfs CLI is unavailable or cannot list datasets")
@@ -75,11 +94,24 @@ mod imp {
 	}
 
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
-		ensure_zfs_available()?;
+		if !cli_available() {
+			return Err(IsoError::unavailable("zfs CLI is unavailable or cannot list datasets"));
+		}
 
 		let lower = canonical_existing_dir(lower)?;
 		let merged = absolute_path(merged);
-		let source = dataset_for_mountpoint(&lower)?.ok_or_else(|| {
+		// Linux `statfs` tells a source off ZFS apart without listing every
+		// dataset to find no match.
+		#[cfg(target_os = "linux")]
+		let on_zfs = crate::statfs_magic(&lower) == Some(ZFS_SUPER_MAGIC);
+		#[cfg(not(target_os = "linux"))]
+		let on_zfs = true;
+		let source = if on_zfs {
+			dataset_for_mountpoint(&lower)?
+		} else {
+			None
+		}
+		.ok_or_else(|| {
 			IsoError::unavailable(format!(
 				"{} is not exactly a mounted ZFS dataset mountpoint",
 				lower.display()
@@ -139,14 +171,6 @@ mod imp {
 					merged.display()
 				))),
 			},
-		}
-	}
-
-	fn ensure_zfs_available() -> IsoResult<()> {
-		if command_available(["version"]) || command_available(["list", "-H"]) {
-			Ok(())
-		} else {
-			Err(IsoError::unavailable("zfs CLI is unavailable or cannot list datasets"))
 		}
 	}
 

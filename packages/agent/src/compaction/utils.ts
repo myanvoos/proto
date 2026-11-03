@@ -32,11 +32,17 @@ export function createFileOps(): FileOperations {
 	};
 }
 
+/** Error text for a summarization call that hit its output limit (`stopReason: "length"`): partial text is never used. */
+export function incompleteOutputError(prefix: string): string {
+	return `${prefix}: model output ended incomplete (stopReason: length)`;
+}
+
 const RANGE_CHUNK_SRC = String.raw`L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?`;
 const RANGE_LIST_SRC = `${RANGE_CHUNK_SRC}(?:,${RANGE_CHUNK_SRC})*`;
 const READ_SELECTOR_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|raw|conflicts)$`, "i");
 const READ_RANGE_ONLY_RE = new RegExp(`^${RANGE_LIST_SRC}$`, "i");
 const READ_RAW_ONLY_RE = /^raw$/i;
+const READ_ALTERNATE_FORM_RE = /^(?:raw|conflicts)$/i;
 
 export function splitReadSelector(path: string): { path: string; sel?: string } {
 	const colon = path.lastIndexOf(":");
@@ -63,6 +69,14 @@ export function splitReadSelector(path: string): { path: string; sel?: string } 
 
 export function stripReadSelector(path: string): string {
 	return splitReadSelector(path).path;
+}
+
+/**
+ * Whether a selector from {@link splitReadSelector} shows the file in a form other
+ * than its plain lines: verbatim `raw` bytes or the merge `conflicts` view.
+ */
+export function isAlternateFormReadSelector(sel: string): boolean {
+	return sel.split(":").some(part => READ_ALTERNATE_FORM_RE.test(part));
 }
 
 const URL_SCHEME_RE = /[a-z][a-z0-9+.-]*:\/\//i;

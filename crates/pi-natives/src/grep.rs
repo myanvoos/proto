@@ -138,6 +138,8 @@ pub struct Match {
 	pub context_after: Option<Vec<ContextLine>>,
 
 	pub truncated: Option<bool>,
+
+	pub column: Option<u32>,
 }
 
 #[napi(object)]
@@ -165,6 +167,8 @@ pub struct GrepMatch {
 	pub context_after: Option<Vec<ContextLine>>,
 
 	pub truncated: Option<bool>,
+
+	pub column: Option<u32>,
 
 	pub match_count: Option<u32>,
 }
@@ -205,7 +209,8 @@ impl TypeFilter {
 	}
 }
 
-struct MatchCollector {
+struct MatchCollector<'a, M> {
+	matcher:         &'a M,
 	matches:         Vec<CollectedMatch>,
 	match_count:     u64,
 	collected_count: u64,
@@ -225,6 +230,7 @@ struct CollectedMatch {
 	context_before: SmallVec<[ContextLine; 8]>,
 	context_after:  SmallVec<[ContextLine; 8]>,
 	truncated:      bool,
+	column:         Option<u32>,
 }
 
 struct SearchResultInternal {
@@ -261,14 +267,16 @@ impl SearchWorker {
 	}
 }
 
-impl MatchCollector {
+impl<'a, M: Matcher> MatchCollector<'a, M> {
 	fn new(
+		matcher: &'a M,
 		max_count: Option<u64>,
 		offset: u64,
 		max_columns: Option<usize>,
 		collect_matches: bool,
 	) -> Self {
 		Self {
+			matcher,
 			matches: Vec::new(),
 			match_count: 0,
 			collected_count: 0,
@@ -297,19 +305,110 @@ fn truncate_line(line: String, max_columns: Option<usize>) -> (String, bool) {
 	(format!("{prefix}{ellipsis}"), true)
 }
 
-fn bytes_to_trimmed_string(bytes: &[u8]) -> String {
+fn window_matched_line(
+	line: &str,
+	max: usize,
+	first_match: Option<(usize, usize)>,
+) -> (String, Option<u32>) {
+	let head_end = line.floor_char_boundary(max.saturating_sub(3));
+	let Some((start, end)) = first_match else {
+		return (format!("{}...", &line[..head_end]), None);
+	};
+	let start = line.floor_char_boundary(start);
+	let column = Some(crate::utils::clamp_u32(line[..start].chars().count() as u64 + 1));
+	let body = max.saturating_sub(6);
+	if end <= head_end || body == 0 {
+		return (format!("{}...", &line[..head_end]), column);
+	}
+	// Centre the match; a match wider than the window shows from its start.
+	let lead = body.saturating_sub(end - start) / 2;
+	let from = start.saturating_sub(lead);
+	let window = if from + body >= line.len() {
+		// The window reaches the end of the line: only its start is cut.
+		let from = line.ceil_char_boundary(line.len() - max.saturating_sub(3));
+		format!("...{}", &line[from..])
+	} else {
+		let from = line.ceil_char_boundary(from);
+		let to = line.floor_char_boundary(from + body);
+		if from == 0 {
+			format!("{}...", &line[..to])
+		} else {
+			format!("...{}...", &line[from..to])
+		}
+	};
+	(window, column)
+}
+
+/// Byte range in `line` (the trimmed, decoded text of `mat`) of the first match
+/// the searcher reported in `mat`. Like ripgrep's printer
+/// (`find_iter_at_in_context`), it re-runs the matcher over the searcher's
+/// buffer from the block's start, so look-behind sees the preceding text; a
+/// single-line block drops its line terminator. A multi-line block keeps the
+/// rest of the buffer for look-ahead: the printer caps that at 128 bytes, which
+/// loses a match whose look-ahead reads further, and this one leftmost search
+/// stops at the block's match anyway.
+fn first_match_in_line<M: Matcher>(
+	searcher: &Searcher,
+	matcher: &M,
+	mat: &SinkMatch<'_>,
+	line: &str,
+	lossy: bool,
+) -> Option<(usize, usize)> {
+	let buffer = mat.buffer();
+	let range = mat.bytes_range_in_buffer();
+	let terminator = searcher.line_terminator();
+	let terminated = terminator.is_suffix(&buffer[range.clone()]);
+	let end = if searcher.multi_line_with_matcher(matcher) {
+		buffer.len()
+	} else {
+		let mut end = range.end;
+		if terminated {
+			end -= 1;
+			if terminator.is_crlf() && end > range.start && buffer[end - 1] == b'\r' {
+				end -= 1;
+			}
+		}
+		end
+	};
+	let found = matcher
+		.find_at(&buffer[..end], range.start)
+		.ok()
+		.flatten()?;
+	// A match at `range.end` begins on the next line, except an empty one
+	// (`$`, `\z`) after an unterminated last line.
+	if found.start() > range.end || (found.start() == range.end && terminated) {
+		return None;
+	}
+	let block = mat.bytes();
+	let (start, stop) = (found.start() - range.start, found.end().min(range.end) - range.start);
+	// `line` is `block` decoded and trimmed: offsets carry over unless lossy
+	// decoding replaced invalid bytes, which changes the byte lengths before
+	// them. An offset in the trimmed trailing whitespace maps to the end of
+	// `line`, the last column it shows.
+	let to_line = |offset: usize| -> usize {
+		let offset = if lossy {
+			String::from_utf8_lossy(&block[..offset]).len()
+		} else {
+			offset
+		};
+		line.floor_char_boundary(offset.min(line.len()))
+	};
+	Some((to_line(start), to_line(stop)))
+}
+
+fn bytes_to_trimmed_str(bytes: &[u8]) -> Cow<'_, str> {
 	match std::str::from_utf8(bytes) {
-		Ok(text) => text.trim_end().to_string(),
-		Err(_) => String::from_utf8_lossy(bytes).trim_end().to_string(),
+		Ok(text) => Cow::Borrowed(text.trim_end()),
+		Err(_) => Cow::Owned(String::from_utf8_lossy(bytes).trim_end().to_owned()),
 	}
 }
 
-impl Sink for MatchCollector {
+impl<M: Matcher> Sink for MatchCollector<'_, M> {
 	type Error = io::Error;
 
 	fn matched(
 		&mut self,
-		_searcher: &Searcher,
+		searcher: &Searcher,
 		mat: &SinkMatch<'_>,
 	) -> std::result::Result<bool, Self::Error> {
 		self.match_count += 1;
@@ -324,18 +423,22 @@ impl Sink for MatchCollector {
 			return Ok(true);
 		}
 
-		if self
-			.max_count
-			.is_some_and(|max| self.collected_count >= max)
-		{
-			self.limit_reached = true;
-			self.context_before.clear();
-			return Ok(false);
-		}
-
 		if self.collect_matches {
-			let raw_line = bytes_to_trimmed_string(mat.bytes());
-			let (line, truncated) = truncate_line(raw_line, self.max_columns);
+			let raw_line = bytes_to_trimmed_str(mat.bytes());
+			let (line, truncated, column) = match self.max_columns {
+				Some(max) if raw_line.len() > max => {
+					let first_match = first_match_in_line(
+						searcher,
+						self.matcher,
+						mat,
+						&raw_line,
+						matches!(raw_line, Cow::Owned(_)),
+					);
+					let (line, column) = window_matched_line(&raw_line, max, first_match);
+					(line, true, column)
+				},
+				_ => (raw_line.into_owned(), false, None),
+			};
 			let line_number = mat.line_number().unwrap_or(0);
 
 			self.matches.push(CollectedMatch {
@@ -344,6 +447,7 @@ impl Sink for MatchCollector {
 				context_before: std::mem::take(&mut self.context_before),
 				context_after: SmallVec::new(),
 				truncated,
+				column,
 			});
 		} else {
 			self.context_before.clear();
@@ -369,8 +473,8 @@ impl Sink for MatchCollector {
 			return Ok(true);
 		}
 
-		let raw_line = bytes_to_trimmed_string(ctx.bytes());
-		let (line, _) = truncate_line(raw_line, self.max_columns);
+		let raw_line = bytes_to_trimmed_str(ctx.bytes());
+		let (line, _) = truncate_line(raw_line.into_owned(), self.max_columns);
 		let line_number = ctx.line_number().unwrap_or(0);
 
 		match ctx.kind() {
@@ -549,6 +653,21 @@ impl Matcher for CompiledMatcher {
 	}
 }
 
+struct CancellableReader<'a> {
+	file: File,
+	ct:   &'a task::CancelToken,
+}
+
+impl io::Read for CancellableReader<'_> {
+	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+		self
+			.ct
+			.heartbeat()
+			.map_err(|err| io::Error::other(err.reason))?;
+		self.file.read(buf)
+	}
+}
+
 fn run_search<M: Matcher + Sync>(
 	matcher: &M,
 	content: &[u8],
@@ -572,6 +691,7 @@ fn run_search_slice<M: Matcher + Sync>(
 		});
 	}
 	let mut collector = MatchCollector::new(
+		matcher,
 		params.max_count,
 		params.offset,
 		params.max_columns.map(|v| v as usize),
@@ -634,6 +754,7 @@ fn build_searcher(
 		.multi_line(multiline)
 		.before_context(context_before as usize)
 		.after_context(context_after as usize)
+		.heap_limit(Some(64 * 1024 * 1024))
 		.build()
 }
 
@@ -654,10 +775,6 @@ fn read_owned_prefix(
 	buffer.reserve(usize::try_from(capacity).expect("bounded read capacity fits usize"));
 	file.by_ref().take(limit).read_to_end(buffer)?;
 	Ok(())
-}
-
-fn read_file_bytes(held: &HeldFiles, path: &Path, buffer: &mut Vec<u8>) -> io::Result<ReadFile> {
-	read_file_bytes_with_size(held, path, None, buffer)
 }
 
 fn read_file_bytes_with_size(
@@ -715,6 +832,7 @@ fn to_public_match(matched: CollectedMatch) -> Match {
 		context_before,
 		context_after,
 		truncated: if matched.truncated { Some(true) } else { None },
+		column: matched.column,
 	}
 }
 
@@ -736,6 +854,7 @@ fn to_grep_match(path: String, matched: CollectedMatch) -> GrepMatch {
 		context_before,
 		context_after,
 		truncated: if matched.truncated { Some(true) } else { None },
+		column: matched.column,
 		match_count: None,
 	}
 }
@@ -1021,6 +1140,18 @@ fn per_file_params(params: SearchParams) -> SearchParams {
 	SearchParams { max_count: file_limit, offset: 0, ..params }
 }
 
+fn single_file_params(params: SearchParams) -> SearchParams {
+	let file_limit = match params.mode {
+		OutputMode::Content => match (params.max_count, params.max_count_per_file) {
+			(Some(global), Some(per_file)) => Some(global.min(per_file)),
+			(global, per_file) => global.or(per_file),
+		},
+		OutputMode::Count => None,
+		OutputMode::FilesWithMatches => Some(1),
+	};
+	SearchParams { max_count: file_limit, ..params }
+}
+
 fn streaming_stop_after(params: SearchParams) -> Option<u64> {
 	if params.mode != OutputMode::Content || params.offset != 0 {
 		return None;
@@ -1057,7 +1188,8 @@ fn build_grep_walk_request(
 	let mut filter = pi_walker::WalkFilter::files_only();
 	if let Some(glob) = glob.map(str::trim).filter(|value| !value.is_empty()) {
 		let pattern = glob_util::build_glob_pattern(glob, true);
-		let compiled = pi_walker::CompiledWalkGlob::new([pattern])
+		let patterns = glob_util::search_scope_patterns(pattern);
+		let compiled = pi_walker::CompiledWalkGlob::new(patterns)
 			.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
 		filter = filter.glob(compiled);
 	}
@@ -1626,6 +1758,7 @@ fn push_count_match(matches: &mut Vec<GrepMatch>, path: String, match_count: u64
 		context_before: None,
 		context_after: None,
 		truncated: None,
+		column: None,
 		match_count: Some(crate::utils::clamp_u32(match_count)),
 	});
 }
@@ -1638,6 +1771,7 @@ fn push_file_match(matches: &mut Vec<GrepMatch>, path: String) {
 		context_before: None,
 		context_after: None,
 		truncated: None,
+		column: None,
 		match_count: None,
 	});
 }
@@ -1876,72 +2010,29 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 		}
 
 		let held = HeldFiles::snapshot();
-		let mut buffer = Vec::new();
-		let (bytes, prefix_only) = match read_file_bytes(&held, &search_path, &mut buffer) {
-			Ok(ReadFile::Read) => (&buffer, false),
-			Ok(ReadFile::Oversized) => match read_file_prefix(&held, &search_path, &mut buffer) {
-				Ok(ReadFile::Read) => (&buffer, true),
-				_ => {
-					return Ok(GrepResult {
-						matches:            Vec::new(),
-						total_matches:      0,
-						files_with_matches: 0,
-						files_searched:     0,
-						limit_reached:      None,
-						skipped_oversized:  Some(1),
-					});
-				},
-			},
-			Ok(ReadFile::Skipped) | Err(_) => {
-				return Ok(GrepResult {
-					matches:            Vec::new(),
-					total_matches:      0,
-					files_with_matches: 0,
-					files_searched:     0,
-					limit_reached:      None,
-					skipped_oversized:  None,
-				});
-			},
-		};
-		let files_searched = u32::from(!prefix_only);
-		let skipped_oversized = prefix_only.then_some(1);
-
-		if output_mode == OutputMode::FilesWithMatches && max_count.is_none() && offset == 0 {
-			let matched = matcher
-				.is_match(bytes.as_slice())
-				.map_err(|err| Error::from_reason(format!("Search failed: {err}")))?;
-			if !matched {
-				return Ok(GrepResult {
-					matches: Vec::new(),
-					total_matches: 0,
-					files_with_matches: 0,
-					files_searched,
-					limit_reached: None,
-					skipped_oversized,
-				});
-			}
-
-			let path_string = search_path.to_string_lossy().into_owned();
-			return Ok(GrepResult {
-				matches: vec![GrepMatch {
-					path:           path_string,
-					line_number:    0,
-					line:           String::new(),
-					context_before: None,
-					context_after:  None,
-					truncated:      None,
-					match_count:    None,
-				}],
-				total_matches: 1,
-				files_with_matches: 1,
-				files_searched,
-				limit_reached: None,
-				skipped_oversized,
-			});
-		}
-
-		let search = run_search(matcher, bytes.as_slice(), params)
+		let file = held
+			.open_read(&search_path)
 			.map_err(|err| Error::from_reason(format!("Search failed: {err}")))?;
+		let params = single_file_params(params);
+		let mut collector = MatchCollector::new(
+			matcher,
+			params.max_count,
+			params.offset,
+			params.max_columns.map(|value| value as usize),
+			params.mode == OutputMode::Content,
+		);
+		let mut searcher = build_searcher_for_params(params);
+		searcher
+			.search_reader(matcher, CancellableReader { file, ct: &ct }, &mut collector)
+			.map_err(|err| Error::from_reason(format!("Search failed: {err}")))?;
+		let search = SearchResultInternal {
+			matches:       collector.matches,
+			match_count:   collector.match_count,
+			collected:     collector.collected_count,
+			limit_reached: collector.limit_reached,
+		};
+		let files_searched = 1;
+		let skipped_oversized = None;
 
 		if search.match_count == 0 {
 			return Ok(GrepResult {
@@ -1968,6 +2059,7 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 					context_before: None,
 					context_after:  None,
 					truncated:      None,
+					column:         None,
 					match_count:    Some(crate::utils::clamp_u32(search.match_count)),
 				});
 			},
@@ -1979,6 +2071,7 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 					context_before: None,
 					context_after:  None,
 					truncated:      None,
+					column:         None,
 					match_count:    None,
 				});
 			},
@@ -2249,16 +2342,16 @@ mod tests {
 	}
 
 	#[test]
-	fn oversized_prefix_search_is_reported_as_skipped_not_fully_searched() {
+	fn explicit_file_finds_match_beyond_the_old_prefix_limit() {
 		let fixture = TempFile::create_oversized_with_late_match();
 		let config = grep_config(&fixture.0, "late-match", GrepOutputMode::Content);
 
 		let result = grep_sync(config, None, task::CancelToken::default())
 			.expect("oversized-file grep should succeed");
 
-		assert!(result.matches.is_empty(), "the match is beyond the bounded prefix");
-		assert_eq!(result.files_searched, 0);
-		assert_eq!(result.skipped_oversized, Some(1));
+		assert_eq!(result.matches[0].line, "late-match");
+		assert_eq!(result.files_searched, 1);
+		assert_eq!(result.skipped_oversized, None);
 	}
 
 	#[test]
@@ -2280,5 +2373,37 @@ mod tests {
 			assert_eq!(line, expected);
 			assert!(xutf::width_str(&line) <= max);
 		}
+	}
+
+	#[test]
+	fn single_file_cap_preserves_offset() {
+		let fixture = TempFile::create(b"match0\nmatch1\nmatch2\nmatch3\n");
+		let mut options = grep_config(&fixture.0, "match", GrepOutputMode::Content);
+		options.max_count_per_file = Some(1);
+		options.offset = Some(2);
+		let result = grep_sync(options, None, task::CancelToken::default()).unwrap();
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].line, "match2");
+	}
+	#[test]
+	fn long_match_window_uses_reported_match_with_multiline_lookahead() {
+		let mut options = search_options(None, Some(80));
+		options.pattern = r"needle(?=\nend)".into();
+		options.multiline = Some(true);
+		let content = format!("{}needle\nend\n", "x".repeat(12_000));
+		let result = search_sync(content.as_bytes(), options);
+		assert!(result.error.is_none(), "{:?}", result.error);
+		assert_eq!(result.matches.len(), 1);
+		assert!(result.matches[0].line.contains("needle"));
+		assert_eq!(result.matches[0].column, Some(12_001));
+	}
+	#[test]
+	fn unterminated_eof_match_shows_the_end_window() {
+		let mut options = search_options(None, Some(80));
+		options.pattern = "token$".into();
+		let content = format!("{}token", "x".repeat(12_000));
+		let result = search_sync(content.as_bytes(), options);
+		assert_eq!(result.matches[0].column, Some(12_001));
+		assert!(result.matches[0].line.ends_with("token"));
 	}
 }

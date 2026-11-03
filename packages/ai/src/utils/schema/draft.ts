@@ -1,3 +1,4 @@
+import { formatLocalRefPointer, parseLocalRefPointer } from "@oh-my-pi/omptype";
 import { areJsonValuesEqual } from "./equality";
 import { epochNext, once } from "./stamps";
 import { isJsonObject, type JsonObject } from "./types";
@@ -25,7 +26,9 @@ const NON_SCHEMA_VALUE_KEYS: Record<string, true> = {
 };
 
 function convertRef(value: string): string {
-	return value.startsWith("#/definitions/") ? `#/$defs/${value.slice("#/definitions/".length)}` : value;
+	const pointer = parseLocalRefPointer(value);
+	if (pointer === undefined || pointer[0] !== "definitions") return value;
+	return formatLocalRefPointer(["$defs", ...pointer.slice(1)]);
 }
 
 function getObjectMap(target: JsonObject, key: string): JsonObject {

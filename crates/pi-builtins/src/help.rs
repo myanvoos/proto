@@ -4,21 +4,16 @@ use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 use itertools::Itertools;
 
-
 #[derive(Parser)]
 pub(crate) struct HelpCommand {
-
 	#[arg(short = 'd')]
 	short_description: bool,
-
 
 	#[arg(short = 'm')]
 	man_page_style: bool,
 
-
 	#[arg(short = 's')]
 	short_usage: bool,
-
 
 	topic_patterns: Vec<String>,
 }
@@ -62,7 +57,6 @@ impl HelpCommand {
 				if let Some((name, builtin)) = builtins.get(i + j * items_per_column) {
 					let prefix = if builtin.disabled { "*" } else { " " };
 					write!(context.stdout(), "  {prefix}{name:<20}")?;
-
 				}
 			}
 			writeln!(context.stdout())?;
@@ -112,10 +106,8 @@ impl HelpCommand {
 		};
 
 		let Some(mut stdout) = context.try_fd(brush_core::openfiles::OpenFiles::STDOUT_FD) else {
-
 			return Ok(());
 		};
-
 
 		let options = builtins::ContentOptions { colorized: stdout.is_terminal() };
 

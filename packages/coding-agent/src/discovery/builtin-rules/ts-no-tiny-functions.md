@@ -5,13 +5,27 @@ interruptMode: never
 match:
   if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
   then:
-    regex: '(?m)\bfunction\s+[A-Za-z_$][\w$]*\s*(?:<[^>{}\n]*>\s*)?\([^{}\n]*\)\s*\{\s*return\b[^{};\n]+;?\s*\}|\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:\([^()\n]*\)|[A-Za-z_$][\w$]*)\s*=>(?!\s*\{)\s*[^\n;]+'
-    in: code
+    any:
+      - regex: "(?m)(?:^|[;{}])[ \\t]*(?:async[ \\t]+)?function(?:[ \\t]*\\*[ \\t]*|[ \\t]+)[\\w$]+\\s*(?:<[^(){};]*>\\s*)?\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?\\{\\s*return [^;{}\\n]+;?\\s*\\}"
+        in: code
+      - regex: "(?m)(?:^|[;{}])[ \\t]*(?:const|let|var)\\s+[\\w$]+\\s*=\\s*(?:async\\s+)?(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*[^{\\s][^{\\n]*$"
+        in: code
+      - regex: "(?m)(?:^|[;{}])[ \\t]*(?:const|let|var)\\s+[\\w$]+\\s*=\\s*(?:async\\s+)?(?:function\\b[^(]*\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*)\\{\\s*return [^;{}\\n]+;?\\s*\\}"
+        in: code
+      - regex: "(?m)(?:^|[;{}])[ \\t]*(?:(?:private[ \\t]+(?:static[ \\t]+)?(?:async[ \\t]+)?(?:get[ \\t]+)?[\\w$]+|(?:static[ \\t]+)?(?:async[ \\t]+)?(?:get[ \\t]+)?#[\\w$]+)\\s*(?:<[^(){};]*>\\s*)?\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?\\{\\s*return [^;{}\\n]+;?\\s*\\}|(?:private[ \\t]+(?:static[ \\t]+)?(?:readonly[ \\t]+)?[\\w$]+|(?:static[ \\t]+)?(?:readonly[ \\t]+)?#[\\w$]+)\\s*(?::[^=\\n]+)?=\\s*(?:async\\s+)?(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*(?:\\{\\s*return [^;{}\\n]+;?\\s*\\}|[^{\\s][^{\\n]*$))"
+        in: code
   else:
     all:
-      - regex: '(?m)\bfunction\s+[A-Za-z_$][\w$]*\s*(?:<[^>{}\n]*>\s*)?\([^{}\n]*\)\s*\{\s*return\b[^{};\n]+;?\s*\}|\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:\([^()\n]*\)|[A-Za-z_$][\w$]*)\s*=>(?!\s*\{)\s*[^\n;]+'
-        in: [code, string]
-      - llm: "Does this content actually define a function whose whole body is a single return of an expression, rather than quoting or discussing such functions?"
+      - any:
+          - regex: "(?m)(?:async[ \\t]+)?function(?:[ \\t]*\\*[ \\t]*|[ \\t]+)[\\w$]+\\s*(?:<[^(){};]*>\\s*)?\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?\\{\\s*return [^;{}\\n]+;?\\s*\\}"
+            in: [code, string]
+          - regex: "(?m)(?:const|let|var)\\s+[\\w$]+\\s*=\\s*(?:async\\s+)?(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*[^{\\s][^{\\n]*$"
+            in: [code, string]
+          - regex: "(?m)(?:const|let|var)\\s+[\\w$]+\\s*=\\s*(?:async\\s+)?(?:function\\b[^(]*\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*)\\{\\s*return [^;{}\\n]+;?\\s*\\}"
+            in: [code, string]
+          - regex: "(?m)(?:(?:private[ \\t]+(?:static[ \\t]+)?(?:async[ \\t]+)?(?:get[ \\t]+)?[\\w$]+|(?:static[ \\t]+)?(?:async[ \\t]+)?(?:get[ \\t]+)?#[\\w$]+)\\s*(?:<[^(){};]*>\\s*)?\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?\\{\\s*return [^;{}\\n]+;?\\s*\\}|(?:private[ \\t]+(?:static[ \\t]+)?(?:readonly[ \\t]+)?[\\w$]+|(?:static[ \\t]+)?(?:readonly[ \\t]+)?#[\\w$]+)\\s*(?::[^=\\n]+)?=\\s*(?:async\\s+)?(?:<[^(){};]*>\\s*)?(?:\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*(?::\\n?(?!\\s*(?:asserts\\s+)?[\\w$]+\\s+is\\s)(?:[^{};=\\n]|=>|\\{[^{}\\n]*\\})*)?|[a-zA-Z_$][\\w$]*\\s*)=>\\s*(?:\\{\\s*return [^;{}\\n]+;?\\s*\\}|[^{\\s][^{\\n]*$))"
+            in: [code, string]
+      - llm: "Does this content actually define a local function whose whole body is a single expression, rather than quoting or discussing one?"
 ---
 
 Inline functions whose whole body: one expression or `return`, unless name creates a durable contract.

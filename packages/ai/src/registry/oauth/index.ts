@@ -138,6 +138,11 @@ export async function getOAuthApiKey(
 	return { newCredentials: creds, apiKey };
 }
 
+/** Credential owner for login aliases; ordinary and extension provider ids remain unchanged. */
+export function getOAuthCredentialProvider(id: string): string {
+	return getOAuthProviders().find(provider => provider.id === id)?.storeCredentialsAs ?? id;
+}
+
 export function getOAuthProviders(): OAuthProviderInfo[] {
 	const customProviders = Array.from(customOAuthProviders.values(), provider => ({
 		id: provider.id,

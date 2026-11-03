@@ -89,6 +89,7 @@ import {
 	renderStatusEvents,
 } from "./eval-render";
 import {
+	formatMinimizedMeta,
 	formatStyledTruncationWarning,
 	type OutputMeta,
 	resolveInlineByteCapBudget,
@@ -224,6 +225,7 @@ export interface BashToolDetails {
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
 	wallTimeMs?: number;
+	wallTimeNoticeEmitted?: boolean;
 
 	exitCode?: number;
 
@@ -481,7 +483,11 @@ function stripExitCodeNotice(text: string, exitCode: number | undefined): string
 
 function stripBackgroundNotice(text: string, async: BashToolDetails["async"] | undefined): string {
 	if (async?.state !== "running") return text;
-	return stripTrailingNotice(text, formatBackgroundNotice(async.jobId));
+	const prefix = `Backgrounded as job ${async.jobId}`;
+	const line = text.trimEnd().split("\n").at(-1);
+	return line?.startsWith(prefix) && (line[prefix.length] === ";" || line[prefix.length] === " ")
+		? stripTrailingNotice(text, line)
+		: text;
 }
 
 /** What a bash card shows as output: the result text without the notices the card renders itself. */
@@ -492,7 +498,8 @@ export function bashCardOutput(
 	const withoutBackground = stripBackgroundNotice(rawOutput, details?.async);
 	const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
 	const withoutExit = stripExitCodeNotice(strippedOutput, details?.exitCode);
-	const withoutWall = stripWallTimeNotice(withoutExit, details?.wallTimeMs);
+	const withoutWall =
+		details?.wallTimeNoticeEmitted === false ? withoutExit : stripWallTimeNotice(withoutExit, details?.wallTimeMs);
 	return stripRawOutputArtifactNotice(withoutWall);
 }
 
@@ -511,6 +518,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const spawnPolicy = resolveSpawnPolicy(this.session.getSessionSpawns?.() ?? "*");
 		return prompt.render(bashDescription, {
 			asyncEnabled: this.#asyncEnabled,
+			defaultTimeoutSec: clampTimeout("bash", undefined, this.session.settings.get("tools.maxTimeout")),
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
 			hasLaunch: launchEnabled && (jobsTool || jobsDevice),
@@ -1201,9 +1209,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// Like the kernel's generation notice: lead with the loss so it is read before the output.
 		if ("shellStateLost" in result && result.shellStateLost) outputLines.unshift(result.shellStateLost);
 		const notices: string[] = [];
-		if (options.wallTimeMs !== undefined) {
-			notices.push(formatWallTimeNotice(options.wallTimeMs));
-		}
+		const wallTimeMs = options.wallTimeMs;
+		const wallTimeNoticeEmitted = wallTimeMs !== undefined && wallTimeMs >= 1_000;
+		if (wallTimeNoticeEmitted) notices.push(formatWallTimeNotice(wallTimeMs));
 		if (options.notices) {
 			for (const notice of options.notices) {
 				if (notice) notices.push(notice);
@@ -1216,8 +1224,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const details: BashToolDetails = {
 			execution,
+			wallTimeNoticeEmitted,
 			deviceResults: protolensResult.records.length ? protolensResult.records : undefined,
 		};
+
 		if (options.queriedExecutions) details.executionRecordOmitted = "executions query";
 		const fsObservations = "fsObservations" in result ? result.fsObservations : undefined;
 		const mutatedPaths = fsObservations
@@ -1308,7 +1318,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
 		updateExecutionOutput();
 
-		const resultBuilder = toolResult(details).truncationFromSummary(result, { direction: "tail" });
+		const resultBuilder = toolResult(details)
+			.truncationFromSummary(result, { direction: "tail" })
+			.minimized("minimized" in result ? result.minimized : undefined);
 		const contentImages: UserContent[] = [...(options.images ?? []), ...protolensMedia];
 		resultBuilder.content([{ type: "text", text: cappedOutputText }, ...contentImages]);
 		if (isHardFailureExit(exitCode, softExit) || protolensTransportFailure) resultBuilder.error();
@@ -1345,7 +1357,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (options.notices?.length) {
 			lines.push(...options.notices, "");
 		}
-		lines.push(formatBackgroundNotice(jobId));
+		lines.push(formatBackgroundNotice(jobId, timeoutSec));
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,
@@ -1372,6 +1384,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		notices?: readonly string[];
 
 		resolvedEnv?: Record<string, string>;
+		sessionId: string | undefined;
 		protolens?: {
 			callId?: string;
 			createDispatcher: (signal?: AbortSignal) => (request: string) => Promise<string>;
@@ -1420,11 +1433,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 							},
 							{ delayMs: BASH_LIVE_UPDATE_INTERVAL_MS },
 						);
+						// The shell lane isolates shell state per job, but a backgrounded
+						// call's kernel cells share the session's kernel: passing the job's
+						// `async:<id>` lane here would spawn a fresh kernel per job.
+						const kernelLane = options.lane;
 						const pyBridge = this.#kernelShellBridge(
 							options.toolCallId,
 							{
 								command: options.command,
-								lane,
+								lane: kernelLane,
 								cwd: options.commandCwd,
 								env: options.resolvedEnv,
 								pty: false,
@@ -1444,7 +1461,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 								(await this.session.allocateOutputArtifact?.("bash")) ?? {};
 							const result = await executeBash(options.command, {
 								cwd: options.commandCwd,
-								sessionKey: this.session.getSessionId?.() ?? undefined,
+								sessionKey: options.sessionId,
 								lane,
 								laneReservation,
 								ephemeral: options.lane === undefined,
@@ -1589,6 +1606,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
+		const sessionId = this.session.getSessionId?.() ?? undefined;
+		const sessionFile = this.session.getSessionFile?.();
+		const sessionEnv = {
+			PI_SESSION_ID: this.session.sessionManager?.getSessionId?.() ?? sessionId ?? "",
+			PI_SESSION_FILE: sessionFile ? path.resolve(sessionFile) : "",
+			PI_TOOL_CALL_ID: toolCallId,
+		};
 		const record: ExecutionRecord = {
 			id: toolCallId,
 			command: input.command,
@@ -1614,11 +1638,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			// Join the lane before the first await: same-lane calls issued together
 			// must run in issue order, whatever their preparation costs.
 			laneReservation = reserveBashLane({
-				sessionKey: this.session.getSessionId?.() ?? undefined,
+				sessionKey: sessionId,
 				lane: input.lane,
 			});
 			const result = await withExecutionOrigin({ lane: input.lane ?? "main", kind: "shell" }, () =>
-				this.#execute(toolCallId, input, takeLane, markStarted, signal, onUpdate, ctx),
+				this.#execute(toolCallId, input, takeLane, markStarted, sessionId, sessionEnv, signal, onUpdate, ctx),
 			);
 			const finishedAt = Date.now();
 			recordExecution(this.session, {
@@ -1662,6 +1686,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}: BashToolInput,
 		takeLane: (transfer?: boolean) => BashLaneReservation,
 		markStarted: () => void,
+		sessionId: string | undefined,
+		sessionEnv: Record<string, string>,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
@@ -1707,20 +1733,23 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 		};
 		command = await expandInternalUrls(command, { ...internalUrlOptions, ensureLocalParentDirs: true });
-		const resolvedEnv = env
-			? Object.fromEntries(
-					await Promise.all(
-						Object.entries(env).map(async ([key, value]) => [
-							key,
-							await expandInternalUrls(value, {
-								...internalUrlOptions,
-								ensureLocalParentDirs: true,
-								noEscape: true,
-							}),
-						]),
-					),
-				)
-			: undefined;
+		const resolvedEnv = {
+			...(env
+				? Object.fromEntries(
+						await Promise.all(
+							Object.entries(env).map(async ([key, value]) => [
+								key,
+								await expandInternalUrls(value, {
+									...internalUrlOptions,
+									ensureLocalParentDirs: true,
+									noEscape: true,
+								}),
+							]),
+						),
+					)
+				: undefined),
+			...sessionEnv,
+		};
 
 		if (cwd?.includes("://") || cwd?.includes("local:/")) {
 			cwd = await expandInternalUrls(cwd, { ...internalUrlOptions, noEscape: true });
@@ -1780,6 +1809,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 				protolens: protolensBridge,
 				resolvedEnv,
+				sessionId,
 				onUpdate,
 				forwardUpdates: false,
 			});
@@ -1829,6 +1859,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 				protolens: protolensBridge,
 				resolvedEnv,
+				sessionId,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
 			});
@@ -2187,7 +2218,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					})
 				: await executeBash(command, {
 						cwd: commandCwd,
-						sessionKey: this.session.getSessionId?.() ?? undefined,
+						sessionKey: sessionId,
 						lane,
 						laneReservation: takeLane(),
 						onStart: markStarted,
@@ -2465,7 +2496,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	};
 	return {
 		animatedPendingPreview: isKernelCellArgs,
-		animatedPartialResult: isKernelCellArgs,
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const command = renderArgs.command === undefined ? undefined : sanitizeText(renderArgs.command);
@@ -2644,7 +2674,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							displayCode: mixedKernelCell ? command : undefined,
 							// The model-facing notice was stripped above; restore its recovery
 							// link inside the card, on the same rail as the output it describes.
-							noticeLines: warningLine ? [warningLine] : undefined,
+							noticeLines: [
+								warningLine,
+								details?.meta?.minimized
+									? uiTheme.fg("dim", `Minimized: ${formatMinimizedMeta(details.meta.minimized)}`)
+									: undefined,
+							].filter((line): line is string => line !== undefined),
 						});
 						cachedWidth = width;
 						cachedPreviewLines = previewLines;
@@ -2688,6 +2723,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						}
 					}
 					if (warningLine) outputLines.push(warningLine);
+					if (details?.meta?.minimized)
+						outputLines.push(uiTheme.fg("dim", `Minimized: ${formatMinimizedMeta(details.meta.minimized)}`));
 					if (backgroundJobId) outputLines.push(uiTheme.fg("dim", `Backgrounded: ${backgroundJobId}`));
 					const artifactId = rawOutputArtifact.artifactId;
 					if (artifactId) outputLines.push(uiTheme.fg("dim", `Artifact: ${artifactId}`));

@@ -1,15 +1,9 @@
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	fs::{self, File},
 	io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
 	path::Path,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-	},
+	sync::atomic::{AtomicBool, Ordering},
 };
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -82,7 +76,6 @@ struct Input<'a> {
 	reader:      BufReader<InputReader<'a>>,
 	regular_len: Option<u64>,
 }
-
 
 pub(crate) struct Cmp {
 	matches: ArgMatches,
@@ -223,47 +216,26 @@ fn compare(matches: &ArgMatches, host: &mut Host) -> Result<i32, String> {
 		host.note_read(path);
 	}
 	let cancel = host.cancel_flag();
+	let mut stdout = host.stdout_writer();
 
-	if name1 == OsStr::new("-") {
+	let compared = if name1 == OsStr::new("-") {
 		let input1 = stdin_input(&mut host.stdin);
 		let input2 = open_input(name2, path2.as_deref().unwrap(), options.no_follow)?;
-		compare_inputs(
-			input1,
-			input2,
-			name1,
-			name2,
-			options,
-			&mut host.stdout,
-			&mut host.stderr,
-			&cancel,
-		)
+		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
 	} else if name2 == OsStr::new("-") {
 		let input1 = open_input(name1, path1.as_deref().unwrap(), options.no_follow)?;
 		let input2 = stdin_input(&mut host.stdin);
-		compare_inputs(
-			input1,
-			input2,
-			name1,
-			name2,
-			options,
-			&mut host.stdout,
-			&mut host.stderr,
-			&cancel,
-		)
+		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
 	} else {
 		let input1 = open_input(name1, path1.as_deref().unwrap(), options.no_follow)?;
 		let input2 = open_input(name2, path2.as_deref().unwrap(), options.no_follow)?;
-		compare_inputs(
-			input1,
-			input2,
-			name1,
-			name2,
-			options,
-			&mut host.stdout,
-			&mut host.stderr,
-			&cancel,
-		)
-	}
+		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
+	};
+	// Output before a failure still lands, ahead of the error message.
+	let flushed = stdout.flush().map_err(io_message);
+	let code = compared?;
+	flushed?;
+	Ok(code)
 }
 
 fn skips(matches: &ArgMatches) -> Result<(u64, u64), String> {
@@ -381,13 +353,8 @@ fn compare_inputs(
 		&& len1 != len2
 	{
 		if !options.quiet {
-			writeln!(
-				stdout,
-				"{} {} differ: size",
-				display_name(name1),
-				display_name(name2)
-			)
-			.map_err(io_message)?;
+			writeln!(stdout, "{} {} differ: size", display_name(name1), display_name(name2))
+				.map_err(io_message)?;
 		}
 		return Ok(1);
 	}
@@ -445,13 +412,8 @@ fn compare_readers(
 			different = true;
 			if !options.quiet {
 				let eof_name = if left.is_empty() { name1 } else { name2 };
-				writeln!(
-					stderr,
-					"cmp: EOF on {} after byte {}",
-					display_name(eof_name),
-					compared
-				)
-				.map_err(io_message)?;
+				writeln!(stderr, "cmp: EOF on {} after byte {}", display_name(eof_name), compared)
+					.map_err(io_message)?;
 			}
 			break;
 		}
@@ -578,9 +540,6 @@ fn io_message(err: io::Error) -> String {
 	err.to_string()
 }
 
-
 pub(crate) fn cmp_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cmp, SE>()
 }
-
-

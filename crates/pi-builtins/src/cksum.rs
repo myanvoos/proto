@@ -1,6 +1,3 @@
-
-
-
 #![allow(dead_code, reason = "upstream checksum-common also supports cksum-only formats")]
 
 use std::{
@@ -15,8 +12,8 @@ use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ValueParser}
 use os_display::Quotable;
 use uucore::{
 	checksum::{
-		AlgoKind, BlakeLength, ChecksumError, ReadingMode, ShaLength, SizedAlgoKind,
-		digest_reader, escape_filename, parse_blake_length, unescape_filename, SUPPORTED_ALGORITHMS,
+		AlgoKind, BlakeLength, ChecksumError, ReadingMode, SUPPORTED_ALGORITHMS, ShaLength,
+		SizedAlgoKind, digest_reader, escape_filename, parse_blake_length, unescape_filename,
 	},
 	hardware::{HasHardwareFeatures as _, SimdPolicy},
 	line_ending::LineEnding,
@@ -54,7 +51,6 @@ mod options {
 	pub(super) const ALGORITHM: &str = "algorithm";
 	pub(super) const DEBUG: &str = "debug";
 
-
 	pub(super) const FILE: &str = "file";
 
 	pub(super) const UNTAGGED: &str = "untagged";
@@ -67,15 +63,12 @@ mod options {
 	pub(super) const BINARY: &str = "binary";
 	pub(super) const ZERO: &str = "zero";
 
-
 	pub(super) const STRICT: &str = "strict";
 	pub(super) const STATUS: &str = "status";
 	pub(super) const WARN: &str = "warn";
 	pub(super) const IGNORE_MISSING: &str = "ignore-missing";
 	pub(super) const QUIET: &str = "quiet";
 }
-
-
 
 trait ChecksumCommand {
 	fn with_algo(self) -> Self;
@@ -236,8 +229,6 @@ impl ChecksumCommand for Command {
 				.long(options::BASE64)
 				.help("emit base64-encoded digests, not hexadecimal")
 				.action(ArgAction::SetTrue)
-
-
 				.conflicts_with(options::RAW),
 		)
 	}
@@ -371,8 +362,8 @@ fn checksum_main(
 		return perform_checksum_validation(host, files, algo, length, opts);
 	}
 
-	let algo = SizedAlgoKind::from_unsized(algo.unwrap_or(AlgoKind::Crc), length)
-		.map_err(failure)?;
+	let algo =
+		SizedAlgoKind::from_unsized(algo.unwrap_or(AlgoKind::Crc), length).map_err(failure)?;
 	let opts = ChecksumComputeOptions {
 		algo_kind: algo,
 		output_format,
@@ -381,20 +372,15 @@ fn checksum_main(
 	perform_checksum_computation(host, opts, files)
 }
 
-
 pub(crate) fn command(name: &'static str, with_length: bool) -> Command {
 	let (about, usage) = standalone_strings(name);
 	if with_length {
-		standalone_checksum_app_with_length(
-			"Print or check BLAKE2b (512-bit) checksums.",
-			usage,
-		)
-		.name(name)
+		standalone_checksum_app_with_length("Print or check BLAKE2b (512-bit) checksums.", usage)
+			.name(name)
 	} else {
 		standalone_checksum_app(about, usage).name(name)
 	}
 }
-
 
 pub(crate) fn run(
 	host: &mut Host,
@@ -415,7 +401,6 @@ pub(crate) fn run(
 		},
 	}
 }
-
 
 pub(crate) struct Cksum {
 	matches: ArgMatches,
@@ -439,7 +424,6 @@ impl Utility for Cksum {
 	}
 }
 
-
 fn cksum_app() -> Command {
 	default_checksum_app(
 		"Print or verify checksums; without --algorithm, prints the POSIX CRC and byte count",
@@ -459,11 +443,9 @@ fn cksum_app() -> Command {
 	.with_debug()
 }
 
-
 pub(crate) fn cksum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Cksum, SE>()
 }
-
 
 fn sanitize_cksum_length(
 	host: &mut Host,
@@ -471,14 +453,9 @@ fn sanitize_cksum_length(
 	input_length: Option<&str>,
 ) -> ExecResult<Option<usize>> {
 	match (algo, input_length) {
-
 		(_, None) => Ok(None),
 
-
 		(Some(algo @ (AlgoKind::Sha2 | AlgoKind::Sha3)), Some(len)) => {
-
-
-
 			let parsed = match len.parse::<usize>() {
 				Ok(parsed) => Some(parsed),
 				Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => None,
@@ -493,27 +470,22 @@ fn sanitize_cksum_length(
 			}
 		},
 
-
-
 		(Some(AlgoKind::Shake128 | AlgoKind::Shake256), Some(len)) => match len.parse::<usize>() {
 			Ok(0) => Ok(None),
 			Ok(parsed) => Ok(Some(parsed)),
 			Err(_) => Err(failure(ChecksumError::InvalidLength(len.into()))),
 		},
 
-
 		(Some(algo @ (AlgoKind::Blake2b | AlgoKind::Blake3)), Some(len)) => {
-			parse_blake_length(algo, BlakeLength::String(len)).map(Some).map_err(failure)
+			parse_blake_length(algo, BlakeLength::String(len))
+				.map(Some)
+				.map_err(failure)
 		},
-
-
 
 		(_, Some(len)) if len.parse::<u32>() == Ok(0) => Ok(None),
 		(_, Some(_)) => Err(failure(ChecksumError::LengthOnlyForBlake2bSha2Sha3)),
 	}
 }
-
-
 
 fn print_cpu_debug_info(host: &mut Host) {
 	let features = SimdPolicy::detect();
@@ -526,19 +498,14 @@ fn print_cpu_debug_info(host: &mut Host) {
 		}
 	};
 
-
 	print_feature("avx512", features.has_avx512());
 	print_feature("avx2", features.has_avx2());
 	print_feature("pclmul", features.has_pclmul());
-
 
 	if cfg!(target_arch = "aarch64") {
 		print_feature("vmull", features.has_vmull());
 	}
 }
-
-
-
 
 fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 	let algo = matches
@@ -547,13 +514,14 @@ fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 		.transpose()
 		.map_err(failure)?;
 
-	let input_length = matches.get_one::<String>(options::LENGTH).map(String::as_str);
+	let input_length = matches
+		.get_one::<String>(options::LENGTH)
+		.map(String::as_str);
 	let length = sanitize_cksum_length(host, algo, input_length)?;
 
 	let tag = !matches.get_flag(options::UNTAGGED);
 	let binary = matches.get_flag(options::BINARY);
 	let text = matches.get_flag(options::TEXT);
-
 
 	if text && tag {
 		return Err(failure(ChecksumError::TextWithoutUntagged));
@@ -574,26 +542,15 @@ fn run_cksum(host: &mut Host, matches: ArgMatches) -> ExecResult<()> {
 	checksum_main(host, algo, length, matches, output_format)
 }
 
-
-
 const READ_BUFFER_SIZE: usize = 32 * 1024;
 
-
-
-
-
-
 struct ChecksumComputeOptions {
-
 	algo_kind: SizedAlgoKind,
-
 
 	output_format: OutputFormat,
 
-
 	line_ending: LineEnding,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DigestFormat {
@@ -608,23 +565,13 @@ impl DigestFormat {
 	}
 }
 
-
 #[derive(Debug, PartialEq, Eq)]
 enum OutputFormat {
-
 	Raw,
-
-
-
 
 	Legacy,
 
-
 	Tagged(DigestFormat),
-
-
-
-
 
 	Untagged(DigestFormat, ReadingMode),
 }
@@ -635,13 +582,10 @@ impl OutputFormat {
 		*self == Self::Raw
 	}
 
-
 	fn from_cksum(algo: AlgoKind, tag: bool, binary: bool, raw: bool, base64: bool) -> Self {
-
 		if raw {
 			return Self::Raw;
 		}
-
 
 		if algo.is_legacy() {
 			return Self::Legacy;
@@ -652,7 +596,6 @@ impl OutputFormat {
 		} else {
 			DigestFormat::Hexadecimal
 		};
-
 
 		if tag {
 			Self::Tagged(digest_format)
@@ -665,11 +608,6 @@ impl OutputFormat {
 			Self::Untagged(digest_format, reading_mode)
 		}
 	}
-
-
-
-
-
 
 	fn from_standalone(text: bool, tag: bool) -> Self {
 		if tag {
@@ -703,7 +641,6 @@ fn print_legacy_checksum(
 		escape_filename(filename)
 	};
 
-
 	match (options.algo_kind, sum) {
 		(SizedAlgoKind::Sysv, DigestOutput::U16(sum)) => {
 			let _ = write!(
@@ -713,7 +650,6 @@ fn print_legacy_checksum(
 			);
 		},
 		(SizedAlgoKind::Bsd, DigestOutput::U16(sum)) => {
-
 			let bsd_width = 5;
 			let _ = write!(
 				&mut host.stdout,
@@ -727,26 +663,27 @@ fn print_legacy_checksum(
 		(algo, output) => unreachable!("Bug: Invalid legacy checksum ({algo:?}, {output:?})"),
 	}
 
-
 	if escaped_filename != "-" {
 		let _ = write!(&mut host.stdout, " ");
 		let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
 	}
 }
 
-fn print_tagged_checksum(host: &mut Host, options: &ChecksumComputeOptions, filename: &OsStr, sum: &String) {
+fn print_tagged_checksum(
+	host: &mut Host,
+	options: &ChecksumComputeOptions,
+	filename: &OsStr,
+	sum: &String,
+) {
 	let (escaped_filename, prefix) = if options.line_ending == LineEnding::Nul {
 		(filename.to_string_lossy().to_string(), "")
 	} else {
 		escape_filename(filename)
 	};
 
-
 	let _ = write!(&mut host.stdout, "{prefix}{} (", options.algo_kind.to_tag());
 
-
 	let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
-
 
 	let _ = write!(&mut host.stdout, ") = {sum}");
 }
@@ -764,22 +701,13 @@ fn print_untagged_checksum(
 		escape_filename(filename)
 	};
 
-
 	let _ = write!(&mut host.stdout, "{prefix}{sum} {}", match reading_mode {
 		ReadingMode::Binary => '*',
 		ReadingMode::Text => ' ',
 	});
 
-
 	let _dropped_result = &mut host.stdout.write_all(escaped_filename.as_bytes());
 }
-
-
-
-
-
-
-
 
 fn perform_checksum_computation<'a, I>(
 	host: &mut Host,
@@ -792,7 +720,6 @@ where
 	let mut files = files.peekable();
 
 	while let Some(filename) = files.next() {
-
 		if options.output_format.is_raw() && files.peek().is_some() {
 			return Err(failure(ChecksumError::RawMultipleFiles));
 		}
@@ -805,7 +732,6 @@ where
 			host.error(format!("{}: Is a directory", filepath.display()), 1);
 			continue;
 		}
-
 
 		let mut file = BufReader::with_capacity(
 			READ_BUFFER_SIZE,
@@ -826,12 +752,9 @@ where
 
 		let mut digest = options.algo_kind.create_digest();
 
-
-
 		let (digest_output, sz) = digest_reader(&mut digest, &mut file, ReadingMode::Binary)
 			.map_err(|error| failure(format!("failed to read input: {error}")))?;
 		drop(file);
-
 
 		let encode_sum = |sum: DigestOutput, df: DigestFormat| {
 			if df.is_base64() {
@@ -843,7 +766,6 @@ where
 
 		match options.output_format {
 			OutputFormat::Raw => {
-
 				digest_output.write_raw(&mut host.stdout)?;
 				return Ok(());
 			},
@@ -851,7 +773,12 @@ where
 				print_legacy_checksum(host, &options, filename, &digest_output, sz);
 			},
 			OutputFormat::Tagged(digest_format) => {
-				print_tagged_checksum(host, &options, filename, &encode_sum(digest_output, digest_format).map_err(failure)?);
+				print_tagged_checksum(
+					host,
+					&options,
+					filename,
+					&encode_sum(digest_output, digest_format).map_err(failure)?,
+				);
 			},
 			OutputFormat::Untagged(digest_format, reading_mode) => {
 				print_untagged_checksum(
@@ -869,7 +796,6 @@ where
 	Ok(())
 }
 
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Copy, Default)]
 enum ChecksumVerbose {
 	Status,
@@ -882,8 +808,6 @@ enum ChecksumVerbose {
 impl ChecksumVerbose {
 	fn new(status: bool, quiet: bool, warn: bool) -> Self {
 		use ChecksumVerbose::*;
-
-
 
 		match (status, quiet, warn) {
 			(true, ..) => Status,
@@ -909,7 +833,6 @@ impl ChecksumVerbose {
 	}
 }
 
-
 #[derive(Debug, Default, Clone, Copy)]
 struct ChecksumValidateOptions {
 	ignore_missing: bool,
@@ -917,20 +840,16 @@ struct ChecksumValidateOptions {
 	verbose:        ChecksumVerbose,
 }
 
-
 #[derive(Default)]
 struct ChecksumResult {
-
-
-	correct:          u32,
-
+	correct: u32,
 
 	failed_cksum:     u32,
 	failed_open_file: u32,
 
-	bad_format:       u32,
+	bad_format: u32,
 
-	total:            u32,
+	total: u32,
 }
 
 impl ChecksumResult {
@@ -940,10 +859,7 @@ impl ChecksumResult {
 	}
 }
 
-
-
 enum LineCheckError {
-
 	Critical(Failure),
 
 	DigestMismatch,
@@ -971,14 +887,10 @@ impl From<ChecksumError> for LineCheckError {
 	}
 }
 
-
 enum FileCheckError {
-
 	Critical(Failure),
 
 	CantOpenChecksumFile,
-
-
 
 	Failed,
 }
@@ -998,15 +910,27 @@ impl From<ChecksumError> for FileCheckError {
 fn print_cksum_report(host: &mut Host, res: &ChecksumResult) {
 	if res.bad_format > 0 {
 		let name = host.name().to_owned();
-		let _ = writeln!(host.stderr, "{name}: WARNING: {} line(s) are improperly formatted", res.bad_format);
+		let _ = writeln!(
+			host.stderr,
+			"{name}: WARNING: {} line(s) are improperly formatted",
+			res.bad_format
+		);
 	}
 	if res.failed_cksum > 0 {
 		let name = host.name().to_owned();
-		let _ = writeln!(host.stderr, "{name}: WARNING: {} computed checksum(s) did NOT match", res.failed_cksum);
+		let _ = writeln!(
+			host.stderr,
+			"{name}: WARNING: {} computed checksum(s) did NOT match",
+			res.failed_cksum
+		);
 	}
 	if res.failed_open_file > 0 {
 		let name = host.name().to_owned();
-		let _ = writeln!(host.stderr, "{name}: WARNING: {} listed file(s) could not be read", res.failed_open_file);
+		let _ = writeln!(
+			host.stderr,
+			"{name}: WARNING: {} listed file(s) could not be read",
+			res.failed_open_file
+		);
 	}
 }
 
@@ -1022,8 +946,6 @@ fn log_no_file_verified(host: &mut Host, filename: impl Display) {
 	let _ = writeln!(host.stderr, "{name}: {filename}: no file was verified");
 }
 
-
-
 #[derive(Debug, Clone, Copy)]
 enum FileChecksumResult {
 	Ok,
@@ -1032,8 +954,6 @@ enum FileChecksumResult {
 }
 
 impl FileChecksumResult {
-
-
 	fn from_bool(checksum_correct: bool) -> Self {
 		if checksum_correct {
 			Self::Ok
@@ -1041,8 +961,6 @@ impl FileChecksumResult {
 			Self::Failed
 		}
 	}
-
-
 
 	fn can_display(self, verbose: ChecksumVerbose) -> bool {
 		match self {
@@ -1062,8 +980,6 @@ impl Display for FileChecksumResult {
 		}
 	}
 }
-
-
 
 fn write_file_report<W: Write>(
 	mut w: W,
@@ -1087,15 +1003,7 @@ enum LineFormat {
 }
 
 impl LineFormat {
-
-
-
-
-
 	fn parse_algo_based(line: &[u8]) -> Option<LineInfo> {
-
-
-
 		let trimmed = line.trim_ascii_start();
 		let algo_start = usize::from(trimmed.starts_with(b"\\"));
 		let rest = &trimmed[algo_start..];
@@ -1105,10 +1013,8 @@ impl LineFormat {
 			OpenSSL,
 		}
 
-
-
 		let par_idx = rest.iter().position(|&b| b == b'(')?;
-		let sub_case = if rest[par_idx - 1] == b' ' {
+		let sub_case = if par_idx > 0 && rest[par_idx - 1] == b' ' {
 			SubCase::Posix
 		} else {
 			SubCase::OpenSSL
@@ -1121,11 +1027,9 @@ impl LineFormat {
 		let mut algo_parts = algo_substring.splitn(2, |&b| b == b'-');
 		let algo = algo_parts.next()?;
 
-
 		let algo_bits = algo_parts
 			.next()
 			.and_then(|s| std::str::from_utf8(s).ok()?.parse::<usize>().ok());
-
 
 		let is_valid_algo = algo == b"BLAKE2b"
 			|| algo
@@ -1135,9 +1039,7 @@ impl LineFormat {
 			return None;
 		}
 
-
 		let algo_utf8 = unsafe { String::from_utf8_unchecked(algo.to_vec()) };
-
 
 		let after_paren = rest.get(par_idx + 1..)?;
 		let (filename, checksum) = match sub_case {
@@ -1157,10 +1059,6 @@ impl LineFormat {
 	}
 
 	#[allow(rustdoc::invalid_html_tags)]
-
-
-
-
 
 	fn parse_untagged(line: &[u8]) -> Option<LineInfo> {
 		let space_idx = line.iter().position(|&b| b == b' ')?;
@@ -1184,22 +1082,12 @@ impl LineFormat {
 
 	#[allow(rustdoc::invalid_html_tags)]
 
-
-
-
-
-
-
-
-
 	fn parse_single_space(line: &[u8]) -> Option<LineInfo> {
-
 		let space_idx = line.iter().position(|&b| b == b' ')?;
 		let checksum = &line[..space_idx];
 		if !checksum.iter().all(|&b| b.is_ascii_hexdigit()) || checksum.is_empty() {
 			return None;
 		}
-
 
 		let checksum_utf8 = unsafe { String::from_utf8_unchecked(checksum.to_vec()) };
 
@@ -1214,8 +1102,6 @@ impl LineFormat {
 		})
 	}
 
-
-
 	fn validate_checksum_format(checksum: &[u8]) -> Option<String> {
 		if checksum.is_empty() {
 			return None;
@@ -1225,7 +1111,6 @@ impl LineFormat {
 
 		for index in 0..checksum.len() {
 			match checksum[index..] {
-
 				[b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9', ..] => (),
 
 				[b'+' | b'/', ..] => is_base64 = true,
@@ -1239,26 +1124,15 @@ impl LineFormat {
 			}
 		}
 
-
-
-
-
-
-
-
 		if is_base64 && !checksum.len().is_multiple_of(4) {
 			return None;
 		}
-
-
 
 		Some(unsafe { String::from_utf8_unchecked(checksum.to_vec()) })
 	}
 }
 
-
 trait ByteSliceExt {
-
 	fn rsplit_once(&self, pattern: &[u8]) -> Option<(&Self, &Self)>;
 }
 
@@ -1272,7 +1146,6 @@ impl ByteSliceExt for [u8] {
 	}
 }
 
-
 struct LineInfo {
 	algo_name:    Option<String>,
 	algo_bit_len: Option<usize>,
@@ -1282,15 +1155,6 @@ struct LineInfo {
 }
 
 impl LineInfo {
-
-
-
-
-
-
-
-
-
 	fn parse(s: impl AsRef<OsStr>, cached_line_format: &mut Option<LineFormat>) -> Option<Self> {
 		let line_bytes = os_bytes(s.as_ref())?;
 
@@ -1315,9 +1179,11 @@ impl LineInfo {
 	}
 }
 
-
 fn forgiving_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
-	let input = input.strip_suffix(b"==").or_else(|| input.strip_suffix(b"=")).unwrap_or(input);
+	let input = input
+		.strip_suffix(b"==")
+		.or_else(|| input.strip_suffix(b"="))
+		.unwrap_or(input);
 	if input.len() % 4 == 1 {
 		return None;
 	}
@@ -1340,11 +1206,7 @@ fn forgiving_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 		let b = sextet(chunk[1])?;
 		let c = sextet(chunk[2])?;
 		let d = sextet(chunk[3])?;
-		output.extend_from_slice(&[
-			(a << 2) | (b >> 4),
-			(b << 4) | (c >> 2),
-			(c << 6) | d,
-		]);
+		output.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
 	}
 	match chunks.remainder() {
 		[] => {},
@@ -1360,11 +1222,7 @@ fn forgiving_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 	Some(output)
 }
 
-
 fn get_raw_expected_digest(checksum: &str, bit_len_hint: Option<usize>) -> Option<Vec<u8>> {
-
-
-
 	if !checksum.len().is_multiple_of(2) {
 		return None;
 	}
@@ -1373,35 +1231,18 @@ fn get_raw_expected_digest(checksum: &str, bit_len_hint: Option<usize>) -> Optio
 
 	let checks_hint = |len| byte_len_hint.is_none_or(|hint| hint == len);
 
-
-
 	if checks_hint(checksum.len() / 2)
 		&& let Ok(raw_ck) = hex::decode(checksum)
 	{
 		return Some(raw_ck);
 	}
 
-
-
-
-
-
-
-
-
-
 	if !checksum.len().is_multiple_of(4) {
 		return None;
 	}
 
-
-
-
-
 	forgiving_base64_decode(checksum.as_bytes()).filter(|raw| checks_hint(raw.len()))
 }
-
-
 
 fn get_file_to_check<'a>(
 	host: &'a mut Host,
@@ -1416,7 +1257,11 @@ fn get_file_to_check<'a>(
 
 	match host.open_read(filename) {
 		Ok(file) => {
-			if file.metadata().map_err(|_| LineCheckError::CantOpenFile)?.is_dir() {
+			if file
+				.metadata()
+				.map_err(|_| LineCheckError::CantOpenFile)?
+				.is_dir()
+			{
 				let escaped = locale_aware_escape_name(filename, QuotingStyle::SHELL_ESCAPE);
 				host.error(format!("{}: Is a directory", escaped.to_string_lossy()), 1);
 				write_file_report(
@@ -1448,7 +1293,6 @@ fn get_file_to_check<'a>(
 	}
 }
 
-
 fn get_input_file(host: &Host, filename: &OsStr) -> ExecResult<Box<dyn Read>> {
 	match host.open_read(filename) {
 		Ok(file) => {
@@ -1458,14 +1302,9 @@ fn get_input_file(host: &Host, filename: &OsStr) -> ExecResult<Box<dyn Read>> {
 				Ok(Box::new(file))
 			}
 		},
-		Err(_) => Err(failure(format!(
-			"{}: No such file or directory",
-			filename.maybe_quote()
-		))),
+		Err(_) => Err(failure(format!("{}: No such file or directory", filename.maybe_quote()))),
 	}
 }
-
-
 
 fn identify_algo_name_and_length(
 	line_info: &LineInfo,
@@ -1475,14 +1314,9 @@ fn identify_algo_name_and_length(
 	use AlgoKind as ak;
 	let algo_from_line = line_info.algo_name.clone().unwrap_or_default();
 	let Ok(line_algo) = AlgoKind::from_cksum(algo_from_line.to_lowercase()) else {
-
 		return Err(LineCheckError::ImproperlyFormatted);
 	};
 	*last_algo = Some(algo_from_line);
-
-
-
-
 
 	if let Some(algo_name_input) = algo_name_input {
 		match (algo_name_input, line_algo) {
@@ -1504,21 +1338,11 @@ fn identify_algo_name_and_length(
 			ak::Sha2 | ak::Sha3 if [224, 256, 384, 512].contains(&bitlen) => Some(bitlen),
 			ak::Shake128 | ak::Shake256 => Some(bitlen),
 
-
-
-
-
-
-
-
-
 			_ => return Err(LineCheckError::ImproperlyFormatted),
 		}
 	} else if line_algo == ak::Blake2b {
-
 		Some(Blake2b::DEFAULT_BYTE_SIZE)
 	} else if line_algo == ak::Blake3 {
-
 		Some(Blake3::DEFAULT_BYTE_SIZE)
 	} else {
 		None
@@ -1526,8 +1350,6 @@ fn identify_algo_name_and_length(
 
 	Ok((line_algo, bytes))
 }
-
-
 
 fn compute_and_check_digest_from_file(
 	host: &mut Host,
@@ -1537,8 +1359,8 @@ fn compute_and_check_digest_from_file(
 	opts: ChecksumValidateOptions,
 ) -> Result<(), LineCheckError> {
 	let (filename_to_check_unescaped, prefix) = unescape_filename(filename);
-	let real_filename_to_check = os_str_from_bytes(&filename_to_check_unescaped)
-		.map_err(|error| failure(error))?;
+	let real_filename_to_check =
+		os_str_from_bytes(&filename_to_check_unescaped).map_err(|error| failure(error))?;
 
 	let file_to_check = get_file_to_check(host, &real_filename_to_check, opts)?;
 	let mut file_reader = BufReader::new(file_to_check);
@@ -1547,10 +1369,8 @@ fn compute_and_check_digest_from_file(
 		Ok((result, _)) => result,
 		Err(error) => {
 			drop(file_reader);
-			let escaped = locale_aware_escape_name(
-				&real_filename_to_check,
-				QuotingStyle::SHELL_ESCAPE,
-			);
+			let escaped =
+				locale_aware_escape_name(&real_filename_to_check, QuotingStyle::SHELL_ESCAPE);
 			host.error(format!("{}: {error}", escaped.to_string_lossy()), 1);
 			write_file_report(
 				&mut host.stdout,
@@ -1577,9 +1397,12 @@ fn compute_and_check_digest_from_file(
 		opts.verbose,
 	);
 
-	if checksum_correct { Ok(()) } else { Err(LineCheckError::DigestMismatch) }
+	if checksum_correct {
+		Ok(())
+	} else {
+		Err(LineCheckError::DigestMismatch)
+	}
 }
-
 
 fn process_algo_based_line(
 	host: &mut Host,
@@ -1591,8 +1414,6 @@ fn process_algo_based_line(
 	let filename_to_check = line_info.filename.as_slice();
 
 	let (algo_kind, algo_len) = identify_algo_name_and_length(line_info, cli_algo_kind, last_algo)?;
-
-
 
 	let digest_bit_length_hint = match (algo_kind, algo_len) {
 		(AlgoKind::Blake2b | AlgoKind::Blake3, Some(byte_len)) => Some(byte_len * 8),
@@ -1611,7 +1432,6 @@ fn process_algo_based_line(
 	compute_and_check_digest_from_file(host, filename_to_check, &expected_checksum, algo, opts)
 }
 
-
 fn process_non_algo_based_line(
 	host: &mut Host,
 	line_number: usize,
@@ -1626,7 +1446,6 @@ fn process_non_algo_based_line(
 		&& line_number == 0
 		&& line_info.format == LineFormat::SingleSpace
 	{
-
 		filename_to_check = &filename_to_check[1..];
 	}
 
@@ -1634,19 +1453,13 @@ fn process_non_algo_based_line(
 	let expected_checksum = get_raw_expected_digest(&line_info.checksum, expected_digest_sum)
 		.ok_or(LineCheckError::ImproperlyFormatted)?;
 
-
-
-
 	let algo_byte_len = match cli_algo_kind {
 		ak::Blake2b | ak::Blake3 => Some(expected_checksum.len()),
-		ak::Sha2 | ak::Sha3 => {
-
-			Some(
-				ShaLength::try_from(expected_checksum.len() * 8)
-					.map_err(|_| LineCheckError::ImproperlyFormatted)?
-					.as_usize(),
-			)
-		},
+		ak::Sha2 | ak::Sha3 => Some(
+			ShaLength::try_from(expected_checksum.len() * 8)
+				.map_err(|_| LineCheckError::ImproperlyFormatted)?
+				.as_usize(),
+		),
 		_ => cli_algo_length,
 	};
 
@@ -1655,12 +1468,6 @@ fn process_non_algo_based_line(
 
 	compute_and_check_digest_from_file(host, filename_to_check, &expected_checksum, algo, opts)
 }
-
-
-
-
-
-
 
 fn process_checksum_line(
 	host: &mut Host,
@@ -1768,7 +1575,11 @@ fn process_checksum_file(
 	}
 
 	let filename_display = || {
-		if input_is_stdin { "standard input".maybe_quote() } else { filename_input.maybe_quote() }
+		if input_is_stdin {
+			"standard input".maybe_quote()
+		} else {
+			filename_input.maybe_quote()
+		}
 	};
 	if res.total_properly_formatted() == 0 {
 		if opts.verbose.over_status() {
@@ -1797,7 +1608,6 @@ fn process_checksum_file(
 	Ok(())
 }
 
-
 fn perform_checksum_validation<'a, I>(
 	host: &mut Host,
 	files: I,
@@ -1817,8 +1627,9 @@ where
 			Ok(()) => (),
 		}
 	}
-	if failed { Err(Failure(String::new())) } else { Ok(()) }
+	if failed {
+		Err(Failure(String::new()))
+	} else {
+		Ok(())
+	}
 }
-
-
-

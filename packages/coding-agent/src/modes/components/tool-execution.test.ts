@@ -25,7 +25,7 @@ function plain(component: ToolExecutionComponent): string {
 		.join("\n");
 }
 
-test("partial tool-result deltas coalesce rebuilds while preserving the newest and final result", () => {
+test("partial tool-result deltas stay unpainted until the settled result arrives", () => {
 	let scheduledRenders = 0;
 	let customResultRenders = 0;
 	const ui: ToolExecutionUi = {
@@ -50,14 +50,13 @@ test("partial tool-result deltas coalesce rebuilds while preserving the newest a
 			component.updateResult({ content: [{ type: "text", text: `partial-${index}` }] }, true);
 		}
 
-		expect(scheduledRenders).toBe(1);
+		expect(scheduledRenders).toBe(0);
 		expect(customResultRenders).toBe(0);
-		expect(plain(component)).toContain("partial-999");
-		expect(plain(component)).not.toContain("partial-998");
-		expect(customResultRenders).toBe(1);
+		expect(plain(component)).toContain("streaming-test");
+		expect(plain(component)).not.toContain("partial-999");
 
 		component.updateResult({ content: [{ type: "text", text: "final-result" }] }, false);
-		expect(customResultRenders).toBe(2);
+		expect(customResultRenders).toBe(1);
 		expect(plain(component)).toContain("final-result");
 		expect(plain(component)).not.toContain("partial-999");
 	} finally {
@@ -127,7 +126,7 @@ class RecordingTerminal implements Terminal {
 	}
 }
 
-test("a live tool card keeps its image on the terminal across result updates and only resends changed pixels", () => {
+test("a settled tool card shows its image once and only resends changed pixels", () => {
 	const previousProtocol = TERMINAL.imageProtocol;
 	const previousCells = getCellDimensions();
 	const previousKitty = getKittyGraphics();
@@ -150,13 +149,12 @@ test("a live tool card keeps its image on the terminal across result updates and
 	try {
 		tui.addChild(component);
 		tui.start({ deferInput: true });
+		// Partial results stay display-less, so a streaming plot is not painted.
 		component.updateResult(result("partial-0"), true);
 		tui.requestRender();
 		scheduler.flush();
-		expect(transmits(terminal.take())).toBe(1);
+		expect(transmits(terminal.take())).toBe(0);
 
-		// Kernel output keeps streaming below an already-displayed plot; the
-		// final result then settles the card. Neither may delete the plot.
 		component.updateResult(result("partial-1"), true);
 		tui.requestRender();
 		scheduler.flush();
@@ -165,7 +163,8 @@ test("a live tool card keeps its image on the terminal across result updates and
 		scheduler.flush();
 		const settled = terminal.take();
 		expect(deletes(settled)).toBe(0);
-		expect(transmits(settled)).toBe(0);
+		expect(transmits(settled)).toBe(1);
+		expect(settled).toContain("UExPVA==");
 
 		// Different pixels at the same position must replace the payload.
 		component.updateResult(result("redrawn", { ...plot, data: "TkVXUExPVA==" }), false);

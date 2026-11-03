@@ -1,4 +1,5 @@
 import {
+	type OAuthAccountSummary,
 	type ResetCreditAccountStatus,
 	type ResetCreditTarget,
 	resolveUsedFraction,
@@ -12,6 +13,7 @@ import {
 	type CodexResetTrigger,
 	DEBOUNCE_BUCKET_MS,
 	REPORT_FRESHNESS_MS,
+	resetAccountLockKey,
 	SALVAGE_MIN_USED_FRACTION,
 } from "./codex-auto-reset";
 
@@ -27,6 +29,7 @@ export type ClaudeResetSkipReason =
 	| "disabled"
 	| "wrong-provider"
 	| "no-identity"
+	| "outside-account-pool"
 	| "no-report"
 	| "stale-report"
 	| "credits-unknown"
@@ -66,6 +69,7 @@ export interface ClaudeResetPlanInput {
 	reports: UsageReport[] | null;
 	/** Authoritative live Cedar/Juniper eligibility for every stored account. */
 	statuses: readonly ResetCreditAccountStatus[];
+	permitsCredential?: (credentialId: number) => boolean;
 	attemptedKeys: ReadonlySet<string>;
 	deferredUntilByKey: ReadonlyMap<string, number>;
 	lastAttemptAtByAccount: ReadonlyMap<string, number>;
@@ -130,6 +134,40 @@ function reportMatchesStatus(report: UsageReport, status: ResetCreditAccountStat
 	const email = normalized(status.email);
 	if (accountId && reportAccountId) return accountId === reportAccountId;
 	return !!email && email === reportEmail;
+}
+
+/** Find salvage candidates without listing every account; a spend must still re-plan from a live listing. */
+export function claudeResetStatusesFromReports(
+	accounts: readonly OAuthAccountSummary[],
+	reports: readonly UsageReport[],
+): ResetCreditAccountStatus[] {
+	const stored = accounts.map(
+		(account): ResetCreditAccountStatus => ({
+			...account,
+			provider: CLAUDE_PROVIDER,
+			availableCount: 0,
+			credits: [],
+		}),
+	);
+	return stored.map(base => {
+		let status = base;
+		let report = reports.find(candidate => reportMatchesStatus(candidate, base));
+		if (!report && !base.orgId) {
+			const adoptable: Array<{ status: ResetCreditAccountStatus; report: UsageReport }> = [];
+			for (const candidate of reports) {
+				const orgId = candidate.metadata?.orgId;
+				if (typeof orgId !== "string" || stored.some(other => reportMatchesStatus(candidate, other))) continue;
+				const adopted = { ...base, orgId };
+				if (reportMatchesStatus(candidate, adopted)) adoptable.push({ status: adopted, report: candidate });
+			}
+			if (adoptable.length === 1) ({ status, report } = adoptable[0]!);
+		}
+		const inventory = report?.resetCredits;
+		if (!inventory) return { ...status, error: "Usage report has no saved-reset inventory" };
+		const credits =
+			inventory.credits?.filter((credit): credit is UsageResetCredit => typeof credit.id === "string") ?? [];
+		return { ...status, ...inventory, credits };
+	});
 }
 
 function creditExpiryMs(credit: UsageResetCredit): number | undefined {
@@ -203,7 +241,8 @@ export function planClaudeResetRedemptions(input: ClaudeResetPlanInput): ClaudeR
 	for (const status of input.statuses) {
 		if (status.provider !== CLAUDE_PROVIDER) continue;
 		const accountKey = Number.isInteger(status.credentialId)
-			? `${CLAUDE_PROVIDER}|${normalized(status.orgId) ?? "-"}|${status.credentialId}`
+			? (resetAccountLockKey(status) ??
+				`${CLAUDE_PROVIDER}|${normalized(status.orgId) ?? "-"}|${status.credentialId}`)
 			: undefined;
 		if (!accountKey) {
 			skipped.push({ accountKey: "*", rule: "account", reason: "no-identity" });
@@ -307,6 +346,10 @@ export function planClaudeResetRedemptions(input: ClaudeResetPlanInput): ClaudeR
 		for (const snapshot of snapshots) {
 			const skip = (reason: ClaudeResetSkipReason) =>
 				skipped.push({ accountKey: snapshot.accountKey, rule: "blocked-account", reason });
+			if (input.permitsCredential && !input.permitsCredential(snapshot.target.credentialId)) {
+				skip("outside-account-pool");
+				continue;
+			}
 			const clears = new Set(snapshot.credit.clears ?? []);
 			const reportedBlockers = snapshot.limits
 				.filter(limit => isExhausted(limit) || (snapshot.credit.usedFractions?.[limit.id] ?? 0) >= 0.999)

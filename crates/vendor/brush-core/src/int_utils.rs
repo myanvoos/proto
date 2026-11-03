@@ -1,12 +1,7 @@
-
-
 use crate::error;
 
-
 pub trait ParseIntRadix: Sized {
-
 	fn from_str_radix(s: &str, radix: u32) -> Result<Self, std::num::ParseIntError>;
-
 
 	fn type_name() -> &'static str;
 }
@@ -30,29 +25,6 @@ impl_parse_int_radix!(u16);
 impl_parse_int_radix!(i32);
 impl_parse_int_radix!(u32);
 impl_parse_int_radix!(usize);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 pub fn parse<T: ParseIntRadix>(s: &str, radix: u32) -> Result<T, error::Error> {
 	T::from_str_radix(s, radix).map_err(|inner| {

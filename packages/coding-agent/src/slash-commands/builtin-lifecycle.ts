@@ -235,16 +235,16 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const text = command.text.slice(`/${command.name}`.length).trim();
-			clearSubmittedText(runtime);
+			clearSubmittedText(runtime, true);
 			if (!text) {
 				runtime.ctx.showStatus("Usage: /side <question> | /side --agent <work>");
 				return;
 			}
 			if (text === "--agent" || text.startsWith("--agent ")) {
-				await runtime.ctx.handleSideCommand("agent", text.slice("--agent".length).trim());
+				await runtime.ctx.handleSideCommand("agent", text.slice("--agent".length).trim(), runtime.input?.images);
 				return;
 			}
-			await runtime.ctx.handleSideCommand("question", text);
+			await runtime.ctx.handleSideCommand("question", text, runtime.input?.images);
 		},
 	},
 	{

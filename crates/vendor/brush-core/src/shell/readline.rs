@@ -1,14 +1,6 @@
-
-
 use crate::{error, extensions, variables::ShellVariable};
 
 impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
-
-
-
-
-
-
 	pub fn set_edit_buffer(&mut self, contents: String, cursor: usize) -> Result<(), error::Error> {
 		self
 			.env
@@ -20,8 +12,6 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 
 		Ok(())
 	}
-
-
 
 	pub fn pop_edit_buffer(&mut self) -> Result<Option<(String, usize)>, error::Error> {
 		let line = self

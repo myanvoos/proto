@@ -70,6 +70,23 @@ Put broad, durable project background in `AGENTS.md`. Reserve `RULES.md` for sho
 
 Providers marked "(no ancestor walk-up)" only look in the current working directory's config directory. If you need ancestor walk-up behavior, prefer the native `.proto/AGENTS.md` format or a standalone `AGENTS.md` (the `agents-md` provider), or launch `proto` from the directory that holds the config directory.
 
+## Extra context filenames
+
+Set `contextFiles.extra` in `config.yml` to discover additional instruction files alongside the built-in names:
+
+```yaml
+contextFiles:
+  extra:
+    - AGENTS.local.md
+    - TEAM.md
+```
+
+The `custom-context` discovery provider walks these filenames using the standalone `AGENTS.md` boundaries. Linked worktrees also load matching files from the primary checkout. These files are additive: an `AGENTS.local.md` does not replace `AGENTS.md`, and distinct paths survive even when their filenames and depths match.
+
+Entries must be plain filenames, not directory paths, `.` or `..`. Built-in names (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and `copilot-instructions.md`, case-insensitive) cannot be listed again. Invalid lists produce a discovery warning and load no extra files.
+
+User-configured names also load matching files from the active profile's agent directory. Names supplied by a project configuration never read that directory, so a repository cannot include arbitrary user configuration files in its instructions. The default list is empty. Disable the `custom-context` provider to disable this discovery source.
+
 ## Load order and shadowing
 
 When two providers describe the _same_ scope, the higher-priority provider wins. Provider priorities:
@@ -83,8 +100,9 @@ When two providers describe the _same_ scope, the higher-priority provider wins.
 |       55 | `opencode`        |
 |       30 | `github`          |
 |       10 | `agents-md`       |
+|        9 | `custom-context`  |
 
-Discovered files are then deduplicated by scope:
+Built-in context files are deduplicated by scope; configured extra filenames are additive and keyed by their full paths:
 
 - **One user context file** is kept across all providers. Because `native` has the highest priority, `~/.proto/agent/AGENTS.md` shadows every other user-level context file.
 - **One project context file per directory depth.** Depth is measured from the current directory: the cwd is depth 0, its parent depth 1, and so on. Config subdirectories of an ancestor (`.claude/`, `.github/`, `.gemini/`, …) count as the same depth as that ancestor.
@@ -141,6 +159,7 @@ Inside any context file, an `@path` token expands inline to the referenced file'
 # Project notes
 
 Read @docs/architecture.md before changing storage code.
+Paths with spaces use backslash-space, for example @docs/release\ notes.md.
 Shared release steps live in @../RELEASE.md and personal aliases in @~/.notes/aliases.md.
 ```
 

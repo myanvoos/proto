@@ -6,7 +6,7 @@ import * as natives from "@oh-my-pi/pi-natives";
 import { formatBytes, getWorktreeDir, isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as git from "../utils/git";
 import * as jj from "../utils/jj";
-import { writeIsolationOwner, writeRetainedBackend } from "./isolation-ownership";
+import { needsNativeTeardown, writeIsolationOwner, writeRetainedBackend } from "./isolation-ownership";
 import { mapWithConcurrencyLimit } from "./parallel";
 
 const { IsoBackendKind } = natives;
@@ -50,8 +50,16 @@ export function getGitNoIndexNullPath(): string {
 	return GIT_NO_INDEX_NULL_PATH;
 }
 
-async function discoverNestedRepos(repoRoot: string): Promise<string[]> {
+async function realCommonDir(dir: string): Promise<string | undefined> {
+	const repository = await git.repo.resolve(dir);
+	if (!repository) return undefined;
+	return fs.realpath(repository.commonDir).catch(() => path.resolve(repository.commonDir));
+}
+
+/** Linked worktrees belong to their owning checkout, not to independent nested repositories. */
+async function discoverNestedRepos(repoRoot: string, ownRepos: readonly string[]): Promise<string[]> {
 	const submodulePaths = new Set(await git.ls.submodules(repoRoot));
+	const ownCommonDirs = new Set((await Promise.all(ownRepos.map(realCommonDir))).filter(Boolean));
 
 	const result: string[] = [];
 	async function walk(dir: string): Promise<void> {
@@ -74,6 +82,8 @@ async function discoverNestedRepos(repoRoot: string): Promise<string[]> {
 				hasGit = true;
 			} catch {}
 			if (hasGit && !submodulePaths.has(rel)) {
+				const commonDir = await realCommonDir(full);
+				if (commonDir && ownCommonDirs.has(commonDir)) continue;
 				result.push(rel);
 
 				continue;
@@ -203,10 +213,11 @@ async function writeSyntheticTree(
 export async function captureBaseline(
 	repoRoot: string,
 	budgetBytes: number = ISOLATION_BASELINE_MAX_CONTENT_BYTES,
+	ownRepos: readonly string[] = [repoRoot],
 ): Promise<WorktreeBaseline> {
 	const [root, nestedPaths] = await Promise.all([
 		captureRepoBaseline(repoRoot, budgetBytes),
-		discoverNestedRepos(repoRoot),
+		discoverNestedRepos(repoRoot, ownRepos),
 	]);
 	const nested = await Promise.all(
 		nestedPaths.map(async relativePath => ({
@@ -293,6 +304,22 @@ interface DeltaPatchResult {
 }
 
 export async function captureDeltaPatch(isolationDir: string, baseline: WorktreeBaseline): Promise<DeltaPatchResult> {
+	const preserveSubmoduleObjects = async (
+		sourceRoot: string,
+		isolatedRoot: string,
+		fallbackRoot: string,
+	): Promise<void> => {
+		const paths = new Set([...(await git.ls.submodules(sourceRoot)), ...(await git.ls.submodules(isolatedRoot))]);
+		for (const relativePath of paths) {
+			const isolatedDir = path.join(isolatedRoot, relativePath);
+			if (!(await hasGitEntry(isolatedDir))) continue;
+			const sourceDir = path.join(sourceRoot, relativePath);
+			const target = (await hasGitEntry(sourceDir)) ? sourceDir : fallbackRoot;
+			await git.copyGitObjects(isolatedDir, target);
+			await preserveSubmoduleObjects(sourceDir, isolatedDir, fallbackRoot);
+		}
+	};
+	await preserveSubmoduleObjects(baseline.root.repoRoot, isolationDir, baseline.root.repoRoot);
 	const rootPatch = await captureRepoDeltaPatch(isolationDir, baseline.root, baseline.root.repoRoot);
 	const nestedPatches: NestedRepoPatch[] = [];
 
@@ -423,6 +450,33 @@ function getTaskIsolationSegment(repoRoot: string, id: string): string {
 	return `${WORKER_ISOLATION_DIR_PREFIX}${digest}`;
 }
 
+async function hasGitEntry(dir: string): Promise<boolean> {
+	try {
+		await fs.lstat(path.join(dir, ".git"));
+		return true;
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
+}
+
+/** Detach leaves first, while the copied root still exposes its submodule administration. */
+async function detachSubmodules(sourceRoot: string, isolationRoot: string): Promise<void> {
+	for (const relativePath of await git.ls.submodules(sourceRoot)) {
+		const sourceDir = path.join(sourceRoot, relativePath);
+		const isolatedDir = path.join(isolationRoot, relativePath);
+		if (!(await hasGitEntry(sourceDir))) continue;
+		if (!(await hasGitEntry(isolatedDir))) await fs.cp(sourceDir, isolatedDir, { recursive: true });
+		await detachSubmodules(sourceDir, isolatedDir);
+		const entry = await fs.lstat(path.join(isolatedDir, ".git"));
+		if (!entry.isFile()) continue;
+		const repository = await git.repo.resolve(sourceDir);
+		if (!repository) throw new Error(`Submodule repository not found: ${sourceDir}`);
+		await Bun.write(path.join(isolatedDir, ".git"), `gitdir: ${repository.gitDir}\n`);
+		await git.detachGitDir(isolatedDir, repository.commonDir);
+	}
+}
+
 export async function ensureIsolation(
 	baseCwd: string,
 	id: string,
@@ -444,7 +498,7 @@ export async function ensureIsolation(
 			`Isolation workspace already exists at ${mergedDir}; recover its changes, then use proto worktree clear before reusing this agent id.`,
 		);
 	}
-	const resolution = natives.isoResolve(preferred ?? null);
+	const resolution = await natives.isoResolve(preferred ?? null);
 	const candidates = resolution.candidates.length > 0 ? resolution.candidates : [resolution.kind];
 	let fallbackReason = resolution.reason ?? null;
 
@@ -458,6 +512,7 @@ export async function ensureIsolation(
 			await writeRetainedBackend(baseDir, candidate);
 			await natives.isoStart(candidate, repoRoot, mergedDir);
 
+			await detachSubmodules(repoRoot, mergedDir);
 			await git.detachGitDir(mergedDir, sourceCommonDir);
 			return {
 				mergedDir,
@@ -466,6 +521,21 @@ export async function ensureIsolation(
 				fallbackReason,
 			};
 		} catch (err) {
+			if (needsNativeTeardown(candidate)) {
+				try {
+					await natives.isoStop(candidate, mergedDir);
+				} catch (stopError) {
+					logger.warn("Isolation setup failed with a live backend; retaining workspace", {
+						mergedDir,
+						error: errorMessage(err),
+						stopError: errorMessage(stopError),
+					});
+					throw new Error(
+						`Isolation setup failed; workspace retained at ${mergedDir} because native teardown failed. Recover it before running proto worktree clear.`,
+						{ cause: err },
+					);
+				}
+			}
 			await fs.rm(baseDir, { recursive: true, force: true });
 			const message = errorMessage(err);
 			if (!natives.isoIsUnavailableError(message)) {
@@ -479,20 +549,28 @@ export async function ensureIsolation(
 }
 
 export async function cleanupIsolation(handle: IsolationHandle): Promise<void> {
+	const baseDir = path.dirname(handle.mergedDir);
 	try {
-		try {
-			await natives.isoStop(handle.backend, handle.mergedDir);
-		} catch (err) {
-			logger.warn("isolation backend stop failed during cleanup", {
-				backend: handle.backend,
-				mergedDir: handle.mergedDir,
-				error: err instanceof Error ? err.message : String(err),
+		await natives.isoStop(handle.backend, handle.mergedDir);
+	} catch (error) {
+		const retained = needsNativeTeardown(handle.backend);
+		logger.warn("isolation backend stop failed during cleanup", {
+			backend: handle.backend,
+			mergedDir: handle.mergedDir,
+			error: errorMessage(error),
+			retained,
+		});
+		if (retained) {
+			await writeRetainedBackend(baseDir, handle.backend).catch(writeError => {
+				logger.warn("Failed to record retained isolation backend; unmount manually", {
+					mergedDir: handle.mergedDir,
+					error: errorMessage(writeError),
+				});
 			});
+			return;
 		}
-	} finally {
-		const baseDir = path.dirname(handle.mergedDir);
-		await fs.rm(baseDir, { recursive: true, force: true });
 	}
+	await fs.rm(baseDir, { recursive: true, force: true });
 }
 
 interface CommitToBranchResult {
@@ -622,6 +700,31 @@ interface FilteredAgentReplayOptions {
 	taskId: string;
 }
 
+/** Reapply a dirty-baseline delta before removing unrelated baseline WIP. */
+async function filteredTreeWithBaselineWip(
+	repoRoot: string,
+	baselineSha: string,
+	taskId: string,
+	patch: string,
+	baseline: RepoBaseline,
+): Promise<string> {
+	try {
+		return await writeSyntheticTree(repoRoot, baselineSha, [patch], { threeWay: true });
+	} catch (error) {
+		if (!(error instanceof git.GitCommandError) || !baselineHasRootWip(baseline)) throw error;
+	}
+	const temporary = path.join(os.tmpdir(), `proto-filtered-tree-${Snowflake.next()}`);
+	try {
+		await git.worktree.add(repoRoot, temporary, baselineSha, { detach: true });
+		await applyDeltaOverBaselineWip(temporary, taskId, patch, collectWipPatches(baseline), baseline);
+		await git.stage.files(temporary);
+		return await git.writeTree(temporary);
+	} finally {
+		await git.worktree.tryRemove(repoRoot, temporary);
+		await fs.rm(temporary, { recursive: true, force: true });
+	}
+}
+
 async function replayFilteredAgentCommits(opts: FilteredAgentReplayOptions): Promise<void> {
 	const baselineSha = opts.baseline.root.headCommit;
 	await git.branch.create(opts.repoRoot, opts.branchName, baselineSha);
@@ -642,9 +745,13 @@ async function replayFilteredAgentCommits(opts: FilteredAgentReplayOptions): Pro
 				allowFailure: true,
 				binary: true,
 			});
-			const currentFilteredTree = await writeSyntheticTree(opts.repoRoot, baselineSha, [taskStatePatch], {
-				threeWay: true,
-			});
+			const currentFilteredTree = await filteredTreeWithBaselineWip(
+				opts.repoRoot,
+				baselineSha,
+				opts.taskId,
+				taskStatePatch,
+				opts.baseline.root,
+			);
 			const commitPatch = await git.diff.tree(opts.repoRoot, previousFilteredTree, currentFilteredTree, {
 				allowFailure: true,
 				binary: true,
@@ -668,9 +775,13 @@ async function replayFilteredAgentCommits(opts: FilteredAgentReplayOptions): Pro
 				await commitPatchToBranchWorktree(tmpDir, opts.taskId, opts.rootPatch, msg, undefined, opts.baseline.root);
 			}
 		} else {
-			const finalFilteredTree = await writeSyntheticTree(opts.repoRoot, baselineSha, [opts.rootPatch], {
-				threeWay: true,
-			});
+			const finalFilteredTree = await filteredTreeWithBaselineWip(
+				opts.repoRoot,
+				baselineSha,
+				opts.taskId,
+				opts.rootPatch,
+				opts.baseline.root,
+			);
 			const leftoverPatch = await git.diff.tree(opts.repoRoot, previousFilteredTree, finalFilteredTree, {
 				allowFailure: true,
 				binary: true,

@@ -299,6 +299,24 @@ const SHARED_CCA_FAMILIES: readonly EffortVariantFamily[] = [
 
 export const ANTIGRAVITY_VARIANT_COLLAPSE_TABLE: VariantCollapseTable = {
 	families: [
+		{
+			id: "gemini-4-argon",
+			name: "Gemini 4 Argon",
+			members: ["gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"],
+			routing: { low: "gemini-4-argon-low", medium: "gemini-4-argon-medium", high: "gemini-4-argon-high" },
+			thinking: { mode: "google-level", efforts: [Effort.Low, Effort.Medium, Effort.High], requiresEffort: true },
+		},
+		...(["opus", "sonnet"] as const).map(kind => ({
+			id: `claude-${kind}-5-5`,
+			name: `Claude ${kind === "opus" ? "Opus" : "Sonnet"} 5.5`,
+			members: ["low", "medium", "high"].map(effort => `claude-${kind}-5-5-${effort}`),
+			routing: {
+				low: `claude-${kind}-5-5-low`,
+				medium: `claude-${kind}-5-5-medium`,
+				high: `claude-${kind}-5-5-high`,
+			},
+			thinking: { mode: "budget" as const, efforts: [Effort.Low, Effort.Medium, Effort.High], requiresEffort: true },
+		})),
 		GEMINI_36_FLASH_FAMILY,
 		GEMINI_37_FLASH_FAMILY,
 		GEMINI_38_FLASH_FAMILY,
@@ -1279,14 +1297,19 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		// markers stay addressable per wire id.
 		const cursorMaxMode = memberSpecs.some(spec => spec.cursorMaxMode === true) ? true : undefined;
 		const cursorMaxModeRoutes = cursorMaxModeRoutesOf((memberSpecs[0] as TSpec).provider, memberSpecs);
+		const profiles = Object.assign({}, ...memberSpecs.map(spec => spec.antigravityWireProfiles));
 		const collapsed: TSpec = {
 			...(memberSpecs[0] as TSpec),
 			id: family.id,
 			name: family.name,
+			...(Object.keys(profiles).length > 0 ? { antigravityWireProfiles: profiles } : {}),
 			reasoning,
 			input,
 			contextWindow: maxOrNull(memberSpecs.map(spec => spec.contextWindow)),
 			maxTokens: maxOrNull(memberSpecs.map(spec => spec.maxTokens)),
+			...(memberSpecs.some(spec => "isProviderDefault" in spec && spec.isProviderDefault === true)
+				? { isProviderDefault: true }
+				: {}),
 			...(cursorMaxMode === undefined ? {} : { cursorMaxMode }),
 			...(cursorMaxModeRoutes === undefined ? {} : { cursorMaxModeRoutes }),
 		};

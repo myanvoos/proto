@@ -12,7 +12,7 @@ import {
 	Text,
 	type TUI,
 } from "@oh-my-pi/pi-tui";
-import { isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, sanitizeText, sanitizeTextDeep } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../../modes/theme/theme";
@@ -79,11 +79,10 @@ function imageBlocksFromDetails(details: unknown): ToolImageBlock[] {
 function displaceableToolName(
 	toolName: string,
 	result: { details?: unknown; isError?: boolean },
-	isPartial: boolean,
 ): DisplaceableToolName | undefined {
 	if (result.isError === true) return undefined;
 	if (toolName === "jobs" && isWaitingPollDetails(result.details)) return "jobs";
-	if (toolName === "checklist" && !isPartial && isChecklistToolDetails(result.details)) return "checklist";
+	if (toolName === "checklist" && isChecklistToolDetails(result.details)) return "checklist";
 	return undefined;
 }
 
@@ -154,6 +153,21 @@ class SafeToolRendererComponent implements Component {
 		const invalidate = this.#component.invalidate;
 		if (invalidate === undefined) return;
 		invalidate.call(this.#component);
+	}
+
+	releaseRenderCaches(): void {
+		try {
+			this.#component.releaseRenderCaches?.();
+		} catch (error) {
+			if (this.#warned) return;
+			this.#warned = true;
+			logger.warn("Tool renderer failed", {
+				tool: this.#toolName,
+				stage: this.#stage,
+				phase: "releaseRenderCaches",
+				error: String(error),
+			});
+		}
 	}
 
 	setIgnoreTight(ignore: boolean): void {
@@ -261,6 +275,7 @@ export class ToolExecutionComponent extends Container {
 	#toolActivityVisible = true;
 	#showImages: boolean;
 	#isPartial = true;
+	#rawDetails: unknown;
 	#resultVersion = 0;
 
 	#lastDisplayKey: string | undefined;
@@ -268,8 +283,6 @@ export class ToolExecutionComponent extends Container {
 	#displayInputVersion = 0;
 
 	#displayBuilt = false;
-	#displayUpdateScheduled = false;
-	#displayUpdateRequested = false;
 
 	#renderedImageCount = 0;
 	#tool?: AgentTool;
@@ -278,6 +291,7 @@ export class ToolExecutionComponent extends Container {
 	#result?: ToolExecutionResult;
 
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	#kittyConversionsInFlight = new Set<number>();
 
 	#spinnerFrame?: number;
 	#spinnerActive = false;
@@ -377,22 +391,32 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	updateResult(result: ToolExecutionResult, isPartial = false, _toolCallId?: string): void {
-		this.#result = result;
+		// A running tool's partial result is not painted: the card keeps its call
+		// preview and spinner until the settled result arrives, so no collapsed
+		// results view is drawn mid-execution. Waiting `jobs` polls still displace
+		// their card, which is compacted away rather than rendered.
+		if (isPartial) {
+			const displaceable = displaceableToolName(this.#toolName, result);
+			if (displaceable !== undefined) {
+				this.#displaceableByToolName = displaceable;
+				this.#everDisplaceable = true;
+				this.#updateSpinnerAnimation();
+				this.#ui.requestRender();
+			}
+			return;
+		}
+		this.#rawDetails = result.details;
+		const details = sanitizeTextDeep(result.details);
+		this.#result = details === result.details ? result : { ...result, details };
 		this.#resultVersion++;
-		this.#isPartial = isPartial;
-		this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
+		this.#isPartial = false;
+		this.#displaceableByToolName = displaceableToolName(this.#toolName, result);
 		if (this.#displaceableByToolName !== undefined) this.#everDisplaceable = true;
 
-		if (!isPartial) {
-			this.#argsComplete = true;
-		}
+		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
 		this.#updateChecklistStrikeAnimation();
-		if (isPartial) {
-			this.#scheduleDisplayUpdate();
-		} else {
-			this.#updateDisplay();
-		}
+		this.#updateDisplay();
 		this.#maybeConvertImagesForKitty();
 	}
 
@@ -416,17 +440,22 @@ export class ToolExecutionComponent extends Container {
 			if (!img.data || !img.mimeType) continue;
 
 			if (img.mimeType === "image/png") continue;
-			if (this.#convertedImages.has(i)) continue;
+			if (this.#convertedImages.has(i) || this.#kittyConversionsInFlight.has(i)) continue;
+			this.#kittyConversionsInFlight.add(i);
 
 			const index = i;
 			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
 				.then(converted => {
+					this.#kittyConversionsInFlight.delete(index);
 					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
 				})
-				.catch(() => {});
+				.catch(() => {
+					this.#kittyConversionsInFlight.delete(index);
+					this.#ui.requestRender();
+				});
 		}
 	}
 
@@ -435,7 +464,6 @@ export class ToolExecutionComponent extends Container {
 			(this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 		const renderer = this.#renderer;
 		const pendingAnimation = renderer?.animatedPendingPreview;
-		const partialAnimation = renderer?.animatedPartialResult;
 		const pendingCallConsumesSpinner =
 			this.#result === undefined &&
 			(renderer === undefined
@@ -443,18 +471,8 @@ export class ToolExecutionComponent extends Container {
 				: typeof pendingAnimation === "function"
 					? pendingAnimation(this.#args)
 					: pendingAnimation === true);
-		const partialResultConsumesSpinner =
-			this.#result !== undefined &&
-			(renderer === undefined
-				? !this.#tool?.renderCall && !this.#tool?.renderResult
-				: typeof partialAnimation === "function"
-					? partialAnimation(this.#args)
-					: partialAnimation === true);
 		const isLivePartialTool =
-			this.#isPartial &&
-			this.#toolName !== "checklist" &&
-			!isBackgroundAsyncRunning &&
-			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
+			this.#isPartial && this.#toolName !== "checklist" && !isBackgroundAsyncRunning && pendingCallConsumesSpinner;
 		const needsSpinner = isLivePartialTool || this.#displaceableByToolName === "jobs";
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
@@ -520,13 +538,12 @@ export class ToolExecutionComponent extends Container {
 
 	isTranscriptBlockFinalized(): boolean {
 		if (!this.#toolActivityVisible) return true;
+		if (this.#showImages && this.#kittyConversionsInFlight.size > 0) return false;
 		if (this.#sealed) return true;
 		if (this.#result === undefined || this.#checklistStrikeInterval) return false;
 
 		if (this.#displaceableByToolName) return false;
-		if (!this.#isPartial) return true;
-
-		return (this.#result.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
+		return true;
 	}
 
 	seal(): void {
@@ -588,21 +605,7 @@ export class ToolExecutionComponent extends Container {
 		this.#updateDisplay();
 	}
 
-	#scheduleDisplayUpdate(): void {
-		this.#displayUpdateScheduled = true;
-		if (this.#displayUpdateRequested) return;
-		this.#displayUpdateRequested = true;
-		this.#ui.requestComponentRender(this);
-	}
-
-	#flushScheduledDisplayUpdate(): void {
-		if (!this.#displayUpdateScheduled) return;
-		this.#updateDisplay();
-	}
-
 	#updateDisplay(): void {
-		this.#displayUpdateScheduled = false;
-		this.#displayUpdateRequested = false;
 		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
@@ -612,7 +615,6 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		this.#flushScheduledDisplayUpdate();
 		if (!this.#toolActivityVisible) return [];
 		return super.render(width);
 	}
@@ -834,7 +836,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#buildRenderContext(): Record<string, unknown> {
-		const context: Record<string, unknown> = {};
+		const context: Record<string, unknown> = { rawDetails: this.#rawDetails };
 		const normalizeTimeoutSeconds = (value: unknown, maxSeconds: number): number | undefined => {
 			if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
 			return Math.max(1, Math.min(maxSeconds, value));

@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-utils",
-  "version": "19.2.0",
+  "version": "19.2.1",
   "description": "Shared utilities for proto packages",
   "homepage": "https://github.com/myanvoos/proto",
   "author": "Stencil Labs, Inc.",
@@ -28,7 +28,7 @@
     "@types/bun": "catalog:"
   },
   "engines": {
-    "bun": ">=1.3.14"
+    "bun": ">=1.4.0"
   },
   "files": [
     "src",

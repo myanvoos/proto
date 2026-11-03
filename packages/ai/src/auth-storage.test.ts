@@ -420,7 +420,7 @@ describe("AuthStorage account routing policies", () => {
 			await authStorage.set(PROVIDER, [account("a"), account("b")]);
 			expect(await authStorage.getApiKey(PROVIDER, "fresh-1")).toBe("access-b");
 
-			remaining.b = 0.05;
+			remaining.b = 0.1; // 1 - 0.9 rounds above the default 10% reserve.
 			await authStorage.invalidateUsageCache(PROVIDER);
 			expect(await authStorage.getApiKey(PROVIDER, "fresh-2")).toBe("access-a");
 		} finally {
@@ -468,15 +468,14 @@ describe("AuthStorage account routing policies", () => {
 		}
 	});
 
-	it("rejects a policy that matches no stored account or several", async () => {
+	it("ignores absent policy accounts but rejects ambiguous selectors", async () => {
 		const unmatched = createPolicyStorage({
 			remaining: {},
 			policies: [{ provider: PROVIDER, account: { email: "missing@example.com" } }],
 		});
 		try {
-			await expect(unmatched.authStorage.set(PROVIDER, [account("a")])).rejects.toThrow(
-				"matches no stored OAuth account",
-			);
+			await unmatched.authStorage.set(PROVIDER, [account("a")]);
+			expect(await unmatched.authStorage.getApiKey(PROVIDER, "unmatched")).toBe("access-a");
 		} finally {
 			unmatched.authStorage.close();
 		}

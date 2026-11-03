@@ -69,15 +69,18 @@ test("streamed empty reads do not finalize a phantom line", async () => {
 		for (const selector of [":2", "", ":raw", ":2:raw"]) {
 			const result = await read.execute(`streamed-empty-${selector}`, { path: `empty.txt${selector}` });
 			const line = selector.startsWith(":2") ? 2 : 1;
-			expect(textOf(result)).toBe(`Line ${line} is beyond end of file (0 lines total). The file is empty.`);
+			expect(textOf(result)).toBe(
+				selector === ":raw" ? "" : `Line ${line} is beyond end of file (0 lines total). The file is empty.`,
+			);
 			expect(result.details?.totalLines).toBe(0);
 			expect(result.details?.displayContent).toBeUndefined();
 		}
 		for (const selector of [":1-1,3-3", ":1-1,3-3:raw"]) {
 			const result = await read.execute(`streamed-empty-ranges-${selector}`, { path: `empty.txt${selector}` });
 			expect(textOf(result)).toBe(
-				"[Range 1-1 is beyond end of file (0 lines total); skipped]\n" +
-					"[Range 3-3 is beyond end of file (0 lines total); skipped]",
+				selector.endsWith(":raw")
+					? ""
+					: "[Range 1-1 is beyond end of file (0 lines total); skipped]\n[Range 3-3 is beyond end of file (0 lines total); skipped]",
 			);
 		}
 		expect(bufferedAttempts).toBe(6);

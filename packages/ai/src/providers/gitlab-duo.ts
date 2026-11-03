@@ -317,6 +317,7 @@ export function streamGitLabDuo(
 									: undefined,
 								reasoning: anthropicReasoningEffort,
 								toolChoice: mapAnthropicToolChoice(options.toolChoice),
+								waitForTerminalDrain: options.waitForTerminalDrain,
 							},
 						)
 					: mapping.openaiApiType === "responses"
@@ -391,6 +392,8 @@ export function streamGitLabDuo(
 									// OpenAICompletionsOptions carries no forceReasoningOff; fold it like azure-openai-responses.
 									disableReasoning: options.disableReasoning || options.forceReasoningOff,
 									toolChoice: options.toolChoice,
+									waitForTerminalDrain: options.waitForTerminalDrain,
+									maxHttpAttempts: options.maxHttpAttempts,
 								} satisfies OpenAICompletionsOptions,
 							);
 

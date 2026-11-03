@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Write as _};
+use std::{
+	collections::HashMap,
+	fmt::Write as _,
+	hash::{Hash, Hasher},
+};
 
 use super::{
 	backend::AxBackend,
@@ -12,6 +16,34 @@ pub enum AxHandle {
 	Mac(objc2_core_foundation::CFRetained<objc2_application_services::AXUIElement>),
 	#[cfg(target_os = "linux")]
 	AtSpi(atspi::ObjectRefOwned),
+}
+
+impl PartialEq for AxHandle {
+	fn eq(&self, other: &Self) -> bool {
+		match (self, other) {
+			#[cfg(target_os = "macos")]
+			(Self::Mac(a), Self::Mac(b)) => a == b,
+			#[cfg(target_os = "linux")]
+			(Self::AtSpi(a), Self::AtSpi(b)) => a == b,
+		}
+	}
+}
+impl Eq for AxHandle {}
+impl Hash for AxHandle {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		match self {
+			#[cfg(target_os = "macos")]
+			Self::Mac(element) => element.hash(state),
+			#[cfg(target_os = "linux")]
+			Self::AtSpi(object) => object.hash(state),
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WalkBounds {
+	Read,
+	Skip,
 }
 
 #[derive(Debug, Clone)]
@@ -40,17 +72,25 @@ struct Registered {
 	handle:     AxHandle,
 	target_key: String,
 	generation: u64,
+	role:       String,
+	label:      Option<String>,
 }
 
 pub struct AxRegistry {
 	next_ref:    u64,
 	generations: HashMap<String, u64>,
 	entries:     HashMap<u64, Registered>,
+	refs:        HashMap<String, HashMap<AxHandle, u64>>,
 }
 
 impl Default for AxRegistry {
 	fn default() -> Self {
-		Self { next_ref: 1, generations: HashMap::new(), entries: HashMap::new() }
+		Self {
+			next_ref:    1,
+			generations: HashMap::new(),
+			entries:     HashMap::new(),
+			refs:        HashMap::new(),
+		}
 	}
 }
 
@@ -58,25 +98,75 @@ impl AxRegistry {
 	pub(crate) fn begin_snapshot(&mut self, target: &str) -> u64 {
 		let generation = self.generations.entry(target.to_string()).or_default();
 		*generation = generation.saturating_add(1);
-		let current = *generation;
-		self.entries.retain(|_, entry| {
-			entry.target_key != target || entry.generation.saturating_add(1) >= current
+		*generation
+	}
+
+	pub(crate) fn end_snapshot(&mut self, target: &str, generation: u64) {
+		self.evict(|entry| {
+			entry.target_key == target && entry.generation.saturating_add(1) < generation
 		});
-		current
 	}
 
 	pub(crate) fn current_generation(&mut self, target: &str) -> u64 {
 		*self.generations.entry(target.to_string()).or_insert(1)
 	}
 
-	pub(crate) fn register(&mut self, target: &str, generation: u64, handle: AxHandle) -> String {
-		let id = self.next_ref;
-		self.next_ref = self.next_ref.saturating_add(1);
-		self
-			.entries
-			.insert(id, Registered { handle, target_key: target.to_string(), generation });
+	/// Re-read live elements retain their refs per target. A changed role or
+	/// label gets a new ref; the previous ref keeps its original handle until
+	/// expiration.
+	pub(crate) fn register(
+		&mut self,
+		target: &str,
+		generation: u64,
+		handle: AxHandle,
+		props: &AxProps,
+	) -> String {
+		let name = label(props);
+		let known = self
+			.refs
+			.get(target)
+			.and_then(|refs| refs.get(&handle))
+			.copied();
+		let renewed = known.filter(|id| {
+			self
+				.entries
+				.get(id)
+				.is_some_and(|entry| entry.role == props.role && entry.label.as_deref() == name)
+		});
+		let id = renewed.unwrap_or_else(|| {
+			let id = self.next_ref;
+			self.next_ref = self.next_ref.saturating_add(1);
+			self
+				.refs
+				.entry(target.to_owned())
+				.or_default()
+				.insert(handle.clone(), id);
+			id
+		});
+		self.entries.insert(id, Registered {
+			handle,
+			target_key: target.to_owned(),
+			generation,
+			role: props.role.clone(),
+			label: name.map(str::to_owned),
+		});
 		self.enforce_cap();
 		format!("e{id}")
+	}
+
+	fn evict(&mut self, mut expired: impl FnMut(&Registered) -> bool) {
+		self.entries.retain(|id, entry| {
+			if !expired(entry) {
+				return true;
+			}
+			if let Some(refs) = self.refs.get_mut(&entry.target_key)
+				&& refs.get(&entry.handle) == Some(id)
+			{
+				refs.remove(&entry.handle);
+			}
+			false
+		});
+		self.refs.retain(|_, refs| !refs.is_empty());
 	}
 
 	pub(crate) fn resolve(&self, reference: &str) -> CoreResult<AxHandle> {
@@ -119,9 +209,7 @@ impl AxRegistry {
 			else {
 				break;
 			};
-			self
-				.entries
-				.retain(|_, entry| entry.target_key != target || entry.generation != oldest);
+			self.evict(|entry| entry.target_key == target && entry.generation == oldest);
 		}
 	}
 }
@@ -139,6 +227,7 @@ struct WalkState {
 	max_nodes: u32,
 	max_depth: u32,
 	truncated: bool,
+	bounds:    WalkBounds,
 }
 
 fn walk_raw(
@@ -152,16 +241,8 @@ fn walk_raw(
 		return Ok(None);
 	}
 	state.visited += 1;
-	let props = match backend.props(&handle) {
-		Ok(props) => props,
-		Err(_) if depth > 0 => {
-			state.skipped = state.skipped.saturating_add(1);
-			return Ok(None);
-		},
-		Err(error) => return Err(error),
-	};
-	let child_handles = match backend.children(&handle) {
-		Ok(children) => children,
+	let (props, child_handles) = match backend.walk_node(&handle, state.bounds) {
+		Ok(node) => node,
 		Err(_) if depth > 0 => {
 			state.skipped = state.skipped.saturating_add(1);
 			return Ok(None);
@@ -288,7 +369,7 @@ fn format_tree(
 	text: &mut String,
 	nodes: &mut u32,
 ) {
-	let reference = registry.register(target, generation, node.handle);
+	let reference = registry.register(target, generation, node.handle, &node.props);
 	if !text.is_empty() {
 		text.push('\n');
 	}
@@ -343,6 +424,7 @@ pub fn snapshot(
 		max_nodes: options.max_nodes.unwrap_or(800).max(1),
 		max_depth: options.max_depth.unwrap_or(24),
 		truncated: false,
+		bounds:    WalkBounds::Skip,
 	};
 	let root = walk_raw(backend, root, 0, &mut state)?
 		.and_then(|node| filter_node(node, options.all.unwrap_or(false)));
@@ -351,6 +433,7 @@ pub fn snapshot(
 	if let Some(root) = root {
 		format_tree(root, 0, window, registry, target, generation, &mut text, &mut node_count);
 	}
+	registry.end_snapshot(target, generation);
 	if state.truncated {
 		if !text.is_empty() {
 			text.push('\n');
@@ -375,8 +458,14 @@ pub fn query(
 	let target = &window.id;
 	let generation = registry.current_generation(target);
 	let root = backend.window_root(window)?;
-	let mut state =
-		WalkState { visited: 0, skipped: 0, max_nodes: 5_000, max_depth: 24, truncated: false };
+	let mut state = WalkState {
+		visited:   0,
+		skipped:   0,
+		max_nodes: 5_000,
+		max_depth: 24,
+		truncated: false,
+		bounds:    WalkBounds::Read,
+	};
 	let Some(root) = walk_raw(backend, root, 0, &mut state)? else {
 		return Ok(Vec::new());
 	};
@@ -396,7 +485,7 @@ pub fn query(
 			&& contains(label(&node.props), title.as_ref())
 			&& contains(node.props.value.as_deref(), value.as_ref())
 		{
-			let reference = registry.register(target, generation, node.handle);
+			let reference = registry.register(target, generation, node.handle, &node.props);
 			result.push(node_to_napi(reference, node.props));
 			if result.len() >= limit {
 				break;
@@ -414,7 +503,7 @@ pub fn register_node(
 ) -> CoreResult<AxNode> {
 	let props = backend.props(&handle)?;
 	let generation = registry.current_generation(target);
-	let reference = registry.register(target, generation, handle);
+	let reference = registry.register(target, generation, handle, &props);
 	Ok(node_to_napi(reference, props))
 }
 pub fn element_at_node(
@@ -470,16 +559,99 @@ pub fn normalize_role_atspi(native: &str, multiline: bool) -> String {
 	}
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
 	use super::*;
 
+	fn handle(id: u32) -> AxHandle {
+		#[cfg(target_os = "macos")]
+		{
+			unsafe extern "C" {
+				fn AXUIElementCreateApplication(
+					pid: libc::pid_t,
+				) -> *mut objc2_application_services::AXUIElement;
+			}
+			let pointer =
+				std::ptr::NonNull::new(unsafe { AXUIElementCreateApplication(id as libc::pid_t) })
+					.unwrap();
+			AxHandle::Mac(unsafe { objc2_core_foundation::CFRetained::from_raw(pointer) })
+		}
+		#[cfg(target_os = "linux")]
+		{
+			AxHandle::AtSpi(atspi::ObjectRefOwned::from_static_str_unchecked(
+				":1.7",
+				Box::leak(format!("/org/a11y/atspi/{id}").into_boxed_str()),
+			))
+		}
+	}
+
+	#[test]
+	fn refs_survive_rereads_and_one_missing_snapshot_but_expire_after_two() {
+		let mut registry = AxRegistry::default();
+		let props = node("button", Some("Go"), vec![]).props;
+		let mut read = |present: bool| {
+			let generation = registry.begin_snapshot("window");
+			let reference =
+				present.then(|| registry.register("window", generation, handle(2), &props));
+			registry.end_snapshot("window", generation);
+			reference
+		};
+		let first = read(true).unwrap();
+		assert_eq!(read(true).as_deref(), Some(first.as_str()));
+		read(false);
+		assert_eq!(read(true).as_deref(), Some(first.as_str()));
+		read(false);
+		read(false);
+		assert_eq!(
+			registry.resolve(&first).err().unwrap().code,
+			super::super::error::ErrorCode::StaleRef
+		);
+	}
+
+	#[test]
+	fn relabelled_elements_keep_old_handles_without_overwriting_new_refs() {
+		let mut registry = AxRegistry::default();
+		let old = node("button", Some("Play"), vec![]).props;
+		let new = node("button", Some("Pause"), vec![]).props;
+		let generation = registry.begin_snapshot("window");
+		let first = registry.register("window", generation, handle(2), &old);
+		let generation = registry.begin_snapshot("window");
+		let second = registry.register("window", generation, handle(2), &new);
+		assert_ne!(first, second);
+		assert!(registry.resolve(&first).is_ok());
+		for _ in 0..2 {
+			let generation = registry.begin_snapshot("window");
+			assert_eq!(registry.register("window", generation, handle(2), &new), second);
+			registry.end_snapshot("window", generation);
+		}
+		assert!(registry.resolve(&first).is_err());
+		assert!(registry.resolve(&second).is_ok());
+	}
+
+	#[test]
+	fn refs_are_isolated_between_targets_and_capped() {
+		let mut registry = AxRegistry::default();
+		let props = node("button", Some("Go"), vec![]).props;
+		let first = registry.register("desktop", 1, handle(2), &props);
+		let generation = registry.current_generation("window");
+		let second = registry.register("window", generation, handle(2), &props);
+		assert_ne!(first, second);
+		for _ in 0..2 {
+			let generation = registry.begin_snapshot("window");
+			registry.end_snapshot("window", generation);
+		}
+		assert!(registry.resolve(&first).is_ok());
+		assert!(registry.resolve(&second).is_err());
+		for id in 10..5_011 {
+			registry.register("large", 1, handle(id), &props);
+		}
+		assert!(registry.entries.len() <= 5_000);
+		assert!(registry.resolve(&first).is_ok());
+	}
+
 	fn node(role: &str, title: Option<&str>, children: Vec<WalkNode>) -> WalkNode {
 		WalkNode {
-			handle: AxHandle::AtSpi(atspi::ObjectRefOwned::from_static_str_unchecked(
-				":1.7",
-				"/org/a11y/atspi/null",
-			)),
+			handle: handle(1),
 			props: AxProps {
 				role:        role.into(),
 				native_role: role.into(),

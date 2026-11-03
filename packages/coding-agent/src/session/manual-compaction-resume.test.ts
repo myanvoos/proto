@@ -10,6 +10,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import type { ExtensionRunner } from "../extensibility/extensions";
+import { runExtensionCompact } from "../extensibility/extensions/compact-handler";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -177,6 +178,44 @@ describe("manual compaction resumes the turn it interrupted", () => {
 		await session.waitForIdle();
 
 		expect(dispatched).toEqual([]);
+	});
+
+	it("reports an overlapping extension compaction through onError exactly once", async () => {
+		const gate = Promise.withResolvers<void>();
+		createSession({ gate: gate.promise });
+		const errors: string[] = [];
+		const compaction = runExtensionCompact(session, undefined);
+
+		try {
+			await runExtensionCompact(session, { onError: error => errors.push(error.message) });
+			expect(errors).toEqual(["Compaction already in progress"]);
+		} finally {
+			gate.resolve();
+			await compaction;
+		}
+	});
+
+	it("preserves cancellation rejection for extension callers without onError", async () => {
+		createSession({ cancel: true });
+
+		await expect(runExtensionCompact(session, undefined)).rejects.toMatchObject({
+			name: "CompactionCancelledError",
+		});
+	});
+
+	it("does not report an extension completion callback exception as a failed compaction", async () => {
+		createSession();
+		const errors: string[] = [];
+
+		await expect(
+			runExtensionCompact(session, {
+				onComplete: () => {
+					throw new Error("Extension completion failed");
+				},
+				onError: error => errors.push(error.message),
+			}),
+		).rejects.toThrow("Extension completion failed");
+		expect(errors).toEqual([]);
 	});
 
 	it("resumes after a no-op rejection, which leaves history unchanged", async () => {

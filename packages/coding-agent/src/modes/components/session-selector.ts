@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	FuzzyQuery,
 	FuzzyText,
 	Input,
 	ListRangeSelection,
@@ -93,13 +94,13 @@ function isLiteralMatch(textLower: string, tokens: string[]): boolean {
 function scoreFuzzySession(
 	session: SessionInfo,
 	index: number,
-	tokens: string[],
+	queries: FuzzyQuery[],
 	fuzzy: FuzzyText,
 ): RankedSessionMatch | undefined {
 	let score = 0;
 	let worstTokenScore = Number.NEGATIVE_INFINITY;
-	for (const token of tokens) {
-		const match = fuzzy.match(token);
+	for (const query of queries) {
+		const match = query.match(fuzzy);
 		if (!match.matches) return undefined;
 		score += match.score;
 		worstTokenScore = Math.max(worstTokenScore, match.score);
@@ -143,6 +144,7 @@ export function rankSessionSearchMatches(allSessions: SessionInfo[], query: stri
 
 	const literal: RankedSessionMatch[] = [];
 	const fuzzyMatches: RankedSessionMatch[] = [];
+	const queries = tokens.map(token => new FuzzyQuery(token));
 	for (let index = 0; index < allSessions.length; index++) {
 		const session = allSessions[index]!;
 		const textLower = sessionTextLower(session);
@@ -150,7 +152,7 @@ export function rankSessionSearchMatches(allSessions: SessionInfo[], query: stri
 			literal.push({ session, score: 0, index });
 			continue;
 		}
-		const match = scoreFuzzySession(session, index, tokens, new FuzzyText(textLower));
+		const match = scoreFuzzySession(session, index, queries, new FuzzyText(textLower));
 		if (match) fuzzyMatches.push(match);
 	}
 
@@ -465,27 +467,33 @@ class SessionList implements Component {
 		// (after a delete) only clamps, keeping focus on the deleted row's neighbor.
 		if (queryChanged) this.#selectedIndex = 0;
 
-		this.#scanFuzzySlice(this.#scanGeneration, tokens, rest, 0, FUZZY_SCAN_INLINE_COUNT);
+		const inlineEnd = Math.min(rest.length, FUZZY_SCAN_INLINE_COUNT);
+		const queries = tokens.map(token => new FuzzyQuery(token));
+		this.#scoreFuzzy(queries, rest, 0, inlineEnd);
 		this.#composeFiltered();
+		if (inlineEnd < rest.length)
+			this.#scheduleFuzzyScan(this.#scanGeneration, queries, rest, inlineEnd, this.#fuzzyRanked.length);
 		this.#scheduleHistoryMerge(query);
 	}
 
-	#scanFuzzySlice(generation: number, tokens: string[], rest: number[], start: number, budget: number): void {
+	#scoreFuzzy(queries: FuzzyQuery[], rest: number[], start: number, end: number): void {
 		const all = this.#allSessions;
-		const end = Math.min(rest.length, start + budget);
 		for (let i = start; i < end; i++) {
 			const index = rest[i]!;
 			const session = all[index]!;
-			const match = scoreFuzzySession(session, index, tokens, new FuzzyText(sessionTextLower(session)));
+			const match = scoreFuzzySession(session, index, queries, new FuzzyText(sessionTextLower(session)));
 			if (match) this.#fuzzyRanked.push(match);
 		}
-		if (end >= rest.length) return;
+	}
+
+	#scheduleFuzzyScan(generation: number, queries: FuzzyQuery[], rest: number[], start: number, shown: number): void {
 		this.#scanTimer = setTimeout(() => {
 			this.#scanTimer = undefined;
 			if (generation !== this.#scanGeneration) return;
-			const before = this.#fuzzyRanked.length;
-			this.#scanFuzzySlice(generation, tokens, rest, end, FUZZY_SCAN_CHUNK_COUNT);
-			if (this.#fuzzyRanked.length > before) {
+			const end = Math.min(rest.length, start + FUZZY_SCAN_CHUNK_COUNT);
+			this.#scoreFuzzy(queries, rest, start, end);
+			if (end < rest.length) this.#scheduleFuzzyScan(generation, queries, rest, end, shown);
+			else if (this.#fuzzyRanked.length > shown) {
 				this.#composeFiltered();
 				this.onRequestRender?.();
 			}

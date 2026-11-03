@@ -140,6 +140,11 @@ export function resolveUsedFraction(limit: UsageLimit): number | undefined {
 	return undefined;
 }
 
+/** Float slack for a remaining fraction calculated as `1 - used` at its reserve boundary. */
+export function isWithinUsageReserve(remainingFraction: number, reserveFraction: number): boolean {
+	return remainingFraction <= reserveFraction + 1e-9;
+}
+
 export interface UsageHistoryEntry {
 	recordedAt: number;
 	provider: Provider;
@@ -344,6 +349,8 @@ export interface UsageFetchContext {
 
 export interface UsageProvider {
 	id: Provider;
+	/** Bump when persisted last-good reports have an incompatible shape. */
+	cacheVersion?: number;
 	fetchUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null>;
 
 	parseRateLimitHeaders?(

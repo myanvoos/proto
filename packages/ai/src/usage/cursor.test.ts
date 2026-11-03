@@ -40,6 +40,65 @@ describe("Cursor credential ranking", () => {
 	});
 });
 
+describe("Cursor subscription pools", () => {
+	it("keeps legacy Other Models as a percentage when the plan dollar limit belongs to another pool", () => {
+		const report = parseCursorIndividualUsage({ individualUsage: { plan: { limit: 40000, apiPercentUsed: 48.44 } } });
+		expect(report?.limits[0]?.amount).toEqual({ used: 48.44, usedFraction: 0.4844, unit: "percent" });
+	});
+
+	it("separates X Subscription weekly usage from exhausted, non-resetting prepaid credit", () => {
+		const report = parseCursorIndividualUsage(
+			{
+				membershipType: "unified_pro",
+				billingCycleEnd: "2030-01-01T00:00:00Z",
+				individualUsage: { plan: { limit: 2000, used: 400, totalPercentUsed: 20 }, onDemand: { enabled: false } },
+			},
+			1,
+			2_000_000_000_000,
+		);
+		if (!report) throw new Error("Expected subscription report");
+		const native = cursorRankingStrategy.scopeLimits?.(report, { modelId: "grok-4.7" }) ?? [];
+		const other = cursorRankingStrategy.scopeLimits?.(report, { modelId: "claude-opus-5" }) ?? [];
+		expect(native[0]?.window).toMatchObject({ id: "weekly", resetsAt: 2_000_000_000_000 });
+		expect(native[0]?.amount.usedFraction).toBe(0.2);
+		expect(other[0]?.window).toEqual({ id: "prepaid", label: "Prepaid credit" });
+		expect(other.some(isUsageLimitExhausted)).toBe(true);
+		expect(cursorRankingStrategy.healableBlockScopes?.(report).map(scope => scope.blockScope)).toEqual([
+			"pool:auto",
+			"pool:api",
+		]);
+		const legacy = parseCursorIndividualUsage({ individualUsage: { plan: { autoPercentUsed: 0 } } });
+		if (!legacy) throw new Error("Expected legacy report");
+		expect(cursorRankingStrategy.healableBlockScopes?.(legacy)).toEqual([]);
+	});
+
+	it("reads GitHub login identity and the weekly reset using authenticated Connect RPC", async () => {
+		const calls: string[] = [];
+		const fetch: FetchImpl = async (input, init) => {
+			const url = String(input);
+			calls.push(url);
+			if (url.includes("aiserver.v1.DashboardService/")) {
+				expect(init?.method).toBe("POST");
+				expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${cursorAccessToken("github|42")}`);
+				return Response.json(
+					url.endsWith("/GetMe")
+						? { authId: "github|42", email: "github@example.com" }
+						: { planInfo: { includedUsageResetsAt: 2_000_000_000_000 } },
+				);
+			}
+			if (url.endsWith("/auth/usage")) return Response.json({});
+			return Response.json({ membershipType: "unified_pro", individualUsage: { plan: { totalPercentUsed: 50 } } });
+		};
+		const report = await cursorUsageProvider.fetchUsage(
+			{ provider: "cursor", credential: { type: "oauth", accessToken: cursorAccessToken("github|42") } },
+			{ fetch },
+		);
+		expect(report?.metadata?.email).toBe("github@example.com");
+		expect(report?.limits[0]?.window?.resetsAt).toBe(2_000_000_000_000);
+		expect(calls.some(url => url.endsWith("/GetPlanInfo"))).toBe(true);
+	});
+});
+
 describe("Cursor usage report", () => {
 	it("drops uncapped, unused legacy buckets beside the dashboard summary", async () => {
 		const fetch: FetchImpl = async input => {

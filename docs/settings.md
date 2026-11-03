@@ -259,6 +259,10 @@ Accepted **value** keys:
 
 Only string values are kept; malformed scoped entries are ignored. Path scoping is resolved **after** the layer merge, so it reads the final effective array.
 
+## Extra context filenames
+
+`contextFiles.extra` (string array, default `[]`) adds instruction filenames such as `AGENTS.local.md` alongside built-in context files. Use plain filenames, not paths or built-in names. Linked worktrees also read the primary checkout; project-configured lists cannot read files from your user agent directory. See [Context files](./context-files.md#extra-context-filenames) for discovery boundaries and examples.
+
 ## Provider and source disabling
 
 `disabledProviders` is a single shared id namespace that gates two different subsystems, before any credential check:

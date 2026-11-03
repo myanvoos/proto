@@ -132,6 +132,62 @@ describe("SessionManager.forkFrom side-agent options", () => {
 		await reopened.close();
 	});
 
+	test("fork billing reset excludes inherited fleet spend but retains child token counts", async () => {
+		const { cwd, sourceFile } = await writeSource([
+			assistant("a1", null, "call", 2),
+			{
+				type: "custom",
+				id: "child-spend",
+				parentId: "a1",
+				timestamp: new Date().toISOString(),
+				customType: "subagent_usage",
+				data: {
+					version: 1,
+					agentId: "child",
+					input: 20,
+					output: 5,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 25,
+					cost: 3,
+					premiumRequests: 2,
+				},
+			},
+		]);
+		const fork = await SessionManager.forkFrom(sourceFile, cwd, path.join(cwd, "fork"), undefined, {
+			resetInheritedCost: true,
+		});
+		try {
+			expect(fork.getUsageStatistics().subagent).toMatchObject({ cost: 0, premiumRequests: 0, totalTokens: 25 });
+			expect(fork.getUsageStatistics().cost).toBe(0);
+		} finally {
+			await fork.close();
+		}
+	});
+
+	test("forking an exited source leaves interrupted calls for process-exit recovery", async () => {
+		const { cwd, sourceFile } = await writeSource([
+			assistant("a1", null, "call-exited"),
+			{
+				type: "custom",
+				id: "exit",
+				parentId: "a1",
+				timestamp: new Date().toISOString(),
+				customType: "session_exit",
+				data: { reason: "writer exited", kind: "process_exit", recordedAt: new Date().toISOString() },
+			},
+		]);
+		const fork = await SessionManager.forkFrom(sourceFile, cwd, path.join(cwd, "fork"), undefined, {
+			repairInterruptedTail: true,
+		});
+		try {
+			expect(syntheticResultIds(fork)).toEqual([]);
+			expect(fork.getLeafEntry()).toMatchObject({ type: "custom", customType: "session_exit" });
+		} finally {
+			await fork.close();
+		}
+	});
+
 	test("repairInterruptedTail follows only the active branch", async () => {
 		const { cwd, sourceFile } = await writeSource([
 			assistant("active", null, "call-active"),

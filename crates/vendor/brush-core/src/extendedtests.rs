@@ -127,7 +127,6 @@ pub(crate) fn apply_unary_predicate_to_str(
 			}
 		},
 		ast::UnaryPredicate::FdIsOpenTerminal => {
-
 			if let Ok(fd) = operand.trim().parse::<ShellFd>() {
 				if let Some(open_file) = params.try_fd(shell, fd) {
 					Ok(open_file.is_terminal())
@@ -223,8 +222,6 @@ async fn apply_binary_predicate(
 			let (matches, captures) = match regex.matches(s.as_str()) {
 				Ok(Some(captures)) => (true, captures),
 				Ok(None) => (false, vec![]),
-
-
 
 				Err(e) => {
 					tracing::warn!("error using regex: {}", e);
@@ -331,8 +328,6 @@ async fn apply_binary_predicate(
 					.await;
 			}
 
-
-
 			Ok(left < right)
 		},
 		ast::BinaryPredicate::LeftSortsAfterRight => {
@@ -344,8 +339,6 @@ async fn apply_binary_predicate(
 					.trace_command(params, std::format!("[[ {left} {op} {right} ]]"))
 					.await;
 			}
-
-
 
 			Ok(left > right)
 		},
@@ -428,10 +421,6 @@ async fn apply_binary_predicate(
 			Ok(left >= right)
 		},
 
-
-
-
-
 		ast::BinaryPredicate::StringExactlyMatchesPattern => {
 			let s = expansion::basic_expand_word(shell, params, left).await?;
 			let pattern = expansion::basic_expand_pattern(shell, params, right)
@@ -488,16 +477,8 @@ pub(crate) fn apply_binary_predicate_to_strs(
 		ast::BinaryPredicate::LeftFileIsOlderOrDoesNotExistWhenRightDoes => {
 			left_file_is_older_or_does_not_exist_when_right_does(shell, left, right)
 		},
-		ast::BinaryPredicate::LeftSortsBeforeRight => {
-
-
-			Ok(left < right)
-		},
-		ast::BinaryPredicate::LeftSortsAfterRight => {
-
-
-			Ok(left > right)
-		},
+		ast::BinaryPredicate::LeftSortsBeforeRight => Ok(left < right),
+		ast::BinaryPredicate::LeftSortsAfterRight => Ok(left > right),
 		ast::BinaryPredicate::ArithmeticEqualTo => {
 			Ok(apply_test_binary_arithmetic_predicate(left, right, |left, right| left == right))
 		},
@@ -550,8 +531,6 @@ fn apply_test_binary_arithmetic_predicate(
 	right: &str,
 	op: fn(i64, i64) -> bool,
 ) -> bool {
-
-
 	let left: Result<i64, _> = left.trim().parse();
 	let right: Result<i64, _> = right.trim().parse();
 

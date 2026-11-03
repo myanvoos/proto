@@ -10,7 +10,7 @@ import {
 	type Timestamp,
 } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
 import { create, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
-import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata, devinWireMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
+import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
 import { decodeDevinUnaryMessage } from "@oh-my-pi/pi-catalog/wire/devin-proto";
 import type {
 	UsageAmount,
@@ -246,10 +246,7 @@ async function fetchDevinUsage(params: UsageFetchParams, ctx: UsageFetchContext)
 	try {
 		const request = create(GetUserStatusRequestSchema, {
 			// OAuth access tokens are session tokens; stored API keys (incl. legacy Windsurf) go on the wire as-is.
-			metadata: create(
-				MetadataSchema,
-				params.credential.type === "oauth" ? devinCliMetadata(token) : devinWireMetadata(token),
-			),
+			metadata: create(MetadataSchema, devinCliMetadata(token)),
 		});
 		const response = await ctx.fetch(`${baseUrl}${GET_USER_STATUS_PATH}`, {
 			method: "POST",

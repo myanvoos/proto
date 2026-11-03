@@ -230,7 +230,7 @@ function selectWithinCap<T extends { status: ChecklistStatus }>(
 	isMatched: (task: T) => boolean,
 	cap: number,
 ): CollapsedChecklistSelection<T> {
-	if (base.length <= cap) return { items: base, summary: "" };
+	if (base.length <= cap + 1) return { items: base, summary: "" };
 
 	const active = base.filter(task => isActiveChecklist(task, isMatched));
 

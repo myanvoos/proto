@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Ellipsis,
+	getKeybindings,
 	Markdown,
 	type MarkdownTheme,
 	matchesKey,
@@ -81,7 +82,7 @@ interface AskDialogInputGuard {
 	handleInput(keyData: string): void;
 	hint: string;
 
-	syncPresentation?(): void;
+	syncPresentation?(blocked: boolean): void;
 }
 
 interface AskDialogOptions {
@@ -135,9 +136,7 @@ function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): 
 }
 
 function wrapQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
-	const mdTheme = getMarkdownTheme();
-	const questionText = renderInlineMarkdown(replaceTabs(question.question), mdTheme, t => theme.fg("text", t));
-	return wrapTextWithAnsi(questionText, Math.max(1, width));
+	return renderPreviewContent(question.question, Math.max(1, width), "text");
 }
 
 function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number, maxRows = MAX_HEADER_ROWS): string[] {
@@ -215,10 +214,10 @@ function splitPreviewSegments(preview: string): PreviewSegment[] {
 	return segments;
 }
 
-function renderPreviewContent(preview: string, width: number): string[] {
+function renderPreviewContent(preview: string, width: number, textColor: "muted" | "text" = "muted"): string[] {
 	const out: string[] = [];
 	const mdTheme = getMarkdownTheme();
-	const accentStyle = { color: (text: string) => theme.fg("muted", text) };
+	const accentStyle = { color: (text: string) => theme.fg(textColor, text) };
 	for (const segment of splitPreviewSegments(preview)) {
 		if (segment.kind === "code") {
 			const highlighted = highlightCode(segment.text, segment.language);
@@ -289,13 +288,16 @@ function clearNoteUnlessRow(state: QuestionState, rowKey: string): void {
 	if (state.noteRowKey !== undefined && state.noteRowKey !== rowKey) clearNote(state);
 }
 
-function noteForSubmittedAnswer(question: ExtensionAskDialogQuestion, state: QuestionState): string | undefined {
+function noteForSubmittedAnswer(
+	question: ExtensionAskDialogQuestion,
+	state: QuestionState,
+): { text: string; option?: string } | undefined {
 	if (state.note === undefined || state.noteRowKey === undefined) return undefined;
-	if (state.noteRowKey === "other") return state.customInput !== undefined ? state.note : undefined;
+	if (state.noteRowKey === "other") return state.customInput !== undefined ? { text: state.note } : undefined;
 	const match = /^option:(\d+)$/.exec(state.noteRowKey);
 	const optionIndex = match?.[1] === undefined ? Number.NaN : Number.parseInt(match[1], 10);
 	const option = Number.isInteger(optionIndex) ? question.options[optionIndex] : undefined;
-	return option && state.selectedOptions.has(option.label) ? state.note : undefined;
+	return option && state.selectedOptions.has(option.label) ? { text: state.note, option: option.label } : undefined;
 }
 
 function optionMarker(question: ExtensionAskDialogQuestion, checked: boolean): string {
@@ -383,6 +385,7 @@ function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]): Exte
 }
 
 export class AskDialogComponent implements Component {
+	#guardReleased = false;
 	#maxHeight = Number.POSITIVE_INFINITY;
 
 	setMaxHeight(rows: number): void {
@@ -404,6 +407,7 @@ export class AskDialogComponent implements Component {
 	#previewCache: PreviewRenderCache = new Map();
 	#overflowLayouts = new WeakMap<ExtensionAskDialogQuestion, Set<string>>();
 	#expanded = false;
+	#hidden = false;
 	#contentWidth = 76;
 	#expandable = false;
 	readonly #questions: ExtensionAskDialogQuestion[];
@@ -454,7 +458,7 @@ export class AskDialogComponent implements Component {
 
 	/** Toggles truncated question/description text; false when nothing is truncated, so Ctrl+O can fall through. */
 	toggleQuestionExpansion(): boolean {
-		if (this.#closed || this.#isSubmitTab()) return false;
+		if (this.#closed || this.#hidden || this.#isSubmitTab()) return false;
 		const question = this.#questions[this.#currentQuestionIndex()];
 		if (!question || (!this.#expanded && !this.#questionOverflows(question, this.#contentWidth))) return false;
 		this.#expanded = !this.#expanded;
@@ -477,14 +481,31 @@ export class AskDialogComponent implements Component {
 			this.#finishCancel();
 			return;
 		}
+		if (getKeybindings().matches(keyData, "app.ask.hide")) {
+			this.#hidden = !this.#hidden;
+			this.#requestRender();
+			return;
+		}
 		if (matchesAppToolsExpand(keyData)) {
 			this.toggleQuestionExpansion();
 			return;
 		}
 		const inputGuard = this.options.inputGuard;
-		if (inputGuard?.isBlocked()) {
-			inputGuard.handleInput(keyData);
+		if (this.#guardBlocks()) {
+			if (!this.#hidden && (matchesSelectUp(keyData) || matchesSelectDown(keyData))) {
+				this.#guardReleased = true;
+				this.#requestRender();
+				return;
+			}
+			inputGuard?.handleInput(keyData);
 			this.#requestRender();
+			return;
+		}
+		if (this.#hidden) {
+			if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+				this.#hidden = false;
+				this.#requestRender();
+			}
 			return;
 		}
 		if (this.#hasSubmitTab() && handleTabSwitchKey(keyData, direction => this.#switchTab(direction))) {
@@ -499,7 +520,8 @@ export class AskDialogComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		this.options.inputGuard?.syncPresentation?.();
+		this.options.inputGuard?.syncPresentation?.(this.#guardBlocks());
+		if (this.#hidden) return this.#renderHidden(width);
 		let innerWidth = Math.max(1, width - 4);
 		this.#contentWidth = innerWidth;
 
@@ -587,6 +609,23 @@ export class AskDialogComponent implements Component {
 		return this.#remainingSeconds === undefined ? "Ask" : `Ask (${this.#remainingSeconds}s)`;
 	}
 
+	#renderHidden(width: number): readonly string[] {
+		const hideKey = editorKey("app.ask.hide");
+		const show = this.#guardBlocks() ? hideKey : hideKey ? `${hideKey}/Enter` : "Enter";
+		const hints: string[] = [];
+		if (this.#guardBlocks() && this.options.inputGuard) hints.push(this.options.inputGuard.hint);
+		if (show) hints.push(`${show} show`);
+		hints.push(`${cancelKeyLabel()} cancel`);
+		const hint = theme.fg("dim", ` · ${hints.join(" · ")}`);
+		const label = theme.fg("accent", `${this.#titleText()} hidden:`);
+		const question = this.#questions[this.#currentQuestionIndex()];
+		const more = this.#questions.length > 1 ? theme.fg("dim", ` (+${this.#questions.length - 1} more)`) : "";
+		const summary = normalizedInlineInput(sanitizeCarriageReturns(question?.question ?? ""));
+		const summaryWidth = Math.max(1, width - visibleWidth(label) - visibleWidth(more) - visibleWidth(hint) - 1);
+		const clipped = truncateToWidth(summary, summaryWidth, Ellipsis.Unicode);
+		return [truncateToWidth(`${label} ${theme.fg("muted", clipped)}${more}${hint}`, width, Ellipsis.Unicode)];
+	}
+
 	#hasSubmitTab(): boolean {
 		return this.#questions.length > 1 || this.#questions.some(question => question.multi);
 	}
@@ -601,6 +640,10 @@ export class AskDialogComponent implements Component {
 
 	#currentQuestionIndex(): number {
 		return clamp(this.#activeTabIndex, 0, Math.max(0, this.#questions.length - 1));
+	}
+
+	#guardBlocks(): boolean {
+		return !this.#guardReleased && (this.options.inputGuard?.isBlocked() ?? false);
 	}
 
 	#requestRender(): void {
@@ -640,9 +683,10 @@ export class AskDialogComponent implements Component {
 	}
 
 	#footerHintText(indicator: string): string {
-		const cancel = `${cancelKeyLabel()} cancel`;
+		const hideKey = editorKey("app.ask.hide");
+		const cancel = `${cancelKeyLabel()} cancel${hideKey ? ` · ${hideKey} hide` : ""}`;
 		const inputGuard = this.options.inputGuard;
-		if (inputGuard?.isBlocked()) return `${inputGuard.hint}${this.#expandHint()} · ${cancel}`;
+		if (inputGuard && this.#guardBlocks()) return `↑/↓ answer · ${inputGuard.hint}${this.#expandHint()} · ${cancel}`;
 		if (this.#isSubmitTab()) {
 			const scroll = indicator ? ` ${indicator} scroll ·` : "";
 			return `Enter submit · ↑/↓ scroll ·${scroll} ${cancel}`;
@@ -651,7 +695,7 @@ export class AskDialogComponent implements Component {
 
 		const enterAction = this.#questions.length > 1 ? "next" : "submit";
 		const action = question?.multi ? `Space toggle · Enter ${enterAction}` : "Enter select · n note";
-		const tabs = this.#hasSubmitTab() ? " · Tab/←/→" : "";
+		const tabs = this.#hasSubmitTab() ? " · Tab/←/→ question" : "";
 		const expand = this.#expandHint();
 		if (this.#questionCanPage && indicator) {
 			return `${action} · ↑/↓${tabs} · ${cancel}${expand} · ${pageKeysLabel()} ${indicator}`;
@@ -935,7 +979,7 @@ export class AskDialogComponent implements Component {
 			const label = questionTabLabel(question, index);
 			const answer = renderAnswerSummary(question, state);
 			allLines.push(`${theme.fg("dim", `${index + 1}. ${label}:`)} ${answer}`);
-			const submittedNote = noteForSubmittedAnswer(question, state);
+			const submittedNote = noteForSubmittedAnswer(question, state)?.text;
 			if (submittedNote?.trim()) {
 				const note = normalizedInlineInput(submittedNote);
 				allLines.push(
@@ -1064,7 +1108,8 @@ export class AskDialogComponent implements Component {
 				multi: question.multi ?? false,
 				selectedOptions,
 				customInput: state.customInput,
-				note: noteForSubmittedAnswer(question, state),
+				note: noteForSubmittedAnswer(question, state)?.text,
+				noteOption: noteForSubmittedAnswer(question, state)?.option,
 				timedOut: state.timedOut || undefined,
 			});
 		}

@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { archiveEntryText, readArchiveEntries } from "../ar";
+import { ZipPackage } from "../ar";
 import { attribute, childElements, descendants, firstChild, localName, parseXml, type XmlElement } from "./xml";
 
 export interface DocxMessage {
@@ -22,6 +22,7 @@ export interface DocxImage {
 	readonly altText: string;
 
 	read(encoding: "base64"): Promise<string>;
+	readBytes(): Promise<Uint8Array>;
 }
 
 export type ImageAttributes = Readonly<Record<string, string>>;
@@ -109,7 +110,7 @@ interface NumberingLevel {
 }
 
 interface ConversionContext {
-	readonly entries: ReadonlyMap<string, Uint8Array>;
+	readonly package: ZipPackage;
 	readonly relationships: ReadonlyMap<string, Relationship>;
 	readonly contentTypes: ReadonlyMap<string, string>;
 	readonly styles: ReadonlyMap<string, Style>;
@@ -363,8 +364,8 @@ async function renderImage(element: XmlElement, context: ConversionContext): Pro
 	const relationship = relationshipId ? context.relationships.get(relationshipId) : undefined;
 	if (!relationship || relationship.external) return "";
 	const memberPath = relationshipPath(relationship.target);
-	const bytes = context.entries.get(memberPath);
-	if (!bytes) {
+	const docx = context.package;
+	if (!docx.members.has(memberPath)) {
 		context.messages.push({ type: "warning", message: `Could not find image ${memberPath}` });
 		return "";
 	}
@@ -381,7 +382,11 @@ async function renderImage(element: XmlElement, context: ConversionContext): Pro
 		altText,
 		async read(encoding: "base64"): Promise<string> {
 			if (encoding !== "base64") throw new Error(`Unsupported image encoding: ${encoding}`);
+			const bytes = await readImageMember(docx, memberPath);
 			return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+		},
+		readBytes(): Promise<Uint8Array> {
+			return readImageMember(docx, memberPath);
 		},
 	};
 	const converted = await context.convertImage.convert(image);
@@ -391,6 +396,12 @@ async function renderImage(element: XmlElement, context: ConversionContext): Pro
 		.map(([name, value]) => `${name}="${escapeAttribute(value)}"`)
 		.join(" ");
 	return attributes ? `<img ${attributes} />` : "<img />";
+}
+
+async function readImageMember(docx: ZipPackage, memberPath: string): Promise<Uint8Array> {
+	const bytes = await docx.readBytes(memberPath);
+	if (!bytes) throw new Error(`Could not find image ${memberPath}`);
+	return bytes;
 }
 
 function renderFootnoteReference(element: XmlElement, context: ConversionContext): string {
@@ -644,21 +655,21 @@ function defaultImageConverter(): ImageConverter {
 
 export async function convertToHtml(input: DocxInput, options: ConvertToHtmlOptions = {}): Promise<DocxResult> {
 	const bytes = "buffer" in input && input.buffer ? input.buffer : await fs.readFile(input.path);
-	const entries = await readArchiveEntries({ bytes, format: "zip" });
-	const documentXml = archiveEntryText(entries, "word/document.xml");
+	const docx = await ZipPackage.open(bytes);
+	const documentXml = await docx.readText("word/document.xml");
 	if (!documentXml) throw new Error("Invalid DOCX: missing word/document.xml");
 	const context: ConversionContext = {
-		entries,
-		relationships: parseRelationships(archiveEntryText(entries, "word/_rels/document.xml.rels")),
-		contentTypes: parseContentTypes(archiveEntryText(entries, "[Content_Types].xml")),
-		styles: parseStyles(archiveEntryText(entries, "word/styles.xml")),
-		numbering: parseNumbering(archiveEntryText(entries, "word/numbering.xml")),
+		package: docx,
+		relationships: parseRelationships(await docx.readText("word/_rels/document.xml.rels")),
+		contentTypes: parseContentTypes(await docx.readText("[Content_Types].xml")),
+		styles: parseStyles(await docx.readText("word/styles.xml")),
+		numbering: parseNumbering(await docx.readText("word/numbering.xml")),
 		messages: [],
 		warnedStyles: new Set(),
 		customStyles: parseCustomStyles(options.styleMap),
 		includeDefaultStyleMap: options.includeDefaultStyleMap !== false,
 		convertImage: options.convertImage ?? defaultImageConverter(),
-		footnotes: parseFootnotes(archiveEntryText(entries, "word/footnotes.xml")),
+		footnotes: parseFootnotes(await docx.readText("word/footnotes.xml")),
 		usedFootnotes: [],
 		footnoteOrdinals: new Map(),
 	};

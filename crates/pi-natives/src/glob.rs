@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, path::Path};
+use std::cmp::Ordering;
 
 use napi::{
 	bindgen_prelude::*,
@@ -66,39 +66,35 @@ fn compare_matches_by_rank(a: &GlobMatch, b: &GlobMatch) -> Ordering {
 		.then_with(|| a.path.cmp(&b.path))
 }
 
-fn resolve_symlink_target_type(root: &Path, relative_path: &str) -> Option<FileType> {
-	let target_path = root.join(relative_path);
-	let metadata = std::fs::metadata(target_path).ok()?;
-	if metadata.is_dir() {
-		Some(FileType::Dir)
-	} else if metadata.is_file() {
-		Some(FileType::File)
-	} else {
-		None
-	}
-}
-
-fn apply_file_type_filter(entry: &GlobMatch, config: &GlobConfig) -> Option<FileType> {
+fn apply_file_type_filter(entry: &mut GlobMatch, config: &GlobConfig) -> bool {
 	let Some(filter) = config.file_type_filter else {
-		return Some(entry.file_type);
+		return true;
 	};
 	if entry.file_type == filter {
-		return Some(entry.file_type);
+		return true;
 	}
-	if entry.file_type != FileType::Symlink {
-		return None;
+	if entry.file_type != FileType::Symlink || filter == FileType::Symlink {
+		return false;
 	}
-	match filter {
-		FileType::File | FileType::Dir => {
-			let resolved = resolve_symlink_target_type(&config.root, &entry.path)?;
-			if resolved == filter {
-				Some(resolved)
-			} else {
-				None
-			}
-		},
-		FileType::Symlink => None,
+	let Ok(metadata) = std::fs::metadata(config.root.join(&entry.path)) else {
+		return false;
+	};
+	let matches = match filter {
+		FileType::File => metadata.is_file(),
+		FileType::Dir => metadata.is_dir(),
+		FileType::Symlink => false,
+	};
+	if !matches {
+		return false;
 	}
+	entry.file_type = filter;
+	entry.size = metadata.is_file().then_some(metadata.len() as f64);
+	entry.mtime = metadata
+		.modified()
+		.ok()
+		.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|duration| duration.as_millis() as f64);
+	true
 }
 
 fn collect_ranked_matches(
@@ -128,10 +124,9 @@ fn collect_native_filtered_matches(
 	for entry in outcome.entries {
 		ct.heartbeat()?;
 		let mut matched_entry = GlobMatch::from(entry);
-		let Some(effective_file_type) = apply_file_type_filter(&matched_entry, config) else {
+		if !apply_file_type_filter(&mut matched_entry, config) {
 			continue;
-		};
-		matched_entry.file_type = effective_file_type;
+		}
 		collected.push(matched_entry);
 		if !config.sort_by_mtime && collected.len() >= config.max_results {
 			break;

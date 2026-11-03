@@ -6,6 +6,7 @@ import {
 	type RemoteDirEntry,
 	type RemotePathKind,
 	readRemoteFile,
+	remoteHomeDirectory,
 	statRemotePath,
 	writeRemoteFile,
 } from "../ssh/file-transfer";
@@ -40,7 +41,7 @@ function decodeUtf8Text(bytes: Uint8Array): string | null {
 	}
 }
 
-function remotePathFromUrl(url: InternalUrl): string {
+async function remotePathFromUrl(url: InternalUrl, target: SSHConnectionTarget, signal?: AbortSignal): Promise<string> {
 	if (url.search) {
 		throw new Error(
 			`ssh:// does not support URL query strings; percent-encode a literal '?' as %3F in the path: ${url.href}`,
@@ -52,6 +53,7 @@ function remotePathFromUrl(url: InternalUrl): string {
 		);
 	}
 	const raw = url.rawPathname ?? url.pathname;
+	const homeRelative = raw === "/~" || raw.startsWith("/~/");
 	let decoded: string;
 	try {
 		decoded = decodeURIComponent(raw);
@@ -62,6 +64,13 @@ function remotePathFromUrl(url: InternalUrl): string {
 		throw new Error(
 			"ssh:// requires an absolute path, e.g. ssh://host/etc/hosts or ssh://host/ for the root directory",
 		);
+	}
+	if (homeRelative) {
+		const home = await remoteHomeDirectory(target, { signal });
+		return `${home.replace(/\/+$/, "")}${decoded.slice(2)}` || "/";
+	}
+	if (raw.startsWith("/~") && !decoded.startsWith("/~/")) {
+		throw new Error("ssh://: named-user /~user paths are unsupported; use /~/ for the connected account's HOME");
 	}
 	return decoded;
 }
@@ -191,7 +200,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 			return this.#resolveHostIndex(url, context?.cwd);
 		}
 		const target = await resolveTarget(url, context?.cwd);
-		const remotePath = remotePathFromUrl(url);
+		const remotePath = await remotePathFromUrl(url, target, context?.signal);
 
 		let kind: RemotePathKind | undefined;
 		try {
@@ -269,7 +278,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
 		const target = await resolveTarget(url, context?.cwd);
-		const remotePath = remotePathFromUrl(url);
+		const remotePath = await remotePathFromUrl(url, target, context?.signal);
 		await writeRemoteFile(target, remotePath, new TextEncoder().encode(content), { signal: context?.signal });
 	}
 }

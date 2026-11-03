@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { USER_AGENT } from "@oh-my-pi/pi-utils";
+import { ProviderHttpError } from "../error";
 import type {
 	CredentialRankingContext,
 	CredentialRankingStrategy,
@@ -16,7 +17,7 @@ import type {
 import { isRecord } from "../utils";
 import { normalizeCodexBaseUrl } from "./openai-codex-base-url";
 import { listCodexResetCredits } from "./openai-codex-reset";
-import { HOUR_MS } from "./shared";
+import { HOUR_MS, usageStatus } from "./shared";
 
 const CODEX_USAGE_PATH = "wham/usage";
 const JWT_AUTH_CLAIM = "https://api.openai.com/auth";
@@ -49,8 +50,19 @@ interface CodexUsageCreditsPayload {
 	balance?: string | number;
 }
 
+interface CodexUsageSpendLimitPayload {
+	unit?: string;
+	limit?: string | number;
+	used?: string | number;
+	remaining?: string | number;
+	used_percent?: number;
+	reset_after_seconds?: number;
+	reset_at?: number;
+}
+
 interface CodexUsageSpendControlPayload {
 	reached?: boolean;
+	individual_limit?: CodexUsageSpendLimitPayload | null;
 }
 
 interface CodexUsagePayload {
@@ -77,6 +89,22 @@ interface ParsedAdditionalUsage {
 	secondary?: ParsedUsageWindow;
 }
 
+/**
+ * Per-user credit cap from `spend_control.individual_limit`. Credit-billed
+ * workspace seats (Business/Enterprise flexible pricing) report this instead
+ * of `rate_limit` windows, so it is their only quota signal.
+ */
+interface ParsedSpendCap {
+	used?: number;
+	limit?: number;
+	remaining?: number;
+	usedFraction?: number;
+	/** Backend verdict; `undefined` when `spend_control.reached` is omitted. */
+	reached?: boolean;
+	resetAt?: number;
+	resetAfterSeconds?: number;
+}
+
 interface ParsedUsage {
 	planType?: string;
 	allowed?: boolean;
@@ -84,6 +112,7 @@ interface ParsedUsage {
 	primary?: ParsedUsageWindow;
 	secondary?: ParsedUsageWindow;
 	additional: ParsedAdditionalUsage[];
+	spendCap?: ParsedSpendCap;
 	/** Plan windows are spent, but credits still fund overage (`/wham/usage` only reports the plan allowance). */
 	creditOverage: boolean;
 	raw: CodexUsagePayload;
@@ -178,14 +207,54 @@ function parseAdditionalRateLimit(payload: unknown): ParsedAdditionalUsage | nul
 // Credits fund overage of a spent plan allowance only: nothing in the payload says
 // a balance covers a separate metered feature (Spark), and a refusal that is not
 // plan exhaustion is not something a balance can pay for.
-function hasPlanCreditOverage(payload: Record<string, unknown>, planLimitReached: boolean | undefined): boolean {
+function hasPlanCreditOverage(
+	payload: Record<string, unknown>,
+	planLimitReached: boolean | undefined,
+	spendCap: ParsedSpendCap | undefined,
+): boolean {
 	if (planLimitReached !== true) return false;
 	const credits = isRecord(payload.credits) ? payload.credits : undefined;
 	if (!credits) return false;
 	if (credits.unlimited !== true && credits.has_credits !== true) return false;
 	if (credits.overage_limit_reached === true) return false;
 	const spendControl = isRecord(payload.spend_control) ? payload.spend_control : undefined;
-	return spendControl?.reached !== true;
+	if (spendControl?.reached === true) return false;
+	if (spendCap && spendCap.reached === undefined && (spendCap.usedFraction ?? 0) >= 1) return false;
+	return true;
+}
+
+function parseSpendCap(payload: Record<string, unknown>): ParsedSpendCap | undefined {
+	const spendControl = isRecord(payload.spend_control) ? payload.spend_control : undefined;
+	const individual =
+		spendControl && isRecord(spendControl.individual_limit) ? spendControl.individual_limit : undefined;
+	if (!spendControl || !individual) return undefined;
+	const used = toNumber(individual.used);
+	const limit = toNumber(individual.limit);
+	const remaining = toNumber(individual.remaining);
+	const usedPercent = toNumber(individual.used_percent);
+	// The backend rounds `used_percent` to an integer; the absolute amounts
+	// keep sub-percent precision when both are present. A bare `remaining`
+	// of zero still proves the cap has no headroom.
+	const rawFraction =
+		used !== undefined && limit !== undefined && limit > 0
+			? used / limit
+			: usedPercent !== undefined
+				? usedPercent / 100
+				: remaining !== undefined && remaining <= 0
+					? 1
+					: undefined;
+	if (used === undefined && limit === undefined && remaining === undefined && rawFraction === undefined) {
+		return undefined;
+	}
+	return {
+		used,
+		limit,
+		remaining,
+		usedFraction: rawFraction === undefined ? undefined : Math.min(Math.max(rawFraction, 0), 1),
+		reached: toBoolean(spendControl.reached),
+		resetAt: toNumber(individual.reset_at),
+		resetAfterSeconds: toNumber(individual.reset_after_seconds),
+	};
 }
 
 function parseUsagePayload(payload: unknown): ParsedUsage | null {
@@ -196,16 +265,22 @@ function parseUsagePayload(payload: unknown): ParsedUsage | null {
 	const additional = additionalRaw
 		.map(parseAdditionalRateLimit)
 		.filter((value): value is ParsedAdditionalUsage => value !== null);
-	if (!rateLimit && additional.length === 0) return null;
+	const spendCap = parseSpendCap(payload);
+	if (!rateLimit && additional.length === 0 && !spendCap) return null;
 	const planLimitReached = rateLimit ? toBoolean(rateLimit.limit_reached) : undefined;
+	// Credit-billed seats carry no plan windows: the spend cap is the plan
+	// meter, so its `reached` flag is the chat verdict. An omitted flag stays
+	// unknown rather than reading as an explicit allow.
+	const spendCapReached = !rateLimit && spendCap ? spendCap.reached : undefined;
 	const parsed: ParsedUsage = {
 		planType,
-		allowed: rateLimit ? toBoolean(rateLimit.allowed) : undefined,
-		limitReached: planLimitReached,
+		allowed: rateLimit ? toBoolean(rateLimit.allowed) : spendCapReached === undefined ? undefined : !spendCapReached,
+		limitReached: rateLimit ? planLimitReached : spendCapReached,
 		primary: rateLimit ? parseUsageWindow(rateLimit.primary_window) : undefined,
 		secondary: rateLimit ? parseUsageWindow(rateLimit.secondary_window) : undefined,
 		additional,
-		creditOverage: hasPlanCreditOverage(payload, planLimitReached),
+		...(spendCap ? { spendCap } : {}),
+		creditOverage: hasPlanCreditOverage(payload, planLimitReached, spendCap),
 		raw: payload as CodexUsagePayload,
 	};
 	if (
@@ -213,7 +288,8 @@ function parseUsagePayload(payload: unknown): ParsedUsage | null {
 		!parsed.secondary &&
 		parsed.allowed === undefined &&
 		parsed.limitReached === undefined &&
-		parsed.additional.length === 0
+		parsed.additional.length === 0 &&
+		!parsed.spendCap
 	) {
 		return null;
 	}
@@ -431,8 +507,47 @@ function buildPlanMeterState(
 	return { allowed: true, limitReached: false };
 }
 
+const CODEX_SPEND_CAP_LIMIT_ID = "openai-codex:spend-cap";
+
+function buildSpendCapLimit(cap: ParsedSpendCap, accountId: string | undefined, nowMs: number): UsageLimit {
+	const resetsAt = resolveResetTime({ resetAt: cap.resetAt, resetAfterSeconds: cap.resetAfterSeconds }, nowMs);
+	const amount = {
+		used: cap.used,
+		limit: cap.limit,
+		remaining: cap.remaining,
+		usedFraction: cap.usedFraction,
+		remainingFraction: cap.usedFraction === undefined ? undefined : Math.max(0, 1 - cap.usedFraction),
+		unit: "credits" as const,
+	};
+	return {
+		id: CODEX_SPEND_CAP_LIMIT_ID,
+		label: "Spend cap",
+		scope: {
+			provider: "openai-codex",
+			...(accountId ? { accountId } : {}),
+			tier: "credits",
+			windowId: "spend-cap",
+			shared: true,
+		},
+		window: { id: "spend-cap", label: "Spend cap", ...(resetsAt !== undefined ? { resetsAt } : {}) },
+		amount,
+		// `spend_control.reached` is the backend's verdict and wins over the
+		// advisory percentage in both directions: a reached cap below 100% is
+		// denied, and an unreached one that rounds to 100% still serves. Without
+		// the flag, the counters decide.
+		status:
+			cap.reached === true
+				? "exhausted"
+				: cap.reached === false
+					? buildUsageStatus({ usedFraction: cap.usedFraction, explicitlyAllowed: true })
+					: usageStatus(cap.usedFraction),
+	};
+}
+
 export const openaiCodexUsageProvider: UsageProvider = {
 	id: "openai-codex",
+	// v1: credit-billed seats gained the spend-cap limit; retire their limitless reports.
+	cacheVersion: 1,
 	supports(params: UsageFetchParams): boolean {
 		return params.provider === "openai-codex" && params.credential.type === "oauth";
 	},
@@ -468,11 +583,21 @@ export const openaiCodexUsageProvider: UsageProvider = {
 		try {
 			const response = await ctx.fetch(url, { headers, signal: params.signal });
 			if (!response.ok) {
+				// A rejected token must purge the cached report and fail the health
+				// check: only a thrown auth status does that, while `null` is the
+				// transient-failure path that keeps serving last-good quota.
+				if (response.status === 401 || response.status === 403) {
+					throw new ProviderHttpError(
+						`Codex usage endpoint returned ${response.status} ${response.statusText}`.trim(),
+						response.status,
+					);
+				}
 				ctx.logger?.warn("Codex usage request failed", { status: response.status, provider: params.provider });
 				return null;
 			}
 			payload = await response.json();
 		} catch (error) {
+			if (error instanceof ProviderHttpError) throw error;
 			ctx.logger?.warn("Codex usage request error", { provider: params.provider, error: String(error) });
 			return null;
 		}
@@ -552,6 +677,9 @@ export const openaiCodexUsageProvider: UsageProvider = {
 				);
 			}
 		}
+		if (parsed?.spendCap) {
+			limits.push(buildSpendCapLimit(parsed.spendCap, accountId, nowMs));
+		}
 
 		const resetCredits = parseResetCredits(payload);
 		if (resetCredits && resetCredits.availableCount > 0) {
@@ -599,16 +727,27 @@ export const openaiCodexUsageProvider: UsageProvider = {
 	},
 };
 
-function scopeCodexLimitsForRequest(report: UsageReport, context?: CredentialRankingContext): UsageLimit[] {
-	const isSparkRequest = isCodexSparkRequest(context);
-	return report.limits.filter(limit => {
+function codexGatingLimits(report: UsageReport): UsageLimit[] {
+	const hasPlanWindows = report.limits.some(
+		limit => limit.id === "openai-codex:primary" || limit.id === "openai-codex:secondary",
+	);
+	return hasPlanWindows ? report.limits.filter(limit => limit.id !== CODEX_SPEND_CAP_LIMIT_ID) : report.limits;
+}
+
+function scopeCodexLimitsForPool(report: UsageReport, isSparkRequest: boolean): UsageLimit[] {
+	return codexGatingLimits(report).filter(limit => {
 		if (limit.id === "openai-codex:primary" || limit.id === "openai-codex:secondary") {
 			return !isSparkRequest;
 		}
 
+		if (limit.id === CODEX_SPEND_CAP_LIMIT_ID) return !isSparkRequest;
 		const slug = limit.id.split(":")[1];
 		return slug === "spark" ? isSparkRequest : false;
 	});
+}
+
+function scopeCodexLimitsForRequest(report: UsageReport, context?: CredentialRankingContext): UsageLimit[] {
+	return scopeCodexLimitsForPool(report, isCodexSparkRequest(context));
 }
 
 function isCodexSparkRequest(context?: CredentialRankingContext): boolean {
@@ -625,6 +764,28 @@ export const codexRankingStrategy: CredentialRankingStrategy = {
 	blockScopes(context) {
 		if (!context) return ["chat", "spark", "shared"];
 		return [isCodexSparkRequest(context) ? "spark" : "chat", "shared"];
+	},
+	healableBlockScopes(report) {
+		const metadata = report.metadata;
+		const meterStates = metadata?.meterStates;
+		const spark = isRecord(meterStates) && isRecord(meterStates.spark) ? meterStates.spark : undefined;
+		return [
+			{
+				blockScope: "chat",
+				limits: scopeCodexLimitsForRequest(report),
+				healthy: metadata?.allowed === true && metadata.limitReached === false,
+			},
+			{
+				blockScope: "spark",
+				limits: scopeCodexLimitsForPool(report, true),
+				healthy: spark?.allowed === true && spark.limitReached === false,
+			},
+			{
+				blockScope: "shared",
+				limits: codexGatingLimits(report),
+				healthy: metadata?.allowed === true && metadata.limitReached === false,
+			},
+		];
 	},
 	findWindowLimits(report, context) {
 		const limits = scopeCodexLimitsForRequest(report, context);

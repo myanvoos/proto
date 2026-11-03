@@ -1,4 +1,5 @@
 import type { FetchImpl } from "@oh-my-pi/pi-utils";
+import type { AntigravityModelWireProfile } from "../types";
 
 export function getGeminiCliUserAgent(modelId = "gemini-3.1-pro-preview"): string {
 	const version = process.env.PI_AI_GEMINI_CLI_VERSION || "0.46.0";
@@ -12,7 +13,7 @@ export const getGeminiCliHeaders = (modelId?: string) => ({
 	"Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 });
 
-export const DEFAULT_ANTIGRAVITY_VERSION = "2.8.0";
+export const DEFAULT_ANTIGRAVITY_VERSION = "2.26.0";
 
 const ANTIGRAVITY_VERSION_MANIFEST_URL =
 	"https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
@@ -60,15 +61,26 @@ export function ensureAntigravityVersion(fetcher: FetchImpl = fetch, signal?: Ab
 export function getAntigravityUserAgent(): string {
 	const version = getAntigravityVersion();
 
-	const cl = process.env.PI_AI_ANTIGRAVITY_CL || "963137146";
-	const os = process.env.PI_AI_ANTIGRAVITY_OS || "darwin";
-	const arch = process.env.PI_AI_ANTIGRAVITY_ARCH || "arm64";
+	const cl = process.env.PI_AI_ANTIGRAVITY_CL || "1005016104";
+	const host = getAntigravityPlatform();
+	const os = process.env.PI_AI_ANTIGRAVITY_OS || host.os;
+	const arch = process.env.PI_AI_ANTIGRAVITY_ARCH || host.arch;
 	return `antigravity/hub/${version} (aidev_client; os_type=${os}; arch=${arch}; cl=${cl})`;
 }
 
-export interface AntigravityModelWireProfile {
-	modelEnum?: string;
-	maxOutputTokens: number;
+export function getAntigravityPlatform(platform: NodeJS.Platform = process.platform): { os: string; arch: string } {
+	return platform === "darwin"
+		? { os: "darwin", arch: "arm64" }
+		: platform === "win32"
+			? { os: "windows", arch: "amd64" }
+			: { os: "linux", arch: "amd64" };
+}
+
+export function getAntigravityHeaders(userAgent = getAntigravityUserAgent()): {
+	"User-Agent": string;
+	"Accept-Encoding": string;
+} {
+	return { "User-Agent": userAgent, "Accept-Encoding": "gzip" };
 }
 export const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<Record<string, AntigravityModelWireProfile>> = {
 	"gemini-3.5-flash-extra-low": { modelEnum: "MODEL_PLACEHOLDER_M187", maxOutputTokens: 65536 },
@@ -80,6 +92,10 @@ export const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<Record<string, Antigravit
 	"claude-sonnet-4-6": { maxOutputTokens: 64000 },
 	"claude-opus-4-6-thinking": { maxOutputTokens: 64000 },
 };
-export function getAntigravityModelWireProfile(wireModelId: string): AntigravityModelWireProfile | undefined {
+export function getAntigravityModelWireProfile(
+	wireModelId: string,
+	...discovered: (Readonly<Record<string, AntigravityModelWireProfile>> | undefined)[]
+): AntigravityModelWireProfile | undefined {
+	for (const profiles of discovered) if (profiles?.[wireModelId] !== undefined) return profiles[wireModelId];
 	return ANTIGRAVITY_MODEL_WIRE_PROFILES[wireModelId];
 }

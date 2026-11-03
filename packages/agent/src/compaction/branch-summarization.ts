@@ -19,6 +19,7 @@ import {
 	createFileOps,
 	extractFileOpsFromMessage,
 	type FileOperations,
+	incompleteOutputError,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
 	stripReadSelector,
@@ -324,6 +325,9 @@ export async function generateBranchSummary(
 	}
 	if (response.stopReason === "error") {
 		return { error: response.errorMessage || "Summarization failed" };
+	}
+	if (response.stopReason === "length") {
+		return { error: incompleteOutputError("Summarization failed") };
 	}
 
 	let summary = response.content

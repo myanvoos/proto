@@ -108,3 +108,12 @@ test("history:// reports agents in the shared lifecycle vocabulary", async () =>
 	expect(transcript.content).not.toContain("aborted");
 	expect(transcript.notes).toContain("Source: session file (read-only, lifecycle=terminal)");
 });
+
+test("a newly running worker without a transcript returns a pending note rather than a missing-session error", async () => {
+	const id = `new-worker-${crypto.randomUUID()}`;
+	AgentRegistry.global().register({ id, label: "new worker", kind: "sub", session: null, status: "running" });
+	const url = Object.assign(new URL(`history://${id}`), { rawHost: id });
+	const resource = await new HistoryProtocolHandler().resolve(url);
+	expect(resource.content).toContain("No transcript has been written yet");
+	expect(resource.content).toContain(id);
+});

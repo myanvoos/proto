@@ -2,6 +2,37 @@ import { describe, expect, test, vi } from "bun:test";
 
 import { type AsyncJobEvent, AsyncJobManager } from "./job-manager";
 
+describe("AsyncJobManager parked delivery suppression", () => {
+	test("a foreground-consumed parked delivery stays stale after row retention expires", async () => {
+		vi.useFakeTimers();
+		const release = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ retentionMs: 25 });
+		let stale = false;
+		manager.registerDeliverySink("owner", async id => {
+			started.resolve();
+			await release.promise;
+			stale = manager.isDeliverySuppressed(id);
+		});
+		try {
+			const id = manager.register("worker", "parked", async () => "done", { ownerId: "owner" });
+			await manager.waitForAll();
+			await started.promise;
+			manager.acknowledgeDeliveries([id]);
+			vi.advanceTimersByTime(30);
+			expect(manager.getJob(id)).toBeUndefined();
+			expect(manager.isDeliverySuppressed(id)).toBe(true);
+			release.resolve();
+			await manager.drainDeliveries();
+			expect(stale).toBe(true);
+		} finally {
+			release.resolve();
+			vi.useRealTimers();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+});
+
 describe("AsyncJobManager cancellation retention", () => {
 	test.each(["single", "bulk"] as const)("keeps %s cancelled work retrievable past retention", async kind => {
 		vi.useFakeTimers();

@@ -1,6 +1,7 @@
+import { untilAborted, withTimeout } from "@oh-my-pi/pi-utils";
 import { MCPManager } from "../mcp/manager";
 import type { MCPResourceReadResult } from "../mcp/types";
-import type { InternalResource, InternalUrl, ProtocolHandler } from "./types";
+import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext } from "./types";
 
 function escapeRegex(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -36,7 +37,7 @@ function extractResourceUri(url: InternalUrl): string {
 	return uri;
 }
 
-function resolveTargetServer(mcpManager: MCPManager, uri: string): string | undefined {
+function resolveTargetServer(mcpManager: MCPManager, uri: string, exact = false): string | undefined {
 	const servers = mcpManager.getConnectedServers();
 	for (const name of servers) {
 		const serverResources = mcpManager.getServerResources(name);
@@ -44,6 +45,8 @@ function resolveTargetServer(mcpManager: MCPManager, uri: string): string | unde
 			return name;
 		}
 	}
+
+	if (exact) return undefined;
 
 	let bestTemplateMatch:
 		| {
@@ -102,58 +105,79 @@ function formatAvailableResources(mcpManager: MCPManager): string {
 	return available || "  (none)";
 }
 
+/** Exact advertised URIs let MCP publish skills without claiming loaded skill names. */
+export async function readMcpResource(
+	mcpManager: MCPManager,
+	url: InternalUrl,
+	options: { exact?: boolean; waitMs?: number; signal?: AbortSignal } = {},
+): Promise<InternalResource | undefined> {
+	const { exact = false, waitMs, signal } = options;
+	const uri = extractResourceUri(url);
+	let targetServer = resolveTargetServer(mcpManager, uri, exact);
+	if (!targetServer) {
+		const settleCatalogs = async (): Promise<void> => {
+			await Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name)));
+			if (resolveTargetServer(mcpManager, uri, exact)) return;
+			await mcpManager.waitForPendingConnections();
+			await Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name)));
+		};
+		const settling = settleCatalogs();
+		await untilAborted(
+			signal,
+			waitMs === undefined ? settling : withTimeout(settling, waitMs, "MCP wait budget spent").catch(() => {}),
+		);
+		targetServer = resolveTargetServer(mcpManager, uri, exact);
+	}
+	if (!targetServer) return undefined;
+	let result: MCPResourceReadResult | undefined;
+	try {
+		result = await mcpManager.readServerResource(targetServer, uri);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`MCP resource read error: ${message}`);
+	}
+
+	if (!result) {
+		throw new Error(`Server "${targetServer}" returned no content for "${uri}".`);
+	}
+
+	const textParts: string[] = [];
+	for (const item of result.contents) {
+		if (item.text !== undefined && item.text !== null) {
+			textParts.push(item.text);
+		} else if (item.blob) {
+			textParts.push(`[Binary content: ${item.mimeType ?? "unknown"}, base64 length ${item.blob.length}]`);
+		}
+	}
+
+	const content = textParts.length > 0 ? textParts.join("\n---\n") : "(empty resource)";
+	return {
+		url: url.href,
+		content,
+		contentType: "text/plain",
+		size: Buffer.byteLength(content, "utf-8"),
+		notes: [`MCP server: ${targetServer}`],
+	};
+}
+
+export class McpResourceNotFoundError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "McpResourceNotFoundError";
+	}
+}
+
 export class McpProtocolHandler implements ProtocolHandler {
 	readonly scheme = "mcp";
 	readonly immutable = true;
 
-	async resolve(url: InternalUrl): Promise<InternalResource> {
-		const mcpManager = MCPManager.instance();
-		if (!mcpManager) {
-			throw new Error("No MCP manager available. MCP servers may not be configured.");
-		}
-
-		const uri = extractResourceUri(url);
-		let targetServer = resolveTargetServer(mcpManager, uri);
-		if (!targetServer) {
-			// A configured server may still be handshaking past the startup window.
-			await mcpManager.waitForPendingConnections();
-			await Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name)));
-			targetServer = resolveTargetServer(mcpManager, uri);
-		}
-		if (!targetServer) {
-			throw new Error(
-				`No MCP server has resource "${uri}".\n\nAvailable resources:\n${formatAvailableResources(mcpManager)}`,
-			);
-		}
-
-		let result: MCPResourceReadResult | undefined;
-		try {
-			result = await mcpManager.readServerResource(targetServer, uri);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			throw new Error(`MCP resource read error: ${message}`);
-		}
-
-		if (!result) {
-			throw new Error(`Server "${targetServer}" returned no content for "${uri}".`);
-		}
-
-		const textParts: string[] = [];
-		for (const item of result.contents) {
-			if (item.text !== undefined && item.text !== null) {
-				textParts.push(item.text);
-			} else if (item.blob) {
-				textParts.push(`[Binary content: ${item.mimeType ?? "unknown"}, base64 length ${item.blob.length}]`);
-			}
-		}
-
-		const content = textParts.length > 0 ? textParts.join("\n---\n") : "(empty resource)";
-		return {
-			url: url.href,
-			content,
-			contentType: "text/plain",
-			size: Buffer.byteLength(content, "utf-8"),
-			notes: [`MCP server: ${targetServer}`],
-		};
+	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		const manager = MCPManager.instance();
+		if (!manager) throw new Error("No MCP manager available. MCP servers may not be configured.");
+		const resource = await readMcpResource(manager, url, { signal: context?.signal });
+		if (resource) return resource;
+		throw new McpResourceNotFoundError(
+			`No MCP server has resource "${extractResourceUri(url)}".\n\nAvailable resources:\n${formatAvailableResources(manager)}`,
+		);
 	}
 }

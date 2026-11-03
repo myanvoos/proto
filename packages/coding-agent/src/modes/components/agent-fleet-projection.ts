@@ -75,13 +75,18 @@ export function progressMetrics(observed: ObservableSession | undefined): AgentM
 export function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
 	try {
 		const stats = session.getSessionStats();
+		const lifetimeCost = session.sessionManager?.getUsageStatistics?.().cost;
+		const directCost =
+			typeof lifetimeCost === "number" && Number.isFinite(lifetimeCost) && lifetimeCost >= 0
+				? lifetimeCost
+				: undefined;
 		const messages = session.agent?.state?.messages;
 		if (!Array.isArray(messages)) {
 			return {
 				tokens: stats.tokens.input + stats.tokens.output + stats.tokens.cacheWrite,
 				requests: stats.assistantMessages,
 				tools: stats.toolCalls,
-				cost: stats.cost,
+				cost: directCost ?? stats.cost,
 				durationMs: 0,
 				durationKind: "unknown",
 				contextTokens: stats.contextUsage?.tokens,
@@ -104,7 +109,7 @@ export function readSessionMetrics(session: NonNullable<AgentRef["session"]>): A
 			tokens,
 			requests,
 			tools,
-			cost,
+			cost: directCost ?? cost,
 			durationMs: 0,
 			durationKind: "unknown",
 			contextTokens: stats.contextUsage?.tokens,
@@ -122,8 +127,26 @@ export function readSessionMetrics(session: NonNullable<AgentRef["session"]>): A
  */
 export function agentRefMetrics(ref: AgentRef | undefined): AgentMetrics | undefined {
 	if (!ref) return undefined;
-	if (ref.history?.metrics) return ref.history.metrics;
+	if (ref.history?.metrics)
+		return ref.history.directCost === undefined
+			? ref.history.metrics
+			: { ...ref.history.metrics, cost: ref.history.directCost };
 	return ref.session ? readSessionMetrics(ref.session) : undefined;
+}
+
+/** Live progress owns turn timing; direct-session snapshots own lifetime spend across wakes and parking. */
+export function fleetRowMetrics(
+	ref: AgentRef,
+	observed: ObservableSession | undefined,
+	sessionMetrics: WeakMap<object, { metrics: AgentMetrics | undefined }>,
+): AgentMetrics | undefined {
+	const direct =
+		(ref.session ? sessionMetrics.get(ref.session)?.metrics : undefined) ?? sessionMetrics.get(ref)?.metrics;
+	const progress = progressMetrics(observed);
+	const directCost = ref.history?.directCost ?? direct?.cost;
+	if (progress) return directCost === undefined ? progress : { ...progress, cost: directCost };
+	const metrics = !ref.session && direct ? direct : (ref.history?.metrics ?? direct);
+	return metrics && directCost !== undefined ? { ...metrics, cost: directCost } : metrics;
 }
 
 export function aggregateMetrics(args: {
@@ -155,7 +178,12 @@ export function aggregateMetrics(args: {
 		if (fallbackSession) {
 			hasFallbackLiveSessions = true;
 			if (args.refreshFallback || !args.sessionMetrics.has(fallbackSession)) {
-				args.sessionMetrics.set(fallbackSession, { metrics: readSessionMetrics(fallbackSession) });
+				const metrics = readSessionMetrics(fallbackSession);
+				if (metrics) {
+					const snapshot = { metrics };
+					args.sessionMetrics.set(fallbackSession, snapshot);
+					args.sessionMetrics.set(ref, snapshot);
+				}
 			}
 		}
 		const metrics = args.metricsFor(ref, observed);

@@ -49,13 +49,15 @@ import {
 } from "../../session/messages";
 import { MONITOR_EVENT_MESSAGE_TYPE } from "../../session/monitor-event";
 import type { SessionContext, StrippedToolCallsMarker, TranscriptWindow } from "../../session/session-context";
+import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
-	buildAsyncResultBlock,
+	buildAsyncResultComponent,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
@@ -174,6 +176,9 @@ export function appendLatestCompactionSummary(ctx: InteractiveModeContext): void
 export class UiHelpers {
 	#transcriptPageFromLatest = 0;
 	#transcriptRenderQueue: Promise<void> = Promise.resolve();
+	#replayGeneration = 0;
+	#replaysInFlight = 0;
+	#chatRenderedBeforeReplay = false;
 
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -185,7 +190,7 @@ export class UiHelpers {
 
 	getVisibleTranscriptContext(): { context: SessionContext; window: TranscriptWindow } {
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
+			keepInFlightToolCalls: this.ctx.viewSession.isStreaming,
 			window: {
 				pageFromLatest: this.#transcriptPageFromLatest,
 				maxMessages: TRANSCRIPT_WINDOW_MESSAGES,
@@ -268,7 +273,11 @@ export class UiHelpers {
 			case "custom": {
 				if (message.display) {
 					if (message.customType === "async-result") {
-						const component = buildAsyncResultBlock(message);
+						const component = buildAsyncResultComponent(
+							message,
+							this.ctx.viewSession.extensionRunner?.getMessageRenderer(message.customType),
+						);
+						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
 						break;
 					}
@@ -483,7 +492,7 @@ export class UiHelpers {
 			if (!previous) return;
 			waitingPoll = null;
 			if (
-				nextToolName === "fleet" &&
+				nextToolName === "jobs" &&
 				previous.isDisplaceableBlock() &&
 				this.ctx.chatContainer.canDisplaceBlock(previous)
 			) {
@@ -502,9 +511,7 @@ export class UiHelpers {
 			}
 			if (previous.canBeDisplacedBy(nextToolName)) {
 				checklistSnapshot = null;
-				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-					this.ctx.chatContainer.disposeAndRemoveChild(previous);
-				}
+				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				previous.seal();
 				return;
 			}
@@ -707,7 +714,7 @@ export class UiHelpers {
 					this.ctx.chatContainer.accountSource(component, message);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					if (
-						message.toolName === "fleet" &&
+						message.toolName === "jobs" &&
 						component instanceof ToolExecutionComponent &&
 						component.isDisplaceableBlock()
 					) {
@@ -820,11 +827,24 @@ export class UiHelpers {
 		return true;
 	}
 
-	async renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
+	renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
+		const generation = ++this.#replayGeneration;
+		if (this.#replaysInFlight++ === 0) this.#chatRenderedBeforeReplay = this.ctx.initialChatRendered;
+		// Close the live-display gate now: messages arriving before the queued replay
+		// starts must not be painted once live and a second time by the replay.
+		this.ctx.initialChatRendered = false;
 		return this.#queueTranscriptRender(async () => {
+			if (generation !== this.#replayGeneration) return;
 			this.#transcriptPageFromLatest = 0;
-			await this.#renderTranscriptWindow(options, true);
-		});
+			await this.#renderTranscriptWindow(options, true, generation);
+		})
+			.catch((error: unknown) => {
+				if (generation === this.#replayGeneration) this.ctx.initialChatRendered = this.#chatRenderedBeforeReplay;
+				throw error;
+			})
+			.finally(() => {
+				this.#replaysInFlight--;
+			});
 	}
 
 	async navigateTranscriptHistory(direction: TranscriptHistoryDirection): Promise<void> {
@@ -863,7 +883,9 @@ export class UiHelpers {
 	async #renderTranscriptWindow(
 		options: RenderInitialMessagesOptions,
 		resetPendingMessages: boolean,
+		generation?: number,
 	): Promise<TranscriptWindow> {
+		let { context, window } = this.getVisibleTranscriptContext();
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
 		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
@@ -874,7 +896,8 @@ export class UiHelpers {
 		const previousPendingPythonComponents = this.ctx.pendingPythonComponents;
 		const previousLastAssistantUsage = this.ctx.lastAssistantUsage;
 		const previousServedModelTracker = this.ctx.servedModelTracker;
-		const chatWasAlreadyRendered = this.ctx.initialChatRendered;
+		const chatWasAlreadyRendered =
+			generation === undefined ? this.ctx.initialChatRendered : this.#chatRenderedBeforeReplay;
 
 		this.ctx.chatContainer = stagedChatContainer;
 		this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, WeakRef<Component>>();
@@ -882,10 +905,10 @@ export class UiHelpers {
 		// Drops deferred bash/python blocks with the old transcript but repaints the queued-message bar:
 		// a mid-turn rebuild (rewind) keeps the session queue, so it must stay visible.
 		if (resetPendingMessages) this.ctx.updatePendingMessagesDisplay();
+		this.ctx.pendingShellContainer.disposeChildren();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		let { context, window } = this.getVisibleTranscriptContext();
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntryCount();
 		const renderOptions = { updateFooter: true };
 		let committed = false;
@@ -896,6 +919,7 @@ export class UiHelpers {
 				this.addTranscriptWindowNotice(stagedChatContainer, window);
 				if (this.ctx.viewSession.isStreaming) this.ctx.renderSessionContext(context, renderOptions);
 				else await this.ctx.renderSessionContextIncrementally(context, renderOptions);
+				if (generation !== undefined && generation !== this.#replayGeneration) return window;
 				if (this.ctx.viewSession.sessionManager.getEntryCount() === replayEntryCount) break;
 				replayAttempts++;
 				if (replayAttempts >= TRANSCRIPT_REPLAY_MAX_ATTEMPTS) {
@@ -957,7 +981,11 @@ export class UiHelpers {
 				this.ctx.servedModelTracker = previousServedModelTracker;
 				stagedChatContainer.disposeChildren();
 			}
-			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
+			if (generation === undefined) this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
+			else {
+				if (committed) this.#chatRenderedBeforeReplay = true;
+				this.ctx.initialChatRendered = generation === this.#replayGeneration && this.#chatRenderedBeforeReplay;
+			}
 		}
 	}
 	clearEditor(): void {
@@ -997,13 +1025,12 @@ export class UiHelpers {
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
 		const steeringMessages = [...queuedMessages.steering];
-		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") steeringMessages.push(entry.text);
-		}
-
 		const followUpMessages = [...queuedMessages.followUp];
-		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "followUp") followUpMessages.push(entry.text);
+		if (!this.ctx.focusedAgentId) {
+			for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
+				if (entry.mode === "steer") steeringMessages.push(entry.text);
+				else followUpMessages.push(entry.text);
+			}
 		}
 
 		const groups = [
@@ -1058,17 +1085,31 @@ export class UiHelpers {
 		);
 	}
 
-	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
+	/** Deliver one compaction-queued message; `onQueued` receives what it pushes onto the session queues. */
+	async #deliverQueuedMessage(
+		message: CompactionQueuedMessage,
+		onQueued: (queued: readonly AgentMessage[]) => void,
+	): Promise<void> {
+		const builtin = await executeBuiltinSlashCommand(message.text, {
+			ctx: this.ctx,
+			input: message.images ? { images: message.images } : undefined,
+		});
+		if (builtin === true) {
+			return;
+		}
+
 		if (
 			await invokeSkillCommandFromText(this.ctx, message.text, message.mode, {
 				propagateErrors: true,
 				queueOnly: true,
 				images: message.images,
+				onPromptQueued: onQueued,
 			})
 		) {
 			return;
 		}
 		if (this.ctx.isKnownSlashCommand(message.text)) {
+			// No `streamingBehavior`: this prompt never queues (a busy session rejects it).
 			await this.ctx.session.prompt(message.text);
 			return;
 		}
@@ -1076,14 +1117,17 @@ export class UiHelpers {
 			message.text,
 			() =>
 				message.mode === "followUp"
-					? this.ctx.session.followUp(message.text, message.images)
-					: this.ctx.session.steer(message.text, message.images),
+					? this.ctx.session.followUp(message.text, message.images, { onPromptQueued: onQueued })
+					: this.ctx.session.steer(message.text, message.images, { onPromptQueued: onQueued }),
 			{ imageCount: message.images?.length ?? 0 },
 		);
 	}
 
 	isKnownSlashCommand(text: string): boolean {
 		if (!text.startsWith("/")) return false;
+		const parsed = parseSlashCommand(text);
+		const builtin = parsed && lookupBuiltinSlashCommand(parsed.name);
+		if (builtin && (builtin.allowArgs || !parsed.args)) return true;
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 		if (!commandName) return false;
@@ -1109,22 +1153,49 @@ export class UiHelpers {
 		const queuedMessages = [...(this.ctx.compactionQueuedMessages as CompactionQueuedMessage[])];
 		this.ctx.compactionQueuedMessages = [] as CompactionQueuedMessage[];
 		this.ctx.updatePendingMessagesDisplay();
+		// On failure the batch goes back to the compaction queue, so the messages this flush pushed
+		// onto the session queues must leave them. Only those: what other sources queue (an
+		// extension's message, input sent through other paths), before, during or after the flush,
+		// stays queued.
+		const deliveredByFlush: AgentMessage[] = [];
+		const onDelivered = (queued: readonly AgentMessage[]) => {
+			deliveredByFlush.push(...queued);
+		};
+		let restored = false;
+		// The fire-and-forget first prompt belongs to the session once admitted (queued, or its turn
+		// started): a restore then leaves it out of the batch, and keeps its queued messages, instead
+		// of sending it again on the next flush — unless the prompt itself fails.
+		let firstPrompt: CompactionQueuedMessage | undefined;
+		/** Set once the first prompt is admitted: the messages it queued, or none if its turn started. */
+		let firstAdmitted: readonly AgentMessage[] | undefined;
+		let firstQueued: readonly AgentMessage[] = [];
+		let firstFailed = false;
+		let firstLeftOut = false;
 
-		const restoreQueue = (error: unknown) => {
-			this.ctx.session.clearQueue();
-			this.ctx.compactionQueuedMessages = queuedMessages;
+		const reportFailure = (count: number, error: unknown) => {
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
+				`Failed to send queued message${count > 1 ? "s" : ""}: ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 			);
 		};
 
+		const restoreQueue = (error: unknown) => {
+			// A `rest` delivery and the fire-and-forget first prompt can both fail; restore once.
+			if (restored) return;
+			restored = true;
+			firstLeftOut = firstAdmitted !== undefined && !firstFailed;
+			this.ctx.session.dropQueuedMessages(firstLeftOut ? deliveredByFlush : [...deliveredByFlush, ...firstQueued]);
+			const batch = firstLeftOut ? queuedMessages.filter(message => message !== firstPrompt) : queuedMessages;
+			this.ctx.compactionQueuedMessages = [...batch, ...this.ctx.compactionQueuedMessages];
+			reportFailure(batch.length, error);
+		};
+
 		try {
 			if (options?.willRetry) {
 				for (const message of queuedMessages) {
-					await this.#deliverQueuedMessage(message);
+					await this.#deliverQueuedMessage(message, onDelivered);
 				}
 				this.ctx.updatePendingMessagesDisplay();
 				return;
@@ -1139,48 +1210,111 @@ export class UiHelpers {
 			}
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
-					await this.ctx.session.prompt(message.text);
+					await this.#deliverQueuedMessage(message, onDelivered);
 				}
 				return;
 			}
 
 			const preCommands = queuedMessages.slice(0, firstPromptIndex);
-			const firstPrompt = queuedMessages[firstPromptIndex];
+			const first = queuedMessages[firstPromptIndex];
+			firstPrompt = first;
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
 			for (const message of preCommands) {
-				await this.#deliverQueuedMessage(message);
+				// preCommands are all slash commands; #deliverQueuedMessage handles
+				// that branch (no local-submission marking needed since slash
+				// commands don't generate a matching user message_start).
+				await this.#deliverQueuedMessage(message, onDelivered);
 			}
 
+			const onFirstQueued = (queued: readonly AgentMessage[]) => {
+				firstQueued = [...firstQueued, ...queued];
+			};
+			const onFirstAdmitted = () => {
+				firstAdmitted = firstQueued;
+				// Admitted after the batch was already restored with it: the session must not send
+				// it as well. Take a queued prompt back out (the batch keeps it); a prompt whose turn
+				// already started leaves the batch instead.
+				if (!restored || firstLeftOut) return;
+				if (firstAdmitted.length > 0) {
+					this.ctx.session.dropQueuedMessages(firstAdmitted);
+				} else {
+					firstLeftOut = true;
+					this.ctx.compactionQueuedMessages = this.ctx.compactionQueuedMessages.filter(m => m !== first);
+					this.ctx.updatePendingMessagesDisplay();
+				}
+			};
+			/** Put the first prompt back into the batch, after the slash commands that preceded it. */
+			const putFirstBack = () => {
+				firstLeftOut = false;
+				const current = this.ctx.compactionQueuedMessages;
+				let at = 0;
+				for (let i = 0; i < current.length; i++) if (preCommands.includes(current[i])) at = i + 1;
+				this.ctx.compactionQueuedMessages = [...current.slice(0, at), first, ...current.slice(at)];
+			};
+			const onFirstFailed = (error: unknown) => {
+				firstFailed = true;
+				if (!firstLeftOut) {
+					restoreQueue(error);
+					return;
+				}
+				// A restore left the admitted first prompt out of the batch, but it failed after all.
+				putFirstBack();
+				reportFailure(1, error);
+			};
+			// A skill prompt the session dropped before sending it (usage preflight, cost cap, an
+			// interrupt) resolves `false` even after admission, and nothing hands a custom prompt
+			// back to the editor: the session does not own it after all, so a restore keeps it in
+			// the batch, or puts it back if one already left it out.
+			const onFirstDropped = () => {
+				firstAdmitted = undefined;
+				if (!firstLeftOut) return;
+				putFirstBack();
+				this.ctx.updatePendingMessagesDisplay();
+			};
+
+			// First prompt is fire-and-forget — its rejection is funneled through
+			// `onFirstFailed` rather than rethrown. Plain prompts use primitive
+			// recordLocalSubmission and dispose manually in the catch. Skill prompts
+			// are rebuilt as user-attributed custom messages so queued `/skill:` text
+			// is not sent as a literal prompt after compaction.
 			let promptPromise: Promise<unknown>;
-			if (isKnownSkillCommand(this.ctx, firstPrompt.text)) {
-				const built = await buildSkillCommandPrompt(
-					this.ctx,
-					firstPrompt.text,
-					firstPrompt.mode,
-					firstPrompt.images,
-				);
+			if (isKnownSkillCommand(this.ctx, first.text)) {
+				const built = await buildSkillCommandPrompt(this.ctx, first.text, first.mode, first.images);
 				promptPromise = built
-					? this.ctx.session.promptCustomMessage(built.message, built.options).catch(restoreQueue)
+					? this.ctx.session
+							.promptCustomMessage(built.message, {
+								...built.options,
+								onPromptQueued: onFirstQueued,
+								onPromptAdmitted: onFirstAdmitted,
+							})
+							.then(sent => {
+								if (sent === false) onFirstDropped();
+							}, onFirstFailed)
 					: Promise.resolve();
 			} else {
-				const disposeFirstPrompt = this.ctx.recordLocalSubmission(
-					firstPrompt.text,
-					firstPrompt.images?.length ?? 0,
-				);
+				const disposeFirstPrompt = this.ctx.recordLocalSubmission(first.text, first.images?.length ?? 0);
 				promptPromise = this.ctx.session
-					.prompt(firstPrompt.text, {
-						streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
-						images: firstPrompt.images,
+					.prompt(first.text, {
+						streamingBehavior: first.mode === "followUp" ? "followUp" : "steer",
+						images: first.images,
+						onPromptQueued: onFirstQueued,
+						onPromptAdmitted: onFirstAdmitted,
 					})
 					.catch((error: unknown) => {
 						disposeFirstPrompt();
-						restoreQueue(error);
+						onFirstFailed(error);
 					});
 			}
 
 			for (const message of rest) {
-				await this.#deliverQueuedMessage(message);
+				await this.#deliverQueuedMessage(message, onDelivered);
+				// The first prompt failed while the rest was still being delivered: the whole batch is
+				// back in the compaction queue, so take back what was delivered since and stop.
+				if (restored) {
+					this.ctx.session.dropQueuedMessages(deliveredByFlush);
+					return;
+				}
 			}
 			this.ctx.updatePendingMessagesDisplay();
 			void promptPromise;
@@ -1191,12 +1325,12 @@ export class UiHelpers {
 
 	flushPendingBashComponents(): void {
 		for (const component of this.ctx.pendingBashComponents) {
-			this.ctx.pendingMessagesContainer.removeChild(component);
+			this.ctx.pendingShellContainer.removeChild(component);
 			this.ctx.chatContainer.addChild(component);
 		}
 		this.ctx.pendingBashComponents = [];
 		for (const component of this.ctx.pendingPythonComponents) {
-			this.ctx.pendingMessagesContainer.removeChild(component);
+			this.ctx.pendingShellContainer.removeChild(component);
 			this.ctx.chatContainer.addChild(component);
 		}
 		this.ctx.pendingPythonComponents = [];

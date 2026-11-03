@@ -32,7 +32,7 @@ export const isKimiK26ModelId = memo((modelId: string): boolean => {
 });
 
 export const isKimiK3ModelId = memo((modelId: string): boolean => {
-	return /(^|\/)kimi-k3(?:\.\d+)?(?:[-.:_]|$)/i.test(modelId);
+	return /(^|[/.])(?:kimi-)?k3(?:\.\d+)?(?:[-.:_]|$)/i.test(modelId);
 });
 
 export const isClaudeModelId = memo((modelId: string): boolean => {

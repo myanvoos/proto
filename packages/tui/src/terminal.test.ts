@@ -241,16 +241,16 @@ test("releases ordinary input when an unterminated OSC11 reply outlives the repl
 	);
 
 	try {
-		// A reply torn mid-body and never terminated: StdinBuffer flushes it on
-		// its hold timer, the parser buffers it, and ordinary keystrokes must
-		// surface again once the buffer outlives the reply window instead of
-		// being swallowed for the rest of the session.
+		// A torn protocol head must not flush its payload as input. A lone
+		// typed key is replayed once the five-second abandonment bound expires.
 		feed("\x1b]11;rgb:ffff/00");
 		vi.advanceTimersByTime(500);
 		expect(input).toEqual([]);
 
 		vi.advanceTimersByTime(1500);
 		feed("q");
+		// A lone key is retained until the protocol head is proven abandoned.
+		vi.advanceTimersByTime(5000);
 		expect(input).toEqual(["q"]);
 	} finally {
 		terminal.stop();
@@ -270,9 +270,8 @@ test("releases ordinary input when an unterminated OSC11 reply outgrows the repl
 	);
 
 	try {
-		// The oversized unterminated reply is one StdinBuffer burst: prefix and
-		// trailing keystrokes arrive as a single torn sequence, append, and trip
-		// the length bound. The next ordinary keystroke must reach input.
+		// An oversized torn reply remains protocol data, but a later lone
+		// keystroke must recover after the abandonment bound.
 		feed(
 			"\x1b]11;rgb:ffff/00xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		);
@@ -280,6 +279,8 @@ test("releases ordinary input when an unterminated OSC11 reply outgrows the repl
 		expect(input).toEqual([]);
 
 		feed("y");
+		// A lone key is retained until the protocol head is proven abandoned.
+		vi.advanceTimersByTime(5000);
 		expect(input).toEqual(["y"]);
 
 		// The released query must not wedge appearance refreshes either.
@@ -369,12 +370,14 @@ test("releases ordinary input when an unterminated OSC99 probe reply outgrows th
 		// probe (as unsupported) instead of swallowing keystrokes forever. If
 		// the probe were never armed, the bursts would surface as input and the
 		// first assertion would fail, so this also pins the arming.
-		// Longer than OSC99_REPLY_MAX_LENGTH so the length bound, not the time bound, releases the probe.
+		// Even an oversized protocol head must recover the later typed key.
 		feed(`\x1b]99;id=probe;pay${"x".repeat(5_000)}`);
 		vi.advanceTimersByTime(500);
 		expect(input).toEqual([]);
 
 		feed("z");
+		// A lone key is retained until the protocol head is proven abandoned.
+		vi.advanceTimersByTime(5000);
 		expect(input).toEqual(["z"]);
 	} finally {
 		terminal.stop();
@@ -617,4 +620,22 @@ test("confirmed bracketed paste asks the loop stall probe how to deliver an unma
 	expect(deliver(true, true).filter(data => data === "\r")).toEqual(["\r", "\r"]);
 	// ...while an input-method commit on a responsive loop lands as one paste.
 	expect(deliver(true, false).filter(data => data === "\r")).toEqual([]);
+});
+
+test("background RGB reports notify image consumers even when the appearance stays dark", () => {
+	const terminal = startTerminal();
+	const reports: string[] = [];
+	const unsubscribe = terminal.onAppearanceReport(appearance => reports.push(appearance));
+	try {
+		feed("\x1b]11;rgb:1111/2222/3333\x1b\\");
+		terminal.refreshAppearance();
+		feed("\x1b]11;rgb:2222/3333/4444\x1b\\");
+		expect(reports).toEqual(["dark", "dark"]);
+		unsubscribe();
+		terminal.refreshAppearance();
+		feed("\x1b]11;rgb:3333/4444/5555\x1b\\");
+		expect(reports).toEqual(["dark", "dark"]);
+	} finally {
+		terminal.stop();
+	}
 });

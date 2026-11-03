@@ -54,6 +54,17 @@ console.log(JSON.stringify(order));
 	expect(result.stdout).toContain('["outer","late","settled"]');
 }, 15_000);
 
+test("fatal recovery hints reflect session state saved during cleanup", async () => {
+	const result = await runPostmortemScript(`
+let saved = false;
+const unregister = postmortem.registerFatalRecoveryHint(() => saved ? { label: "Resume", command: "proto --resume saved-after-cleanup" } : undefined);
+postmortem.register("save-session", async () => { await Bun.sleep(10); saved = true; unregister(); });
+await postmortem.fatal(new Error("recovery timing probe"));
+`);
+	expect(result.exitCode).toBe(1);
+	expect(result.stderr).toContain("proto --resume saved-after-cleanup");
+});
+
 test("a SIGTERM exit finishes async cleanup registered during the exit pass", async () => {
 	const result = await runPostmortemScript(`
 postmortem.register("outer", () => {

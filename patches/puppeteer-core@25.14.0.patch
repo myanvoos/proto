@@ -1,17 +1,8 @@
-diff --git a/node_modules/puppeteer-core/.bun-tag-2e714b457f0bd8e8 b/.bun-tag-2e714b457f0bd8e8
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/puppeteer-core/.bun-tag-a797aeb3ca2bd69f b/.bun-tag-a797aeb3ca2bd69f
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/puppeteer-core/.bun-tag-f6b71be083df18d4 b/.bun-tag-f6b71be083df18d4
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/puppeteer/api/ElementHandle.js b/lib/puppeteer/api/ElementHandle.js
-index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87af232ebbd 100644
+index 63c5df3c495c92d918a56e2059ed74255cf07a1a..5a6bb8e1c0654375e1775114bdef09428850139f 100644
 --- a/lib/puppeteer/api/ElementHandle.js
 +++ b/lib/puppeteer/api/ElementHandle.js
-@@ -102,6 +102,36 @@ import { throwIfDisposed } from '../util/decorators.js';
+@@ -103,6 +103,36 @@ import { throwIfDisposed } from '../util/decorators.js';
  import { _isElementHandle } from './ElementHandleSymbol.js';
  import { JSHandle } from './JSHandle.js';
  import { NodeLocator } from './locators/locators.js';
@@ -48,7 +39,7 @@ index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87a
  /**
   * A given method will have it's `this` replaced with an isolated version of
   * `this` when decorated with this decorator.
-@@ -299,6 +329,7 @@ let ElementHandle = (() => {
+@@ -300,6 +330,7 @@ let ElementHandle = (() => {
           * trying to adopt it multiple times
           */
          isolatedHandle = __runInitializers(this, _instanceExtraInitializers);
@@ -56,7 +47,7 @@ index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87a
          /**
           * @internal
           */
-@@ -335,19 +366,37 @@ let ElementHandle = (() => {
+@@ -336,19 +367,37 @@ let ElementHandle = (() => {
          async getProperties() {
              return await this.handle.getProperties();
          }
@@ -96,7 +87,7 @@ index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87a
          }
          /**
           * @internal
-@@ -371,7 +420,7 @@ let ElementHandle = (() => {
+@@ -372,7 +421,7 @@ let ElementHandle = (() => {
           * @internal
           */
          async dispose() {
@@ -105,7 +96,7 @@ index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87a
          }
          /**
           * @internal
-@@ -555,15 +604,27 @@ let ElementHandle = (() => {
+@@ -556,15 +605,27 @@ let ElementHandle = (() => {
          async $$eval(selector, pageFunction, ...args) {
              const env_2 = { stack: [], error: void 0, hasError: false };
              try {
@@ -138,7 +129,7 @@ index 81454fe2af73518f7e76f04cbe3a7f170d735fa5..ee6b042c87861f00d7fcbb6e3eb6e87a
                  ]);
                  return result;
 diff --git a/lib/puppeteer/api/Frame.js b/lib/puppeteer/api/Frame.js
-index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf6545bb59b86 100644
+index 2d94da19ceda4482d6c5364582ce28a7b99afa8e..17b02eade4991b4566282a6ea888d98c601a0fdd 100644
 --- a/lib/puppeteer/api/Frame.js
 +++ b/lib/puppeteer/api/Frame.js
 @@ -119,6 +119,36 @@ export var FrameEvent;
@@ -178,8 +169,8 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
  /**
   * Represents a DOM frame.
   *
-@@ -277,12 +307,21 @@ let Frame = (() => {
-             super();
+@@ -282,12 +312,21 @@ let Frame = (() => {
+             this.logger = logger;
          }
          #_document;
 +        #_mainDocument;
@@ -202,7 +193,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
                      return document;
                  });
              }
-@@ -295,6 +334,7 @@ let Frame = (() => {
+@@ -300,6 +339,7 @@ let Frame = (() => {
           */
          clearDocumentHandle() {
              this.#_document = undefined;
@@ -210,7 +201,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
          }
          /**
           * @returns The frame element associated with this frame (if any).
-@@ -345,8 +385,9 @@ let Frame = (() => {
+@@ -350,8 +390,9 @@ let Frame = (() => {
           * See {@link Page.evaluateHandle} for details.
           */
          async evaluateHandle(pageFunction, ...args) {
@@ -221,7 +212,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
          }
          /**
           * Behaves identically to {@link Page.evaluate} except it's run within
-@@ -355,8 +396,9 @@ let Frame = (() => {
+@@ -360,8 +401,9 @@ let Frame = (() => {
           * See {@link Page.evaluate} for details.
           */
          async evaluate(pageFunction, ...args) {
@@ -232,7 +223,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
          }
          /**
           * @internal
-@@ -458,9 +500,10 @@ let Frame = (() => {
+@@ -463,9 +505,10 @@ let Frame = (() => {
           * @returns A promise to the result of the function.
           */
          async $eval(selector, pageFunction, ...args) {
@@ -244,7 +235,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
              return await document.$eval(selector, pageFunction, ...args);
          }
          /**
-@@ -498,9 +541,10 @@ let Frame = (() => {
+@@ -503,9 +546,10 @@ let Frame = (() => {
           * @returns A promise to the result of the function.
           */
          async $$eval(selector, pageFunction, ...args) {
@@ -256,7 +247,7 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
              return await document.$$eval(selector, pageFunction, ...args);
          }
          /**
-@@ -577,7 +621,8 @@ let Frame = (() => {
+@@ -582,7 +626,8 @@ let Frame = (() => {
           * @returns the promise which resolve when the `pageFunction` returns a truthy value.
           */
          async waitForFunction(pageFunction, options = {}, ...args) {
@@ -267,10 +258,10 @@ index 8698d2a5a976b277344fe42e90ffe985bdf0fbd7..62c3b7ca8ec987cc62ceacec69acf654
          /**
           * The full HTML contents of the frame, including the DOCTYPE.
 diff --git a/lib/puppeteer/cdp/ExecutionContext.js b/lib/puppeteer/cdp/ExecutionContext.js
-index c67098fd6c9f66666ad2b41d5b7dea42e1991833..2a543a09bfbd48bb9c02f085399788e913d0e8e4 100644
+index c161965f31909e268841d5e57facb53d448c8db3..2d8bf569c3b9fde7e74a78a79e86f46061c2d880 100644
 --- a/lib/puppeteer/cdp/ExecutionContext.js
 +++ b/lib/puppeteer/cdp/ExecutionContext.js
-@@ -326,14 +326,19 @@ export class ExecutionContext extends EventEmitter {
+@@ -340,14 +340,19 @@ export class ExecutionContext extends EventEmitter {
          return await this.#evaluate(false, pageFunction, ...args);
      }
      async #evaluate(returnByValue, pageFunction, ...args) {
@@ -293,7 +284,7 @@ index c67098fd6c9f66666ad2b41d5b7dea42e1991833..2a543a09bfbd48bb9c02f085399788e9
              const { exceptionDetails, result: remoteObject } = await this.#client
                  .send('Runtime.evaluate', {
                  expression: expressionWithSourceUrl,
-@@ -352,9 +357,8 @@ export class ExecutionContext extends EventEmitter {
+@@ -366,9 +371,8 @@ export class ExecutionContext extends EventEmitter {
              return this.#world.createCdpHandle(remoteObject);
          }
          const functionDeclaration = stringifyFunction(pageFunction);
@@ -306,19 +297,19 @@ index c67098fd6c9f66666ad2b41d5b7dea42e1991833..2a543a09bfbd48bb9c02f085399788e9
          try {
              callFunctionOnPromise = this.#client.send('Runtime.callFunctionOn', {
 diff --git a/lib/puppeteer/cdp/Frame.js b/lib/puppeteer/cdp/Frame.js
-index 4e27013ad8f9b89ee13913e55bba243cc8bf9662..42c4bf547443aa01955dde6f4e0f4d5385ca3c96 100644
+index 922ed9d77fc1429f5f4fb3d946a15ff85bf24dea..91b464fd7eb0a76f0ee32b7c2d20deeadde04914 100644
 --- a/lib/puppeteer/cdp/Frame.js
 +++ b/lib/puppeteer/cdp/Frame.js
-@@ -276,7 +276,7 @@ let CdpFrame = (() => {
+@@ -291,7 +291,7 @@ let CdpFrame = (() => {
                  this.#client.send('Runtime.addBinding', {
                      name: CDP_BINDING_PREFIX + binding.name,
                  }),
--                this.evaluate(binding.initSource).catch(debugCatchError),
-+                this.mainRealm().evaluate(binding.initSource).catch(debugCatchError),
+-                this.evaluate(binding.initSource).catch(error => {
++                this.mainRealm().evaluate(binding.initSource).catch(error => {
+                     this.#logger?.(DEBUG_PREFIXES.error)?.(error);
+                 }),
              ]);
-         }
-         async removeExposedFunctionBinding(binding) {
-@@ -289,7 +289,7 @@ let CdpFrame = (() => {
+@@ -306,7 +306,7 @@ let CdpFrame = (() => {
                  this.#client.send('Runtime.removeBinding', {
                      name: CDP_BINDING_PREFIX + binding.name,
                  }),
@@ -328,10 +319,10 @@ index 4e27013ad8f9b89ee13913e55bba243cc8bf9662..42c4bf547443aa01955dde6f4e0f4d53
                      // @ts-expect-error: In a different context.
                      globalThis[name] = undefined;
 diff --git a/lib/puppeteer/cdp/FrameManager.js b/lib/puppeteer/cdp/FrameManager.js
-index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..e1d40c15cb7b4df462a15fdfa715a546d91d3466 100644
+index f94964b186105e8be9e78b2c7b4dd64faaddf26e..43e3d774a2b58874abd3f7eb460843b76b836177 100644
 --- a/lib/puppeteer/cdp/FrameManager.js
 +++ b/lib/puppeteer/cdp/FrameManager.js
-@@ -13,6 +13,7 @@ import { disposeSymbol } from '../util/disposable.js';
+@@ -66,6 +66,7 @@ import { DisposableStack, disposeSymbol } from '../util/disposable.js';
  import { isErrorLike } from '../util/ErrorLike.js';
  import { CdpIssue } from './CdpIssue.js';
  import { CdpPreloadScript } from './CdpPreloadScript.js';
@@ -339,7 +330,19 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..e1d40c15cb7b4df462a15fdfa715a546
  import { isTargetClosedError } from './Connection.js';
  import { CdpDeviceRequestPromptManager } from './DeviceRequestPrompt.js';
  import { ExecutionContext } from './ExecutionContext.js';
-@@ -43,6 +44,10 @@ export class FrameManager extends EventEmitter {
+@@ -76,6 +77,11 @@ import { IsolatedWorld } from './IsolatedWorld.js';
+ import { MAIN_WORLD, PUPPETEER_WORLD } from './IsolatedWorlds.js';
+ import { NetworkManager } from './NetworkManager.js';
+ const CHROME_EXTENSION_PREFIX = 'chrome-extension://';
++// xxx-stealth: lazy context acquisition failures are retried on the next
++// evaluation; they must not surface through the caller's CDP path.
++const debugCatchError = error => {
++    void error;
++};
+ /**
+  * A frame manager manages the frames for a given {@link Page | page}.
+  *
+@@ -96,6 +102,10 @@ export class FrameManager extends EventEmitter {
       * frameNavigated event usually contains the latest information.
       */
      #frameNavigatedReceived = new Set();
@@ -349,8 +352,8 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..e1d40c15cb7b4df462a15fdfa715a546
 +    #acquirePromises = new Map();
      #deviceRequestPromptManagerMap = new WeakMap();
      #frameTreeHandled;
-     get timeoutSettings() {
-@@ -191,9 +196,18 @@ export class FrameManager extends EventEmitter {
+     #logger;
+@@ -257,9 +267,18 @@ export class FrameManager extends EventEmitter {
                      this.#frameTreeHandled?.resolve();
                  }),
                  client.send('Page.setLifecycleEventsEnabled', { enabled: true }),
@@ -372,15 +375,15 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..e1d40c15cb7b4df462a15fdfa715a546
                  ...(frame
                      ? Array.from(this.#scriptsToEvaluateOnNewDocument.values())
                      : []).map(script => {
-@@ -346,6 +360,7 @@ export class FrameManager extends EventEmitter {
+@@ -431,6 +450,7 @@ export class FrameManager extends EventEmitter {
              return;
          }
-         frame = new CdpFrame(this, frameId, parentFrameId, session);
+         frame = new CdpFrame(this, frameId, parentFrameId, session, this.#logger);
 +        this.#installContextProviders(frame);
          this._frameTree.addFrame(frame);
          this.emit(FrameManagerEvent.FrameAttached, frame);
      }
-@@ -376,6 +391,177 @@ export class FrameManager extends EventEmitter {
+@@ -461,6 +481,177 @@ export class FrameManager extends EventEmitter {
          frame._navigated(framePayload);
          this.emit(FrameManagerEvent.FrameNavigated, frame);
          frame.emit(FrameEvent.FrameNavigated, navigationType);
@@ -559,7 +562,7 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..e1d40c15cb7b4df462a15fdfa715a546
      async #createIsolatedWorld(session, name) {
          const key = `${session.id()}:${name}`;
 diff --git a/lib/puppeteer/cdp/IsolatedWorld.js b/lib/puppeteer/cdp/IsolatedWorld.js
-index b0619734a9eeb884f3ac4ffff39b540226aaf818..7e577d8a0200f0201742fd0a471edc9792c35a3f 100644
+index 48a575b08b525d4dfe514483f0a53af4e5e1b13c..b5b0b299666e814fec1f2f016fd836e8f6bc606a 100644
 --- a/lib/puppeteer/cdp/IsolatedWorld.js
 +++ b/lib/puppeteer/cdp/IsolatedWorld.js
 @@ -21,6 +21,13 @@ export class IsolatedWorld extends Realm {
@@ -573,10 +576,10 @@ index b0619734a9eeb884f3ac4ffff39b540226aaf818..7e577d8a0200f0201742fd0a471edc97
 +    setContextProvider(provider) {
 +        this.#contextProvider = provider;
 +    }
-     constructor(frameOrWorker, timeoutSettings, worldId) {
+     #logger;
+     constructor(frameOrWorker, timeoutSettings, worldId, logger) {
          super(timeoutSettings);
-         this.#frameOrWorker = frameOrWorker;
-@@ -72,6 +79,19 @@ export class IsolatedWorld extends Realm {
+@@ -74,6 +81,19 @@ export class IsolatedWorld extends Realm {
       * Waits for the next context to be set on the isolated world.
       */
      async #waitForExecutionContext() {
@@ -597,16 +600,15 @@ index b0619734a9eeb884f3ac4ffff39b540226aaf818..7e577d8a0200f0201742fd0a471edc97
          const result = await firstValueFrom(fromEmitterEvent(this.#emitter, 'context').pipe(raceWith(fromEmitterEvent(this.#emitter, 'disposed').pipe(map(() => {
              // The message has to match the CDP message expected by the WaitTask class.
 diff --git a/lib/puppeteer/cdp/WebWorker.js b/lib/puppeteer/cdp/WebWorker.js
-index 3d68f887920ded269eb641273a5a13dee235ae1d..b4cc8fc1bcdfaf7fa58e169f8fe27225ac494e44 100644
+index c16af2c8c5de931d34724a5198a2704120cdea56..b7716f5c87ba07adc7c604231b0bf62402c1882e 100644
 --- a/lib/puppeteer/cdp/WebWorker.js
 +++ b/lib/puppeteer/cdp/WebWorker.js
-@@ -29,9 +29,21 @@ export class CdpWebWorker extends WebWorker {
+@@ -32,8 +32,22 @@ export class CdpWebWorker extends WebWorker {
          this.#targetType = targetType;
-         this.#world = new IsolatedWorld(this, new TimeoutSettings(), MAIN_WORLD);
-         this.#emitter = new EventEmitter();
+         this.#world = new IsolatedWorld(this, new TimeoutSettings(), MAIN_WORLD, logger);
+         this.#emitter = new EventEmitter(undefined, logger);
 -        this.#client.once('Runtime.executionContextCreated', async (event) => {
--            this.#world.setContext(new ExecutionContext(client, event.context, this.#world));
--        });
+-            this.#world.setContext(new ExecutionContext(client, event.context, this.#world, logger));
 +        // xxx-stealth: acquire the worker's execution context via an idOnly
 +        // globalThis evaluate instead of Runtime.enable + executionContextCreated.
 +        void this.#client
@@ -618,18 +620,21 @@ index 3d68f887920ded269eb641273a5a13dee235ae1d..b4cc8fc1bcdfaf7fa58e169f8fe27225
 +            const objectId = res?.result?.objectId;
 +            const id = typeof objectId === 'string' ? Number.parseInt(objectId.split('.')[1] ?? '', 10) : NaN;
 +            if (!Number.isNaN(id)) {
-+                this.#world.setContext(new ExecutionContext(client, { id }, this.#world));
++                this.#world.setContext(new ExecutionContext(client, { id }, this.#world, logger));
 +            }
 +        })
-+            .catch(debugCatchError);
++            .catch((err) => {
++            return this.#logger?.(DEBUG_PREFIXES.error)?.(err);
+         });
          this.#client.once('Inspector.workerScriptLoaded', () => {
              this.#workerLoaded.resolve();
+@@ -76,9 +90,6 @@ export class CdpWebWorker extends WebWorker {
+         networkManager?.addClient(this.#client).catch((err) => {
+             return this.#logger?.(DEBUG_PREFIXES.error)?.(err);
          });
-@@ -68,7 +80,6 @@ export class CdpWebWorker extends WebWorker {
-         networkManager
-             ?.addClient(this.#client)
-             .catch(debugCatchError ?? (() => { }));
--        this.#client.send('Runtime.enable').catch(debugCatchError ?? (() => { }));
+-        this.#client.send('Runtime.enable').catch((err) => {
+-            return this.#logger?.(DEBUG_PREFIXES.error)?.(err);
+-        });
      }
      mainRealm() {
          return this.#world;
@@ -668,10 +673,10 @@ index 8c406cf90e0f9d899efaa5acb6a636a86f32e37e..185ef5954b2b95b708855ed68e8327a8
                  catch (e_3) {
                      env_4.error = e_3;
 diff --git a/lib/puppeteer/common/util.js b/lib/puppeteer/common/util.js
-index b185921857e559f3379924e96dd1dd6345b73374..85f470df561d9005fd26f25a0c9067e2a34771dc 100644
+index f092b2afa6870646d987b63d53ae08c176ee0d67..631ee7ad9c4538357242ce325d01df959ea35895 100644
 --- a/lib/puppeteer/common/util.js
 +++ b/lib/puppeteer/common/util.js
-@@ -38,7 +38,8 @@ export class PuppeteerURL {
+@@ -27,7 +27,8 @@ export class PuppeteerURL {
      static fromCallSite(functionName, site) {
          const url = new PuppeteerURL();
          url.#functionName = functionName;
@@ -682,10 +687,10 @@ index b185921857e559f3379924e96dd1dd6345b73374..85f470df561d9005fd26f25a0c9067e2
      }
      static parse = (url) => {
 diff --git a/lib/puppeteer/node/ChromeLauncher.js b/lib/puppeteer/node/ChromeLauncher.js
-index fb7fe66ecb99fd207b99c1e9a9ae00769f0b9a20..af5284b9ee8226e78fa0243ec2f83a631bbaca9d 100644
+index 88a539acf0ed2497a205cb17a4e09c4fc2056f7c..654401c9d83520ac23dc6d37c2feb79721a810f2 100644
 --- a/lib/puppeteer/node/ChromeLauncher.js
 +++ b/lib/puppeteer/node/ChromeLauncher.js
-@@ -131,22 +131,12 @@ export class ChromeLauncher extends BrowserLauncher {
+@@ -130,24 +130,12 @@ export class ChromeLauncher extends BrowserLauncher {
          ].filter(feature => {
              return feature !== '';
          });
@@ -702,6 +707,8 @@ index fb7fe66ecb99fd207b99c1e9a9ae00769f0b9a20..af5284b9ee8226e78fa0243ec2f83a63
 -            'MediaRouter',
 -            'OptimizationHints',
 -            'WebUIReloadButton',
+-            'WebUIOmniboxPopup',
+-            'WebUIOmniboxAimPopup',
 -            ...(turnOnExperimentalFeaturesForTesting
 -                ? []
 -                : [

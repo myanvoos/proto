@@ -244,6 +244,7 @@ export async function hasResolvableTranscript(agentId: string): Promise<boolean>
 		if (ref?.kind === "advisor") ref = undefined;
 		ref ??= registry.list().find(candidate => candidate.kind !== "advisor" && candidate.id.toLowerCase() === lower);
 		if (ref?.session) return true;
+		if (ref?.status === "running") return true;
 		if (ref?.sessionFile && (await isReadableFile(ref.sessionFile))) return true;
 		return (await findSessionFileFromDisk(agentId)) !== undefined;
 	} catch {

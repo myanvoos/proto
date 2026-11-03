@@ -17,7 +17,6 @@ import { UserMessageComponent } from "./user-message";
 class Block implements Component {
 	#rows: string[];
 	#finalized: boolean;
-	allocations: number[] = [];
 
 	constructor(rows: string[], finalized: boolean) {
 		this.#rows = rows;
@@ -31,10 +30,6 @@ class Block implements Component {
 
 	isTranscriptBlockFinalized(): boolean {
 		return this.#finalized;
-	}
-
-	setTranscriptAllocation(rows: number): void {
-		this.allocations.push(rows);
 	}
 
 	render(): readonly string[] {
@@ -437,14 +432,14 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("assigns one row per live block until pressure requires aggregation", () => {
+	it("shows the chronological tail instead of aggregating active blocks", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["first"], false));
 		transcript.addChild(new Block(["second"], false));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["", "second"]);
 		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["second"]);
 	});
 	it("does not report settled resume backlog as active", () => {
 		const transcript = new TranscriptContainer();
@@ -456,19 +451,13 @@ describe("TranscriptContainer", () => {
 		// settled transcript prefix live for one frame while it drains next.
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current tool"]);
 	});
-	it("excludes empty blocks so pressure never emits blank rows", () => {
+	it("hidden tool blocks do not add separators or consume visible rows", () => {
 		const transcript = new TranscriptContainer();
-		// Text blocks interleaved with empty (hidden tool-activity) blocks that
-		// render nothing but stay live until retired.
 		for (let i = 0; i < 6; i++) {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
-		const out = transcript.renderViewport(80, 12, frame);
-		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(transcript.renderViewport(80, 7, frame)).toEqual(["t4a", "t4b", "t4c", "", "t5a", "t5b", "t5c"]);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure", () => {
@@ -478,28 +467,20 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
+		// Empty blocks do not disturb the ordinary separator between visible cards.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
-	it("gives surplus rows to assistant text before a growing tool card", () => {
+	it("keeps the newest tool card intact instead of squeezing it behind assistant text", () => {
 		const transcript = new TranscriptContainer();
-		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
-		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
-		transcript.addChild(assistant);
-		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
-		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
-		expect(tool.allocations.at(-1)).toBe(1);
+		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], false));
+		transcript.addChild(new ToolBlock(["T1", "T2", "T3", "T4"], false));
+
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["", "T1", "T2", "T3", "T4"]);
 	});
 
-	it("keeps a completed assistant answer's prose visible behind an active prefix", () => {
+	it("does not move an older answer ahead of the newest transcript tail", () => {
 		initThemeSync();
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["stale active"], false));
@@ -508,10 +489,8 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["task running"], false));
 
 		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
-		const rows = transcript.renderViewport(80, 3, frame);
-		expect(rows[0]).toBe("2 more transcript blocks active");
-		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
-		expect(rows[2]).toBe("task running");
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["continued turn", "", "task running"]);
+		expect(transcript.renderViewport(80, 30, frame).join("\n")).toContain("Implemented");
 	});
 
 	it("keeps an optimistic skill row removable until it is reconciled", () => {
@@ -712,29 +691,20 @@ describe("TranscriptContainer", () => {
 describe("TranscriptContainer viewport pressure", () => {
 	const frame = { now: 0, tick: 0 };
 
-	it("reuses measured 256-block rows and rerenders only changed overflow allocations", () => {
-		class CountedBlock extends Block {
-			renders = 0;
-
-			override render(): readonly string[] {
-				this.renders++;
-				return super.render();
-			}
+	it("hundreds of active cards cannot replace the newest tool output with headers", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 256; index++) {
+			transcript.addChild(new ToolBlock([`block ${index}`, `detail ${index}`], false));
 		}
 
-		const transcript = new TranscriptContainer();
-		const blocks = Array.from(
-			{ length: 256 },
-			(_, index) => new CountedBlock([`block ${index}`, `detail ${index}`], false),
-		);
-		for (const block of blocks) transcript.addChild(block);
-
 		expect(transcript.liveRowCount(80, frame)).toBe(767);
-		const viewport = transcript.renderViewport(80, 511, frame);
-
-		expect(viewport).toHaveLength(511);
-		expect(blocks.reduce((total, block) => total + block.renders, 0)).toBe(512);
-		expect(transcript.blockStates()).toEqual(Array.from({ length: 256 }, () => "active"));
+		expect(transcript.renderViewport(80, 5, frame)).toEqual([
+			"block 254",
+			"detail 254",
+			"",
+			"block 255",
+			"detail 255",
+		]);
 	});
 
 	function prompts(count: number): TranscriptContainer {
@@ -763,20 +733,20 @@ describe("TranscriptContainer viewport pressure", () => {
 		expect(transcript.blockStates()[0]).toBe("committed");
 	});
 
-	it("spends a clipped block's rows on its prompt instead of its spacer", () => {
+	it("clips only the oldest rows and never replaces the newest prompt with padding", () => {
 		const transcript = prompts(6);
-		for (const rows of [30, 20, 12, 8, 6, 4, 3, 2, 1]) {
-			const viewport = transcript.renderViewport(60, rows, frame).map(row => Bun.stripANSI(row));
-			expect(viewport.length, `${rows} rows`).toBeLessThanOrEqual(rows);
-			const visible = viewport.filter(row => row.includes("PROMPT_")).length;
-			// Every row a squeezed block gets must carry its prompt; the newest
-			// prompts win when there are fewer rows than blocks.
-			expect(visible, `${rows} rows: ${JSON.stringify(viewport)}`).toBe(Math.min(6, rows));
-			expect(
-				viewport.findLast(row => row.trim().length > 0),
-				`${rows} rows`,
-			).toContain("PROMPT_6");
+		const full = transcript.render(60);
+		for (const rows of [12, 6, 1, 0]) {
+			const viewport = transcript.renderViewport(60, rows, frame);
+			expect(viewport).toEqual(rows > 0 ? full.slice(-rows) : []);
 		}
+	});
+
+	it("drops outer padding before clipping an oversized tool card", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new ToolBlock(["", "header", "output one", "output two", ""], false));
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["output two"]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["header", "output one", "output two"]);
 	});
 
 	it("keeps whole blocks intact when the viewport can hold them", () => {
@@ -808,4 +778,44 @@ describe("TranscriptContainer.canDisplaceBlock", () => {
 		expect(container.canDisplaceBlock(poll)).toBe(false);
 		expect(container.canRemoveBlock(poll)).toBe(true);
 	});
+});
+
+describe("committed transcript render-cache lifetime", () => {
+	it("releases caches after commit and replay acknowledgement without invalidating semantic state", () => {
+		let releases = 0;
+		let invalidations = 0;
+		const component: Component = {
+			render: () => ["retained answer"],
+			releaseRenderCaches: () => {
+				releases++;
+			},
+			invalidate: () => {
+				invalidations++;
+			},
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		const commit = transcript.peekFlushBatch(40);
+		expect(commit?.rows.join("\n")).toContain("retained answer");
+		transcript.acknowledgeFinalizedBatch(commit!.id);
+		expect(releases).toBeGreaterThan(0);
+		expect(invalidations).toBe(0);
+		const released = releases;
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(30);
+		expect(replay?.rows.join("\n")).toContain("retained answer");
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(releases).toBeGreaterThan(released);
+		expect(invalidations).toBe(0);
+	});
+});
+
+it("live insertion preserves transcript order", () => {
+	const transcript = new TranscriptContainer();
+	transcript.addChild(new Block(["first"], true));
+	transcript.addChild(new Block(["last"], true));
+	transcript.insertChildAt(new Block(["middle"], true), 1);
+	const output = transcript.render(40).join("\n");
+	expect(output.indexOf("first")).toBeLessThan(output.indexOf("middle"));
+	expect(output.indexOf("middle")).toBeLessThan(output.indexOf("last"));
 });

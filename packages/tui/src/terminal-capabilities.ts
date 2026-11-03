@@ -11,9 +11,11 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
+import { ensureSixelRasterWidth } from "./sixel";
 import {
 	isInsideTmux,
-	resolveTmuxClientTerminalName,
+	resolveTmuxClientTerminalNames,
+	tmuxPaneAllowsPassthrough,
 	unwrapTmuxPassthrough,
 	wrapTmuxPassthrough,
 	wrapTmuxPassthroughIfNeeded,
@@ -23,6 +25,25 @@ import type { HangulCompatibilityJamoWidth } from "./utils";
 
 export { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 export { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
+
+let terminalBackgroundColor: number | undefined;
+let terminalBackgroundFallback: number | undefined;
+
+/** SIXEL has no alpha channel; composite against the last trustworthy background. */
+export function getTerminalBackgroundColor(): number {
+	if (!Bun.env.ZELLIJ && terminalBackgroundColor !== undefined) return terminalBackgroundColor;
+	if (terminalBackgroundFallback !== undefined) return terminalBackgroundFallback;
+	const background = Number.parseInt(Bun.env.COLORFGBG?.split(";")[1] ?? "", 10);
+	return background >= 8 ? 0xffffff : 0x000000;
+}
+
+export function setTerminalBackgroundColor(color: number | undefined): void {
+	terminalBackgroundColor = color;
+}
+
+export function setTerminalBackgroundFallback(color: number | undefined): void {
+	terminalBackgroundFallback = color;
+}
 
 export enum ImageProtocol {
 	Kitty = "\x1b_G",
@@ -63,6 +84,8 @@ export type TerminalId =
 	| "orca"
 	| "otty"
 	| "rio"
+	| "monstar"
+	| "rex"
 	| "base"
 	| "trueColor";
 
@@ -311,6 +334,7 @@ export function shouldEnableSynchronizedOutputByDefault(
 	switch (terminalId) {
 		case "kitty":
 		case "ghostty":
+		case "monstar":
 		case "wezterm":
 		case "iterm2":
 		case "alacritty":
@@ -344,12 +368,14 @@ export function detectStyledUnderlineSupport(terminalId: TerminalId, env: NodeJS
 	switch (terminalId) {
 		case "kitty":
 		case "ghostty":
+		case "monstar":
 		case "wezterm":
 			return true;
 		case "iterm2": {
 			// Curly underline plus SGR 58/59 color shipped together in iTerm2 3.5;
 			// an absent or unparseable version keeps the flat fallback.
-			const version = parseMajorMinorVersion(env.TERM_PROGRAM_VERSION);
+			const version =
+				parseMajorMinorVersion(env.TERM_PROGRAM_VERSION) ?? parseMajorMinorVersion(env.LC_TERMINAL_VERSION);
 			return version !== null && (version.major > 3 || (version.major === 3 && version.minor >= 5));
 		}
 		default:
@@ -452,6 +478,10 @@ const KNOWN_TERMINALS = Object.freeze({
 	// Windows OSC 9 path raises a toast Windows silently drops. DECCARA,
 	// screen-to-scrollback, OSC 99 and OSC 66 are outside rio's supported set.
 	rio: new TerminalInfo("rio", ImageProtocol.Kitty, true, true),
+	// Monstar uses libghostty graphics, notifications, and two-cell compatibility Jamo.
+	monstar: new TerminalInfo("monstar", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
+	// Rex confirms Kitty graphics, not the other optional terminal capabilities.
+	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, false),
 });
 
 export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
@@ -471,6 +501,8 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 		if (caseEq(program, "orca")) return "orca";
 		if (caseEq(program, "otty")) return "otty";
 		if (caseEq(program, "rio")) return "rio";
+		if (caseEq(program, "monstar")) return "monstar";
+		if (caseEq(program, "rex")) return "rex";
 		return null;
 	}
 
@@ -496,12 +528,19 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	const programId = fromProgram(TERM_PROGRAM);
 	if (programId) return programId;
 
+	// LC_* markers survive SSH, unlike TERM_PROGRAM and ITERM_SESSION_ID.
+	if (env.LC_TERMINAL && caseEq(env.LC_TERMINAL, "iTerm2") && !isInsideTerminalMultiplexer(env)) return "iterm2";
+
 	// tmux >= 3.2 replaces the pane's identity with `TERM_PROGRAM=tmux`; its
 	// server still holds the attached client's terminal-type reply.
-	const clientProgramId = fromProgram(resolveTmuxClientTerminalName(env) ?? undefined);
-	if (clientProgramId) return clientProgramId;
+	for (const program of resolveTmuxClientTerminalNames(env)) {
+		const clientProgramId = fromProgram(program);
+		if (clientProgramId) return clientProgramId;
+	}
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
+	if (TERM && caseEq(TERM, "monstar")) return "monstar";
+	if (TERM && caseEq(TERM, "xterm-rex")) return "rex";
 
 	if (COLORTERM) {
 		if (caseEq(COLORTERM, "truecolor") || caseEq(COLORTERM, "24bit")) return "trueColor";
@@ -524,6 +563,7 @@ export function resolveImageProtocol(
 	if (terminalId === "warp") imageProtocol = resolveWarpImageProtocol();
 	if (!imageProtocol) imageProtocol = getFallbackImageProtocol(terminalId, env, isTTY);
 	if (imageProtocol && (isPaseoEmbedder(env) || isInsideHerdr(env))) return null;
+	if (imageProtocol === ImageProtocol.Kitty && isInsideTmux(env) && !tmuxPaneAllowsPassthrough(env)) return null;
 	return imageProtocol;
 }
 
@@ -572,6 +612,17 @@ export function resolveHyperlinkPolicy(mode: unknown): boolean {
 	if (Bun.env.NO_COLOR) return false;
 	if (!process.stdout.isTTY) return false;
 	return DETECTED_TERMINAL_HYPERLINKS;
+}
+
+const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
+
+/** Reserved image rows above this line, excluding unrelated history. */
+export function directPlacementLift(line: string): number {
+	return Number(DIRECT_PLACEMENT_LIFT.exec(line)?.[1] ?? 0);
+}
+
+export function withDirectPlacementLift(line: string, lift: number): string {
+	return line.replace(DIRECT_PLACEMENT_LIFT, lift > 0 ? `\x1b7\x1b[${lift}A` : "\x1b7");
 }
 
 /**
@@ -742,7 +793,7 @@ export function encodeKittyPlacementLine(options: {
 		params.push(`y=${srcY}`, `h=${Math.max(1, options.imageHeightPx - srcY)}`);
 	}
 
-	const apc = `\x1b_G${params.join(",")}\x1b\\`;
+	const apc = wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
 	const cuu = visibleRows - 1;
 	return cuu > 0 ? `\x1b7\x1b[${cuu}A${apc}\x1b8` : apc;
 }
@@ -1040,7 +1091,9 @@ export function renderImage(
 			const rows = Math.max(1, Math.ceil(targetHeightPx / cellDims.heightPx));
 			if (targetWidthPx * targetHeightPx > TERMINAL_IMAGE_LIMITS.pixels) return null;
 			const decoded = new Uint8Array(Buffer.from(base64Data, "base64"));
-			const sequence = encodeSixel(decoded, targetWidthPx, targetHeightPx);
+			const sequence = ensureSixelRasterWidth(
+				encodeSixel(decoded, targetWidthPx, targetHeightPx, getTerminalBackgroundColor()),
+			);
 			return { sequence, rows };
 		} catch {
 			return null;
@@ -1049,7 +1102,8 @@ export function renderImage(
 	if (TERMINAL.imageProtocol === ImageProtocol.Iterm2) {
 		const sequence = encodeITerm2(base64Data, {
 			width: fit.columns,
-			height: "auto",
+			// Background iTerm2 tabs cannot resolve an automatic image height.
+			height: fit.rows,
 			preserveAspectRatio: options.preserveAspectRatio ?? true,
 		});
 		return { sequence, rows: fit.rows };

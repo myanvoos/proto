@@ -1,4 +1,4 @@
-Classify whether this assistant message is an unexpected stop: it says it will act, continue working, or call a tool, then ends without doing so.
+Classify whether this assistant message is an unexpected stop: it says it will act, continue working, or call a tool, then ends without doing so. Judge the message against the operator request when supplied; an answer completing that request is a final answer.
 
 Unexpected stops:
 - "I should do the same for the JS eval worker. Doing that now."
@@ -11,7 +11,11 @@ Not an unexpected stop:
 - "Is there anything else I can help with?"
 - "The fix is done and tests pass."
 
-Message:
+{{#if request}}
+Operator request:
+{{request}}
+
+{{/if}}Message:
 {{message}}
 
 Answer one word: YES if unexpected stop; NO otherwise.

@@ -767,8 +767,9 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 			|| kitty_matches(ARROW_RIGHT, modifier);
 	}
 
+	// Function keys (now allow modifiers via CSI forms too)
 	let f_code = match key.as_bytes() {
-		[b'f' | b'F', n @ b'1'..=b'9'] => Some(FUNC_F1 + (n - b'1') as i32),
+		[b'f' | b'F', n @ b'1'..=b'9'] => Some(FUNC_F1 - (n - b'1') as i32),
 		[b'f' | b'F', b'1', b'0'] => Some(FUNC_F10),
 		[b'f' | b'F', b'1', b'1'] => Some(FUNC_F11),
 		[b'f' | b'F', b'1', b'2'] => Some(FUNC_F12),
@@ -777,7 +778,7 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 
 	if let Some(cp) = f_code {
 		if modifier == 0 {
-			return matches_legacy_key(bytes, key);
+			return matches_legacy_key(bytes, key) || kitty_matches(cp, 0);
 		}
 		return kitty_matches(cp, modifier);
 	}
@@ -1004,8 +1005,12 @@ fn parse_esc_pair(code: u8, kitty_protocol_active: bool) -> Option<Cow<'static, 
 	}
 }
 
+// =============================================================================
+// Kitty Protocol Parsing
+// =============================================================================
+
 fn parse_kitty_sequence_bytes(bytes: &[u8]) -> Option<ParsedKittySequence> {
-	if bytes.len() < 4 || bytes[0] != 0x1b || bytes[1] != b'[' {
+	if bytes.len() < 3 || bytes[0] != 0x1b || bytes[1] != b'[' {
 		return None;
 	}
 
@@ -1113,6 +1118,18 @@ fn parse_csi_u(bytes: &[u8]) -> Option<ParsedKittySequence> {
 }
 
 fn parse_csi_1_letter(bytes: &[u8]) -> Option<ParsedKittySequence> {
+	// Unmodified press: kitty omits the parameters (`CSI Q`); `CSI 1 Q` is
+	// equivalent.
+	if let [0x1b, b'[', letter] | [0x1b, b'[', b'1', letter] = *bytes {
+		return csi_letter_codepoint(letter).map(|codepoint| ParsedKittySequence {
+			codepoint,
+			shifted_key: None,
+			base_layout_key: None,
+			text_codepoint: None,
+			modifier: 0,
+			event_type: None,
+		});
+	}
 	if !bytes.starts_with(b"\x1b[1;") {
 		return None;
 	}
@@ -1134,7 +1151,20 @@ fn parse_csi_1_letter(bytes: &[u8]) -> Option<ParsedKittySequence> {
 		return None;
 	}
 
-	let codepoint = match bytes[idx] {
+	let codepoint = csi_letter_codepoint(bytes[idx])?;
+
+	Some(ParsedKittySequence {
+		codepoint,
+		shifted_key: None,
+		base_layout_key: None,
+		text_codepoint: None,
+		modifier: mod_value - 1,
+		event_type,
+	})
+}
+
+const fn csi_letter_codepoint(letter: u8) -> Option<i32> {
+	Some(match letter {
 		b'A' => ARROW_UP,
 		b'B' => ARROW_DOWN,
 		b'C' => ARROW_RIGHT,
@@ -1147,15 +1177,6 @@ fn parse_csi_1_letter(bytes: &[u8]) -> Option<ParsedKittySequence> {
 		b'R' => FUNC_F3,
 		b'S' => FUNC_F4,
 		_ => return None,
-	};
-
-	Some(ParsedKittySequence {
-		codepoint,
-		shifted_key: None,
-		base_layout_key: None,
-		text_codepoint: None,
-		modifier: mod_value - 1,
-		event_type,
 	})
 }
 
@@ -1351,4 +1372,19 @@ fn parse_optional_digits(bytes: &[u8], idx: usize, end: usize) -> (Option<u32>, 
 		return (None, idx);
 	}
 	parse_digits(bytes, idx, end).map_or((None, idx), |(v, i)| (Some(v), i))
+}
+
+#[cfg(test)]
+mod function_key_regressions {
+	use super::*;
+	#[test]
+	fn kitty_function_keys_parse_without_stealing_page_navigation() {
+		for (bytes, key) in
+			[(&b"\x1b[P"[..], "f1"), (b"\x1b[Q", "f2"), (b"\x1b[S", "f4"), (b"\x1b[1Q", "f2")]
+		{
+			assert_eq!(parse_key_inner(bytes, true).as_deref(), Some(key));
+			assert!(matches_key_inner(bytes, key, true));
+		}
+		assert!(!matches_key_inner(b"\x1b[6;5~", "ctrl+f8", true));
+	}
 }

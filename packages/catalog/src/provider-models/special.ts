@@ -27,6 +27,7 @@ export function openaiCodexModelManagerOptions(
 		providerId: "openai-codex",
 		cacheProviderId: resolveModelCacheProviderId("openai-codex"),
 		dynamicModelsAuthoritative: true,
+		keepStaticNames: true,
 		...(resolveAccounts
 			? {
 					fetchDynamicModels: async () => {

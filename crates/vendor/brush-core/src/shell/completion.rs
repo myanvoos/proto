@@ -1,15 +1,6 @@
-
-
 use crate::{completion, error, extensions};
 
 impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
-
-
-
-
-
-
-
 	pub async fn complete(
 		&mut self,
 		input: &str,

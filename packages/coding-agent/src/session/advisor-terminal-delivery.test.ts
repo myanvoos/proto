@@ -77,6 +77,7 @@ describe("advisor delivery at the primary's terminal boundary", () => {
 	it("preserves a late nit after a terminal answer instead of queueing an aside", () => {
 		expect(
 			resolveAdvisorDeliveryChannel({
+				continueSeverity: "concern",
 				severity: "nit",
 				autoResumeSuppressed: false,
 				streaming: false,
@@ -225,6 +226,7 @@ describe("advisor delivery at the primary's terminal boundary", () => {
 				"compaction.enabled": false,
 				"retry.enabled": false,
 				"advisor.syncBacklog": "off",
+				"advisor.continueSeverity": "blocker",
 			});
 			settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 			const session = new AgentSession({

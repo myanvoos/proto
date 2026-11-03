@@ -34,7 +34,7 @@ describe("Meta Model API discovery", () => {
 		expect(byId.get("muse-spark-1.3-contributor")).toMatchObject({
 			name: "Muse Spark 1.3 (C)",
 			cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
-			thinking: { efforts: FIVE_TIER },
+			thinking: { efforts: [...FIVE_TIER, Effort.Max] },
 		});
 		expect(byId.has("muse-image-1.0")).toBe(false);
 	});

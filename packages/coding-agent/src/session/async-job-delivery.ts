@@ -1,6 +1,7 @@
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import { truncateMiddle } from "./streaming-output";
 
@@ -70,6 +71,7 @@ type AsyncResultJobDetails = {
 	label?: string;
 	durationMs?: number;
 	status?: AsyncJob["status"];
+	agentId?: string;
 };
 
 type AsyncResultDetails = {
@@ -80,11 +82,12 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 	if (entries.length === 0) return null;
 	const jobs = entries.map(entry => ({
 		jobId: entry.jobId,
-		result: entry.result,
+		result: escapeHarnessTags(entry.result),
 		type: entry.job?.type,
 		label: entry.job?.label,
 		durationMs: entry.durationMs,
 		status: entry.job?.status,
+		agentId: entry.job?.agentId,
 		// The failure signal usually lives at the end of the output, which is exactly what the
 		// context cap drops, so status has to be stated in the header instead.
 		failed: entry.job?.status === "failed",
@@ -96,6 +99,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			label: job.label,
 			durationMs: job.durationMs,
 			...(job.status ? { status: job.status } : {}),
+			...(job.agentId ? { agentId: job.agentId } : {}),
 		})),
 	};
 	return {

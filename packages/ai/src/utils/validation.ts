@@ -1,4 +1,4 @@
-import { type Type, type } from "@oh-my-pi/omptype";
+import { parseLocalRefPointer, type Type, type } from "@oh-my-pi/omptype";
 import { structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type { Tool, ToolCall } from "../types";
@@ -685,7 +685,10 @@ function normalizeOptionalNullsForSchema(
 	for (const [key, propertySchema] of Object.entries(properties)) {
 		if (!(key in nextValue)) continue;
 		const currentValue = nextValue[key];
-		const isNullish = currentValue === null || currentValue === "null";
+		const isNullish =
+			currentValue === null ||
+			(currentValue === "null" &&
+				!(Object.hasOwn(CONTENT_CARRYING_KEYS, key) && branchMatchesSchema(propertySchema, currentValue, root)));
 		const isInvalidEmptyString =
 			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue, root);
 
@@ -714,7 +717,7 @@ function normalizeOptionalNullsForSchema(
 			currentValue,
 			false,
 			root,
-			insideContent || CONTENT_CARRYING_KEYS.has(key),
+			insideContent || Object.hasOwn(CONTENT_CARRYING_KEYS, key),
 			speculativeUnion,
 		);
 		if (!normalized.changed) continue;
@@ -744,16 +747,11 @@ function normalizeOptionalNullsForSchema(
 	return { value: changed ? nextValue : value, changed };
 }
 
-function decodeJsonPointerToken(token: string): string {
-	return token.replace(/~1/g, "/").replace(/~0/g, "~");
-}
-
 function resolveLocalJsonSchemaRef(root: unknown, ref: string): unknown | undefined {
-	if (ref === "#") return root;
-	if (!ref.startsWith("#/")) return undefined;
+	const pointer = parseLocalRefPointer(ref);
+	if (pointer === undefined) return undefined;
 	let current: unknown = root;
-	for (const rawToken of ref.slice(2).split("/")) {
-		const token = decodeJsonPointerToken(rawToken);
+	for (const token of pointer) {
 		if (current === null || typeof current !== "object") return undefined;
 		current = (current as Record<string, unknown>)[token];
 	}
@@ -891,7 +889,15 @@ const IDENTIFIER_STRING_KEYS: ReadonlySet<string> = new Set([
 	"label",
 ]);
 
-const CONTENT_CARRYING_KEYS: ReadonlySet<string> = new Set(["content", "input", "body", "text", "command", "code"]);
+const CONTENT_CARRYING_KEYS: Record<string, true> = {
+	content: true,
+	input: true,
+	body: true,
+	text: true,
+	command: true,
+	code: true,
+	payload: true,
+};
 
 const TRAILING_LINE_TERMINATOR_RE = /[\r\n]+$/;
 
@@ -951,7 +957,7 @@ function normalizeIdentifierStringWhitespace(
 	let out: Record<string, unknown> = source;
 	for (const [key, entry] of Object.entries(source)) {
 		let nextEntry = entry;
-		if (CONTENT_CARRYING_KEYS.has(key)) continue;
+		if (Object.hasOwn(CONTENT_CARRYING_KEYS, key)) continue;
 		if (IDENTIFIER_STRING_KEYS.has(key)) {
 			const trimmed = trimIdentifierStringLeaf(entry);
 			if (trimmed !== entry) nextEntry = trimmed;
@@ -1169,15 +1175,21 @@ function normalizeSingleStringField(schema: unknown, value: unknown): { value: u
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return { value, changed: false };
 	const record = value as Record<string, unknown>;
 	if (record[key] !== undefined) return { value, changed: false };
+	let adopted: string | undefined;
+	let ambiguous = false;
 	for (const candidate in record) {
 		if (candidate === key || !Object.hasOwn(record, candidate)) continue;
-		const candidateValue = record[candidate];
-		if (typeof candidateValue !== "string") continue;
-		const next = { ...record, [key]: candidateValue };
-		delete next[candidate];
-		return { value: next, changed: true };
+		if (typeof record[candidate] !== "string") continue;
+		if (adopted !== undefined) {
+			ambiguous = true;
+			break;
+		}
+		adopted = candidate;
 	}
-	return { value, changed: false };
+	if (ambiguous || adopted === undefined) return { value, changed: false };
+	const next = { ...record, [key]: record[adopted] };
+	delete next[adopted];
+	return { value: next, changed: true };
 }
 
 const MAX_FLATTENED_INDEX = 100_000;

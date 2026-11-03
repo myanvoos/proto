@@ -1,9 +1,7 @@
-
 #[derive(Clone)]
 pub(crate) struct PipeReader {}
 
 impl PipeReader {
-
 	pub fn try_clone(&self) -> std::io::Result<Self> {
 		Ok((*self).clone())
 	}
@@ -21,12 +19,10 @@ impl std::io::Read for PipeReader {
 	}
 }
 
-
 #[derive(Clone)]
 pub(crate) struct PipeWriter {}
 
 impl PipeWriter {
-
 	pub fn try_clone(&self) -> std::io::Result<Self> {
 		Ok((*self).clone())
 	}

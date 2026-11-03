@@ -1,5 +1,3 @@
-
-
 pub use crate::sys::stubs::fs::*;
 
 impl crate::sys::fs::PathExt for std::path::Path {
@@ -47,10 +45,6 @@ impl crate::sys::fs::PathExt for std::path::Path {
 		Ok((0, 0))
 	}
 }
-
-
-
-
 
 pub fn split_paths<T: AsRef<std::ffi::OsStr> + ?Sized>(
 	s: &T,

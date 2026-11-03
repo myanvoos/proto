@@ -229,8 +229,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 9.9,
-		"tps": 202.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -263,8 +261,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 6.7,
-		"tps": 293.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -459,8 +455,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 16.1,
-		"tps": 124.1,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -690,8 +684,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 15.6,
-		"tps": 316.9,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -758,8 +750,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 29.7,
-		"tps": 116.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -822,8 +812,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 32.6,
-		"tps": 216,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -857,8 +845,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 22.2,
-		"tps": 360,
+		"int": 11.7,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -892,8 +879,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 34,
-		"tps": 198.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -927,8 +912,6 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 39.1,
-		"tps": 302.6,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -961,8 +944,60 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 40.9,
-		"tps": 242.3,
+		"int": 30.5,
+		"thinking": {
+			"mode": "google-level",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"gemini-4-argon": {
+		"id": "gemini-4-argon",
+		"name": "Gemini 4 Argon",
+		"api": "google-generative-ai",
+		"provider": "google",
+		"baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 0,
+			"timeBased": {
+				"offPeakMultiplier": 1,
+				"peakWindows": [],
+				"effectiveRates": [
+					{
+						"effectiveFrom": 0,
+						"input": 2,
+						"output": 10,
+						"cacheRead": 0.1,
+						"cacheWrite": 0
+					},
+					{
+						"effectiveFrom": 1796112000000,
+						"input": 4,
+						"output": 20,
+						"cacheRead": 0.2,
+						"cacheWrite": 0
+					}
+				]
+			}
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 32768,
+		"int": 50.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1103,6 +1138,38 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
+	"gemini-pro-latest": {
+		"id": "gemini-pro-latest",
+		"name": "Gemini Pro Latest",
+		"api": "google-generative-ai",
+		"provider": "google",
+		"baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 12,
+			"cacheRead": 0.2,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 65536,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
 	"gemini-robotics-er-1.6-preview": {
 		"id": "gemini-robotics-er-1.6-preview",
 		"name": "Gemini Robotics-ER 1.6 Preview",
@@ -1178,13 +1245,11 @@
 		"contextWindow": 256000,
 		"maxTokens": 8192,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
@@ -1210,13 +1275,11 @@
 		"contextWindow": 262144,
 		"maxTokens": 32768,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -1242,13 +1305,11 @@
 		"contextWindow": 256000,
 		"maxTokens": 8192,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
@@ -1274,13 +1335,11 @@
 		"contextWindow": 256000,
 		"maxTokens": 8192,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
@@ -1306,13 +1365,11 @@
 		"contextWindow": 262144,
 		"maxTokens": 32768,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -1338,13 +1395,11 @@
 		"contextWindow": 131072,
 		"maxTokens": 8192,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
@@ -1370,13 +1425,11 @@
 		"contextWindow": 131072,
 		"maxTokens": 8192,
 		"thinking": {
-			"mode": "budget",
+			"mode": "google-level",
 			"efforts": [
-				"minimal",
-				"low",
-				"medium",
 				"high"
-			]
+			],
+			"suppressWhenOff": true
 		},
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,

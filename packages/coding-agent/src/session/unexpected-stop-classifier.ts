@@ -11,6 +11,12 @@ import { tinyModelClient } from "../tiny/title-client";
 const CLASSIFIER_SYSTEM_PROMPT = prompt.render(unexpectedStopClassifierPrompt);
 
 const ANSWER_MAX_TOKENS = 16;
+const REQUEST_CHARS = 2_000;
+
+export interface UnexpectedStopTurn {
+	message: string;
+	request?: string;
+}
 
 const ONLINE_REASONING_SAFE_MAX_TOKENS = 4096;
 
@@ -26,12 +32,13 @@ export function isUnexpectedStopCandidate(message: AssistantMessage): boolean {
 	if (message.stopReason !== "stop") return false;
 	let hasContent = false;
 	for (const content of message.content) {
-		if (content.type === "toolCall") return false;
+		// A tool call or image is deliverable output; retrying would repeat it.
+		if (content.type === "toolCall" || content.type === "image") return false;
 		if (content.type === "text" && /\S/.test(content.text)) {
 			hasContent = true;
 		}
 
-		if (content.type === "thinking" && /\S/.test(content.thinking) && /\S/.test(content.thinkingSignature ?? "")) {
+		if (content.type === "thinking" && /\S/.test(content.thinkingSignature ?? "")) {
 			hasContent = true;
 		}
 	}
@@ -39,16 +46,18 @@ export function isUnexpectedStopCandidate(message: AssistantMessage): boolean {
 }
 
 export async function classifyUnexpectedStop(
-	text: string,
+	stop: UnexpectedStopTurn,
 	deps: ClassifyUnexpectedStopDeps,
 ): Promise<boolean | undefined> {
+	const request = stop.request?.trim().slice(0, REQUEST_CHARS);
+	const text = request ? JSON.stringify({ request, message: stop.message }) : stop.message;
 	const backend = deps.settings.get("providers.unexpectedStopModel");
 	try {
 		if (backend === ONLINE_MEMORY_MODEL_KEY) {
 			return await classifyOnline(text, deps);
 		}
 		if (isTinyMemoryLocalModelKey(backend)) {
-			return await classifyLocal(text, backend, deps);
+			return await classifyLocal({ message: stop.message, request }, backend, deps);
 		}
 		return undefined;
 	} catch (error) {
@@ -105,14 +114,14 @@ async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): P
 }
 
 async function classifyLocal(
-	text: string,
+	stop: UnexpectedStopTurn,
 	modelKey: string,
 	deps: ClassifyUnexpectedStopDeps,
 ): Promise<boolean | undefined> {
 	if (!isTinyMemoryLocalModelKey(modelKey)) {
 		throw new Error(`unexpected-stop: unsupported local classifier model: ${modelKey}`);
 	}
-	const builtPrompt = prompt.render(unexpectedStopClassifierPrompt, { message: text });
+	const builtPrompt = prompt.render(unexpectedStopClassifierPrompt, { message: stop.message, request: stop.request });
 	const output = await tinyModelClient.complete(modelKey, builtPrompt, {
 		maxTokens: ANSWER_MAX_TOKENS,
 		signal: deps.signal,

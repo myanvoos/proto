@@ -10,6 +10,8 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { createMCPJsonRpcError, nonRetryableMCPTransportError, normalizeMCPTransportError } from "../errors";
+import { routeProgressNotification, withProgressToken } from "../progress";
 import { RequestIdAllocator } from "../request-id";
 import { createMCPTimeout, getNeverAbortSignal, MCPRequestTimeoutError, resolveMCPTimeoutMs } from "../timeout";
 import { type MCPFetchInit, mcpFetch } from "./header-policy";
@@ -47,6 +49,7 @@ export class LegacySseTransport implements MCPTransport {
 	#pending = new Map<string | number, PendingLegacySseRequest>();
 	#config: MCPSseServerConfig;
 	readonly #requestIds = new RequestIdAllocator();
+	readonly #progressCallbacks = new Map<string | number, NonNullable<MCPRequestOptions["onProgress"]>>();
 
 	onClose?: () => void;
 	onError?: (error: Error) => void;
@@ -199,12 +202,23 @@ export class LegacySseTransport implements MCPTransport {
 			} else if (error instanceof Error && error.name !== "AbortError") {
 				logger.debug("Legacy SSE stream error", { url: this.#config.url, error: error.message });
 				this.onError?.(error);
-				this.#rejectPending(error);
+				this.#rejectPending(
+					nonRetryableMCPTransportError(
+						normalizeMCPTransportError(error, { transport: "http", stage: "receive" }),
+					),
+				);
 			}
 		} finally {
 			operation.clear();
 			if (endpointReceived) {
-				this.#rejectPending(new Error("Transport closed: legacy SSE stream closed"));
+				this.#rejectPending(
+					nonRetryableMCPTransportError(
+						normalizeMCPTransportError(new Error("Transport closed: legacy SSE stream closed"), {
+							transport: "http",
+							stage: "receive",
+						}),
+					),
+				);
 			}
 		}
 	}
@@ -218,7 +232,7 @@ export class LegacySseTransport implements MCPTransport {
 				if (pending.abortHandler) pending.operation.signal?.removeEventListener("abort", pending.abortHandler);
 				const response = message as JsonRpcResponse;
 				if (response.error) {
-					pending.reject(new Error(`MCP error ${response.error.code}: ${response.error.message}`));
+					pending.reject(createMCPJsonRpcError("http", response.error));
 				} else {
 					pending.resolve(response.result);
 				}
@@ -230,6 +244,7 @@ export class LegacySseTransport implements MCPTransport {
 			return;
 		}
 		if ("method" in message && !("id" in message)) {
+			routeProgressNotification(message.method, message.params, token => this.#progressCallbacks.get(token));
 			this.onNotification?.(message.method, message.params);
 		}
 	}
@@ -244,11 +259,12 @@ export class LegacySseTransport implements MCPTransport {
 		}
 
 		const id = this.#requestIds.next(this.#config.requestIdFormat);
+		if (options?.onProgress) this.#progressCallbacks.set(id, options.onProgress);
 		const body = {
 			jsonrpc: "2.0" as const,
 			id,
 			method,
-			params: params ?? {},
+			params: options?.onProgress ? withProgressToken(params, id) : (params ?? {}),
 		};
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
 		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
@@ -279,8 +295,10 @@ export class LegacySseTransport implements MCPTransport {
 		}
 		this.#pending.set(id, pending);
 
+		let posted = false;
 		try {
 			const response = await this.#postJson(body, operation.signal);
+			posted = true;
 			if (!response.ok) {
 				const text = await response.text();
 				throw new Error(`HTTP ${response.status}: ${text}`);
@@ -294,7 +312,16 @@ export class LegacySseTransport implements MCPTransport {
 			if (operation.isTimeoutAbort(error)) {
 				throw new MCPRequestTimeoutError(`Request timeout after ${timeout}ms`);
 			}
+			if (!posted && !options?.signal?.aborted && error instanceof Error && error.name !== "AbortError") {
+				const normalized = normalizeMCPTransportError(error, { transport: "http", stage: "send" });
+				if (normalized.failure === "connect") throw normalized;
+				if (normalized.failure === "reset" || normalized.failure === "eof") {
+					throw nonRetryableMCPTransportError(normalized);
+				}
+			}
 			throw error;
+		} finally {
+			this.#progressCallbacks.delete(id);
 		}
 	}
 

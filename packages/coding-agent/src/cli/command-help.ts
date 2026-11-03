@@ -106,6 +106,9 @@ export const authBrokerHelp = {
 			description: "Also upload OAuth from local SQLite during migrate (default skips them)",
 		}),
 		"dry-run": Flags.boolean({ description: "Print actions without executing (import / login --via / migrate)" }),
+		"trust-proxy-headers": Flags.boolean({
+			description: "Trust forwarded peer IP headers from a trusted reverse proxy (serve); off by default",
+		}),
 	},
 	examples: [
 		"# Boot the broker against the local SQLite store\n  proto auth-broker serve",
@@ -314,6 +317,10 @@ export const configHelp = {
 	},
 	flags: {
 		json: Flags.boolean({ description: "Output JSON" }),
+		scope: Flags.string({
+			description: "With list: show only values set by the global or project layer",
+			options: ["global", "project"],
+		}),
 		config: Flags.string({
 			description: "Load an extra config.yml-style overlay for this run (repeatable)",
 			multiple: true,
@@ -335,6 +342,10 @@ export const dryBalanceHelp = {
 		concurrency: Flags.integer({ description: "Maximum concurrent credential resolutions", default: 32 }),
 		json: Flags.boolean({ description: "Output JSON" }),
 		bench: Flags.boolean({ description: "Send one live benchmark request per OAuth account" }),
+		config: Flags.string({
+			description: "Load an extra config.yml-style overlay for this run (repeatable)",
+			multiple: true,
+		}),
 	},
 	examples: [
 		"# Dry-run the configured default model with 100 random session ids\n  proto dry-balance",
@@ -861,7 +872,7 @@ export const usageHelp = {
 		action: Args.string({
 			description: "Optional subcommand to execute",
 			required: false,
-			options: ["invalidate", "clients"],
+			options: ["invalidate", "clients", "accounts"],
 		}),
 	},
 	flags: {

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
+use crate::minimizer::{MinimizerCtx, MinimizerOutput, engine, primitives};
 
 #[must_use]
 pub fn supports(subcommand: Option<&str>) -> bool {
@@ -30,6 +30,15 @@ pub fn supports(subcommand: Option<&str>) -> bool {
 
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
+	filter_for(ctx, ctx.program, input, exit_code)
+}
+
+pub(crate) fn filter_for(
+	ctx: &MinimizerCtx<'_>,
+	overlay_program: &str,
+	input: &str,
+	exit_code: i32,
+) -> MinimizerOutput {
 	if is_show_path_content(ctx.tokens) || is_stash_patch(ctx.tokens) {
 		return MinimizerOutput::passthrough(input);
 	}
@@ -38,8 +47,16 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	let text = match ctx.subcommand {
 		Some("status") if is_status_machine_format(ctx.tokens) => cleaned,
 		Some("status") => condense_status(&cleaned),
+		// Word diffs carry no per-line `+`/`-` prefix, so they cannot be counted.
+		Some("diff" | "show") if prints_word_patch(ctx.tokens) => cleaned,
 		Some("diff") if has_token(ctx.tokens, "--summary") => cleaned,
 		Some("diff") if is_stat_format(ctx.tokens) => condense_diff_stat(&cleaned),
+		Some("diff")
+			if diff_listing_mode(ctx.tokens).is_none()
+				&& keeps_patch_whole(ctx, overlay_program, input, &cleaned, exit_code) =>
+		{
+			cleaned
+		},
 		Some("diff") => {
 			if exit_code == 0 {
 				if let Some(mode) = diff_listing_mode(ctx.tokens) {
@@ -52,10 +69,18 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 			}
 		},
 		Some("show") if is_show_custom_format(ctx.tokens) => cleaned,
+		Some("show") if keeps_patch_whole(ctx, overlay_program, input, &cleaned, exit_code) => {
+			cleaned
+		},
 		Some("show") => condense_show(&cleaned),
 		Some("log") if is_log_custom_format(ctx.tokens) => cleaned,
 		Some("log") => condense_log(&cleaned, 32, 16),
-
+		// Non-listing branch formats produce single values or one-liner
+		// confirmations (e.g. `--show-current` → `main`, `--delete` →
+		// `Deleted branch feature (was abc123).`).  `condense_branch`
+		// would rewrite those as `local: main\n` / `local: Deleted
+		// branch…`, changing the meaning of the requested output, so
+		// skip it and passthrough the cleaned buffer.
 		Some("branch") if is_branch_non_listing(ctx.tokens) => cleaned,
 		Some("branch") => condense_branch(&cleaned),
 		Some("tag") if is_tag_non_listing(ctx.tokens) => cleaned,
@@ -87,6 +112,23 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	} else {
 		MinimizerOutput::transformed(text, input.len())
 	}
+}
+
+pub(crate) fn keeps_patch_whole(
+	ctx: &MinimizerCtx<'_>,
+	overlay_program: &str,
+	input: &str,
+	patch: &str,
+	exit_code: i32,
+) -> bool {
+	patch.len() <= primitives::WHOLE_OUTPUT_BYTES
+		&& !engine::overlay_caps_lines(
+			ctx.config,
+			overlay_program,
+			ctx.subcommand,
+			exit_code,
+			input.len(),
+		)
 }
 
 fn is_show_path_content(tokens: &[String]) -> bool {
@@ -145,6 +187,44 @@ fn is_stat_format(tokens: &[String]) -> bool {
 	tokens
 		.iter()
 		.any(|part| part == "--stat" || part.starts_with("--stat="))
+}
+
+/// The last word-diff option wins: `--word-diff=none` turns it off again, and
+/// `--word-diff-regex` and `--color-words` turn it on (git-diff(1)).
+fn is_word_diff(tokens: &[String]) -> bool {
+	tokens
+		.iter()
+		.map(String::as_str)
+		.fold(false, |on, part| match part {
+			"--word-diff=none" => false,
+			"--word-diff" | "--word-diff-regex" | "--color-words" => true,
+			_ if part.starts_with("--word-diff=")
+				|| part.starts_with("--word-diff-regex=")
+				|| part.starts_with("--color-words=") =>
+			{
+				true
+			},
+			_ => on,
+		})
+}
+
+/// Whether the output holds a word-diff patch: word diff is on, and either a
+/// patch is asked for or no stat or listing option replaces it.
+fn prints_word_patch(tokens: &[String]) -> bool {
+	if !is_word_diff(tokens) {
+		return false;
+	}
+	let parts = || tokens.iter().map(String::as_str);
+	if parts().any(|part| matches!(part, "-p" | "-u" | "--patch")) {
+		return true;
+	}
+	let replaces_patch = is_stat_format(tokens)
+		|| diff_listing_mode(tokens).is_some()
+		|| parts().any(|part| {
+			matches!(part, "--shortstat" | "--raw" | "--no-patch" | "-s")
+				|| part.starts_with("--dirstat")
+		});
+	!replaces_patch
 }
 
 #[derive(Clone, Copy)]
@@ -908,8 +988,46 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 	let mut current: Option<DiffFile> = None;
 	let mut current_hunk: Option<DiffHunk> = None;
 	let mut pending_old_path: Option<String> = None;
+	// Old and new lines still owed by the current `@@ -a,b +c,d @@` header.
+	// While either is nonzero, a line is hunk content classified by its first
+	// byte, so a removed `-- comment` or added `++ item` (shown as `--- …` /
+	// `+++ …`) is not mistaken for a file header.
+	let mut hunk_old = 0usize;
+	let mut hunk_new = 0usize;
 
 	for line in input.lines() {
+		if hunk_old > 0 || hunk_new > 0 {
+			match line.as_bytes().first() {
+				Some(b'-') => {
+					hunk_old = hunk_old.saturating_sub(1);
+					if let Some(file) = current.as_mut() {
+						file.removed += 1;
+						push_diff_line(&mut current_hunk, line);
+					}
+					continue;
+				},
+				Some(b'+') => {
+					hunk_new = hunk_new.saturating_sub(1);
+					if let Some(file) = current.as_mut() {
+						file.added += 1;
+						push_diff_line(&mut current_hunk, line);
+					}
+					continue;
+				},
+				// Context; an empty line is context whose leading space was stripped.
+				Some(b' ') | None => {
+					hunk_old = hunk_old.saturating_sub(1);
+					hunk_new = hunk_new.saturating_sub(1);
+					continue;
+				},
+				Some(b'\\') => continue,
+				// Anything else means the counts overstated the hunk: leave it.
+				Some(_) => {
+					hunk_old = 0;
+					hunk_new = 0;
+				},
+			}
+		}
 		if let Some(path) = parse_diff_git_path(line) {
 			flush_hunk(&mut current, &mut current_hunk);
 			if let Some(file) = current.take() {
@@ -959,6 +1077,7 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 		}
 		if line.starts_with("@@") {
 			flush_hunk(&mut current, &mut current_hunk);
+			(hunk_old, hunk_new) = parse_hunk_counts(line).unwrap_or((0, 0));
 			current_hunk = Some(DiffHunk { header: line.to_string(), lines: Vec::new() });
 			continue;
 		}
@@ -993,6 +1112,23 @@ fn parse_diff_git_path(line: &str) -> Option<String> {
 	let _old = parts.next()?;
 	let new = parts.next()?;
 	Some(new.strip_prefix("b/").map_or(new, |path| path).to_string())
+}
+
+/// Old and new line counts of a two-way `@@ -a[,b] +c[,d] @@` header; an
+/// omitted count is 1. Combined (`@@@`) and malformed headers yield `None`.
+fn parse_hunk_counts(line: &str) -> Option<(usize, usize)> {
+	let mut parts = line.strip_prefix("@@ ")?.split(' ');
+	let old = parts.next()?.strip_prefix('-')?;
+	let new = parts.next()?.strip_prefix('+')?;
+	if parts.next()? != "@@" {
+		return None;
+	}
+	let count = |range: &str| {
+		let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+		start.parse::<usize>().ok()?;
+		count.parse::<usize>().ok()
+	};
+	Some((count(old)?, count(new)?))
 }
 
 fn flush_hunk(file: &mut Option<DiffFile>, hunk: &mut Option<DiffHunk>) {

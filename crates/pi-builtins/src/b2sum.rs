@@ -1,7 +1,3 @@
-
-
-
-
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
 use uucore::checksum::{AlgoKind, BlakeLength, parse_blake_length};
@@ -10,7 +6,6 @@ use crate::{
 	cksum,
 	host::{Host, Utility, matches_parser, util},
 };
-
 
 pub(crate) struct B2sum {
 	matches: ArgMatches,
@@ -43,9 +38,6 @@ fn app() -> clap::Command {
 	cksum::command(B2sum::NAME, true)
 }
 
-
 pub(crate) fn b2sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<B2sum, SE>()
 }
-
-

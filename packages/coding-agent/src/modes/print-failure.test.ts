@@ -196,11 +196,35 @@ test("an unreachable provider fails fast with visible retry progress", async () 
 		expect(result.elapsedMs).toBeLessThan(45_000);
 		expect(result.stderr).toContain("retry 1/2");
 		expect(result.stderr).toContain("Retry budget exhausted after 2 retries");
-		expect(result.stderr).toContain("Unable to connect");
+		expect(result.stderr).toContain(`127.0.0.1:${deadPort}`);
+		expect(result.stderr).toMatch(/connect|refused/i);
 	} finally {
 		await fs.writeFile(models, original);
 	}
 }, 120_000);
+
+test("an unavailable configured default warns before a successful noninteractive fallback", async () => {
+	const config = path.join(agentDir, "config.yml");
+	const original = await fs.readFile(config, "utf8");
+	await fs.writeFile(
+		config,
+		`${original}modelRoles:
+  default: unavailable/missing
+enabledModels:
+  - faultok/faultok-model
+`,
+	);
+	try {
+		const result = await runPrint(["-p", "hi"], 45_000);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("PRINTED ANSWER");
+		expect(result.stderr).toContain("Warning:");
+		expect(result.stderr).toContain('Configured default model "unavailable/missing" is unavailable');
+		expect(result.stderr).toContain("faultok/faultok-model");
+	} finally {
+		await fs.writeFile(config, original);
+	}
+}, 60_000);
 
 test("a healthy provider still prints its answer and exits 0", async () => {
 	const result = await runPrint(["-p", "hi", "--model", "faultok/faultok-model"], 45_000);

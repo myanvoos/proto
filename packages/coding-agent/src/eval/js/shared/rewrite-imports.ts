@@ -97,6 +97,52 @@ async function parseProgram(
 	}
 }
 
+/** Parse the original source only after engine compilation failed, preserving native runtime errors. */
+export async function diagnoseCellSyntaxError(code: string): Promise<SyntaxError | undefined> {
+	const { parse } = await loadBabelParser();
+	let failure: unknown;
+	try {
+		const parsed = parse(code, {
+			sourceType: "module",
+			allowAwaitOutsideFunction: true,
+			allowReturnOutsideFunction: true,
+			allowImportExportEverywhere: true,
+			allowNewTargetOutsideFunction: true,
+			allowSuperOutsideMethod: true,
+			allowUndeclaredExports: true,
+			errorRecovery: true,
+			plugins: ["typescript"],
+		});
+		failure = parsed.errors?.[0];
+	} catch (error) {
+		failure = error;
+	}
+	if (!(failure instanceof Error) || !("loc" in failure)) return undefined;
+	const loc = failure.loc;
+	if (!loc || typeof loc !== "object" || !("line" in loc) || !("column" in loc)) return undefined;
+	const { line, column } = loc;
+	if (typeof line !== "number" || typeof column !== "number") return undefined;
+	const lines = code.split(/\r\n|[\n\r\u2028\u2029]/);
+	if (line < 1 || line > lines.length) return undefined;
+	const gutter = String(line).length;
+	const frame: string[] = [];
+	for (let n = Math.max(1, line - 2); n <= line; n++) {
+		const source = lines[n - 1];
+		const start = n === line ? Math.max(0, Math.min(column - 60, source.length - 120)) : 0;
+		const text = `${start > 0 ? "…" : ""}${source.slice(start, start + 120)}${source.length > start + 120 ? "…" : ""}`;
+		frame.push(`${String(n).padStart(gutter)} | ${text}`);
+		if (n === line) {
+			const prefix = text.slice(0, column - start + (start > 0 ? 1 : 0));
+			const pad = [...prefix]
+				.map(char => (char === "\t" ? char : " ".repeat(typeof Bun === "undefined" ? 1 : Bun.stringWidth(char))))
+				.join("");
+			frame.push(`${" ".repeat(gutter)} | ${pad}^`);
+		}
+	}
+	const reason = failure.message.replace(/ \(\d+:\d+\)$/, "");
+	return new SyntaxError(`${reason} (line ${line}, column ${column + 1})\n${frame.join("\n")}`);
+}
+
 const DYNAMIC_IMPORT_CALLEE = '(typeof __proto_import__ === "function" ? __proto_import__ : (s, o) => import(s, o))';
 
 function walkNodes(root: unknown, visit: (node: BabelNode) => void): void {

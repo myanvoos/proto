@@ -13,6 +13,7 @@ pub enum ErrorCode {
 	StaleRef,
 	AxUnsupported,
 	AxFailed,
+	AxUnconfirmed,
 	Timeout,
 	Closed,
 	Internal,
@@ -32,6 +33,7 @@ impl ErrorCode {
 			Self::StaleRef => "StaleRef",
 			Self::AxUnsupported => "AxUnsupported",
 			Self::AxFailed => "AxFailed",
+			Self::AxUnconfirmed => "AxUnconfirmed",
 			Self::Timeout => "Timeout",
 			Self::Closed => "Closed",
 			Self::Internal => "Internal",
@@ -92,6 +94,11 @@ impl DesktopError {
 
 	pub(crate) fn ax_failed(message: impl Into<String>) -> Self {
 		Self::new(ErrorCode::AxFailed, message)
+	}
+
+	#[cfg(target_os = "macos")]
+	pub(crate) fn ax_unconfirmed(message: impl Into<String>) -> Self {
+		Self::new(ErrorCode::AxUnconfirmed, message)
 	}
 
 	pub(crate) fn timeout(message: impl Into<String>) -> Self {

@@ -6,6 +6,7 @@ import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../
 import { resolveReadPath } from "../tools/path-utils";
 import { ImageDecodeError, ImageInputTooLargeError, loadImageInput } from "./image-loading";
 import { ImageResourceLimitError } from "./image-resources";
+import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "./markit";
 
 const FILE_MENTION_REGEX = /@(?:"([^"]+)"|'([^']+)'|([^\s@]+))/g;
 const LEADING_PUNCTUATION_REGEX = /^[`"'([{<]+/;
@@ -197,7 +198,7 @@ export function extractFileMentions(text: string): string[] {
 export async function generateFileMentionMessages(
 	filePaths: string[],
 	cwd: string,
-	options?: { autoResizeImages?: boolean },
+	options?: { autoResizeImages?: boolean; signal?: AbortSignal },
 ): Promise<AgentMessage[]> {
 	if (filePaths.length === 0) return [];
 
@@ -206,6 +207,7 @@ export async function generateFileMentionMessages(
 	const files: FileMentionMessage["files"] = [];
 
 	for (const resolvedPath of filePaths) {
+		if (options?.signal?.aborted) return [];
 		const absolutePath = resolveReadPath(resolvedPath, cwd);
 		try {
 			// A missing path throws here and is skipped by the catch below: unresolved mentions are prose.
@@ -265,6 +267,23 @@ export async function generateFileMentionMessages(
 				});
 				continue;
 			}
+			const extension = path.extname(absolutePath).toLowerCase();
+			if (CONVERTIBLE_EXTENSIONS.has(extension)) {
+				const result = await convertFileWithMarkit(absolutePath, options?.signal);
+				if (options?.signal?.aborted) return [];
+				if (result.ok && result.content.trim()) {
+					const { output, lineCount } = buildTextOutput(result.content);
+					files.push({ path: resolvedPath, content: output, lineCount });
+				} else {
+					files.push({
+						path: resolvedPath,
+						content: `(skipped auto-read: ${result.error || `cannot read ${extension} file`})`,
+						byteSize: stat.size,
+						skippedReason: "binary",
+					});
+				}
+				continue;
+			}
 			if (await isProbablyBinary(absolutePath)) {
 				files.push({
 					path: resolvedPath,
@@ -279,11 +298,12 @@ export async function generateFileMentionMessages(
 			const { output, lineCount } = buildTextOutput(content);
 			files.push({ path: resolvedPath, content: output, lineCount });
 		} catch (error) {
+			if (options?.signal?.aborted) return [];
 			if (error instanceof ImageResourceLimitError) throw error;
 		}
 	}
 
-	if (files.length === 0) return [];
+	if (options?.signal?.aborted || files.length === 0) return [];
 
 	const message: FileMentionMessage = {
 		role: "fileMention",

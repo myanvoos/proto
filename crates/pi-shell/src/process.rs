@@ -1,3 +1,5 @@
+//! Cross-platform process tree management.
+
 use std::{
 	collections::{HashMap, HashSet},
 	sync::Arc,
@@ -6,6 +8,11 @@ use std::{
 
 use anyhow::Result;
 use parking_lot::Mutex;
+/// Current state of a process reference.
+///
+/// Defined in `pi-builtins` alongside the process-table snapshots its process
+/// builtins read, and re-exported here so this module — and `pi-natives`
+/// through it — keeps one status type for both concerns.
 pub use pi_builtins::ProcessStatus;
 
 use crate::cancel::CancelToken;
@@ -14,15 +21,16 @@ use crate::cancel::CancelToken;
 mod platform {
 	use std::{
 		collections::HashSet,
-		ffi::OsStr,
 		fs,
-		os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-		ptr,
+		os::fd::{AsFd, AsRawFd, OwnedFd},
 		sync::Arc,
 	};
 
+	use pi_builtins::proc_sys as sys;
+
 	use super::ProcessStatus;
 
+	/// Stable Linux process reference backed by a pidfd.
 	#[derive(Clone)]
 	pub struct Process {
 		pid:        i32,
@@ -35,8 +43,8 @@ mod platform {
 			if pid <= 0 {
 				return None;
 			}
-			let pidfd = open_pidfd(pid)?;
-			let start_time = read_start_time(pid)?;
+			let pidfd = Arc::new(sys::open_pidfd(pid)?);
+			let start_time = sys::start_time(pid)?;
 			Some(Self { pid, pidfd, start_time })
 		}
 
@@ -49,6 +57,10 @@ mod platform {
 				return Vec::new();
 			}
 
+			// `/proc/{pid}/task/{tid}/children` is per-task: a child fork()ed from
+			// a worker thread appears under that thread's `tid`, not the tgid.
+			// Walk every task subdir and union the lists, then re-validate
+			// parentage.
 			let task_dir = format!("/proc/{}/task", self.pid);
 			let Ok(entries) = fs::read_dir(&task_dir) else {
 				return Vec::new();
@@ -69,7 +81,7 @@ mod platform {
 				let Ok(content) = fs::read_to_string(&children_path) else {
 					continue;
 				};
-
+				// The file is readable -> this kernel has CONFIG_PROC_CHILDREN.
 				children_file_available = true;
 				for part in content.split_whitespace() {
 					let Ok(child_pid) = part.parse::<i32>() else {
@@ -79,21 +91,26 @@ mod platform {
 				}
 			}
 
-			if !children_file_available && let Ok(proc_entries) = fs::read_dir("/proc") {
-				for entry in proc_entries.flatten() {
-					let name = entry.file_name();
-					let Some(pid_str) = name.to_str() else {
-						continue;
-					};
-					let Ok(child_pid) = pid_str.parse::<i32>() else {
-						continue;
-					};
+			// Some Kata / microVM guest kernels are built without
+			// CONFIG_PROC_CHILDREN, so no `.../children` file exists and the
+			// walk above finds nothing — which would silently turn descendant
+			// signaling (cancellation cleanup) into a no-op inside such
+			// containers. Fall back to scanning `/proc` and grouping
+			// by parent pid, the same primitive the macOS path uses. Only taken
+			// when no `children` file was readable, so kernels that support it
+			// keep the cheap per-task fast path.
+			if !children_file_available {
+				for child_pid in sys::pids() {
 					self.push_validated_child(child_pid, &mut seen, &mut out);
 				}
 			}
 			out
 		}
 
+		/// Validate a candidate child pid — dedup, still running, and currently
+		/// parented to `self` — then push it onto `out`. Shared by the
+		/// `/proc/<pid>/task/<tid>/children` fast path and the `/proc`-scan
+		/// fallback for kernels without `CONFIG_PROC_CHILDREN`.
 		fn push_validated_child(&self, child_pid: i32, seen: &mut HashSet<i32>, out: &mut Vec<Self>) {
 			if child_pid == self.pid || !seen.insert(child_pid) {
 				return;
@@ -101,8 +118,7 @@ mod platform {
 			let Some(child) = Self::from_pid(child_pid) else {
 				return;
 			};
-			if child.status() == ProcessStatus::Running
-				&& current_parent_pid(child.pid) == Some(self.pid)
+			if child.status() == ProcessStatus::Running && sys::parent_pid(child.pid) == Some(self.pid)
 			{
 				out.push(child);
 			}
@@ -110,7 +126,7 @@ mod platform {
 
 		pub fn parent_pid(&self) -> Option<i32> {
 			if self.status() == ProcessStatus::Running {
-				current_parent_pid(self.pid)
+				sys::parent_pid(self.pid)
 			} else {
 				None
 			}
@@ -121,28 +137,19 @@ mod platform {
 				return Vec::new();
 			}
 
-			let cmdline_path = format!("/proc/{}/cmdline", self.pid);
-			let Ok(content) = fs::read(cmdline_path) else {
+			let Some(args) = sys::cmdline(self.pid) else {
 				return Vec::new();
 			};
-
+			// Re-validate after the read: PID reuse between identity check and
+			// read would otherwise leak an impostor's command line to callers.
 			if !self.live_identity() {
 				return Vec::new();
 			}
-			split_nul_arguments(&content)
+			args
 		}
 
 		pub fn kill(&self, signal: i32) -> bool {
-			let ret = unsafe {
-				libc::syscall(
-					libc::SYS_pidfd_send_signal,
-					self.pidfd.as_raw_fd(),
-					signal,
-					ptr::null::<libc::siginfo_t>(),
-					0,
-				)
-			};
-			ret == 0
+			sys::pidfd_send_signal(self.pidfd.as_fd(), signal)
 		}
 
 		pub fn group_id(&self) -> Option<i32> {
@@ -150,6 +157,9 @@ mod platform {
 				return None;
 			}
 
+			// SAFETY: `self.pid` names the process currently referenced by
+			// `self.pidfd` unless it exits concurrently. If it exits, `getpgid`
+			// reports failure rather than dereferencing caller-owned memory.
 			let pgid = unsafe { libc::getpgid(self.pid) };
 			if pgid > 0 { Some(pgid) } else { None }
 		}
@@ -158,9 +168,16 @@ mod platform {
 			loop {
 				let mut pollfd =
 					libc::pollfd { fd: self.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-
+				// SAFETY: `pollfd` points to one initialized `pollfd` element, and
+				// the pidfd remains open for the duration of the call. Timeout
+				// zero makes this a non-blocking readiness probe.
 				let ready = unsafe { libc::poll(&raw mut pollfd, 1, 0) };
 				if ready < 0 {
+					// Retry on EINTR; for any other transient poll error treat the
+					// pidfd as still running. The pidfd is still owned and the
+					// kernel has not reported the process gone — a spurious
+					// `Exited` here makes every downstream signal/kill fall
+					// through silently.
 					if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
 						continue;
 					}
@@ -178,6 +195,21 @@ mod platform {
 			}
 		}
 
+		/// Resolves once the process exits: its pidfd becomes readable then.
+		pub async fn exited(&self) -> std::io::Result<()> {
+			// SAFETY: the owned pidfd stays valid and its descriptor is never replaced.
+			let pidfd = unsafe {
+				tokio::io::unix::AsyncFd::register_with_interest(
+					self.pidfd.try_clone()?,
+					tokio::io::Interest::READABLE,
+				)
+			}?;
+			let _ready = pidfd.readable().await?;
+			Ok(())
+		}
+
+		/// Walk the descendant tree in post-order (leaves first), de-duplicating
+		/// by PID so concurrent reparenting cannot trap us in a cycle.
 		pub fn descendants(&self) -> Vec<Self> {
 			let mut out = Vec::new();
 			let mut visited = HashSet::new();
@@ -197,84 +229,21 @@ mod platform {
 
 		fn live_identity(&self) -> bool {
 			self.status() == ProcessStatus::Running
-				&& read_start_time(self.pid) == Some(self.start_time)
+				&& sys::start_time(self.pid) == Some(self.start_time)
 		}
 	}
 
-	fn split_nul_arguments(content: &[u8]) -> Vec<String> {
-		content
-			.split(|byte| *byte == 0)
-			.filter(|part| !part.is_empty())
-			.map(|part| String::from_utf8_lossy(part).into_owned())
+	/// Find processes whose `/proc/{pid}/exe` symlink resolves to exactly
+	/// `target`.
+	pub fn find_by_path(target: &str) -> Vec<Process> {
+		sys::pids()
+			.filter(|pid| {
+				fs::read_link(format!("/proc/{pid}/exe"))
+					.is_ok_and(|resolved| resolved.as_os_str() == target)
+			})
+			.filter_map(Process::from_pid)
 			.collect()
 	}
-
-	fn current_parent_pid(pid: i32) -> Option<i32> {
-		let status_path = format!("/proc/{pid}/status");
-		let content = fs::read_to_string(status_path).ok()?;
-		content.lines().find_map(|line| {
-			line
-				.strip_prefix("PPid:")
-				.and_then(|ppid| ppid.trim().parse::<i32>().ok())
-		})
-	}
-
-	fn read_start_time(pid: i32) -> Option<u64> {
-		let stat_path = format!("/proc/{pid}/stat");
-		let content = fs::read_to_string(stat_path).ok()?;
-		let last_paren = content.rfind(')')?;
-		let rest = &content[last_paren + 1..];
-		rest.split_whitespace().nth(19)?.parse().ok()
-	}
-
-	fn open_pidfd(pid: i32) -> Option<Arc<OwnedFd>> {
-		let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-		if fd < 0 {
-			return None;
-		}
-
-		Some(Arc::new(unsafe { OwnedFd::from_raw_fd(fd as RawFd) }))
-	}
-
-	pub fn kill_process_group(pgid: i32, signal: i32) -> bool {
-		unsafe { libc::kill(-pgid, signal) == 0 }
-	}
-
-	pub fn find_by_path(target: &str) -> Vec<Process> {
-		let mut matches = Vec::new();
-		let Ok(entries) = fs::read_dir("/proc") else {
-			return matches;
-		};
-		let target_os = OsStr::new(target);
-		for entry in entries.flatten() {
-			let name = entry.file_name();
-			let Some(name_str) = name.to_str() else {
-				continue;
-			};
-			let Ok(pid) = name_str.parse::<i32>() else {
-				continue;
-			};
-			let exe_path = format!("/proc/{pid}/exe");
-			let Ok(resolved) = fs::read_link(&exe_path) else {
-				continue;
-			};
-			if resolved.as_os_str() == target_os
-				&& let Some(process) = Process::from_pid(pid)
-			{
-				matches.push(process);
-			}
-		}
-		matches
-	}
-}
-
-/// Translate libproc's PID count into a padded allocation and its C byte size.
-#[cfg(any(target_os = "macos", test))]
-fn macos_pid_buffer_size(reported: i32) -> Option<(usize, i32)> {
-	let count = usize::try_from(reported).ok().filter(|count| *count > 0)?;
-	let capacity = count.saturating_mul(4).max(2048);
-	let bytes = i32::try_from(capacity.checked_mul(size_of::<i32>())?).ok()?;
-	Some((capacity, bytes))
 }
 
 #[cfg(target_os = "macos")]
@@ -284,14 +253,13 @@ mod platform {
 		ptr,
 	};
 
+	use pi_builtins::proc_sys as sys;
+
 	use super::ProcessStatus;
 
-	#[link(name = "proc", kind = "dylib")]
-	unsafe extern "C" {
-		fn proc_listallpids(buffer: *mut i32, buffersize: i32) -> i32;
-		fn proc_pidpath(pid: i32, buffer: *mut std::ffi::c_void, buffersize: u32) -> i32;
-	}
-
+	/// macOS does not expose pidfds; identity is pinned via the kernel-reported
+	/// process start time so a recycled PID does not silently impersonate the
+	/// original target.
 	#[derive(Clone)]
 	pub struct Process {
 		pid:          i32,
@@ -304,7 +272,7 @@ mod platform {
 			if pid <= 0 {
 				return None;
 			}
-			let info = read_bsdinfo(pid)?;
+			let info = sys::bsdinfo(pid)?;
 			if i32::try_from(info.pbi_pid).ok()? != pid {
 				return None;
 			}
@@ -319,7 +287,16 @@ mod platform {
 			if self.live_bsdinfo().is_none() {
 				return Vec::new();
 			}
-
+			// `proc_listchildpids` (the obvious choice) is broken on recent macOS
+			// kernels when queried for the *calling* process — it returns one byte
+			// of padding regardless of how many children the process actually
+			// has, so a process can never list its own descendants. Confirmed
+			// on darwin 25.4 from C, Rust, and Bun callers via
+			// `proc_listchildpids(getpid(), …)`, while `ps -P` and `pgrep -P`
+			// still see the same children. Walk the whole pid table via
+			// `proc_listallpids` and filter on `pbi_ppid` instead; this is the
+			// same approach we already use for `find_by_path` and that the
+			// Windows implementation uses via Toolhelp snapshots.
 			let tree = build_process_tree();
 			Self::children_from_tree(self.pid, &tree)
 		}
@@ -333,14 +310,20 @@ mod platform {
 			if self.live_bsdinfo().is_none() {
 				return Vec::new();
 			}
-			process_args(self.pid)
+			sys::args(self.pid)
 		}
 
 		pub fn kill(&self, signal: i32) -> bool {
+			// Re-validate identity right before signaling. There is no atomic
+			// "kill iff start_time matches" primitive on macOS, so a vanishingly
+			// small window remains between this check and the syscall — but
+			// matching against the recorded `(pid, start_tvsec, start_tvusec)`
+			// triple eliminates the PID-reuse race in every practical case.
 			if self.live_bsdinfo().is_none() {
 				return false;
 			}
-
+			// SAFETY: `kill` takes integer identifiers by value and does not
+			// access caller-owned memory.
 			unsafe { libc::kill(self.pid, signal) == 0 }
 		}
 
@@ -349,7 +332,13 @@ mod platform {
 			i32::try_from(info.pbi_pgid).ok().filter(|pgid| *pgid > 0)
 		}
 
+		/// Walk the descendant tree in post-order (leaves first), de-duplicating
+		/// by PID so concurrent reparenting cannot trap us in a cycle.
 		pub fn descendants(&self) -> Vec<Self> {
+			// One process-table snapshot per walk — building it inside the
+			// recursion would re-scan every pid for every visited node,
+			// producing an `O(N · D)` kernel call pattern. Mirrors the Windows
+			// implementation.
 			let tree = build_process_tree();
 			let mut out = Vec::new();
 			let mut visited = HashSet::new();
@@ -385,7 +374,8 @@ mod platform {
 				let Some(child) = Self::from_pid(child_pid) else {
 					continue;
 				};
-
+				// Post-order: grandchildren first, so leaf processes get signalled
+				// before their parents during tree termination.
 				Self::collect_descendants_from_tree(child_pid, tree, visited, out);
 				out.push(child);
 			}
@@ -399,8 +389,62 @@ mod platform {
 			}
 		}
 
+		/// Resolves once the process exits, through a kqueue `NOTE_EXIT`
+		/// filter.
+		pub async fn exited(&self) -> std::io::Result<()> {
+			use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+			// SAFETY: `kqueue` takes no arguments; a negative result is an error.
+			let kq = unsafe { libc::kqueue() };
+			if kq < 0 {
+				return Err(std::io::Error::last_os_error());
+			}
+			// SAFETY: `kq` is a fresh descriptor nothing else owns.
+			let kq = unsafe { OwnedFd::from_raw_fd(kq) };
+			// Scoped so the raw record (its `udata` is a `*mut c_void`) is gone
+			// before the await below; holding it would make this future `!Send`.
+			let registered = {
+				let change = libc::kevent {
+					ident:  self.pid as libc::uintptr_t,
+					filter: libc::EVFILT_PROC,
+					flags:  libc::EV_ADD | libc::EV_ONESHOT,
+					fflags: libc::NOTE_EXIT,
+					data:   0,
+					udata:  ptr::null_mut(),
+				};
+				// SAFETY: `change` is one initialized change record; with no event
+				// buffer the call only registers it and the null timeout is unused.
+				unsafe {
+					libc::kevent(kq.as_raw_fd(), &raw const change, 1, ptr::null_mut(), 0, ptr::null())
+				}
+			};
+			if registered < 0 {
+				let err = std::io::Error::last_os_error();
+				// No such process: it is already gone.
+				return if err.raw_os_error() == Some(libc::ESRCH) {
+					Ok(())
+				} else {
+					Err(err)
+				};
+			}
+			// The pid may have been reused before the filter was registered, in
+			// which case it watches another process; confirm identity after.
+			if self.status() != ProcessStatus::Running {
+				return Ok(());
+			}
+			// SAFETY: this owned kqueue is held unchanged until the registration drops.
+			let kq = unsafe {
+				tokio::io::unix::AsyncFd::register_with_interest(kq, tokio::io::Interest::READABLE)
+			}?;
+			let _ready = kq.readable().await?;
+			Ok(())
+		}
+
+		/// Returns the current `proc_bsdinfo` only if it still describes the same
+		/// process this reference was opened on — i.e. the start time has not
+		/// changed.
 		fn live_bsdinfo(&self) -> Option<libc::proc_bsdinfo> {
-			let info = read_bsdinfo(self.pid)?;
+			let info = sys::bsdinfo(self.pid)?;
 			if info.pbi_start_tvsec == self.start_tvsec && info.pbi_start_tvusec == self.start_tvusec {
 				Some(info)
 			} else {
@@ -409,47 +453,15 @@ mod platform {
 		}
 	}
 
-	pub fn kill_process_group(pgid: i32, signal: i32) -> bool {
-		unsafe { libc::kill(-pgid, signal) == 0 }
-	}
-
-	const KERN_PROCARGS2: libc::c_int = 49;
-
-	const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
-
-	/// Snapshot every pid currently visible to `proc_listallpids`. macOS
-	/// silently truncates the second call to the supplied buffer size even
-	/// when the sizing query reports more PIDs available, so the buffer is
-	/// padded well beyond the reported count.
-	fn snapshot_all_pids() -> Vec<i32> {
-		// SAFETY: Passing a null buffer with size 0 is the documented libproc
-		// query form for obtaining the PID count; libproc
-		// does not dereference the null pointer in this mode.
-		let reported = unsafe { proc_listallpids(ptr::null_mut(), 0) };
-		let Some((cap, byte_capacity)) = super::macos_pid_buffer_size(reported) else {
-			return Vec::new();
-		};
-		let mut buffer = vec![0i32; cap];
-		// SAFETY: `buffer` is valid for `buffer.len() * size_of::<i32>()` bytes
-		// and is properly aligned for `i32`; libproc writes at most the
-		// supplied size.
-		let actual = unsafe { proc_listallpids(buffer.as_mut_ptr(), byte_capacity) };
-		if actual <= 0 {
-			return Vec::new();
-		}
-		let pid_count = (actual as usize).min(buffer.len());
-		buffer.truncate(pid_count);
-		buffer
-	}
-
+	/// Build a `ppid -> [pids]` map from a one-shot scan of `proc_listallpids`.
+	///
+	/// Used as the foundation of `Process::children` and `Process::descendants`
+	/// on macOS where `proc_listchildpids` returns no children for self-queries.
 	pub(super) fn build_process_tree() -> HashMap<i32, Vec<i32>> {
-		let pids = snapshot_all_pids();
+		let pids = sys::pids();
 		let mut tree: HashMap<i32, Vec<i32>> = HashMap::with_capacity(pids.len() / 2);
 		for pid in pids {
-			if pid <= 0 {
-				continue;
-			}
-			let Some(info) = read_bsdinfo(pid) else {
+			let Some(info) = sys::bsdinfo(pid) else {
 				continue;
 			};
 			let Ok(ppid) = i32::try_from(info.pbi_ppid) else {
@@ -463,146 +475,201 @@ mod platform {
 		tree
 	}
 
+	/// Find processes whose libproc-reported executable path equals `target`.
 	pub fn find_by_path(target: &str) -> Vec<Process> {
-		let pids = snapshot_all_pids();
-		let mut path_buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
-		let mut matches = Vec::new();
-		for pid in pids {
+		let mut path = [0u8; sys::PATH_CAPACITY];
+		sys::pids()
+			.into_iter()
+			.filter(|pid| *pid > 0 && sys::executable_path(*pid, &mut path) == Some(target.as_bytes()))
+			.filter_map(Process::from_pid)
+			.collect()
+	}
+}
+#[cfg(target_os = "windows")]
+mod platform {
+	use std::{
+		collections::{HashMap, HashSet},
+		ffi::OsStr,
+		os::windows::{ffi::OsStrExt, io::OwnedHandle},
+		sync::Arc,
+	};
+
+	use pi_builtins::proc_sys as sys;
+	use smallvec::SmallVec;
+
+	use super::ProcessStatus;
+
+	const PROCESS_REFERENCE_ACCESS: u32 =
+		sys::PROCESS_TERMINATE | sys::PROCESS_QUERY_LIMITED_INFORMATION | sys::SYNCHRONIZE;
+
+	#[derive(Clone)]
+	/// Stable Windows process reference backed by an owned process handle plus
+	/// the kernel-reported creation time, which pins identity even if the PID is
+	/// recycled while we hold the handle.
+	pub struct Process {
+		pid:           i32,
+		handle:        Arc<OwnedHandle>,
+		creation_time: u64,
+	}
+
+	impl Process {
+		pub fn from_pid(pid: i32) -> Option<Self> {
 			if pid <= 0 {
-				continue;
+				return None;
 			}
+			let handle =
+				Arc::new(sys::open_process(u32::try_from(pid).ok()?, PROCESS_REFERENCE_ACCESS)?);
+			let creation_time = sys::process_times(&handle)?.0;
+			Some(Self { pid, handle, creation_time })
+		}
 
-			let len = unsafe {
-				proc_pidpath(
-					pid,
-					path_buf.as_mut_ptr().cast::<std::ffi::c_void>(),
-					path_buf.len() as u32,
-				)
+		pub const fn pid(&self) -> i32 {
+			self.pid
+		}
+
+		pub fn parent_pid(&self) -> Option<i32> {
+			sys::parent_pid(&self.handle)
+		}
+
+		/// Read through the pinned handle, so it is always this process's
+		/// command line even after the pid is reused.
+		pub fn args(&self) -> Vec<String> {
+			sys::command_line(&self.handle)
+				.map_or_default(|command_line| sys::split_command_line(&command_line))
+		}
+
+		pub fn children(&self) -> Vec<Self> {
+			let tree = build_process_tree();
+			self.children_from_tree(&tree)
+		}
+
+		/// Walk the entire descendant tree using a single Toolhelp snapshot.
+		///
+		/// `children()` recursing per-node would re-snapshot the whole process
+		/// table for every visited descendant, making tree termination
+		/// `O(N · D)` snapshots. One snapshot per termination wave is enough.
+		pub fn descendants(&self) -> Vec<Self> {
+			let tree = build_process_tree();
+			let Ok(root) = u32::try_from(self.pid) else {
+				return Vec::new();
 			};
-			if len <= 0 {
-				continue;
-			}
-			let path_bytes = &path_buf[..len as usize];
-			let path_bytes = match path_bytes.iter().position(|byte| *byte == 0) {
-				Some(end) => &path_bytes[..end],
-				None => path_bytes,
+			let mut visited: HashSet<u32> = HashSet::new();
+			visited.insert(root);
+			let mut out = Vec::new();
+			self.collect_descendants_from_tree(&tree, &mut visited, &mut out);
+			out
+		}
+
+		/// The running process `child_pid`, when it really is a child of
+		/// `self`. Windows never rewrites the parent id recorded for a process
+		/// whose parent exited, so such an orphan is listed as a child of
+		/// whichever process reuses that pid. A real child cannot have been
+		/// created before its parent; an orphan older than `self` can.
+		fn child(&self, child_pid: u32) -> Option<Self> {
+			let child = Self::from_pid(i32::try_from(child_pid).ok()?)?;
+			(child.creation_time >= self.creation_time && child.status() == ProcessStatus::Running)
+				.then_some(child)
+		}
+
+		pub(super) fn children_from_tree(
+			&self,
+			tree: &HashMap<u32, SmallVec<[u32; 4]>>,
+		) -> Vec<Self> {
+			let Ok(pid_u32) = u32::try_from(self.pid) else {
+				return Vec::new();
 			};
-			let Ok(path) = std::str::from_utf8(path_bytes) else {
-				continue;
+			tree
+				.get(&pid_u32)
+				.into_iter()
+				.flatten()
+				.filter_map(|&child_pid| self.child(child_pid))
+				.collect()
+		}
+
+		fn collect_descendants_from_tree(
+			&self,
+			tree: &HashMap<u32, SmallVec<[u32; 4]>>,
+			visited: &mut HashSet<u32>,
+			out: &mut Vec<Self>,
+		) {
+			let Some(children) = u32::try_from(self.pid).ok().and_then(|pid| tree.get(&pid)) else {
+				return;
 			};
-			if path == target
-				&& let Some(process) = Process::from_pid(pid)
-			{
-				matches.push(process);
+			for &child_pid in children {
+				if !visited.insert(child_pid) {
+					continue;
+				}
+				let Some(child) = self.child(child_pid) else {
+					continue;
+				};
+				// Post-order: collect grandchildren first so leaves are signalled
+				// before their parents during tree termination.
+				child.collect_descendants_from_tree(tree, visited, out);
+				out.push(child);
 			}
 		}
-		matches
+
+		/// The handle pins the original kernel process object even after the
+		/// pid is recycled, so this cannot hit a different process.
+		pub fn kill(&self, _signal: i32) -> bool {
+			sys::terminate(&self.handle)
+		}
+
+		pub const fn group_id() -> Option<i32> {
+			None
+		}
+
+		pub fn status(&self) -> ProcessStatus {
+			if sys::has_exited(&self.handle) {
+				ProcessStatus::Exited
+			} else {
+				ProcessStatus::Running
+			}
+		}
+
+		/// Resolves once the process exits, through a thread-pool wait on the
+		/// process handle, so no thread is parked per waiter.
+		pub async fn exited(&self) -> std::io::Result<()> {
+			sys::exited(Arc::clone(&self.handle)).await
+		}
 	}
 
-	fn read_bsdinfo(pid: i32) -> Option<libc::proc_bsdinfo> {
-		let mut info = unsafe { std::mem::zeroed::<libc::proc_bsdinfo>() };
-
-		let actual = unsafe {
-			libc::proc_pidinfo(
-				pid,
-				libc::PROC_PIDTBSDINFO,
-				0,
-				(&raw mut info).cast::<std::ffi::c_void>(),
-				size_of::<libc::proc_bsdinfo>() as i32,
-			)
-		};
-		if actual < size_of::<libc::proc_bsdinfo>() as i32 {
-			return None;
+	/// Build a map of `parent_pid` -> [`child_pids`] for all processes.
+	fn build_process_tree() -> HashMap<u32, SmallVec<[u32; 4]>> {
+		let mut tree: HashMap<u32, SmallVec<[u32; 4]>> = HashMap::new();
+		for entry in sys::processes() {
+			tree.entry(entry.ppid).or_default().push(entry.pid);
 		}
-		Some(info)
+		tree
 	}
 
-	fn process_args(pid: i32) -> Vec<String> {
-		let mut mib = [libc::CTL_KERN, KERN_PROCARGS2, pid];
-		let mut size = 0usize;
-
-		let sizing_ok = unsafe {
-			libc::sysctl(
-				mib.as_mut_ptr(),
-				mib.len() as u32,
-				ptr::null_mut(),
-				&raw mut size,
-				ptr::null_mut(),
-				0,
-			)
-		} == 0;
-		if !sizing_ok || size <= size_of::<libc::c_int>() {
-			return Vec::new();
-		}
-
-		let mut buffer = vec![0u8; size];
-
-		let read_ok = unsafe {
-			libc::sysctl(
-				mib.as_mut_ptr(),
-				mib.len() as u32,
-				buffer.as_mut_ptr().cast::<std::ffi::c_void>(),
-				&raw mut size,
-				ptr::null_mut(),
-				0,
-			)
-		} == 0;
-		if !read_ok {
-			return Vec::new();
-		}
-		buffer.truncate(size);
-		parse_macos_procargs(&buffer)
-	}
-
-	fn parse_macos_procargs(buffer: &[u8]) -> Vec<String> {
-		let argc_size = size_of::<libc::c_int>();
-		if buffer.len() <= argc_size {
-			return Vec::new();
-		}
-
-		let argc_bytes: [u8; 4] = match buffer[..argc_size].try_into() {
-			Ok(bytes) => bytes,
-			Err(_) => return Vec::new(),
-		};
-		let argc = libc::c_int::from_ne_bytes(argc_bytes);
-		if argc <= 0 {
-			return Vec::new();
-		}
-
-		let mut offset = argc_size;
-		while offset < buffer.len() && buffer[offset] != 0 {
-			offset += 1;
-		}
-		while offset < buffer.len() && buffer[offset] == 0 {
-			offset += 1;
-		}
-
-		let mut args = Vec::with_capacity(argc as usize);
-		while offset < buffer.len() && args.len() < argc as usize {
-			let end = buffer[offset..]
-				.iter()
-				.position(|byte| *byte == 0)
-				.map_or(buffer.len(), |position| offset + position);
-			if end == offset {
-				break;
-			}
-			args.push(String::from_utf8_lossy(&buffer[offset..end]).into_owned());
-			offset = end + 1;
-		}
-		args
+	/// Find processes whose `QueryFullProcessImageNameW` result equals `target`.
+	pub fn find_by_path(target: &str) -> Vec<Process> {
+		let target: Vec<u16> = OsStr::new(target).encode_wide().collect();
+		let mut path = vec![0u16; 32_768];
+		sys::processes()
+			.filter(|entry| {
+				sys::open_process(entry.pid, sys::PROCESS_QUERY_LIMITED_INFORMATION)
+					.is_some_and(|handle| sys::image_path(&handle, &mut path) == Some(&target[..]))
+			})
+			.filter_map(|entry| Process::from_pid(i32::try_from(entry.pid).ok()?))
+			.collect()
 	}
 }
 
+/// Stable process reference.
 #[derive(Clone)]
 pub struct Process {
 	inner: platform::Process,
 }
 
 impl Process {
+	/// Open a stable process reference from a PID.
 	pub fn from_pid(pid: i32) -> Option<Self> {
 		platform::Process::from_pid(pid).map(Self::from_inner)
 	}
 
+	/// Open stable process references whose executable path matches exactly.
 	pub fn from_path(path: String) -> Vec<Self> {
 		platform::find_by_path(&path)
 			.into_iter()
@@ -610,31 +677,56 @@ impl Process {
 			.collect()
 	}
 
+	/// Operating-system process identifier for this process reference.
 	#[must_use]
 	pub const fn pid(&self) -> i32 {
 		self.inner.pid()
 	}
 
+	/// Parent process id for this process, when available.
 	#[must_use]
 	pub fn ppid(&self) -> Option<i32> {
 		self.inner.parent_pid()
 	}
 
+	/// Launch arguments for this process.
 	#[must_use]
 	pub fn args(&self) -> Vec<String> {
 		self.inner.args()
 	}
 
+	/// Send `signal` to this process only, through its pinned identity, so it
+	/// never reaches a process that reused the pid after this one was reaped.
+	/// On Windows the process is terminated whatever `signal` is.
+	pub fn signal(&self, signal: i32) -> bool {
+		self.inner.kill(signal)
+	}
+
+	/// Send `signal` to this process and its descendants, children first.
+	///
+	/// On Linux and macOS the signal is forwarded as-is. On Windows there is no
+	/// signal abstraction, so the `signal` argument is ignored and the entire
+	/// tree is hard-killed via `TerminateProcess`. Defaults to the POSIX
+	/// hard-kill signal.
 	#[must_use]
 	pub fn kill_tree(&self, signal: Option<i32>) -> u32 {
 		self.signal_tree(signal.unwrap_or(KILL_SIGNAL))
 	}
 
+	/// Process group id for this process, when supported by the platform.
+	#[cfg(target_os = "windows")]
+	#[must_use]
+	pub const fn group_id(&self) -> Option<i32> {
+		platform::Process::group_id()
+	}
+
+	#[cfg(not(target_os = "windows"))]
 	#[must_use]
 	pub fn group_id(&self) -> Option<i32> {
 		self.inner.group_id()
 	}
 
+	/// Direct children of this process as stable process references.
 	pub fn children(&self) -> Vec<Self> {
 		self
 			.inner
@@ -644,11 +736,19 @@ impl Process {
 			.collect()
 	}
 
+	/// Current status of this process reference.
 	#[must_use]
 	pub fn status(&self) -> ProcessStatus {
 		self.inner.status()
 	}
 
+	/// Gracefully terminate this process and its descendants.
+	///
+	/// Sends `TERM_SIGNAL` to the optional process group, every live descendant,
+	/// and the root, then optionally waits up to `graceful_ms` for the tree to
+	/// exit before escalating to `KILL_SIGNAL`. Pass `graceful_ms < 0` to skip
+	/// the wait entirely (the polite signal is still emitted). Returns `true`
+	/// when the tree has exited by the end of the hard wave's wait window.
 	pub async fn terminate_tree(
 		&self,
 		group: bool,
@@ -661,6 +761,7 @@ impl Process {
 			.await
 	}
 
+	/// Wait until this process exits, optionally bounded by `timeout`.
 	pub async fn wait_for_exit(&self, timeout: Option<Duration>, ct: CancelToken) -> Result<bool> {
 		wait_for_exit(self, &[], timeout, ct).await
 	}
@@ -671,6 +772,9 @@ impl Process {
 		Self { inner }
 	}
 
+	/// Walk the live descendant tree from scratch. Cheap and idempotent — call
+	/// it again before each signal wave so grandchildren spawned during a grace
+	/// period are not missed.
 	fn live_descendants(&self) -> Vec<Self> {
 		self
 			.inner
@@ -684,26 +788,42 @@ impl Process {
 		self.signal_tree_excluding(signal, &host_protected_pids())
 	}
 
+	/// Signal this process and its live descendants (children first), skipping
+	/// any pid in `protected`.
+	///
+	/// `protected` shields the harness itself: a run-cancellation sweep must
+	/// never hard-kill the host. On Windows the
+	/// descendant tree is derived from raw `th32ParentProcessID` values that
+	/// outlive their recorded parent, so a freshly spawned child whose recycled
+	/// pid matches the harness's stale parent pid makes the harness enumerate
+	/// as a false descendant; `TerminateProcess`-ing it drops the whole session
+	/// with no cleanup and no `session_exit` record (#7452, related #4605).
 	fn signal_tree_excluding(&self, signal: i32, protected: &HashSet<i32>) -> u32 {
 		let descendants = self.signalable_descendants(protected);
-		let mut signaled = 0u32;
-
-		if let Some(pgid) = self.group_id()
-			&& pgid == self.inner.pid()
-		{
-			let _ = kill_process_group(pgid, signal);
-		}
-		for child in &descendants {
-			if child.inner.kill(signal) {
-				signaled += 1;
-			}
-		}
-		if !protected.contains(&self.pid()) && self.inner.kill(signal) {
-			signaled += 1;
-		}
-		signaled
+		// If self leads its own process group, also signal the group — this
+		// catches grandchildren reparented to init when their immediate parent
+		// died inside the descendant walk.
+		let pgid = self
+			.group_id()
+			.filter(|&pgid| pgid == self.pid() && !protected.contains(&pgid));
+		signal_processes(
+			descendants
+				.iter()
+				.chain(std::iter::once(self).filter(|process| !protected.contains(&process.pid()))),
+			pgid,
+			signal,
+		)
 	}
 
+	/// Live descendants with every protected subtree pruned, not just the exact
+	/// protected pids.
+	///
+	/// The flattened descendant list can contain a protected node (the harness,
+	/// on a Windows PID-reuse false-descendant) *together with* that node's real
+	/// children, which were collected by recursing through it. Skipping only the
+	/// exact protected pid would still terminate those unrelated worker/tool
+	/// subprocesses, so drop every node whose recorded parent chain — within the
+	/// enumerated set — passes through a protected pid (#7452 review).
 	fn signalable_descendants(&self, protected: &HashSet<i32>) -> Vec<Self> {
 		let descendants = self.live_descendants();
 		let parents: HashMap<i32, i32> = descendants
@@ -727,20 +847,30 @@ impl Process {
 			return Ok(true);
 		}
 
-		let process_group = if group { self.group_id() } else { None };
 		let protected = host_protected_pids();
+		let process_group = if group && !protected.contains(&self.pid()) {
+			self.group_id()
+		} else {
+			None
+		};
+		let signal_wave = |descendants: &[Self], signal| {
+			signal_processes(
+				descendants
+					.iter()
+					.chain(std::iter::once(self).filter(|process| !protected.contains(&process.pid()))),
+				process_group,
+				signal,
+			)
+		};
 
-		if let Some(pgid) = process_group {
-			let _ = kill_process_group(pgid, TERM_SIGNAL);
-		}
+		// Snapshot before signalling: a TERM trap can create cleanup children
+		// that must not be picked up and terminated by the same polite wave.
 		let mut descendants = self.signalable_descendants(&protected);
-		for child in &descendants {
-			let _ = child.inner.kill(TERM_SIGNAL);
-		}
-		if !protected.contains(&self.pid()) {
-			let _ = self.inner.kill(TERM_SIGNAL);
-		}
+		signal_wave(&descendants, TERM_SIGNAL);
 
+		// Optional grace wait. A negative `graceful_ms` skips the wait entirely
+		// (we still emit the polite signal so cleanup handlers can run before
+		// KILL).
 		if graceful_ms >= 0 {
 			let exited = wait_for_exit(
 				self,
@@ -754,33 +884,81 @@ impl Process {
 			}
 		}
 
-		if let Some(pgid) = process_group {
-			let _ = kill_process_group(pgid, KILL_SIGNAL);
-		}
+		// Hard wave. Re-walk the tree so any grandchild spawned during the grace
+		// period — or any process re-parented to the root — is signalled too.
 		descendants = self.signalable_descendants(&protected);
-		for child in &descendants {
-			let _ = child.inner.kill(KILL_SIGNAL);
-		}
-		if !protected.contains(&self.pid()) {
-			let _ = self.inner.kill(KILL_SIGNAL);
-		}
+		signal_wave(&descendants, KILL_SIGNAL);
 
 		wait_for_exit(self, &descendants, Some(Duration::from_millis(u64::from(timeout_ms))), ct)
 			.await
 	}
 }
 
+/// Signal each known process once across overlapping groups and trees.
+/// Snapshot group membership before sending anything, so a cleanup handler
+/// cannot add its newly spawned children to this wave. Processes outside the
+/// successfully signalled groups still need their pinned, individual signal.
+fn signal_processes<'a>(
+	processes: impl IntoIterator<Item = &'a Process>,
+	pgids: impl IntoIterator<Item = i32>,
+	signal: i32,
+) -> u32 {
+	let mut seen_pids = HashSet::new();
+	let processes: Vec<_> = processes
+		.into_iter()
+		.filter(|process| seen_pids.insert(process.pid()))
+		.map(|process| (process, process.group_id()))
+		.collect();
+	let mut seen_pgids = HashSet::new();
+	let signaled_groups: HashSet<_> = pgids
+		.into_iter()
+		.filter(|&pgid| seen_pgids.insert(pgid) && kill_process_group(pgid, signal))
+		.collect();
+	let mut signaled = 0;
+	for (process, pgid) in processes {
+		let covered_by_group = pgid.is_some_and(|pgid| {
+			signaled_groups.contains(&pgid)
+				&& (process.status() != ProcessStatus::Running || process.group_id() == Some(pgid))
+		});
+		if covered_by_group || process.inner.kill(signal) {
+			signaled += 1;
+		}
+	}
+	signaled
+}
+
+/// The harness pid — the one process a run-cancellation sweep must never
+/// signal.
+///
+/// On Unix the descendant walk is identity-pinned (pidfd / start-time), so the
+/// host can never appear as a false descendant and this set is a harmless
+/// no-op safety net. On Windows the descendant tree is derived from raw
+/// `th32ParentProcessID` values that survive their recorded parent's death: a
+/// freshly spawned child whose recycled pid matches the harness's stale parent
+/// pid makes the harness enumerate as a false descendant, so cancelling a
+/// timed-out bash run would `TerminateProcess` the host with no cleanup and no
+/// `session_exit` record (#7452, related #4605).
+///
+/// Do not walk the host's numeric parent chain here. On Windows the host's
+/// recorded parent pid can itself have been recycled onto the cancellation
+/// target; treating that raw pid as protected would spare the hung command and
+/// prune all of its descendants from cleanup.
 fn host_protected_pids() -> HashSet<i32> {
 	i32::try_from(std::process::id()).into_iter().collect()
 }
 
+/// True when `pid` is itself protected or descends — within the enumerated
+/// `parents` map (pid -> recorded parent pid) — from a protected pid. Used to
+/// prune a whole protected subtree from a cancellation sweep so a false
+/// descendant of the harness cannot drag the harness's real children into the
+/// kill set (#7452).
 fn pid_in_protected_subtree(
 	pid: i32,
 	protected: &HashSet<i32>,
 	parents: &HashMap<i32, i32>,
 ) -> bool {
 	let mut current = pid;
-
+	// Bound the walk against a corrupted or cyclic parent chain.
 	for _ in 0..256 {
 		if protected.contains(&current) {
 			return true;
@@ -808,6 +986,15 @@ async fn wait_for_exit(
 		return Ok(true);
 	}
 
+	// A lone process is awaited through the OS exit notification. Polling woke
+	// every waiter 20 times a second, and IPC workers wait on their parent for
+	// their whole life. Trees still poll: their membership changes.
+	if descendants.is_empty()
+		&& let Some(result) = wait_for_root_exit(root, timeout, &ct).await
+	{
+		return result;
+	}
+
 	let poll_interval = Duration::from_millis(50);
 	let mut elapsed = Duration::ZERO;
 	while timeout.is_none_or(|limit| elapsed < limit) {
@@ -832,17 +1019,64 @@ async fn wait_for_exit(
 	Ok(false)
 }
 
+/// Waits for `root` to exit through the platform's exit notification:
+/// `Ok(true)` once it exited, `Ok(false)` when `timeout` elapsed first.
+/// `None` when no notification could be set up, so the caller polls instead.
+async fn wait_for_root_exit(
+	root: &Process,
+	timeout: Option<Duration>,
+	ct: &CancelToken,
+) -> Option<Result<bool>> {
+	let exited = root.inner.exited();
+	let bounded = async {
+		match timeout {
+			Some(limit) => tokio::time::timeout(limit, exited).await.ok(),
+			None => Some(exited.await),
+		}
+	};
+	tokio::select! {
+		outcome = bounded => match outcome {
+			None => Some(Ok(false)),
+			Some(Ok(())) => Some(Ok(true)),
+			Some(Err(_)) => None,
+		},
+		reason = ct.wait() => Some(Err(anyhow::Error::msg(format!("Aborted: {reason:?}")))),
+	}
+}
+
+/// Send `signal` to the process group `pgid`.
+/// Returns false when process groups are unsupported on the platform.
 #[allow(clippy::missing_const_for_fn, reason = "Dispatches to platform-specific implementation")]
 #[must_use]
 pub fn kill_process_group(pgid: i32, signal: i32) -> bool {
+	// Defense in depth: refuse to deliver a signal to the harness's own
+	// process group. Doing so terminates the harness along with the targets.
+	// `SpawnRegistry` only ever records pgids brush created for this run (never
+	// the harness pgid); this catches any future caller that bypasses it.
 	if pgid <= 0 || is_self_process_group(pgid) {
 		return false;
 	}
-	platform::kill_process_group(pgid, signal)
+	platform_kill_process_group(pgid, signal)
+}
+
+#[cfg(unix)]
+fn platform_kill_process_group(pgid: i32, signal: i32) -> bool {
+	// SAFETY: `kill` takes integer identifiers by value and does not access
+	// caller-owned memory. A negative PID is the POSIX process-group form.
+	unsafe { libc::kill(-pgid, signal) == 0 }
+}
+
+/// Process groups are not exposed on Windows.
+#[cfg(not(unix))]
+const fn platform_kill_process_group(_pgid: i32, _signal: i32) -> bool {
+	false
 }
 
 #[cfg(unix)]
 fn is_self_process_group(pgid: i32) -> bool {
+	// SAFETY: `getpgid(0)` queries the calling process's pgid and does not
+	// access caller-owned memory. A return value <= 0 is treated as "unknown",
+	// which fails open so the actual signal call decides.
 	let self_pgid = unsafe { libc::getpgid(0) };
 	self_pgid > 0 && self_pgid == pgid
 }
@@ -852,10 +1086,19 @@ const fn is_self_process_group(_pgid: i32) -> bool {
 	false
 }
 
+/// POSIX `SIGTERM` / Windows polite termination sentinel.
 pub const TERM_SIGNAL: i32 = 15;
 
+/// POSIX `SIGKILL` / Windows hard-termination sentinel.
 pub const KILL_SIGNAL: i32 = 9;
 
+/// A collection of process groups and process trees scheduled for
+/// termination together.
+///
+/// Built incrementally from job records or PTY metadata, then signalled
+/// in escalating waves (typically `TERM_SIGNAL` followed by
+/// `KILL_SIGNAL` after a grace period). Process-group calls are no-ops
+/// on platforms that do not expose process groups.
 #[derive(Default)]
 pub struct TerminationTargets {
 	pgids:     Vec<i32>,
@@ -864,17 +1107,27 @@ pub struct TerminationTargets {
 }
 
 impl TerminationTargets {
+	/// Create an empty target set.
 	#[must_use]
 	pub fn new() -> Self {
 		Self::default()
 	}
 
+	/// Record a process group id. Duplicates are ignored.
 	pub fn add_pgid(&mut self, pgid: i32) {
 		if pgid > 0 && !self.pgids.contains(&pgid) {
 			self.pgids.push(pgid);
 		}
 	}
 
+	/// Record a pid. Duplicates are ignored. If the pid is alive, opens
+	/// a stable [`Process`] reference so the descendant tree can be
+	/// killed even if the original pid is reused later.
+	///
+	/// Prefer [`add_process`](Self::add_process) when the caller already holds a
+	/// [`Process`] captured at spawn time: opening by pid here loses the
+	/// original identity if the pid was recycled between the child exiting
+	/// and this call.
 	pub fn add_pid(&mut self, pid: i32) {
 		if self.seen_pids.insert(pid)
 			&& let Some(process) = Process::from_pid(pid)
@@ -883,29 +1136,53 @@ impl TerminationTargets {
 		}
 	}
 
+	/// Record a pre-pinned [`Process`] handle. Duplicates (by pid) are ignored.
+	///
+	/// This is the correct entry point when the caller captured the handle at
+	/// spawn time — the handle already pins OS-level identity, so no `from_pid`
+	/// re-open (and its PID-reuse race) is needed at cancellation time.
 	pub fn add_process(&mut self, process: Process) {
 		if self.seen_pids.insert(process.pid()) {
 			self.processes.push(process);
 		}
 	}
 
+	/// True when no targets have been recorded.
 	#[must_use]
 	pub const fn is_empty(&self) -> bool {
 		self.pgids.is_empty() && self.processes.is_empty()
 	}
 
+	/// Send `signal` to every recorded target. Failures are swallowed:
+	/// targets routinely exit between collection and signalling, and
+	/// the caller's policy is "best effort".
 	pub fn signal(&self, signal: i32) -> bool {
-		let mut signaled = false;
-		for &pgid in &self.pgids {
-			signaled |= kill_process_group(pgid, signal);
-		}
+		let protected = host_protected_pids();
+		let mut pgids = self.pgids.clone();
+		let mut processes = Vec::new();
 		for process in &self.processes {
-			signaled |= process.signal_tree(signal) > 0;
+			processes.extend(process.signalable_descendants(&protected));
+			if !protected.contains(&process.pid()) {
+				if let Some(pgid) = process.group_id().filter(|&pgid| pgid == process.pid()) {
+					pgids.push(pgid);
+				}
+				processes.push(process.clone());
+			}
 		}
-		signaled
+		signal_processes(&processes, pgids, signal) > 0
 	}
 }
 
+/// A single external child reported by the shell's spawn-observer hook.
+///
+/// `process` is captured *at spawn time* so its OS-level identity is pinned
+/// before the pid can be recycled. On Windows an open process handle keeps
+/// the pid reserved for the lifetime of the reference; on Linux the pidfd
+/// pins identity; on macOS the recorded `(pid, start_time)` triple detects
+/// impersonation. Storing only the raw pid and re-opening at cancellation
+/// time — as previous versions did — leaked kills onto unrelated processes
+/// that happened to acquire the recycled pid between the child exiting and
+/// the run being cancelled (issue #4605).
 #[derive(Clone)]
 struct SpawnedProcess {
 	process: Option<Process>,
@@ -1007,20 +1284,4 @@ fn platform_process_group_alive(pgid: i32) -> bool {
 #[cfg(not(unix))]
 const fn platform_process_group_alive(_pgid: i32) -> bool {
 	false
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn macos_pid_buffer_size_preserves_count_and_checks_byte_capacity() {
-		let count = 4097;
-		let (capacity, bytes) = macos_pid_buffer_size(count).expect("valid PID count");
-		assert!(capacity > usize::try_from(count).unwrap(), "leave room for new processes");
-		assert_eq!(usize::try_from(bytes).unwrap(), capacity * size_of::<i32>());
-		assert_eq!(macos_pid_buffer_size(i32::MAX), None, "byte size must fit the C ABI");
-		assert_eq!(macos_pid_buffer_size(0), None);
-		assert_eq!(macos_pid_buffer_size(-1), None);
-	}
 }

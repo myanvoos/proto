@@ -58,6 +58,16 @@ export class UserMessageComponent extends Container {
 		this.addChild(md);
 	}
 
+	override releaseRenderCaches(): void {
+		this.#zoneSource = undefined;
+		this.#zoneLines = undefined;
+		super.releaseRenderCaches();
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return true;
+	}
+
 	override render(width: number): readonly string[] {
 		const lines = super.render(Math.max(1, width - 4));
 		if (lines.length === 0) {
@@ -111,6 +121,11 @@ export class CollapsedSyntheticMessageComponent implements Component {
 
 	dispose(): void {
 		this.#body?.dispose?.();
+	}
+
+	releaseRenderCaches(): void {
+		this.#cache = undefined;
+		this.#body?.releaseRenderCaches();
 	}
 
 	render(width: number): readonly string[] {

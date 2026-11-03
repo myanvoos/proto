@@ -1,5 +1,7 @@
 import { afterEach, expect, test, vi } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "../config/settings";
 import { registerWakeTurnOwner } from "../orchestrator/wake-turns";
@@ -176,6 +178,7 @@ test("a wake turn's result is only its final answer, not every reply glued toget
 			listeners.push(listener);
 			return () => listeners.splice(listeners.indexOf(listener), 1);
 		},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: (observer: typeof wakeObserver) => {
 			wakeObserver = observer;
 		},
@@ -221,6 +224,7 @@ async function runDataLessYield(id: string, turns: AssistantMessage[]): Promise<
 	const session = {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		baseSystemPrompt: ["test"],
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -252,6 +256,7 @@ async function runDataLessYield(id: string, turns: AssistantMessage[]): Promise<
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},
@@ -304,4 +309,63 @@ test("a data-less terminal yield never adopts narration from a turn that resumed
 	expect(result.output).toContain("Subagent called yield with null data.");
 	expect(result.output).not.toBe(staleReport);
 	expect(result.output).not.toBe(narration);
+});
+
+test("a terminal yield uses only prose after the last server-executed Cursor call", async () => {
+	const serverCall = {
+		type: "toolCall" as const,
+		id: "cursor-exec",
+		name: "bash",
+		arguments: {},
+		[kCursorExecResolved]: true as const,
+	};
+	const result = await runDataLessYield("cursor-post-tool-report", [
+		assistant("", [
+			{ type: "text", text: "Before running the test." },
+			serverCall,
+			{ type: "text", text: "All tests passed after the fix." },
+		]),
+	]);
+	expect(result.exitCode).toBe(0);
+	expect(result.output).toBe("All tests passed after the fix.");
+});
+
+test("cancelling an owner wake claim aborts the worker session turn", async () => {
+	const controller = new AbortController();
+	let observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined;
+	let aborts = 0;
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	const session = {
+		sessionManager: { getSubagentUsage: () => emptySubagentUsageTotals() },
+		subscribe: (listener: (event: AgentSessionEvent) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		setWakeTurnObserver: (next: typeof observer) => {
+			observer = next;
+		},
+		getLastAssistantMessage: () => undefined,
+		getToolByName: () => undefined,
+		abort: async () => {
+			aborts++;
+		},
+	} as unknown as AgentSession;
+	using _owner = {
+		[Symbol.dispose]: registerWakeTurnOwner("cancel-wake", () => ({
+			signal: controller.signal,
+			progress: () => {},
+			settle: () => {},
+			fail: () => {},
+		})),
+	};
+	attachWakeTurnMonitor(session, {
+		id: "cancel-wake",
+		agent: { name: "worker", description: "test", systemPrompt: "test", source: "bundled" },
+	});
+	const finish = observer?.([
+		{ role: "custom", customType: "irc:incoming", content: "continue", display: true, timestamp: 1 },
+	]);
+	controller.abort("owner cancelled wake");
+	await finish?.();
+	expect(aborts).toBe(1);
 });

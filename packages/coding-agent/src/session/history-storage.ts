@@ -1,8 +1,17 @@
-import type { Database, Statement } from "bun:sqlite";
+import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui";
-import { checkpointWal, getHistoryDbPath, logger, openSqliteDatabaseSync, postmortem } from "@oh-my-pi/pi-utils";
+import {
+	checkpointWal,
+	getHistoryDbPath,
+	logger,
+	openSqliteDatabaseSync,
+	postmortem,
+	readSalvageableRows,
+} from "@oh-my-pi/pi-utils";
+
+import { closeSessionIndex, salvageSessionIndex } from "./session-index";
 
 export interface HistoryEntry {
 	id: number;
@@ -35,7 +44,7 @@ const SEARCH_QUERY_BYTES = 4096;
 const SEARCH_QUERY_TOKENS = 64;
 const PROMPT_BYTES_SQL = "length(CAST(prompt AS BLOB))";
 const ROW_BYTES_SQL = `${PROMPT_BYTES_SQL} + coalesce(length(CAST(cwd AS BLOB)), 0) + coalesce(length(CAST(session_id AS BLOB)), 0)`;
-const ELIGIBLE_SQL = `${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} AND (${ROW_BYTES_SQL}) <= ${EDITOR_LIMITS.historyBytes}`;
+const ELIGIBLE_SQL = `typeof(prompt) = 'text' AND typeof(created_at) = 'integer' AND ${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} AND (${ROW_BYTES_SQL}) <= ${EDITOR_LIMITS.historyBytes}`;
 const CANDIDATE_SQL = `SELECT id, created_at, (${ROW_BYTES_SQL}) AS bytes FROM history`;
 
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
@@ -70,6 +79,8 @@ export class HistoryStorage {
 	#db: Database;
 	static #instance?: HistoryStorage;
 	#sessionResolver?: () => string | undefined;
+	#writeFailureReported = false;
+	#errorListener?: (error: unknown) => void;
 
 	#upsertRowStmt: Statement;
 	#recentStmt: Statement;
@@ -105,6 +116,7 @@ END;
 				logger.warn("HistoryStorage FTS rebuild failed", { error: String(error) });
 			}
 		}
+		this.#assertRecentWindowReadable();
 		this.#recentStmt = this.#db.prepare(
 			`${CANDIDATE_SQL} WHERE ${ELIGIBLE_SQL} ORDER BY created_at DESC, id DESC LIMIT ?`,
 		);
@@ -131,7 +143,9 @@ ON CONFLICT(prompt) DO UPDATE SET
 		if (existing) return existing;
 
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-		return openSqliteDatabaseSync(
+		closeSessionIndex();
+		let backupPath: string | undefined;
+		const instance = openSqliteDatabaseSync(
 			dbPath,
 			db => {
 				const instance = new HistoryStorage(db);
@@ -139,8 +153,15 @@ ON CONFLICT(prompt) DO UPDATE SET
 				HistoryStorage.#instance = instance;
 				return instance;
 			},
-			{ recoverCorruption: true },
+			{
+				recoverCorruption: true,
+				onCorruptionPreserved: preserved => {
+					backupPath = preserved;
+				},
+			},
 		);
+		if (backupPath) instance.#salvage(backupPath);
+		return instance;
 	}
 
 	/** Checkpoints and closes the process-wide database, and permits reopening it. */
@@ -160,6 +181,10 @@ ON CONFLICT(prompt) DO UPDATE SET
 		this.#recentStmt.finalize();
 		this.#searchStmt.finalize();
 		this.#db.close();
+	}
+
+	setErrorListener(listener: (error: unknown) => void): void {
+		this.#errorListener = listener;
 	}
 
 	setSessionResolver(resolver: () => string | undefined): void {
@@ -184,8 +209,13 @@ ON CONFLICT(prompt) DO UPDATE SET
 			return Promise.resolve();
 		try {
 			this.#upsertRowStmt.run(trimmed, cwd ?? null, session || null);
+			this.#writeFailureReported = false;
 		} catch (error) {
 			logger.error("HistoryStorage add failed", { error: String(error) });
+			if (!this.#writeFailureReported) {
+				this.#writeFailureReported = true;
+				this.#errorListener?.(error);
+			}
 		}
 		return Promise.resolve();
 	}
@@ -286,7 +316,7 @@ ON CONFLICT(prompt) DO UPDATE SET
 			// Oversized legacy prompts stay byte-for-byte intact in the durable table.
 			this.#db.run("CREATE TEMP TABLE history_normalized (id INTEGER PRIMARY KEY, prompt TEXT NOT NULL UNIQUE)");
 			const rows = this.#db.prepare<{ id: number; prompt: string }, []>(
-				`SELECT id, prompt FROM history WHERE ${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} ORDER BY created_at DESC, id DESC`,
+				`SELECT id, prompt FROM history WHERE typeof(prompt) = 'text' AND ${PROMPT_BYTES_SQL} <= ${EDITOR_LIMITS.draftBytes} ORDER BY created_at DESC, id DESC`,
 			);
 			const insert = this.#db.prepare("INSERT OR IGNORE INTO history_normalized (id, prompt) VALUES (?, ?)");
 			try {
@@ -308,6 +338,79 @@ ON CONFLICT(prompt) DO UPDATE SET
 			this.#db.run(`PRAGMA user_version = ${HISTORY_DATA_VERSION}`);
 		})();
 		return true;
+	}
+
+	#assertRecentWindowReadable(): void {
+		const result = this.#db
+			.query<{ invalid: number }, []>(`
+SELECT count(*) AS invalid FROM (SELECT prompt, created_at FROM history ORDER BY created_at DESC, id DESC LIMIT 100)
+WHERE typeof(prompt) != 'text' OR typeof(created_at) != 'integer'
+		`)
+			.get();
+		if (!result?.invalid) return;
+		const check = this.#db.query<{ quick_check: string }, []>("PRAGMA quick_check(1)").get();
+		if (check?.quick_check === "ok") return;
+		throw Object.assign(new Error(`database disk image is malformed (${check?.quick_check})`), {
+			code: "SQLITE_CORRUPT",
+		});
+	}
+
+	/** Preserve the damaged database and copy only independently readable rows into its replacement. */
+	#salvage(backupPath: string): void {
+		let source: Database | undefined;
+		try {
+			source = new Database(backupPath, { readonly: true });
+			const rows = readSalvageableRows<Record<keyof HistoryRow, unknown>>(
+				source,
+				"history",
+				"id, prompt, created_at, cwd, session_id",
+			);
+			let sequence: number | undefined;
+			try {
+				sequence = source
+					.query<{ seq: number }, []>("SELECT seq FROM sqlite_sequence WHERE name = 'history'")
+					.get()?.seq;
+			} catch {}
+			const titles = this.#db.transaction(() => {
+				using insert = this.#db.prepare(`
+INSERT INTO history (id, prompt, created_at, cwd, session_id)
+VALUES (CASE WHEN EXISTS (SELECT 1 FROM history WHERE id = ?1) THEN NULL ELSE ?1 END, ?2, ?3, ?4, ?5)
+ON CONFLICT(prompt) DO UPDATE SET
+	created_at = max(history.created_at, excluded.created_at),
+	cwd = iif(excluded.created_at > history.created_at, excluded.cwd, history.cwd),
+	session_id = iif(excluded.created_at > history.created_at, excluded.session_id, history.session_id)
+				`);
+				for (const row of rows) {
+					if (
+						!Number.isSafeInteger(row.id) ||
+						typeof row.prompt !== "string" ||
+						!row.prompt.trim() ||
+						!Number.isSafeInteger(row.created_at)
+					)
+						continue;
+					insert.run(
+						row.id as number,
+						row.prompt,
+						row.created_at as number,
+						typeof row.cwd === "string" ? row.cwd : null,
+						typeof row.session_id === "string" ? row.session_id : null,
+					);
+				}
+				if (Number.isSafeInteger(sequence))
+					this.#db.run("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = 'history'", [
+						sequence as number,
+					]);
+				return salvageSessionIndex(source as Database, this.#db);
+			})();
+			logger.warn("Salvaged readable history from a damaged database", { backupPath, titles });
+		} catch (error) {
+			logger.error("History salvage failed; the damaged database remains preserved", {
+				backupPath,
+				error: String(error),
+			});
+		} finally {
+			source?.close();
+		}
 	}
 
 	#normalizeLimit(limit: number): number {

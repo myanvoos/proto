@@ -16,7 +16,14 @@ import {
 	truncateMiddle,
 	truncateTail,
 } from "../session/streaming-output";
-import { formatBytes, wrapBrackets } from "./render-utils";
+import {
+	formatBytes,
+	sanitizeSingleLine,
+	shortenEmbeddedPaths,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+	wrapBrackets,
+} from "./render-utils";
 import { renderError } from "./tool-errors";
 
 export interface TruncationMeta {
@@ -56,7 +63,22 @@ export interface LimitsMeta {
 	columnTruncated?: { maxColumn: number; unit: "bytes" | "chars" };
 }
 
+export interface MinimizedMeta {
+	filter: string;
+	inputBytes: number;
+	outputBytes: number;
+	artifactId?: string;
+}
+
+export function formatMinimizedMeta(minimized: MinimizedMeta): string {
+	const label = shortenEmbeddedPaths(sanitizeSingleLine(minimized.filter).replace(/\s+/gu, " ").trim());
+	const filter = truncateToWidth(label, TRUNCATE_LENGTHS.SHORT);
+	return `${filter} ${formatBytes(minimized.inputBytes)} → ${formatBytes(minimized.outputBytes)}`;
+}
+
 export interface OutputMeta {
+	pagedSource?: true;
+	minimized?: MinimizedMeta;
 	truncation?: TruncationMeta;
 	source?: SourceMeta;
 	limits?: LimitsMeta;
@@ -85,6 +107,16 @@ export interface TruncationTextOptions {
 
 export class OutputMetaBuilder {
 	#meta: OutputMeta = {};
+
+	pagedSource(): this {
+		this.#meta.pagedSource = true;
+		return this;
+	}
+
+	minimized(value: MinimizedMeta | undefined): this {
+		if (value) this.#meta.minimized = value;
+		return this;
+	}
 
 	truncation(result: TruncationResult, options: TruncationOptions): this {
 		if (!result.truncated) return this;
@@ -549,8 +581,12 @@ export function resolveOutputSinkHeadBytes(s: Settings | undefined): number {
 
 const INLINE_CAP_SLACK_BYTES = 2 * 1024;
 
+export function resolveArtifactSpillThreshold(s: Settings | undefined): number {
+	return getSpillConfig(s).threshold;
+}
+
 export function resolveInlineByteCapBudget(s: Settings | undefined): number {
-	return getSpillConfig(s).threshold + INLINE_CAP_SLACK_BYTES;
+	return resolveArtifactSpillThreshold(s) + INLINE_CAP_SLACK_BYTES;
 }
 
 export function resolveOutputMaxColumns(s: Settings | undefined): number {
@@ -568,6 +604,7 @@ async function spillLargeResultToArtifact(
 
 	const existingMeta: OutputMeta | undefined = result.details?.meta;
 	if (existingMeta?.truncation?.artifactId) return result;
+	if (existingMeta?.pagedSource) return result;
 
 	if (
 		toolName === "read" &&

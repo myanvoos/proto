@@ -47,6 +47,7 @@ test("the model picker switches the focused agent, not the main session behind i
 		}) as unknown as AgentSession;
 
 	let picker: Component | undefined;
+	let mounts = 0;
 	const editor = {} as Component;
 	const ctx = {
 		session: makeSession("main"),
@@ -63,6 +64,7 @@ test("the model picker switches the focused agent, not the main session behind i
 		ui: {
 			showOverlay: (component: Component) => {
 				picker = component;
+				mounts++;
 				return { hide: () => {} };
 			},
 			setFocus: () => {},
@@ -71,7 +73,10 @@ test("the model picker switches the focused agent, not the main session behind i
 	} as unknown as InteractiveModeContext;
 
 	try {
-		new SelectorController(ctx).showModelSelector({ temporaryOnly: true });
+		const controller = new SelectorController(ctx);
+		controller.showModelSelector({ temporaryOnly: true });
+		controller.showModelSelector({ temporaryOnly: true });
+		expect(mounts).toBe(1);
 		expect(picker).toBeDefined();
 		// onActivate runs the async apply; await the microtask it schedules rather than a delay.
 		picker?.handleInput?.("\r");

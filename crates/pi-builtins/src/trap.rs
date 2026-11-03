@@ -3,13 +3,10 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins, traps::TrapSignal};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct TrapCommand {
-
 	#[arg(short = 'l')]
 	list_signals: bool,
-
 
 	#[arg(short = 'p')]
 	print_trap_commands: bool,
@@ -37,14 +34,10 @@ impl builtins::Command for TrapCommand {
 			}
 			Ok(ExecutionResult::success())
 		} else if self.args.len() == 1 {
-
-
 			let signal = self.args[0].as_str();
 			Self::remove_all_handlers(&mut context, signal.parse()?);
 			Ok(ExecutionResult::success())
 		} else if self.args[0] == "-" {
-
-
 			for signal in &self.args[1..] {
 				Self::remove_all_handlers(&mut context, signal.parse()?);
 			}
@@ -95,9 +88,6 @@ impl TrapCommand {
 		signals: Vec<TrapSignal>,
 		handler: &str,
 	) {
-
-
-
 		let source_info = context.shell.call_stack().current_pos_as_source_info();
 
 		for signal in signals {

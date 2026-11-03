@@ -21,7 +21,12 @@ async function probe(dbPath: string, source: string): Promise<unknown> {
 			process.execPath,
 			"--eval",
 			`
+		import { Database } from "bun:sqlite";
 		import { HistoryStorage } from ${JSON.stringify(modulePath)};
+		import * as index from ${JSON.stringify(path.join(import.meta.dir, "session-index.ts"))};
+		import * as fsSync from "node:fs";
+		import { setAgentDir } from "@oh-my-pi/pi-utils";
+		setAgentDir(${JSON.stringify(path.dirname(dbPath))});
 		import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui";
 		const storage = HistoryStorage.open(${JSON.stringify(dbPath)});
 		try { ${source} } finally { HistoryStorage.close(); }
@@ -57,6 +62,31 @@ function seed(dbPath: string, version: number, rows: Array<[number, string, numb
 
 afterEach(async () => {
 	await Promise.all(directories.splice(0).map(directory => fs.rm(directory, { recursive: true, force: true })));
+});
+
+test("history write failures warn once per outage and recover after a durable write", async () => {
+	const dbPath = await databasePath();
+	expect(
+		await probe(
+			dbPath,
+			`
+		const db = new Database(${JSON.stringify(dbPath)});
+		let failures = 0;
+		storage.setErrorListener(() => { failures++; });
+		const block = () => db.run("CREATE TRIGGER reject_history BEFORE INSERT ON history BEGIN SELECT RAISE(ABORT, 'write blocked'); END");
+		block();
+		await storage.add("first unavailable prompt");
+		await storage.add("second unavailable prompt");
+		const firstOutage = failures;
+		db.run("DROP TRIGGER reject_history");
+		await storage.add("durable prompt");
+		block();
+		await storage.add("new unavailable prompt");
+		db.close();
+		console.log(JSON.stringify({firstOutage, failures, prompts: storage.getRecent(10).map(row => row.prompt)}));
+	`,
+		),
+	).toEqual({ firstOutage: 1, failures: 2, prompts: ["durable prompt"] });
 });
 
 test("legacy normalization preserves oversized durable rows and chooses the newest eligible duplicate", async () => {
@@ -206,4 +236,97 @@ test("add persists bounded expanded prompts without admitting them to draft retr
 	} finally {
 		db.close();
 	}
+});
+
+test("damaged history keeps every readable prompt and title without resetting assigned row ids", async () => {
+	const dbPath = await databasePath();
+	await probe(dbPath, "console.log(JSON.stringify(null));");
+	const prompt = (id: number) => `prompt-${String(id).padStart(4, "0")}-${"x".repeat(180)}`;
+	const db = new Database(dbPath);
+	db.run("PRAGMA secure_delete = ON");
+	db.run(
+		"CREATE TABLE session_titles (session_id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+	);
+	db.run("INSERT INTO session_titles VALUES ('retained', 'Recovered title', 1700000000)");
+	const insert = db.prepare("INSERT INTO history (id, prompt, created_at) VALUES (?, ?, ?)");
+	db.transaction(() => {
+		for (let id = 1; id <= 200; id++) insert.run(id, prompt(id), 1_700_000_000 + id);
+	})();
+	insert.finalize();
+	db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+	const pageSize = db.query<{ page_size: number }, []>("PRAGMA page_size").get()!.page_size;
+	db.close();
+	const bytes = await fs.readFile(dbPath);
+	const pageOf = (id: number): number => {
+		const marker = prompt(id).slice(0, 12);
+		for (let at = bytes.indexOf(marker); at !== -1; at = bytes.indexOf(marker, at + 1)) {
+			const page = Math.floor(at / pageSize);
+			if (bytes[page * pageSize] === 0x0d) return page;
+		}
+		throw new Error(`No table leaf holds prompt ${id}`);
+	};
+	const damaged = pageOf(200);
+	const expected = Array.from({ length: 200 }, (_, index) => 200 - index)
+		.filter(id => pageOf(id) !== damaged)
+		.map(prompt);
+	bytes.fill(0xff, damaged * pageSize, (damaged + 1) * pageSize);
+	await Bun.write(dbPath, bytes);
+	const result = await probe(
+		dbPath,
+		`
+		const recovered = storage.getRecent(1000).map(row => row.prompt);
+		await storage.add("after recovery");
+		const check = new Database(${JSON.stringify(dbPath)});
+		try {
+			console.log(JSON.stringify({ recovered, next: storage.getRecent(1)[0]?.id,
+				titles: check.query("SELECT session_id, title FROM session_titles").all(),
+				integrity: check.query("PRAGMA quick_check").get().quick_check }));
+		} finally { check.close(); }
+	`,
+	);
+	expect(result).toEqual({
+		recovered: expected,
+		next: 201,
+		titles: [{ session_id: "retained", title: "Recovered title" }],
+		integrity: "ok",
+	});
+	expect((await fs.readdir(path.dirname(dbPath))).some(name => name.includes(".corrupt-"))).toBe(true);
+});
+
+test("history recall filters BLOB prompts rather than handing binary data to the editor", async () => {
+	const dbPath = await databasePath();
+	expect(
+		await probe(
+			dbPath,
+			`
+		await storage.add("readable prompt");
+		const db = new Database(${JSON.stringify(dbPath)});
+		db.run("INSERT INTO history (prompt, created_at) VALUES (x'72656164', 4102444800)");
+		db.close();
+		console.log(JSON.stringify({ recent: storage.getRecent(10).map(row => row.prompt), search: storage.search("read", 10).map(row => row.prompt) }));
+	`,
+		),
+	).toEqual({ recent: ["readable prompt"], search: ["readable prompt"] });
+});
+
+test("the title index reopens after history.db is replaced instead of writing to the discarded inode", async () => {
+	const dbPath = await databasePath();
+	expect(
+		await probe(
+			dbPath,
+			`
+		index.recordSessionTitle("old-session", "Old title");
+		HistoryStorage.close();
+		for (const suffix of ["", "-wal", "-shm"]) {
+			const file = ${JSON.stringify(dbPath)} + suffix;
+			if (fsSync.existsSync(file)) fsSync.renameSync(file, file + ".old");
+		}
+		index.recordSessionTitle("new-session", "New title");
+		const raw = new Database(${JSON.stringify(dbPath)});
+		try { console.log(JSON.stringify({ current: index.lookupSessionTitle("new-session"),
+			rows: raw.query("SELECT session_id, title FROM session_titles").all() })); }
+		finally { raw.close(); index.closeSessionIndex(); }
+	`,
+		),
+	).toEqual({ current: "New title", rows: [{ session_id: "new-session", title: "New title" }] });
 });

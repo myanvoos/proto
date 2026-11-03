@@ -1,7 +1,39 @@
-import { RelayBridge } from "./bridge";
+import { VERSION } from "@oh-my-pi/pi-utils/dirs";
+import { RelayBridge, type RelayBridgeExtensionUpdater } from "./bridge";
+import {
+	defaultRelayExtensionDir,
+	installedRelayExtensionVersion,
+	unpackedExtensionId,
+	writeRelayExtension,
+} from "./extension-files";
+import { isOlderProtoVersion } from "./protocol";
 
-interface RelayServerOptions {
+export interface RelayUnavailableInfo {
+	protoRelayVersion: string;
+	error: string;
+	extensionSeen: boolean;
+	uptimeMs: number;
+	protoRelayCdpClients: number;
+	disconnectedMs?: number;
+}
+
+function extensionUpdaterFor(dir: string): RelayBridgeExtensionUpdater {
+	let queue: Promise<unknown> = Promise.resolve();
+	return extensionId => {
+		const result = queue.then(async () => {
+			if ((await unpackedExtensionId(dir)) !== extensionId) return false;
+			if (isOlderProtoVersion(VERSION, await installedRelayExtensionVersion(dir))) return false;
+			await writeRelayExtension(dir, VERSION);
+			return true;
+		});
+		queue = result.catch(() => {});
+		return result;
+	};
+}
+
+export interface RelayServerOptions {
 	port: number;
+	extensionDir?: string;
 
 	token?: string;
 
@@ -18,6 +50,7 @@ export interface RelayServer {
 interface SocketData {
 	role: "cdp" | "ext";
 	connId?: number;
+	extensionId?: string;
 }
 
 type RelayWebSocket = Bun.ServerWebSocket<SocketData>;
@@ -41,7 +74,12 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 	const log = opts.log ?? (() => {});
 	const group =
 		opts.group === false ? null : opts.group === true || opts.group === undefined ? DEFAULT_GROUP : opts.group;
-	const bridge = new RelayBridge({ log, group });
+	const bridge = new RelayBridge({
+		log,
+		group,
+		updateExtension: extensionUpdaterFor(opts.extensionDir ?? defaultRelayExtensionDir()),
+	});
+	const startedAt = Date.now();
 	const sockets = new Set<RelayWebSocket>();
 
 	const server = Bun.serve({
@@ -71,14 +109,26 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 				if (opts.token && url.searchParams.get("token") !== opts.token) {
 					return new Response("Unauthorized", { status: 401 });
 				}
-				const data: SocketData = { role: "ext" };
+				const data: SocketData = {
+					role: "ext",
+					extensionId: origin?.match(/^chrome-extension:\/\/([a-p]{32})$/)?.[1],
+				};
 				if (srv.upgrade(req, { data })) return undefined;
 				return new Response("websocket upgrade required", { status: 426 });
 			}
 			if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
 			if (path === "/json/version") {
 				if (!bridge.ready) {
-					return Response.json({ error: "relay extension is not connected" }, { status: 503 });
+					const disconnectedMs = bridge.extensionGoneForMs;
+					const info: RelayUnavailableInfo = {
+						protoRelayVersion: VERSION,
+						error: "relay extension is not connected",
+						extensionSeen: bridge.extensionSeen,
+						uptimeMs: Date.now() - startedAt,
+						protoRelayCdpClients: bridge.cdpClientCount,
+						...(disconnectedMs === null ? {} : { disconnectedMs }),
+					};
+					return Response.json(info, { status: 503 });
 				}
 				return Response.json(bridge.versionInfo(`ws://${host}/cdp`));
 			}
@@ -94,7 +144,7 @@ export function startRelayServer(opts: RelayServerOptions): RelayServer {
 			open(ws: RelayWebSocket): void {
 				sockets.add(ws);
 				if (ws.data.role === "ext") {
-					bridge.extConnected(ws);
+					bridge.extConnected(ws, ws.data.extensionId);
 				} else {
 					ws.data.connId = bridge.cdpConnected(ws);
 				}

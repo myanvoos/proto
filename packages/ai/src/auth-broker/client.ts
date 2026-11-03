@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import { readSseEvents } from "@oh-my-pi/pi-utils";
-import type { AuthCredential, DisabledCredentialSummary } from "../auth-storage";
+import type { AuthCredential, DisabledCredentialSummary, OAuthRefreshReason } from "../auth-storage";
 import type {
 	ClientUsageReportRequest,
 	ClientUsageReportResponse,
@@ -242,7 +242,9 @@ export class AuthBrokerClient {
 		}
 	}
 
-	fetchUsage(options: { signal?: AbortSignal; maxAccountsPerProvider?: number } = {}): Promise<UsageResponse> {
+	fetchUsage(
+		options: { signal?: AbortSignal; maxAccountsPerProvider?: number; provider?: string } = {},
+	): Promise<UsageResponse> {
 		const requestedAccountCount = options.maxAccountsPerProvider;
 		const accountCount =
 			typeof requestedAccountCount === "number" && Number.isFinite(requestedAccountCount)
@@ -250,7 +252,8 @@ export class AuthBrokerClient {
 				: 1;
 		const perAccountTimeoutMs = Math.max(DEFAULT_TIMEOUT_MS, this.#timeoutMs);
 		const timeoutMs = perAccountTimeoutMs * (accountCount + 1);
-		return this.#request<UsageResponse>("GET", "/v1/usage", {
+		const query = options.provider !== undefined ? `?${new URLSearchParams({ provider: options.provider })}` : "";
+		return this.#request<UsageResponse>("GET", `/v1/usage${query}`, {
 			schema: "usageResponseSchema",
 			signal: options.signal,
 			timeoutMs,
@@ -286,15 +289,23 @@ export class AuthBrokerClient {
 		});
 	}
 
-	notifyUsageStale(signal?: AbortSignal): Promise<UsageStaleResponse> {
-		return this.#request<UsageStaleResponse>("POST", "/v1/usage/stale", {
+	notifyUsageStale(provider?: string, signal?: AbortSignal): Promise<UsageStaleResponse> {
+		const params = new URLSearchParams();
+		if (provider) params.set("provider", provider);
+		const path = `/v1/usage/stale${params.size > 0 ? `?${params.toString()}` : ""}`;
+		return this.#request<UsageStaleResponse>("POST", path, {
 			schema: "usageStaleResponseSchema",
 			signal,
 		});
 	}
 
-	async refreshCredential(id: number, signal?: AbortSignal): Promise<CredentialRefreshResponse> {
-		return this.#request<CredentialRefreshResponse>("POST", `/v1/credential/${id}/refresh`, {
+	async refreshCredential(
+		id: number,
+		signal?: AbortSignal,
+		reason?: OAuthRefreshReason,
+	): Promise<CredentialRefreshResponse> {
+		const suffix = reason ? `?reason=${reason}` : "";
+		return this.#request<CredentialRefreshResponse>("POST", `/v1/credential/${id}/refresh${suffix}`, {
 			schema: "credentialRefreshResponseSchema",
 			signal,
 		});

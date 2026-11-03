@@ -1,4 +1,7 @@
+import { parseLocalRefPointer } from "@oh-my-pi/omptype";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { areJsonValuesEqual } from "./equality";
+import { stamp } from "./stamps";
 
 export interface JsonSchemaValidationIssue {
 	path: PropertyKey[];
@@ -148,17 +151,12 @@ function schemaTypes(schema: Record<string, unknown>): string[] {
 	return types;
 }
 
-function decodePointerToken(token: string): string {
-	return token.replace(/~1/g, "/").replace(/~0/g, "~");
-}
-
 function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
-	if (ref === "#") return root;
-	if (!ref.startsWith("#/")) return undefined;
+	const pointer = parseLocalRefPointer(ref);
+	if (pointer === undefined) return undefined;
 	let current: unknown = root;
-	for (const rawToken of ref.slice(2).split("/")) {
-		const token = decodePointerToken(rawToken);
-		if (!isJsonObject(current) && !Array.isArray(current)) return undefined;
+	for (const token of pointer) {
+		if (!isRecord(current) && !Array.isArray(current)) return undefined;
 		current = (current as Record<string, unknown>)[token];
 	}
 	return current;
@@ -197,7 +195,20 @@ const OWNERSHIP_CONTEXT_BITS: Record<OwnershipContext, number> = { positive: 1, 
  * composed and conditional branches, dependencies, propertyNames/patternProperties/additionalProperties,
  * object const/enum values, and negations (with polarity). Nested object properties never count.
  */
+const kDefinesPropertyCache = Symbol("ai.schemaDefinesPropertyCache");
+
+/** Schema graphs are immutable per identity; a new root resets derived answers. */
 export function schemaDefinesProperty(schema: unknown, key: string): boolean {
+	if (!isRecord(schema)) return false;
+	const cache = stamp(schema, kDefinesPropertyCache, () => new Map<string, boolean>());
+	const cached = cache.get(key);
+	if (cached !== undefined) return cached;
+	const result = computeSchemaDefinesProperty(schema, key);
+	cache.set(key, result);
+	return result;
+}
+
+function computeSchemaDefinesProperty(schema: unknown, key: string): boolean {
 	const root = schema;
 	const visited = new WeakMap<object, number>();
 	const visit = (node: unknown, context: OwnershipContext = "positive"): boolean => {

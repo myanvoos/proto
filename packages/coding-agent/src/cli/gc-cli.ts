@@ -15,6 +15,7 @@ import {
 	getTerminalSessionsDir,
 	normalizePathForComparison,
 	readLines,
+	Snowflake,
 } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
@@ -70,6 +71,9 @@ interface ArchiveGcResult {
 	wouldArchive: number;
 	archived: number;
 	historyRowsDeleted: number;
+	wouldDeleteTemps: number;
+	deletedTemps: number;
+	tempBytes: number;
 	ftsRebuilt: boolean;
 	errors: string[];
 }
@@ -346,14 +350,14 @@ async function collectReferencedBlobHashes(sessionRoots: string[], exactSessionF
  * (`custom-session-files/*`, one absolute path each) keeps every one; terminal breadcrumbs (`cwd\nsessionFile`) also
  * catch the current transcript if its marker write failed.
  */
-async function collectCustomSessionFiles(agentDir: string): Promise<string[]> {
+async function collectCustomSessionFiles(agentDir: string, includeMissing = false): Promise<string[]> {
 	const files = new Map<string, string>();
 	const registryDir = getCustomSessionFilesDir(agentDir);
 	for (const entry of await readdirIfPresent(registryDir)) {
 		const recorded = (await readTextIfPresent(path.join(registryDir, entry))).trim();
 		if (!recorded) continue;
 		const sessionFile = path.resolve(recorded);
-		if (!(await statIfPresent(sessionFile))?.isFile()) continue;
+		if (!includeMissing && !(await statIfPresent(sessionFile))?.isFile()) continue;
 		files.set(normalizePathForComparison(sessionFile), sessionFile);
 	}
 	const breadcrumbDir = getTerminalSessionsDir(agentDir);
@@ -746,15 +750,20 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 	const db = new Database(dbPath);
 	try {
 		db.run("PRAGMA busy_timeout = 5000");
-		if (!tableExists(db, "history")) return { deleted: 0, ftsRebuilt: false };
-		if (!historyHasSessionId(db)) return { deleted: 0, ftsRebuilt: false };
-		const hasFts = tableExists(db, "history_fts");
-		using deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
+		const hasHistory = tableExists(db, "history") && historyHasSessionId(db);
+		const hasTitles = tableExists(db, "session_titles");
+		if (!hasHistory && !hasTitles) return { deleted: 0, ftsRebuilt: false };
+		const hasFts = hasHistory && tableExists(db, "history_fts");
+		using deleteStmt = hasHistory ? db.prepare("DELETE FROM history WHERE session_id = ?") : undefined;
+		using deleteTitles = hasTitles ? db.prepare("DELETE FROM session_titles WHERE session_id = ?") : undefined;
 		let deleted = 0;
 		const tx = db.transaction((ids: string[]) => {
 			for (const id of ids) {
-				const result = deleteStmt.run(id) as SqliteRunResult;
-				deleted += sqliteNumber(result.changes);
+				deleteTitles?.run(id);
+				if (deleteStmt) {
+					const result = deleteStmt.run(id) as SqliteRunResult;
+					deleted += sqliteNumber(result.changes);
+				}
 			}
 			if (deleted > 0 && hasFts) db.run("INSERT INTO history_fts(history_fts) VALUES('rebuild')");
 		});
@@ -804,6 +813,46 @@ async function cleanupHistoryRowsForArchivedSessions(
 	}
 }
 
+async function sweepSessionStagingFiles(
+	options: ResolvedGcOptions,
+	sessionsRoot: string,
+	result: ArchiveGcResult,
+): Promise<void> {
+	const files = new Set<string>();
+	const stagingTarget = (name: string): string | undefined => {
+		const match = /^\.(.+)\.([^.]+)\.tmp$/.exec(name);
+		return match && Snowflake.valid(match[2]!) ? match[1] : undefined;
+	};
+	try {
+		const glob = new Bun.Glob("**/.*.jsonl.*.tmp");
+		for await (const name of glob.scan({ cwd: sessionsRoot, dot: true, onlyFiles: true })) {
+			if (stagingTarget(path.basename(name))) files.add(path.join(sessionsRoot, name));
+		}
+	} catch (error) {
+		if (codeOf(error) !== "ENOENT") result.errors.push(`session staging scan: ${errorMessage(error)}`);
+	}
+	// A crashed first save can leave only its temp; registry targets need not exist.
+	for (const target of await collectCustomSessionFiles(options.agentDir, true)) {
+		for (const name of await readdirIfPresent(path.dirname(target))) {
+			if (stagingTarget(name) === path.basename(target)) files.add(path.join(path.dirname(target), name));
+		}
+	}
+	const cutoff = Date.now() - GC_WRITE_GRACE_MS;
+	for (const file of files) {
+		try {
+			const stat = await statIfPresent(file);
+			if (!stat?.isFile() || stat.mtimeMs > cutoff) continue;
+			result.wouldDeleteTemps++;
+			result.tempBytes += stat.size;
+			if (!options.apply) continue;
+			await fs.unlink(file);
+			result.deletedTemps++;
+		} catch (error) {
+			if (codeOf(error) !== "ENOENT") result.errors.push(`${file}: ${errorMessage(error)}`);
+		}
+	}
+}
+
 async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Promise<ArchiveGcResult> {
 	const sessionsRoot = getSessionsDir(options.agentDir);
 	const sessions = await listActiveSessions(sessionsRoot);
@@ -816,6 +865,9 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 		wouldArchive: 0,
 		archived: 0,
 		historyRowsDeleted: 0,
+		wouldDeleteTemps: 0,
+		deletedTemps: 0,
+		tempBytes: 0,
 		ftsRebuilt: false,
 		errors: [],
 	};
@@ -858,6 +910,7 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 	}
 
 	result.wouldArchive = candidates.length;
+	await sweepSessionStagingFiles(options, sessionsRoot, result);
 	if (!options.apply) return result;
 
 	const archivedSessionIds: string[] = [];
@@ -1126,6 +1179,11 @@ function renderText(result: GcResult): string {
 			`sessions: ${result.archive.archived}/${result.archive.wouldArchive} archived, ${result.archive.historyRowsDeleted} history rows removed`,
 		);
 		if (result.archive.skippedActive > 0) lines.push(`sessions skipped active: ${result.archive.skippedActive}`);
+		if (result.archive.wouldDeleteTemps > 0) {
+			lines.push(
+				`session staging temps: ${result.archive.deletedTemps}/${result.archive.wouldDeleteTemps} files, ${formatBytes(result.archive.tempBytes)}`,
+			);
+		}
 		if (result.archive.errors.length > 0) lines.push(`session errors: ${result.archive.errors.length}`);
 	}
 	if (result.wal) {

@@ -82,3 +82,10 @@ describe("planAdvisorUsageLimitWait", () => {
 		expect(planAdvisorUsageLimitWait(timing, RETRY, 0, NOW)).toBe(6_000);
 	});
 });
+
+test("a sibling at the exact retry cap still receives its post-unblock selection buffer", () => {
+	expect(planAdvisorUsageLimitWait({ retryAtMs: NOW + RETRY.maxDelayMs }, RETRY, 0, NOW)).toBe(
+		RETRY.maxDelayMs + 1000,
+	);
+	expect(planAdvisorUsageLimitWait({ retryAtMs: NOW + RETRY.maxDelayMs + 1 }, RETRY, 0, NOW)).toBeUndefined();
+});

@@ -1,11 +1,11 @@
-import { archiveEntryText, readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
+import { ZipPackage } from "@oh-my-pi/pi-utils/ar";
 import { XMLParser } from "@oh-my-pi/pi-utils/xml";
 import type { ConversionResult, Converter, StreamInfo } from "../types";
 
 const EXTENSIONS = [".xlsx"];
 const MIMETYPES = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 
-type XmlText = string | number | { "#text"?: string };
+type XmlText = string | { "#text"?: string };
 
 interface RichTextRun {
 	t?: XmlText;
@@ -16,7 +16,7 @@ interface StringItem {
 }
 interface Cell {
 	"@_t"?: string;
-	v?: string | number;
+	v?: string;
 	is?: StringItem;
 }
 interface Row {
@@ -53,25 +53,26 @@ export class XlsxConverter implements Converter {
 	}
 
 	async convert(input: Buffer, _streamInfo: StreamInfo): Promise<ConversionResult> {
-		const entries = await readArchiveEntries({ bytes: input, format: "zip" });
+		const zip = await ZipPackage.open(input);
 		const parser = new XMLParser({
 			ignoreAttributes: false,
 			attributeNamePrefix: "@_",
 			textNodeName: "#text",
+			parseTagValue: false,
 			processEntities: { maxTotalExpansions: 1_000_000 },
 		});
 
-		const ssXml = archiveEntryText(entries, "xl/sharedStrings.xml");
+		const ssXml = await zip.readText("xl/sharedStrings.xml");
 		const ss = ssXml ? (parser.parse(ssXml) as SharedStringsDoc) : null;
 		const siList = ss?.sst?.si;
 		const shared = toArray(siList);
 
-		const wbXml = archiveEntryText(entries, "xl/workbook.xml");
+		const wbXml = await zip.readText("xl/workbook.xml");
 		if (!wbXml) throw new Error("Invalid XLSX: missing workbook.xml");
 		const wb = parser.parse(wbXml) as WorkbookDoc;
 		const sheets = toArray(wb.workbook?.sheets?.sheet);
 
-		const relsXml = archiveEntryText(entries, "xl/_rels/workbook.xml.rels");
+		const relsXml = await zip.readText("xl/_rels/workbook.xml.rels");
 		const rels = relsXml ? (parser.parse(relsXml) as RelationshipsDoc) : null;
 		const relList = toArray(rels?.Relationships?.Relationship);
 		const relMap = new Map<string, string>();
@@ -85,7 +86,7 @@ export class XlsxConverter implements Converter {
 			const target = relMap.get(rId);
 			if (!target) continue;
 			const sheetPath = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
-			const sheetXml = archiveEntryText(entries, sheetPath);
+			const sheetXml = await zip.readText(sheetPath);
 			if (!sheetXml) continue;
 			const parsed = parser.parse(sheetXml) as WorksheetDoc;
 			const rows = toArray(parsed.worksheet?.sheetData?.row);
@@ -102,7 +103,8 @@ export class XlsxConverter implements Converter {
 			}
 			if (tableRows.length === 0) continue;
 
-			const maxCols = Math.max(...tableRows.map(r => r.length));
+			let maxCols = 0;
+			for (const row of tableRows) maxCols = Math.max(maxCols, row.length);
 			for (const row of tableRows) {
 				while (row.length < maxCols) row.push("");
 			}
@@ -136,10 +138,10 @@ export class XlsxConverter implements Converter {
 		}
 
 		if (cell["@_t"] === "b") {
-			return cell.v === 1 || cell.v === "1" ? "TRUE" : "FALSE";
+			return cell.v === "1" ? "TRUE" : "FALSE";
 		}
 
-		if (cell.v != null) return String(cell.v);
+		if (cell.v != null) return cell.v;
 		return "";
 	}
 
@@ -161,7 +163,7 @@ export class XlsxConverter implements Converter {
 function textValue(t: XmlText | undefined): string {
 	if (t == null) return "";
 	if (typeof t === "object") return t["#text"] || "";
-	return String(t);
+	return t;
 }
 
 function toArray<T>(val: T | T[] | undefined): T[] {

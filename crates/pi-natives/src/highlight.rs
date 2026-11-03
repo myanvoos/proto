@@ -1,9 +1,13 @@
-use std::{cell::RefCell, collections::HashMap, sync::OnceLock};
+use std::{
+	cell::RefCell,
+	collections::{HashMap, HashSet},
+	sync::OnceLock,
+};
 
 use napi::{JsString, Result};
 use napi_derive::napi;
 use syntect::parsing::{
-	ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxDefinition, SyntaxReference, SyntaxSet,
+	ParseState, Scope, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet,
 };
 
 use crate::js::{self, InlineStr};
@@ -17,10 +21,36 @@ thread_local! {
 	static SCOPE_COLOR_CACHE: RefCell<HashMap<Scope, usize>> = RefCell::new(HashMap::with_capacity(256));
 }
 
-const EXTRA_SYNTAXES: &[&str] = &[
-	include_str!("syntaxes/Julia.sublime-syntax"),
-	include_str!("syntaxes/Nix.sublime-syntax"),
-	include_str!("syntaxes/Mermaid.sublime-syntax"),
+const EXTRA_SYNTAXES: &[(&str, &str)] = &[
+	("Julia", include_str!("syntaxes/Julia.sublime-syntax")),
+	("Nix", include_str!("syntaxes/Nix.sublime-syntax")),
+	("Mermaid", include_str!("syntaxes/Mermaid.sublime-syntax")),
+	("TypeScript", include_str!("syntaxes/TypeScript.sublime-syntax")),
+	("TypeScriptReact", include_str!("syntaxes/TypeScriptReact.sublime-syntax")),
+	("Astro", include_str!("syntaxes/Astro.sublime-syntax")),
+	("CMake", include_str!("syntaxes/CMake.sublime-syntax")),
+	("CMakeCommands", include_str!("syntaxes/CMakeCommands.sublime-syntax")),
+	("Dockerfile", include_str!("syntaxes/Dockerfile.sublime-syntax")),
+	("Elixir", include_str!("syntaxes/Elixir.sublime-syntax")),
+	(
+		"Regular Expressions (Elixir)",
+		include_str!("syntaxes/Regular Expressions (Elixir).sublime-syntax"),
+	),
+	("Git Ignore", include_str!("syntaxes/Git Ignore.sublime-syntax")),
+	("GraphQL", include_str!("syntaxes/GraphQL.sublime-syntax")),
+	("INI", include_str!("syntaxes/INI.sublime-syntax")),
+	("Kotlin", include_str!("syntaxes/Kotlin.sublime-syntax")),
+	("PowerShell", include_str!("syntaxes/PowerShell.sublime-syntax")),
+	("Protocol Buffer", include_str!("syntaxes/Protobuf.sublime-syntax")),
+	("Protocol Buffer (TEXT)", include_str!("syntaxes/ProtobufText.sublime-syntax")),
+	("Sass", include_str!("syntaxes/Sass.sublime-syntax")),
+	("SCSS", include_str!("syntaxes/SCSS.sublime-syntax")),
+	("Swift", include_str!("syntaxes/Swift.sublime-syntax")),
+	("Terraform", include_str!("syntaxes/Terraform.sublime-syntax")),
+	("TOML", include_str!("syntaxes/TOML.sublime-syntax")),
+	("VimL", include_str!("syntaxes/VimL.sublime-syntax")),
+	// The later entry shadows syntect's backtracking Markdown grammar.
+	("Markdown", include_str!("syntaxes/Markdown.sublime-syntax")),
 ];
 
 fn get_syntax_set() -> &'static SyntaxSet {
@@ -29,10 +59,10 @@ fn get_syntax_set() -> &'static SyntaxSet {
 
 fn build_syntax_set() -> SyntaxSet {
 	let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
-	for src in EXTRA_SYNTAXES {
-		if let Ok(def) = SyntaxDefinition::load_from_str(src, true, None) {
-			builder.add(def);
-		}
+	for (name, source) in EXTRA_SYNTAXES {
+		let syntax = SyntaxDefinition::load_from_str(source, true, Some(name))
+			.unwrap_or_else(|error| panic!("invalid bundled {name} syntax: {error}"));
+		builder.add(syntax);
 	}
 	builder.build()
 }
@@ -42,7 +72,6 @@ struct ScopeMatchers {
 
 	string:             Scope,
 	constant_character: Scope,
-	meta_string:        Scope,
 
 	constant_numeric: Scope,
 	constant_integer: Scope,
@@ -87,7 +116,6 @@ impl ScopeMatchers {
 			comment:               Scope::new("comment").unwrap(),
 			string:                Scope::new("string").unwrap(),
 			constant_character:    Scope::new("constant.character").unwrap(),
-			meta_string:           Scope::new("meta.string").unwrap(),
 			constant_numeric:      Scope::new("constant.numeric").unwrap(),
 			constant_integer:      Scope::new("constant.integer").unwrap(),
 			constant:              Scope::new("constant").unwrap(),
@@ -162,7 +190,9 @@ pub struct HighlightColors {
 }
 
 const LANG_ALIASES: &[(&[&str], &str)] = &[
-	(&["ts", "tsx", "typescript", "js", "jsx", "javascript", "mjs", "cjs"], "JavaScript"),
+	(&["ts", "mts", "cts", "typescript"], "TypeScript"),
+	(&["tsx"], "TypeScriptReact"),
+	(&["js", "jsx", "javascript", "mjs", "cjs"], "JavaScript"),
 	(&["py", "python"], "Python"),
 	(&["rb", "ruby"], "Ruby"),
 	(&["jl", "julia"], "Julia"),
@@ -171,18 +201,22 @@ const LANG_ALIASES: &[(&[&str], &str)] = &[
 	(&["rs", "rust"], "Rust"),
 	(&["go", "golang"], "Go"),
 	(&["java"], "Java"),
-	(&["kt", "kotlin"], "Java"),
-	(&["swift"], "Objective-C"),
-	(&["c", "h"], "C"),
+	(&["kt", "kts", "kotlin"], "Kotlin"),
+	(&["swift"], "Swift"),
+	(&["c"], "C"),
 	(&["cpp", "cc", "cxx", "c++", "hpp", "hxx", "hh"], "C++"),
 	(&["cs", "csharp"], "C#"),
 	(&["php"], "PHP"),
 	(&["sh", "bash", "zsh", "shell"], "Bash"),
-	(&["html", "htm", "astro", "vue", "svelte"], "HTML"),
+	(&["ps1", "powershell", "pwsh"], "PowerShell"),
+	(&["html", "htm", "vue", "svelte"], "HTML"),
+	(&["astro"], "Astro"),
 	(&["css"], "CSS"),
 	(&["scss"], "SCSS"),
 	(&["sass"], "Sass"),
-	(&["less"], "LESS"),
+	// No licensed Less grammar loads in syntect (the maintained one uses
+	// `extends`); SCSS shares its nesting, `//` comments and most syntax.
+	(&["less"], "SCSS"),
 	(&["json"], "JSON"),
 	(&["yaml", "yml"], "YAML"),
 	(&["toml"], "TOML"),
@@ -194,35 +228,29 @@ const LANG_ALIASES: &[(&[&str], &str)] = &[
 	(&["scala"], "Scala"),
 	(&["clj", "clojure"], "Clojure"),
 	(&["el", "elisp", "emacs-lisp", "emacslisp"], "Lisp"),
-	(&["ex", "exs", "elixir"], "Ruby"),
+	(&["ex", "exs", "elixir"], "Elixir"),
 	(&["erl", "erlang"], "Erlang"),
 	(&["hs", "haskell"], "Haskell"),
 	(&["ml", "ocaml"], "OCaml"),
 	(&["vim"], "VimL"),
 	(&["graphql", "gql"], "GraphQL"),
-	(&["proto", "protobuf"], "Protocol Buffers"),
+	(&["proto", "protobuf"], "Protocol Buffer"),
 	(&["tf", "hcl", "terraform"], "Terraform"),
 	(&["dockerfile", "docker", "containerfile"], "Dockerfile"),
 	(&["makefile", "make", "just", "justfile"], "Makefile"),
 	(&["cmake", "cmakelists"], "CMake"),
-	(&["ini", "cfg", "conf", "config", "properties"], "INI"),
+	(&["ini", "cfg", "conf", "config"], "INI"),
 	(&["diff", "patch"], "Diff"),
 	(&["gitignore", "gitattributes", "gitmodules"], "Git Ignore"),
 ];
 
+/// Find syntax name from alias table using case-insensitive comparison.
 #[inline]
 fn find_alias(lang: &str) -> Option<&'static str> {
 	LANG_ALIASES
 		.iter()
 		.find(|(aliases, _)| aliases.iter().any(|a| lang.eq_ignore_ascii_case(a)))
 		.map(|(_, target)| *target)
-}
-
-#[inline]
-fn is_known_alias(lang: &str) -> bool {
-	LANG_ALIASES
-		.iter()
-		.any(|(aliases, _)| aliases.iter().any(|a| lang.eq_ignore_ascii_case(a)))
 }
 
 #[inline]
@@ -245,10 +273,7 @@ fn compute_scope_color(s: Scope) -> usize {
 		return 1;
 	}
 
-	if m.string.is_prefix_of(s)
-		|| m.constant_character.is_prefix_of(s)
-		|| m.meta_string.is_prefix_of(s)
-	{
+	if m.string.is_prefix_of(s) || m.constant_character.is_prefix_of(s) {
 		return 4;
 	}
 
@@ -408,17 +433,7 @@ fn highlight_into(
 			}
 			prev_end = offset;
 
-			match op {
-				ScopeStackOp::Push(scope) => {
-					scope_stack.push(scope);
-				},
-				ScopeStackOp::Pop(count) => {
-					for _ in 0..count {
-						scope_stack.pop();
-					}
-				},
-				ScopeStackOp::Restore | ScopeStackOp::Clear(_) | ScopeStackOp::Noop => {},
-			}
+			let _ = scope_stack.apply(&op);
 		}
 
 		if prev_end < line.len() {
@@ -484,16 +499,44 @@ pub fn supports_language(lang: JsString) -> Result<bool> {
 }
 
 fn supports_language_impl(lang: &str) -> bool {
-	if is_known_alias(lang) {
-		return true;
-	}
-
-	let ss = get_syntax_set();
-	find_syntax(ss, lang).is_some()
+	find_syntax(get_syntax_set(), lang).is_some()
 }
 
 #[napi(catch_unwind)]
 pub fn get_supported_languages() -> Vec<String> {
 	let ss = get_syntax_set();
-	ss.syntaxes().iter().map(|s| s.name.clone()).collect()
+	let mut seen = HashSet::new();
+	ss.syntaxes()
+		.iter()
+		.filter(|syntax| seen.insert(syntax.name.as_str()))
+		.map(|syntax| syntax.name.clone())
+		.collect()
+}
+
+#[cfg(test)]
+mod grammar_regressions {
+	use super::*;
+	#[test]
+	fn vendored_languages_parse_cross_grammar_includes() {
+		let set = get_syntax_set();
+		for (lang, code) in [
+			("pwsh", "$x = Get-Item -Path 'a' # c\n"),
+			("cmake", "cmake_minimum_required(VERSION 3.10)\n"),
+			("ex", "defmodule M do\n  def f(x), do: ~r/a+/\nend\n"),
+			("scss", "$c: #fff; a { color: $c; }\n"),
+			("toml", "[a.b]\nk = 1\n"),
+		] {
+			let syntax = find_syntax(set, lang).unwrap_or_else(|| panic!("missing {lang}"));
+			let mut parser = ParseState::new(syntax);
+			for line in syntect::util::LinesWithEndings::from(code) {
+				assert!(parser.parse_line(line, set).is_ok(), "{lang}");
+			}
+		}
+	}
+	#[test]
+	fn supported_language_names_are_unique() {
+		let names = get_supported_languages();
+		let unique: std::collections::BTreeSet<_> = names.iter().collect();
+		assert_eq!(names.len(), unique.len());
+	}
 }

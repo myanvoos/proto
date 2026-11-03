@@ -521,7 +521,9 @@ function obfuscateAssistantContentForReplay(
 			const rawBlock = block.rawBlock === undefined ? undefined : obfuscate(block.rawBlock);
 			if (args === block.arguments && intent === block.intent && rawBlock === block.rawBlock) return block;
 			changed = true;
-			return { ...block, arguments: args, intent, rawBlock };
+			return args === block.arguments
+				? { ...block, intent, rawBlock }
+				: { ...block, arguments: args, intent, rawBlock, thoughtSignature: undefined };
 		}
 		return block;
 	});

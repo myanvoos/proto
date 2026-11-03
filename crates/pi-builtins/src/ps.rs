@@ -1,11 +1,11 @@
-
+//! The `ps` process-status builtin, moved from `pi-shell`.
 
 #[cfg(unix)]
 use std::collections::HashSet;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{
 	collections::HashMap,
 	fmt::Write as _,
@@ -17,9 +17,14 @@ use brush_core::{ExecutionContext, ExecutionExitCode, ExecutionResult, builtins}
 use clap::Parser;
 use jiff::{Timestamp, fmt::strtime, tz::TimeZone};
 
+use crate::{
+	proc_select::{parse_group_list, parse_i32_list, parse_terminal_list, parse_user_list},
+	proc_snapshot::{ProcInfo, ThreadInfo},
+};
+
 #[derive(Parser)]
 #[command(disable_help_flag = true, disable_version_flag = true)]
-
+/// Implements the `ps` process-status builtin.
 pub(crate) struct PsCommand {
 	#[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
 	argv: Vec<String>,
@@ -40,6 +45,7 @@ struct PsOptions {
 	running_only:        bool,
 	no_headers:          bool,
 	custom_format:       bool,
+	threads:             bool,
 	pids:                Vec<i32>,
 	parents:             Vec<i32>,
 	groups:              Vec<i32>,
@@ -91,6 +97,8 @@ enum PsField {
 	MajorFaults,
 	CpuSeconds,
 	Size,
+	UserTime,
+	SystemTime,
 }
 
 impl PsField {
@@ -133,6 +141,8 @@ impl PsField {
 			Self::MajorFaults => "MAJFL",
 			Self::CpuSeconds => "TIME",
 			Self::Size => "SZ",
+			Self::UserTime => "UTIME",
+			Self::SystemTime => "STIME",
 		}
 	}
 
@@ -162,9 +172,24 @@ impl PsField {
 				| Self::MajorFaults
 				| Self::CpuSeconds
 				| Self::Size
+				| Self::UserTime
+				| Self::SystemTime
 		)
 	}
 }
+
+/// Columns Apple `ps -M` appends to the output format.
+const THREAD_COLUMNS: [(PsField, &str); 9] = [
+	(PsField::User, "USER"),
+	(PsField::Pid, "PID"),
+	(PsField::Tty, "TT"),
+	(PsField::CpuPercent, "%CPU"),
+	(PsField::State, "STAT"),
+	(PsField::Priority, "PRI"),
+	(PsField::SystemTime, "STIME"),
+	(PsField::UserTime, "UTIME"),
+	(PsField::Args, "COMMAND"),
+];
 
 #[derive(Clone)]
 struct PsColumn {
@@ -199,6 +224,15 @@ struct PsSort {
 	descending: bool,
 }
 
+/// How a short-flag group was written; `r` means different things in each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlagForm {
+	/// `-axr`: Unix/Apple syntax (`-r` sorts by CPU).
+	Dashed,
+	/// `axr`: BSD syntax as procps reads it (`r` selects running processes).
+	Bare,
+}
+
 enum ParsePsResult {
 	Options(Box<PsOptions>),
 	Help,
@@ -223,7 +257,7 @@ struct PsProcessRow {
 	cpu_time:      Option<Duration>,
 	virtual_size:  Option<u64>,
 	resident_size: Option<u64>,
-	threads:       Option<u32>,
+	thread_count:  Option<u32>,
 	nice:          Option<i32>,
 	priority:      Option<i32>,
 	flags:         Option<u64>,
@@ -232,10 +266,25 @@ struct PsProcessRow {
 	wchan:         Option<String>,
 	command:       String,
 	args:          String,
+	/// Filled only under `-M`; each thread becomes its own output line.
+	threads:       Vec<ThreadInfo>,
+}
+
+/// One output line: a process, or under `-M` one of its threads.
+#[derive(Clone, Copy)]
+struct PsLine<'a> {
+	row:    &'a PsProcessRow,
+	/// Thread index within the process, and its details.
+	thread: Option<(usize, &'a ThreadInfo)>,
 }
 
 impl PsProcessRow {
-	fn from_process(process: crate::proc_snapshot::ProcInfo, now: SystemTime, command_only: bool) -> Self {
+	fn from_process(
+		process: ProcInfo,
+		threads: Vec<ThreadInfo>,
+		now: SystemTime,
+		command_only: bool,
+	) -> Self {
 		let command = crate::proc_snapshot::sanitize_process_command(process.command_name());
 		let argv = process.args();
 		let args = if command_only || argv.is_empty() {
@@ -264,7 +313,7 @@ impl PsProcessRow {
 			cpu_time: process.cpu_time(),
 			virtual_size: process.virtual_bytes(),
 			resident_size: process.resident_bytes(),
-			threads: process.thread_count(),
+			thread_count: process.thread_count(),
 			nice: process.nice(),
 			priority: process.priority(),
 			flags: process.flags(),
@@ -273,13 +322,32 @@ impl PsProcessRow {
 			wchan: process.wchan(),
 			command,
 			args,
+			threads,
 		}
+	}
+
+	/// Lines this process renders as: one per thread when threads were read.
+	fn lines(&self) -> impl Iterator<Item = PsLine<'_>> {
+		let process = self
+			.threads
+			.is_empty()
+			.then_some(PsLine { row: self, thread: None });
+		let threads = self
+			.threads
+			.iter()
+			.enumerate()
+			.map(|thread| PsLine { row: self, thread: Some(thread) });
+		process.into_iter().chain(threads)
 	}
 
 	fn cpu_percent(&self) -> Option<f64> {
 		let age = self.age?.as_secs_f64();
 		let cpu_time = self.cpu_time?.as_secs_f64();
-		Some(if age > 0.0 { 100.0 * cpu_time / age } else { 0.0 })
+		Some(if age > 0.0 {
+			100.0 * cpu_time / age
+		} else {
+			0.0
+		})
 	}
 
 	fn memory_percent(&self, total_memory: Option<u64>) -> Option<f64> {
@@ -296,8 +364,9 @@ impl builtins::Command for PsCommand {
 		context: ExecutionContext<'_, SE>,
 	) -> impl Future<Output = std::result::Result<ExecutionResult, brush_core::Error>> + Send {
 		let argv = self.argv.clone();
+		let paths = context.shell.working_dir().to_path_buf();
 		async move {
-			let options = match parse_ps_args(&argv) {
+			let options = match parse_ps_args(&argv, &paths) {
 				Ok(ParsePsResult::Options(options)) => *options,
 				Ok(ParsePsResult::Help) => {
 					write_ps_help(context.stdout())?;
@@ -316,7 +385,7 @@ impl builtins::Command for PsCommand {
 				return Ok(ExecutionExitCode::Interrupted.into());
 			}
 
-			let mut processes = crate::proc_snapshot::ProcInfo::all();
+			let mut processes = ProcInfo::all();
 			let current_pid = i32::try_from(std::process::id()).ok();
 			let current =
 				current_pid.and_then(|pid| processes.iter().find(|process| process.pid() == pid));
@@ -325,8 +394,8 @@ impl builtins::Command for PsCommand {
 					.effective_user_id()
 					.or_else(|| process.real_user_id())
 			});
-			let current_terminal = current.and_then(crate::proc_snapshot::ProcInfo::terminal_id);
-			let current_session = current.and_then(crate::proc_snapshot::ProcInfo::session_id);
+			let current_terminal = current.and_then(ProcInfo::terminal_id);
+			let current_session = current.and_then(ProcInfo::session_id);
 			processes.retain(|process| {
 				ps_process_selected(
 					process,
@@ -338,17 +407,30 @@ impl builtins::Command for PsCommand {
 				)
 			});
 
+			let mut threads = if options.threads {
+				crate::proc_snapshot::threads_by_pid(&processes)
+			} else {
+				HashMap::new()
+			};
 			let now = SystemTime::now();
 			let mut rows: Vec<_> = processes
 				.into_iter()
-				.map(|process| PsProcessRow::from_process(process, now, options.command_only))
+				.map(|process| {
+					let threads = threads.remove(&process.pid()).unwrap_or_default();
+					PsProcessRow::from_process(process, threads, now, options.command_only)
+				})
 				.collect();
+			// Filtered on the row's own read: a second read of a live state can
+			// disagree with the STAT column it prints.
+			if options.running_only {
+				rows.retain(|row| row.state == 'R');
+			}
 			sort_ps_rows(&mut rows, &options.sort);
 			let columns = ps_columns(&options);
 			let output = render_ps_table(&rows, &columns, options.no_headers);
 			if let Err(err) = write!(context.stdout(), "{output}") {
 				if err.kind() == io::ErrorKind::BrokenPipe {
-					return Ok(ExecutionResult::success());
+					return Ok(ExecutionResult::new(crate::host::SIGPIPE_EXIT_CODE as u8));
 				}
 				return Err(err.into());
 			}
@@ -361,132 +443,10 @@ impl builtins::Command for PsCommand {
 	}
 }
 
-fn parse_i32_list(value: &str, target: &mut Vec<i32>) -> std::result::Result<(), (u8, String)> {
-	for item in value.split(',') {
-		let parsed = item
-			.parse::<i32>()
-			.map_err(|_| (2, format!("invalid numeric selector '{item}'")))?;
-		target.push(parsed);
-	}
-	Ok(())
-}
-
-fn parse_user_list(value: &str, target: &mut Vec<u32>) -> std::result::Result<(), (u8, String)> {
-	for item in value.split(',') {
-		target.push(resolve_user(item).ok_or_else(|| (2, format!("unknown user '{item}'")))?);
-	}
-	Ok(())
-}
-
-fn parse_group_list(value: &str, target: &mut Vec<u32>) -> std::result::Result<(), (u8, String)> {
-	for item in value.split(',') {
-		target.push(resolve_group(item).ok_or_else(|| (2, format!("unknown group '{item}'")))?);
-	}
-	Ok(())
-}
-
-#[cfg(unix)]
-fn resolve_user(value: &str) -> Option<u32> {
-	use std::ffi::CString;
-	if let Ok(id) = value.parse() {
-		return Some(id);
-	}
-	let name = CString::new(value).ok()?;
-	let mut record = std::mem::MaybeUninit::<libc::passwd>::zeroed();
-	let mut result = std::ptr::null_mut();
-	let mut buffer = vec![0u8; 16 * 1024];
-
-	let status = unsafe {
-		libc::getpwnam_r(
-			name.as_ptr(),
-			record.as_mut_ptr(),
-			buffer.as_mut_ptr().cast(),
-			buffer.len(),
-			&raw mut result,
-		)
-	};
-	if status != 0 || result.is_null() {
-		return None;
-	}
-
-	Some(unsafe { record.assume_init() }.pw_uid)
-}
-
-#[cfg(not(unix))]
-fn resolve_user(value: &str) -> Option<u32> {
-	value.parse().ok()
-}
-
-#[cfg(unix)]
-fn resolve_group(value: &str) -> Option<u32> {
-	use std::ffi::CString;
-	if let Ok(id) = value.parse() {
-		return Some(id);
-	}
-	let name = CString::new(value).ok()?;
-	let mut record = std::mem::MaybeUninit::<libc::group>::zeroed();
-	let mut result = std::ptr::null_mut();
-	let mut buffer = vec![0u8; 16 * 1024];
-
-	let status = unsafe {
-		libc::getgrnam_r(
-			name.as_ptr(),
-			record.as_mut_ptr(),
-			buffer.as_mut_ptr().cast(),
-			buffer.len(),
-			&raw mut result,
-		)
-	};
-	if status != 0 || result.is_null() {
-		return None;
-	}
-
-	Some(unsafe { record.assume_init() }.gr_gid)
-}
-
-#[cfg(not(unix))]
-fn resolve_group(value: &str) -> Option<u32> {
-	value.parse().ok()
-}
-
-fn parse_terminal_list(
-	value: &str,
-	target: &mut Vec<Option<u64>>,
-) -> std::result::Result<(), (u8, String)> {
-	for item in value.split(',') {
-		if matches!(item, "?" | "-") {
-			target.push(None);
-		} else if let Some(id) = resolve_terminal(item) {
-			target.push(Some(id));
-		} else if let Ok(id) = item.parse() {
-			target.push(Some(id));
-		} else {
-			return Err((2, format!("unknown terminal '{item}'")));
-		}
-	}
-	Ok(())
-}
-
-#[cfg(unix)]
-fn resolve_terminal(value: &str) -> Option<u64> {
-	use std::os::unix::fs::MetadataExt;
-	let primary = if value.starts_with('/') {
-		PathBuf::from(value)
-	} else {
-		Path::new("/dev").join(value)
-	};
-	fs::metadata(&primary)
-		.or_else(|_| fs::metadata(Path::new("/dev").join(format!("tty{value}"))))
-		.ok()
-		.map(|metadata| metadata.rdev())
-}
-
-#[cfg(not(unix))]
-fn resolve_terminal(_value: &str) -> Option<u64> {
-	None
-}
-
-fn parse_ps_args(argv: &[String]) -> std::result::Result<ParsePsResult, (u8, String)> {
+fn parse_ps_args(
+	argv: &[String],
+	paths: &std::path::Path,
+) -> std::result::Result<ParsePsResult, (u8, String)> {
 	let mut options = PsOptions::default();
 	let mut index = 0;
 	let mut options_done = false;
@@ -534,7 +494,7 @@ fn parse_ps_args(argv: &[String]) -> std::result::Result<ParsePsResult, (u8, Str
 			},
 			_ if arg == "--tty" || arg.starts_with("--tty=") => {
 				let value = take_ps_value(argv, &mut index, arg.strip_prefix("--tty="), "--tty")?;
-				parse_terminal_list(&value, &mut options.terminals)?;
+				parse_terminal_list(&value, &mut options.terminals, paths)?;
 			},
 			_ if arg == "--format" || arg.starts_with("--format=") => {
 				let value = take_ps_value(argv, &mut index, arg.strip_prefix("--format="), "--format")?;
@@ -545,12 +505,15 @@ fn parse_ps_args(argv: &[String]) -> std::result::Result<ParsePsResult, (u8, Str
 				let value = take_ps_value(argv, &mut index, arg.strip_prefix("--sort="), "--sort")?;
 				parse_ps_sort(&value, &mut options.sort)?;
 			},
+			_ if let Some(long) = arg.strip_prefix("--") => {
+				let name = long.split_once('=').map_or(long, |(name, _)| name);
+				return Err(unsupported_option(&format!("unrecognized option '--{name}'")));
+			},
 			_ if let Some(group) = arg.strip_prefix('-') => {
 				if group.is_empty() {
 					return Err((1, "invalid option '-'".to_string()));
 				}
-				let bsd = group.contains('x');
-				parse_ps_flag_group(group, bsd, argv, &mut index, &mut options)?;
+				parse_ps_flag_group(group, FlagForm::Dashed, argv, &mut index, &mut options, paths)?;
 			},
 			_ if arg
 				.chars()
@@ -559,7 +522,7 @@ fn parse_ps_args(argv: &[String]) -> std::result::Result<ParsePsResult, (u8, Str
 				parse_i32_list(arg, &mut options.pids)?;
 			},
 			_ if arg.chars().all(|character| character.is_ascii_alphabetic()) => {
-				parse_ps_flag_group(arg, true, argv, &mut index, &mut options)?;
+				parse_ps_flag_group(arg, FlagForm::Bare, argv, &mut index, &mut options, paths)?;
 			},
 			_ => return Err((1, format!("unsupported operand '{arg}'"))),
 		}
@@ -590,19 +553,18 @@ fn take_ps_value(
 
 fn parse_ps_flag_group(
 	group: &str,
-	bsd: bool,
+	form: FlagForm,
 	argv: &[String],
 	index: &mut usize,
 	options: &mut PsOptions,
+	paths: &std::path::Path,
 ) -> std::result::Result<(), (u8, String)> {
+	let bsd = form == FlagForm::Bare || group.contains('x');
 	if bsd {
 		options.bsd_syntax = true;
 	}
-	let mut offset = 0;
-	while offset < group.len() {
-		let option = group.as_bytes()[offset] as char;
-		offset += 1;
-		let remainder = &group[offset..];
+	for (start, option) in group.char_indices() {
+		let remainder = &group[start + option.len_utf8()..];
 		match option {
 			'A' => options.all = true,
 			'e' if !bsd => options.all = true,
@@ -619,8 +581,27 @@ fn parse_ps_flag_group(
 			'u' if bsd => options.user_format = true,
 			'w' => {},
 			'c' => options.command_only = true,
+			'r' if form == FlagForm::Dashed => {
+				options
+					.sort
+					.push(PsSort { field: PsSortField::Cpu, descending: true });
+			},
 			'r' => options.running_only = true,
+			'm' if form == FlagForm::Dashed => {
+				options
+					.sort
+					.push(PsSort { field: PsSortField::Mem, descending: true });
+			},
 			'h' => options.no_headers = true,
+			'M' => {
+				options.threads = true;
+				options.custom_format = true;
+				options.columns.extend(
+					THREAD_COLUMNS
+						.iter()
+						.map(|&(field, header)| PsColumn::with_header(field, header)),
+				);
+			},
 			'o' => {
 				let value =
 					take_ps_value(argv, index, (!remainder.is_empty()).then_some(remainder), "-o")?;
@@ -659,7 +640,7 @@ fn parse_ps_flag_group(
 			't' => {
 				let value =
 					take_ps_value(argv, index, (!remainder.is_empty()).then_some(remainder), "-t")?;
-				parse_terminal_list(&value, &mut options.terminals)?;
+				parse_terminal_list(&value, &mut options.terminals, paths)?;
 				return Ok(());
 			},
 			'u' => {
@@ -680,10 +661,21 @@ fn parse_ps_flag_group(
 				parse_group_list(&value, &mut options.real_groups)?;
 				return Ok(());
 			},
-			_ => return Err((1, format!("unsupported option '-{option}'"))),
+			_ => return Err(unsupported_option(&format!("unsupported option '-{option}'"))),
 		}
 	}
 	Ok(())
+}
+
+/// Appended to every unsupported-option error: this `ps` covers a subset of
+/// procps. In the embedded shell `command ps` and `env ps` still run this
+/// builtin, so only a full path reaches a host `ps`, and not every host has
+/// one.
+const SYSTEM_PS_HINT: &str = "this ps supports a subset of procps options (see 'ps --help'); a \
+                              system ps, if installed, may support more when run by its full path";
+
+fn unsupported_option(message: &str) -> (u8, String) {
+	(1, format!("{message}; {SYSTEM_PS_HINT}"))
 }
 
 fn parse_ps_format(
@@ -778,16 +770,13 @@ fn parse_ps_sort(value: &str, sort: &mut Vec<PsSort>) -> std::result::Result<(),
 }
 
 fn ps_process_selected(
-	process: &crate::proc_snapshot::ProcInfo,
+	process: &ProcInfo,
 	options: &PsOptions,
 	current_pid: Option<i32>,
 	current_user: Option<u32>,
 	current_terminal: Option<u64>,
 	current_session: Option<i32>,
 ) -> bool {
-	if options.running_only && process.state() != 'R' {
-		return false;
-	}
 	let has_selectors = !options.pids.is_empty()
 		|| !options.parents.is_empty()
 		|| !options.groups.is_empty()
@@ -979,28 +968,37 @@ fn render_ps_table(rows: &[PsProcessRow], columns: &[PsColumn], no_headers: bool
 	if has_field(PsField::User) || has_field(PsField::Ruser) {
 		let uids = rows.iter().flat_map(|row| [row.user, row.ruid]).flatten();
 		for uid in uids {
-			user_names
-				.entry(uid)
-				.or_insert_with(|| ps_user_name(uid).unwrap_or_else(|| uid.to_string()));
+			user_names.entry(uid).or_insert_with(|| {
+				#[cfg(unix)]
+				let name = uucore::entries::uid2usr(uid).ok();
+				#[cfg(not(unix))]
+				let name: Option<String> = None;
+				name.unwrap_or_else(|| uid.to_string())
+			});
 		}
 	}
 	let mut group_names = HashMap::new();
 	if has_field(PsField::Rgroup) || has_field(PsField::Egroup) {
 		let gids = rows.iter().flat_map(|row| [row.rgid, row.egid]).flatten();
 		for gid in gids {
-			group_names
-				.entry(gid)
-				.or_insert_with(|| ps_group_name(gid).unwrap_or_else(|| gid.to_string()));
+			group_names.entry(gid).or_insert_with(|| {
+				#[cfg(unix)]
+				let name = uucore::entries::gid2grp(gid).ok();
+				#[cfg(not(unix))]
+				let name: Option<String> = None;
+				name.unwrap_or_else(|| gid.to_string())
+			});
 		}
 	}
 	let values: Vec<Vec<String>> = rows
 		.iter()
-		.map(|row| {
+		.flat_map(PsProcessRow::lines)
+		.map(|line| {
 			columns
 				.iter()
 				.map(|column| {
 					render_ps_value(
-						row,
+						line,
 						column.field,
 						total_memory,
 						timezone.as_ref(),
@@ -1060,7 +1058,7 @@ fn write_ps_line<'a>(
 }
 
 fn render_ps_value(
-	row: &PsProcessRow,
+	line: PsLine<'_>,
 	field: PsField,
 	total_memory: Option<u64>,
 	timezone: Option<&TimeZone>,
@@ -1068,6 +1066,12 @@ fn render_ps_value(
 	user_names: &HashMap<u32, String>,
 	group_names: &HashMap<u32, String>,
 ) -> String {
+	if let Some((index, thread)) = line.thread
+		&& let Some(value) = render_ps_thread_value(index, thread, field)
+	{
+		return value;
+	}
+	let row = line.row;
 	match field {
 		PsField::User => row
 			.user
@@ -1129,7 +1133,7 @@ fn render_ps_value(
 			.nice
 			.map_or_else(|| "?".to_string(), |value| value.to_string()),
 		PsField::Threads => row
-			.threads
+			.thread_count
 			.map_or_else(|| "?".to_string(), |value| value.to_string()),
 		PsField::Priority => row
 			.priority
@@ -1174,7 +1178,34 @@ fn render_ps_value(
 			.map_or_else(|| "?".to_string(), |(bytes, page)| bytes.div_ceil(page).to_string()),
 		PsField::Command => row.command.clone(),
 		PsField::Args => row.args.clone(),
+		// Only threads split CPU time into user and system.
+		PsField::UserTime | PsField::SystemTime => "?".to_string(),
 	}
+}
+
+/// Thread-scoped `-M` values, as Apple `ps` prints them: USER, TT and the
+/// command only on a process's first thread line; scheduler columns per
+/// thread. `None` falls through to the process-wide value.
+fn render_ps_thread_value(index: usize, thread: &ThreadInfo, field: PsField) -> Option<String> {
+	let known = |value: Option<String>| value.unwrap_or_else(|| "?".to_string());
+	Some(match field {
+		PsField::User | PsField::Tty | PsField::Command | PsField::Args if index > 0 => String::new(),
+		PsField::State => thread.state.to_string(),
+		PsField::CpuPercent => known(thread.cpu_percent.map(|percent| format!("{percent:.1}"))),
+		PsField::Priority => known(thread.priority.map(|priority| match thread.policy {
+			Some(policy) => format!("{priority}{policy}"),
+			None => priority.to_string(),
+		})),
+		PsField::UserTime => known(thread.user_time.map(format_ps_thread_time)),
+		PsField::SystemTime => known(thread.system_time.map(format_ps_thread_time)),
+		_ => return None,
+	})
+}
+
+/// CPU time as `M:SS.cc`, Apple `ps`'s UTIME/STIME format.
+fn format_ps_thread_time(time: Duration) -> String {
+	let centis = (time.as_micros() + 5_000) / 10_000;
+	format!("{}:{:02}.{:02}", centis / 6_000, centis / 100 % 60, centis % 100)
 }
 
 fn format_ps_state(row: &PsProcessRow) -> String {
@@ -1187,7 +1218,9 @@ fn format_ps_state(row: &PsProcessRow) -> String {
 	if row.sid == Some(row.pid) {
 		state.push('s');
 	}
-	if row.threads.is_some_and(|threads| threads > 1) {
+	// procps marks multithreaded processes; Apple `ps` has no such flag.
+	#[cfg(not(target_os = "macos"))]
+	if row.thread_count.is_some_and(|threads| threads > 1) {
 		state.push('l');
 	}
 	if row.terminal.is_some() && row.tpgid.is_some() && row.tpgid == row.pgid {
@@ -1261,8 +1294,8 @@ fn ps_total_memory_bytes() -> Option<u64> {
 fn ps_total_memory_bytes() -> Option<u64> {
 	let mut value = 0_u64;
 	let mut size = std::mem::size_of::<u64>();
-
-
+	// SAFETY: the output pointer names a writable u64 and `size` reports its
+	// exact capacity; hw.memsize has no input buffer.
 	let status = unsafe {
 		libc::sysctlbyname(
 			c"hw.memsize".as_ptr(),
@@ -1275,71 +1308,15 @@ fn ps_total_memory_bytes() -> Option<u64> {
 	(status == 0 && size == std::mem::size_of::<u64>()).then_some(value)
 }
 
-
-#[cfg(unix)]
-fn ps_user_name(uid: u32) -> Option<String> {
-	use std::ffi::CStr;
-	let mut record = std::mem::MaybeUninit::<libc::passwd>::zeroed();
-	let mut result = std::ptr::null_mut();
-	let mut buffer = vec![0_u8; 16 * 1024];
-
-
-	let status = unsafe {
-		libc::getpwuid_r(
-			uid,
-			record.as_mut_ptr(),
-			buffer.as_mut_ptr().cast(),
-			buffer.len(),
-			&raw mut result,
-		)
-	};
-	if status != 0 || result.is_null() {
-		return None;
-	}
-
-	let name = unsafe { CStr::from_ptr(record.assume_init().pw_name) };
-	Some(name.to_string_lossy().into_owned())
-}
-
-#[cfg(not(unix))]
-fn ps_user_name(_uid: u32) -> Option<String> {
+#[cfg(target_os = "windows")]
+fn ps_total_memory_bytes() -> Option<u64> {
 	None
 }
 
-#[cfg(unix)]
-fn ps_group_name(gid: u32) -> Option<String> {
-	use std::ffi::CStr;
-	let mut record = std::mem::MaybeUninit::<libc::group>::zeroed();
-	let mut result = std::ptr::null_mut();
-	let mut buffer = vec![0_u8; 16 * 1024];
-
-
-	let status = unsafe {
-		libc::getgrgid_r(
-			gid,
-			record.as_mut_ptr(),
-			buffer.as_mut_ptr().cast(),
-			buffer.len(),
-			&raw mut result,
-		)
-	};
-	if status != 0 || result.is_null() {
-		return None;
-	}
-
-	let name = unsafe { CStr::from_ptr(record.assume_init().gr_name) };
-	Some(name.to_string_lossy().into_owned())
-}
-
-#[cfg(not(unix))]
-fn ps_group_name(_gid: u32) -> Option<String> {
-	None
-}
-
-
+/// System memory page size in bytes, used for the SZ (pages) column.
 #[cfg(unix)]
 fn ps_page_size() -> Option<u64> {
-
+	// SAFETY: sysconf reads a process-global constant.
 	u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
 		.ok()
 		.filter(|value| *value > 0)
@@ -1393,30 +1370,174 @@ fn write_ps_help(mut output: impl Write) -> io::Result<()> {
 		 LIST     select effective users\n-U, --User LIST     select real users\n-t, --tty LIST      \
 		 select terminals\n\nOutput:\n-f                  full format\n-l                  long \
 		 format\n-o, --format LIST   custom columns\n--sort LIST     sort by columns; prefix \
-		 descending keys with '-'\n--no-headers    omit column headings\n\nBSD forms such as 'ps \
+		 descending keys with '-'\n-r                  sort by CPU usage, highest first\n-m                  \
+		 sort by memory usage, highest first\n--no-headers    omit column headings\n-M                  one \
+		 line per thread (USER PID TT %CPU STAT PRI STIME UTIME COMMAND)\n\nBSD forms such as 'ps \
 		 ax', 'ps aux', and 'ps axo pid,command' are supported."
 	)
 }
 
-
-
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
 	use super::*;
 
 	#[test]
-	fn zero_elapsed_time_reports_zero_cpu_instead_of_unknown() {
-		let process = crate::proc_snapshot::ProcInfo::all()
-			.into_iter()
-			.find(|process| process.pid() == std::process::id() as i32)
+	fn parses_output_field_lists_and_overrides() {
+		let argv = vec!["-o".to_string(), "pid:8=PROCESS,user,args=COMMAND".to_string()];
+		let ParsePsResult::Options(options) =
+			parse_ps_args(&argv, &std::path::PathBuf::default()).expect("valid output fields")
+		else {
+			panic!("expected parsed options");
+		};
+
+		assert!(options.custom_format);
+		assert_eq!(options.columns.len(), 3);
+		assert!(matches!(options.columns[0].field, PsField::Pid));
+		assert_eq!(options.columns[0].header, "PROCESS");
+		assert_eq!(options.columns[0].min_width, 8);
+		assert!(matches!(options.columns[1].field, PsField::User));
+		assert_eq!(options.columns[1].header, "USER");
+		assert!(matches!(options.columns[2].field, PsField::Args));
+		assert_eq!(options.columns[2].header, "COMMAND");
+	}
+
+	#[test]
+	fn rejects_unknown_output_field() {
+		let error = parse_ps_format("pid,definitely_not_a_field", &mut Vec::new())
+			.expect_err("unknown fields must fail");
+		assert_eq!(
+			error,
+			(1, "unknown output format specifier 'definitely_not_a_field'".to_string())
+		);
+	}
+
+	#[test]
+	fn dashed_r_sorts_by_cpu_while_bare_r_selects_running() {
+		for argv in [&["-Ao", "pid,comm", "-r"][..], &["-axr"][..]] {
+			let argv: Vec<String> = argv.iter().map(ToString::to_string).collect();
+			let ParsePsResult::Options(options) =
+				parse_ps_args(&argv, &std::path::PathBuf::default()).expect("valid -r")
+			else {
+				panic!("expected parsed options");
+			};
+			assert!(!options.running_only, "{argv:?}");
+			assert!(matches!(options.sort[..], [PsSort {
+				field:      PsSortField::Cpu,
+				descending: true,
+			}]));
+		}
+
+		let ParsePsResult::Options(options) =
+			parse_ps_args(&["axr".to_string()], &std::path::PathBuf::default()).expect("valid bare r")
+		else {
+			panic!("expected parsed options");
+		};
+		assert!(options.running_only);
+		assert!(options.sort.is_empty());
+	}
+
+	#[test]
+	fn unknown_options_name_themselves_and_point_at_system_ps() {
+		for (args, named) in [
+			(&["-eo", "pid,args", "--forest"][..], "unrecognized option '--forest'"),
+			(&["--cols=200", "-e"][..], "unrecognized option '--cols'"),
+			(&["-eH"][..], "unsupported option '-H'"),
+		] {
+			let argv: Vec<String> = args.iter().map(ToString::to_string).collect();
+			let Err((code, message)) = parse_ps_args(&argv, &std::path::PathBuf::default()) else {
+				panic!("{args:?} must be rejected");
+			};
+			assert_eq!(code, 1, "{args:?}");
+			let hint = message
+				.strip_prefix(named)
+				.and_then(|rest| rest.strip_prefix("; "))
+				.unwrap_or_else(|| panic!("{args:?}: {message:?} must start with {named:?}"));
+			assert!(hint.contains("'ps --help'"), "{args:?}: {message:?}");
+			assert!(hint.contains("system ps"), "{args:?}: {message:?}");
+			assert!(hint.contains("full path"), "{args:?}: {message:?}");
+		}
+	}
+
+	#[test]
+	fn parses_sort_keys_and_directions() {
+		let mut sort = Vec::new();
+		parse_ps_sort("-pcpu,+pid command", &mut sort).expect("valid sort keys");
+		assert_eq!(sort.len(), 3);
+		assert!(matches!(sort[0].field, PsSortField::Cpu));
+		assert!(sort[0].descending);
+		assert!(matches!(sort[1].field, PsSortField::Pid));
+		assert!(!sort[1].descending);
+		assert!(matches!(sort[2].field, PsSortField::Command));
+		assert!(!sort[2].descending);
+
+		let error = parse_ps_sort("bogus", &mut Vec::new()).expect_err("unknown keys must fail");
+		assert_eq!(error, (1, "unknown sort specifier 'bogus'".to_string()));
+	}
+
+	#[test]
+	fn formats_elapsed_time_boundaries() {
+		assert_eq!(format_ps_elapsed(Duration::from_secs(0)), "00:00");
+		assert_eq!(format_ps_elapsed(Duration::from_secs(65)), "01:05");
+		assert_eq!(format_ps_elapsed(Duration::from_secs(3_661)), "01:01:01");
+		assert_eq!(format_ps_elapsed(Duration::from_secs(90_061)), "1-01:01:01");
+	}
+
+	#[test]
+	fn formats_thread_time_with_centisecond_rounding() {
+		assert_eq!(format_ps_thread_time(Duration::from_micros(4_999)), "0:00.00");
+		assert_eq!(format_ps_thread_time(Duration::from_micros(5_000)), "0:00.01");
+		assert_eq!(format_ps_thread_time(Duration::from_micros(59_995_000)), "1:00.00");
+		assert_eq!(format_ps_thread_time(Duration::from_secs(3_725)), "62:05.00");
+	}
+
+	#[test]
+	fn formats_start_time_by_age() {
+		let started_at = UNIX_EPOCH
+			.checked_add(Duration::from_secs(1_704_164_640))
 			.unwrap();
-		let mut row = PsProcessRow::from_process(process, SystemTime::now(), false);
-		row.age = Some(Duration::ZERO);
-		row.cpu_time = Some(Duration::from_secs(1));
-		assert_eq!(row.cpu_percent(), Some(0.0));
-		row.age = Some(Duration::from_secs(2));
-		assert_eq!(row.cpu_percent(), Some(50.0));
-		row.age = None;
-		assert_eq!(row.cpu_percent(), None);
+		assert_eq!(
+			format_ps_start(Some(started_at), Some(Duration::from_secs(60)), &TimeZone::UTC, false),
+			"03:04"
+		);
+		assert_eq!(
+			format_ps_start(
+				Some(started_at),
+				Some(Duration::from_secs(24 * 60 * 60)),
+				&TimeZone::UTC,
+				false,
+			),
+			"Jan02"
+		);
+		assert_eq!(
+			format_ps_start(
+				Some(started_at),
+				Some(Duration::from_secs(180 * 24 * 60 * 60)),
+				&TimeZone::UTC,
+				false,
+			),
+			"2024"
+		);
+		assert_eq!(
+			format_ps_start(Some(started_at), None, &TimeZone::UTC, true),
+			"Tue Jan  2 03:04:00 2024"
+		);
+		assert_eq!(format_ps_start(None, None, &TimeZone::UTC, false), "?");
+	}
+
+	#[test]
+	fn non_ascii_option_in_a_cluster_is_reported_not_a_panic() {
+		for (arg, message) in [
+			("-é", "unsupported option '-é'"),
+			("-eé", "unsupported option '-é'"),
+			// `-o` takes the rest of the cluster, here `é`, as its value.
+			("-eoé", "unknown output format specifier 'é'"),
+		] {
+			let Err((code, error)) = parse_ps_args(&[arg.to_string()], &std::path::PathBuf::default())
+			else {
+				panic!("{arg:?} must be rejected");
+			};
+			assert_eq!(code, 1, "{arg:?}");
+			assert!(error.starts_with(message), "{arg:?}: {error}");
+		}
 	}
 }

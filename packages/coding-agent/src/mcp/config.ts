@@ -113,6 +113,8 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		suppress: suppressServer,
 	});
 
+	for (const warning of result.warnings) logger.warn(warning);
+
 	let configs: Record<string, MCPServerConfig> = {};
 	let sources: Record<string, SourceMeta> = {};
 	for (const server of result.items) {

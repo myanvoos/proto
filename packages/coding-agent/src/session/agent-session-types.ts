@@ -88,10 +88,13 @@ export interface InitialRetryFallbackState {
 }
 
 export interface AgentSessionConfig {
+	/** Defer IRC wake turns until the owning executor admits its initial assignment. */
+	awaitingAssignment?: boolean;
 	agent: Agent;
 
 	sessionManager: SessionManager;
 	settings: Settings;
+	allowSessionModelFallback?: boolean;
 
 	scoutAllowedBySpawnPolicy?: boolean;
 	/** Resolved worker authority, retained by side-session clones. */
@@ -149,6 +152,8 @@ export interface AgentSessionConfig {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+	/** Creates isolated per-reviewer context state (for example date/cwd injection). */
+	createAdvisorTransformProviderContext?: () => (context: Context, model: Model) => Context | Promise<Context>;
 
 	sideStreamFn?: StreamFn;
 
@@ -184,6 +189,7 @@ export interface AgentSessionConfig {
 	requiredToolNames?: ReadonlySet<string>;
 
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
+	setMcpServerInstructionsSource?: (source: (() => Map<string, string> | undefined) | undefined) => void;
 
 	ttsrManager?: TtsrManager;
 
@@ -245,6 +251,12 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 
 	skipCompactionCheck?: boolean;
+
+	/** Runs synchronously when this submission owns queued messages. */
+	onPromptQueued?: (messages: readonly AgentMessage[]) => void;
+
+	/** Runs once a submission has queued or started setting up its turn. */
+	onPromptAdmitted?: () => void;
 }
 
 export interface DroppedPrompt {
@@ -259,12 +271,14 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 
 	attribution?: MessageAttribution;
+	onPromptQueued?: PromptOptions["onPromptQueued"];
 }
 
 /** Options for AgentSession.steer(). */
 export interface SteerOptions {
 	/** Who initiated the steer; defaults to "user". Host and parent-agent steers pass "agent". */
 	attribution?: MessageAttribution;
+	onPromptQueued?: PromptOptions["onPromptQueued"];
 }
 
 /** Options for AgentSession.sendUserMessage() and the extension `sendUserMessage` API. */

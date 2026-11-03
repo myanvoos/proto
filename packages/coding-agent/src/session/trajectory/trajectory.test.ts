@@ -79,3 +79,22 @@ test("trajectory step keeps reasoning for the interactive view while text stays 
 	expect(chat?.content).toContain("[thinking]\nI should check the file contents first.");
 	expect(chat?.text).toBe("Let me look at the file.");
 });
+
+test("trajectory exports block-array session init prompts as readable text instead of failing string parsing", () => {
+	const trajectory = buildTrajectory([
+		{
+			type: "session_init",
+			id: "init",
+			parentId: null,
+			timestamp: "2026-11-03T00:00:00.000Z",
+			systemPrompt: ["Policy block", "Workspace block"],
+			task: "Inspect workspace",
+			tools: [],
+		},
+	]);
+	expect(trajectory.steps[0]).toMatchObject({
+		kind: "session_init",
+		preview: "Policy block",
+		content: "Policy block\n\nWorkspace block",
+	});
+});

@@ -1,3 +1,4 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 
@@ -21,11 +22,13 @@ export interface AuthAccountPolicy {
 	readonly priority?: number;
 	/** Protected remaining quota percentage for this account. */
 	readonly reservePct?: number;
+	/** Remaining quota threshold for reclaiming lower-priority automatic pins; must exceed the reserve. */
+	readonly reclaimAbovePct?: number;
 }
 
 export type AuthAccountPolicies = readonly AuthAccountPolicy[];
 
-const POLICY_FIELDS = new Set(["provider", "account", "priority", "reservePct"]);
+const POLICY_FIELDS = new Set(["provider", "account", "priority", "reservePct", "reclaimAbovePct"]);
 const SELECTOR_FIELDS = ["email", "accountId", "projectId", "orgId"] as const;
 const BASE_IDENTITY_FIELDS = ["email", "accountId", "projectId"] as const;
 
@@ -78,6 +81,7 @@ export function parseAuthAccountPolicies(value: unknown): AuthAccountPolicies {
 			account: selector,
 			...(policy.priority === undefined ? {} : { priority: policy.priority as number }),
 			...(policy.reservePct === undefined ? {} : { reservePct: policy.reservePct as number }),
+			...(policy.reclaimAbovePct === undefined ? {} : { reclaimAbovePct: policy.reclaimAbovePct as number }),
 		};
 		validateAuthAccountPolicy(parsed, index);
 		return parsed;
@@ -135,6 +139,7 @@ export function parseUsageReservePct(value: unknown): number {
 /** Validated per-account routing policies (priority/reserve) plus the global reserve fallback. */
 export class AccountPolicies {
 	readonly #policies: AuthAccountPolicies;
+	#warnedUnmatched = new Set<number>();
 	readonly defaultReservePct: number;
 
 	constructor(policies: AuthAccountPolicies = [], defaultReservePct?: number) {
@@ -144,6 +149,15 @@ export class AccountPolicies {
 			typeof defaultReservePct === "number" && Number.isFinite(defaultReservePct)
 				? Math.max(0, Math.min(100, defaultReservePct))
 				: DEFAULT_USAGE_RESERVE_PCT;
+		for (const [index, policy] of policies.entries()) {
+			const threshold = policy.reclaimAbovePct;
+			const reserve = policy.reservePct ?? this.defaultReservePct;
+			if (threshold !== undefined && (!Number.isFinite(threshold) || threshold <= reserve || threshold > 100)) {
+				throw new AIError.ConfigurationError(
+					`auth.accountPolicies[${index}].reclaimAbovePct must be a finite number above the account's reserve (${reserve}%) and at most 100`,
+				);
+			}
+		}
 	}
 
 	/** Whether any policy targets `provider`. */
@@ -153,17 +167,17 @@ export class AccountPolicies {
 
 	/** A reserve override needs a usage source for its provider; fail closed instead of silently ignoring it. */
 	validateUsageCapability(provider: string, canFetchUsage: boolean): void {
-		const policyIndex = this.#policies.findIndex(
-			policy => policy.provider === provider && policy.reservePct !== undefined,
-		);
-		if (policyIndex !== -1 && !canFetchUsage) {
-			throw new AIError.ConfigurationError(
-				`auth.accountPolicies[${policyIndex}].reservePct requires a usage provider for ${provider}`,
-			);
+		if (canFetchUsage) return;
+		for (const field of ["reservePct", "reclaimAbovePct"] as const) {
+			const index = this.#policies.findIndex(policy => policy.provider === provider && policy[field] !== undefined);
+			if (index !== -1)
+				throw new AIError.ConfigurationError(
+					`auth.accountPolicies[${index}].${field} requires a usage provider for ${provider}`,
+				);
 		}
 	}
 
-	/** Every policy for `provider` must match exactly one stored OAuth account, and no two policies the same one. */
+	/** Absent accounts are inert; ambiguous or overlapping selectors remain errors. */
 	validateFor(provider: string, credentials: readonly { type: string }[]): void {
 		const policies = this.#policies
 			.map((policy, index) => ({ policy, index }))
@@ -184,7 +198,11 @@ export class AccountPolicies {
 			}
 			const path = `auth.accountPolicies[${index}].account`;
 			if (matches.length === 0) {
-				throw new AIError.ConfigurationError(`${path} matches no stored OAuth account for ${provider}`);
+				if (!this.#warnedUnmatched.has(index)) {
+					this.#warnedUnmatched.add(index);
+					logger.warn("Account policy matches no stored OAuth account; ignoring it", { provider, path });
+				}
+				continue;
 			}
 			if (matches.length > 1) {
 				throw new AIError.ConfigurationError(

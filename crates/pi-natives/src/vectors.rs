@@ -161,18 +161,24 @@ const fn is_js_whitespace(c: char) -> bool {
 	)
 }
 
+/// Lowercased word set per the TS `jaccardSimilarity` tokenizer:
+/// `text.toLowerCase().split(/\s+/).filter(Boolean)` into a `Set`.
+/// Returned sorted and deduplicated for merge-based intersection counting.
 fn word_set(text: &str) -> Vec<Box<str>> {
 	let lower = text.to_lowercase();
-	let mut words: Vec<Box<str>> = lower
+	let mut words: Vec<&str> = lower
 		.split(is_js_whitespace)
 		.filter(|w| !w.is_empty())
-		.map(Box::from)
 		.collect();
 	words.sort_unstable();
 	words.dedup();
-	words
+	// Only distinct words need owned storage after `lower` is dropped.
+	words.into_iter().map(Box::from).collect()
 }
 
+/// Jaccard similarity of two sorted, deduplicated word sets. Matches the TS
+/// `jaccardSimilarity`: `0` when either set is empty, otherwise
+/// `|A ∩ B| / (|A| + |B| - |A ∩ B|)` with exact integer counts.
 fn jaccard_sorted(a: &[Box<str>], b: &[Box<str>]) -> f64 {
 	if a.is_empty() || b.is_empty() {
 		return 0.0;
@@ -193,11 +199,25 @@ fn jaccard_sorted(a: &[Box<str>], b: &[Box<str>]) -> f64 {
 	intersection as f64 / (a.len() + b.len() - intersection) as f64
 }
 
+/// MMR selection over pre-sorted candidates using Jaccard word similarity.
+///
+/// `contents[i]` and `scores[i]` describe candidate `i`, already sorted by
+/// relevance exactly as the TS `mmrRerank` sorts them (the JS stable sort
+/// stays on the TS side so its tie and NaN semantics are preserved).
+/// Replicates the TS selection loop exactly: candidate `0` is always taken
+/// first; each round picks the remaining candidate maximizing
+/// `lambda * score - (1 - lambda) * maxSimilarity(selected)` with strict
+/// `>` comparisons, so ties keep the earliest remaining candidate — and a
+/// round where every score is `NaN` picks the first remaining candidate,
+/// matching the TS `bestIdx = 0` initialisation. Returns the selected
+/// indices into the input order.
+///
+/// Word tokenization matches `text.toLowerCase().split(/\s+/)` (ECMA `\s`,
+/// Unicode default full case conversion). Known divergence: unpaired
+/// surrogates arrive here as U+FFFD, while JS keeps the lone surrogate; both
+/// tokenize to a single non-whitespace word so Jaccard counts still agree
+/// unless a text mixes U+FFFD words with lone-surrogate words.
 #[napi]
-#[allow(
-	clippy::suboptimal_flops,
-	reason = "mul_add rounds differently; bit-exact with the TS loops is the contract"
-)]
 pub fn mmr_rerank_indices(
 	#[napi(ts_arg_type = "Array<string>")] contents: Array,
 	scores: Float64Array,
@@ -219,33 +239,53 @@ pub fn mmr_rerank_indices(
 			.ok_or_else(|| Error::new(Status::InvalidArg, "contents changed during reranking"))?;
 		sets.push(word_set(&js::utf8(content)?));
 	}
+	let selected = mmr_select_indices(&sets, scores.as_ref(), lambda_param, limit);
+	Ok(Uint32Array::new(selected))
+}
+
+/// N-API-free MMR greedy selection core, keeping each remaining candidate's
+/// running maximum similarity across selection rounds.
+#[allow(
+	clippy::suboptimal_flops,
+	reason = "mul_add rounds differently; bit-exact with the TS loops is the contract"
+)]
+fn mmr_select_indices(
+	sets: &[Vec<Box<str>>],
+	scores: &[f64],
+	lambda_param: f64,
+	limit: usize,
+) -> Vec<u32> {
+	let count = sets.len();
+	if limit == 0 || count == 0 {
+		return Vec::new();
+	}
 	let mut selected: Vec<u32> = Vec::with_capacity(limit.min(count));
 	selected.push(0);
-	let mut remaining: Vec<u32> = (1..count as u32).collect();
+	let mut remaining: Vec<(u32, f64)> = (1..count as u32).map(|i| (i, 0.0)).collect();
+	let mut last_picked = 0usize;
 
 	while !remaining.is_empty() && selected.len() < limit {
 		let mut best_idx = 0usize;
 		let mut best_score = f64::NEG_INFINITY;
-		for (idx, &candidate) in remaining.iter().enumerate() {
-			let mut max_similarity = 0.0f64;
-			for &picked in &selected {
-				let similarity = jaccard_sorted(&sets[candidate as usize], &sets[picked as usize]);
-				if similarity > max_similarity {
-					max_similarity = similarity;
-				}
+		for (idx, (candidate, max_similarity)) in remaining.iter_mut().enumerate() {
+			let similarity = jaccard_sorted(&sets[*candidate as usize], &sets[last_picked]);
+			if similarity > *max_similarity {
+				*max_similarity = similarity;
 			}
-			let relevance = scores[candidate as usize];
-			let mmr_score = lambda_param * relevance - (1.0 - lambda_param) * max_similarity;
+			let relevance = scores[*candidate as usize];
+			let mmr_score = lambda_param * relevance - (1.0 - lambda_param) * *max_similarity;
 			if mmr_score > best_score {
 				best_score = mmr_score;
 				best_idx = idx;
 			}
 		}
-		selected.push(remaining.remove(best_idx));
+		let (picked, _) = remaining.remove(best_idx);
+		last_picked = picked as usize;
+		selected.push(picked);
 	}
 	if selected.len() < limit {
-		selected.extend(remaining);
+		selected.extend(remaining.into_iter().map(|(candidate, _)| candidate));
 		selected.truncate(limit);
 	}
-	Ok(Uint32Array::new(selected))
+	selected
 }

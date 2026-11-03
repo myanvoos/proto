@@ -50,6 +50,8 @@ const LEX_STALL_NOVELTY_FLOOR = 0.2;
 
 const LEX_STALL_MIN_RUN = 8;
 
+const CODE_LINE = /^(?:[ \t]*```.*|(?: {2,}|\t)(?![ \t]*(?:[-*+]|\d+[.)])[ \t]).*|.*[{}[\](;,>][ \t]*)$/gm;
+
 const CONCRETE_ANCHOR =
 	/`[^`]+`|\b\w{2,}\.[a-zA-Z]\w{0,4}\b|[\w-]+(?:\/[\w-]+){2,}|\b\w+_\w+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b/g;
 
@@ -152,7 +154,10 @@ export class ThinkingLoopDetector {
 	}
 
 	#consumeSegment(raw: string): string | null {
-		const segment = raw.replace(/^[ \t]*#{1,6}[ \t].*$/gm, "").replace(/^[ \t]*\*{2,3}.+?\*{2,3}[ \t]*$/gm, "");
+		const segment = raw
+			.replace(CODE_LINE, "")
+			.replace(/^[ \t]*#{1,6}[ \t].*$/gm, "")
+			.replace(/^[ \t]*\*{2,3}.+?\*{2,3}[ \t]*$/gm, "");
 		const normalized = normalizeSegment(segment);
 		if (normalized.length < SEGMENT_MIN_NORM_CHARS) return null;
 
@@ -262,8 +267,30 @@ export function guardThinkingLoopStream(
 		let thinkingArmed = true;
 		let textArmed = checkAssistantContent;
 		let textStarted = false;
+		// The provider's latest snapshot of this attempt, and when (wall clock,
+		// like its `timestamp`) its first delta arrived: the guard reports the
+		// attempt that tripped, not the wrapper's lifetime around retries. The
+		// attempt's start is kept as a value: providers that retry may reset
+		// the same output object's `timestamp` in place.
+		let snapshot: AssistantMessage | undefined;
+		let attemptStart: number | undefined;
+		let firstDeltaAt: number | undefined;
 		try {
 			for await (const event of inner) {
+				const next = "partial" in event ? event.partial : event.type === "done" ? event.message : undefined;
+				if (next) {
+					if (next.timestamp !== attemptStart) {
+						attemptStart = next.timestamp;
+						firstDeltaAt = undefined;
+					}
+					snapshot = next;
+				}
+				if (
+					firstDeltaAt === undefined &&
+					(event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta")
+				) {
+					firstDeltaAt = Date.now();
+				}
 				let detail: string | null = null;
 				if (event.type === "thinking_delta") {
 					if (!textStarted) {
@@ -305,7 +332,7 @@ export function guardThinkingLoopStream(
 					outer.push({
 						type: "error",
 						reason: "error",
-						error: buildThinkingLoopError(model, detail),
+						error: buildThinkingLoopError(model, detail, snapshot, firstDeltaAt),
 					});
 					return;
 				}
@@ -344,66 +371,89 @@ export function withThinkingLoopGuard<
 	return guardThinkingLoopStream(dispatch(merged), model, controller, options);
 }
 
-function buildThinkingLoopError(model: Model<Api>, detail: string): AssistantMessage {
+/**
+ * The loop-abort error for one attempt. It keeps what the provider had
+ * reported for that attempt when the guard tripped (usage so far, start time,
+ * response id, and timing a finished snapshot already carries); otherwise
+ * duration and time to first delta run from the attempt's own start, since
+ * the provider's timers stop with the abort.
+ */
+function buildThinkingLoopError(
+	model: Model<Api>,
+	detail: string,
+	snapshot: AssistantMessage | undefined,
+	firstDeltaAt: number | undefined,
+): AssistantMessage {
+	const now = Date.now();
+	const duration = snapshot ? (snapshot.duration ?? now - snapshot.timestamp) : undefined;
+	const ttft =
+		snapshot?.ttft ??
+		(snapshot && firstDeltaAt !== undefined ? Math.max(0, firstDeltaAt - snapshot.timestamp) : undefined);
 	return {
 		role: "assistant",
-
+		// Empty content is load-bearing: loop-guard output is replay garbage, even
+		// when it arrived as assistant text instead of native thinking. Keeping it
+		// would persist the failed attempt before AgentSession retries.
 		content: [],
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
+		// Cloned: the provider keeps mutating its output while it tears down.
+		usage: snapshot?.usage
+			? structuredClone(snapshot.usage)
+			: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
 		stopReason: "error",
-
+		// "stream stall" makes the transport/session retry classifiers treat this
+		// as a transient (retryable) failure with no bespoke rule.
 		errorMessage: `${THINKING_LOOP_ERROR_MARKER}: the model repeated near-identical content (${detail}). Treating as a stream stall and retrying.`,
 		errorId: AIError.create(AIError.Flag.ThinkingLoop),
-		timestamp: Date.now(),
+		...(snapshot?.responseId && { responseId: snapshot.responseId }),
+		...(duration !== undefined && { duration }),
+		...(ttft !== undefined && { ttft }),
+		timestamp: snapshot?.timestamp ?? now,
 	};
 }
 
-// Scratch buffers for detectExactSuffixCycle, reused across checks: the exact
-// scan runs every EXACT_CHECK_STRIDE characters on the stream hot path, so a
-// per-check split().reverse().join("") plus a fresh Z table is measurable
-// overhead. Code units are exactly what split("") yields, so results are
-// bit-identical to the string-domain version.
-let exactRevBuf = new Uint16Array(512);
-let exactZBuf = new Uint16Array(512);
+// Reuse the bounded Z scratch; the reversed text is indexed virtually in UTF-16 code units.
+const exactZ = new Uint16Array(EXACT_MAX_UNIT + 1);
 
 function detectExactSuffixCycle(text: string): [unit: string, count: number] | null {
-	if (text.length < EXACT_MIN_REPEATED_CHARS) return null;
 	const n = text.length;
-	if (exactRevBuf.length < n) {
-		exactRevBuf = new Uint16Array(n * 2);
-		exactZBuf = new Uint16Array(n * 2);
-	}
-	const reversed = exactRevBuf;
-	for (let i = 0; i < n; i++) reversed[i] = text.charCodeAt(n - 1 - i);
-	const z = exactZBuf;
+	if (n < EXACT_MIN_REPEATED_CHARS) return null;
+	const last = n - 1;
+	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(n / EXACT_MIN_COUNT));
+	const z = exactZ;
 	let left = 0;
 	let right = 0;
-	for (let i = 1; i < n; i++) {
-		if (i <= right) z[i] = Math.min(right - i + 1, z[i - left]);
-		else z[i] = 0;
-		while (i + z[i] < n && reversed[z[i]] === reversed[i + z[i]]) z[i]++;
-		if (i + z[i] - 1 > right) {
+	for (let i = 1; i <= maxUnit; i++) {
+		let zi = i <= right ? Math.min(right - i + 1, z[i - left]) : 0;
+		while (i + zi < n && text.charCodeAt(last - zi) === text.charCodeAt(last - i - zi)) zi++;
+		z[i] = zi;
+		if (i + zi - 1 > right) {
 			left = i;
-			right = i + z[i] - 1;
+			right = i + zi - 1;
 		}
 	}
 
-	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(n / EXACT_MIN_COUNT));
 	for (let len = 2; len <= maxUnit; len++) {
 		const count = 1 + Math.floor(z[len] / len);
-		if (count < EXACT_MIN_COUNT || len * count < EXACT_MIN_REPEATED_CHARS) continue;
+		const minCount = EXACT_MIN_COUNT;
+		if (count < minCount) continue;
 		const unit = text.slice(-len);
-		if (/\p{L}|\p{Extended_Pictographic}/u.test(unit)) return [unit, count];
+		if (/\p{L}|\p{Extended_Pictographic}/u.test(unit)) {
+			const minChars = EXACT_MIN_REPEATED_CHARS;
+			if (len * count >= minChars) return [unit, count];
+			continue;
+		}
+		if (/^[\p{N}\s]*$/u.test(unit)) continue;
+		if (len * count >= EXACT_MIN_REPEATED_CHARS) return [unit, count];
 	}
 	return null;
 }

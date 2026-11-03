@@ -66,6 +66,60 @@ export interface LoadSessionOptions {
 	retainEntry?: (entry: SessionEntry) => SessionEntry;
 }
 
+/**
+ * Complete optional accounting fields from persisted/imported assistant turns.
+ * Complete provider usage is left untouched; missing prices never discard reported tokens.
+ */
+export function normalizeAssistantUsage(message: Extract<AgentMessage, { role: "assistant" }>): boolean {
+	const usage = message.usage;
+	if (
+		usage &&
+		usage.input !== undefined &&
+		usage.output !== undefined &&
+		usage.cacheRead !== undefined &&
+		usage.cacheWrite !== undefined &&
+		usage.totalTokens !== undefined &&
+		usage.cost?.input !== undefined &&
+		usage.cost.output !== undefined &&
+		usage.cost.cacheRead !== undefined &&
+		usage.cost.cacheWrite !== undefined &&
+		usage.cost.total !== undefined
+	) {
+		return false;
+	}
+	const input = usage?.input ?? 0;
+	const output = usage?.output ?? 0;
+	const cacheRead = usage?.cacheRead ?? 0;
+	const cacheWrite = usage?.cacheWrite ?? 0;
+	const cost = usage?.cost;
+	message.usage = {
+		...usage,
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		totalTokens:
+			usage?.totalTokens ??
+			input +
+				output +
+				cacheRead +
+				cacheWrite +
+				(usage?.orchestration?.input ?? 0) +
+				(usage?.orchestration?.cacheRead ?? 0) +
+				(usage?.orchestration?.output ?? 0),
+		cost: {
+			...cost,
+			input: cost?.input ?? 0,
+			output: cost?.output ?? 0,
+			cacheRead: cost?.cacheRead ?? 0,
+			cacheWrite: cost?.cacheWrite ?? 0,
+			total:
+				cost?.total ?? (cost?.input ?? 0) + (cost?.output ?? 0) + (cost?.cacheRead ?? 0) + (cost?.cacheWrite ?? 0),
+		},
+	};
+	return true;
+}
+
 export interface SessionArchiveRecord {
 	id: string;
 	beforeId: string | null;
@@ -760,14 +814,7 @@ function createBoundedBlobReader(blobStore: BlobStore): BlobReader {
 			}
 		})();
 		state.inFlight.set(hash, pending);
-		void pending.then(
-			() => {
-				if (state.inFlight.get(hash) === pending) state.inFlight.delete(hash);
-			},
-			() => {
-				if (state.inFlight.get(hash) === pending) state.inFlight.delete(hash);
-			},
-		);
+		// Cache for this load, including references discovered later inside replay blobs.
 		return pending;
 	};
 }
@@ -833,7 +880,27 @@ async function resolvePersistedBlobRefs(
 	return value;
 }
 
-function resolvePersistedBlobRefsSync(value: unknown, blobStore: BlobStore, key?: string): unknown {
+function resolveImageSiteSync(
+	blobStore: BlobStore,
+	ref: string,
+	asUrl: boolean,
+	resolved: Map<string, string>,
+): string {
+	const key = `${asUrl ? "url" : "base64"}:${ref}`;
+	let data = resolved.get(key);
+	if (data === undefined) {
+		data = asUrl ? resolveImageDataUrlSync(blobStore, ref) : resolveImageDataSync(blobStore, ref);
+		resolved.set(key, data);
+	}
+	return data;
+}
+
+function resolvePersistedBlobRefsSync(
+	value: unknown,
+	blobStore: BlobStore,
+	resolved: Map<string, string>,
+	key?: string,
+): unknown {
 	if (isPersistedReplayBlobRef(value)) {
 		const hash = parseBlobRef(value.__protoReplayBlob);
 		if (!hash) return value;
@@ -844,7 +911,7 @@ function resolvePersistedBlobRefsSync(value: unknown, blobStore: BlobStore, key?
 		}
 		try {
 			const parsed: unknown = JSON.parse(buffer.toString("utf8"));
-			return resolvePersistedBlobRefsSync(parsed, blobStore, key);
+			return resolvePersistedBlobRefsSync(parsed, blobStore, resolved, key);
 		} catch (error) {
 			logger.warn("Invalid persisted replay payload blob", {
 				hash,
@@ -854,12 +921,12 @@ function resolvePersistedBlobRefsSync(value: unknown, blobStore: BlobStore, key?
 		}
 	}
 	if (shouldResolveImagePayload(value, key)) {
-		value.data = resolveImageDataSync(blobStore, value.data);
+		value.data = resolveImageSiteSync(blobStore, value.data, false, resolved);
 		return value;
 	}
 	if (Array.isArray(value)) {
 		for (let index = 0; index < value.length; index++) {
-			value[index] = resolvePersistedBlobRefsSync(value[index], blobStore, key);
+			value[index] = resolvePersistedBlobRefsSync(value[index], blobStore, resolved, key);
 		}
 		return value;
 	}
@@ -871,13 +938,13 @@ function resolvePersistedBlobRefsSync(value: unknown, blobStore: BlobStore, key?
 		typeof value.result === "string" &&
 		isBlobRef(value.result)
 	) {
-		value.result = resolveImageDataSync(blobStore, value.result);
+		value.result = resolveImageSiteSync(blobStore, value.result, false, resolved);
 	}
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
-		value.image_url = resolveImageDataUrlSync(blobStore, value.image_url);
+		value.image_url = resolveImageSiteSync(blobStore, value.image_url, true, resolved);
 	}
 	for (const [childKey, item] of Object.entries(value)) {
-		(value as Record<string, unknown>)[childKey] = resolvePersistedBlobRefsSync(item, blobStore, childKey);
+		(value as Record<string, unknown>)[childKey] = resolvePersistedBlobRefsSync(item, blobStore, resolved, childKey);
 	}
 	return value;
 }
@@ -919,8 +986,9 @@ export function estimateResolvedBlobBytes(value: unknown, blobStore: BlobStore, 
 }
 
 export function resolveBlobRefsInEntriesSync(entries: FileEntry[], blobStore: BlobStore): void {
+	const resolved = new Map<string, string>();
 	for (const entry of entries) {
-		if (entry.type !== "session" && containsBlobRef(entry)) resolvePersistedBlobRefsSync(entry, blobStore);
+		if (entry.type !== "session" && containsBlobRef(entry)) resolvePersistedBlobRefsSync(entry, blobStore, resolved);
 	}
 }
 

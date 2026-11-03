@@ -68,7 +68,7 @@ export {
 	piReadPath,
 	piReadPathHasRange,
 	piTimeout,
-	shellTimeoutSeconds,
+	shellDeadlineSeconds,
 } from "../cursor-pi-args";
 
 export function piOutputText(toolResult: ToolResultMessage): string {

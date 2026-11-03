@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "bun:test";
 import type { MCPManager } from "../mcp/manager";
 import { ToolAbortError } from "../tools/tool-errors";
-import { createMCPProxyTools } from "./executor";
+import { createMCPProxyTools, followMCPTools } from "./executor";
 
 type ProxyResult = { content: Array<{ type: string; text?: string }> };
 
@@ -45,4 +45,51 @@ test("a subagent MCP call ends with an abort as soon as its caller aborts", asyn
 	controller.abort();
 
 	await expect(result).rejects.toBeInstanceOf(ToolAbortError);
+});
+
+test("subagent MCP reload catches startup changes, preserves explicit tools, and stops after disposal", async () => {
+	const listeners = new Set<() => void>();
+	let names = ["mcp_old"];
+	const manager = {
+		getTools: () =>
+			names.map(name => ({
+				name,
+				label: name,
+				description: "test",
+				parameters: { type: "object" },
+				mcpServerName: "server",
+				mcpToolName: name,
+			})),
+		addToolsChangedListener: (listener: () => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	} as unknown as MCPManager;
+	const follower = followMCPTools(manager, new Set(["mcp_reserved"]));
+	const refreshes: string[][] = [];
+	let dispose = () => {};
+	names = ["mcp_new", "mcp_reserved"];
+	for (const listener of listeners) listener();
+	follower.bind({
+		refreshMCPTools: async tools => {
+			refreshes.push(tools.map(tool => tool.name));
+		},
+		addDisposer: callback => {
+			dispose = callback;
+		},
+	});
+	await Promise.resolve();
+	expect(refreshes).toEqual([["mcp_new"]]);
+	names = ["mcp_latest"];
+	for (const listener of listeners) {
+		listener();
+		listener();
+	}
+	await Promise.resolve();
+	expect(refreshes).toEqual([["mcp_new"], ["mcp_latest"]]);
+	dispose();
+	names = ["mcp_after_disposal"];
+	for (const listener of listeners) listener();
+	await Promise.resolve();
+	expect(refreshes).toEqual([["mcp_new"], ["mcp_latest"]]);
 });

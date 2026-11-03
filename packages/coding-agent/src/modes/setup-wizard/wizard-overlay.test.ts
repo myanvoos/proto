@@ -139,3 +139,15 @@ test("OAuth code input remains visible ahead of login instructions on resize", (
 		expect(plain(wizard.render(20)).join("\n")).toContain("CODE042");
 	}
 });
+
+test("enhanced paste reaches the focused OAuth prompt and is submitted unchanged", async () => {
+	const submitted = Promise.withResolvers<string>();
+	vi.spyOn(auth, "login").mockImplementation(async (_provider, callbacks) => {
+		submitted.resolve(await callbacks.onPrompt({ message: "Paste the returned code" }));
+	});
+	wizard.handleInput("\r");
+	const prompt = focus as (Component & { pasteText?: (text: string) => void }) | null;
+	prompt?.pasteText?.("sk-paste-0123456789");
+	prompt?.handleInput?.("\r");
+	expect(await submitted.promise).toBe("sk-paste-0123456789");
+});

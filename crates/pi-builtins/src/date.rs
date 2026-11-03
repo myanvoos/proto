@@ -1,12 +1,11 @@
-
-
-
 use brush_core::{ShellExtensions, builtins::Registration};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::{
+	host::{Host, Utility, format_usage, matches_parser, util},
+	time_zone::shell_time_zone,
+};
 
 mod format_modifiers {
-
 
 	use std::{fmt, sync::LazyLock};
 
@@ -16,10 +15,8 @@ mod format_modifiers {
 	};
 	use regex::Regex;
 
-
 	#[derive(Debug)]
 	pub enum FormatError {
-
 		JiffError(jiff::Error),
 
 		FieldWidthTooLarge { width: usize, specifier: String },
@@ -30,9 +27,11 @@ mod format_modifiers {
 			match self {
 				Self::JiffError(e) => write!(f, "{e}"),
 
-
 				Self::FieldWidthTooLarge { width, specifier } => {
-					write!(f, "format modifier width '{width}' is too large for specifier '%{specifier}'")
+					write!(
+						f,
+						"format modifier width '{width}' is too large for specifier '%{specifier}'"
+					)
 				},
 			}
 		}
@@ -44,10 +43,8 @@ mod format_modifiers {
 		}
 	}
 
-
 	static FORMAT_SPEC_REGEX: LazyLock<Regex> =
 		LazyLock::new(|| Regex::new(r"%([_0^#+-]*)(\d*)(:*[a-zA-Z])").unwrap());
-
 
 	pub fn format_with_modifiers_if_present(
 		date: &Zoned,
@@ -55,7 +52,6 @@ mod format_modifiers {
 		config: &Config<PosixCustom>,
 	) -> Option<Result<String, FormatError>> {
 		let re = &*FORMAT_SPEC_REGEX;
-
 
 		let has_modifiers = re.captures_iter(format_string).any(|cap| {
 			let flags = cap.get(1).map_or("", |m| m.as_str());
@@ -67,17 +63,14 @@ mod format_modifiers {
 			return None;
 		}
 
-
 		Some(format_with_modifiers(date, format_string, config))
 	}
-
 
 	fn format_with_modifiers(
 		date: &Zoned,
 		format_string: &str,
 		config: &Config<PosixCustom>,
 	) -> Result<String, FormatError> {
-
 		let placeholder = "\x00PERCENT\x00";
 		let temp_format = format_string.replace("%%", placeholder);
 
@@ -93,42 +86,33 @@ mod format_modifiers {
 			let width_str = cap.get(2).map_or("", |m| m.as_str());
 			let spec = cap.get(3).unwrap().as_str();
 
-
 			result.push_str(&temp_format[last_end..whole_match.start()]);
-
 
 			let base_format = format!("%{spec}");
 			let formatted = broken_down.to_string_with_config(config, &base_format)?;
 
-
 			if !flags.is_empty() || !width_str.is_empty() {
-
 				let width: usize = width_str.parse().unwrap_or(0);
 				let explicit_width = !width_str.is_empty();
 				let modified = apply_modifiers(&formatted, flags, width, spec, explicit_width)?;
 				result.push_str(&modified);
 			} else {
-
 				result.push_str(&formatted);
 			}
 
 			last_end = whole_match.end();
 		}
 
-
 		result.push_str(&temp_format[last_end..]);
-
 
 		let result = result.replace(placeholder, "%");
 
 		Ok(result)
 	}
 
-
 	fn is_text_specifier(specifier: &str) -> bool {
 		matches!(specifier.chars().last(), Some('A' | 'a' | 'B' | 'b' | 'h' | 'Z' | 'p' | 'P'))
 	}
-
 
 	fn is_space_padded_specifier(specifier: &str) -> bool {
 		matches!(
@@ -137,10 +121,8 @@ mod format_modifiers {
 		)
 	}
 
-
 	fn get_default_width(specifier: &str) -> usize {
 		match specifier.chars().last() {
-
 			Some('d') | Some('e') => 2,
 
 			Some('m') => 2,
@@ -179,7 +161,6 @@ mod format_modifiers {
 		}
 	}
 
-
 	fn strip_default_padding(value: &str) -> String {
 		if value.starts_with('0') && value.len() >= 2 {
 			let stripped = value.trim_start_matches('0');
@@ -201,7 +182,6 @@ mod format_modifiers {
 		value.to_string()
 	}
 
-
 	fn apply_modifiers(
 		value: &str,
 		flags: &str,
@@ -211,13 +191,11 @@ mod format_modifiers {
 	) -> Result<String, FormatError> {
 		let mut result = value.to_string();
 
-
 		let default_pad = if is_space_padded_specifier(specifier) {
 			' '
 		} else {
 			'0'
 		};
-
 
 		let mut pad_char = default_pad;
 		let mut no_pad = false;
@@ -245,7 +223,6 @@ mod format_modifiers {
 					swap_case = false;
 				},
 				'#' if !uppercase => {
-
 					swap_case = true;
 				},
 				'+' => {
@@ -256,7 +233,6 @@ mod format_modifiers {
 				_ => {},
 			}
 		}
-
 
 		if uppercase {
 			result = result.to_uppercase();
@@ -274,11 +250,9 @@ mod format_modifiers {
 			}
 		}
 
-
 		if no_pad {
 			return Ok(strip_default_padding(&result));
 		}
-
 
 		let effective_width = if !explicit_width && (underscore_flag || pad_char != default_pad) {
 			get_default_width(specifier)
@@ -286,22 +260,17 @@ mod format_modifiers {
 			width
 		};
 
-
 		if effective_width > 0 && effective_width < result.len() {
 			result = strip_default_padding(&result);
 		}
 
-
 		if !is_text_specifier(specifier) && result.len() >= 2 {
 			if pad_char == ' ' && result.starts_with('0') {
-
 				result = strip_default_padding(&result);
 			} else if pad_char == '0' && result.starts_with(' ') {
-
 				result = strip_default_padding(&result);
 			}
 		}
-
 
 		if force_sign
 			&& !result.starts_with('+')
@@ -315,13 +284,11 @@ mod format_modifiers {
 			}
 		}
 
-
 		if effective_width > result.len() {
 			let padding = effective_width - result.len();
 			let has_sign = result.starts_with('+') || result.starts_with('-');
 
 			if pad_char == '0' && has_sign {
-
 				let sign = result.chars().next().unwrap();
 				let rest = &result[1..];
 				let mut padded = try_alloc_padded(result.len(), padding, effective_width, specifier)?;
@@ -330,7 +297,6 @@ mod format_modifiers {
 				padded.push_str(rest);
 				result = padded;
 			} else {
-
 				let mut padded = try_alloc_padded(result.len(), padding, effective_width, specifier)?;
 				padded.extend(std::iter::repeat_n(pad_char, padding));
 				padded.push_str(&result);
@@ -341,33 +307,29 @@ mod format_modifiers {
 		Ok(result)
 	}
 
-
 	fn try_alloc_padded(
 		current_len: usize,
 		padding: usize,
 		width: usize,
 		specifier: &str,
 	) -> Result<String, FormatError> {
-		let target_len = current_len
-			.checked_add(padding)
-			.ok_or_else(|| FormatError::FieldWidthTooLarge { width, specifier: specifier.to_string() })?;
+		let target_len =
+			current_len
+				.checked_add(padding)
+				.ok_or_else(|| FormatError::FieldWidthTooLarge {
+					width,
+					specifier: specifier.to_string(),
+				})?;
 		let mut s = String::new();
 		s.try_reserve(target_len)
-			.map_err(|_| FormatError::FieldWidthTooLarge { width, specifier: specifier.to_string() })?;
+			.map_err(|_| FormatError::FieldWidthTooLarge {
+				width,
+				specifier: specifier.to_string(),
+			})?;
 		Ok(s)
 	}
-
-
 }
 
-use std::{
-	borrow::Cow,
-	collections::HashMap,
-	ffi::OsString,
-	io::{BufRead, BufReader, Read, Write},
-	path::{Path, PathBuf},
-	sync::LazyLock,
-};
 #[cfg(any(
 	target_os = "linux",
 	target_vendor = "apple",
@@ -377,7 +339,14 @@ use std::{
 	target_os = "dragonfly",
 ))]
 use std::ffi::{CStr, CString};
-
+use std::{
+	borrow::Cow,
+	collections::HashMap,
+	ffi::OsString,
+	io::{BufRead, BufReader, Read, Write},
+	path::{Path, PathBuf},
+	sync::LazyLock,
+};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use jiff::{
@@ -386,7 +355,6 @@ use jiff::{
 	tz::{Offset, TimeZone, TimeZoneDatabase},
 };
 use uucore::{display::Quotable, parser::shortcut_value_parser::ShortcutValueParser};
-
 
 const DATE: &str = "date";
 const HOURS: &str = "hours";
@@ -412,20 +380,17 @@ const OPT_UNIVERSAL_2: &str = "utc";
 const OPT_BSD_ADJUST: &str = "bsd-adjust";
 const OPT_BSD_PARSE_ONLY: &str = "bsd-parse-only";
 
-
 struct Settings {
-	utc:         bool,
-	format:      Format,
-	date_source: DateSource,
-	debug:       bool,
+	utc:            bool,
+	format:         Format,
+	date_source:    DateSource,
+	debug:          bool,
 	default_format: String,
 }
 
-
 #[derive(Clone, Copy)]
 struct DebugOptions {
-
-	debug:         bool,
+	debug: bool,
 
 	warn_midnight: bool,
 }
@@ -436,7 +401,6 @@ impl DebugOptions {
 	}
 }
 
-
 enum Format {
 	Iso8601(Iso8601Format),
 	Rfc5322,
@@ -445,7 +409,6 @@ enum Format {
 	Custom(String),
 	Default,
 }
-
 
 enum DateSource {
 	Now,
@@ -498,10 +461,8 @@ impl From<&str> for Rfc3339Format {
 	}
 }
 
-
 #[derive(PartialEq, Debug)]
 enum DayDelta {
-
 	Same,
 
 	Previous,
@@ -509,23 +470,19 @@ enum DayDelta {
 	Next,
 }
 
-
 fn escape_invalid_bytes(bytes: &[u8]) -> String {
 	let escaped = bytes
 		.iter()
 		.flat_map(|&b| {
-
 			if (0x20..0x7f).contains(&b) && b != b'\\' {
 				vec![b]
 			} else {
-
 				format!("\\{b:03o}").into_bytes()
 			}
 		})
 		.collect::<Vec<u8>>();
 	String::from_utf8_lossy(&escaped).into_owned()
 }
-
 
 fn strip_parenthesized_comments(input: &str) -> Cow<'_, str> {
 	if !input.contains('(') {
@@ -553,7 +510,6 @@ fn strip_parenthesized_comments(input: &str) -> Cow<'_, str> {
 	Cow::Owned(result)
 }
 
-
 fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	if s.is_empty() || s.len() > 3 {
 		return None;
@@ -562,11 +518,9 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	let mut chars = s.chars();
 	let letter = chars.next()?.to_ascii_lowercase();
 
-
 	if !letter.is_ascii_lowercase() || letter == 'j' {
 		return None;
 	}
-
 
 	let additional_hours: i32 = if let Some(rest) = chars.as_str().chars().next() {
 		if !rest.is_ascii_digit() {
@@ -576,7 +530,6 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	} else {
 		0
 	};
-
 
 	let tz_offset = match letter {
 		'a'..='i' => (letter as i32 - 'a' as i32) + 1,
@@ -592,15 +545,12 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 		_ => DayDelta::Same,
 	};
 
-
 	let hours_from_midnight = (0 - tz_offset + additional_hours).rem_euclid(24);
 
 	Some((hours_from_midnight, day_delta))
 }
 
-
 fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
-
 	const VALUE_LONGS: &[&str] = &["date", "file", "reference", "set", "rfc-3339"];
 
 	const FLAG_LONGS: &[&str] =
@@ -629,8 +579,6 @@ fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
 			opts_ended = true;
 			out.push(arg);
 		} else if let Some(long) = token.strip_prefix("--") {
-
-
 			let (name, value) = match long.split_once('=') {
 				Some((name, value)) => (name, Some(value)),
 				None => (long, None),
@@ -652,7 +600,6 @@ fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
 				out.push(arg);
 			}
 		} else if let Some(cluster) = token.strip_prefix('-').filter(|rest| !rest.is_empty()) {
-
 			let mut rewrote = false;
 			for (index, ch) in cluster.char_indices() {
 				if ch == 'I' {
@@ -667,8 +614,6 @@ fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
 					break;
 				}
 				if VALUE_SHORTS.contains(&ch) {
-
-
 					if cluster[index + ch.len_utf8()..].is_empty() {
 						skip_value = true;
 					}
@@ -685,7 +630,6 @@ fn rewrite_date_argv(argv: Vec<OsString>) -> Vec<OsString> {
 	out
 }
 
-
 #[derive(Clone, Copy)]
 enum BsdAdjustUnit {
 	Year,
@@ -697,13 +641,11 @@ enum BsdAdjustUnit {
 	Second,
 }
 
-
 #[derive(Clone, Copy)]
 enum BsdAdjustment {
 	Offset(i64, BsdAdjustUnit),
 	Set(i64, BsdAdjustUnit),
 }
-
 
 fn parse_bsd_adjustment(spec: &str) -> Option<BsdAdjustment> {
 	let (sign, rest) = match *spec.as_bytes().first()? {
@@ -733,7 +675,6 @@ fn parse_bsd_adjustment(spec: &str) -> Option<BsdAdjustment> {
 	})
 }
 
-
 fn apply_bsd_adjustments(mut date: Zoned, adjustments: &[BsdAdjustment]) -> Result<Zoned, String> {
 	for adjustment in adjustments {
 		date = match *adjustment {
@@ -760,21 +701,20 @@ fn apply_bsd_adjustments(mut date: Zoned, adjustments: &[BsdAdjustment]) -> Resu
 				let with = date.with();
 				let with = match unit {
 					BsdAdjustUnit::Year => {
-
 						let year = match value {
 							0..=68 => value + 2000,
 							69..=99 => value + 1900,
 							_ => value,
 						};
-						let year = i16::try_from(year)
-							.map_err(|_| format!("invalid adjustment: '{value}y'"))?;
+						let year =
+							i16::try_from(year).map_err(|_| format!("invalid adjustment: '{value}y'"))?;
 						with.year(year)
 					},
 					BsdAdjustUnit::Month => with.month(narrow('m')?),
 					BsdAdjustUnit::Week => {
 						return Err(format!(
-							"unsupported adjustment: '{value}w' (setting the week is not \
-							 implemented; use an offset like '+{value}w')"
+							"unsupported adjustment: '{value}w' (setting the week is not implemented; \
+							 use an offset like '+{value}w')"
 						));
 					},
 					BsdAdjustUnit::Day => with.day(narrow('d')?),
@@ -791,10 +731,10 @@ fn apply_bsd_adjustments(mut date: Zoned, adjustments: &[BsdAdjustment]) -> Resu
 	Ok(date)
 }
 
-
 fn parse_bsd_strptime(format: &str, value: &str, now: &Zoned) -> Result<Zoned, String> {
-	let convert_error =
-		|error: jiff::Error| format!("failed conversion of '{value}' using format '{format}' ({error})");
+	let convert_error = |error: jiff::Error| {
+		format!("failed conversion of '{value}' using format '{format}' ({error})")
+	};
 	let broken = BrokenDownTime::parse(format, value).map_err(convert_error)?;
 
 	if let Ok(timestamp) = broken.to_timestamp() {
@@ -815,7 +755,9 @@ fn parse_bsd_strptime(format: &str, value: &str, now: &Zoned) -> Result<Zoned, S
 		broken.hour().unwrap_or(base.hour()),
 		broken.minute().unwrap_or(base.minute()),
 		broken.second().unwrap_or(base.second()),
-		broken.subsec_nanosecond().unwrap_or(base.subsec_nanosecond()),
+		broken
+			.subsec_nanosecond()
+			.unwrap_or(base.subsec_nanosecond()),
 	)
 	.map_err(convert_error)?;
 	date
@@ -823,7 +765,6 @@ fn parse_bsd_strptime(format: &str, value: &str, now: &Zoned) -> Result<Zoned, S
 		.to_zoned(now.time_zone().clone())
 		.map_err(convert_error)
 }
-
 
 pub(crate) struct Date {
 	matches: ArgMatches,
@@ -866,18 +807,7 @@ impl Utility for Date {
 		}
 	}
 }
-fn shell_time_zone(host: &Host) -> TimeZone {
-	let Some(value) = host.var("TZ") else {
-		return TimeZone::system();
-	};
-	let value = value.strip_prefix(':').unwrap_or(value);
-	if value.is_empty() {
-		return TimeZone::UTC;
-	}
-	TimeZone::get(value)
-		.or_else(|_| TimeZone::posix(value))
-		.unwrap_or(TimeZone::UTC)
-}
+
 fn shell_locale(host: &Host) -> String {
 	let locale = host
 		.var("LC_ALL")
@@ -898,7 +828,6 @@ fn shell_locale(host: &Host) -> String {
 ))]
 fn locale_default_format(locale: &str) -> Option<String> {
 	let locale = CString::new(locale).ok()?;
-
 
 	unsafe {
 		let locale_object =
@@ -939,7 +868,6 @@ fn locale_default_format(_locale: &str) -> Option<String> {
 	None
 }
 
-
 #[allow(clippy::cognitive_complexity)]
 fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	let bsd_parse_only = matches.get_flag(OPT_BSD_PARSE_ONLY);
@@ -953,12 +881,10 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 		})
 		.collect::<Result<_, _>>()?;
 
-
 	let mut operands: Vec<&String> = matches
 		.get_many::<String>(OPT_FORMAT)
 		.map(Iterator::collect)
 		.unwrap_or_default();
-
 
 	let strptime_format = if bsd_parse_only {
 		matches.get_one::<String>(OPT_FILE)
@@ -966,7 +892,10 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 		None
 	};
 	let strptime_value = if strptime_format.is_some() {
-		if operands.first().is_some_and(|operand| !operand.starts_with('+')) {
+		if operands
+			.first()
+			.is_some_and(|operand| !operand.starts_with('+'))
+		{
 			Some(operands.remove(0))
 		} else {
 			return Err(DateError::new(1, "'-j -f FORMAT' requires a date operand to parse"));
@@ -978,7 +907,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	let date_source = if let (Some(format), Some(value)) = (strptime_format, strptime_value) {
 		DateSource::Strptime { format: format.clone(), value: value.clone() }
 	} else if let Some(date_os) = matches.get_one::<OsString>(OPT_DATE) {
-
 		let date = date_os.to_str().ok_or_else(|| {
 			let bytes = date_os.as_encoded_bytes();
 			let escaped_str = escape_invalid_bytes(bytes);
@@ -991,8 +919,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 			_ => DateSource::File(file.into()),
 		}
 	} else if let Some(reference) = matches.get_one::<String>(OPT_REFERENCE) {
-
-
 		let digits = reference.strip_prefix('-').unwrap_or(reference);
 		let numeric = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
 		if numeric && !host.resolve(Path::new(reference)).exists() {
@@ -1006,19 +932,15 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 		DateSource::Now
 	};
 
-
 	if operands.len() > 1 {
 		return Err(DateError::new(1, format!("extra operand '{}'", operands[1])));
 	}
 
 	let format = if let Some(form) = operands.first() {
 		if !form.starts_with('+') {
-
-
 			if !matches!(date_source, DateSource::Human(_) | DateSource::Strptime { .. }) {
 				return Err(DateError::new(1, format!("invalid date '{form}'")));
 			}
-
 
 			return Err(DateError::new(
 				1,
@@ -1050,7 +972,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	let utc = matches.get_flag(OPT_UNIVERSAL);
 	let debug_mode = matches.get_flag(OPT_DEBUG);
 
-
 	let local_time_zone = shell_time_zone(host);
 	let now = Timestamp::now().to_zoned(if utc {
 		TimeZone::UTC
@@ -1059,20 +980,14 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	});
 	if let Some(input) = matches.get_one::<String>(OPT_SET) {
 		let mut error = host.stderr_clone();
-		let date = parse_date(
-			input,
-			&now,
-			DebugOptions::new(debug_mode, true),
-			&mut error,
-		)
-		.map_err(|(input, _)| DateError::new(1, format!("invalid date '{input}'")))?;
+		let date = parse_date(input, &now, DebugOptions::new(debug_mode, true), &mut error)
+			.map_err(|(input, _)| DateError::new(1, format!("invalid date '{input}'")))?;
 		return set_system_datetime(date);
 	}
 
 	let default_format = shell_locale(host);
 
 	let settings = Settings { utc, format, date_source, debug: debug_mode, default_format };
-
 
 	let cancel = host.cancel_flag();
 	let mut had_error = false;
@@ -1081,25 +996,19 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	let reader_stderr = host.stderr_clone();
 	let dates: Box<dyn Iterator<Item = _>> = match &settings.date_source {
 		DateSource::Human(input) => {
-
 			let input = strip_parenthesized_comments(input);
 			let input = input.trim();
 
-
 			let is_empty_or_whitespace = input.is_empty();
-
 
 			let is_military_j = input.eq_ignore_ascii_case("j");
 
-
 			let military_tz_with_offset = parse_military_timezone_with_offset(input);
-
 
 			let is_pure_digits =
 				!input.is_empty() && input.len() <= 4 && input.chars().all(|c| c.is_ascii_digit());
 
 			let date = if is_empty_or_whitespace || is_military_j {
-
 				let date_part =
 					strtime::format("%F", &now).unwrap_or_else(|_| String::from("1970-01-01"));
 				let offset = if settings.utc {
@@ -1113,20 +1022,11 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 					format!("{date_part} 00:00 {offset}")
 				};
 				if settings.debug {
-					let _ = writeln!(
-						host.stderr,
-						"date: warning: using midnight as starting time: 00:00:00"
-					);
+					let _ =
+						writeln!(host.stderr, "date: warning: using midnight as starting time: 00:00:00");
 				}
-				parse_date(
-					composed,
-					&now,
-					DebugOptions::new(settings.debug, false),
-					&mut debug_stderr,
-				)
+				parse_date(composed, &now, DebugOptions::new(settings.debug, false), &mut debug_stderr)
 			} else if let Some((total_hours, day_delta)) = military_tz_with_offset {
-
-
 				let format_date_with_epoch_fallback = |date: Result<Zoned, _>| -> String {
 					date
 						.and_then(|d| strtime::format("%F", &d))
@@ -1138,14 +1038,8 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 					DayDelta::Previous => format_date_with_epoch_fallback(now.yesterday()),
 				};
 				let composed = format!("{date_part} {total_hours:02}:00:00 +00:00");
-				parse_date(
-					composed,
-					&now,
-					DebugOptions::new(settings.debug, false),
-					&mut debug_stderr,
-				)
+				parse_date(composed, &now, DebugOptions::new(settings.debug, false), &mut debug_stderr)
 			} else if is_pure_digits {
-
 				let (hh_opt, mm_opt) = if input.len() <= 2 {
 					(input.parse::<u32>().ok(), Some(0u32))
 				} else {
@@ -1154,8 +1048,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 				};
 
 				if let (Some(hh), Some(mm)) = (hh_opt, mm_opt) {
-
-
 					let date_part =
 						strtime::format("%F", &now).unwrap_or_else(|_| String::from("1970-01-01"));
 
@@ -1176,21 +1068,10 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 						&mut debug_stderr,
 					)
 				} else {
-
-					parse_date(
-						input,
-						&now,
-						DebugOptions::new(settings.debug, true),
-						&mut debug_stderr,
-					)
+					parse_date(input, &now, DebugOptions::new(settings.debug, true), &mut debug_stderr)
 				}
 			} else {
-				parse_date(
-					input,
-					&now,
-					DebugOptions::new(settings.debug, true),
-					&mut debug_stderr,
-				)
+				parse_date(input, &now, DebugOptions::new(settings.debug, true), &mut debug_stderr)
 			};
 
 			let iter = std::iter::once(date);
@@ -1203,7 +1084,6 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 			reader_stderr.clone(),
 		),
 		DateSource::File(path) => {
-
 			let resolved = host.resolve(path);
 			if resolved.is_dir() {
 				return Err(DateError::new(
@@ -1214,15 +1094,9 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 			let file = brush_core::heldfiles::open_read(&resolved).map_err(|error| {
 				DateError::new(1, format!("{}: {error}", path.as_os_str().maybe_quote()))
 			})?;
-			parse_dates_from_reader(
-				file,
-				&now,
-				DebugOptions::new(settings.debug, true),
-				reader_stderr,
-			)
+			parse_dates_from_reader(file, &now, DebugOptions::new(settings.debug, true), reader_stderr)
 		},
 		DateSource::FileMtime(path) => {
-
 			let metadata = std::fs::metadata(host.resolve(path)).map_err(|error| {
 				DateError::new(1, format!("{}: {error}", path.as_os_str().maybe_quote()))
 			})?;
@@ -1252,16 +1126,13 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 
 	let format_string = make_format_string(&settings);
 
-
 	let config = Config::new().custom(PosixCustom::new()).lenient(true);
 	for date in dates {
-
 		if cancel.load(std::sync::atomic::Ordering::Relaxed) {
 			break;
 		}
 		match date {
 			Ok(date) => {
-
 				let date = if adjustments.is_empty() {
 					date
 				} else {
@@ -1283,16 +1154,12 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 						.map_err(|e| DateError::new(1, format!("write error: {e}")))?,
 					Err(e) => {
 						let _ = stdout.flush();
-						return Err(DateError::new(
-							1,
-							format!("invalid format '{format_string}' ({e})"),
-						));
+						return Err(DateError::new(1, format!("invalid format '{format_string}' ({e})")));
 					},
 				}
 			},
 			Err((input, _err)) => {
 				let _ = stdout.flush();
-
 
 				let _ = writeln!(host.stderr, "date: invalid date '{input}'");
 				had_error = true;
@@ -1314,7 +1181,6 @@ fn uu_app() -> Command {
 	Command::new("date")
 		.version("0.8.0")
 		.about("Print or set the system date and time")
-
 		.override_usage(format_usage(
 			"date [OPTION]... [+FORMAT]...\ndate [OPTION]... [MMDDhhmm[[CC]YY][.ss]]",
 		))
@@ -1338,8 +1204,8 @@ fn uu_app() -> Command {
 				.value_hint(clap::ValueHint::FilePath)
 				.conflicts_with(OPT_DATE)
 				.help(
-					"like --date; once for each line of DATEFILE\n(BSD: with -j, the strptime(3) \
-					 input format for the date operand)",
+					"like --date; once for each line of DATEFILE\n(BSD: with -j, the strptime(3) input \
+					 format for the date operand)",
 				),
 		)
 		.arg(
@@ -1348,8 +1214,6 @@ fn uu_app() -> Command {
 				.long(OPT_ISO_8601)
 				.value_name("FMT")
 				.value_parser(ShortcutValueParser::new([DATE, HOURS, MINUTES, SECONDS, NS]))
-
-
 				.num_args(0..=1)
 				.require_equals(true)
 				.default_missing_value(OPT_DATE)
@@ -1404,8 +1268,8 @@ fn uu_app() -> Command {
 				.allow_hyphen_values(true)
 				.conflicts_with_all([OPT_DATE, OPT_FILE, OPT_RESOLUTION])
 				.help(
-					"display the last modification time of FILE\n(BSD: when FILE is numeric and \
-					 no such file exists,\ndisplay the date at that many seconds since the epoch)",
+					"display the last modification time of FILE\n(BSD: when FILE is numeric and no \
+					 such file exists,\ndisplay the date at that many seconds since the epoch)",
 				),
 		)
 		.arg(
@@ -1430,8 +1294,8 @@ fn uu_app() -> Command {
 			Arg::new(OPT_BSD_PARSE_ONLY)
 				.short('j')
 				.help(
-					"BSD compatibility: do not try to set the system clock;\nwith -f, parse the \
-					 date operand using the strptime(3)\nformat given to -f",
+					"BSD compatibility: do not try to set the system clock;\nwith -f, parse the date \
+					 operand using the strptime(3)\nformat given to -f",
 				)
 				.action(ArgAction::SetTrue),
 		)
@@ -1442,13 +1306,12 @@ fn uu_app() -> Command {
 				.allow_hyphen_values(true)
 				.action(ArgAction::Append)
 				.help(
-					"BSD compatibility: adjust ('+'/'-') or set (no sign) the\ndisplayed date; \
-					 may be given multiple times, applied in order",
+					"BSD compatibility: adjust ('+'/'-') or set (no sign) the\ndisplayed date; may be \
+					 given multiple times, applied in order",
 				),
 		)
 		.arg(Arg::new(OPT_FORMAT).num_args(0..))
 }
-
 
 const FORMAT_HELP: &str = "\
 FORMAT controls the output.  Interpreted sequences are:
@@ -1517,13 +1380,11 @@ Examples:
   Show the time on the west coast of the US (use tzselect(1) to find TZ)
     TZ='America/Los_Angeles' date";
 
-
 fn format_date(
 	date: &Zoned,
 	format_string: &str,
 	config: &Config<PosixCustom>,
 ) -> Result<String, String> {
-
 	if let Some(result) =
 		format_modifiers::format_with_modifiers_if_present(date, format_string, config)
 	{
@@ -1535,7 +1396,6 @@ fn format_date(
 		.to_string_with_config(config, format_string)
 		.map_err(|e| e.to_string())
 }
-
 
 fn make_format_string(settings: &Settings) -> &str {
 	match &settings.format {
@@ -1558,12 +1418,10 @@ fn make_format_string(settings: &Settings) -> &str {
 	}
 }
 
-
 static FIXED_OFFSET_ABBREVIATIONS: &[(&str, i32)] = &[
 	("UTC", 0),
 	("GMT", 0),
 	("MEST", 7200),
-
 	("PST", -28800),
 	("PDT", -25200),
 	("MST", -25200),
@@ -1572,24 +1430,18 @@ static FIXED_OFFSET_ABBREVIATIONS: &[(&str, i32)] = &[
 	("CDT", -18000),
 	("EST", -18000),
 	("EDT", -14400),
-
 	("IST", 19800),
-
 	("AWST", 28800),
 	("ACST", 34200),
 	("ACDT", 37800),
 	("AEST", 36000),
 	("AEDT", 39600),
-
 	("MEZ", 3600),
 	("MESZ", 7200),
-
 	("KST", 32400),
 ];
 
-
 static TZ_ABBREV_CACHE: LazyLock<HashMap<String, String>> = LazyLock::new(build_tz_abbrev_map);
-
 
 fn build_tz_abbrev_map() -> HashMap<String, String> {
 	let mut map = HashMap::new();
@@ -1597,7 +1449,6 @@ fn build_tz_abbrev_map() -> HashMap<String, String> {
 
 	for tz_name in tzdb.available() {
 		let tz_str = tz_name.as_str();
-
 
 		if let Some(last_part) = tz_str.split('/').next_back() {
 			let potential_abbrev = last_part.to_uppercase();
@@ -1615,18 +1466,14 @@ fn build_tz_abbrev_map() -> HashMap<String, String> {
 	map
 }
 
-
 fn tz_abbrev_to_iana(abbrev: &str) -> Option<&str> {
 	TZ_ABBREV_CACHE.get(abbrev).map(String::as_str)
 }
 
-
 fn try_parse_with_abbreviation<S: AsRef<str>>(date_str: S, now: &Zoned) -> Option<Zoned> {
 	let s = date_str.as_ref();
 
-
 	if let Some(last_word) = s.split_whitespace().last() {
-
 		if last_word.len() >= 2
 			&& last_word.len() <= 5
 			&& last_word.chars().all(|c| c.is_ascii_uppercase())
@@ -1653,10 +1500,8 @@ fn try_parse_with_abbreviation<S: AsRef<str>>(date_str: S, now: &Zoned) -> Optio
 		}
 	}
 
-
 	None
 }
-
 
 fn parse_dates_from_reader<'a, R: Read + 'a, W: Write + 'a>(
 	reader: R,
@@ -1672,7 +1517,6 @@ fn parse_dates_from_reader<'a, R: Read + 'a, W: Write + 'a>(
 	)
 }
 
-
 fn parse_date<S: AsRef<str> + Clone>(
 	s: S,
 	now: &Zoned,
@@ -1684,7 +1528,6 @@ fn parse_date<S: AsRef<str> + Clone>(
 	if dbg_opts.debug {
 		let _ = writeln!(error, "date: input string: {input_str}");
 	}
-
 
 	if let Some(zoned) = try_parse_with_abbreviation(input_str, now) {
 		if dbg_opts.debug {
@@ -1706,12 +1549,9 @@ fn parse_date<S: AsRef<str> + Clone>(
 	}
 
 	match parse_datetime::parse_datetime_at_date(now.clone(), input_str) {
-
-
 		Ok(date) => {
 			let result = date.timestamp().to_zoned(now.time_zone().clone());
 			if dbg_opts.debug {
-
 				let err = &mut *error;
 				let _ = writeln!(
 					err,
@@ -1724,12 +1564,9 @@ fn parse_date<S: AsRef<str> + Clone>(
 					strtime::format("%H:%M:%S", &result).unwrap_or_default()
 				);
 
-
 				let _ = writeln!(err, "date: input timezone: system default");
 
-
 				if dbg_opts.warn_midnight && !input_str.contains(':') && !input_str.contains('@') {
-
 					let time_str = strtime::format("%H:%M:%S", &result).unwrap_or_default();
 					if time_str == "00:00:00" {
 						let _ = writeln!(err, "date: warning: using midnight as starting time: 00:00:00");
@@ -1742,9 +1579,7 @@ fn parse_date<S: AsRef<str> + Clone>(
 	}
 }
 
-
 #[cfg(all(unix, not(target_os = "redox")))]
-
 
 fn get_clock_resolution() -> Timestamp {
 	use rustix::time::{ClockId, clock_getres};
@@ -1759,10 +1594,8 @@ fn set_system_datetime(date: Zoned) -> Result<(), DateError> {
 	use rustix::time::{ClockId, Timespec, clock_settime};
 
 	let timestamp = date.timestamp();
-	let timespec = Timespec {
-		tv_sec:  timestamp.as_second() as _,
-		tv_nsec: timestamp.subsec_nanosecond() as _,
-	};
+	let timespec =
+		Timespec { tv_sec: timestamp.as_second() as _, tv_nsec: timestamp.subsec_nanosecond() as _ };
 	clock_settime(ClockId::Realtime, timespec)
 		.map_err(std::io::Error::from)
 		.map_err(|error| DateError::new(1, format!("cannot set date: {error}")))
@@ -1770,20 +1603,13 @@ fn set_system_datetime(date: Zoned) -> Result<(), DateError> {
 
 #[cfg(not(unix))]
 fn set_system_datetime(_date: Zoned) -> Result<(), DateError> {
-	Err(DateError::new(
-		1,
-		"--set is not supported by the in-process builtin",
-	))
+	Err(DateError::new(1, "--set is not supported by the in-process builtin"))
 }
-
 
 #[cfg(all(unix, target_os = "redox"))]
 fn get_clock_resolution() -> Timestamp {
-
-
 	Timestamp::constant(0, 1)
 }
-
 
 pub(crate) fn date_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Date, SE>()

@@ -374,6 +374,8 @@ export function renderSampleProfile(text: string): string | null {
 	}
 
 	out.push("");
-	out.push("[Summarized view of a macOS `sample` call-tree report. Use ':raw' to read the original file.]");
+	out.push(
+		"[Summarized view of a macOS `sample` call-tree report. Use ':raw' or a line range to read the original file.]",
+	);
 	return out.join("\n");
 }

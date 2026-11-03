@@ -1,5 +1,3 @@
-
-
 pub(crate) use nix::sys::signal::Signal;
 
 use crate::{error, sys, traps};
@@ -28,11 +26,6 @@ pub(crate) fn continue_process(pid: sys::process::ProcessId) -> Result<(), error
 		.map_err(|_errno| error::ErrorKind::FailedToSendSignal)?;
 	Ok(())
 }
-
-
-
-
-
 
 pub fn kill_process(
 	pid: sys::process::ProcessId,
@@ -79,12 +72,6 @@ pub(crate) fn mask_sigttou() -> Result<(), error::Error> {
 		nix::sys::signal::SigSet::empty(),
 	);
 
-
-
-
-
-
-
 	unsafe { nix::sys::signal::sigaction(nix::sys::signal::Signal::SIGTTOU, &ignore) }?;
 
 	Ok(())
@@ -116,24 +103,11 @@ fn waitid_all(
 	nix::sys::wait::waitid(nix::sys::wait::Id::All, flags)
 }
 
-
-
-
-
-
-
 #[cfg(target_os = "macos")]
 fn waitid_all(
 	flags: nix::sys::wait::WaitPidFlag,
 ) -> Result<nix::sys::wait::WaitStatus, nix::errno::Errno> {
-
-
-
-
-
 	let mut siginfo: nix::libc::siginfo_t = unsafe { std::mem::zeroed() };
-
-
 
 	nix::errno::Errno::result(unsafe {
 		nix::libc::waitid(nix::libc::P_ALL, 0, &raw mut siginfo, flags.bits())
@@ -146,16 +120,12 @@ fn waitid_all(
 fn siginfo_to_wait_status(
 	siginfo: nix::libc::siginfo_t,
 ) -> Result<nix::sys::wait::WaitStatus, nix::errno::Errno> {
-
-
 	let si_pid = unsafe { siginfo.si_pid() };
 	if si_pid == 0 {
 		return Ok(nix::sys::wait::WaitStatus::StillAlive);
 	}
 
 	let pid = nix::unistd::Pid::from_raw(si_pid);
-
-
 
 	let si_status = unsafe { siginfo.si_status() };
 

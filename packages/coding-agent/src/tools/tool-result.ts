@@ -1,7 +1,13 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { UserContent } from "@oh-my-pi/pi-ai";
 import type { OutputSummary, TruncationResult } from "../session/streaming-output";
-import type { OutputMeta, TruncationOptions, TruncationSummaryOptions, TruncationTextOptions } from "./output-meta";
+import type {
+	MinimizedMeta,
+	OutputMeta,
+	TruncationOptions,
+	TruncationSummaryOptions,
+	TruncationTextOptions,
+} from "./output-meta";
 import { outputMeta } from "./output-meta";
 
 type ToolContent = UserContent[];
@@ -52,6 +58,16 @@ export class ToolResultBuilder<TDetails extends DetailsWithMeta> {
 		columnUnit?: "bytes" | "chars";
 	}): this {
 		this.#meta.limits(limits);
+		return this;
+	}
+
+	pagedSource(): this {
+		this.#meta.pagedSource();
+		return this;
+	}
+
+	minimized(value: MinimizedMeta | undefined): this {
+		this.#meta.minimized(value);
 		return this;
 	}
 

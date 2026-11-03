@@ -428,7 +428,7 @@ That means print mode and non-UI RPC/tool contexts never use the local PTY overl
 Session-level bang-command executions pass the captured session id as `sessionKey` (`target.sessionId` in `BashRunner`).
 
 Tool-call executions pass `sessionKey: this.session.getSessionId?.()`, when available. In both surfaces, a session key isolates shell reuse per session; without one, reuse falls back to shell config/snapshot/env.
-Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Overlap no longer silently switches to a fresh shell. Named lanes isolate shell and Python/JavaScript state while allowing independent execution. A cancelled queued caller never executes its command. Managed background jobs default to `async:<jobId>`; explicit lanes are respected. Kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid waiting on their own calling cell. Do not request the calling lane from a nested tool call.
+Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Overlap no longer silently switches to a fresh shell. Named lanes isolate shell and Python/JavaScript state while allowing independent execution. A cancelled queued caller never executes its command. Managed background jobs run in their own shell lane (`async:<jobId>` by default), but their Python/JavaScript cells stay in the session's kernel (or the explicit lane's kernel) instead of starting a kernel per job. Kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid waiting on their own calling cell. Do not request the calling lane from a nested tool call.
 
 ## Bundled `jq` compatibility
 

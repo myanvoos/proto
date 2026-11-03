@@ -26,6 +26,10 @@ function isAddressInUse(error: unknown): boolean {
 	return error instanceof Error && /EADDRINUSE|in use/i.test(error.message);
 }
 
+function serializeCallbackState(state: unknown): string {
+	return JSON.stringify(state).replaceAll("<", "\\u003c");
+}
+
 function ipv6LoopbackAvailable(): boolean {
 	const interfaces = os.networkInterfaces();
 	for (const name in interfaces) {
@@ -298,7 +302,7 @@ export abstract class OAuthCallbackFlow {
 		}
 
 		return new Response(
-			(templateHtml as unknown as string).replaceAll("__OAUTH_STATE__", JSON.stringify(resultState)),
+			(templateHtml as unknown as string).replaceAll("__OAUTH_STATE__", () => serializeCallbackState(resultState)),
 			{
 				status: resultState.ok ? 200 : 500,
 				headers: { "Content-Type": "text/html" },

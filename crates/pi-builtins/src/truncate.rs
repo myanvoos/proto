@@ -1,7 +1,3 @@
-
-
-
-
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::{
@@ -31,14 +27,6 @@ enum TruncateMode {
 }
 
 impl TruncateMode {
-
-
-
-
-
-
-
-
 	fn to_size(&self, fsize: u64) -> Option<u64> {
 		match self {
 			Self::Absolute(size) => Some(*size),
@@ -51,7 +39,6 @@ impl TruncateMode {
 		}
 	}
 
-
 	fn value(&self) -> u64 {
 		match self {
 			Self::Absolute(n)
@@ -63,9 +50,6 @@ impl TruncateMode {
 			| Self::RoundUp(n) => *n,
 		}
 	}
-
-
-
 
 	fn scale(&self, factor: u64) -> Option<Self> {
 		let value = self.value().checked_mul(factor)?;
@@ -80,7 +64,6 @@ impl TruncateMode {
 		})
 	}
 
-
 	fn is_absolute(&self) -> bool {
 		matches!(self, Self::Absolute(_))
 	}
@@ -93,7 +76,6 @@ mod options {
 	pub static SIZE: &str = "size";
 	pub static ARG_FILES: &str = "files";
 }
-
 
 pub(crate) struct Truncate {
 	matches: ArgMatches,
@@ -122,7 +104,10 @@ impl Utility for Truncate {
 			.matches
 			.get_one::<String>(options::REFERENCE)
 			.map(String::from);
-		let size = self.matches.get_one::<String>(options::SIZE).map(String::from);
+		let size = self
+			.matches
+			.get_one::<String>(options::SIZE)
+			.map(String::from);
 
 		if let Err(error) = truncate(host, no_create, io_blocks, reference, size, &files) {
 			host.error(error, 1);
@@ -130,7 +115,6 @@ impl Utility for Truncate {
 		host.exit_code()
 	}
 }
-
 
 fn app() -> Command {
 	Command::new(Truncate::NAME)
@@ -193,8 +177,6 @@ fn app() -> Command {
 		)
 }
 
-
-
 #[cfg(unix)]
 fn io_blocksize(file_metadata: &Metadata) -> u64 {
 	match file_metadata.blksize() {
@@ -208,13 +190,6 @@ fn io_blocksize(_file_metadata: &Metadata) -> u64 {
 	512
 }
 
-
-
-
-
-
-
-
 fn file_truncate(
 	host: &Host,
 	no_create: bool,
@@ -224,8 +199,6 @@ fn file_truncate(
 	filename: &OsString,
 ) -> Result<(), String> {
 	let resolved = host.resolve(filename);
-
-
 
 	#[cfg(unix)]
 	if let Ok(pre_metadata) = metadata(&resolved) {
@@ -263,18 +236,13 @@ fn file_truncate(
 		*mode
 	};
 
-
-
 	let actual_reference_size = reference_size.unwrap_or_else(|| file_metadata.len());
 	let Some(truncate_size) = mode.to_size(actual_reference_size) else {
 		return Err("division by zero".to_string());
 	};
 
 	file.set_len(truncate_size).map_err(|error| {
-		format!(
-			"failed to truncate {} at {truncate_size} bytes: {error}",
-			filename.quote()
-		)
+		format!("failed to truncate {} at {truncate_size} bytes: {error}", filename.quote())
 	})
 }
 
@@ -292,41 +260,35 @@ fn truncate(
 
 	let reference_size = match reference {
 		Some(reference_path) => {
-			let reference_metadata = metadata(host.resolve(&reference_path)).map_err(|error| {
-				match error.kind() {
-					ErrorKind::NotFound => format!(
-						"cannot stat {}: No such file or directory",
-						reference_path.quote()
-					),
+			let reference_metadata =
+				metadata(host.resolve(&reference_path)).map_err(|error| match error.kind() {
+					ErrorKind::NotFound => {
+						format!("cannot stat {}: No such file or directory", reference_path.quote())
+					},
 					_ => error.to_string(),
-				}
-			})?;
+				})?;
 			Some(reference_metadata.len())
 		},
 		None => None,
 	};
 
-
 	let mode = match size.as_deref() {
-		Some(string) => parse_mode_and_size(string)
-			.map_err(|error| format!("Invalid number: {error}"))?,
+		Some(string) => {
+			parse_mode_and_size(string).map_err(|error| format!("Invalid number: {error}"))?
+		},
 		None => TruncateMode::Extend(0),
 	};
-
-
 
 	if matches!(mode, TruncateMode::RoundDown(0) | TruncateMode::RoundUp(0)) {
 		return Err("division by zero".to_string());
 	}
-
 
 	if reference_size.is_some() && mode.is_absolute() {
 		return Err("you must specify a relative '--size' with '--reference'".to_string());
 	}
 
 	for filename in filenames {
-		if let Err(error) =
-			file_truncate(host, no_create, io_blocks, reference_size, &mode, filename)
+		if let Err(error) = file_truncate(host, no_create, io_blocks, reference_size, &mode, filename)
 		{
 			host.error(error, 1);
 		}
@@ -335,13 +297,9 @@ fn truncate(
 	Ok(())
 }
 
-
-
-
 fn is_modifier(c: char) -> bool {
 	c == '+' || c == '-' || c == '<' || c == '>' || c == '/' || c == '%' || c == '='
 }
-
 
 fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError> {
 	let mut size_string = size_string.trim();
@@ -351,7 +309,6 @@ fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError
 			size_string = &size_string[1..];
 		}
 		let mut allow_list = allow_list_with_all_suffixes("EgGkKmMPQRtTYZ");
-
 
 		allow_list.push("b".to_string());
 		let allow_list_ref = allow_list.iter().map(AsRef::as_ref).collect::<Vec<&str>>();
@@ -372,9 +329,6 @@ fn parse_mode_and_size(size_string: &str) -> Result<TruncateMode, ParseSizeError
 	}
 }
 
-
 pub(crate) fn truncate_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Truncate, SE>()
 }
-
-

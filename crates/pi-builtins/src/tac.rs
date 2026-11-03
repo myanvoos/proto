@@ -1,21 +1,19 @@
-
-
-
+//! `tac` builtin: write each file to standard output, last line first.
+//!
+//! Ported from uutils coreutils 0.8.0.
 
 use std::{
 	ffi::{OsStr, OsString},
-	fs::File,
-	io::{BufWriter, Read, Write},
+	io::{BufWriter, Read, Seek, SeekFrom, Write},
 };
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use memchr::memmem;
-use memmap2::Mmap;
 use thiserror::Error;
 use uucore::display::Quotable;
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno, util};
 
 mod options {
 	pub static BEFORE: &str = "before";
@@ -26,29 +24,21 @@ mod options {
 
 #[derive(Debug, Error)]
 enum TacError {
-
+	/// A regular expression given by the user is invalid.
 	#[error("invalid regular expression: {0}")]
 	InvalidRegex(regex::Error),
-
+	/// An error opening a file for reading.
 	#[error("failed to open {} for reading: {}", .0.quote(), strip_errno(.1))]
 	Open(OsString, std::io::Error),
-
+	/// An error reading the contents of a file or stdin.
 	#[error("{}: read error: {}", .0.maybe_quote(), strip_errno(.1))]
 	Read(OsString, std::io::Error),
-
+	/// An error writing the reversed contents of a file or stdin.
 	#[error("failed to write to stdout: {}", strip_errno(.0))]
 	Write(std::io::Error),
 }
 
-fn strip_errno(error: &std::io::Error) -> String {
-	let mut message = error.to_string();
-	if let Some(position) = message.find(" (os error ") {
-		message.truncate(position);
-	}
-	message
-}
-
-
+/// Parsed `tac` invocation.
 pub(crate) struct Tac {
 	matches: ArgMatches,
 }
@@ -64,8 +54,8 @@ impl Utility for Tac {
 }
 
 #[allow(dead_code, reason = "called by the separately feature-gated tail builtin")]
-
-
+/// Runs `tac` with `argv` (argv[0] is the command name) against `host`.
+/// Entry point for BSD `tail -r` delegation.
 pub(crate) fn run_argv(argv: Vec<std::ffi::OsString>, host: &mut Host) -> i32 {
 	match <Tac as clap::Parser>::try_parse_from(argv) {
 		Ok(parsed) => parsed.run(host),
@@ -99,7 +89,11 @@ fn tac_main(matches: &ArgMatches, host: &mut Host) -> Result<(), TacError> {
 		.get_one::<OsString>(options::SEPARATOR)
 		.map_or(OsStr::new("\n"), |separator| separator.as_os_str());
 
-	let separator = if raw_separator.is_empty() { OsStr::new("\0") } else { raw_separator };
+	let separator = if raw_separator.is_empty() {
+		OsStr::new("\0")
+	} else {
+		raw_separator
+	};
 	let files: Vec<OsString> = matches
 		.get_many::<OsString>(options::FILE)
 		.map_or_else(|| vec![OsString::from("-")], |files| files.cloned().collect());
@@ -107,7 +101,7 @@ fn tac_main(matches: &ArgMatches, host: &mut Host) -> Result<(), TacError> {
 	tac(&files, before, regex, separator, host)
 }
 
-
+/// The `tac` argument model.
 fn app() -> Command {
 	Command::new(Tac::NAME)
 		.version("0.8.0")
@@ -145,16 +139,17 @@ fn app() -> Command {
 		)
 }
 
-
-
-
-
+/// Reports a recoverable per-file error and records a non-zero status.
+///
+/// This deliberately uses `Tac::NAME`: delegated `tail -r` invocations retain
+/// `tac:` diagnostics even though the shared host's invocation name is `tail`.
 fn show(host: &mut Host, error: &TacError) {
 	let _ = writeln!(host.stderr, "{}: {error}", Tac::NAME);
 	host.fail(1);
 }
 
-
+/// Prints lines of a buffer in reverse, with the line separator given as a
+/// regex.
 fn buffer_tac_regex(
 	data: &[u8],
 	pattern: &regex::bytes::Regex,
@@ -163,11 +158,11 @@ fn buffer_tac_regex(
 ) -> std::io::Result<()> {
 	let mut out = BufWriter::new(&mut host.stdout);
 
-
-
+	// As we scan from right to left, this limits each search to bytes before the
+	// separator found on the previous iteration.
 	let mut this_line_end = data.len();
-
-
+	// If `before` is true, each line starts immediately before its separator;
+	// otherwise it starts immediately after it.
 	let mut following_line_start = data.len();
 
 	for i in (0..data.len()).rev() {
@@ -190,31 +185,65 @@ fn buffer_tac_regex(
 	out.flush()
 }
 
+/// Input read per step when a file is read backwards.
+const BLOCK: usize = 128 * 1024;
+/// Output gathered per write: lines come out short and scattered.
+const OUTPUT_BUFFER: usize = 64 * 1024;
 
-fn buffer_tac(data: &[u8], before: bool, separator: &OsStr, host: &mut Host) -> std::io::Result<()> {
-	let mut out = BufWriter::new(&mut host.stdout);
-	let separator_len = separator.len();
-	let mut following_line_start = data.len();
-
-	for i in memmem::rfind_iter(data, separator.as_encoded_bytes()) {
-		if before {
-			out.write_all(&data[i..following_line_start])?;
-			following_line_start = i;
+/// Writes the input's lines to stdout in reverse, split on a literal separator.
+///
+/// `window` holds the input from offset `start` to its end. While no separator
+/// is left in it and `start` is not 0, `read_before(offset, buffer)` fills
+/// `buffer` with the input bytes that end at `offset`, so a file read backwards
+/// keeps only one block and its unfinished line in memory. Separators match as
+/// `memmem::rfind_iter` over the whole input would: each search ends where the
+/// previously found separator starts.
+fn reverse_lines(
+	mut window: Vec<u8>,
+	mut start: usize,
+	before: bool,
+	separator: &[u8],
+	host: &mut Host,
+	mut read_before: impl FnMut(usize, &mut [u8]) -> Result<(), TacError>,
+) -> Result<(), TacError> {
+	let finder = memmem::FinderRev::new(separator);
+	let mut out = BufWriter::with_capacity(OUTPUT_BUFFER, &mut host.stdout);
+	// `window[..end]` is not written yet; separators are searched in
+	// `window[..limit]`.
+	let mut end = window.len();
+	let mut limit = end;
+	loop {
+		if let Some(i) = finder.rfind(&window[..limit]) {
+			let line_start = if before { i } else { i + separator.len() };
+			out.write_all(&window[line_start..end])
+				.map_err(TacError::Write)?;
+			end = line_start;
+			limit = i;
+		} else if start == 0 {
+			break;
 		} else {
-			out.write_all(&data[i + separator_len..following_line_start])?;
-			following_line_start = i + separator_len;
+			// Prepend the input before the window, at least as much as the
+			// unfinished line holds, so a long line costs linear time.
+			let read = BLOCK.max(end).min(start);
+			if window.len() < read + end {
+				window.resize(read + end, 0);
+			}
+			window.copy_within(..end, read);
+			read_before(start, &mut window[..read])?;
+			start -= read;
+			end += read;
+			limit += read;
 		}
 	}
-
-	out.write_all(&data[..following_line_start])?;
-	out.flush()
+	out.write_all(&window[..end]).map_err(TacError::Write)?;
+	out.flush().map_err(TacError::Write)
 }
 
-
-
-
-
-
+/// Makes the GNU basic regular-expression flavor compatible with `regex`.
+///
+/// This toggles escaping of `()`, `|`, and `{}`, escapes misplaced anchors,
+/// leaves only ASCII bytes inside bracket expressions, and byte-escapes
+/// non-ASCII outside bracket expressions.
 fn translate_regex_flavor(bytes: &[u8]) -> String {
 	let mut result = Vec::new();
 	let mut i = 0;
@@ -316,69 +345,75 @@ fn tac(
 	};
 
 	for filename in filenames {
-		let mmap;
-		let buffer;
-		let data: &[u8] = if filename == "-" {
-			let mut contents = Vec::new();
-			match host.stdin.read_to_end(&mut contents) {
-				Ok(_) => {
-					buffer = contents;
-					&buffer
-				},
-				Err(error) => {
-					show(host, &TacError::Read(OsString::from("stdin"), error));
-					continue;
-				},
+		if host.is_cancelled() {
+			break;
+		}
+		// Never map the input: a concurrent truncation would SIGBUS the whole
+		// host process through the mapping (and on Windows the mapping makes the
+		// writer's SetEndOfFile fail).
+		let mut data = Vec::new();
+		if filename == "-" {
+			if let Err(error) = host.stdin.read_to_end(&mut data) {
+				show(host, &TacError::Read(OsString::from("stdin"), error));
+				continue;
 			}
 		} else {
-			let mut file = match host.open_read(filename) {
+			let path = host.resolve(filename);
+			let mut file = match host.open_read(path) {
 				Ok(file) => file,
 				Err(error) => {
 					show(host, &TacError::Open(filename.clone(), error));
 					continue;
 				},
 			};
-
-			if let Some(mapping) = try_mmap_file(&file) {
-				mmap = mapping;
-				&mmap
-			} else {
-				let mut contents = Vec::new();
-				match file.read_to_end(&mut contents) {
-					Ok(_) => {
-						buffer = contents;
-						&buffer
+			// A regular host file larger than a block is read backwards instead
+			// of whole. Smaller files include pseudo-files (procfs, sysfs) whose
+			// reported size is not their content's.
+			if maybe_pattern.is_none()
+				&& let Some(len) = file
+					.metadata()
+					.ok()
+					.filter(std::fs::Metadata::is_file)
+					.and_then(|metadata| usize::try_from(metadata.len()).ok())
+					.filter(|len| *len > BLOCK)
+			{
+				let result = reverse_lines(
+					Vec::new(),
+					len,
+					before,
+					separator.as_encoded_bytes(),
+					host,
+					|offset, buffer| {
+						file
+							.seek(SeekFrom::Start((offset - buffer.len()) as u64))
+							.and_then(|_| file.read_exact(buffer))
+							.map_err(|error| TacError::Read(filename.clone(), error))
 					},
-					Err(error) => {
-						show(host, &TacError::Read(filename.clone(), error));
-						continue;
-					},
+				);
+				match result {
+					Err(error @ TacError::Read(..)) => show(host, &error),
+					result => result?,
 				}
+				continue;
 			}
-		};
+			if let Err(error) = file.read_to_end(&mut data) {
+				show(host, &TacError::Read(filename.clone(), error));
+				continue;
+			}
+		}
 
-		let result = match &maybe_pattern {
-			Some(pattern) => buffer_tac_regex(data, pattern, before, host),
-			None => buffer_tac(data, before, separator, host),
-		};
-		if let Err(error) = result {
-			return Err(TacError::Write(error));
+		match &maybe_pattern {
+			Some(pattern) => {
+				buffer_tac_regex(&data, pattern, before, host).map_err(TacError::Write)?
+			},
+			// The whole input is in the window, so nothing is read before it.
+			None => reverse_lines(data, 0, before, separator.as_encoded_bytes(), host, |_, _| Ok(()))?,
 		}
 	}
 	Ok(())
 }
 
-fn try_mmap_file(file: &File) -> Option<Mmap> {
-
-
-	unsafe { Mmap::map(file).ok() }
-}
-
-
+/// Creates the `tac` builtin registration.
 pub(crate) fn tac_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Tac, SE>()
 }
-
-
-
-

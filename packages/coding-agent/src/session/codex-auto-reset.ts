@@ -101,6 +101,7 @@ export type CodexResetSkipReason =
 	| "wrong-provider"
 	| "spark-model"
 	| "no-identity"
+	| "outside-account-pool"
 	| "stale-report"
 	| "not-limit-reached"
 	| "no-exhausted-window"
@@ -134,6 +135,8 @@ export interface CodexResetPlanInput {
 	};
 	/** Active account (marks the preferred restore candidate); may be undefined. */
 	identity: OAuthAccountIdentity | undefined;
+	/** Whether this stored credential is still visible in the caller's account pool. */
+	permitsCredential?: (credentialId: number) => boolean;
 	/** Usage reports for ALL stored accounts (one per account for Codex). */
 	reports: UsageReport[] | null;
 	attemptedKeys: ReadonlySet<string>;
@@ -149,7 +152,7 @@ export interface CodexResetPlanInput {
 	activeBlockUnblockAtMs?: number;
 }
 
-/** One credit to spend. `redeemResetCredit` picks the account's soonest-expiring credit. */
+/** One planned reset; expiry salvage pins the exact credit when the live inventory names it. */
 export interface CodexResetAction {
 	reason: "blocked-account" | "expiring-credit";
 	target: ResetCreditTarget;
@@ -189,18 +192,18 @@ export interface CodexResetPlan {
 	skipped: CodexResetSkip[];
 }
 
-/** Soonest future expiry (epoch ms) among available credits, or undefined. */
-function soonestCreditExpiryMs(
+/** Identity and future expiry of the earliest-expiring available credit, or undefined. */
+function soonestAvailableCredit(
 	credits: readonly UsageResetCreditDetail[] | undefined,
 	nowMs: number,
-): number | undefined {
-	let soonest: number | undefined;
+): { id?: string; expiresAtMs: number } | undefined {
+	let soonest: { id?: string; expiresAtMs: number } | undefined;
 	for (const credit of credits ?? []) {
 		if ((credit.status ?? "available") !== "available") continue;
 		if (!credit.expiresAt) continue;
 		const expiry = Date.parse(credit.expiresAt);
 		if (Number.isNaN(expiry) || expiry <= nowMs) continue;
-		if (soonest === undefined || expiry < soonest) soonest = expiry;
+		if (soonest === undefined || expiry < soonest.expiresAtMs) soonest = { id: credit.id, expiresAtMs: expiry };
 	}
 	return soonest;
 }
@@ -223,6 +226,7 @@ interface AccountSnapshot {
 	windows: CodexChatWindowSnapshot[];
 	limitReached: boolean;
 	creditExpiresAtMs: number | undefined;
+	creditId: string | undefined;
 }
 
 function classifyChatWindow(limit: UsageLimit, fallback: CodexChatWindow): CodexChatWindow {
@@ -297,7 +301,9 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 			skipped.push({ accountKey: "*", rule: "account", reason: "credits-unknown" });
 			continue;
 		}
-		const accountKey = `openai-codex|${orgId?.trim().toLowerCase() ?? "-"}|${credentialId}`;
+		const accountKey =
+			resetAccountLockKey({ provider: "openai-codex", accountId, email, orgId }) ??
+			`openai-codex|${orgId?.trim().toLowerCase() ?? "-"}|${credentialId}`;
 		const isActive =
 			report.metadata?.resetCreditActive === true || reportMatchesActiveAccount(report, input.identity);
 		if (nowMs - report.fetchedAt > REPORT_FRESHNESS_MS) {
@@ -321,6 +327,7 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 		if (weekly) windows.push(snapshotChatWindow(weekly, "weekly"));
 		const baseLabel = email ?? accountId ?? accountKey;
 		const label = orgId && orgId !== baseLabel ? `${baseLabel} (${orgId})` : baseLabel;
+		const soonest = soonestAvailableCredit(report.resetCredits?.credits, nowMs);
 		snapshots.push({
 			accountKey,
 			target: {
@@ -335,7 +342,8 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 			availableCount: available,
 			windows,
 			limitReached: report.metadata?.limitReached === true,
-			creditExpiresAtMs: soonestCreditExpiryMs(report.resetCredits?.credits, nowMs),
+			creditExpiresAtMs: soonest?.expiresAtMs,
+			creditId: soonest?.id,
 		});
 	}
 
@@ -358,6 +366,10 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 		for (const snapshot of snapshots) {
 			const rule = "blocked-account" as const;
 			const skip = (reason: CodexResetSkipReason) => skipped.push({ accountKey: snapshot.accountKey, rule, reason });
+			if (input.permitsCredential && !input.permitsCredential(snapshot.target.credentialId)) {
+				skip("outside-account-pool");
+				continue;
+			}
 			// Live evidence: the 429 that triggered this pass names the active
 			// account directly, outranking a possibly pre-block report snapshot.
 			const liveUnblockAtMs = snapshot.active ? input.activeBlockUnblockAtMs : undefined;
@@ -518,7 +530,7 @@ export function planCodexResetRedemptions(input: CodexResetPlanInput): CodexRese
 			}
 			salvages.push({
 				reason: "expiring-credit",
-				target: snapshot.target,
+				target: snapshot.creditId ? { ...snapshot.target, creditId: snapshot.creditId } : snapshot.target,
 				accountKey: snapshot.accountKey,
 				attemptKey,
 				label: snapshot.label,
@@ -585,7 +597,12 @@ export function overlayLiveResetCredits(
 				availableCount: status.availableCount,
 				credits: status.credits
 					.filter(credit => (credit.status ?? "available") === "available")
-					.map(credit => ({ grantedAt: credit.grantedAt, expiresAt: credit.expiresAt, status: credit.status })),
+					.map(credit => ({
+						id: credit.id,
+						grantedAt: credit.grantedAt,
+						expiresAt: credit.expiresAt,
+						status: credit.status,
+					})),
 			},
 		};
 	});
@@ -620,6 +637,7 @@ export function overlayLiveResetCredits(
 					credits: active.credits
 						.filter(credit => (credit.status ?? "available") === "available")
 						.map(credit => ({
+							id: credit.id,
 							grantedAt: credit.grantedAt,
 							expiresAt: credit.expiresAt,
 							status: credit.status,
@@ -629,6 +647,17 @@ export function overlayLiveResetCredits(
 		}
 	}
 	return reports || merged.length > 0 ? merged : null;
+}
+
+/** Cross-process fences follow upstream account identity, never a store-local row id. */
+export function resetAccountLockKey(identity: {
+	provider: string;
+	accountId?: string;
+	email?: string;
+	orgId?: string;
+}): string | undefined {
+	const account = (identity.accountId ?? identity.email)?.trim().toLowerCase();
+	return account ? `${identity.provider}|${identity.orgId?.trim().toLowerCase() ?? "-"}|${account}` : undefined;
 }
 
 /**
@@ -660,8 +689,8 @@ export function isTerminalRedeemOutcome(code: string): boolean {
  * - `lastAttemptAtByAccount`: per-account cooldown timestamps (epoch ms),
  *   catching attempt-key drift across a minute boundary.
  * - `inFlightByAccount`: serializes blocked passes per account — a second
- *   session for the same account adopts the in-flight promise instead of
- *   starting a second consume.
+ *   session accepts the restored target only if its visible account pool can use
+ *   that exact upstream identity; otherwise it re-plans after the pass settles.
  * - `sweepInFlight` / `lastSweepAt` / `sweepPromise`: re-entrancy guard, floor,
  *   and settlement handle for the combined provider salvage sweep (a redeem refreshes usage,
  *   which would recurse into a sweep; the promise lets tests and diagnostics
@@ -673,7 +702,9 @@ export interface CodexAutoRedeemCoordinator {
 	attemptedKeys: Set<string>;
 	deferredUntilByKey: Map<string, number>;
 	lastAttemptAtByAccount: Map<string, number>;
-	inFlightByAccount: Map<string, Promise<boolean>>;
+	inFlightByAccount: Map<string, Promise<ResetCreditTarget[]>>;
+	/** Optional fence namespace for isolated stores/tests; default is the agent database. */
+	resetLockPath?: string;
 	sweepInFlight: boolean;
 	lastSweepAt: number;
 	/** Settlement of the most recently scheduled sweep (never rejects). */

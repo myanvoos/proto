@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
 import { isEnoent, isEnotdir } from "./fs-error";
+import { isBunTestRuntime } from "./test-runtime";
 
 export const APP_NAME: string = "proto";
 
@@ -84,10 +85,18 @@ function standardizeMacOSPath(p: string): string {
 
 export function resolveEquivalentPath(inputPath: string): string {
 	const resolvedPath = path.resolve(inputPath);
-	try {
-		return fs.realpathSync(resolvedPath);
-	} catch {
-		return resolvedPath;
+	let ancestor = resolvedPath;
+	const missing: string[] = [];
+	for (;;) {
+		try {
+			return path.join(fs.realpathSync(ancestor), ...missing.reverse());
+		} catch (error) {
+			if (!isEnoent(error) && !isEnotdir(error)) return resolvedPath;
+			const parent = path.dirname(ancestor);
+			if (parent === ancestor) return resolvedPath;
+			missing.push(path.basename(ancestor));
+			ancestor = parent;
+		}
 	}
 }
 
@@ -461,6 +470,10 @@ export function getReportsDir(): string {
 }
 
 export function getLogsDir(): string {
+	if (isBunTestRuntime()) {
+		const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().username;
+		return path.join(os.tmpdir(), `proto-test-logs-${uid}`);
+	}
 	return dirs.rootSubdir("logs", "state");
 }
 

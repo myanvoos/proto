@@ -1,16 +1,10 @@
-
-
 use crate::error;
-
-
 
 pub fn get_self_user_and_system_time()
 -> Result<(std::time::Duration, std::time::Duration), error::Error> {
 	let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)?;
 	Ok((convert_rusage_time(usage.user_time()), convert_rusage_time(usage.system_time())))
 }
-
-
 
 pub fn get_children_user_and_system_time()
 -> Result<(std::time::Duration, std::time::Duration), error::Error> {

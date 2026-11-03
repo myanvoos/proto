@@ -8,6 +8,9 @@ import {
 	getConfigDirName,
 	getPluginsDir,
 	getProjectDir,
+	isFsError,
+	logger,
+	normalizePathForComparison,
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
@@ -247,8 +250,15 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	let tools =
-		Array.isArray(frontmatter.tools) && frontmatter.tools.length === 0 ? [] : parseArrayOrCSV(frontmatter.tools);
+	// Malformed restrictions must never widen access to the default tools.
+	const rawTools = frontmatter.tools;
+	let tools = rawTools == null ? undefined : (parseArrayOrCSV(rawTools) ?? []);
+	if (tools?.length === 0 && !(Array.isArray(rawTools) && rawTools.length === 0)) {
+		logger.warn("Agent tools declaration names no tools; using an empty built-in allowlist", {
+			agent: name,
+			valueType: Array.isArray(rawTools) ? "array" : typeof rawTools,
+		});
+	}
 	if (tools) tools = normalizeToolNames(tools);
 
 	if (tools && !tools.includes("yield")) {
@@ -766,40 +776,130 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 	return data;
 }
 
+/** Project discovery never examines home or shared temporary roots, or their ancestors. */
+export function getProjectDiscoveryCeilings(): ReadonlySet<string> {
+	const ceilings = new Set<string>();
+	ceilings.add(normalizePathForComparison(os.homedir()));
+	ceilings.add(normalizePathForComparison(os.tmpdir()));
+	if (process.platform !== "win32") {
+		ceilings.add(normalizePathForComparison("/tmp"));
+		ceilings.add(normalizePathForComparison("/var/tmp"));
+	}
+	return ceilings;
+}
+
+/** The current user's config roots are never project anchors. */
+export function isUserConfigRoot(root: string): boolean {
+	const configDir = normalizePathForComparison(path.join(root, getConfigDirName()));
+	return (
+		configDir === normalizePathForComparison(path.join(os.homedir(), getConfigDirName())) ||
+		configDir === normalizePathForComparison(path.dirname(getPluginsDir()))
+	);
+}
+
+/**
+ * An inactive default user layout (`<configDirName>/agent/`) is not a project anchor above a git
+ * root or without a repo. `configDirName` is the project config dir the caller would load from.
+ */
+export async function isForeignUserConfigRoot(root: string, configDirName: string): Promise<boolean> {
+	try {
+		const agentDir = path.join(root, configDirName, "agent");
+		const stat = await fs.promises.stat(agentDir);
+		return stat.isDirectory() && normalizePathForComparison(agentDir) !== normalizePathForComparison(getAgentDir());
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Resolve the active project registry path by walking up from `cwd`.
+ *
+ * Walk order:
+ * 1. Walk up from `cwd` looking for the nearest directory containing `.proto/`.
+ *    The first match returns `<dir>/.proto/plugins/installed_plugins.json`.
+ * 2. If no `.proto/` is found, rescan from `cwd` upward looking for `.git`.
+ *    The git root is used as an anchor: `<gitRoot>/.proto/plugins/installed_plugins.json`.
+ * 3. Stop before home or a temporary root in either pass. If neither anchor is
+ *    found below that ceiling, return `null` — no project context is active.
+ * Inactive `.proto/agent/` layouts are skipped only above the nearest git root,
+ * or throughout an unanchored walk, so repo-local agent directories stay project scope.
+ *
+ * This is the single source of truth for "active project root" used by install,
+ * uninstall, list, upgrade, discovery, and doctor. Deterministic for a given `cwd`.
+ */
 export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
-	const homeDir = os.homedir();
-	const configDirName = getConfigDirName();
-	let gitCandidate: string | null = null;
+	return resolveProjectRegistryPath(cwd, getProjectDiscoveryCeilings());
+}
+
+async function resolveProjectRegistryPath(cwd: string, ceilings: ReadonlySet<string>): Promise<string | null> {
+	// Find the nearest git root once, retaining the existing user-root exclusion for fallback.
+	let nearestGitRoot: string | null = null;
+	let gitAnchor: string | null = null;
 	let dir = path.resolve(cwd);
-	while (dir !== homeDir) {
-		const entries = await readDirEntries(dir);
-		if (entries.some(entry => entry.name === configDirName)) {
-			try {
-				const stat = await fs.promises.stat(path.join(dir, configDirName));
-				if (stat.isDirectory()) {
-					return path.join(dir, configDirName, "plugins", "installed_plugins.json");
-				}
-			} catch {}
-		}
-		if (!gitCandidate && entries.some(entry => entry.name === ".git")) {
-			try {
-				await fs.promises.stat(path.join(dir, ".git"));
-				gitCandidate = path.join(dir, configDirName, "plugins", "installed_plugins.json");
-			} catch {}
+	while (!ceilings.has(normalizePathForComparison(dir))) {
+		try {
+			await fs.promises.stat(path.join(dir, ".git"));
+			nearestGitRoot ??= dir;
+			if (!isUserConfigRoot(dir)) {
+				gitAnchor = dir;
+				break;
+			}
+		} catch {
+			// not found at this level — continue up
 		}
 		const parent = path.dirname(dir);
-		if (parent === dir) break;
+		if (parent === dir) break; // filesystem root
 		dir = parent;
 	}
 
-	return gitCandidate;
+	// Existing .proto/ directories still win, even above the git root, except foreign user roots.
+	const configDirName = getConfigDirName();
+	let aboveGitRoot = nearestGitRoot === null;
+	dir = path.resolve(cwd);
+	while (!ceilings.has(normalizePathForComparison(dir))) {
+		try {
+			const stat = await fs.promises.stat(path.join(dir, configDirName));
+			if (
+				stat.isDirectory() &&
+				!isUserConfigRoot(dir) &&
+				(!aboveGitRoot || !(await isForeignUserConfigRoot(dir, configDirName)))
+			) {
+				return path.join(dir, configDirName, "plugins", "installed_plugins.json");
+			}
+		} catch {
+			// not found at this level — continue up
+		}
+		if (dir === nearestGitRoot) aboveGitRoot = true;
+		const parent = path.dirname(dir);
+		if (parent === dir) break; // filesystem root
+		dir = parent;
+	}
+
+	return gitAnchor ? path.join(gitAnchor, getConfigDirName(), "plugins", "installed_plugins.json") : null;
 }
 
+/**
+ * Like resolveActiveProjectRegistryPath, but falls back to `<cwd>/.proto/plugins/installed_plugins.json`
+ * when no project anchor (.proto/ or .git/) is found.
+ *
+ * Use this when the caller accepts an explicit --scope project so that installing into a freshly
+ * bootstrapped directory (no .proto/ or .git/ yet) works: writeInstalledPluginsRegistry auto-creates
+ * the directory tree on first write.
+ *
+ * Returns undefined when cwd is a discovery ceiling or user config root, so the
+ * fallback never creates a shared temporary registry or aliases the user registry.
+ */
 export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<string | undefined> {
-	const resolved = await resolveActiveProjectRegistryPath(cwd);
+	const ceilings = getProjectDiscoveryCeilings();
+	const resolved = await resolveProjectRegistryPath(cwd, ceilings);
 	if (resolved) return resolved;
-
-	if (path.resolve(cwd) === os.homedir()) return undefined;
+	// A cwd containing .proto/ at or below a git root already resolved above.
+	if (
+		ceilings.has(normalizePathForComparison(cwd)) ||
+		isUserConfigRoot(cwd) ||
+		(await isForeignUserConfigRoot(cwd, getConfigDirName()))
+	)
+		return undefined;
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
 }
 
@@ -836,8 +936,14 @@ interface ClaudePluginRootsResult {
 	warnings: string[];
 }
 
+interface PluginRootsCacheEntry {
+	files: readonly string[];
+	signatures: readonly string[];
+	result: ClaudePluginRootsResult;
+}
+
 const PLUGIN_ROOTS_CACHE_MAX_ENTRIES = 256;
-const pluginRootsCache = new LRUCache<string, ClaudePluginRootsResult>({
+const pluginRootsCache = new LRUCache<string, PluginRootsCacheEntry>({
 	max: PLUGIN_ROOTS_CACHE_MAX_ENTRIES,
 });
 const pluginRootsInFlight = new Map<string, Promise<ClaudePluginRootsResult>>();
@@ -848,10 +954,39 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
 	pluginCacheInvalidators.add(invalidator);
 }
 
-async function loadClaudePluginRoots(home: string, cwd?: string): Promise<ClaudePluginRootsResult> {
+interface PluginRegistryFiles {
+	claudeConfigDir: string;
+	ompRegistryPath: string;
+	resolvedProjectPath: string | null;
+	files: string[];
+}
+
+async function resolvePluginRegistryFiles(home: string, cwd?: string): Promise<PluginRegistryFiles> {
 	const claudeConfigDir = resolveClaudePaths(home).configDir;
 	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
-	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
+	const projectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
+	const resolvedProjectPath =
+		projectPath && normalizePathForComparison(projectPath) !== normalizePathForComparison(ompRegistryPath)
+			? projectPath
+			: null;
+	const files = [path.join(claudeConfigDir, "plugins", "installed_plugins.json"), ompRegistryPath];
+	if (resolvedProjectPath) files.push(resolvedProjectPath);
+	return { claudeConfigDir, ompRegistryPath, resolvedProjectPath, files };
+}
+
+async function registrySignature(filePath: string): Promise<string> {
+	try {
+		const stat = await fs.promises.stat(filePath);
+		return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+	} catch (error) {
+		return `unreadable:${isFsError(error) ? error.code : "unknown"}`;
+	}
+}
+
+async function loadClaudePluginRoots(
+	cwd: string | undefined,
+	{ claudeConfigDir, ompRegistryPath, resolvedProjectPath }: PluginRegistryFiles,
+): Promise<ClaudePluginRootsResult> {
 	const projectRoot = resolvedProjectPath ? path.dirname(path.dirname(path.dirname(resolvedProjectPath))) : cwd;
 	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
 	const canonicalCwd = cwd ? await canonicalClaudeProjectPath(cwd) : null;
@@ -1015,18 +1150,34 @@ export async function listClaudePluginRoots(home: string, cwd?: string): Promise
 	const normalizedHome = path.resolve(home);
 	const normalizedCwd = cwd === undefined ? undefined : path.resolve(cwd);
 	const cacheKey = JSON.stringify([normalizedHome, normalizedCwd ?? null]);
-	const cached = pluginRootsCache.get(cacheKey);
-	if (cached) return cached;
-
 	const existing = pluginRootsInFlight.get(cacheKey);
-	if (existing) return await existing;
+	if (existing) return existing;
 
-	const pending = loadClaudePluginRoots(normalizedHome, normalizedCwd);
+	let pending: Promise<ClaudePluginRootsResult> | undefined;
+	pending = (async () => {
+		const registryFiles = await resolvePluginRegistryFiles(normalizedHome, normalizedCwd);
+		const signatures = await Promise.all(registryFiles.files.map(registrySignature));
+		const cached = pluginRootsCache.get(cacheKey);
+		if (
+			cached &&
+			cached.files.length === registryFiles.files.length &&
+			cached.files.every(
+				(file, index) => file === registryFiles.files[index] && cached.signatures[index] === signatures[index],
+			)
+		) {
+			return cached.result;
+		}
+		for (const file of registryFiles.files) invalidateFsCache(file);
+		const result = await loadClaudePluginRoots(normalizedCwd, registryFiles);
+		if (pluginRootsInFlight.get(cacheKey) === pending) {
+			pluginRootsCache.set(cacheKey, { files: registryFiles.files, signatures, result });
+			for (const warning of result.warnings) logger.warn(warning);
+		}
+		return result;
+	})();
 	pluginRootsInFlight.set(cacheKey, pending);
 	try {
-		const result = await pending;
-		if (pluginRootsInFlight.get(cacheKey) === pending) pluginRootsCache.set(cacheKey, result);
-		return result;
+		return await pending;
 	} finally {
 		if (pluginRootsInFlight.get(cacheKey) === pending) pluginRootsInFlight.delete(cacheKey);
 	}

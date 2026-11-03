@@ -2,7 +2,7 @@
 {{#if forced}}
 Before substantive work, create a phased checklist.
 
-You MUST call `{{toolRefs.checklist}}` first in this turn.
+You MUST call `{{toolRefs.checklist}}` first in this turn. This forced initialization is the sole exception to batching checklist updates beside real tool calls.
 You MUST initialize the checklist list with a single `init` op.
 You MUST cover the entire request from investigation through implementation and verification — not just the next immediate step.
 Task descriptions MUST be concise, specific 5-10 word labels.

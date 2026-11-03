@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Added
+
+- Look up ordered executable candidates across PATH and include optional programmatic tool names in ACP notifications.
+
+### Changed
+
+- Reduce repeated archive, Markdown, DOM, terminal-emulation and text-styling work.
+
+### Fixed
+
+- Inflate document archive members lazily while enforcing aggregate limits, including repeated reads after rejection.
+- Preserve Unicode separators, escaped code, frontmatter and display-math boundaries during Markdown conversion.
+- Sanitize nested tool-result display text without mutating original payloads or raw file targets.
+- Preserve scoped log context and explicit overrides while isolating test logs from user logs.
+- Honor ACP cancellation, stop child processes after native termination failures and retain recovery hints through cleanup.
+- Recognize missing descendants of symlinked roots without allowing path escapes.
+- Keep spawned shells on the main-session environment captured after lifecycle hooks.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Fixed

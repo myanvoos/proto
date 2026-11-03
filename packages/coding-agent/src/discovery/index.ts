@@ -15,6 +15,7 @@ import "../capability/tool";
 
 import "./agent-plugins";
 import "./agents-md";
+import "./custom-context-files";
 import "./builtin";
 import "./builtin-defaults";
 import "./claude";

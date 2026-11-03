@@ -1,7 +1,11 @@
 export const DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS = 60_000;
 
-export function formatBackgroundNotice(jobId: string): string {
-	return `Backgrounded as job ${jobId}; result will be delivered automatically.`;
+export function formatBackgroundNotice(jobId: string, timeoutSec: number | undefined): string {
+	const deadline =
+		timeoutSec === undefined
+			? "no deadline"
+			: `killed once it has run ${timeoutSec}s in total; timeout: 0 disables the deadline`;
+	return `Backgrounded as job ${jobId} (${deadline}); result will be delivered automatically.`;
 }
 
 export function resolveAutoBackgroundWaitMs(thresholdMs: number, timeoutMs: number | undefined): number {
@@ -15,31 +19,30 @@ type JobWaitInterrupt = { kind: "running" } | { kind: "steer" } | { kind: "abort
 
 export async function raceJobSettlement<C>(
 	completion: Promise<C>,
-	thresholdMs: number,
+	thresholdMs: number | undefined,
 	signal?: AbortSignal,
 	steeringSignal?: AbortSignal,
 ): Promise<C | JobWaitInterrupt> {
-	if (signal?.aborted) {
-		return { kind: "aborted" };
+	const waiters: Array<Promise<C | JobWaitInterrupt>> = [completion];
+	let thresholdTimer: NodeJS.Timeout | undefined;
+	if (thresholdMs !== undefined) {
+		const { promise, resolve } = Promise.withResolvers<{ kind: "running" }>();
+		thresholdTimer = setTimeout(() => resolve({ kind: "running" }), thresholdMs);
+		waiters.push(promise);
 	}
-	if (steeringSignal?.aborted) {
-		return { kind: "steer" };
-	}
-
-	const { promise: thresholdPromise, resolve: resolveThreshold } = Promise.withResolvers<{ kind: "running" }>();
-	const thresholdTimer = setTimeout(() => resolveThreshold({ kind: "running" }), thresholdMs);
-	const waiters: Array<Promise<C | JobWaitInterrupt>> = [completion, thresholdPromise];
 
 	const { promise: abortedPromise, resolve: resolveAborted } = Promise.withResolvers<{ kind: "aborted" }>();
 	const onAbort = () => resolveAborted({ kind: "aborted" });
 	const { promise: steerPromise, resolve: resolveSteer } = Promise.withResolvers<{ kind: "steer" }>();
 	const onSteer = () => resolveSteer({ kind: "steer" });
 	if (signal) {
-		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
 		waiters.push(abortedPromise);
 	}
 	if (steeringSignal) {
-		steeringSignal.addEventListener("abort", onSteer, { once: true });
+		if (steeringSignal.aborted) onSteer();
+		else steeringSignal.addEventListener("abort", onSteer, { once: true });
 		waiters.push(steerPromise);
 	}
 	try {

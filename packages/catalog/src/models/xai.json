@@ -20,6 +20,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -99,6 +100,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -178,6 +180,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -258,6 +261,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -338,6 +342,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -418,6 +423,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -497,6 +503,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -576,6 +583,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -655,6 +663,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -734,6 +743,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -825,6 +835,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -921,6 +932,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -1017,6 +1029,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -1113,6 +1126,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -1197,6 +1211,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1277,6 +1292,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1357,6 +1373,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1437,6 +1454,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1517,6 +1535,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1602,8 +1621,8 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 30000,
-		"int": 25.2,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1691,8 +1710,8 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 30000,
-		"int": 25.2,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1783,6 +1802,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1871,6 +1891,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -1972,6 +1993,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -2058,9 +2080,8 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 30000,
-		"int": 24.9,
-		"tps": 143.9,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -2165,9 +2186,8 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
-		"int": 38.8,
-		"tps": 56.4,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -2272,9 +2292,8 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
-		"int": 44.3,
-		"tps": 75.8,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -2376,9 +2395,9 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
-		"int": 46.4,
-		"tps": 79,
+		"int": 35.3,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": true,
@@ -2474,6 +2493,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -2560,6 +2580,7 @@
 		"contextWindow": 256000,
 		"maxTokens": 256000,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -2641,6 +2662,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,
@@ -2721,6 +2743,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsDeveloperRole": false,
 			"supportsStrictMode": false,
 			"supportsReasoningEffort": false,

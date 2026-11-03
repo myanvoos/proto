@@ -1,25 +1,9 @@
-
-
-
-
-
-
-
-
 use std::{
 	process::{Child, Stdio},
 	thread,
 };
 
-use crate::host::ChildEnv;
-
-
-
-
-
-
-
-
+use crate::{host::ChildEnv, locale::shell_locale};
 
 #[derive(Clone)]
 pub struct Compressor {
@@ -28,8 +12,6 @@ pub struct Compressor {
 }
 
 impl Compressor {
-
-
 	fn spawn(
 		&self,
 		stdin: impl Into<Stdio>,
@@ -55,960 +37,1657 @@ impl Compressor {
 }
 
 mod buffer_hint {
+	// This file is part of the uutils coreutils package.
+	//
+	// For the full copyright and license information, please view the LICENSE
+	// file that was distributed with this source code.
 
+	//! Heuristics for determining buffer size for external sorting.
+	use std::{ffi::OsString, path::Path};
 
+	// Heuristics to size the external sort buffer without overcommit memory.
+	pub(crate) fn automatic_buffer_size(files: &[OsString]) -> usize {
+		let file_hint = file_size_hint(files);
+		let mem_hint = available_memory_hint();
 
-
-
-
-use std::ffi::OsString;
-
-
-pub(crate) fn automatic_buffer_size(files: &[OsString]) -> usize {
-	let file_hint = file_size_hint(files);
-	let mem_hint = available_memory_hint();
-
-
-
-	match (file_hint, mem_hint) {
-		(Some(file), Some(mem)) => file.min(mem),
-		(Some(file), None) => file,
-		(None, Some(mem)) => mem,
-		(None, None) => super::FALLBACK_AUTOMATIC_BUF_SIZE,
-	}
-}
-
-fn file_size_hint(files: &[OsString]) -> Option<usize> {
-
-	let mut total_bytes: u128 = 0;
-
-	for file in files {
-		if file == super::STDIN_FILE {
-			continue;
-		}
-
-		let Ok(metadata) = std::fs::metadata(file) else {
-			continue;
+		// Prefer the tighter bound when both hints exist, otherwise fall back to
+		// whichever hint is available.
+		let size = match (file_hint, mem_hint) {
+			(Some(file), Some(mem)) => file.min(mem),
+			(Some(file), None) => file,
+			(None, Some(mem)) => mem,
+			(None, None) => super::FALLBACK_AUTOMATIC_BUF_SIZE,
 		};
-
-		if !metadata.is_file() {
-			continue;
-		}
-
-		total_bytes = total_bytes.saturating_add(metadata.len() as u128);
-
-		if total_bytes >= (super::MAX_AUTOMATIC_BUF_SIZE as u128) * 8 {
-			break;
-		}
+		with_floor(size, mem_hint)
 	}
 
-	if total_bytes == 0 {
-		return None;
+	/// The automatic size keeps chunks of at least 8 MiB, two of them in
+	/// memory, but no more than the memory hint allows: in a cgroup with a few
+	/// MiB of headroom, the floor alone would pass the limit.
+	fn with_floor(size: usize, mem_hint: Option<usize>) -> usize {
+		size.max(super::AUTOMATIC_BUF_FLOOR.min(mem_hint.unwrap_or(usize::MAX)))
 	}
 
-	let desired_bytes = desired_file_buffer_bytes(total_bytes);
-	Some(clamp_hint(desired_bytes))
-}
+	fn file_size_hint(files: &[OsString]) -> Option<usize> {
+		// Estimate total bytes across real files; non-regular inputs are skipped.
+		let mut total_bytes: u128 = 0;
 
-fn available_memory_hint() -> Option<usize> {
+		for file in files {
+			if file == super::STDIN_FILE {
+				continue;
+			}
+
+			let Ok(metadata) = std::fs::metadata(Path::new(file)) else {
+				continue;
+			};
+
+			if !metadata.is_file() {
+				continue;
+			}
+
+			total_bytes = total_bytes.saturating_add(metadata.len() as u128);
+
+			if total_bytes >= (super::MAX_AUTOMATIC_BUF_SIZE as u128) * 8 {
+				break;
+			}
+		}
+
+		if total_bytes == 0 {
+			return None;
+		}
+
+		let desired_bytes = desired_file_buffer_bytes(total_bytes);
+		Some(clamp_hint(desired_bytes))
+	}
+
+	fn available_memory_hint() -> Option<usize> {
+		let system = system_available_memory();
+		#[cfg(target_os = "linux")]
+		let system = match (system, linux_cgroup_memory_headroom()) {
+			(Some(system), Some(cgroup)) => Some(system.min(cgroup)),
+			(system, cgroup) => system.or(cgroup),
+		};
+		system.map(memory_hint)
+	}
+
+	/// A quarter of the `available` bytes, in the range the automatic size
+	/// keeps. The smallest size it keeps, 512 KiB, is for a machine with memory
+	/// to spare: where a quarter of what is available is less than that, the
+	/// two chunks of that minimum take all of the memory instead of a quarter
+	/// of it, and cross it below about 512 KiB. So the quarter stands there,
+	/// down to no buffer at all.
+	fn memory_hint(available: u128) -> usize {
+		let quarter = available / 4;
+		clamp_hint(quarter).min(usize::try_from(quarter).unwrap_or(usize::MAX))
+	}
+
+	fn system_available_memory() -> Option<u128> {
+		#[cfg(target_os = "linux")]
+		if let Some(bytes) = std::fs::read_to_string("/proc/meminfo")
+			.ok()
+			.as_deref()
+			.and_then(meminfo_available_bytes)
+		{
+			return Some(bytes);
+		}
+
+		physical_memory_bytes()
+	}
+
+	/// The memory available to start new work, from the text of
+	/// `/proc/meminfo`: `MemAvailable`, or on kernels without it `MemFree +
+	/// Buffers + Cached`. The file counts in KiB. (uucore's reader multiplied
+	/// the procfs crate's values, already in bytes, by 1024 again, so available
+	/// memory always gave the 1 GiB maximum; only a cgroup limit made the hint
+	/// smaller.)
+	#[cfg(any(target_os = "linux", test))]
+	fn meminfo_available_bytes(meminfo: &str) -> Option<u128> {
+		let field = |name: &str| -> Option<u128> {
+			meminfo
+				.lines()
+				.find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))?
+				.split_ascii_whitespace()
+				.next()?
+				.parse::<u128>()
+				.ok()
+		};
+		let kib = field("MemAvailable").filter(|&kib| kib > 0).or_else(|| {
+			let free =
+				field("MemFree")? + field("Buffers").unwrap_or(0) + field("Cached").unwrap_or(0);
+			(free > 0).then_some(free)
+		})?;
+		Some(kib * 1024)
+	}
+
+	/// Memory the process's cgroups still let it use. `/proc/meminfo` reports
+	/// the whole machine, so in a container or a systemd scope with a lower
+	/// limit a buffer sized from it gets the process killed.
 	#[cfg(target_os = "linux")]
-	if let Some(bytes) = uucore::parser::parse_size::available_memory_bytes() {
-		return Some(clamp_hint(bytes / 4));
+	fn linux_cgroup_memory_headroom() -> Option<u128> {
+		let membership = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+		cgroup_memory_headroom(&membership, Path::new("/sys/fs/cgroup"))
 	}
 
-	physical_memory_bytes().map(|bytes| clamp_hint(bytes / 4))
-}
-
-fn clamp_hint(bytes: u128) -> usize {
-	let min = super::MIN_AUTOMATIC_BUF_SIZE as u128;
-	let max = super::MAX_AUTOMATIC_BUF_SIZE as u128;
-	let clamped = bytes.clamp(min, max);
-	clamped.min(usize::MAX as u128) as usize
-}
-
-fn desired_file_buffer_bytes(total_bytes: u128) -> u128 {
-	if total_bytes == 0 {
-		return 0;
+	/// The smallest `limit - usage` over the cgroup named in `membership` (the
+	/// text of `/proc/self/cgroup`) and its ancestors under `root`, where each
+	/// limit is the lower of `memory.max` and `memory.high` (cgroup v2), or
+	/// `memory.limit_in_bytes` (cgroup v1, mounted at `root/memory`). `None`
+	/// when no cgroup on the path sets a limit.
+	#[cfg(any(target_os = "linux", test))]
+	fn cgroup_memory_headroom(membership: &str, root: &Path) -> Option<u128> {
+		for line in membership.lines() {
+			let mut fields = line.splitn(3, ':');
+			let (Some(_), Some(controllers), Some(path)) =
+				(fields.next(), fields.next(), fields.next())
+			else {
+				continue;
+			};
+			let relative = path.trim_start_matches('/');
+			let headroom = if controllers.is_empty() {
+				// cgroup v2: one unified hierarchy.
+				headroom_along(&root.join(relative), root, &CGROUP_V2)
+			} else if controllers
+				.split(',')
+				.any(|controller| controller == "memory")
+			{
+				let base = root.join("memory");
+				headroom_along(&base.join(relative), &base, &CGROUP_V1)
+			} else {
+				None
+			};
+			if headroom.is_some() {
+				return headroom;
+			}
+		}
+		None
 	}
 
-	let max = super::MAX_AUTOMATIC_BUF_SIZE as u128;
-
-	if total_bytes <= max {
-		return total_bytes.saturating_mul(12).clamp(total_bytes, max);
+	/// Where a cgroup version reports a memory limit and its use.
+	#[cfg(any(target_os = "linux", test))]
+	struct MemoryFiles {
+		limits:      &'static [&'static str],
+		usage:       &'static str,
+		/// The `memory.stat` field counting page cache the kernel reclaims under
+		/// pressure: usage includes it, though it is not taken.
+		reclaimable: &'static str,
 	}
 
-	let quarter = total_bytes / 4;
-	quarter.max(max)
-}
+	#[cfg(any(target_os = "linux", test))]
+	const CGROUP_V2: MemoryFiles = MemoryFiles {
+		limits:      &["memory.max", "memory.high"],
+		usage:       "memory.current",
+		reclaimable: "inactive_file",
+	};
 
-fn physical_memory_bytes() -> Option<u128> {
+	#[cfg(any(target_os = "linux", test))]
+	const CGROUP_V1: MemoryFiles = MemoryFiles {
+		limits:      &["memory.limit_in_bytes"],
+		usage:       "memory.usage_in_bytes",
+		reclaimable: "total_inactive_file",
+	};
+
+	/// Walks from `dir` up to `top`, returning the smallest headroom that any
+	/// level with a numeric limit allows.
+	#[cfg(any(target_os = "linux", test))]
+	fn headroom_along(dir: &Path, top: &Path, files: &MemoryFiles) -> Option<u128> {
+		let read = |dir: &Path, name: &str| -> Option<u128> {
+			std::fs::read_to_string(dir.join(name))
+				.ok()?
+				.trim()
+				.parse()
+				.ok()
+		};
+		let reclaimable = |dir: &Path| -> Option<u128> {
+			let stat = std::fs::read_to_string(dir.join("memory.stat")).ok()?;
+			stat.lines().find_map(|line| {
+				line
+					.strip_prefix(files.reclaimable)?
+					.strip_prefix(' ')?
+					.parse()
+					.ok()
+			})
+		};
+		let mut smallest: Option<u128> = None;
+		let mut level = Some(dir);
+		while let Some(dir) = level {
+			// v2's "max" does not parse and so sets no limit; v1's "unlimited" is
+			// a huge number that never wins the minimum.
+			if let Some(limit) = files.limits.iter().filter_map(|name| read(dir, name)).min() {
+				let usage = read(dir, files.usage)
+					.unwrap_or(0)
+					.saturating_sub(reclaimable(dir).unwrap_or(0));
+				let headroom = limit.saturating_sub(usage);
+				smallest = Some(smallest.map_or(headroom, |smallest| smallest.min(headroom)));
+			}
+			if dir == top {
+				break;
+			}
+			level = dir.parent().filter(|parent| parent.starts_with(top));
+		}
+		smallest
+	}
+
+	fn clamp_hint(bytes: u128) -> usize {
+		let min = super::MIN_AUTOMATIC_BUF_SIZE as u128;
+		let max = super::MAX_AUTOMATIC_BUF_SIZE as u128;
+		let clamped = bytes.clamp(min, max);
+		clamped.min(usize::MAX as u128) as usize
+	}
+
+	/// As in GNU sort, a buffer that holds a whole file allows for a line record
+	/// on every input byte; the chunk budget counts those records.
+	const WORST_CASE_PER_INPUT_BYTE: u128 = size_of::<super::Line>() as u128 + 1;
+
+	fn desired_file_buffer_bytes(total_bytes: u128) -> u128 {
+		if total_bytes == 0 {
+			return 0;
+		}
+
+		let max = super::MAX_AUTOMATIC_BUF_SIZE as u128;
+
+		if total_bytes <= max {
+			return total_bytes
+				.saturating_mul(WORST_CASE_PER_INPUT_BYTE)
+				.clamp(total_bytes, max);
+		}
+
+		let quarter = total_bytes / 4;
+		quarter.max(max)
+	}
+
+	pub(super) fn physical_memory_bytes() -> Option<u128> {
+		#[cfg(all(
+			target_family = "unix",
+			not(target_os = "redox"),
+			any(target_os = "linux", target_os = "android")
+		))]
+		{
+			physical_memory_bytes_unix()
+		}
+
+		#[cfg(any(
+			not(target_family = "unix"),
+			target_os = "redox",
+			not(any(target_os = "linux", target_os = "android"))
+		))]
+		{
+			// No portable or safe API is available here to detect total physical memory.
+			None
+		}
+	}
+
 	#[cfg(all(
 		target_family = "unix",
 		not(target_os = "redox"),
 		any(target_os = "linux", target_os = "android")
 	))]
-	{
-		physical_memory_bytes_unix()
+	fn physical_memory_bytes_unix() -> Option<u128> {
+		use nix::unistd::{SysconfVar, sysconf};
+
+		let pages = match sysconf(SysconfVar::_PHYS_PAGES) {
+			Ok(Some(pages)) if pages > 0 => u128::try_from(pages).ok()?,
+			_ => return None,
+		};
+
+		let page_size = match sysconf(SysconfVar::PAGE_SIZE) {
+			Ok(Some(page_size)) if page_size > 0 => u128::try_from(page_size).ok()?,
+			_ => return None,
+		};
+
+		Some(pages.saturating_mul(page_size))
 	}
 
-	#[cfg(any(
-		not(target_family = "unix"),
-		target_os = "redox",
-		not(any(target_os = "linux", target_os = "android"))
-	))]
-	{
+	#[cfg(test)]
+	mod tests {
+		use super::*;
 
-		None
+		#[test]
+		fn desired_buffer_matches_total_when_small() {
+			let six_mebibytes = 6 * 1024 * 1024;
+			let expected = ((six_mebibytes as u128) * WORST_CASE_PER_INPUT_BYTE)
+				.clamp(six_mebibytes as u128, super::super::MAX_AUTOMATIC_BUF_SIZE as u128);
+			assert_eq!(desired_file_buffer_bytes(six_mebibytes as u128), expected);
+		}
+
+		#[test]
+		fn desired_buffer_caps_at_max_for_large_inputs() {
+			let large = 256 * 1024 * 1024; // 256 MiB
+			assert_eq!(
+				desired_file_buffer_bytes(large as u128),
+				super::super::MAX_AUTOMATIC_BUF_SIZE as u128
+			);
+		}
+
+		// Failure mode: in a cgroup with 8 MiB of headroom, the 8 MiB chunk floor
+		// raised both chunks to 16 MiB together, over the cgroup's limit.
+		#[test]
+		fn the_automatic_floor_stays_under_the_memory_hint() {
+			const MIB: usize = 1024 * 1024;
+			// A small file, plenty of memory: the floor applies.
+			assert_eq!(with_floor(MIB / 2, Some(1024 * MIB)), 16 * MIB);
+			// No memory hint: the floor applies.
+			assert_eq!(with_floor(MIB / 2, None), 16 * MIB);
+			// 8 MiB of headroom gives a 2 MiB hint; the floor does not pass it.
+			assert_eq!(with_floor(2 * MIB, Some(2 * MIB)), 2 * MIB);
+			// A size above the floor is kept.
+			assert_eq!(with_floor(64 * MIB, Some(64 * MIB)), 64 * MIB);
+		}
+
+		// Failure mode: the available-memory hint read procfs's byte counts as
+		// KiB, so a host with 3 GiB available got the 1 GiB maximum instead of a
+		// quarter of what is available.
+		#[test]
+		fn the_memory_hint_is_a_quarter_of_available_memory() {
+			const GIB: u128 = 1024 * 1024 * 1024;
+			let meminfo =
+				"MemTotal:       16384000 kB\nMemFree:          524288 kB\nMemAvailable:    3145728 \
+				 kB\nBuffers:           10240 kB\nCached:          2097152 kB\nSwapCached:            \
+				 0 kB\n";
+			let available = meminfo_available_bytes(meminfo).expect("MemAvailable");
+			assert_eq!(available, 3 * GIB);
+			assert_eq!(clamp_hint(available / 4), 768 * 1024 * 1024);
+			// Kernels before 3.14 have no MemAvailable.
+			let old = "MemTotal:       16384000 kB\nMemFree:          524288 kB\nBuffers:           \
+			           10240 kB\nCached:          2097152 kB\nSwapCached:       999999 kB\n";
+			assert_eq!(meminfo_available_bytes(old), Some((524_288 + 10_240 + 2_097_152) * 1024));
+		}
+
+		// Failure mode: the smallest automatic size, 512 KiB, was kept where a
+		// quarter of the memory available was less than that, so in a cgroup
+		// with a few hundred KiB of headroom the two chunks crossed its limit.
+		#[test]
+		fn the_memory_hint_keeps_a_small_cgroup_limit() {
+			const KIB: u128 = 1024;
+			// 400 KiB of headroom: a quarter of it, not the 512 KiB minimum.
+			assert_eq!(memory_hint(400 * KIB), 100 * 1024);
+			// Nothing left: no buffer. Each chunk still takes two records.
+			assert_eq!(memory_hint(0), 0);
+			// The minimum applies again where a quarter reaches it.
+			assert_eq!(memory_hint(2 * 1024 * KIB), 512 * 1024);
+			assert_eq!(memory_hint(8 * 1024 * KIB), 2 * 1024 * 1024);
+		}
+
+		fn write_files(dir: &Path, files: &[(&str, &str)]) {
+			std::fs::create_dir_all(dir).unwrap();
+			for (name, contents) in files {
+				std::fs::write(dir.join(name), contents).unwrap();
+			}
+		}
+
+		// Failure mode: the automatic buffer came from /proc/meminfo alone, so in
+		// a 2 GiB systemd scope on a large machine `sort` sized its chunks for the
+		// machine and the scope's OOM killer took the host process.
+		#[test]
+		fn cgroup_headroom_is_the_tightest_limit_on_the_path() {
+			let root = tempfile::tempdir().unwrap();
+			let root = root.path();
+			let scope = root.join("user.slice/app.scope");
+			write_files(root, &[("memory.current", "999999999999")]);
+			write_files(&root.join("user.slice"), &[
+				("memory.max", "8000"),
+				("memory.current", "3000"),
+			]);
+			write_files(&scope, &[
+				("memory.max", "max"),
+				("memory.high", "max"),
+				("memory.current", "1000"),
+			]);
+			let membership = "0::/user.slice/app.scope\n";
+			assert_eq!(
+				cgroup_memory_headroom(membership, root),
+				Some(5000),
+				"an ancestor's limit applies"
+			);
+
+			write_files(&scope, &[("memory.high", "2500")]);
+			assert_eq!(
+				cgroup_memory_headroom(membership, root),
+				Some(1500),
+				"memory.high counts as a limit"
+			);
+
+			write_files(&scope, &[("memory.current", "9000")]);
+			assert_eq!(
+				cgroup_memory_headroom(membership, root),
+				Some(0),
+				"usage past the limit leaves nothing"
+			);
+
+			// Page cache the kernel can reclaim is not taken.
+			write_files(&scope, &[("memory.stat", "anon 500\nactive_file 7\ninactive_file 8500\n")]);
+			assert_eq!(
+				cgroup_memory_headroom(membership, root),
+				Some(2000),
+				"inactive file cache is free"
+			);
+
+			// cgroup v1 keeps the memory controller in a hierarchy of its own.
+			let v1 = root.join("memory/job");
+			write_files(&v1, &[
+				("memory.limit_in_bytes", "4096"),
+				("memory.usage_in_bytes", "1536"),
+				("memory.stat", "inactive_file 99\ntotal_inactive_file 512\n"),
+			]);
+			write_files(&root.join("memory"), &[("memory.limit_in_bytes", "9223372036854771712")]);
+			assert_eq!(
+				cgroup_memory_headroom("4:cpu,cpuacct:/job\n3:memory:/job\n", root),
+				Some(3072)
+			);
+
+			let unlimited = root.join("free.scope");
+			write_files(&unlimited, &[("memory.max", "max"), ("memory.current", "1000")]);
+			assert_eq!(cgroup_memory_headroom("0::/free.scope\n", root), None, "no limit, no cap");
+		}
 	}
-}
-
-#[cfg(all(
-	target_family = "unix",
-	not(target_os = "redox"),
-	any(target_os = "linux", target_os = "android")
-))]
-fn physical_memory_bytes_unix() -> Option<u128> {
-	use nix::unistd::{SysconfVar, sysconf};
-
-	let pages = match sysconf(SysconfVar::_PHYS_PAGES) {
-		Ok(Some(pages)) if pages > 0 => u128::try_from(pages).ok()?,
-		_ => return None,
-	};
-
-	let page_size = match sysconf(SysconfVar::PAGE_SIZE) {
-		Ok(Some(page_size)) if page_size > 0 => u128::try_from(page_size).ok()?,
-		_ => return None,
-	};
-
-	Some(pages.saturating_mul(page_size))
-}
-
-
-
 }
 mod check {
 
+	use std::{cmp::Ordering, ffi::OsStr, io::Read, iter, thread};
 
+	use flume::{Receiver, Sender};
+	use itertools::Itertools;
 
-
-
-
-
-use std::{cmp::Ordering, ffi::OsStr, io::Read, iter, thread};
-
-use flume::{Receiver, Sender};
-use itertools::Itertools;
-
-use super::{
-	AtomicOrdering, GlobalSettings, SortError, SortResult,
-	chunks::{self, Chunk, RecycledChunk},
-	compare_by, open,
-};
-
-
-
-
-
-
-pub fn check(path: &OsStr, settings: &GlobalSettings) -> SortResult<()> {
-	let max_allowed_cmp = if settings.unique {
-
-
-		Ordering::Less
-	} else {
-
-
-		Ordering::Equal
+	use super::{
+		AtomicOrdering, GlobalSettings, SortError, SortResult,
+		chunks::{self, Chunk, RecycledChunk},
+		compare_by, open,
 	};
-	let file = open(path)?;
-	let (recycled_sender, recycled_receiver) = flume::bounded(2);
-	let (loaded_sender, loaded_receiver) = flume::bounded(2);
-	thread::spawn({
-		let settings = settings.clone();
-		move || reader(file, &recycled_receiver, &loaded_sender, &settings)
-	});
-	for _ in 0..2 {
-		let _ = recycled_sender.send(RecycledChunk::new(if settings.buffer_size < 100 * 1024 {
 
-
-			settings.buffer_size
+	pub fn check(path: &OsStr, settings: &GlobalSettings) -> SortResult<()> {
+		let max_allowed_cmp = if settings.unique {
+			Ordering::Less
 		} else {
-			100 * 1024
-		}));
-	}
-
-	let mut prev_chunk: Option<Chunk> = None;
-	let mut line_idx = 0;
-	while let Ok(chunk) = loaded_receiver.recv() {
-		line_idx += 1;
-		if let Some(prev_chunk) = prev_chunk.take() {
-
-
-			let prev_last = prev_chunk.lines().last().unwrap();
-			let new_first = chunk.lines().first().unwrap();
-
-			if compare_by(prev_last, new_first, settings, prev_chunk.line_data(), chunk.line_data())
-				> max_allowed_cmp
-			{
-				return Err(
-					SortError::Disorder {
-						file:        path.to_owned(),
-						line_number: line_idx,
-						line:        String::from_utf8_lossy(new_first.line).into_owned(),
-						silent:      settings.check_silent,
-					}
-					.into(),
-				);
-			}
-			let _ = recycled_sender.send(prev_chunk.recycle());
+			Ordering::Equal
+		};
+		let file = open(path)?;
+		let (recycled_sender, recycled_receiver) = flume::bounded(2);
+		let (loaded_sender, loaded_receiver) = flume::bounded(2);
+		thread::spawn({
+			let settings = settings.clone();
+			move || reader(file, &recycled_receiver, &loaded_sender, &settings)
+		});
+		for _ in 0..2 {
+			let _ = recycled_sender.send(RecycledChunk::new(if settings.buffer_size < 100 * 1024 {
+				settings.buffer_size
+			} else {
+				100 * 1024
+			}));
 		}
 
-		for (a, b) in chunk.lines().iter().tuple_windows() {
+		let mut prev_chunk: Option<Chunk> = None;
+		let mut line_idx = 0;
+		while let Ok(chunk) = loaded_receiver.recv() {
 			line_idx += 1;
-			if compare_by(a, b, settings, chunk.line_data(), chunk.line_data()) > max_allowed_cmp {
-				return Err(
-					SortError::Disorder {
-						file:        path.to_owned(),
-						line_number: line_idx,
-						line:        String::from_utf8_lossy(b.line).into_owned(),
-						silent:      settings.check_silent,
-					}
-					.into(),
-				);
+			if let Some(prev_chunk) = prev_chunk.take() {
+				let prev_last = prev_chunk.lines().last().unwrap();
+				let new_first = chunk.lines().first().unwrap();
+
+				if compare_by(prev_last, new_first, settings, prev_chunk.line_data(), chunk.line_data())
+					> max_allowed_cmp
+				{
+					return Err(
+						SortError::Disorder {
+							file:        path.to_owned(),
+							line_number: line_idx,
+							line:        String::from_utf8_lossy(new_first.line).into_owned(),
+							silent:      settings.check_silent,
+						}
+						.into(),
+					);
+				}
+				let _ = recycled_sender.send(prev_chunk.recycle());
+			}
+
+			for (a, b) in chunk.lines().iter().tuple_windows() {
+				line_idx += 1;
+				if compare_by(a, b, settings, chunk.line_data(), chunk.line_data()) > max_allowed_cmp {
+					return Err(
+						SortError::Disorder {
+							file:        path.to_owned(),
+							line_number: line_idx,
+							line:        String::from_utf8_lossy(b.line).into_owned(),
+							silent:      settings.check_silent,
+						}
+						.into(),
+					);
+				}
+			}
+
+			prev_chunk = Some(chunk);
+		}
+		if settings.cancel.load(AtomicOrdering::Relaxed) {
+			return Err(SortError::Cancelled);
+		}
+		Ok(())
+	}
+
+	fn reader(
+		mut file: Box<dyn Read + Send>,
+		receiver: &Receiver<RecycledChunk>,
+		sender: &Sender<Chunk>,
+		settings: &GlobalSettings,
+	) -> SortResult<()> {
+		let mut carry_over = vec![];
+		while let Ok(recycled_chunk) = receiver.recv() {
+			if settings.cancel.load(AtomicOrdering::Relaxed) {
+				break;
+			}
+			let should_continue = chunks::read(
+				sender,
+				recycled_chunk,
+				None,
+				&mut carry_over,
+				&mut file,
+				&mut iter::empty(),
+				settings.line_ending.into(),
+				settings,
+			)?;
+			if !should_continue {
+				break;
 			}
 		}
-
-		prev_chunk = Some(chunk);
+		Ok(())
 	}
-	Ok(())
-}
-
-
-fn reader(
-	mut file: Box<dyn Read + Send>,
-	receiver: &Receiver<RecycledChunk>,
-	sender: &Sender<Chunk>,
-	settings: &GlobalSettings,
-) -> SortResult<()> {
-	let mut carry_over = vec![];
-	while let Ok(recycled_chunk) = receiver.recv() {
-		if settings.cancel.load(AtomicOrdering::Relaxed) {
-			break;
-		}
-		let should_continue = chunks::read(
-			sender,
-			recycled_chunk,
-			None,
-			&mut carry_over,
-			&mut file,
-			&mut iter::empty(),
-			settings.line_ending.into(),
-			settings,
-		)?;
-		if !should_continue {
-			break;
-		}
-	}
-	Ok(())
-}
-
 }
 mod chunks {
+	// This file is part of the uutils coreutils package.
+	//
+	// For the full copyright and license information, please view the LICENSE
+	// file that was distributed with this source code.
 
+	//! Utilities for reading files as chunks.
 
+	#![allow(
+		dead_code,
+		reason = "Chunk's self-referential storage exposes upstream recycling accessors"
+	)]
 
+	use std::{
+		io::{ErrorKind, Read},
+		ops::Range,
+	};
 
+	use flume::Sender;
+	use memchr::{memchr_iter, memrchr};
+	use self_cell::self_cell;
 
+	use super::{
+		AtomicOrdering, GeneralBigDecimalParseResult, GlobalSettings, Line, SortError, SortMode,
+		SortResult, numeric_str_cmp::NumInfo,
+	};
 
+	const ALLOC_CHUNK_SIZE: usize = 64 * 1024;
+	/// A read asks for at least this much, also where the budget is smaller: a
+	/// chunk takes at least two records, whatever its budget says.
+	const MIN_READ_SIZE: usize = 4 * 1024;
+	/// Collation sort keys measured at most 2.5 bytes per input byte (upper
+	/// case, punctuation, invalid UTF-8) plus 6 bytes of level separators.
+	const COLLATION_KEY_BYTES_PER_BYTE: usize = 3;
+	const COLLATION_KEY_FIXED_BYTES: usize = 8;
+	/// The smallest heap block holding a parsed `-g` number's digits.
+	const BIG_NUMBER_ALLOCATION: usize = 32;
 
-#![allow(dead_code, reason = "Chunk's self-referential storage exposes upstream recycling accessors")]
-
-use std::{
-	io::{ErrorKind, Read},
-	ops::Range,
-};
-
-use flume::Sender;
-use memchr::memchr_iter;
-use self_cell::self_cell;
-
-use super::{
-	GeneralBigDecimalParseResult, GlobalSettings, Line, SortMode, SortError, SortResult, numeric_str_cmp::NumInfo,
-};
-
-const ALLOC_CHUNK_SIZE: usize = 64 * 1024;
-
-self_cell!(
-
-	 pub struct Chunk {
-		  owner: Vec<u8>,
-
-		  #[covariant]
-		  dependent: ChunkContents,
-	 }
-
-	 impl {Debug}
-);
-
-#[derive(Debug)]
-pub struct ChunkContents<'a> {
-	pub lines:           Vec<Line<'a>>,
-	pub line_data:       LineData<'a>,
-	pub token_buffer:    Vec<Range<usize>>,
-	pub line_count_hint: usize,
-}
-
-#[derive(Debug, Default)]
-pub struct LineData<'a> {
-	pub selections:           Vec<&'a [u8]>,
-	pub num_infos:            Vec<NumInfo>,
-	pub parsed_floats:        Vec<GeneralBigDecimalParseResult>,
-	pub line_num_floats:      Vec<Option<f64>>,
-
-	pub collation_key_buffer: Vec<u8>,
-
-	pub collation_key_ends:   Vec<usize>,
-}
-
-impl LineData<'_> {
-
-	pub fn collation_key(&self, index: usize) -> &[u8] {
-		let start = if index == 0 {
-			0
-		} else {
-			self.collation_key_ends[index - 1]
-		};
-		let end = self.collation_key_ends[index];
-		&self.collation_key_buffer[start..end]
+	/// What a chunk holds in memory, as counted against its budget: its input
+	/// buffer, and the data derived from its records. Each record costs
+	/// `per_record` (its [`Line`], key data, and a stable sort's scratch) and
+	/// each input byte `derived_per_byte` (the sort-key bytes derived from it).
+	/// Until the records reuse them, the vectors recycled from the previous
+	/// chunk still hold `recycled` bytes of derived data.
+	#[derive(Clone, Copy, Debug)]
+	struct ChunkCost {
+		derived_per_byte: usize,
+		per_record:       usize,
+		recycled:         usize,
 	}
-}
 
-impl Chunk {
-
-	pub fn recycle(mut self) -> RecycledChunk {
-		let mut recycled_contents = self.with_dependent_mut(|_, contents| {
-			contents.lines.clear();
-			contents.line_data.selections.clear();
-			contents.line_data.num_infos.clear();
-			contents.line_data.parsed_floats.clear();
-			contents.line_data.line_num_floats.clear();
-			contents.line_data.collation_key_buffer.clear();
-			contents.line_data.collation_key_ends.clear();
-			contents.token_buffer.clear();
-			let lines = unsafe {
-
-
-
-
-				std::mem::transmute::<Vec<Line<'_>>, Vec<Line<'static>>>(std::mem::take(
-					&mut contents.lines,
-				))
-			};
-			let selections = unsafe {
-
-
-				std::mem::transmute::<Vec<&'_ [u8]>, Vec<&'static [u8]>>(std::mem::take(
-					&mut contents.line_data.selections,
-				))
-			};
-			RecycledChunk {
-				lines,
-				selections,
-				num_infos: std::mem::take(&mut contents.line_data.num_infos),
-				parsed_floats: std::mem::take(&mut contents.line_data.parsed_floats),
-				line_num_floats: std::mem::take(&mut contents.line_data.line_num_floats),
-				collation_key_buffer: std::mem::take(&mut contents.line_data.collation_key_buffer),
-				collation_key_ends: std::mem::take(&mut contents.line_data.collation_key_ends),
-				token_buffer: std::mem::take(&mut contents.token_buffer),
-				line_count_hint: contents.line_count_hint,
-
-				buffer: Vec::new(),
+	impl ChunkCost {
+		fn new(settings: &GlobalSettings, recycled: usize) -> Self {
+			let precomputed = &settings.precomputed;
+			// A number's digits take at most one byte per input byte.
+			let mut derived_per_byte = precomputed.floats_per_line;
+			let mut per_record = size_of::<Line>()
+				+ precomputed.selections_per_line * size_of::<&[u8]>()
+				+ precomputed.num_infos_per_line * size_of::<NumInfo>()
+				+ precomputed.floats_per_line
+					* (size_of::<GeneralBigDecimalParseResult>() + BIG_NUMBER_ALLOCATION);
+			if settings.mode == SortMode::Numeric {
+				per_record += size_of::<Option<f64>>();
 			}
-		});
-		recycled_contents.buffer = self.into_owner();
-		recycled_contents
-	}
+			if precomputed.fast_locale_collation {
+				derived_per_byte += COLLATION_KEY_BYTES_PER_BYTE;
+				per_record += size_of::<usize>() + COLLATION_KEY_FIXED_BYTES;
+			}
+			if settings.stable || settings.unique {
+				// rayon's stable sort copies the lines into a scratch vector.
+				per_record += size_of::<Line>();
+			}
+			Self { derived_per_byte, per_record, recycled }
+		}
 
-	pub fn lines(&self) -> &Vec<Line<'_>> {
-		&self.borrow_dependent().lines
-	}
+		/// The memory of a chunk whose `buffer`-byte input buffer holds `bytes`
+		/// in `records`.
+		fn of_chunk(self, buffer: usize, bytes: usize, records: usize) -> usize {
+			let derived = bytes
+				.saturating_mul(self.derived_per_byte)
+				.saturating_add(records.saturating_mul(self.per_record));
+			buffer.max(bytes).saturating_add(derived.max(self.recycled))
+		}
 
-	pub fn line_data(&self) -> &LineData<'_> {
-		&self.borrow_dependent().line_data
-	}
-}
-
-pub struct RecycledChunk {
-	lines:                Vec<Line<'static>>,
-	selections:           Vec<&'static [u8]>,
-	num_infos:            Vec<NumInfo>,
-	parsed_floats:        Vec<GeneralBigDecimalParseResult>,
-	line_num_floats:      Vec<Option<f64>>,
-	collation_key_buffer: Vec<u8>,
-	collation_key_ends:   Vec<usize>,
-	token_buffer:         Vec<Range<usize>>,
-	line_count_hint:      usize,
-	buffer:               Vec<u8>,
-}
-
-impl RecycledChunk {
-	pub fn new(capacity: usize) -> Self {
-		Self {
-			lines:                Vec::new(),
-			selections:           Vec::new(),
-			num_infos:            Vec::new(),
-			parsed_floats:        Vec::new(),
-			line_num_floats:      Vec::new(),
-			collation_key_buffer: Vec::new(),
-			collation_key_ends:   Vec::new(),
-			token_buffer:         Vec::new(),
-			line_count_hint:      0,
-			buffer:               vec![0; capacity],
+		/// Input bytes such a chunk may still take without passing `budget`,
+		/// should every one of them end a record.
+		fn room(self, budget: usize, buffer: usize, bytes: usize, records: usize) -> usize {
+			budget.saturating_sub(self.of_chunk(buffer, bytes, records))
+				/ (1 + self.derived_per_byte + self.per_record)
 		}
 	}
-}
 
+	self_cell!(
+		 /// The chunk that is passed around between threads.
+		 pub struct Chunk {
+			  owner: Vec<u8>,
 
+			  #[covariant]
+			  dependent: ChunkContents,
+		 }
 
+		 impl {Debug}
+	);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#[allow(clippy::too_many_arguments)]
-pub fn read<T: Read>(
-	sender: &Sender<Chunk>,
-	recycled_chunk: RecycledChunk,
-	max_buffer_size: Option<usize>,
-	carry_over: &mut Vec<u8>,
-	file: &mut T,
-	next_files: &mut impl Iterator<Item = SortResult<T>>,
-	separator: u8,
-	settings: &GlobalSettings,
-) -> SortResult<bool> {
-	let RecycledChunk {
-		lines,
-		selections,
-		num_infos,
-		parsed_floats,
-		line_num_floats,
-		collation_key_buffer,
-		collation_key_ends,
-		mut token_buffer,
-		mut line_count_hint,
-		mut buffer,
-	} = recycled_chunk;
-	if buffer.len() < carry_over.len() {
-
-		buffer.extend_from_slice(&carry_over[buffer.len()..]);
+	#[derive(Debug)]
+	pub struct ChunkContents<'a> {
+		pub lines:        Vec<Line<'a>>,
+		pub line_data:    LineData<'a>,
+		pub token_buffer: Vec<Range<usize>>,
 	}
-	buffer[..carry_over.len()].copy_from_slice(carry_over);
-	let (read, should_continue) =
-		read_to_buffer(file, next_files, &mut buffer, max_buffer_size, carry_over.len(), separator)?;
-	carry_over.clear();
-	carry_over.extend_from_slice(&buffer[read..]);
 
-	if read != 0 {
-		let payload: SortResult<Chunk> = Chunk::try_new(buffer, |buffer| {
-			let selections = unsafe {
+	#[derive(Debug, Default)]
+	pub struct LineData<'a> {
+		pub selections:           Vec<&'a [u8]>,
+		pub num_infos:            Vec<NumInfo>,
+		pub parsed_floats:        Vec<GeneralBigDecimalParseResult>,
+		pub line_num_floats:      Vec<Option<f64>>,
+		/// Arena buffer holding all collation sort keys concatenated.
+		pub collation_key_buffer: Vec<u8>,
+		/// End offsets into `collation_key_buffer` for each line's sort key.
+		pub collation_key_ends:   Vec<usize>,
+	}
 
-
-
-				std::mem::transmute::<Vec<&'static [u8]>, Vec<&'_ [u8]>>(selections)
+	impl LineData<'_> {
+		/// Get the collation sort key for a line at the given index.
+		pub fn collation_key(&self, index: usize) -> &[u8] {
+			let start = if index == 0 {
+				0
+			} else {
+				self.collation_key_ends[index - 1]
 			};
-			let mut lines = unsafe {
+			let end = self.collation_key_ends[index];
+			&self.collation_key_buffer[start..end]
+		}
+	}
 
+	impl Chunk {
+		/// Destroy this chunk and return its components to be reused.
+		pub fn recycle(mut self) -> RecycledChunk {
+			let mut recycled_contents = self.with_dependent_mut(|_, contents| {
+				contents.lines.clear();
+				contents.line_data.selections.clear();
+				contents.line_data.num_infos.clear();
+				contents.line_data.parsed_floats.clear();
+				contents.line_data.line_num_floats.clear();
+				contents.line_data.collation_key_buffer.clear();
+				contents.line_data.collation_key_ends.clear();
+				contents.token_buffer.clear();
+				let lines = unsafe {
+					// SAFETY: It is safe to (temporarily) transmute to a vector of lines with a
+					// longer lifetime, because the vector is empty.
+					// Transmuting is necessary to make recycling possible. See https://github.com/rust-lang/rfcs/pull/2802
+					// for a rfc to make this unnecessary. Its example is similar to the code here.
+					std::mem::transmute::<Vec<Line<'_>>, Vec<Line<'static>>>(std::mem::take(
+						&mut contents.lines,
+					))
+				};
+				let selections = unsafe {
+					// SAFETY: (same as above) It is safe to (temporarily) transmute to a vector of
+					// &str with a longer lifetime, because the vector is empty.
+					std::mem::transmute::<Vec<&'_ [u8]>, Vec<&'static [u8]>>(std::mem::take(
+						&mut contents.line_data.selections,
+					))
+				};
+				RecycledChunk {
+					lines,
+					selections,
+					num_infos: std::mem::take(&mut contents.line_data.num_infos),
+					parsed_floats: std::mem::take(&mut contents.line_data.parsed_floats),
+					line_num_floats: std::mem::take(&mut contents.line_data.line_num_floats),
+					collation_key_buffer: std::mem::take(&mut contents.line_data.collation_key_buffer),
+					collation_key_ends: std::mem::take(&mut contents.line_data.collation_key_ends),
+					token_buffer: std::mem::take(&mut contents.token_buffer),
+					// buffer is set below after we consume `self`
+					buffer: Vec::new(),
+				}
+			});
+			recycled_contents.buffer = self.into_owner();
+			recycled_contents
+		}
 
+		pub fn lines(&self) -> &Vec<Line<'_>> {
+			&self.borrow_dependent().lines
+		}
 
-				std::mem::transmute::<Vec<Line<'static>>, Vec<Line<'_>>>(lines)
-			};
-			let read = &buffer[..read];
-			let mut line_data = LineData {
-				selections,
-				num_infos,
-				parsed_floats,
-				line_num_floats,
-				collation_key_buffer,
-				collation_key_ends,
-			};
-			parse_lines(
-				read,
-				&mut lines,
-				&mut line_data,
-				&mut token_buffer,
-				&mut line_count_hint,
-				separator,
-				settings,
-			);
-			Ok(ChunkContents { lines, line_data, token_buffer, line_count_hint })
+		pub fn line_data(&self) -> &LineData<'_> {
+			&self.borrow_dependent().line_data
+		}
+	}
+
+	pub struct RecycledChunk {
+		lines:                Vec<Line<'static>>,
+		selections:           Vec<&'static [u8]>,
+		num_infos:            Vec<NumInfo>,
+		parsed_floats:        Vec<GeneralBigDecimalParseResult>,
+		line_num_floats:      Vec<Option<f64>>,
+		collation_key_buffer: Vec<u8>,
+		collation_key_ends:   Vec<usize>,
+		token_buffer:         Vec<Range<usize>>,
+		buffer:               Vec<u8>,
+	}
+
+	impl RecycledChunk {
+		pub fn new(capacity: usize) -> Self {
+			Self {
+				lines:                Vec::new(),
+				selections:           Vec::new(),
+				num_infos:            Vec::new(),
+				parsed_floats:        Vec::new(),
+				line_num_floats:      Vec::new(),
+				collation_key_buffer: Vec::new(),
+				collation_key_ends:   Vec::new(),
+				token_buffer:         Vec::new(),
+				buffer:               vec![0; capacity],
+			}
+		}
+	}
+
+	/// Read a chunk, parse lines and send them.
+	///
+	/// No empty chunk will be sent. If we reach the end of the input, `false` is
+	/// returned. However, if this function returns `true`, it is not guaranteed
+	/// that there is still input left: If the input fits _exactly_ into a
+	/// buffer, we will only notice that there's nothing more to read at the
+	/// next invocation. In case there is no input left, nothing will be sent.
+	///
+	/// # Arguments
+	///
+	/// (see also `read_to_chunk` for a more detailed documentation)
+	///
+	/// * `sender`: The sender to send the lines to the sorter.
+	/// * `recycled_chunk`: The recycled chunk, as returned by `Chunk::recycle`.
+	///   (i.e. `buffer.len()` should be equal to `buffer.capacity()`)
+	/// * `budget`: The memory the chunk may hold, counted by [`ChunkCost`]: its
+	///   input buffer and the data derived from its records. The buffer grows
+	///   until the chunk reaches it. If None, the buffer does not grow, unless
+	///   needed to read at least two lines.
+	/// * `carry_over`: The bytes that must be carried over in between
+	///   invocations.
+	/// * `file`: The current file.
+	/// * `next_files`: What `file` should be updated to next.
+	/// * `separator`: The line separator.
+	/// * `settings`: The global settings.
+	#[allow(clippy::too_many_arguments)]
+	pub fn read<T: Read>(
+		sender: &Sender<Chunk>,
+		recycled_chunk: RecycledChunk,
+		budget: Option<usize>,
+		carry_over: &mut Vec<u8>,
+		file: &mut T,
+		next_files: &mut impl Iterator<Item = SortResult<T>>,
+		separator: u8,
+		settings: &GlobalSettings,
+	) -> SortResult<bool> {
+		let RecycledChunk {
+			lines,
+			selections,
+			num_infos,
+			parsed_floats,
+			line_num_floats,
+			collation_key_buffer,
+			collation_key_ends,
+			mut token_buffer,
+			mut buffer,
+		} = recycled_chunk;
+		if buffer.len() < carry_over.len() {
+			// Separate carry_over and copy them to avoid cost of 0 fill buffer.
+			// Exactly, as `Vec`'s growth would reserve more than the budget counts.
+			buffer.reserve_exact(carry_over.len() - buffer.len());
+			buffer.extend_from_slice(&carry_over[buffer.len()..]);
+		}
+		buffer[..carry_over.len()].copy_from_slice(carry_over);
+		let start_offset = carry_over.len();
+		// The buffer holds those bytes now, so the reader's copy of them goes
+		// back to the allocator instead of staying beside the chunk it reads.
+		carry_over.clear();
+		carry_over.shrink_to_fit();
+		let budget = budget.map(|budget| {
+			let recycled = lines.capacity() * size_of::<Line>()
+				+ selections.capacity() * size_of::<&[u8]>()
+				+ num_infos.capacity() * size_of::<NumInfo>()
+				+ parsed_floats.capacity() * size_of::<GeneralBigDecimalParseResult>()
+				+ line_num_floats.capacity() * size_of::<Option<f64>>()
+				+ collation_key_buffer.capacity()
+				+ collation_key_ends.capacity() * size_of::<usize>();
+			(budget, ChunkCost::new(settings, recycled))
 		});
-
-
-
-
-
-		if sender.send(payload?).is_err() {
+		let fill = read_to_buffer(
+			file,
+			next_files,
+			&mut buffer,
+			budget,
+			start_offset,
+			separator,
+			&settings.cancel,
+		)?;
+		// The bytes read past this chunk's end wait for the next one, in a copy
+		// of exactly their size: the reader holds it while the chunk is sorted.
+		let carried = fill.filled - fill.complete;
+		fit(carry_over, carried);
+		carry_over.extend_from_slice(&buffer[fill.complete..fill.filled]);
+		if budget.is_some() {
+			// The buffer keeps the length of the largest chunk so far; a chunk of
+			// shorter lines does not need it.
+			buffer.truncate(fill.complete);
+			buffer.shrink_to_fit();
+		}
+		if settings.cancel.load(AtomicOrdering::Relaxed) {
 			return Ok(false);
 		}
-	}
-	Ok(should_continue)
-}
 
+		let read = fill.complete;
+		if read != 0 {
+			// The lines end at separators, apart from an unterminated last line
+			// of the input.
+			let line_count = fill.separators + usize::from(buffer[read - 1] != separator);
+			let payload: SortResult<Chunk> = Chunk::try_new(buffer, |buffer| {
+				let selections = unsafe {
+					// SAFETY: It is safe to transmute to an empty vector of selections with shorter
+					// lifetime. It was only temporarily transmuted to a Vec<Line<'static>> to
+					// make recycling possible.
+					std::mem::transmute::<Vec<&'static [u8]>, Vec<&'_ [u8]>>(selections)
+				};
+				let mut lines = unsafe {
+					// SAFETY: (same as above) It is safe to transmute to a vector of lines with
+					// shorter lifetime, because it was only temporarily transmuted to a
+					// Vec<Line<'static>> to make recycling possible.
+					std::mem::transmute::<Vec<Line<'static>>, Vec<Line<'_>>>(lines)
+				};
+				let read = &buffer[..read];
+				let mut line_data = LineData {
+					selections,
+					num_infos,
+					parsed_floats,
+					line_num_floats,
+					collation_key_buffer,
+					collation_key_ends,
+				};
+				parse_lines(
+					read,
+					&mut lines,
+					&mut line_data,
+					&mut token_buffer,
+					line_count,
+					separator,
+					settings,
+				);
+				Ok(ChunkContents { lines, line_data, token_buffer })
+			});
+			// The upstream unwrap would panic with `SendError` when the receiver has
+			// disconnected.
+			// The receiver goes away when the consumer thread (sorter, merger, or
+			// checker) stops early after hitting an error or a closed output. Stop
+			// reading gracefully; the real error is reported by that other thread.
+			let chunk = payload?;
+			// A cancelled parse stops part way; the chunk is not the input.
+			if settings.cancel.load(AtomicOrdering::Relaxed) || sender.send(chunk).is_err() {
+				return Ok(false);
+			}
+		}
+		Ok(fill.more)
+	}
 
-fn parse_lines<'a>(
-	read: &'a [u8],
-	lines: &mut Vec<Line<'a>>,
-	line_data: &mut LineData<'a>,
-	token_buffer: &mut Vec<Range<usize>>,
-	line_count_hint: &mut usize,
-	separator: u8,
-	settings: &GlobalSettings,
-) {
-	let read = read.strip_suffix(&[separator]).unwrap_or(read);
+	/// Split `read`, which holds `line_count` lines, into `Line`s, and add them
+	/// to `lines`. Once `settings.cancel` is set it stops part way: parsing a
+	/// chunk of tens of millions of records takes a while.
+	fn parse_lines<'a>(
+		read: &'a [u8],
+		lines: &mut Vec<Line<'a>>,
+		line_data: &mut LineData<'a>,
+		token_buffer: &mut Vec<Range<usize>>,
+		line_count: usize,
+		separator: u8,
+		settings: &GlobalSettings,
+	) {
+		let read = read.strip_suffix(&[separator]).unwrap_or(read);
 
-	assert!(lines.is_empty());
-	assert!(line_data.selections.is_empty());
-	assert!(line_data.num_infos.is_empty());
-	assert!(line_data.parsed_floats.is_empty());
-	assert!(line_data.line_num_floats.is_empty());
-	assert!(line_data.collation_key_buffer.is_empty());
-	assert!(line_data.collation_key_ends.is_empty());
-	token_buffer.clear();
-	const SMALL_CHUNK_BYTES: usize = 64 * 1024;
-	let mut estimated = (*line_count_hint).max(1);
-	let mut exact_line_count = None;
-	if *line_count_hint == 0 || read.len() <= SMALL_CHUNK_BYTES {
-		let count = if read.is_empty() {
-			1
-		} else {
-			memchr_iter(separator, read).count() + 1
-		};
-		exact_line_count = Some(count);
-		estimated = count;
-	} else if estimated == 1 {
-		const LINE_LEN_HINT: usize = 128;
-		estimated = (read.len() / LINE_LEN_HINT).clamp(1, 1024);
-	}
-	lines.reserve(estimated);
-	if settings.precomputed.selections_per_line > 0 {
-		line_data
-			.selections
-			.reserve(estimated.saturating_mul(settings.precomputed.selections_per_line));
-	}
-	if settings.precomputed.num_infos_per_line > 0 {
-		line_data
-			.num_infos
-			.reserve(estimated.saturating_mul(settings.precomputed.num_infos_per_line));
-	}
-	if settings.precomputed.floats_per_line > 0 {
-		line_data
-			.parsed_floats
-			.reserve(estimated.saturating_mul(settings.precomputed.floats_per_line));
-	}
-	if settings.mode == SortMode::Numeric {
-		line_data.line_num_floats.reserve(estimated);
-	}
-	let mut start = 0usize;
-	let mut index = 0usize;
-	for sep_idx in memchr_iter(separator, read) {
-		let line = &read[start..sep_idx];
+		assert!(lines.is_empty());
+		assert!(line_data.selections.is_empty());
+		assert!(line_data.num_infos.is_empty());
+		assert!(line_data.parsed_floats.is_empty());
+		assert!(line_data.line_num_floats.is_empty());
+		assert!(line_data.collation_key_buffer.is_empty());
+		assert!(line_data.collation_key_ends.is_empty());
+		token_buffer.clear();
+		// Exact sizes, for vectors recycled from a chunk of more records too:
+		// growing by doubling, or keeping a larger capacity, holds memory the
+		// budget does not count.
+		let precomputed = &settings.precomputed;
+		fit(lines, line_count);
+		fit(&mut line_data.selections, line_count.saturating_mul(precomputed.selections_per_line));
+		fit(&mut line_data.num_infos, line_count.saturating_mul(precomputed.num_infos_per_line));
+		fit(&mut line_data.parsed_floats, line_count.saturating_mul(precomputed.floats_per_line));
+		fit(
+			&mut line_data.line_num_floats,
+			if settings.mode == SortMode::Numeric {
+				line_count
+			} else {
+				0
+			},
+		);
+		fit(
+			&mut line_data.collation_key_ends,
+			if precomputed.fast_locale_collation {
+				line_count
+			} else {
+				0
+			},
+		);
+		// The collation keys of the previous chunk, whose records could be far
+		// longer, would otherwise keep their arena until this chunk's keys pass
+		// it: the budget counts either the recycled vectors or this chunk's
+		// derived data, not both. The size here is the one the budget counts
+		// (see [`ChunkCost`]); text that expands more under collation grows it.
+		fit(
+			&mut line_data.collation_key_buffer,
+			if precomputed.fast_locale_collation {
+				read
+					.len()
+					.saturating_mul(COLLATION_KEY_BYTES_PER_BYTE)
+					.saturating_add(line_count.saturating_mul(COLLATION_KEY_FIXED_BYTES))
+			} else {
+				0
+			},
+		);
+		let mut start = 0usize;
+		let mut index = 0usize;
+		for sep_idx in memchr_iter(separator, read) {
+			if index.is_multiple_of(64 * 1024) && settings.cancel.load(AtomicOrdering::Relaxed) {
+				return;
+			}
+			let line = &read[start..sep_idx];
+			lines.push(Line::create(line, index, line_data, token_buffer, settings));
+			index += 1;
+			start = sep_idx + 1;
+		}
+		let line = &read[start..];
 		lines.push(Line::create(line, index, line_data, token_buffer, settings));
-		index += 1;
-		start = sep_idx + 1;
+		line_data.collation_key_buffer.shrink_to_fit();
 	}
-	let line = &read[start..];
-	lines.push(Line::create(line, index, line_data, token_buffer, settings));
-	*line_count_hint = exact_line_count.unwrap_or(index + 1);
-}
 
+	/// Sets `vec`'s capacity, which must hold nothing, to exactly `len`.
+	fn fit<T>(vec: &mut Vec<T>, len: usize) {
+		vec.shrink_to(len);
+		vec.reserve_exact(len);
+	}
 
+	/// How far [`read_to_buffer`] filled the buffer.
+	struct Fill {
+		/// `buffer[..complete]` holds whole lines.
+		complete:   usize,
+		/// `buffer[complete..filled]` starts a line that continues in the input;
+		/// it must be carried over to the start of the next buffer.
+		filled:     usize,
+		/// The separators in `buffer[..complete]`.
+		separators: usize,
+		/// Whether this function should be called again.
+		more:       bool,
+	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-fn read_to_buffer<T: Read>(
-	file: &mut T,
-	next_files: &mut impl Iterator<Item = SortResult<T>>,
-	buffer: &mut Vec<u8>,
-	max_buffer_size: Option<usize>,
-	start_offset: usize,
-	separator: u8,
-) -> SortResult<(usize, bool)> {
-	let mut read_target = &mut buffer[start_offset..];
-	let mut last_file_empty = true;
-	let mut newline_search_offset = 0;
-	let mut found_newline = false;
-	loop {
-		match file.read(read_target) {
-			Ok(0) => {
-				if read_target.is_empty() {
-
-					if let Some(max_buffer_size) = max_buffer_size
-						&& max_buffer_size > buffer.len()
-					{
-
-						let prev_len = buffer.len();
-						buffer.resize(prev_len + ALLOC_CHUNK_SIZE, 0);
-						read_target = &mut buffer[prev_len..];
-						continue;
-					}
-
-					let mut sep_iter =
-						memchr_iter(separator, &buffer[newline_search_offset..buffer.len()]).rev();
-					newline_search_offset = buffer.len();
-					if let Some(last_line_end) = sep_iter.next() {
-						if found_newline || sep_iter.next().is_some() {
-
-
-							return Ok((last_line_end + 1, true));
-						}
-						found_newline = true;
-					}
-
-
-					let len = buffer.len();
-					buffer.resize(len + ALLOC_CHUNK_SIZE, 0);
-					read_target = &mut buffer[len..];
-				} else {
-
-					let mut leftover_len = read_target.len();
-					if !last_file_empty {
-
-						let read_len = buffer.len() - leftover_len;
-						if buffer[read_len - 1] != separator {
-
-							buffer[read_len] = separator;
-							leftover_len -= 1;
-						}
-						let read_len = buffer.len() - leftover_len;
-						read_target = &mut buffer[read_len..];
+	/// Read from `file` into `buffer`.
+	///
+	/// This function makes sure that at least two lines are read (unless we
+	/// reach EOF and there's no next file), growing the buffer if necessary.
+	/// The last line is likely to not have been fully read into the buffer. Its
+	/// bytes must be copied to the front of the buffer for the next invocation
+	/// so that it can be continued to be read (see [`Fill`] and
+	/// `start_offset`).
+	///
+	/// # Arguments
+	///
+	/// * `file`: The file to start reading from.
+	/// * `next_files`: When `file` reaches EOF, it is updated to
+	///   `next_files.next()` if that is `Some`, and this function continues
+	///   reading.
+	/// * `buffer`: The buffer that is filled with bytes. Its contents will
+	///   mostly be overwritten (see `start_offset` as well).
+	/// * `budget`: The chunk's memory budget and what its records cost. Reading
+	///   stops, and the buffer stops growing, before the bytes and records read
+	///   would cost more than the budget; like GNU sort, each read asks for no
+	///   more bytes than the budget could take if every byte ended a record,
+	///   except that a read into buffer the chunk already holds asks for at
+	///   least `ALLOC_CHUNK_SIZE` bytes while any room is left. The lines such a
+	///   read takes past the budget are left for the next chunk. If None, the
+	///   buffer does not grow, unless needed to read at least two lines.
+	/// * `start_offset`: The amount of bytes at the start of `buffer` that were
+	///   carried over from the previous read and should not be overwritten.
+	/// * `separator`: The byte that separates lines.
+	/// * `cancel`: Once set, reading stops and nothing is returned: a line with
+	///   no end, such as `/dev/zero` without `-z`, grows the buffer forever.
+	#[allow(clippy::too_many_arguments)]
+	fn read_to_buffer<T: Read>(
+		file: &mut T,
+		next_files: &mut impl Iterator<Item = SortResult<T>>,
+		buffer: &mut Vec<u8>,
+		budget: Option<(usize, ChunkCost)>,
+		start_offset: usize,
+		separator: u8,
+		cancel: &std::sync::atomic::AtomicBool,
+	) -> SortResult<Fill> {
+		let mut filled = start_offset;
+		let mut separators = memchr_iter(separator, &buffer[..filled]).count();
+		// Lines carried over past the previous chunk's budget can pass this one's.
+		if let Some(fill) = cut_at_budget(buffer, 0, filled, 0, separators, separator, budget) {
+			return Ok(fill);
+		}
+		loop {
+			if cancel.load(AtomicOrdering::Relaxed) {
+				return Ok(Fill { complete: 0, filled: 0, separators: 0, more: false });
+			}
+			let room = match budget {
+				Some((budget, cost)) => cost.room(budget, buffer.len(), filled, separators),
+				None => buffer.len() - filled,
+			};
+			// What a read asks for at least. Bytes read into buffer the chunk
+			// already holds cost only the records they add, so a chunk that
+			// recycled a full buffer and its record vectors starts with a few
+			// bytes of room and would otherwise read the whole buffer a few
+			// bytes per `read` call. What a read takes past the chunk's end
+			// waits for the next chunk, so it asks for no more than one chunk's
+			// budget, and never for less than `MIN_READ_SIZE`.
+			let step = match budget {
+				Some((budget, _)) => ALLOC_CHUNK_SIZE.min(budget.max(MIN_READ_SIZE)),
+				None => ALLOC_CHUNK_SIZE,
+			};
+			let want = if room > 0 {
+				room.max(step.min(buffer.len() - filled))
+			} else if separators >= 2 {
+				// The chunk is full. The separator ends the last whole line, so
+				// it is not carried over.
+				let complete = memrchr(separator, &buffer[..filled]).map_or(0, |end| end + 1);
+				return Ok(Fill { complete, filled, separators, more: true });
+			} else {
+				// We need to read more lines.
+				step
+			};
+			if buffer.len() == filled {
+				// Doubling, so a large budget is not zero-filled ahead of a small
+				// input; growth within `want` keeps the chunk within its budget.
+				// `Vec`'s own growth would reserve twice the capacity, which the
+				// budget, counted on the length, does not allow for, so the room
+				// is reserved exactly.
+				let grown = filled + want.min(filled.max(ALLOC_CHUNK_SIZE));
+				buffer.reserve_exact(grown - buffer.len());
+				buffer.resize(grown, 0);
+			}
+			let end = buffer.len().min(filled + want);
+			match file.read(&mut buffer[filled..end]) {
+				Ok(0) => {
+					// This file has been fully read. Its last line, read now or
+					// carried over, must end before the next file's first line.
+					if filled > 0 && buffer[filled - 1] != separator {
+						buffer[filled] = separator;
+						filled += 1;
+						separators += 1;
 					}
 					if let Some(next_file) = next_files.next() {
-
-						last_file_empty = true;
 						*file = next_file?;
 					} else {
-
-						let read_len = buffer.len() - leftover_len;
-						return Ok((read_len, false));
+						return Ok(Fill { complete: filled, filled, separators, more: false });
 					}
-				}
-			},
-			Ok(n) => {
-				read_target = &mut read_target[n..];
-				last_file_empty = false;
-			},
-			Err(e) if e.kind() == ErrorKind::Interrupted => {
+				},
+				Ok(n) => {
+					let start = filled;
+					filled += n;
+					let added = memchr_iter(separator, &buffer[start..filled]).count();
+					if let Some(fill) =
+						cut_at_budget(buffer, start, filled, separators, added, separator, budget)
+					{
+						return Ok(fill);
+					}
+					separators += added;
+				},
+				Err(e) if e.kind() == ErrorKind::Interrupted => {
+					// retry
+				},
+				Err(e) => return Err(SortError::message(e.to_string())),
+			}
+		}
+	}
 
-			},
-			Err(e) => return Err(SortError::message(e.to_string())),
+	/// Where a chunk of `buffer[..filled]` ends to stay within `budget`, if the
+	/// lines in it cost more: a read can take more records than the chunk has
+	/// room for (see `want` in [`read_to_buffer`]). `buffer[..from]` holds
+	/// `before` separators, and `buffer[from..filled]` `added`. The chunk keeps
+	/// at least two lines; the rest wait for the next chunk. A chunk ending at
+	/// `end` keeps only `buffer[..end]` (see [`read`]), so that is what counts,
+	/// not a buffer grown for a longer line or for lines carried over.
+	fn cut_at_budget(
+		buffer: &[u8],
+		from: usize,
+		filled: usize,
+		before: usize,
+		added: usize,
+		separator: u8,
+		budget: Option<(usize, ChunkCost)>,
+	) -> Option<Fill> {
+		let (budget, cost) = budget?;
+		if before + added <= 2 || cost.of_chunk(filled, filled, before + added) <= budget {
+			return None;
+		}
+		let mut records = before;
+		let mut complete = None;
+		for end in memchr_iter(separator, &buffer[from..filled]).map(|i| from + i + 1) {
+			records += 1;
+			if records > 2 && cost.of_chunk(end, end, records) > budget {
+				let complete = complete
+					.unwrap_or_else(|| memrchr(separator, &buffer[..from]).map_or(0, |end| end + 1));
+				return Some(Fill { complete, filled, separators: records - 1, more: true });
+			}
+			complete = Some(end);
+		}
+		None
+	}
+
+	/// Parse a buffer into a `ChunkContents` suitable for `Chunk::try_new`.
+	/// Used by the WASI single-threaded sort path.
+	#[cfg(target_os = "wasi")]
+	pub fn parse_into_chunk<'a>(
+		buffer: &'a [u8],
+		separator: u8,
+		settings: &GlobalSettings,
+	) -> ChunkContents<'a> {
+		let mut lines = Vec::new();
+		let mut line_data = LineData::default();
+		let mut token_buffer = Vec::new();
+		let line_count =
+			memchr_iter(separator, buffer.strip_suffix(&[separator]).unwrap_or(buffer)).count() + 1;
+		parse_lines(
+			buffer,
+			&mut lines,
+			&mut line_data,
+			&mut token_buffer,
+			line_count,
+			separator,
+			settings,
+		);
+		ChunkContents { lines, line_data, token_buffer }
+	}
+
+	#[cfg(test)]
+	mod budget_tests {
+		use std::iter;
+
+		use super::*;
+		fn read_chunks(input: &[u8], budget: usize, settings: &GlobalSettings) -> (usize, usize) {
+			let (sender, receiver) = flume::bounded::<Chunk>(1);
+			let mut input = input;
+			let mut carry_over = Vec::new();
+			let mut recycled = RecycledChunk::new(8 * 1024);
+			let mut largest = 0;
+			let mut chunks = 0;
+			loop {
+				let more = read(
+					&sender,
+					recycled,
+					Some(budget),
+					&mut carry_over,
+					&mut input,
+					&mut iter::empty::<SortResult<&[u8]>>(),
+					b'\n',
+					settings,
+				)
+				.expect("read");
+				let Ok(chunk) = receiver.try_recv() else {
+					break;
+				};
+				chunks += 1;
+				let contents = chunk.borrow_dependent();
+				largest = largest.max(
+					chunk.borrow_owner().capacity()
+						+ contents.lines.capacity() * size_of::<Line>()
+						+ contents.line_data.selections.capacity() * size_of::<&[u8]>()
+						+ contents.token_buffer.capacity() * size_of::<Range<usize>>(),
+				);
+				recycled = chunk.recycle();
+				if !more {
+					break;
+				}
+			}
+			(largest, chunks)
+		}
+
+		// Failure mode: `sort -S 100T` of a 19 KB file aborted the host: the
+		// buffer was zero-filled to the whole budget before any input arrived.
+		#[test]
+		fn a_key_on_a_high_field_stays_within_its_budget() {
+			const BUDGET: usize = 1 << 20;
+			const FIELD: usize = BUDGET / 4;
+			for separator in [None, Some(b' ')] {
+				let mut settings = GlobalSettings { separator, ..GlobalSettings::default() };
+				let key = format!("{FIELD},{FIELD}");
+				settings.selectors =
+					vec![super::super::FieldSelector::parse(&key, &settings).expect("key")];
+				settings.init_precomputed(false);
+				let mut input = b"a ".repeat(FIELD);
+				input.push(b'\n');
+				input.extend(b"b c\n".repeat(1000));
+				let (held, _) = read_chunks(&input, BUDGET, &settings);
+				assert!(
+					held <= BUDGET,
+					"with separator {separator:?}, a chunk held {held} bytes for a budget of {BUDGET}"
+				);
+			}
 		}
 	}
 }
 
-
-
-#[cfg(target_os = "wasi")]
-pub fn parse_into_chunk<'a>(
-	buffer: &'a [u8],
-	separator: u8,
-	settings: &GlobalSettings,
-) -> ChunkContents<'a> {
-	let mut lines = Vec::new();
-	let mut line_data = LineData::default();
-	let mut token_buffer = Vec::new();
-	let mut line_count_hint = 0;
-	parse_lines(
-		buffer,
-		&mut lines,
-		&mut line_data,
-		&mut token_buffer,
-		&mut line_count_hint,
-		separator,
-		settings,
-	);
-	ChunkContents { lines, line_data, token_buffer, line_count_hint }
-}
-
-
-
-}
 mod custom_str_cmp {
 
+	use std::cmp::Ordering;
 
-
-
-
-
-
-
-
-
-use std::cmp::Ordering;
-
-fn filter_char(c: u8, ignore_non_printing: bool, ignore_non_dictionary: bool) -> bool {
-	if ignore_non_dictionary && !(c.is_ascii_alphanumeric() || c.is_ascii_whitespace()) {
-		return false;
+	fn filter_char(c: u8, ignore_non_printing: bool, ignore_non_dictionary: bool) -> bool {
+		if ignore_non_dictionary && !(c.is_ascii_alphanumeric() || c.is_ascii_whitespace()) {
+			return false;
+		}
+		if ignore_non_printing && (c.is_ascii_control() || !c.is_ascii()) {
+			return false;
+		}
+		true
 	}
-	if ignore_non_printing && (c.is_ascii_control() || !c.is_ascii()) {
-		return false;
-	}
-	true
-}
 
-fn cmp_chars(a: u8, b: u8, ignore_case: bool) -> Ordering {
-	if ignore_case {
-		a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase())
-	} else {
-		a.cmp(&b)
-	}
-}
-
-pub fn custom_str_cmp(
-	a: &[u8],
-	b: &[u8],
-	ignore_non_printing: bool,
-	ignore_non_dictionary: bool,
-	ignore_case: bool,
-) -> Ordering {
-	if !(ignore_case || ignore_non_dictionary || ignore_non_printing) {
-
-
-		return a.cmp(b);
-	}
-	let mut a_chars = a
-		.iter()
-		.filter(|&&c| filter_char(c, ignore_non_printing, ignore_non_dictionary));
-	let mut b_chars = b
-		.iter()
-		.filter(|&&c| filter_char(c, ignore_non_printing, ignore_non_dictionary));
-	loop {
-		let a_char = a_chars.next();
-		let b_char = b_chars.next();
-		match (a_char, b_char) {
-			(None, None) => return Ordering::Equal,
-			(Some(_), None) => return Ordering::Greater,
-			(None, Some(_)) => return Ordering::Less,
-			(Some(a_char), Some(b_char)) => {
-				let ordering = cmp_chars(*a_char, *b_char, ignore_case);
-				if ordering != Ordering::Equal {
-					return ordering;
-				}
-			},
+	fn cmp_chars(a: u8, b: u8, ignore_case: bool) -> Ordering {
+		if ignore_case {
+			a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase())
+		} else {
+			a.cmp(&b)
 		}
 	}
-}
 
+	pub fn custom_str_cmp(
+		a: &[u8],
+		b: &[u8],
+		ignore_non_printing: bool,
+		ignore_non_dictionary: bool,
+		ignore_case: bool,
+	) -> Ordering {
+		if !(ignore_case || ignore_non_dictionary || ignore_non_printing) {
+			return a.cmp(b);
+		}
+		let mut a_chars = a
+			.iter()
+			.filter(|&&c| filter_char(c, ignore_non_printing, ignore_non_dictionary));
+		let mut b_chars = b
+			.iter()
+			.filter(|&&c| filter_char(c, ignore_non_printing, ignore_non_dictionary));
+		loop {
+			let a_char = a_chars.next();
+			let b_char = b_chars.next();
+			match (a_char, b_char) {
+				(None, None) => return Ordering::Equal,
+				(Some(_), None) => return Ordering::Greater,
+				(None, Some(_)) => return Ordering::Less,
+				(Some(a_char), Some(b_char)) => {
+					let ordering = cmp_chars(*a_char, *b_char, ignore_case);
+					if ordering != Ordering::Equal {
+						return ordering;
+					}
+				},
+			}
+		}
+	}
 }
 mod ext_sort {
 
+	#[cfg(not(target_os = "wasi"))]
+	mod threaded {
 
+		use std::{
+			cmp::Ordering,
+			fs::File,
+			io::{Read, Write},
+			path::PathBuf,
+			thread,
+		};
 
+		use flume::{Receiver, Sender};
+		use itertools::Itertools;
 
+		use super::super::{
+			AtomicOrdering, GlobalSettings, Line, OpenFile, Output, SortError, SortResult,
+			chunks::{self, Chunk, RecycledChunk},
+			compare_by, merge,
+			merge::{WriteableCompressedTmpFile, WriteablePlainTmpFile, WriteableTmpFile},
+			print_sorted, sort_by, strip_errno,
+			tmp_dir::TmpDirWrapper,
+		};
 
+		const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
+		pub fn ext_sort(
+			files: &mut impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
+			settings: &GlobalSettings,
+			output: Output,
+			tmp_dir: &mut TmpDirWrapper,
+			mut stderr: OpenFile,
+		) -> SortResult<()> {
+			let (sorted_sender, sorted_receiver) = flume::bounded(1);
+			let (recycled_sender, recycled_receiver) = flume::bounded(1);
+			let sorter_handle = thread::spawn({
+				let settings = settings.clone();
+				move || sorter(&recycled_receiver, &sorted_sender, &settings)
+			});
 
+			let mut effective_settings = settings.clone();
+			if let Some(compress) = &settings.compress {
+				let mut probe = compress.env.command(&compress.prog);
+				probe
+					.stdin(std::process::Stdio::null())
+					.stdout(std::process::Stdio::null())
+					.stderr(std::process::Stdio::null());
+				match probe.spawn() {
+					Ok(mut child) => {
+						let _ = child.kill();
+						let _ = child.wait();
+					},
+					Err(err) => {
+						let _ = writeln!(
+							stderr,
+							"sort: could not run compress program '{}': {}",
+							compress.prog,
+							strip_errno(&err)
+						);
+						effective_settings.compress = None;
+					},
+				}
+			}
 
+			let result = if effective_settings.compress.is_some() {
+				reader_writer::<_, WriteableCompressedTmpFile>(
+					files,
+					&effective_settings,
+					&sorted_receiver,
+					recycled_sender,
+					output,
+					tmp_dir,
+				)
+			} else {
+				reader_writer::<_, WriteablePlainTmpFile>(
+					files,
+					&effective_settings,
+					&sorted_receiver,
+					recycled_sender,
+					output,
+					tmp_dir,
+				)
+			};
 
+			drop(sorted_receiver);
 
-#[cfg(not(target_os = "wasi"))]
-mod threaded {
+			match sorter_handle.join() {
+				Ok(()) => result,
+				Err(_) => result.and(Err(SortError::message(
+					"sort: sorter thread terminated unexpectedly".to_string(),
+				))),
+			}
+		}
 
+		fn reader_writer<
+			F: Iterator<Item = SortResult<Box<dyn Read + Send>>>,
+			Tmp: WriteableTmpFile + 'static,
+		>(
+			files: F,
+			settings: &GlobalSettings,
+			receiver: &Receiver<Chunk>,
+			sender: Sender<Chunk>,
+			output: Output,
+			tmp_dir: &mut TmpDirWrapper,
+		) -> SortResult<()> {
+			let separator = settings.line_ending.into();
 
+			let chunk_budget = settings.buffer_size / 2;
+			let read_result: ReadResult<Tmp> =
+				read_write_loop(files, tmp_dir, separator, chunk_budget, settings, receiver, sender)?;
+			// A cancelled sorter stops mid-input; what was read is not the answer.
+			if settings.cancel.load(AtomicOrdering::Relaxed) {
+				return Err(SortError::Cancelled);
+			}
+			match read_result {
+				ReadResult::WroteChunksToFile { tmp_files } => {
+					merge::merge_with_file_limit::<_, _, Tmp>(
+						tmp_files.into_iter().map(merge::ClosedTmpFile::reopen),
+						settings,
+						output,
+						tmp_dir,
+					)?;
+				},
+				ReadResult::SortedSingleChunk(chunk) => {
+					if settings.unique {
+						print_sorted(
+							chunk.lines().iter().dedup_by(|a, b| {
+								compare_by(a, b, settings, chunk.line_data(), chunk.line_data())
+									== Ordering::Equal
+							}),
+							settings,
+							output,
+						)?;
+					} else {
+						print_sorted(chunk.lines().iter(), settings, output)?;
+					}
+				},
+				ReadResult::SortedTwoChunks([a, b]) => {
+					let merged_iter = a.lines().iter().map(|line| (line, &a)).merge_by(
+						b.lines().iter().map(|line| (line, &b)),
+						|(line_a, a), (line_b, b)| {
+							compare_by(line_a, line_b, settings, a.line_data(), b.line_data())
+								!= Ordering::Greater
+						},
+					);
+					if settings.unique {
+						print_sorted(
+							merged_iter
+								.dedup_by(|(line_a, a), (line_b, b)| {
+									compare_by(line_a, line_b, settings, a.line_data(), b.line_data())
+										== Ordering::Equal
+								})
+								.map(|(line, _)| line),
+							settings,
+							output,
+						)?;
+					} else {
+						print_sorted(merged_iter.map(|(line, _)| line), settings, output)?;
+					}
+				},
+				ReadResult::EmptyInput => {},
+			}
+			Ok(())
+		}
 
+		fn sorter(receiver: &Receiver<Chunk>, sender: &Sender<Chunk>, settings: &GlobalSettings) {
+			while let Ok(mut payload) = receiver.recv() {
+				if settings.cancel.load(AtomicOrdering::Relaxed) {
+					return;
+				}
+				let sorted = payload.with_dependent_mut(|_, contents| {
+					sort_by(&mut contents.lines, settings, &contents.line_data)
+				});
+				if !sorted {
+					// Cancelled: the chunk is unsorted, and `reader_writer` reports the
+					// cancellation.
+					return;
+				}
+				if sender.send(payload).is_err() {
+					return;
+				}
+			}
+		}
 
+		enum ReadResult<I: WriteableTmpFile> {
+			EmptyInput,
 
+			SortedSingleChunk(Chunk),
 
+			SortedTwoChunks([Chunk; 2]),
 
+			WroteChunksToFile { tmp_files: Vec<I::Closed> },
+		}
 
-use std::{
-	cmp::Ordering,
-	fs::File,
-	io::{Read, Write},
-	path::PathBuf,
-	thread,
-};
+		fn read_write_loop<I: WriteableTmpFile>(
+			mut files: impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
+			tmp_dir: &mut TmpDirWrapper,
+			separator: u8,
+			chunk_budget: usize,
+			settings: &GlobalSettings,
+			receiver: &Receiver<Chunk>,
+			sender: Sender<Chunk>,
+		) -> SortResult<ReadResult<I>> {
+			let mut file = files.next().unwrap()?;
 
-use flume::{Receiver, Sender};
-use itertools::Itertools;
+			let mut carry_over = vec![];
 
-use super::super::{
-	Compressor, GlobalSettings, Line, OpenFile, Output, SortError, SortResult,
-	chunks::{self, Chunk, RecycledChunk},
-	compare_by, merge,
-	merge::{WriteableCompressedTmpFile, WriteablePlainTmpFile, WriteableTmpFile},
-	print_sorted, sort_by, strip_errno,
-	tmp_dir::TmpDirWrapper,
-	AtomicOrdering,
-};
+			for _ in 0..2 {
+				let should_continue = chunks::read(
+					&sender,
+					RecycledChunk::new(chunk_budget.min(DEFAULT_BUF_SIZE)),
+					Some(chunk_budget),
+					&mut carry_over,
+					&mut file,
+					&mut files,
+					separator,
+					settings,
+				)?;
 
+				if !should_continue {
+					drop(sender);
 
+					return Ok(if let Ok(first_chunk) = receiver.recv() {
+						if let Ok(second_chunk) = receiver.recv() {
+							ReadResult::SortedTwoChunks([first_chunk, second_chunk])
+						} else {
+							ReadResult::SortedSingleChunk(first_chunk)
+						}
+					} else {
+						ReadResult::EmptyInput
+					});
+				}
+			}
 
+			let mut sender_option = Some(sender);
+			let mut tmp_files = vec![];
+			loop {
+				let Ok(chunk) = receiver.recv() else {
+					return Ok(ReadResult::WroteChunksToFile { tmp_files });
+				};
 
-const DEFAULT_BUF_SIZE: usize = 8 * 1024;
+				let tmp_file = write::<I>(&chunk, tmp_dir.next_file()?, settings, separator)?;
+				tmp_files.push(tmp_file);
 
+				let recycled_chunk = chunk.recycle();
 
+				if let Some(sender) = &sender_option {
+					let should_continue = chunks::read(
+						sender,
+						recycled_chunk,
+						Some(chunk_budget),
+						&mut carry_over,
+						&mut file,
+						&mut files,
+						separator,
+						settings,
+					)?;
+					if !should_continue {
+						sender_option = None;
+					}
+				}
+			}
+		}
 
+		fn write<I: WriteableTmpFile>(
+			chunk: &Chunk,
+			file: (File, PathBuf),
+			settings: &GlobalSettings,
+			separator: u8,
+		) -> SortResult<I::Closed> {
+			let mut tmp_file = I::create(file, settings.compress.as_ref())?;
+			// A chunk of tens of millions of records takes a while to write.
+			for lines in chunk.lines().chunks(64 * 1024) {
+				if settings.cancel.load(AtomicOrdering::Relaxed) {
+					// Closed properly, so a `--compress-program` child is waited for.
+					let _ = tmp_file.finished_writing();
+					return Err(SortError::Cancelled);
+				}
+				write_lines(lines, tmp_file.as_write(), separator);
+			}
+			tmp_file.finished_writing()
+		}
 
-
-
-
-pub fn ext_sort(
-	files: &mut impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
-	settings: &GlobalSettings,
-	output: Output,
-	tmp_dir: &mut TmpDirWrapper,
-	mut stderr: OpenFile,
-) -> SortResult<()> {
-	let (sorted_sender, sorted_receiver) = flume::bounded(1);
-	let (recycled_sender, recycled_receiver) = flume::bounded(1);
-	let sorter_handle = thread::spawn({
-		let settings = settings.clone();
-		move || sorter(&recycled_receiver, &sorted_sender, &settings)
-	});
-
-
-
-
-
-	let mut effective_settings = settings.clone();
-	if let Some(compress) = &settings.compress {
-		let mut probe = compress.env.command(&compress.prog);
-		probe
-			.stdin(std::process::Stdio::null())
-			.stdout(std::process::Stdio::null())
-			.stderr(std::process::Stdio::null());
-		match probe.spawn() {
-			Ok(mut child) => {
-
-				let _ = child.kill();
-			},
-			Err(err) => {
-
-				let _ = writeln!(
-					stderr,
-					"sort: could not run compress program '{}': {}",
-					compress.prog,
-					strip_errno(&err)
-				);
-				effective_settings.compress = None;
-			},
+		fn write_lines<T: Write>(lines: &[Line], writer: &mut T, separator: u8) {
+			for s in lines {
+				writer.write_all(s.line).unwrap();
+				writer.write_all(&[separator]).unwrap();
+			}
 		}
 	}
+	#[cfg(not(target_os = "wasi"))]
+	pub use threaded::ext_sort;
 
-	let result = if effective_settings.compress.is_some() {
-		reader_writer::<_, WriteableCompressedTmpFile>(
-			files,
-			&effective_settings,
-			&sorted_receiver,
-			recycled_sender,
-			output,
-			tmp_dir,
-		)
-	} else {
-		reader_writer::<_, WriteablePlainTmpFile>(
-			files,
-			&effective_settings,
-			&sorted_receiver,
-			recycled_sender,
-			output,
-			tmp_dir,
-		)
-	};
+	#[cfg(target_os = "wasi")]
+	mod wasi {
 
+		use std::{cmp::Ordering, io::Read};
 
+		use itertools::Itertools;
 
+		use super::super::{
+			AtomicOrdering, GlobalSettings, OpenFile, Output, SortError, SortResult,
+			chunks::{self, Chunk},
+			compare_by, print_sorted, sort_by,
+			tmp_dir::TmpDirWrapper,
+		};
 
-	drop(sorted_receiver);
+		pub fn ext_sort(
+			files: &mut impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
+			settings: &GlobalSettings,
+			output: Output,
+			_tmp_dir: &mut TmpDirWrapper,
+			_stderr: OpenFile,
+		) -> SortResult<()> {
+			let separator = settings.line_ending.into();
 
-
-
-
-
-
-	match sorter_handle.join() {
-		Ok(()) => result,
-		Err(_) => result
-			.and(Err(SortError::message("sort: sorter thread terminated unexpectedly".to_string()))),
-	}
-}
-
-fn reader_writer<
-	F: Iterator<Item = SortResult<Box<dyn Read + Send>>>,
-	Tmp: WriteableTmpFile + 'static,
->(
-	files: F,
-	settings: &GlobalSettings,
-	receiver: &Receiver<Chunk>,
-	sender: Sender<Chunk>,
-	output: Output,
-	tmp_dir: &mut TmpDirWrapper,
-) -> SortResult<()> {
-	let separator = settings.line_ending.into();
-
-
-
-
-	let mut buffer_size = match settings.buffer_size {
-		size if size <= 512 * 1024 * 1024 => size,
-		size => size / 2,
-	};
-	if !settings.buffer_size_is_explicit {
-		buffer_size = buffer_size.max(8 * 1024 * 1024);
-	}
-	let read_result: ReadResult<Tmp> =
-		read_write_loop(files, tmp_dir, separator, buffer_size, settings, receiver, sender)?;
-	match read_result {
-		ReadResult::WroteChunksToFile { tmp_files } => {
-			merge::merge_with_file_limit::<_, _, Tmp>(
-				tmp_files.into_iter().map(merge::ClosedTmpFile::reopen),
-				settings,
-				output,
-				tmp_dir,
-			)?;
-		},
-		ReadResult::SortedSingleChunk(chunk) => {
+			let mut input = Vec::new();
+			for file in files {
+				file?.read_to_end(&mut input)?;
+			}
+			if input.is_empty() {
+				return Ok(());
+			}
+			let mut chunk = Chunk::try_new(input, |buffer| {
+				Ok::<_, SortError>(chunks::parse_into_chunk(buffer, separator, settings))
+			})?;
+			if settings.cancel.load(AtomicOrdering::Relaxed) {
+				return Err(SortError::Cancelled);
+			}
+			let sorted = chunk.with_dependent_mut(|_, contents| {
+				sort_by(&mut contents.lines, settings, &contents.line_data)
+			});
+			if !sorted {
+				return Err(SortError::Cancelled);
+			}
 			if settings.unique {
 				print_sorted(
 					chunk.lines().iter().dedup_by(|a, b| {
@@ -1021,1145 +1700,911 @@ fn reader_writer<
 			} else {
 				print_sorted(chunk.lines().iter(), settings, output)?;
 			}
-		},
-		ReadResult::SortedTwoChunks([a, b]) => {
-			let merged_iter = a.lines().iter().map(|line| (line, &a)).merge_by(
-				b.lines().iter().map(|line| (line, &b)),
-				|(line_a, a), (line_b, b)| {
-					compare_by(line_a, line_b, settings, a.line_data(), b.line_data())
-						!= Ordering::Greater
-				},
-			);
-			if settings.unique {
-				print_sorted(
-					merged_iter
-						.dedup_by(|(line_a, a), (line_b, b)| {
-							compare_by(line_a, line_b, settings, a.line_data(), b.line_data())
-								== Ordering::Equal
-						})
-						.map(|(line, _)| line),
-					settings,
-					output,
-				)?;
-			} else {
-				print_sorted(merged_iter.map(|(line, _)| line), settings, output)?;
-			}
-		},
-		ReadResult::EmptyInput => {
-
-		},
-	}
-	Ok(())
-}
-
-
-fn sorter(receiver: &Receiver<Chunk>, sender: &Sender<Chunk>, settings: &GlobalSettings) {
-	while let Ok(mut payload) = receiver.recv() {
-		if settings.cancel.load(AtomicOrdering::Relaxed) {
-			return;
-		}
-		payload.with_dependent_mut(|_, contents| {
-			sort_by(&mut contents.lines, settings, &contents.line_data);
-		});
-		if sender.send(payload).is_err() {
-
-
-			return;
+			Ok(())
 		}
 	}
-}
-
-
-enum ReadResult<I: WriteableTmpFile> {
-
-	EmptyInput,
-
-	SortedSingleChunk(Chunk),
-
-	SortedTwoChunks([Chunk; 2]),
-
-
-	WroteChunksToFile { tmp_files: Vec<I::Closed> },
-}
-
-fn read_write_loop<I: WriteableTmpFile>(
-	mut files: impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
-	tmp_dir: &mut TmpDirWrapper,
-	separator: u8,
-	buffer_size: usize,
-	settings: &GlobalSettings,
-	receiver: &Receiver<Chunk>,
-	sender: Sender<Chunk>,
-) -> SortResult<ReadResult<I>> {
-	let mut file = files.next().unwrap()?;
-
-	let mut carry_over = vec![];
-
-	for _ in 0..2 {
-		let should_continue = chunks::read(
-			&sender,
-			RecycledChunk::new(buffer_size.min(DEFAULT_BUF_SIZE)),
-			Some(buffer_size),
-			&mut carry_over,
-			&mut file,
-			&mut files,
-			separator,
-			settings,
-		)?;
-
-		if !should_continue {
-			drop(sender);
-
-
-
-			return Ok(if let Ok(first_chunk) = receiver.recv() {
-				if let Ok(second_chunk) = receiver.recv() {
-					ReadResult::SortedTwoChunks([first_chunk, second_chunk])
-				} else {
-					ReadResult::SortedSingleChunk(first_chunk)
-				}
-			} else {
-				ReadResult::EmptyInput
-			});
-		}
-	}
-
-	let mut sender_option = Some(sender);
-	let mut tmp_files = vec![];
-	loop {
-		let Ok(chunk) = receiver.recv() else {
-			return Ok(ReadResult::WroteChunksToFile { tmp_files });
-		};
-
-		let tmp_file =
-			write::<I>(&chunk, tmp_dir.next_file()?, settings.compress.as_ref(), separator)?;
-		tmp_files.push(tmp_file);
-
-		let recycled_chunk = chunk.recycle();
-
-		if let Some(sender) = &sender_option {
-			let should_continue = chunks::read(
-				sender,
-				recycled_chunk,
-				None,
-				&mut carry_over,
-				&mut file,
-				&mut files,
-				separator,
-				settings,
-			)?;
-			if !should_continue {
-				sender_option = None;
-			}
-		}
-	}
-}
-
-
-
-fn write<I: WriteableTmpFile>(
-	chunk: &Chunk,
-	file: (File, PathBuf),
-	compress: Option<&Compressor>,
-	separator: u8,
-) -> SortResult<I::Closed> {
-	let mut tmp_file = I::create(file, compress)?;
-	write_lines(chunk.lines(), tmp_file.as_write(), separator);
-	tmp_file.finished_writing()
-}
-
-fn write_lines<T: Write>(lines: &[Line], writer: &mut T, separator: u8) {
-	for s in lines {
-		writer.write_all(s.line).unwrap();
-		writer.write_all(&[separator]).unwrap();
-	}
-}
-
-
-
-}
-#[cfg(not(target_os = "wasi"))]
-pub use threaded::ext_sort;
-
-#[cfg(target_os = "wasi")]
-mod wasi {
-
-
-
-
-
-
-
-
-use std::{cmp::Ordering, io::Read};
-
-use itertools::Itertools;
-
-use super::super::{
-	GlobalSettings, Output, SortError, SortResult,
-	chunks::{self, Chunk},
-	compare_by, print_sorted, sort_by,
-	tmp_dir::TmpDirWrapper,
-};
-
-
-
-pub fn ext_sort(
-	files: &mut impl Iterator<Item = SortResult<Box<dyn Read + Send>>>,
-	settings: &GlobalSettings,
-	output: Output,
-	_tmp_dir: &mut TmpDirWrapper,
-) -> SortResult<()> {
-	let separator = settings.line_ending.into();
-
-
-
-
-	let mut input = Vec::new();
-	for file in files {
-		file?.read_to_end(&mut input)?;
-	}
-	if input.is_empty() {
-		return Ok(());
-	}
-	let mut chunk = Chunk::try_new(input, |buffer| {
-		Ok::<_, SortError>(chunks::parse_into_chunk(buffer, separator, settings))
-	})?;
-	chunk.with_dependent_mut(|_, contents| {
-		sort_by(&mut contents.lines, settings, &contents.line_data);
-	});
-	if settings.unique {
-		print_sorted(
-			chunk.lines().iter().dedup_by(|a, b| {
-				compare_by(a, b, settings, chunk.line_data(), chunk.line_data()) == Ordering::Equal
-			}),
-			settings,
-			output,
-		)?;
-	} else {
-		print_sorted(chunk.lines().iter(), settings, output)?;
-	}
-	Ok(())
-}
-
-}
-#[cfg(target_os = "wasi")]
-
-pub use self::wasi::ext_sort;
-
+	#[cfg(target_os = "wasi")]
+	pub use self::wasi::ext_sort;
 }
 mod merge {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-use std::{
-	cmp::Ordering,
-	ffi::{OsStr, OsString},
-	fs::{self, File},
-	io::{BufWriter, Read, Write},
-	iter,
-	path::{Path, PathBuf},
-	process::{Child, ChildStdin, ChildStdout, Stdio},
-	rc::Rc,
-	thread::{self, JoinHandle},
-};
-
-use compare::Compare;
-use flume::{Receiver, Sender};
-
-use super::{
-	AtomicOrdering, Compressor, GlobalSettings, Output, SortError, SortResult,
-	chunks::{self, Chunk, RecycledChunk},
-	compare_by, current_open_fd_count, fd_soft_limit, open,
-	tmp_dir::TmpDirWrapper,
-};
-
-
-
-fn replace_output_file_in_input_files(
-	files: &mut [OsString],
-	output: Option<&OsStr>,
-	tmp_dir: &mut TmpDirWrapper,
-) -> SortResult<()> {
-	let mut copy: Option<PathBuf> = None;
-	if let Some(Ok(output_path)) = output.map(|path| Path::new(path).canonicalize()) {
-		for file in files {
-			if let Ok(file_path) = Path::new(file.as_os_str()).canonicalize()
-				&& file_path == output_path
-			{
-				if let Some(copy) = &copy {
-					*file = copy.clone().into_os_string();
-				} else {
-					let (_file, copy_path) = tmp_dir.next_file()?;
-					fs::copy(file_path, &copy_path)
-						.map_err(|error| SortError::OpenTmpFileFailed { error })?;
-					*file = copy_path.clone().into_os_string();
-					copy = Some(copy_path);
-				}
-			}
-		}
-	}
-	Ok(())
-}
-
-
-
-
-fn effective_merge_batch_size(settings: &GlobalSettings) -> usize {
-	const MIN_BATCH_SIZE: usize = 2;
-	const RESERVED_TMP_OUTPUT: usize = 1;
-	const RESERVED_CTRL_C: usize = 2;
-	const RESERVED_RANDOM_SOURCE: usize = 1;
-	const SAFETY_MARGIN: usize = 1;
-	let mut batch_size = settings.merge_batch_size.max(MIN_BATCH_SIZE);
-
-	if let Some(limit) = fd_soft_limit() {
-		let open_fds = current_open_fd_count().unwrap_or(3);
-		let mut reserved = RESERVED_TMP_OUTPUT + RESERVED_CTRL_C + SAFETY_MARGIN;
-		if settings.salt.is_some() {
-			reserved = reserved.saturating_add(RESERVED_RANDOM_SOURCE);
-		}
-		let available_inputs = limit.saturating_sub(open_fds.saturating_add(reserved));
-		if available_inputs >= MIN_BATCH_SIZE {
-			batch_size = batch_size.min(available_inputs);
-		} else {
-			batch_size = MIN_BATCH_SIZE;
-		}
-	}
-
-	batch_size
-}
-
-
-
-
-
-
-pub fn merge(
-	files: &mut [OsString],
-	settings: &GlobalSettings,
-	output: Output,
-	tmp_dir: &mut TmpDirWrapper,
-) -> SortResult<()> {
-	replace_output_file_in_input_files(files, output.as_output_name(), tmp_dir)?;
-	let files = files
-		.iter()
-		.map(|file| open(file).map(|file| PlainMergeInput { inner: file }));
-	if settings.compress.is_none() {
-		merge_with_file_limit::<_, _, WriteablePlainTmpFile>(files, settings, output, tmp_dir)
-	} else {
-		merge_with_file_limit::<_, _, WriteableCompressedTmpFile>(files, settings, output, tmp_dir)
-	}
-}
-
-
-pub fn merge_with_file_limit<
-	M: MergeInput + 'static,
-	F: ExactSizeIterator<Item = SortResult<M>>,
-	Tmp: WriteableTmpFile + 'static,
->(
-	files: F,
-	settings: &GlobalSettings,
-	output: Output,
-	tmp_dir: &mut TmpDirWrapper,
-) -> SortResult<()> {
-	let batch_size = effective_merge_batch_size(settings);
-	debug_assert!(batch_size >= 2);
-
-	if files.len() <= batch_size {
-		let merger = merge_without_limit(files, settings);
-		merger?.write_all(settings, output)
-	} else {
-		let mut temporary_files = vec![];
-		let mut batch = Vec::with_capacity(batch_size);
-		for file in files {
-			batch.push(file);
-			if batch.len() >= batch_size {
-				assert_eq!(batch.len(), batch_size);
-				let merger = merge_without_limit(batch.into_iter(), settings)?;
-				batch = Vec::with_capacity(batch_size);
-
-				let mut tmp_file =
-					Tmp::create(tmp_dir.next_file()?, settings.compress.as_ref())?;
-				merger.write_all_to(settings, tmp_file.as_write())?;
-				temporary_files.push(tmp_file.finished_writing()?);
-			}
-		}
-
-		if !batch.is_empty() {
-			assert!(batch.len() < batch_size);
-			let merger = merge_without_limit(batch.into_iter(), settings)?;
-
-			let mut tmp_file = Tmp::create(tmp_dir.next_file()?, settings.compress.as_ref())?;
-			merger.write_all_to(settings, tmp_file.as_write())?;
-			temporary_files.push(tmp_file.finished_writing()?);
-		}
-		merge_with_file_limit::<_, _, Tmp>(
-			temporary_files
-				.into_iter()
-				.map(Box::new(|c: Tmp::Closed| c.reopen())
-					as Box<dyn FnMut(Tmp::Closed) -> SortResult<<Tmp::Closed as ClosedTmpFile>::Reopened>>),
-			settings,
-			output,
-			tmp_dir,
-		)
-	}
-}
-
-
-
-
-
-fn merge_without_limit<M: MergeInput + 'static, F: Iterator<Item = SortResult<M>>>(
-	files: F,
-	settings: &GlobalSettings,
-) -> SortResult<FileMerger<'_>> {
-	let (request_sender, request_receiver) = flume::unbounded();
-	let mut reader_files = Vec::with_capacity(files.size_hint().0);
-	let mut loaded_receivers = Vec::with_capacity(files.size_hint().0);
-	for (file_number, file) in files.enumerate() {
-		let (sender, receiver) = flume::bounded(2);
-		loaded_receivers.push(receiver);
-		reader_files.push(Some(ReaderFile { file: file?, sender, carry_over: vec![] }));
-
-		request_sender
-			.send((file_number, RecycledChunk::new(8 * 1024)))
-			.unwrap();
-	}
-
-
-	for file_number in 0..reader_files.len() {
-		request_sender
-			.send((file_number, RecycledChunk::new(8 * 1024)))
-			.unwrap();
-	}
-
-	let reader_join_handle = thread::spawn({
-		let settings = settings.clone();
-		move || reader(&request_receiver, &mut reader_files, &settings, settings.line_ending.into())
-	});
-
-	let mut mergeable_files = vec![];
-
-	for (file_number, receiver) in loaded_receivers.into_iter().enumerate() {
-		if let Ok(chunk) = receiver.recv() {
-			mergeable_files.push(MergeableFile {
-				current_chunk: Rc::new(chunk),
-				file_number,
-				line_idx: 0,
-				receiver,
-			});
-		}
-	}
-
-	Ok(FileMerger {
-		heap: binary_heap_plus::BinaryHeap::from_vec_cmp(mergeable_files, FileComparator {
-			settings,
-		}),
-		request_sender,
-		prev: None,
-		reader_join_handle,
-	})
-}
-
-struct ReaderFile<M: MergeInput> {
-	file:       M,
-	sender:     Sender<Chunk>,
-	carry_over: Vec<u8>,
-}
-
-
-fn reader(
-	recycled_receiver: &Receiver<(usize, RecycledChunk)>,
-	files: &mut [Option<ReaderFile<impl MergeInput>>],
-	settings: &GlobalSettings,
-	separator: u8,
-) -> SortResult<()> {
-	while let Ok((file_idx, recycled_chunk)) = recycled_receiver.recv() {
-		if settings.cancel.load(AtomicOrdering::Relaxed) {
-			break;
-		}
-		if let Some(ReaderFile { file, sender, carry_over }) = &mut files[file_idx] {
-			let should_continue = chunks::read(
-				sender,
-				recycled_chunk,
-				None,
-				carry_over,
-				file.as_read(),
-				&mut iter::empty(),
-				separator,
-				settings,
-			)?;
-			if !should_continue {
-
-				let ReaderFile { file, .. } = files[file_idx].take().unwrap();
-
-				file.finished_reading()?;
-			}
-		}
-	}
-	Ok(())
-}
-
-pub struct MergeableFile {
-	current_chunk: Rc<Chunk>,
-	line_idx:      usize,
-	receiver:      Receiver<Chunk>,
-	file_number:   usize,
-}
-
-
-
-
-struct PreviousLine {
-	chunk:       Rc<Chunk>,
-	line_idx:    usize,
-	file_number: usize,
-}
-
-
-
-struct FileMerger<'a> {
-	heap:               binary_heap_plus::BinaryHeap<MergeableFile, FileComparator<'a>>,
-	request_sender:     Sender<(usize, RecycledChunk)>,
-	prev:               Option<PreviousLine>,
-	reader_join_handle: JoinHandle<SortResult<()>>,
-}
-
-impl FileMerger<'_> {
-
-	fn write_all(self, settings: &GlobalSettings, output: Output) -> SortResult<()> {
-		let mut out = output.into_write();
-		self.write_all_to(settings, &mut out)
-	}
-
-	fn write_all_to(mut self, settings: &GlobalSettings, out: &mut impl Write) -> SortResult<()> {
-		while self
-			.write_next(settings, out)
-			.map_err(|error| SortError::WriteFailed {
-				path: OsString::from("standard output"),
-				error,
-			})?
-		{}
-		drop(self.request_sender);
-		self.reader_join_handle.join().unwrap()
-	}
-
-	fn write_next(
-		&mut self,
-		settings: &GlobalSettings,
-		out: &mut impl Write,
-	) -> std::io::Result<bool> {
-		if let Some(file) = self.heap.peek() {
-			let prev = self.prev.replace(PreviousLine {
-				chunk:       file.current_chunk.clone(),
-				line_idx:    file.line_idx,
-				file_number: file.file_number,
-			});
-
-			file.current_chunk.with_dependent(|_, contents| {
-				let current_line = &contents.lines[file.line_idx];
-				if settings.unique
-					&& let Some(prev) = &prev
+	use std::{
+		cmp::Ordering,
+		ffi::{OsStr, OsString},
+		fs::{self, File},
+		io::{BufWriter, Read, Write},
+		iter,
+		path::{Path, PathBuf},
+		process::{Child, ChildStdin, ChildStdout, Stdio},
+		rc::Rc,
+		thread::{self, JoinHandle},
+	};
+
+	use compare::Compare;
+	use flume::{Receiver, Sender};
+
+	use super::{
+		AtomicOrdering, Compressor, GlobalSettings, Output, SortError, SortResult, StdinOperand,
+		chunks::{self, Chunk, RecycledChunk},
+		compare_by, current_open_fd_count, fd_soft_limit, open_operand,
+		tmp_dir::TmpDirWrapper,
+	};
+
+	fn replace_output_file_in_input_files(
+		files: &mut [OsString],
+		output: Option<&OsStr>,
+		tmp_dir: &mut TmpDirWrapper,
+	) -> SortResult<()> {
+		let mut copy: Option<PathBuf> = None;
+		if let Some(Ok(output_path)) = output.map(|path| Path::new(path).canonicalize()) {
+			for file in files {
+				if let Ok(file_path) = Path::new(file.as_os_str()).canonicalize()
+					&& file_path == output_path
 				{
-					let cmp = compare_by(
-						&prev.chunk.lines()[prev.line_idx],
-						current_line,
-						settings,
-						prev.chunk.line_data(),
-						file.current_chunk.line_data(),
-					);
-					if cmp == Ordering::Equal {
-						return Ok(());
+					if let Some(copy) = &copy {
+						*file = copy.clone().into_os_string();
+					} else {
+						let (_file, copy_path) = tmp_dir.next_file()?;
+						fs::copy(file_path, &copy_path)
+							.map_err(|error| SortError::OpenTmpFileFailed { error })?;
+						*file = copy_path.clone().into_os_string();
+						copy = Some(copy_path);
 					}
 				}
-				current_line.print(out, settings)
-			})?;
+			}
+		}
+		Ok(())
+	}
 
-			let was_last_line_for_file = file.current_chunk.lines().len() == file.line_idx + 1;
+	fn effective_merge_batch_size(settings: &GlobalSettings) -> usize {
+		const MIN_BATCH_SIZE: usize = 2;
+		const RESERVED_TMP_OUTPUT: usize = 1;
+		const RESERVED_CTRL_C: usize = 2;
+		const RESERVED_RANDOM_SOURCE: usize = 1;
+		const SAFETY_MARGIN: usize = 1;
+		let mut batch_size = settings.merge_batch_size.max(MIN_BATCH_SIZE);
 
-			if was_last_line_for_file {
-				if let Ok(next_chunk) = file.receiver.recv() {
-					let mut file = self.heap.peek_mut().unwrap();
-					file.current_chunk = Rc::new(next_chunk);
-					file.line_idx = 0;
-				} else {
-					self.heap.pop();
-				}
+		if let Some(limit) = fd_soft_limit() {
+			let open_fds = current_open_fd_count().unwrap_or(3);
+			let mut reserved = RESERVED_TMP_OUTPUT + RESERVED_CTRL_C + SAFETY_MARGIN;
+			if settings.salt.is_some() {
+				reserved = reserved.saturating_add(RESERVED_RANDOM_SOURCE);
+			}
+			let available_inputs = limit.saturating_sub(open_fds.saturating_add(reserved));
+			if available_inputs >= MIN_BATCH_SIZE {
+				batch_size = batch_size.min(available_inputs);
 			} else {
-
-
-				self.heap.peek_mut().unwrap().line_idx += 1;
-			}
-
-			if let Some(prev) = prev
-				&& let Ok(prev_chunk) = Rc::try_unwrap(prev.chunk)
-			{
-
-
-				self
-					.request_sender
-					.send((prev.file_number, prev_chunk.recycle()))
-					.ok();
+				batch_size = MIN_BATCH_SIZE;
 			}
 		}
-		Ok(!self.heap.is_empty())
-	}
-}
 
-
-struct FileComparator<'a> {
-	settings: &'a GlobalSettings,
-}
-
-impl Compare<MergeableFile> for FileComparator<'_> {
-	fn compare(&self, a: &MergeableFile, b: &MergeableFile) -> Ordering {
-		let mut cmp = compare_by(
-			&a.current_chunk.lines()[a.line_idx],
-			&b.current_chunk.lines()[b.line_idx],
-			self.settings,
-			a.current_chunk.line_data(),
-			b.current_chunk.line_data(),
-		);
-		if cmp == Ordering::Equal {
-
-
-			cmp = a.file_number.cmp(&b.file_number);
-		}
-
-
-		cmp.reverse()
-	}
-}
-
-
-fn check_child_success(mut child: Child, program: &str) -> SortResult<()> {
-	if matches!(child.wait().map(|e| e.code()), Ok(Some(0) | None) | Err(_)) {
-		Ok(())
-	} else {
-		Err(SortError::CompressProgTerminatedAbnormally { prog: program.to_owned() }.into())
-	}
-}
-
-
-pub trait WriteableTmpFile: Sized {
-	type Closed: ClosedTmpFile;
-	type InnerWrite: Write;
-	fn create(file: (File, PathBuf), compress: Option<&Compressor>) -> SortResult<Self>;
-
-	fn finished_writing(self) -> SortResult<Self::Closed>;
-	fn as_write(&mut self) -> &mut Self::InnerWrite;
-}
-
-pub trait ClosedTmpFile {
-	type Reopened: MergeInput;
-
-	fn reopen(self) -> SortResult<Self::Reopened>;
-}
-
-pub trait MergeInput: Send {
-	type InnerRead: Read;
-
-
-	fn finished_reading(self) -> SortResult<()>;
-	fn as_read(&mut self) -> &mut Self::InnerRead;
-}
-
-pub struct WriteablePlainTmpFile {
-	path: PathBuf,
-	file: BufWriter<File>,
-}
-pub struct ClosedPlainTmpFile {
-	path: PathBuf,
-}
-pub struct PlainTmpMergeInput {
-	path: PathBuf,
-	file: File,
-}
-impl WriteableTmpFile for WriteablePlainTmpFile {
-	type Closed = ClosedPlainTmpFile;
-	type InnerWrite = BufWriter<File>;
-
-	fn create((file, path): (File, PathBuf), _: Option<&Compressor>) -> SortResult<Self> {
-		Ok(Self { file: BufWriter::new(file), path })
+		batch_size
 	}
 
-	fn finished_writing(self) -> SortResult<Self::Closed> {
-		Ok(ClosedPlainTmpFile { path: self.path })
-	}
-
-	fn as_write(&mut self) -> &mut Self::InnerWrite {
-		&mut self.file
-	}
-}
-impl ClosedTmpFile for ClosedPlainTmpFile {
-	type Reopened = PlainTmpMergeInput;
-
-	fn reopen(self) -> SortResult<Self::Reopened> {
-		Ok(PlainTmpMergeInput {
-			file: File::open(&self.path).map_err(|error| SortError::OpenTmpFileFailed { error })?,
-			path: self.path,
-		})
-	}
-}
-impl MergeInput for PlainTmpMergeInput {
-	type InnerRead = File;
-
-	fn finished_reading(self) -> SortResult<()> {
-
-
-
-		let _ = fs::remove_file(self.path);
-		Ok(())
-	}
-
-	fn as_read(&mut self) -> &mut Self::InnerRead {
-		&mut self.file
-	}
-}
-
-pub struct WriteableCompressedTmpFile {
-	path:        PathBuf,
-	compress:    Compressor,
-	child:       Child,
-	child_stdin: BufWriter<ChildStdin>,
-
-
-	forwarder:   thread::JoinHandle<()>,
-}
-pub struct ClosedCompressedTmpFile {
-	path:     PathBuf,
-	compress: Compressor,
-}
-pub struct CompressedTmpMergeInput {
-	path:         PathBuf,
-	compress:     Compressor,
-	child:        Child,
-	child_stdout: ChildStdout,
-	forwarder:    thread::JoinHandle<()>,
-}
-impl WriteableTmpFile for WriteableCompressedTmpFile {
-	type Closed = ClosedCompressedTmpFile;
-	type InnerWrite = BufWriter<ChildStdin>;
-
-	fn create((file, path): (File, PathBuf), compress: Option<&Compressor>) -> SortResult<Self> {
-		let compress = compress
-			.expect("WriteableCompressedTmpFile is only selected when a compressor is configured")
-			.clone();
-		let (mut child, forwarder) = compress.spawn(Stdio::piped(), file, false)?;
-		let child_stdin = child.stdin.take().expect("compressor stdin is piped");
-		Ok(Self {
-			path,
-			compress,
-			child,
-			child_stdin: BufWriter::new(child_stdin),
-			forwarder,
-		})
-	}
-
-	fn finished_writing(self) -> SortResult<Self::Closed> {
-		drop(self.child_stdin);
-		let result = check_child_success(self.child, &self.compress.prog);
-		let _ = self.forwarder.join();
-		result?;
-		Ok(ClosedCompressedTmpFile { path: self.path, compress: self.compress })
-	}
-
-	fn as_write(&mut self) -> &mut Self::InnerWrite {
-		&mut self.child_stdin
-	}
-}
-impl ClosedTmpFile for ClosedCompressedTmpFile {
-	type Reopened = CompressedTmpMergeInput;
-
-	fn reopen(self) -> SortResult<Self::Reopened> {
-
-		let file = File::open(&self.path).map_err(|error| SortError::OpenTmpFileFailed { error })?;
-		let (mut child, forwarder) = self.compress.spawn(file, Stdio::piped(), true)?;
-		let child_stdout = child.stdout.take().expect("compressor stdout is piped");
-		Ok(CompressedTmpMergeInput {
-			path: self.path,
-			compress: self.compress,
-			child,
-			child_stdout,
-			forwarder,
-		})
-	}
-}
-impl MergeInput for CompressedTmpMergeInput {
-	type InnerRead = ChildStdout;
-
-	fn finished_reading(self) -> SortResult<()> {
-
-		#[allow(clippy::drop_non_drop)]
-		drop(self.child_stdout);
-		let result = check_child_success(self.child, &self.compress.prog);
-		let _ = self.forwarder.join();
-		result?;
-		let _ = fs::remove_file(self.path);
-		Ok(())
-	}
-
-	fn as_read(&mut self) -> &mut Self::InnerRead {
-		&mut self.child_stdout
-	}
-}
-
-pub struct PlainMergeInput<R: Read + Send> {
-	inner: R,
-}
-impl<R: Read + Send> MergeInput for PlainMergeInput<R> {
-	type InnerRead = R;
-
-	fn finished_reading(self) -> SortResult<()> {
-		Ok(())
-	}
-
-	fn as_read(&mut self) -> &mut Self::InnerRead {
-		&mut self.inner
-	}
-}
-
-}
-mod numeric_str_cmp {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-use std::{cmp::Ordering, ops::Range};
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-enum Sign {
-	Negative,
-	Positive,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct NumInfo {
-	exponent: i64,
-	sign:     Sign,
-}
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct NumInfoParseSettings {
-	pub accept_si_units:     bool,
-	pub thousands_separator: Option<u8>,
-	pub decimal_pt:          Option<u8>,
-}
-
-impl Default for NumInfoParseSettings {
-	fn default() -> Self {
-		Self {
-			accept_si_units:     false,
-			thousands_separator: None,
-			decimal_pt:          Some(b'.'),
+	pub fn merge(
+		stdin: &StdinOperand,
+		files: &mut [OsString],
+		settings: &GlobalSettings,
+		output: Output,
+		tmp_dir: &mut TmpDirWrapper,
+	) -> SortResult<()> {
+		replace_output_file_in_input_files(files, output.as_output_name(), tmp_dir)?;
+		let files = files
+			.iter()
+			.map(|file| open_operand(stdin, file).map(|file| PlainMergeInput { inner: file }));
+		if settings.compress.is_none() {
+			merge_with_file_limit::<_, _, WriteablePlainTmpFile>(files, settings, output, tmp_dir)
+		} else {
+			merge_with_file_limit::<_, _, WriteableCompressedTmpFile>(files, settings, output, tmp_dir)
 		}
 	}
-}
 
-impl NumInfo {
+	pub fn merge_with_file_limit<
+		M: MergeInput + 'static,
+		F: ExactSizeIterator<Item = SortResult<M>>,
+		Tmp: WriteableTmpFile + 'static,
+	>(
+		files: F,
+		settings: &GlobalSettings,
+		output: Output,
+		tmp_dir: &mut TmpDirWrapper,
+	) -> SortResult<()> {
+		let batch_size = effective_merge_batch_size(settings);
+		debug_assert!(batch_size >= 2);
 
+		if files.len() <= batch_size {
+			let merger = merge_without_limit(files, settings);
+			merger?.write_all(settings, output)
+		} else {
+			let mut temporary_files = vec![];
+			let mut batch = Vec::with_capacity(batch_size);
+			for file in files {
+				batch.push(file);
+				if batch.len() >= batch_size {
+					assert_eq!(batch.len(), batch_size);
+					let merger = merge_without_limit(batch.into_iter(), settings)?;
+					batch = Vec::with_capacity(batch_size);
 
-
-
-
-
-
-
-	#[allow(clippy::cognitive_complexity)]
-	pub fn parse(num: &[u8], parse_settings: &NumInfoParseSettings) -> (Self, Range<usize>) {
-		let mut exponent = -1;
-		let mut had_decimal_pt = false;
-		let mut had_digit = false;
-		let mut start = None;
-		let mut sign = Sign::Positive;
-
-		let mut first_char = true;
-
-		for (idx, &char) in num.iter().enumerate() {
-			if first_char && char.is_ascii_whitespace() {
-				continue;
-			}
-
-			if first_char && char == b'-' {
-				sign = Sign::Negative;
-				first_char = false;
-				continue;
-			}
-			first_char = false;
-
-			if matches!(
-				 parse_settings.thousands_separator,
-				 Some(c) if c == char
-			) {
-				continue;
-			}
-
-			if Self::is_invalid_char(char, &mut had_decimal_pt, parse_settings) {
-				return if let Some(start) = start {
-					let has_si_unit = parse_settings.accept_si_units
-						&& matches!(
-							char,
-							b'K' | b'k' | b'M' | b'G' | b'T' | b'P' | b'E' | b'Z' | b'Y' | b'R' | b'Q'
-						);
-					(Self { exponent, sign }, start..if has_si_unit { idx + 1 } else { idx })
-				} else {
-					(
-						Self { sign: Sign::Positive, exponent: 0 },
-						if had_digit {
-
-
-
-							idx..idx
-						} else {
-
-
-							0..0
-						},
-					)
-				};
-			}
-			if Some(char) == parse_settings.decimal_pt {
-				continue;
-			}
-			had_digit = true;
-			if start.is_none() && char == b'0' {
-				if had_decimal_pt {
-
-					exponent -= 1;
-				} else {
-
-					continue;
+					let mut tmp_file = Tmp::create(tmp_dir.next_file()?, settings.compress.as_ref())?;
+					if let Err(error) = merger.write_all_to(settings, tmp_file.as_write()) {
+						// Closed properly, so a `--compress-program` child is waited for.
+						let _ = tmp_file.finished_writing();
+						return Err(error);
+					}
+					temporary_files.push(tmp_file.finished_writing()?);
 				}
 			}
-			if !had_decimal_pt {
-				exponent += 1;
+
+			if !batch.is_empty() {
+				assert!(batch.len() < batch_size);
+				let merger = merge_without_limit(batch.into_iter(), settings)?;
+
+				let mut tmp_file = Tmp::create(tmp_dir.next_file()?, settings.compress.as_ref())?;
+				if let Err(error) = merger.write_all_to(settings, tmp_file.as_write()) {
+					let _ = tmp_file.finished_writing();
+					return Err(error);
+				}
+				temporary_files.push(tmp_file.finished_writing()?);
 			}
-			if start.is_none() && char != b'0' {
-				start = Some(idx);
-			}
-		}
-		if let Some(start) = start {
-			(Self { exponent, sign }, start..num.len())
-		} else {
-			(
-				Self { sign: Sign::Positive, exponent: 0 },
-				if had_digit {
-
-
-
-					num.len()..num.len()
-				} else {
-
-
-
-					0..0
-				},
+			merge_with_file_limit::<_, _, Tmp>(
+				temporary_files
+					.into_iter()
+					.map(Box::new(|c: Tmp::Closed| c.reopen())
+						as Box<
+							dyn FnMut(Tmp::Closed) -> SortResult<<Tmp::Closed as ClosedTmpFile>::Reopened>,
+						>),
+				settings,
+				output,
+				tmp_dir,
 			)
 		}
 	}
 
-	fn is_invalid_char(
-		c: u8,
-		had_decimal_pt: &mut bool,
-		parse_settings: &NumInfoParseSettings,
-	) -> bool {
-		if Some(c) == parse_settings.decimal_pt {
-			if *had_decimal_pt {
+	fn merge_without_limit<M: MergeInput + 'static, F: Iterator<Item = SortResult<M>>>(
+		files: F,
+		settings: &GlobalSettings,
+	) -> SortResult<FileMerger<'_>> {
+		let (request_sender, request_receiver) = flume::unbounded();
+		let mut reader_files = Vec::with_capacity(files.size_hint().0);
+		let mut loaded_receivers = Vec::with_capacity(files.size_hint().0);
+		for (file_number, file) in files.enumerate() {
+			let (sender, receiver) = flume::bounded(2);
+			loaded_receivers.push(receiver);
+			reader_files.push(Some(ReaderFile { file: file?, sender, carry_over: vec![] }));
 
-				true
+			request_sender
+				.send((file_number, RecycledChunk::new(8 * 1024)))
+				.unwrap();
+		}
+
+		for file_number in 0..reader_files.len() {
+			request_sender
+				.send((file_number, RecycledChunk::new(8 * 1024)))
+				.unwrap();
+		}
+
+		let reader_join_handle = thread::spawn({
+			let settings = settings.clone();
+			move || {
+				reader(&request_receiver, &mut reader_files, &settings, settings.line_ending.into())
+			}
+		});
+
+		let mut mergeable_files = vec![];
+
+		for (file_number, receiver) in loaded_receivers.into_iter().enumerate() {
+			if let Ok(chunk) = receiver.recv() {
+				mergeable_files.push(MergeableFile {
+					current_chunk: Rc::new(chunk),
+					file_number,
+					line_idx: 0,
+					receiver,
+				});
+			}
+		}
+
+		Ok(FileMerger {
+			heap: binary_heap_plus::BinaryHeap::from_vec_cmp(mergeable_files, FileComparator {
+				settings,
+			}),
+			request_sender,
+			prev: None,
+			reader_join_handle,
+			join_on_cancel: !M::MAY_BLOCK,
+		})
+	}
+
+	struct ReaderFile<M: MergeInput> {
+		file:       M,
+		sender:     Sender<Chunk>,
+		carry_over: Vec<u8>,
+	}
+
+	fn reader(
+		recycled_receiver: &Receiver<(usize, RecycledChunk)>,
+		files: &mut [Option<ReaderFile<impl MergeInput>>],
+		settings: &GlobalSettings,
+		separator: u8,
+	) -> SortResult<()> {
+		let mut read_all = || -> SortResult<()> {
+			while let Ok((file_idx, recycled_chunk)) = recycled_receiver.recv() {
+				if settings.cancel.load(AtomicOrdering::Relaxed) {
+					break;
+				}
+				if let Some(ReaderFile { file, sender, carry_over }) = &mut files[file_idx] {
+					let should_continue = chunks::read(
+						sender,
+						recycled_chunk,
+						None,
+						carry_over,
+						file.as_read(),
+						&mut iter::empty(),
+						separator,
+						settings,
+					)?;
+					if !should_continue {
+						// Remove the file from the list by replacing it with `None`.
+						let ReaderFile { file, .. } = files[file_idx].take().unwrap();
+						// Depending on the kind of the `MergeInput`, this may delete the file:
+						file.finished_reading()?;
+					}
+				}
+			}
+			Ok(())
+		};
+		let result = read_all();
+		// Inputs still open after a cancel or an error: closed properly, so a
+		// decompressor child is waited for and a temporary file removed.
+		for ReaderFile { file, .. } in files.iter_mut().filter_map(Option::take) {
+			let _ = file.finished_reading();
+		}
+		result
+	}
+	/// The struct on the main thread representing an input file
+	pub struct MergeableFile {
+		current_chunk: Rc<Chunk>,
+		line_idx:      usize,
+		receiver:      Receiver<Chunk>,
+		file_number:   usize,
+	}
+
+	struct PreviousLine {
+		chunk:       Rc<Chunk>,
+		line_idx:    usize,
+		file_number: usize,
+	}
+
+	struct FileMerger<'a> {
+		heap:               binary_heap_plus::BinaryHeap<MergeableFile, FileComparator<'a>>,
+		request_sender:     Sender<(usize, RecycledChunk)>,
+		prev:               Option<PreviousLine>,
+		reader_join_handle: JoinHandle<SortResult<()>>,
+		join_on_cancel:     bool,
+	}
+
+	impl FileMerger<'_> {
+		fn write_all(self, settings: &GlobalSettings, output: Output) -> SortResult<()> {
+			let mut out = output.into_write();
+			self.write_all_to(settings, &mut out)
+		}
+
+		fn write_all_to(mut self, settings: &GlobalSettings, out: &mut impl Write) -> SortResult<()> {
+			let cancelled = || settings.cancel.load(AtomicOrdering::Relaxed);
+			let written = loop {
+				if cancelled() {
+					break Ok(());
+				}
+				match self.write_next(settings, out) {
+					Ok(true) => {},
+					Ok(false) => break Ok(()),
+					Err(error) => {
+						break Err(SortError::WriteFailed {
+							path: OsString::from("standard output"),
+							error,
+						});
+					},
+				}
+			};
+			drop(self.request_sender);
+			if written.is_ok() && !cancelled() {
+				return self.reader_join_handle.join().unwrap();
+			}
+			// Stopped early. Without the receivers, a reader waiting to hand over
+			// a chunk stops too, and closes its inputs: a `--compress-program`
+			// child is waited for and its temporary file removed before `sort`
+			// returns and its temporary directory goes.
+			drop(self.heap);
+			drop(self.prev);
+			if self.join_on_cancel {
+				let _ = self.reader_join_handle.join();
+			}
+			written?;
+			Err(SortError::Cancelled)
+		}
+
+		fn write_next(
+			&mut self,
+			settings: &GlobalSettings,
+			out: &mut impl Write,
+		) -> std::io::Result<bool> {
+			if let Some(file) = self.heap.peek() {
+				let prev = self.prev.replace(PreviousLine {
+					chunk:       file.current_chunk.clone(),
+					line_idx:    file.line_idx,
+					file_number: file.file_number,
+				});
+
+				file.current_chunk.with_dependent(|_, contents| {
+					let current_line = &contents.lines[file.line_idx];
+					if settings.unique
+						&& let Some(prev) = &prev
+					{
+						let cmp = compare_by(
+							&prev.chunk.lines()[prev.line_idx],
+							current_line,
+							settings,
+							prev.chunk.line_data(),
+							file.current_chunk.line_data(),
+						);
+						if cmp == Ordering::Equal {
+							return Ok(());
+						}
+					}
+					current_line.print(out, settings)
+				})?;
+
+				let was_last_line_for_file = file.current_chunk.lines().len() == file.line_idx + 1;
+
+				if was_last_line_for_file {
+					if let Ok(next_chunk) = file.receiver.recv() {
+						let mut file = self.heap.peek_mut().unwrap();
+						file.current_chunk = Rc::new(next_chunk);
+						file.line_idx = 0;
+					} else {
+						self.heap.pop();
+					}
+				} else {
+					self.heap.peek_mut().unwrap().line_idx += 1;
+				}
+
+				if let Some(prev) = prev
+					&& let Ok(prev_chunk) = Rc::try_unwrap(prev.chunk)
+				{
+					self
+						.request_sender
+						.send((prev.file_number, prev_chunk.recycle()))
+						.ok();
+				}
+			}
+			Ok(!self.heap.is_empty())
+		}
+	}
+
+	struct FileComparator<'a> {
+		settings: &'a GlobalSettings,
+	}
+
+	impl Compare<MergeableFile> for FileComparator<'_> {
+		fn compare(&self, a: &MergeableFile, b: &MergeableFile) -> Ordering {
+			let mut cmp = compare_by(
+				&a.current_chunk.lines()[a.line_idx],
+				&b.current_chunk.lines()[b.line_idx],
+				self.settings,
+				a.current_chunk.line_data(),
+				b.current_chunk.line_data(),
+			);
+			if cmp == Ordering::Equal {
+				cmp = a.file_number.cmp(&b.file_number);
+			}
+
+			cmp.reverse()
+		}
+	}
+
+	fn check_child_success(mut child: Child, program: &str) -> SortResult<()> {
+		if matches!(child.wait().map(|e| e.code()), Ok(Some(0) | None) | Err(_)) {
+			Ok(())
+		} else {
+			Err(SortError::CompressProgTerminatedAbnormally { prog: program.to_owned() }.into())
+		}
+	}
+
+	pub trait WriteableTmpFile: Sized {
+		type Closed: ClosedTmpFile;
+		type InnerWrite: Write;
+		fn create(file: (File, PathBuf), compress: Option<&Compressor>) -> SortResult<Self>;
+
+		fn finished_writing(self) -> SortResult<Self::Closed>;
+		fn as_write(&mut self) -> &mut Self::InnerWrite;
+	}
+
+	pub trait ClosedTmpFile {
+		type Reopened: MergeInput;
+
+		fn reopen(self) -> SortResult<Self::Reopened>;
+	}
+
+	pub trait MergeInput: Send {
+		type InnerRead: Read;
+
+		const MAY_BLOCK: bool;
+		fn finished_reading(self) -> SortResult<()>;
+		fn as_read(&mut self) -> &mut Self::InnerRead;
+	}
+
+	pub struct WriteablePlainTmpFile {
+		path: PathBuf,
+		file: BufWriter<File>,
+	}
+	pub struct ClosedPlainTmpFile {
+		path: PathBuf,
+	}
+	pub struct PlainTmpMergeInput {
+		path: PathBuf,
+		file: File,
+	}
+	impl WriteableTmpFile for WriteablePlainTmpFile {
+		type Closed = ClosedPlainTmpFile;
+		type InnerWrite = BufWriter<File>;
+
+		fn create((file, path): (File, PathBuf), _: Option<&Compressor>) -> SortResult<Self> {
+			Ok(Self { file: BufWriter::new(file), path })
+		}
+
+		fn finished_writing(self) -> SortResult<Self::Closed> {
+			Ok(ClosedPlainTmpFile { path: self.path })
+		}
+
+		fn as_write(&mut self) -> &mut Self::InnerWrite {
+			&mut self.file
+		}
+	}
+	impl ClosedTmpFile for ClosedPlainTmpFile {
+		type Reopened = PlainTmpMergeInput;
+
+		fn reopen(self) -> SortResult<Self::Reopened> {
+			Ok(PlainTmpMergeInput {
+				file: File::open(&self.path).map_err(|error| SortError::OpenTmpFileFailed { error })?,
+				path: self.path,
+			})
+		}
+	}
+	impl MergeInput for PlainTmpMergeInput {
+		type InnerRead = File;
+
+		const MAY_BLOCK: bool = false;
+
+		fn finished_reading(self) -> SortResult<()> {
+			let _ = fs::remove_file(self.path);
+			Ok(())
+		}
+
+		fn as_read(&mut self) -> &mut Self::InnerRead {
+			&mut self.file
+		}
+	}
+
+	pub struct WriteableCompressedTmpFile {
+		path:        PathBuf,
+		compress:    Compressor,
+		child:       Child,
+		child_stdin: BufWriter<ChildStdin>,
+
+		forwarder: thread::JoinHandle<()>,
+	}
+	pub struct ClosedCompressedTmpFile {
+		path:     PathBuf,
+		compress: Compressor,
+	}
+	pub struct CompressedTmpMergeInput {
+		path:         PathBuf,
+		compress:     Compressor,
+		child:        Child,
+		child_stdout: ChildStdout,
+		forwarder:    thread::JoinHandle<()>,
+	}
+	impl WriteableTmpFile for WriteableCompressedTmpFile {
+		type Closed = ClosedCompressedTmpFile;
+		type InnerWrite = BufWriter<ChildStdin>;
+
+		fn create((file, path): (File, PathBuf), compress: Option<&Compressor>) -> SortResult<Self> {
+			let compress = compress
+				.expect("WriteableCompressedTmpFile is only selected when a compressor is configured")
+				.clone();
+			let (mut child, forwarder) = compress.spawn(Stdio::piped(), file, false)?;
+			let child_stdin = child.stdin.take().expect("compressor stdin is piped");
+			Ok(Self { path, compress, child, child_stdin: BufWriter::new(child_stdin), forwarder })
+		}
+
+		fn finished_writing(self) -> SortResult<Self::Closed> {
+			drop(self.child_stdin);
+			let result = check_child_success(self.child, &self.compress.prog);
+			let _ = self.forwarder.join();
+			result?;
+			Ok(ClosedCompressedTmpFile { path: self.path, compress: self.compress })
+		}
+
+		fn as_write(&mut self) -> &mut Self::InnerWrite {
+			&mut self.child_stdin
+		}
+	}
+	impl ClosedTmpFile for ClosedCompressedTmpFile {
+		type Reopened = CompressedTmpMergeInput;
+
+		fn reopen(self) -> SortResult<Self::Reopened> {
+			let file =
+				File::open(&self.path).map_err(|error| SortError::OpenTmpFileFailed { error })?;
+			let (mut child, forwarder) = self.compress.spawn(file, Stdio::piped(), true)?;
+			let child_stdout = child.stdout.take().expect("compressor stdout is piped");
+			Ok(CompressedTmpMergeInput {
+				path: self.path,
+				compress: self.compress,
+				child,
+				child_stdout,
+				forwarder,
+			})
+		}
+	}
+	impl MergeInput for CompressedTmpMergeInput {
+		type InnerRead = ChildStdout;
+
+		const MAY_BLOCK: bool = false;
+
+		fn finished_reading(self) -> SortResult<()> {
+			#[allow(clippy::drop_non_drop)]
+			drop(self.child_stdout);
+			let result = check_child_success(self.child, &self.compress.prog);
+			let _ = self.forwarder.join();
+			result?;
+			let _ = fs::remove_file(self.path);
+			Ok(())
+		}
+
+		fn as_read(&mut self) -> &mut Self::InnerRead {
+			&mut self.child_stdout
+		}
+	}
+
+	pub struct PlainMergeInput<R: Read + Send> {
+		inner: R,
+	}
+	impl<R: Read + Send> MergeInput for PlainMergeInput<R> {
+		type InnerRead = R;
+
+		const MAY_BLOCK: bool = true;
+
+		fn finished_reading(self) -> SortResult<()> {
+			Ok(())
+		}
+
+		fn as_read(&mut self) -> &mut Self::InnerRead {
+			&mut self.inner
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use std::{
+			io::Cursor,
+			sync::{
+				Arc,
+				atomic::{AtomicUsize, Ordering as Atomic},
+			},
+			time::Duration,
+		};
+
+		use super::*;
+
+		/// A temporary file whose cleanup takes a while, as a decompressor's
+		/// exit can.
+		struct SlowCleanup {
+			inner:  Cursor<Vec<u8>>,
+			closed: Arc<AtomicUsize>,
+		}
+
+		impl MergeInput for SlowCleanup {
+			type InnerRead = Cursor<Vec<u8>>;
+
+			const MAY_BLOCK: bool = false;
+
+			fn finished_reading(self) -> SortResult<()> {
+				thread::sleep(Duration::from_millis(100));
+				self.closed.fetch_add(1, Atomic::SeqCst);
+				Ok(())
+			}
+
+			fn as_read(&mut self) -> &mut Self::InnerRead {
+				&mut self.inner
+			}
+		}
+
+		// Failure mode: a merge cancelled part way returned before its reader
+		// thread closed the inputs, so `--compress-program` decompressors outlived
+		// `sort` and its temporary directory.
+
+		#[test]
+		fn a_cancelled_merge_closes_its_inputs_before_it_returns() {
+			const FILES: usize = 4;
+			let settings = GlobalSettings::default();
+			let closed = Arc::new(AtomicUsize::new(0));
+			// Many read chunks per file, so every input is still open at the cancel.
+			let lines: Vec<u8> = (0..20_000)
+				.flat_map(|n| format!("{n:08}\n").into_bytes())
+				.collect();
+			let files = (0..FILES).map(|_| {
+				Ok(SlowCleanup { inner: Cursor::new(lines.clone()), closed: Arc::clone(&closed) })
+			});
+			let merger = merge_without_limit(files, &settings).expect("merger");
+			settings.cancel.store(true, AtomicOrdering::Relaxed);
+			let result = merger.write_all_to(&settings, &mut std::io::sink());
+			assert!(matches!(result, Err(SortError::Cancelled)), "{result:?}");
+			assert_eq!(
+				closed.load(Atomic::SeqCst),
+				FILES,
+				"inputs still open when the merge returned"
+			);
+		}
+	}
+}
+mod numeric_str_cmp {
+
+	use std::{cmp::Ordering, ops::Range};
+
+	#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+	enum Sign {
+		Negative,
+		Positive,
+	}
+
+	#[derive(Debug, PartialEq, Eq, Clone)]
+	pub struct NumInfo {
+		exponent: i64,
+		sign:     Sign,
+	}
+	#[derive(Debug, PartialEq, Eq, Clone)]
+	pub struct NumInfoParseSettings {
+		pub accept_si_units:     bool,
+		pub thousands_separator: Option<u8>,
+		pub decimal_pt:          Option<u8>,
+	}
+
+	impl Default for NumInfoParseSettings {
+		fn default() -> Self {
+			Self {
+				accept_si_units:     false,
+				thousands_separator: None,
+				decimal_pt:          Some(b'.'),
+			}
+		}
+	}
+
+	impl NumInfo {
+		#[allow(clippy::cognitive_complexity)]
+		pub fn parse(num: &[u8], parse_settings: &NumInfoParseSettings) -> (Self, Range<usize>) {
+			let mut exponent = -1;
+			let mut had_decimal_pt = false;
+			let mut had_digit = false;
+			let mut start = None;
+			let mut sign = Sign::Positive;
+
+			let mut first_char = true;
+
+			for (idx, &char) in num.iter().enumerate() {
+				if first_char && char.is_ascii_whitespace() {
+					continue;
+				}
+
+				if first_char && char == b'-' {
+					sign = Sign::Negative;
+					first_char = false;
+					continue;
+				}
+				first_char = false;
+
+				if matches!(
+					 parse_settings.thousands_separator,
+					 Some(c) if c == char
+				) {
+					continue;
+				}
+
+				if Self::is_invalid_char(char, &mut had_decimal_pt, parse_settings) {
+					return if let Some(start) = start {
+						let has_si_unit = parse_settings.accept_si_units
+							&& matches!(
+								char,
+								b'K' | b'k' | b'M' | b'G' | b'T' | b'P' | b'E' | b'Z' | b'Y' | b'R' | b'Q'
+							);
+						(Self { exponent, sign }, start..if has_si_unit { idx + 1 } else { idx })
+					} else {
+						(
+							Self { sign: Sign::Positive, exponent: 0 },
+							if had_digit { idx..idx } else { 0..0 },
+						)
+					};
+				}
+				if Some(char) == parse_settings.decimal_pt {
+					continue;
+				}
+				had_digit = true;
+				if start.is_none() && char == b'0' {
+					if had_decimal_pt {
+						exponent -= 1;
+					} else {
+						continue;
+					}
+				}
+				if !had_decimal_pt {
+					exponent += 1;
+				}
+				if start.is_none() && char != b'0' {
+					start = Some(idx);
+				}
+			}
+			if let Some(start) = start {
+				(Self { exponent, sign }, start..num.len())
 			} else {
-				*had_decimal_pt = true;
-				false
+				(
+					Self { sign: Sign::Positive, exponent: 0 },
+					if had_digit {
+						num.len()..num.len()
+					} else {
+						0..0
+					},
+				)
+			}
+		}
+
+		fn is_invalid_char(
+			c: u8,
+			had_decimal_pt: &mut bool,
+			parse_settings: &NumInfoParseSettings,
+		) -> bool {
+			if Some(c) == parse_settings.decimal_pt {
+				if *had_decimal_pt {
+					true
+				} else {
+					*had_decimal_pt = true;
+					false
+				}
+			} else {
+				!c.is_ascii_digit()
+			}
+		}
+	}
+
+	fn get_unit(unit: Option<u8>) -> u8 {
+		if let Some(unit) = unit {
+			match unit {
+				b'K' | b'k' => 1,
+				b'M' => 2,
+				b'G' => 3,
+				b'T' => 4,
+				b'P' => 5,
+				b'E' => 6,
+				b'Z' => 7,
+				b'Y' => 8,
+				b'R' => 9,
+				b'Q' => 10,
+				_ => 0,
 			}
 		} else {
-			!c.is_ascii_digit()
+			0
 		}
 	}
-}
 
-fn get_unit(unit: Option<u8>) -> u8 {
-	if let Some(unit) = unit {
-		match unit {
-			b'K' | b'k' => 1,
-			b'M' => 2,
-			b'G' => 3,
-			b'T' => 4,
-			b'P' => 5,
-			b'E' => 6,
-			b'Z' => 7,
-			b'Y' => 8,
-			b'R' => 9,
-			b'Q' => 10,
-			_ => 0,
+	pub fn human_numeric_str_cmp(
+		(a, a_info): (&[u8], &NumInfo),
+		(b, b_info): (&[u8], &NumInfo),
+	) -> Ordering {
+		if a_info.sign != b_info.sign {
+			return a_info.sign.cmp(&b_info.sign);
 		}
-	} else {
-		0
-	}
-}
 
-
-
-pub fn human_numeric_str_cmp(
-	(a, a_info): (&[u8], &NumInfo),
-	(b, b_info): (&[u8], &NumInfo),
-) -> Ordering {
-
-	if a_info.sign != b_info.sign {
-		return a_info.sign.cmp(&b_info.sign);
+		let a_unit = get_unit(a.iter().next_back().copied());
+		let b_unit = get_unit(b.iter().next_back().copied());
+		let ordering = a_unit.cmp(&b_unit);
+		if ordering == Ordering::Equal {
+			numeric_str_cmp((a, a_info), (b, b_info))
+		} else if a_info.sign == Sign::Negative {
+			ordering.reverse()
+		} else {
+			ordering
+		}
 	}
 
-	let a_unit = get_unit(a.iter().next_back().copied());
-	let b_unit = get_unit(b.iter().next_back().copied());
-	let ordering = a_unit.cmp(&b_unit);
-	if ordering == Ordering::Equal {
+	#[inline(always)]
+	pub fn numeric_str_cmp(
+		(a, a_info): (&[u8], &NumInfo),
+		(b, b_info): (&[u8], &NumInfo),
+	) -> Ordering {
+		if a_info.sign != b_info.sign {
+			return a_info.sign.cmp(&b_info.sign);
+		}
 
-		numeric_str_cmp((a, a_info), (b, b_info))
-	} else if a_info.sign == Sign::Negative {
-		ordering.reverse()
-	} else {
-		ordering
-	}
-}
-
-
-
-
-#[inline(always)]
-pub fn numeric_str_cmp((a, a_info): (&[u8], &NumInfo), (b, b_info): (&[u8], &NumInfo)) -> Ordering {
-
-	if a_info.sign != b_info.sign {
-		return a_info.sign.cmp(&b_info.sign);
-	}
-
-
-	let ordering = if a_info.exponent != b_info.exponent && !a.is_empty() && !b.is_empty() {
-		a_info.exponent.cmp(&b_info.exponent)
-	} else {
-
-		let mut a_chars = a.iter().copied().filter(u8::is_ascii_digit);
-		let mut b_chars = b.iter().copied().filter(u8::is_ascii_digit);
-		loop {
-			let a_next = a_chars.next();
-			let b_next = b_chars.next();
-			match (a_next, b_next) {
-				(None, None) => break Ordering::Equal,
-				(Some(c), None) => {
-					break if c == b'0' && a_chars.all(|c| c == b'0') {
-						Ordering::Equal
-					} else {
-						Ordering::Greater
-					};
-				},
-				(None, Some(c)) => {
-					break if c == b'0' && b_chars.all(|c| c == b'0') {
-						Ordering::Equal
-					} else {
-						Ordering::Less
-					};
-				},
-				(Some(a_char), Some(b_char)) => {
-					let ord = a_char.cmp(&b_char);
-					if ord != Ordering::Equal {
-						break ord;
-					}
-				},
+		let ordering = if a_info.exponent != b_info.exponent && !a.is_empty() && !b.is_empty() {
+			a_info.exponent.cmp(&b_info.exponent)
+		} else {
+			let mut a_chars = a.iter().copied().filter(u8::is_ascii_digit);
+			let mut b_chars = b.iter().copied().filter(u8::is_ascii_digit);
+			loop {
+				let a_next = a_chars.next();
+				let b_next = b_chars.next();
+				match (a_next, b_next) {
+					(None, None) => break Ordering::Equal,
+					(Some(c), None) => {
+						break if c == b'0' && a_chars.all(|c| c == b'0') {
+							Ordering::Equal
+						} else {
+							Ordering::Greater
+						};
+					},
+					(None, Some(c)) => {
+						break if c == b'0' && b_chars.all(|c| c == b'0') {
+							Ordering::Equal
+						} else {
+							Ordering::Less
+						};
+					},
+					(Some(a_char), Some(b_char)) => {
+						let ord = a_char.cmp(&b_char);
+						if ord != Ordering::Equal {
+							break ord;
+						}
+					},
+				}
 			}
+		};
+
+		if a_info.sign == Sign::Negative {
+			ordering.reverse()
+		} else {
+			ordering
 		}
-	};
-
-	if a_info.sign == Sign::Negative {
-		ordering.reverse()
-	} else {
-		ordering
 	}
-}
-
-
-
 }
 mod tmp_dir {
 
+	use std::{fs::File, path::PathBuf};
 
+	use tempfile::TempDir;
 
+	use super::{SortError, SortResult};
 
-
-use std::{fs::File, path::PathBuf};
-
-use tempfile::TempDir;
-
-use super::{SortError, SortResult};
-
-
-
-
-
-
-
-
-
-pub struct TmpDirWrapper {
-	temp_dir:    Option<TempDir>,
-	parent_path: PathBuf,
-	size:        usize,
-}
-
-impl TmpDirWrapper {
-	pub fn new(path: PathBuf) -> Self {
-		Self { parent_path: path, size: 0, temp_dir: None }
+	pub struct TmpDirWrapper {
+		temp_dir:    Option<TempDir>,
+		parent_path: PathBuf,
+		size:        usize,
 	}
 
-	fn init_tmp_dir(&mut self) -> SortResult<()> {
-		assert!(self.temp_dir.is_none());
-		assert_eq!(self.size, 0);
-		self.temp_dir = Some(
-			tempfile::Builder::new()
-				.prefix("uutils_sort")
-				.tempdir_in(&self.parent_path)
-				.map_err(|_| SortError::TmpFileCreationFailed { path: self.parent_path.clone() })?,
-		);
-		Ok(())
-	}
-
-	pub fn next_file(&mut self) -> SortResult<(File, PathBuf)> {
-		if self.temp_dir.is_none() {
-			self.init_tmp_dir()?;
+	impl TmpDirWrapper {
+		pub fn new(path: PathBuf) -> Self {
+			Self { parent_path: path, size: 0, temp_dir: None }
 		}
 
-		let file_name = self.size.to_string();
-		self.size += 1;
-		let path = self.temp_dir.as_ref().unwrap().path().join(file_name);
-		Ok((File::create(&path).map_err(|error| SortError::OpenTmpFileFailed { error })?, path))
-	}
-}
+		fn init_tmp_dir(&mut self) -> SortResult<()> {
+			assert!(self.temp_dir.is_none());
+			assert_eq!(self.size, 0);
+			self.temp_dir = Some(
+				tempfile::Builder::new()
+					.prefix("uutils_sort")
+					.tempdir_in(&self.parent_path)
+					.map_err(|_| SortError::TmpFileCreationFailed { path: self.parent_path.clone() })?,
+			);
+			Ok(())
+		}
 
+		pub fn next_file(&mut self) -> SortResult<(File, PathBuf)> {
+			if self.temp_dir.is_none() {
+				self.init_tmp_dir()?;
+			}
+
+			let file_name = self.size.to_string();
+			self.size += 1;
+			let path = self.temp_dir.as_ref().unwrap().path().join(file_name);
+			Ok((File::create(&path).map_err(|error| SortError::OpenTmpFileFailed { error })?, path))
+		}
+	}
 }
 
 #[cfg(not(target_os = "wasi"))]
@@ -2175,13 +2620,18 @@ use std::{
 	num::IntErrorKind,
 	ops::Range,
 	path::{Path, PathBuf},
-	sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering as AtomicOrdering}},
+	sync::{
+		Arc, LazyLock, OnceLock,
+		atomic::{AtomicBool, Ordering as AtomicOrdering},
+	},
 };
 
 use bigdecimal::BigDecimal;
 use brush_core::{ShellExtensions, builtins::Registration, openfiles::OpenFile};
 use chunks::LineData;
-use clap::{Arg, ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, builder::ValueParser};
+use clap::{
+	Arg, ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, builder::ValueParser,
+};
 use custom_str_cmp::custom_str_cmp;
 use ext_sort::ext_sort;
 use foldhash::{HashMap, SharedSeed, fast::FoldHasher};
@@ -2190,12 +2640,15 @@ use rand::{RngExt as _, rng};
 #[cfg(not(target_os = "wasi"))]
 use rayon::slice::ParallelSliceMut;
 use thiserror::Error;
-use uucore::i18n::collator::{compute_sort_key_utf8, locale_cmp};
 use uucore::{
 	display::Quotable,
 	extendedbigdecimal::ExtendedBigDecimal,
 	i18n,
-	i18n::{datetime::get_locale_months, decimal::locale_decimal_separator},
+	i18n::{
+		collator::{compute_sort_key_utf8, locale_cmp},
+		datetime::get_locale_months,
+		decimal::locale_decimal_separator,
+	},
 	line_ending::LineEnding,
 	parser::{
 		num_parser::{ExtendedParser, ExtendedParserError},
@@ -2225,7 +2678,6 @@ macro_rules! show_error {
 	}};
 }
 
-
 const SORT_ABOUT: &str = "Display sorted concatenation of all FILE(s). With no FILE, or when FILE \
                           is -, read standard input.";
 const SORT_USAGE: &str = "sort [OPTION]... [FILE]...";
@@ -2238,8 +2690,6 @@ const SORT_AFTER_HELP: &str =
 	 end of the line.\nIf CHAR is set 0, it means the end of the field. CHAR defaults to 1 for the \
 	 start position and to 0 for the end position.\n\nValid options are: MbdfhnRrV. They override \
 	 the global options for this key.";
-
-
 
 fn field_spec_msg(key: &str) -> &'static str {
 	match key {
@@ -2260,7 +2710,10 @@ fn materialize_stdin(
 	tmp_dir: &mut TmpDirWrapper,
 ) -> SortResult<()> {
 	let mut stdin = Some(&mut host.stdin);
-	for file in files.iter_mut().filter(|file| file.as_os_str() == OsStr::new(STDIN_FILE)) {
+	for file in files
+		.iter_mut()
+		.filter(|file| file.as_os_str() == OsStr::new(STDIN_FILE))
+	{
 		let (mut temp, path) = tmp_dir.next_file()?;
 		if let Some(reader) = stdin.take() {
 			std::io::copy(reader, &mut temp)
@@ -2330,13 +2783,11 @@ fn locale_decimal_pt() -> u8 {
 const NEGATIVE: &u8 = &b'-';
 const POSITIVE: &u8 = &b'+';
 
-
-
-
 const MIN_AUTOMATIC_BUF_SIZE: usize = 512 * 1024;
 const FALLBACK_AUTOMATIC_BUF_SIZE: usize = 32 * 1024 * 1024;
 const MAX_AUTOMATIC_BUF_SIZE: usize = 1024 * 1024 * 1024;
 
+const AUTOMATIC_BUF_FLOOR: usize = 16 * 1024 * 1024;
 #[derive(Debug, Error)]
 pub enum SortError {
 	#[error("{0}")]
@@ -2369,7 +2820,6 @@ pub enum SortError {
 	#[error("extra operand {}\nfile operands cannot be combined with --files0-from\nTry 'sort --help' for more information.", .file.quote())]
 	FileOperandsCombined { file: PathBuf },
 
-
 	#[error("multiple output files specified")]
 	MultipleOutputFiles,
 
@@ -2381,6 +2831,8 @@ pub enum SortError {
 
 	#[error("{}:{}: invalid zero-length file name", .file.maybe_quote(), .line_num)]
 	ZeroLengthFileName { file: PathBuf, line_num: usize },
+	#[error("")]
+	Cancelled,
 }
 
 impl SortError {
@@ -2389,10 +2841,13 @@ impl SortError {
 	}
 
 	fn code(&self) -> i32 {
-		if matches!(self, Self::Disorder { .. }) { 1 } else { 2 }
+		if matches!(self, Self::Disorder { .. }) {
+			1
+		} else {
+			2
+		}
 	}
 }
-
 
 #[expect(clippy::trivially_copy_pass_by_ref)]
 fn format_disorder(file: &OsString, line_number: &usize, line: &String, silent: &bool) -> String {
@@ -2414,8 +2869,6 @@ enum SortMode {
 	Default,
 }
 
-
-
 fn count_non_null_bytes(bytes: &[u8]) -> usize {
 	bytes.iter().filter(|&&c| c != b'\0').count()
 }
@@ -2430,7 +2883,6 @@ impl Output {
 		let file = if let Some(name) = name {
 			let path = Path::new(name.as_ref());
 
-
 			let file = brush_core::heldfiles::open(path, OpenOptions::new().write(true).create(true))
 				.map_err(|error| SortError::OpenFailed { path: path.to_owned(), error })?;
 			Some((name.as_ref().to_owned(), file))
@@ -2443,7 +2895,6 @@ impl Output {
 	fn into_write(mut self) -> BufWriter<Box<dyn Write>> {
 		BufWriter::new(match self.file {
 			Some((_name, file)) => {
-
 				let _ = file.set_len(0);
 				Box::new(file)
 			},
@@ -2461,35 +2912,45 @@ impl Output {
 
 #[derive(Clone)]
 pub struct GlobalSettings {
-	mode:                    SortMode,
-	debug:                   bool,
-	ignore_leading_blanks:   bool,
-	ignore_case:             bool,
-	dictionary_order:        bool,
-	ignore_non_printing:     bool,
-	merge:                   bool,
-	reverse:                 bool,
-	stable:                  bool,
-	unique:                  bool,
-	check:                   bool,
-	check_silent:            bool,
-	salt:                    Option<[u8; 16]>,
-	random_source:           Option<PathBuf>,
-	selectors:               Vec<FieldSelector>,
-	separator:               Option<u8>,
-	threads:                 String,
-	line_ending:             LineEnding,
-	buffer_size:             usize,
-	buffer_size_is_explicit: bool,
+	mode:                  SortMode,
+	debug:                 bool,
+	ignore_leading_blanks: bool,
+	ignore_case:           bool,
+	dictionary_order:      bool,
+	ignore_non_printing:   bool,
+	merge:                 bool,
+	reverse:               bool,
+	stable:                bool,
+	unique:                bool,
+	check:                 bool,
+	check_silent:          bool,
+	salt:                  Option<[u8; 16]>,
+	random_source:         Option<PathBuf>,
+	selectors:             Vec<FieldSelector>,
+	separator:             Option<u8>,
+	line_ending:           LineEnding,
+	buffer_size:           usize,
 
-
-	compress:                Option<Compressor>,
-	merge_batch_size:        usize,
-	numeric_locale:          NumericLocaleSettings,
-	precomputed:             Precomputed,
-	cancel:                  Arc<AtomicBool>,
+	compress:         Option<Compressor>,
+	merge_batch_size: usize,
+	numeric_locale:   NumericLocaleSettings,
+	parallelism:      Parallelism,
+	precomputed:      Precomputed,
+	cancel:           Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+enum Parallelism {
+	/// No `--parallel`: Rayon's process-global pool, when the embedder made it
+	/// available.
+	Global,
+	/// `--parallel=1`, or a requested pool whose workers could not be spawned.
+	Sequential,
+	/// `--parallel=N`: a pool owned by this call, so the limit never leaks into
+	/// the shared global pool other commands use.
+	#[cfg(not(target_os = "wasi"))]
+	Pool(Arc<rayon::ThreadPool>),
+}
 #[derive(Clone, Copy, Debug)]
 struct NumericLocaleSettings {
 	thousands_sep: Option<u8>,
@@ -2512,51 +2973,59 @@ impl NumericLocaleSettings {
 	}
 }
 
-
-
 #[derive(Clone, Debug, Default)]
 struct Precomputed {
-	needs_tokens:                    bool,
-	num_infos_per_line:              usize,
-	floats_per_line:                 usize,
-	selections_per_line:             usize,
-	fast_lexicographic:              bool,
-	fast_locale_collation:           bool,
-	fast_ascii_insensitive:          bool,
-	tokenize_blank_thousands_sep:    bool,
+	needs_tokens: bool,
+	key_fields: Vec<usize>,
+	num_infos_per_line: usize,
+	floats_per_line: usize,
+	selections_per_line: usize,
+	fast_lexicographic: bool,
+	fast_locale_collation: bool,
+	locale_collation: bool,
+	fast_ascii_insensitive: bool,
+	tokenize_blank_thousands_sep: bool,
 	tokenize_allow_unit_after_blank: bool,
 }
 
 impl GlobalSettings {
-
-
-
-
 	fn parse_byte_count(input: &str) -> Result<usize, ParseSizeError> {
-
-
-		let size = Parser::default()
-			.with_allow_list(&[
-				"b", "k", "K", "m", "M", "g", "G", "t", "T", "P", "E", "Z", "Y", "R", "Q", "%",
-			])
-			.with_default_unit("K")
-			.with_b_byte_count(true)
-			.parse(input.trim())?;
+		let input = input.trim();
+		let size = if let Some(percent) = input.strip_suffix('%') {
+			// uucore reads N% as (N / 100) * memory, so 50% came out as 0.
+			let percent: u128 = percent
+				.parse()
+				.map_err(|_| ParseSizeError::ParseFailure(input.quote().to_string()))?;
+			let memory = buffer_hint::physical_memory_bytes()
+				.ok_or_else(|| ParseSizeError::PhysicalMem(input.to_string()))?;
+			memory.saturating_mul(percent) / 100
+		} else {
+			// GNU sort (8.32)   valid: 1b,        k, K, m, M, g, G, t, T, P, E, Z, Y
+			// GNU sort (8.32) invalid:  b, B, 1B,                         p, e, z, y
+			Parser::default()
+				.with_allow_list(&[
+					"b", "k", "K", "m", "M", "g", "G", "t", "T", "P", "E", "Z", "Y", "R", "Q",
+				])
+				.with_default_unit("K")
+				.with_b_byte_count(true)
+				.parse(input)?
+		};
 
 		usize::try_from(size).map_err(|_| {
 			ParseSizeError::SizeTooBig(format!("Buffer size {size} does not fit in address space"))
 		})
 	}
 
-
-
-
-
-
-
-
-	fn init_precomputed(&mut self, disable_fast_lexicographic: bool) {
+	fn init_precomputed(&mut self, locale_collation: bool) {
 		self.precomputed.needs_tokens = self.selectors.iter().any(|s| s.needs_tokens);
+		let mut key_fields: Vec<usize> = self
+			.selectors
+			.iter()
+			.flat_map(|s| std::iter::once(s.from.field).chain(s.to.as_ref().map(|to| to.field)))
+			.collect();
+		key_fields.sort_unstable();
+		key_fields.dedup();
+		self.precomputed.key_fields = key_fields;
 		self.precomputed.selections_per_line =
 			self.selectors.iter().filter(|s| s.needs_selection).count();
 		self.precomputed.num_infos_per_line = self
@@ -2584,17 +3053,12 @@ impl GlobalSettings {
 		self.precomputed.tokenize_allow_unit_after_blank =
 			self.precomputed.tokenize_blank_thousands_sep && uses_human_numeric;
 
-		self.precomputed.fast_lexicographic =
-			!disable_fast_lexicographic && self.can_use_fast_lexicographic();
+		self.precomputed.locale_collation = locale_collation;
+		self.precomputed.fast_lexicographic = !locale_collation && self.can_use_fast_lexicographic();
 		self.precomputed.fast_locale_collation =
-			disable_fast_lexicographic && self.can_use_fast_lexicographic();
+			locale_collation && self.can_use_fast_lexicographic();
 		self.precomputed.fast_ascii_insensitive = self.can_use_fast_ascii_insensitive();
 	}
-
-
-
-
-
 
 	fn can_use_fast_lexicographic(&self) -> bool {
 		self.mode == SortMode::Default
@@ -2613,7 +3077,6 @@ impl GlobalSettings {
 					&& !selector.settings.ignore_blanks
 			}
 	}
-
 
 	fn can_use_fast_ascii_insensitive(&self) -> bool {
 		self.mode == SortMode::Default
@@ -2637,31 +3100,30 @@ impl GlobalSettings {
 impl Default for GlobalSettings {
 	fn default() -> Self {
 		Self {
-			mode:                    SortMode::Default,
-			debug:                   false,
-			ignore_leading_blanks:   false,
-			ignore_case:             false,
-			dictionary_order:        false,
-			ignore_non_printing:     false,
-			merge:                   false,
-			reverse:                 false,
-			stable:                  false,
-			unique:                  false,
-			check:                   false,
-			check_silent:            false,
-			salt:                    None,
-			random_source:           None,
-			selectors:               vec![],
-			separator:               None,
-			threads:                 String::new(),
-			line_ending:             LineEnding::Newline,
-			buffer_size:             FALLBACK_AUTOMATIC_BUF_SIZE,
-			buffer_size_is_explicit: false,
-			compress:                None,
-			merge_batch_size:        default_merge_batch_size(),
-			numeric_locale:          NumericLocaleSettings::default(),
-			cancel:                  Arc::new(AtomicBool::new(false)),
-			precomputed:             Precomputed::default(),
+			mode:                  SortMode::Default,
+			debug:                 false,
+			ignore_leading_blanks: false,
+			ignore_case:           false,
+			dictionary_order:      false,
+			ignore_non_printing:   false,
+			merge:                 false,
+			reverse:               false,
+			stable:                false,
+			unique:                false,
+			check:                 false,
+			check_silent:          false,
+			salt:                  None,
+			random_source:         None,
+			selectors:             vec![],
+			separator:             None,
+			line_ending:           LineEnding::Newline,
+			buffer_size:           FALLBACK_AUTOMATIC_BUF_SIZE,
+			compress:              None,
+			merge_batch_size:      default_merge_batch_size(),
+			numeric_locale:        NumericLocaleSettings::default(),
+			parallelism:           Parallelism::Global,
+			cancel:                Arc::new(AtomicBool::new(false)),
+			precomputed:           Precomputed::default(),
 		}
 	}
 }
@@ -2786,12 +3248,9 @@ fn ordering_incompatible(
 		+ u8::from(flags.human_numeric)
 		+ u8::from(flags.month);
 
-
 	if mode_count > 1 {
 		return true;
 	}
-
-
 
 	if mode_count == 1 {
 		return flags.version || flags.random || dictionary_order || ignore_non_printing;
@@ -2818,10 +3277,6 @@ pub struct Line<'a> {
 }
 
 impl<'a> Line<'a> {
-
-
-
-
 	fn create(
 		line: &'a [u8],
 		index: usize,
@@ -2829,7 +3284,7 @@ impl<'a> Line<'a> {
 		token_buffer: &mut Vec<Field>,
 		settings: &GlobalSettings,
 	) -> Self {
-				if settings.precomputed.fast_locale_collation {
+		if settings.precomputed.fast_locale_collation {
 			compute_sort_key_utf8(line, &mut line_data.collation_key_buffer);
 			line_data
 				.collation_key_ends
@@ -2846,20 +3301,22 @@ impl<'a> Line<'a> {
 			return Self { line, index };
 		}
 		token_buffer.clear();
-		if settings.precomputed.needs_tokens {
-			tokenize(line, settings.separator, token_buffer, &settings.precomputed);
-		}
+		let tokens = settings
+			.precomputed
+			.needs_tokens
+			.then(|| tokenize(line, settings.separator, token_buffer, &settings.precomputed));
 		if settings.mode == SortMode::Numeric {
-
 			let line_num_float = (!line.iter().any(u8::is_ascii_alphabetic))
 				.then(|| std::str::from_utf8(line).ok())
 				.flatten()
 				.and_then(|s| s.parse::<f64>().ok());
 			line_data.line_num_floats.push(line_num_float);
 		}
-		for (selector, selection) in settings.selectors.iter().map(|selector| {
-			(selector, selector.get_selection(line, token_buffer, settings.numeric_locale))
-		}) {
+		for (selector, selection) in settings
+			.selectors
+			.iter()
+			.map(|selector| (selector, selector.get_selection(line, tokens, settings.numeric_locale)))
+		{
 			match selection {
 				Selection::AsBigDecimal(parsed_float) => line_data.parsed_floats.push(parsed_float),
 				Selection::WithNumInfo(str, num_info) => {
@@ -2886,17 +3343,11 @@ impl<'a> Line<'a> {
 		Ok(())
 	}
 
-
-
 	fn write_debug(
 		&self,
 		settings: &GlobalSettings,
 		writer: &mut impl Write,
 	) -> std::io::Result<()> {
-
-
-
-
 		let line = self
 			.line
 			.iter()
@@ -2908,12 +3359,11 @@ impl<'a> Line<'a> {
 		writeln!(writer)?;
 
 		let mut fields = vec![];
-		tokenize(self.line, settings.separator, &mut fields, &settings.precomputed);
+		let tokens = tokenize(self.line, settings.separator, &mut fields, &settings.precomputed);
 		for selector in &settings.selectors {
-			let mut selection = selector.get_range(self.line, Some(&fields));
+			let mut selection = selector.get_range(self.line, Some(tokens));
 			match selector.settings.mode {
 				SortMode::Numeric | SortMode::HumanNumeric => {
-
 					let mut parse_settings = settings
 						.numeric_locale
 						.num_info_settings(selector.settings.mode == SortMode::HumanNumeric);
@@ -2922,13 +3372,10 @@ impl<'a> Line<'a> {
 					let (_, num_range) = NumInfo::parse(&self.line[selection.clone()], &parse_settings);
 					let initial_selection = selection.clone();
 
-
 					selection.start += num_range.start;
 					selection.end = selection.start + num_range.len();
 
 					if num_range == (0..0) {
-
-
 						let leading_whitespace = self.line[selection.clone()]
 							.iter()
 							.position(|c| !c.is_ascii_whitespace())
@@ -2936,7 +3383,6 @@ impl<'a> Line<'a> {
 						selection.start += leading_whitespace;
 						selection.end += leading_whitespace;
 					} else {
-
 						if selector.settings.mode == SortMode::HumanNumeric
 							&& let Some(
 								b'k' | b'K' | b'M' | b'G' | b'T' | b'P' | b'E' | b'Z' | b'Y' | b'R' | b'Q',
@@ -2944,7 +3390,6 @@ impl<'a> Line<'a> {
 						{
 							selection.end += 1;
 						}
-
 
 						while let Some(b'-' | b'0' | b'.') =
 							self.line[initial_selection.start..selection.start].last()
@@ -2955,9 +3400,8 @@ impl<'a> Line<'a> {
 				},
 				SortMode::GeneralNumeric => {
 					let initial_selection = &self.line[selection.clone()];
-					let decimal_pt = locale_decimal_pt();
+					let decimal_pt = settings.numeric_locale.decimal_pt.unwrap_or(DECIMAL_PT);
 					let leading = get_leading_gen(initial_selection, decimal_pt);
-
 
 					selection.start += leading.start;
 					selection.end = selection.start + leading.len();
@@ -2972,21 +3416,15 @@ impl<'a> Line<'a> {
 					let (parsed, match_len) = month_parse(initial_selection);
 
 					if parsed == Month::Unknown {
-
-
 						selection.start += first_non_blank;
 						selection.end = selection.start;
 					} else {
-
 						selection.start += first_non_blank;
 						selection.end = selection.start + match_len;
 					}
 				},
 				_ => {},
 			}
-
-
-
 
 			let select = &line[..selection.start];
 			let indent = count_non_null_bytes(select);
@@ -3014,7 +3452,6 @@ impl<'a> Line<'a> {
 					.last()
 					.is_none_or(|selector| selector != &FieldSelector::default()))
 		{
-
 			if self.line.is_empty() {
 				writeln!(writer, "^ no match for key")?;
 			} else {
@@ -3025,36 +3462,96 @@ impl<'a> Line<'a> {
 	}
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Tokens<'a> {
+	/// The numbers of the fields kept, in increasing order: `fields[i]` is
+	/// field `numbers[i]`. If empty, every field is kept: `fields[i]` is
+	/// field `i + 1`.
+	numbers: &'a [usize],
+	fields:  &'a [Field],
+	/// The fields the line has, counted no further than the last of `numbers`.
+	count:   usize,
+}
 
-fn tokenize(
+impl Tokens<'_> {
+	/// Field `number` (1-indexed), which the line must have.
+	fn field(self, number: usize) -> Field {
+		let index = if self.numbers.is_empty() {
+			number - 1
+		} else {
+			self
+				.numbers
+				.binary_search(&number)
+				.expect("a field a key reads")
+		};
+		self.fields[index].clone()
+	}
+}
+
+/// Takes the fields of a line in order and keeps those that `numbers` names
+/// (every field if `numbers` is empty).
+struct FieldSink<'a> {
+	numbers: &'a [usize],
+	/// The index in `numbers` of the next field to keep.
+	next:    usize,
+	/// The fields taken so far.
+	count:   usize,
+	fields:  &'a mut Vec<Field>,
+}
+
+impl FieldSink<'_> {
+	/// Takes the line's next field. Returns false when no later field is
+	/// kept, so tokenizing can stop.
+	fn push(&mut self, field: Field) -> bool {
+		self.count += 1;
+		if self.numbers.is_empty() {
+			self.fields.push(field);
+			return true;
+		}
+		if self.numbers[self.next] == self.count {
+			self.fields.push(field);
+			self.next += 1;
+		}
+		self.next < self.numbers.len()
+	}
+}
+
+/// Tokenize a line up to the last of `precomputed.key_fields`, and keep
+/// those fields in `token_buffer`.
+fn tokenize<'t>(
 	line: &[u8],
 	separator: Option<u8>,
-	token_buffer: &mut Vec<Field>,
-	precomputed: &Precomputed,
-) {
+	token_buffer: &'t mut Vec<Field>,
+	precomputed: &'t Precomputed,
+) -> Tokens<'t> {
 	assert!(token_buffer.is_empty());
+	let mut sink = FieldSink {
+		numbers: &precomputed.key_fields,
+		next:    0,
+		count:   0,
+		fields:  &mut *token_buffer,
+	};
 	if let Some(separator) = separator {
-		tokenize_with_separator(line, separator, token_buffer);
+		tokenize_with_separator(line, separator, &mut sink);
 	} else {
 		tokenize_default(
 			line,
-			token_buffer,
+			&mut sink,
 			precomputed.tokenize_blank_thousands_sep,
 			precomputed.tokenize_allow_unit_after_blank,
 		);
 	}
+	let count = sink.count;
+	Tokens { numbers: &precomputed.key_fields, fields: token_buffer, count }
 }
-
-
-
 
 fn tokenize_default(
 	line: &[u8],
-	token_buffer: &mut Vec<Field>,
+	sink: &mut FieldSink<'_>,
 	blank_thousands_sep: bool,
 	allow_unit_after_blank: bool,
 ) {
-	token_buffer.push(0..0);
+	let mut start = 0;
 
 	let mut previous_was_whitespace = true;
 	for (idx, char) in line.iter().enumerate() {
@@ -3071,15 +3568,17 @@ fn tokenize_default(
 
 		if treat_as_separator {
 			if !previous_was_whitespace {
-				token_buffer.last_mut().unwrap().end = idx;
-				token_buffer.push(idx..0);
+				if !sink.push(start..idx) {
+					return;
+				}
+				start = idx;
 			}
 			previous_was_whitespace = true;
 		} else {
 			previous_was_whitespace = false;
 		}
 	}
-	token_buffer.last_mut().unwrap().end = line.len();
+	sink.push(start..line.len());
 }
 
 fn is_blank_thousands_sep(line: &[u8], idx: usize, allow_unit_after_blank: bool) -> bool {
@@ -3107,27 +3606,26 @@ fn is_blank_thousands_sep(line: &[u8], idx: usize, allow_unit_after_blank: bool)
 	}
 }
 
-
-
-fn tokenize_with_separator(line: &[u8], separator: u8, token_buffer: &mut Vec<Field>) {
+fn tokenize_with_separator(line: &[u8], separator: u8, sink: &mut FieldSink<'_>) {
 	let separator_indices = line
 		.iter()
 		.enumerate()
 		.filter_map(|(i, &c)| if c == separator { Some(i) } else { None });
 	let mut start = 0;
 	for sep_idx in separator_indices {
-		token_buffer.push(start..sep_idx);
+		if !sink.push(start..sep_idx) {
+			return;
+		}
 		start = sep_idx + 1;
 	}
 	if start < line.len() {
-		token_buffer.push(start..line.len());
+		sink.push(start..line.len());
 	}
 }
 
 #[derive(Clone, PartialEq, Debug)]
 struct KeyPosition {
-
-	field:         usize,
+	field: usize,
 
 	char:          usize,
 	ignore_blanks: bool,
@@ -3214,12 +3712,10 @@ fn parse_ordering_options<'a>(
 
 #[derive(Clone, PartialEq, Debug, Default)]
 struct FieldSelector {
-	from:            KeyPosition,
-	to:              Option<KeyPosition>,
-	settings:        KeySettings,
-	needs_tokens:    bool,
-
-
+	from:         KeyPosition,
+	to:           Option<KeyPosition>,
+	settings:     KeySettings,
+	needs_tokens: bool,
 
 	needs_selection: bool,
 }
@@ -3345,24 +3841,15 @@ impl FieldSelector {
 		}
 	}
 
-
-
 	fn get_selection<'a>(
 		&self,
 		line: &'a [u8],
-		tokens: &[Field],
+		tokens: Option<Tokens<'_>>,
 		numeric_locale: NumericLocaleSettings,
 	) -> Selection<'a> {
-
-
-		let tokens = if self.needs_tokens {
-			Some(tokens)
-		} else {
-			None
-		};
+		let tokens = tokens.filter(|_| self.needs_tokens);
 		let mut range_str = &line[self.get_range(line, tokens)];
 		if self.settings.mode == SortMode::Numeric || self.settings.mode == SortMode::HumanNumeric {
-
 			let (info, num_range) = NumInfo::parse(
 				range_str,
 				&numeric_locale.num_info_settings(self.settings.mode == SortMode::HumanNumeric),
@@ -3371,26 +3858,19 @@ impl FieldSelector {
 			range_str = &range_str[num_range];
 			Selection::WithNumInfo(range_str, info)
 		} else if self.settings.mode == SortMode::GeneralNumeric {
-
-
-			let decimal_pt = locale_decimal_pt();
+			let decimal_pt = numeric_locale.decimal_pt.unwrap_or(DECIMAL_PT);
 			Selection::AsBigDecimal(general_bd_parse(
 				&range_str[get_leading_gen(range_str, decimal_pt)],
 				decimal_pt,
 			))
 		} else {
-
 			Selection::Str(range_str)
 		}
 	}
 
-
-
-	fn get_range(&self, line: &[u8], tokens: Option<&[Field]>) -> Range<usize> {
+	fn get_range(&self, line: &[u8], tokens: Option<Tokens<'_>>) -> Range<usize> {
 		enum Resolution {
-
 			StartOfChar(usize),
-
 
 			EndOfChar(usize),
 
@@ -3399,16 +3879,15 @@ impl FieldSelector {
 			TooHigh,
 		}
 
-
 		fn resolve_index(
 			line: &[u8],
-			tokens: Option<&[Field]>,
+			tokens: Option<Tokens<'_>>,
 			position: &KeyPosition,
 		) -> Resolution {
-			if matches!(tokens, Some(tokens) if tokens.len() < position.field) {
+			if matches!(tokens, Some(tokens) if tokens.count < position.field) {
 				Resolution::TooHigh
 			} else if position.char == 0 {
-				let end = tokens.unwrap()[position.field - 1].end;
+				let end = tokens.unwrap().field(position.field).end;
 				if end == 0 {
 					Resolution::TooLow
 				} else {
@@ -3416,11 +3895,9 @@ impl FieldSelector {
 				}
 			} else {
 				let mut idx = if position.field == 1 {
-
-
 					0
 				} else {
-					tokens.unwrap()[position.field - 1].start
+					tokens.unwrap().field(position.field).start
 				};
 
 				if position.ignore_blanks {
@@ -3450,15 +3927,12 @@ impl FieldSelector {
 
 				let mut range = match to {
 					Some(Resolution::StartOfChar(mut to)) => {
-
 						to += 1;
 						from..to
 					},
 					Some(Resolution::EndOfChar(to)) => from..to,
 
-
 					None | Some(Resolution::TooHigh) => from..line.len(),
-
 
 					Some(Resolution::TooLow) => 0..0,
 				};
@@ -3474,17 +3948,44 @@ impl FieldSelector {
 				)
 			},
 
-
 			Resolution::TooHigh => line.len()..line.len(),
 		}
 	}
 }
 
-fn detect_numeric_locale() -> NumericLocaleSettings {
+/// Whether `locale` names the C/POSIX locale, using uucore's name parsing.
+fn is_c_locale_name(locale: &str) -> bool {
+	matches!(locale.split(['.', '@']).next(), Some("C" | "POSIX"))
+}
+
+/// Whether the process-global ICU collator exists. uucore builds a single
+/// collator from the process environment's locale, and only for UTF-8 locales;
+/// probing once avoids constructing a throwaway collator on every call.
+static PROCESS_COLLATOR: LazyLock<bool> = LazyLock::new(|| {
+	i18n::collator::init_locale_collation();
+	i18n::get_locale_encoding() == i18n::UEncoding::Utf8
+});
+
+/// Whether text comparisons use locale collation: the shell's LC_COLLATE must
+/// be a UTF-8 locale (uucore's rule) that the system can load (GNU falls back
+/// to byte order otherwise), and the process collator must exist.
+fn use_locale_collation(host: &Host) -> bool {
+	shell_locale(host, "LC_COLLATE").is_some_and(|locale| {
+		let mut parts = locale.split(['.', '@']);
+		!matches!(parts.next(), Some("C" | "POSIX"))
+			&& parts.next().is_some_and(|encoding| {
+				encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8")
+			})
+	}) && !locale_failed_to_set(host)
+		&& *PROCESS_COLLATOR
+}
+
+fn detect_numeric_locale(host: &Host) -> NumericLocaleSettings {
 	let numeric_locale = i18n::get_numeric_locale();
 	let locale = &numeric_locale.0;
 	let encoding = numeric_locale.1;
-	let is_c_locale = encoding == i18n::UEncoding::Ascii && locale.to_string() == "und";
+	let is_c_locale = shell_locale(host, "LC_NUMERIC").is_none_or(is_c_locale_name)
+		|| (encoding == i18n::UEncoding::Ascii && locale.to_string() == "und");
 
 	if is_c_locale {
 		return NumericLocaleSettings { decimal_pt: Some(DECIMAL_PT), thousands_sep: None };
@@ -3492,12 +3993,10 @@ fn detect_numeric_locale() -> NumericLocaleSettings {
 
 	let grouping = i18n::decimal::locale_grouping_separator();
 	NumericLocaleSettings {
-		decimal_pt:    Some(locale_decimal_pt()),
-
+		decimal_pt: Some(locale_decimal_pt()),
 
 		thousands_sep: match grouping.as_bytes() {
 			[b] => Some(*b),
-
 
 			[0xc2, 0xa0] if encoding != i18n::UEncoding::Utf8 => Some(0xa0),
 			_ => None,
@@ -3603,8 +4102,6 @@ pub(crate) fn current_open_fd_count() -> Option<usize> {
 }
 
 const STDIN_FILE: &str = "-";
-
-
 
 fn allows_traditional_usage() -> bool {
 	!matches!(uucore::posix::posix_version(), Some(ver) if (TRADITIONAL..MODERN).contains(&ver))
@@ -3723,8 +4220,6 @@ fn parse_legacy_part(spec: &str) -> Option<LegacyKeyPart> {
 	Some(LegacyKeyPart { field, char_pos, opts: rest.to_string() })
 }
 
-
-
 fn legacy_key_to_k(from: &LegacyKeyPart, to: Option<&LegacyKeyPart>) -> String {
 	let start_field = from.field.saturating_add(1);
 	let start_char = from.char_pos.saturating_add(1);
@@ -3741,8 +4236,6 @@ fn legacy_key_to_k(from: &LegacyKeyPart, to: Option<&LegacyKeyPart>) -> String {
 
 	if let Some(to) = to {
 		let end_field = if to.char_pos == 0 {
-
-
 			to.field.max(1)
 		} else {
 			to.field.saturating_add(1)
@@ -3759,8 +4252,6 @@ fn legacy_key_to_k(from: &LegacyKeyPart, to: Option<&LegacyKeyPart>) -> String {
 
 	keydef
 }
-
-
 
 fn preprocess_legacy_args<I>(args: I) -> (Vec<OsString>, Vec<LegacyKeyWarning>)
 where
@@ -3895,7 +4386,6 @@ const LINUX_BATCH_MAX: usize = 256;
 fn default_merge_batch_size() -> usize {
 	#[cfg(target_os = "linux")]
 	{
-
 		match fd_soft_limit() {
 			Some(limit) => {
 				let usable_limit = limit.saturating_div(LINUX_BATCH_DIVISOR);
@@ -3912,15 +4402,29 @@ fn default_merge_batch_size() -> usize {
 }
 
 #[cfg(not(unix))]
-fn locale_failed_to_set() -> bool {
-	use std::env;
-	env::var_os("LC_ALL").as_deref() == Some(OsStr::new("missing"))
+fn locale_failed_to_set(host: &Host) -> bool {
+	host.var("LC_ALL") == Some("missing")
 }
 
 #[cfg(unix)]
-fn locale_failed_to_set() -> bool {
+fn locale_failed_to_set(host: &Host) -> bool {
 	use nix::libc;
-	unsafe { libc::setlocale(libc::LC_COLLATE, c"".as_ptr()).is_null() }
+	let Some(locale) = shell_locale(host, "LC_COLLATE") else {
+		return false;
+	};
+	let Ok(locale) = std::ffi::CString::new(locale) else {
+		return true;
+	};
+	// SAFETY: `locale` is a valid NUL-terminated string; a non-null result is
+	// a fresh locale object owned here and freed immediately.
+	unsafe {
+		let handle = libc::newlocale(libc::LC_COLLATE_MASK, locale.as_ptr(), std::ptr::null_mut());
+		if handle.is_null() {
+			return true;
+		}
+		libc::freelocale(handle);
+	}
+	false
 }
 
 fn key_zero_width(selector: &FieldSelector) -> bool {
@@ -3960,16 +4464,20 @@ fn emit_debug_warnings(
 	settings: &GlobalSettings,
 	flags: &GlobalOptionFlags,
 	legacy_warnings: &[LegacyKeyWarning],
+	locale_collation: bool,
 ) {
-	if locale_failed_to_set() {
+	if locale_failed_to_set(host) {
 		show_error!(&mut host.stderr, "{}", "failed to set locale");
 	}
 
-	let (locale, encoding) = i18n::get_collating_locale();
-
-	if matches!(encoding, i18n::UEncoding::Utf8) {
+	if locale_collation {
+		let locale = &i18n::get_collating_locale().0;
 		let locale_as_posix = format!("{}.UTF-8", locale.to_string().replace('-', "_"));
-		show_error!(&mut host.stderr, "{}", format!("text ordering performed using ‘{locale_as_posix}’ sorting rules"));
+		show_error!(
+			&mut host.stderr,
+			"{}",
+			format!("text ordering performed using ‘{locale_as_posix}’ sorting rules")
+		);
 	} else {
 		show_error!(&mut host.stderr, "{}", "text ordering performed using simple byte comparison");
 	}
@@ -3979,7 +4487,8 @@ fn emit_debug_warnings(
 			.iter()
 			.find(|warning| warning.key_index == Some(key_index))
 		{
-			show_error!(&mut host.stderr,
+			show_error!(
+				&mut host.stderr,
 				"{}",
 				format!(
 					"obsolescent key '{}' used; consider '-k {}' instead",
@@ -3990,14 +4499,23 @@ fn emit_debug_warnings(
 		}
 
 		if key_zero_width(selector) {
-			show_error!(&mut host.stderr, "{}", format!("key {key_index} has zero width and will be ignored"));
+			show_error!(
+				&mut host.stderr,
+				"{}",
+				format!("key {key_index} has zero width and will be ignored")
+			);
 			continue;
 		}
 
 		if flags.keys_specified && key_spans_multiple_fields(selector) {
-			show_error!(&mut host.stderr, "{}", format!("key {key_index} is numeric and spans multiple fields"));
+			show_error!(
+				&mut host.stderr,
+				"{}",
+				format!("key {key_index} is numeric and spans multiple fields")
+			);
 		} else if flags.keys_specified && key_leading_blanks_significant(selector) {
-			show_error!(&mut host.stderr,
+			show_error!(
+				&mut host.stderr,
 				"{}",
 				format!(
 					"leading blanks are significant in key {key_index}; consider also specifying 'b'"
@@ -4018,14 +4536,26 @@ fn emit_debug_warnings(
 		if let Some(sep) = settings.separator {
 			match sep {
 				b'.' => {
-					show_error!(&mut host.stderr, "{}", "field separator '.' is treated as a decimal point in numbers");
+					show_error!(
+						&mut host.stderr,
+						"{}",
+						"field separator '.' is treated as a decimal point in numbers"
+					);
 					suppress_decimal_warning = true;
 				},
 				b'-' => {
-					show_error!(&mut host.stderr, "{}", "field separator '-' is treated as a minus sign in numbers");
+					show_error!(
+						&mut host.stderr,
+						"{}",
+						"field separator '-' is treated as a minus sign in numbers"
+					);
 				},
 				b'+' => {
-					show_error!(&mut host.stderr, "{}", "field separator '+' is treated as a plus sign in numbers");
+					show_error!(
+						&mut host.stderr,
+						"{}",
+						"field separator '+' is treated as a plus sign in numbers"
+					);
 				},
 				_ => {},
 			}
@@ -4116,7 +4646,6 @@ fn emit_debug_warnings(
 	}
 }
 
-
 pub(crate) struct Sort {
 	matches:         ArgMatches,
 	legacy_warnings: Vec<LegacyKeyWarning>,
@@ -4160,9 +4689,97 @@ impl clap::Parser for Sort {
 	}
 }
 
+fn split_attached_separator(argv: Vec<OsString>) -> Vec<OsString> {
+	let app = uu_app();
+	let takes_value = |arg: &Arg| arg.get_action().takes_values() && !arg.is_require_equals_set();
+	let short_takes_value = |short: u8| {
+		app.get_arguments()
+			.find(|arg| arg.get_short() == Some(char::from(short)))
+			.map(takes_value)
+	};
+	// Mirrors clap's `infer_long_args`: an exact name wins, else a unique prefix.
+	let long_takes_value = |name: &str| {
+		let exact = app.get_arguments().find(|arg| arg.get_long() == Some(name));
+		let arg = exact.or_else(|| {
+			let mut prefixed = app
+				.get_arguments()
+				.filter(|arg| arg.get_long().is_some_and(|long| long.starts_with(name)));
+			let first = prefixed.next();
+			if prefixed.next().is_none() {
+				first
+			} else {
+				None
+			}
+		});
+		arg.is_some_and(takes_value)
+	};
+
+	let mut out = Vec::with_capacity(argv.len() + 1);
+	let mut args = argv.into_iter();
+	out.extend(args.next());
+	while let Some(arg) = args.next() {
+		let bytes = arg.as_encoded_bytes();
+		if bytes == b"--" {
+			out.push(arg);
+			out.extend(args);
+			break;
+		}
+		if let Some(long) = bytes.strip_prefix(b"--") {
+			let value_follows = !long.contains(&b'=')
+				&& std::str::from_utf8(long).is_ok_and(|name| long_takes_value(name));
+			out.push(arg);
+			if value_follows {
+				out.extend(args.next());
+			}
+			continue;
+		}
+		let Some(cluster) = bytes.strip_prefix(b"-") else {
+			out.push(arg);
+			continue;
+		};
+		let mut value_follows = false;
+		let mut split_at = None;
+		for (index, &short) in cluster.iter().enumerate() {
+			match short.is_ascii().then(|| short_takes_value(short)).flatten() {
+				Some(false) => continue,
+				// An unknown option ends the scan; clap reports it unchanged.
+				None => break,
+				Some(true) => {},
+			}
+			let value = &cluster[index + 1..];
+			if value.is_empty() {
+				value_follows = true;
+			} else if short == b't' && value[0] == b'=' {
+				// `-` plus the cluster up to and including `t`.
+				split_at = Some(index + 2);
+			}
+			break;
+		}
+		match split_at {
+			Some(split_at) => {
+				let (option, separator) = bytes.split_at(split_at);
+				// SAFETY: both halves come from `OsStr::as_encoded_bytes`, split
+				// after an ASCII byte.
+				out.push(unsafe { OsString::from_encoded_bytes_unchecked(option.to_vec()) });
+				out.push(unsafe { OsString::from_encoded_bytes_unchecked(separator.to_vec()) });
+			},
+			None => {
+				out.push(arg);
+				if value_follows {
+					out.extend(args.next());
+				}
+			},
+		}
+	}
+	out
+}
 impl Utility for Sort {
 	const NAME: &'static str = "sort";
 	const USAGE_ERROR: u8 = 2;
+
+	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+		Ok(split_attached_separator(argv))
+	}
 
 	fn run(self, host: &mut Host) -> i32 {
 		match uu_sort(host, &self.matches, &self.legacy_warnings) {
@@ -4180,9 +4797,13 @@ impl Utility for Sort {
 }
 
 #[allow(clippy::cognitive_complexity)]
-fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWarning]) -> SortResult<()> {
+fn uu_sort(
+	host: &mut Host,
+	matches: &ArgMatches,
+	legacy_warnings: &[LegacyKeyWarning],
+) -> SortResult<()> {
 	let mut settings = GlobalSettings {
-		numeric_locale: detect_numeric_locale(),
+		numeric_locale: detect_numeric_locale(host),
 		cancel: host.cancel_flag(),
 		..Default::default()
 	};
@@ -4199,8 +4820,6 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 		settings.random_source = Some(host.resolve(path));
 	}
 
-
-
 	let mut files: Vec<OsString> = if matches.contains_id(options::FILES0_FROM) {
 		let files0_arg = matches
 			.get_one::<OsString>(options::FILES0_FROM)
@@ -4208,17 +4827,16 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 			.unwrap_or_default();
 		let files0_from = host.resolve(&files0_arg);
 
-
 		if let Some(s) = matches.get_one::<OsString>(options::FILES) {
 			return Err(SortError::FileOperandsCombined { file: s.into() }.into());
 		}
 
 		let mut files = Vec::new();
 
-
 		let reader: Box<dyn Read + Send> = if files0_arg == OsStr::new(STDIN_FILE) {
 			let mut bytes = Vec::new();
-			host.stdin
+			host
+				.stdin
 				.read_to_end(&mut bytes)
 				.map_err(|error| SortError::ReadFailed { path: PathBuf::from(STDIN_FILE), error })?;
 			Box::new(std::io::Cursor::new(bytes))
@@ -4307,33 +4925,16 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	settings.dictionary_order = dictionary_order;
 	settings.ignore_non_printing = ignore_non_printing;
 	settings.ignore_case = ignore_case;
-	if matches.contains_id(options::PARALLEL) {
 
-		settings.threads = matches
-			.get_one::<String>(options::PARALLEL)
-			.map_or_else(|| "0".to_string(), String::from);
-		#[cfg(not(target_os = "wasi"))]
-		{
-			if rayon_global_pool_available() {
-				let num_threads = match settings.threads.parse::<usize>() {
-					Ok(0) | Err(_) => std::thread::available_parallelism().map_or(1, NonZero::get),
-					Ok(n) => n,
-				};
-				let _ = rayon::ThreadPoolBuilder::new()
-					.num_threads(num_threads)
-					.build_global();
-			}
-		}
-	}
-
+	let parallel = matches
+		.get_one::<String>(options::PARALLEL)
+		.map(|threads| parse_parallel(threads))
+		.transpose()?;
 	if let Some(size_str) = matches.get_one::<String>(options::BUF_SIZE) {
-		settings.buffer_size = GlobalSettings::parse_byte_count(size_str).map_err(|e| {
-			SortError::message(format_error_message(&e, size_str, options::BUF_SIZE))
-		})?;
-		settings.buffer_size_is_explicit = true;
+		settings.buffer_size = GlobalSettings::parse_byte_count(size_str)
+			.map_err(|e| SortError::message(format_error_message(&e, size_str, options::BUF_SIZE)))?;
 	} else {
 		settings.buffer_size = automatic_buffer_size(&files);
-		settings.buffer_size_is_explicit = false;
 	}
 
 	let tmp_base = matches
@@ -4351,7 +4952,11 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 		match n_merge.parse::<usize>() {
 			Ok(parsed_value) => {
 				if parsed_value < 2 {
-					show_error!(&mut host.stderr, "{}", format!("invalid --batch-size argument '{n_merge}'"));
+					show_error!(
+						&mut host.stderr,
+						"{}",
+						format!("invalid --batch-size argument '{n_merge}'")
+					);
 					return Err(SortError::message("minimum --batch-size argument is '2'"));
 				}
 				settings.merge_batch_size = parsed_value;
@@ -4414,10 +5019,12 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	settings.unique = matches.get_flag(options::UNIQUE);
 
 	if files.is_empty() {
-
 		files.push(OsString::from(STDIN_FILE));
 	} else if settings.check && files.len() != 1 {
-		return Err(SortError::message(format!("extra operand {} not allowed with -c", files[1].quote())));
+		return Err(SortError::message(format!(
+			"extra operand {} not allowed with -c",
+			files[1].quote()
+		)));
 	}
 
 	if let Some(arg) = matches.get_one::<OsString>(options::SEPARATOR) {
@@ -4428,11 +5035,11 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 			separator = "\0";
 		}
 
-
-
-
 		let &[sep_char] = separator.as_bytes() else {
-			return Err(SortError::message(format!("separator must be exactly one character long: {}", separator.quote())));
+			return Err(SortError::message(format!(
+				"separator must be exactly one character long: {}",
+				separator.quote()
+			)));
 		};
 		settings.separator = Some(sep_char);
 	}
@@ -4445,7 +5052,6 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	}
 
 	if !matches.contains_id(options::KEY) {
-
 		let key_settings = KeySettings::from(&settings);
 		settings.selectors.push(
 			FieldSelector::new(
@@ -4473,39 +5079,59 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 		});
 	}
 
-	for file in files.iter().filter(|file| file.as_os_str() != OsStr::new(STDIN_FILE)) {
+	for file in files
+		.iter()
+		.filter(|file| file.as_os_str() != OsStr::new(STDIN_FILE))
+	{
 		host.note_read(file);
 	}
-	materialize_stdin(host, &mut files, &mut tmp_dir)?;
+	if settings.check || (settings.merge && matches.contains_id(options::OUTPUT)) {
+		materialize_stdin(host, &mut files, &mut tmp_dir)?;
+	}
+	let stdin_operand = if files.iter().any(|file| file == STDIN_FILE) {
+		let stdin = host
+			.stdin
+			.try_clone()
+			.map_err(|error| SortError::ReadFailed { path: PathBuf::from(STDIN_FILE), error })?;
+		StdinOperand::new(Some(stdin))
+	} else {
+		StdinOperand::new(None)
+	};
 
-
-
-	for file in &files {
+	for file in files.iter().filter(|file| *file != STDIN_FILE) {
 		open(file)?;
 	}
 
 	let output_path = matches
 		.get_one::<OsString>(options::OUTPUT)
 		.map(|path| host.resolve(path).into_os_string());
-	let observation = output_path.as_ref().map(|path| {
-		host.prepare_write(path).map_err(|error| SortError::OpenFailed { path: PathBuf::from(path), error })
-	}).transpose()?.flatten();
+	let observation = output_path
+		.as_ref()
+		.map(|path| {
+			host
+				.prepare_write(path)
+				.map_err(|error| SortError::OpenFailed { path: PathBuf::from(path), error })
+		})
+		.transpose()?
+		.flatten();
 	let output = Output::new(output_path.as_ref(), Some(host.stdout_clone()))?;
 	host.commit_write(observation);
 
+	let locale_collation = use_locale_collation(host);
 	if settings.debug {
 		let global_flags = GlobalOptionFlags::from_matches(matches);
-		emit_debug_warnings(host, &settings, &global_flags, legacy_warnings);
+		emit_debug_warnings(host, &settings, &global_flags, legacy_warnings, locale_collation);
 	}
 
+	if let Some(requested) = parallel
+		&& !settings.check
+		&& !settings.merge
+	{
+		settings.parallelism = invocation_parallelism(requested);
+	}
+	settings.init_precomputed(locale_collation);
 
-
-
-	let needs_locale_collation = i18n::collator::init_locale_collation();
-
-	settings.init_precomputed(needs_locale_collation);
-
-	exec(&mut files, &settings, output, &mut tmp_dir, host.stderr_clone())
+	exec(&stdin_operand, &mut files, &settings, output, &mut tmp_dir, host.stderr_clone())
 }
 
 fn uu_app() -> Command {
@@ -4644,7 +5270,6 @@ fn uu_app() -> Command {
 				.value_hint(clap::ValueHint::FilePath)
 				.num_args(1)
 				.allow_hyphen_values(true)
-
 				.action(ArgAction::Append),
 		)
 		.arg(
@@ -4749,12 +5374,12 @@ fn uu_app() -> Command {
 		)
 }
 
-
 pub(crate) fn sort_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sort, SE>()
 }
 
 fn exec(
+	stdin: &StdinOperand,
 	files: &mut [OsString],
 	settings: &GlobalSettings,
 	output: Output,
@@ -4762,7 +5387,7 @@ fn exec(
 	stderr: OpenFile,
 ) -> SortResult<()> {
 	if settings.merge {
-		merge::merge(files, settings, output, tmp_dir)
+		merge::merge(stdin, files, settings, output, tmp_dir)
 	} else if settings.check {
 		if files.len() > 1 {
 			Err(SortError::message("only one file allowed with -c"))
@@ -4770,36 +5395,100 @@ fn exec(
 			check::check(files.first().unwrap(), settings)
 		}
 	} else {
-		let mut lines = files.iter().map(open);
+		let mut lines = files.iter().map(|file| open_operand(stdin, file));
 		ext_sort(&mut lines, settings, output, tmp_dir, stderr)
 	}
 }
 
-fn sort_by<'a>(unsorted: &mut Vec<Line<'a>>, settings: &GlobalSettings, line_data: &LineData<'a>) {
-	let cmp = |a: &Line<'a>, b: &Line<'a>| compare_by(a, b, settings, line_data, line_data);
+struct SortCancelled;
 
+/// Sorts one chunk's lines. Returns `false`, leaving them in no particular
+/// order, if the command was cancelled meanwhile.
+fn sort_by<'a>(
+	unsorted: &mut Vec<Line<'a>>,
+	settings: &GlobalSettings,
+	line_data: &LineData<'a>,
+) -> bool {
+	let cmp = |a: &Line<'a>, b: &Line<'a>| {
+		// A build that aborts on panic sorts each chunk to its end.
+		#[cfg(panic = "unwind")]
+		if settings.cancel.load(AtomicOrdering::Relaxed) {
+			// Unlike `panic!`, this runs no panic hook: it is no crash.
+			std::panic::resume_unwind(Box::new(SortCancelled));
+		}
+		compare_by(a, b, settings, line_data, line_data)
+	};
 
-
-
-	if settings.stable || settings.unique {
-		#[cfg(not(target_os = "wasi"))]
-		if rayon_global_pool_available() {
+	let stable = settings.stable || settings.unique;
+	// WASI has no threads (rayon's pool hits an unreachable trap there), and
+	// Windows leaves the global pool unavailable when pi-natives could not
+	// safely configure it under commit pressure; both sort sequentially.
+	#[cfg(not(target_os = "wasi"))]
+	let sort_parallel = |unsorted: &mut Vec<Line<'a>>| {
+		if stable {
 			unsorted.par_sort_by(cmp);
 		} else {
-			unsorted.sort_by(cmp);
-		}
-		#[cfg(target_os = "wasi")]
-		unsorted.sort_by(cmp);
-	} else {
-		#[cfg(not(target_os = "wasi"))]
-		if rayon_global_pool_available() {
 			unsorted.par_sort_unstable_by(cmp);
-		} else {
-			unsorted.sort_unstable_by(cmp);
 		}
-		#[cfg(target_os = "wasi")]
-		unsorted.sort_unstable_by(cmp);
+	};
+	let sort = || match &settings.parallelism {
+		#[cfg(not(target_os = "wasi"))]
+		Parallelism::Pool(pool) => pool.install(|| sort_parallel(unsorted)),
+		#[cfg(not(target_os = "wasi"))]
+		Parallelism::Global if rayon_global_pool_available() => sort_parallel(unsorted),
+		_ if stable => unsorted.sort_by(cmp),
+		_ => unsorted.sort_unstable_by(cmp),
+	};
+	match std::panic::catch_unwind(std::panic::AssertUnwindSafe(sort)) {
+		Ok(()) => true,
+		Err(payload) if payload.is::<SortCancelled>() => false,
+		Err(payload) => std::panic::resume_unwind(payload),
 	}
+}
+
+/// Parses `--parallel`'s NUM_THREADS like GNU's `xstrtoumax`: optional
+/// leading whitespace and `+`, then decimal digits and nothing else. Values
+/// past `usize` saturate, as GNU's do; zero is rejected.
+fn parse_parallel(arg: &str) -> SortResult<usize> {
+	let number = arg.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+	let digits = number.strip_prefix('+').unwrap_or(number);
+	let digit_count = digits.bytes().take_while(u8::is_ascii_digit).count();
+	if digit_count == 0 {
+		return Err(SortError::message(format!("invalid --parallel argument {}", arg.quote())));
+	}
+	if digit_count != digits.len() {
+		return Err(SortError::message(format!(
+			"invalid suffix in --parallel argument {}",
+			arg.quote()
+		)));
+	}
+	match digits.parse::<usize>() {
+		Ok(0) => Err(SortError::message("number in parallel must be nonzero")),
+		Ok(threads) => Ok(threads),
+		Err(_) => Ok(usize::MAX),
+	}
+}
+
+/// How a sort with `--parallel=N` runs: on a pool of its own, so the limit
+/// stays local to this call instead of resizing the process-global pool.
+#[cfg(not(target_os = "wasi"))]
+fn invocation_parallelism(requested: usize) -> Parallelism {
+	// Rayon spawns every worker up front, and more workers than cores cannot
+	// speed up the sort, so the request is capped at the core count.
+	let threads = requested.min(std::thread::available_parallelism().map_or(1, NonZero::get));
+	if threads == 1 {
+		return Parallelism::Sequential;
+	}
+	// Spawning fails under memory pressure; the sort then runs on its own thread.
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(threads)
+		.build()
+		.map_or(Parallelism::Sequential, |pool| Parallelism::Pool(Arc::new(pool)))
+}
+
+#[cfg(target_os = "wasi")]
+fn invocation_parallelism(_requested: usize) -> Parallelism {
+	Parallelism::Sequential
 }
 
 fn compare_by<'a>(
@@ -4818,7 +5507,7 @@ fn compare_by<'a>(
 		};
 	}
 
-		if global_settings.precomputed.fast_locale_collation {
+	if global_settings.precomputed.fast_locale_collation {
 		let a_key = a_line_data.collation_key(a.index);
 		let b_key = b_line_data.collation_key(b.index);
 		let cmp = a_key.cmp(b_key);
@@ -4847,9 +5536,7 @@ fn compare_by<'a>(
 	if let (Some(Some(a_f64)), Some(Some(b_f64))) =
 		(a_line_data.line_num_floats.get(a.index), b_line_data.line_num_floats.get(b.index))
 	{
-
 		if let Some(cmp) = a_f64.partial_cmp(b_f64) {
-
 			if cmp != Ordering::Equal || a.line == b.line {
 				return if global_settings.reverse {
 					cmp.reverse()
@@ -4871,7 +5558,6 @@ fn compare_by<'a>(
 			selection_index += 1;
 			selections
 		} else {
-
 			(a.line, b.line)
 		};
 
@@ -4879,7 +5565,6 @@ fn compare_by<'a>(
 
 		let cmp: Ordering = match settings.mode {
 			SortMode::Random => {
-
 				if custom_str_cmp(
 					a_str,
 					b_str,
@@ -4890,7 +5575,6 @@ fn compare_by<'a>(
 				{
 					Ordering::Equal
 				} else {
-
 					random_shuffle(a_str, b_str, &global_settings.salt.unwrap())
 				}
 			},
@@ -4921,8 +5605,6 @@ fn compare_by<'a>(
 			SortMode::Month => month_compare(a_str, b_str),
 			SortMode::Version => version_cmp(a_str, b_str),
 			SortMode::Default => {
-
-
 				if settings.ignore_case || settings.dictionary_order || settings.ignore_non_printing {
 					custom_str_cmp(
 						a_str,
@@ -4931,8 +5613,10 @@ fn compare_by<'a>(
 						settings.dictionary_order,
 						settings.ignore_case,
 					)
-				} else {
+				} else if global_settings.precomputed.locale_collation {
 					locale_cmp(a_str, b_str)
+				} else {
+					a_str.cmp(b_str)
 				}
 			},
 		};
@@ -4940,7 +5624,6 @@ fn compare_by<'a>(
 			return if settings.reverse { cmp.reverse() } else { cmp };
 		}
 	}
-
 
 	let cmp = if global_settings.mode == SortMode::Random
 		|| global_settings.stable
@@ -4957,9 +5640,6 @@ fn compare_by<'a>(
 		cmp
 	}
 }
-
-
-
 
 fn ascii_case_insensitive_cmp(a: &[u8], b: &[u8]) -> Ordering {
 	#[inline]
@@ -4978,17 +5658,10 @@ fn ascii_case_insensitive_cmp(a: &[u8], b: &[u8]) -> Ordering {
 	a.len().cmp(&b.len())
 }
 
-
-
-
-
-
-
 #[allow(clippy::cognitive_complexity)]
 fn get_leading_gen(inp: &[u8], decimal_pt: u8) -> Range<usize> {
 	let trimmed = inp.trim_ascii_start();
 	let leading_whitespace_len = inp.len() - trimmed.len();
-
 
 	const ALLOWED_PREFIXES: &[&[u8]] = &[b"inf", b"-inf", b"nan"];
 	for &allowed_prefix in ALLOWED_PREFIXES {
@@ -5030,15 +5703,12 @@ fn get_leading_gen(inp: &[u8], decimal_pt: u8) -> Range<usize> {
 		let is_decimal_e = (c == b'e' || c == b'E') && !had_hex_notation;
 		let is_hex_e = (c == b'p' || c == b'P') && had_hex_notation;
 		if (is_decimal_e || is_hex_e) && !had_e_notation {
-
-
 			if let Some(&(_, &next_char)) = char_indices.peek() {
 				if (next_char == b'+' || next_char == b'-')
 					&& matches!(
 						 char_indices.peek_nth(1),
 						 Some((_, c)) if c.is_ascii_digit()
 					) {
-
 					char_indices.next();
 					had_e_notation = true;
 					continue;
@@ -5063,9 +5733,6 @@ pub enum GeneralBigDecimalParseResult {
 	Infinity,
 }
 
-
-
-
 #[inline(always)]
 fn general_bd_parse(a: &[u8], decimal_pt: u8) -> GeneralBigDecimalParseResult {
 	let parsed_bytes = (decimal_pt != DECIMAL_PT).then(|| {
@@ -5075,11 +5742,9 @@ fn general_bd_parse(a: &[u8], decimal_pt: u8) -> GeneralBigDecimalParseResult {
 	});
 	let input = parsed_bytes.as_deref().unwrap_or(a);
 
-
 	let Ok(a) = std::str::from_utf8(input) else {
 		return GeneralBigDecimalParseResult::Invalid;
 	};
-
 
 	let ebd = match ExtendedBigDecimal::extended_parse(a) {
 		Err(ExtendedParserError::NotNumeric) => return GeneralBigDecimalParseResult::Invalid,
@@ -5101,16 +5766,12 @@ fn general_bd_parse(a: &[u8], decimal_pt: u8) -> GeneralBigDecimalParseResult {
 	}
 }
 
-
-
-
 fn general_numeric_compare(
 	a: &GeneralBigDecimalParseResult,
 	b: &GeneralBigDecimalParseResult,
 ) -> Ordering {
 	a.partial_cmp(b).unwrap()
 }
-
 
 fn get_rand_string() -> [u8; SALT_LEN] {
 	rng().sample(rand::distr::StandardUniform)
@@ -5121,7 +5782,6 @@ const MAX_BYTES: usize = 1024 * 1024;
 const BUF_LEN: usize = 8192;
 const U64_LEN: usize = 8;
 const RANDOM_SOURCE_TAG: &[u8] = b"uutils-sort-random-source";
-
 
 fn salt_from_random_source(path: &Path) -> SortResult<[u8; SALT_LEN]> {
 	let mut reader = open_with_open_failed_error(path)?;
@@ -5163,7 +5823,6 @@ fn salt_from_random_source(path: &Path) -> SortResult<[u8; SALT_LEN]> {
 }
 
 fn get_hash<T: Hash>(t: &T) -> u64 {
-
 	let mut s = FoldHasher::with_seed(0, SharedSeed::global_fixed());
 	t.hash(&mut s);
 	s.finish()
@@ -5191,8 +5850,6 @@ enum Month {
 	November,
 	December,
 }
-
-
 
 type MonthTable = Vec<(Vec<u8>, Month)>;
 
@@ -5226,18 +5883,8 @@ fn get_locale_month_table() -> Option<&'static MonthTable> {
 		.as_ref()
 }
 
-
-
-
-
-
-
-
 fn month_parse(line: &[u8]) -> (Month, usize) {
 	let line = line.trim_ascii_start();
-
-
-
 
 	if let Some(table) = get_locale_month_table() {
 		let mut best = None;
@@ -5253,7 +5900,6 @@ fn month_parse(line: &[u8]) -> (Month, usize) {
 			return (month, len);
 		}
 	}
-
 
 	match line.get(..3).map(<[u8]>::to_ascii_uppercase).as_deref() {
 		Some(b"JAN") => (Month::January, 3),
@@ -5290,14 +5936,40 @@ fn print_sorted<'a, T: Iterator<Item = &'a Line<'a>>>(
 		.to_owned();
 
 	let mut writer = output.into_write();
-	for line in iter {
-		line.print(&mut writer, settings)
+	for (index, line) in iter.enumerate() {
+		// A result held in memory can be a gigabyte of lines.
+		if index % (64 * 1024) == 0 && settings.cancel.load(AtomicOrdering::Relaxed) {
+			return Err(SortError::Cancelled);
+		}
+		line
+			.print(&mut writer, settings)
 			.map_err(|error| SortError::WriteFailed { path: output_name.clone(), error })?;
 	}
 	writer
 		.flush()
 		.map_err(|error| SortError::WriteFailed { path: output_name, error })?;
 	Ok(())
+}
+
+struct StdinOperand(std::cell::Cell<Option<crate::host::Stdin>>);
+impl StdinOperand {
+	const fn new(stdin: Option<crate::host::Stdin>) -> Self {
+		Self(std::cell::Cell::new(stdin))
+	}
+
+	fn take(&self) -> Box<dyn Read + Send> {
+		match self.0.take() {
+			Some(stdin) => Box::new(stdin),
+			None => Box::new(std::io::empty()),
+		}
+	}
+}
+fn open_operand(stdin: &StdinOperand, path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
+	if path.as_ref() == OsStr::new(STDIN_FILE) {
+		Ok(stdin.take())
+	} else {
+		open(path)
+	}
 }
 
 fn open(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
@@ -5309,7 +5981,6 @@ fn open(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
 }
 
 fn open_with_open_failed_error(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Read + Send>> {
-
 	let path = Path::new(path.as_ref());
 	match brush_core::heldfiles::open_read(path) {
 		Ok(file) => Ok(Box::new(file)),
@@ -5318,9 +5989,6 @@ fn open_with_open_failed_error(path: impl AsRef<OsStr>) -> SortResult<Box<dyn Re
 }
 
 fn format_error_message(error: &ParseSizeError, s: &str, option: &str) -> String {
-
-
-
 	match error {
 		ParseSizeError::InvalidSuffix(_) => {
 			format!("invalid suffix in --{option} argument {}", s.quote())
@@ -5333,5 +6001,3 @@ fn format_error_message(error: &ParseSizeError, s: &str, option: &str) -> String
 		},
 	}
 }
-
-

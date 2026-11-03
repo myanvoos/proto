@@ -69,7 +69,7 @@ describe("browser handle guarded actions", () => {
 		const stub = {
 			type: async () => {},
 			evaluate: async (fn: (el: unknown) => unknown) => {
-				fn({ focus: () => {} });
+				fn({ focus: () => {}, matches: () => false });
 			},
 			frame: {
 				page: () => ({

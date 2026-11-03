@@ -1,17 +1,9 @@
-
-
 use std::io::Write;
 
 use clap::builder::styling;
 pub use futures::future::BoxFuture;
 
 use crate::{BuiltinError, CommandArg, commands, error, extensions, results};
-
-
-
-
-
-
 
 #[allow(type_alias_bounds)]
 pub type CommandExecuteFunc<SE: extensions::ShellExtensions> =
@@ -20,25 +12,11 @@ pub type CommandExecuteFunc<SE: extensions::ShellExtensions> =
 		Vec<commands::CommandArg>,
 	) -> BoxFuture<'_, Result<results::ExecutionResult, error::Error>>;
 
-
-
-
-
-
-
-
 pub type CommandContentFunc =
 	fn(&str, ContentType, &ContentOptions) -> Result<String, error::Error>;
 
-
 pub trait Command: clap::Parser {
-
 	type Error: BuiltinError + 'static;
-
-
-
-
-
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
@@ -47,8 +25,6 @@ pub trait Command: clap::Parser {
 		if !Self::takes_plus_options() {
 			Self::try_parse_from(args)
 		} else {
-
-
 			let mut updated_args = vec![];
 			for arg in args {
 				if let Some(plus_options) = arg.strip_prefix("+") {
@@ -64,30 +40,15 @@ pub trait Command: clap::Parser {
 		}
 	}
 
-
-
 	fn takes_plus_options() -> bool {
 		false
 	}
-
-
-
-
-
-
 
 	fn execute<SE: extensions::ShellExtensions>(
 		&self,
 		context: commands::ExecutionContext<'_, SE>,
 	) -> impl std::future::Future<Output = Result<results::ExecutionResult, Self::Error>>
 	+ std::marker::Send;
-
-
-
-
-
-
-
 
 	fn get_content(
 		name: &str,
@@ -117,20 +78,11 @@ pub trait Command: clap::Parser {
 	}
 }
 
-
-
 pub trait DeclarationCommand: Command {
-
-
-
-
-
 	fn set_declarations(&mut self, declarations: Vec<commands::CommandArg>);
 }
 
-
 pub enum ContentType {
-
 	DetailedHelp,
 
 	ShortUsage,
@@ -140,45 +92,31 @@ pub enum ContentType {
 	ManPage,
 }
 
-
 #[derive(Default)]
 pub struct ContentOptions {
-
 	pub colorized: bool,
 }
 
-
 #[derive(Clone)]
 pub struct Registration<SE: extensions::ShellExtensions> {
-
 	pub execute_func: CommandExecuteFunc<SE>,
-
 
 	pub content_func: CommandContentFunc,
 
-
 	pub disabled: bool,
-
 
 	pub special_builtin: bool,
 
-
 	pub declaration_builtin: bool,
-
-
 
 	pub transparent_background_wrapper: bool,
 }
 
 impl<SE: extensions::ShellExtensions> Registration<SE> {
-
 	#[must_use]
 	pub const fn special(self) -> Self {
 		Self { special_builtin: true, ..self }
 	}
-
-
-
 
 	#[must_use]
 	pub const fn transparent_background_wrapper(self) -> Self {
@@ -423,35 +361,6 @@ fn brush_help_styles() -> clap::builder::Styles {
 		.placeholder(styling::AnsiColor::Cyan.on_default())
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 pub fn parse_known<T: clap::Parser, S>(
 	args: impl IntoIterator<Item = S>,
 ) -> (T, Option<impl Iterator<Item = S>>)
@@ -459,8 +368,6 @@ where
 	S: Into<std::ffi::OsString> + Clone + PartialEq<&'static str>,
 {
 	let mut args = args.into_iter();
-
-
 
 	let mut hyphen = None;
 	let args_before_hyphen = args.by_ref().take_while(|a| {
@@ -474,9 +381,6 @@ where
 	let raw_args = hyphen.map(|hyphen| std::iter::once(hyphen).chain(args));
 	(parsed_args, raw_args)
 }
-
-
-
 
 pub fn try_parse_known<T: clap::Parser>(
 	args: impl IntoIterator<Item = String>,
@@ -496,15 +400,12 @@ pub fn try_parse_known<T: clap::Parser>(
 	Ok((parsed_args, raw_args))
 }
 
-
 pub trait SimpleCommand {
-
 	fn get_content(
 		name: &str,
 		content_type: ContentType,
 		options: &ContentOptions,
 	) -> Result<String, error::Error>;
-
 
 	fn execute<SE: extensions::ShellExtensions, I: Iterator<Item = S>, S: AsRef<str>>(
 		context: commands::ExecutionContext<'_, SE>,
@@ -512,43 +413,36 @@ pub trait SimpleCommand {
 	) -> Result<results::ExecutionResult, error::Error>;
 }
 
-
-
 pub fn simple_builtin<B: SimpleCommand + Send + Sync, SE: extensions::ShellExtensions>()
 -> Registration<SE> {
 	Registration {
-		execute_func:        exec_simple_builtin::<B, SE>,
-		content_func:        B::get_content,
-		disabled:            false,
-		special_builtin:     false,
+		execute_func: exec_simple_builtin::<B, SE>,
+		content_func: B::get_content,
+		disabled: false,
+		special_builtin: false,
 		declaration_builtin: false,
 		transparent_background_wrapper: false,
 	}
 }
-
-
 
 pub fn builtin<B: Command + Send + Sync, SE: extensions::ShellExtensions>() -> Registration<SE> {
 	Registration {
-		execute_func:        exec_builtin::<B, SE>,
-		content_func:        get_builtin_content::<B>,
-		disabled:            false,
-		special_builtin:     false,
+		execute_func: exec_builtin::<B, SE>,
+		content_func: get_builtin_content::<B>,
+		disabled: false,
+		special_builtin: false,
 		declaration_builtin: false,
 		transparent_background_wrapper: false,
 	}
 }
-
-
-
 
 pub fn decl_builtin<B: DeclarationCommand + Send + Sync, SE: extensions::ShellExtensions>()
 -> Registration<SE> {
 	Registration {
-		execute_func:        exec_declaration_builtin::<B, SE>,
-		content_func:        get_builtin_content::<B>,
-		disabled:            false,
-		special_builtin:     false,
+		execute_func: exec_declaration_builtin::<B, SE>,
+		content_func: get_builtin_content::<B>,
+		disabled: false,
+		special_builtin: false,
 		declaration_builtin: true,
 		transparent_background_wrapper: false,
 	}
@@ -556,20 +450,15 @@ pub fn decl_builtin<B: DeclarationCommand + Send + Sync, SE: extensions::ShellEx
 
 #[allow(clippy::too_long_first_doc_paragraph)]
 
-
-
-
-
-
 pub fn raw_arg_builtin<
 	B: DeclarationCommand + Default + Send + Sync,
 	SE: extensions::ShellExtensions,
 >() -> Registration<SE> {
 	Registration {
-		execute_func:        exec_raw_arg_builtin::<B, SE>,
-		content_func:        get_builtin_content::<B>,
-		disabled:            false,
-		special_builtin:     false,
+		execute_func: exec_raw_arg_builtin::<B, SE>,
+		content_func: get_builtin_content::<B>,
+		disabled: false,
+		special_builtin: false,
 		declaration_builtin: true,
 		transparent_background_wrapper: false,
 	}

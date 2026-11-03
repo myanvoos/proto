@@ -285,7 +285,11 @@ describe("Bedrock forced tool choice", () => {
 		} satisfies ModelSpec<"bedrock-converse-stream">);
 	type ToolChoicePayload = {
 		toolConfig?: { toolChoice?: Record<string, unknown> };
-		additionalModelRequestFields?: { thinking?: unknown };
+		additionalModelRequestFields?: {
+			thinking?: { type?: string; block_binding?: unknown };
+			anthropic_beta?: string[];
+		};
+		additionalModelResponseFieldPaths?: string[];
 	};
 	const capture = async (
 		target: Model<"bedrock-converse-stream">,
@@ -314,6 +318,50 @@ describe("Bedrock forced tool choice", () => {
 
 		const namedPayload = await capture(model55, { type: "tool", name: "echo" });
 		expect(namedPayload.toolConfig?.toolChoice).toEqual({ auto: {} });
+	});
+
+	it("lets a Bedrock gateway opt out of thinking-binding beta fields without disabling prefix-bound thinking", async () => {
+		const target = buildModel({
+			...claude("us.anthropic.claude-opus-5-5"),
+			compat: { supportsThinkingBindingControls: false },
+		});
+		const payload = await capture(target, "any");
+		expect(payload.additionalModelRequestFields?.thinking?.type).toBe("adaptive");
+		expect(payload.additionalModelRequestFields?.thinking?.block_binding).toBeUndefined();
+		expect(payload.additionalModelRequestFields?.anthropic_beta ?? []).not.toContain(
+			"thinking-binding-controls-2026-05-08",
+		);
+		expect(payload.additionalModelResponseFieldPaths).toBeUndefined();
+		expect(payload.toolConfig?.toolChoice).toEqual({ auto: {} });
+	});
+
+	it("preserves explicit adaptive thinking-off with forced tools and no binding controls", async () => {
+		const target = buildModel({
+			...claude("us.anthropic.claude-haiku-5-5"),
+			thinking: { mode: "anthropic-adaptive", efforts: [Effort.Low, Effort.Medium], prefixBinding: true },
+			compat: { disabledThinking: "disabled", supportsForcedToolChoice: true },
+		});
+		let captured:
+			| {
+					toolConfig?: { toolChoice?: unknown };
+					additionalModelRequestFields?: Record<string, unknown>;
+					additionalModelResponseFieldPaths?: string[];
+			  }
+			| undefined;
+		await streamBedrock(target, toolContext, {
+			bearerToken: "test-token",
+			toolChoice: { type: "tool", name: "echo" },
+			fetch: fetchForBody(Buffer.concat(completeFrames())),
+			onPayload: payload => {
+				captured = payload as typeof captured;
+			},
+		}).result();
+		expect(captured?.additionalModelRequestFields).toEqual({
+			thinking: { type: "disabled" },
+			output_config: { effort: "low" },
+		});
+		expect(captured?.toolConfig?.toolChoice).toEqual({ tool: { name: "echo" } });
+		expect(captured?.additionalModelResponseFieldPaths).toBeUndefined();
 	});
 
 	it("still forces the tool on Opus 5, dropping thinking instead", async () => {

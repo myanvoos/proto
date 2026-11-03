@@ -14,6 +14,8 @@ export interface AdvisorConfig {
 	instructions?: string;
 
 	enabled?: boolean;
+	scope?: "all" | "main" | "subagent";
+	includeReasoning?: boolean;
 }
 
 export type AdvisorRuntimeStatus = "running" | "paused" | "quota_exhausted" | "error" | "no_model";
@@ -31,6 +33,8 @@ const advisorEntrySchema = type({
 	"tools?": "string[]",
 	"instructions?": "string",
 	"enabled?": "boolean",
+	"scope?": "'all' | 'main' | 'subagent'",
+	"includeReasoning?": "boolean",
 });
 
 type AdvisorYamlEntry = typeof advisorEntrySchema.infer;
@@ -153,6 +157,8 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 				tools: filterAdvisorTools(entry.tools, item.path),
 				instructions,
 				enabled: entry.enabled,
+				scope: entry.scope,
+				includeReasoning: entry.includeReasoning,
 			});
 		}
 	}
@@ -220,6 +226,8 @@ export async function loadWatchdogConfigFile(filePath: string): Promise<Watchdog
 		if (a.tools !== undefined) advisor.tools = [...a.tools];
 		if (a.instructions?.trim()) advisor.instructions = a.instructions;
 		if (a.enabled !== undefined) advisor.enabled = a.enabled;
+		if (a.scope !== undefined) advisor.scope = a.scope;
+		if (a.includeReasoning !== undefined) advisor.includeReasoning = a.includeReasoning;
 		return advisor;
 	});
 	const doc: WatchdogConfigDoc = { advisors };
@@ -272,6 +280,8 @@ export function serializeWatchdogConfig(doc: WatchdogConfigDoc): string {
 				appendYamlString(lines, "    ", "instructions", advisor.instructions);
 			}
 			if (advisor.enabled !== undefined) lines.push(`    enabled: ${advisor.enabled}`);
+			if (advisor.scope !== undefined) lines.push(`    scope: ${YAML.stringify(advisor.scope)}`);
+			if (advisor.includeReasoning !== undefined) lines.push(`    includeReasoning: ${advisor.includeReasoning}`);
 		}
 	}
 	return lines.length === 0 ? "" : `${lines.join("\n")}\n`;

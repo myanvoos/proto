@@ -11,6 +11,20 @@ const XML_BLOCK = /<([a-zA-Z][\w-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g;
 const LONG_HEX_RUN = /\b[0-9a-fA-F]{12,}\b/g;
 
 const SHORT_HASH_CHARS = 7;
+const RAW_SCAN_EDGE_CHARS = 262_144;
+const CLEAN_WINDOW_EDGE_CHARS = 16_384;
+
+function windowEdges(message: string, edgeChars: number): string {
+	if (message.length <= edgeChars * 2) return message;
+	return `${message.slice(0, edgeChars)}\n…\n${message.slice(-edgeChars)}`;
+}
+
+function collapseWhitespace(message: string): string {
+	return message
+		.replace(/[ \t]+/g, " ")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
 
 export function stripAnsi(message: string): string {
 	return message.replace(ANSI_ESCAPE, "");
@@ -43,16 +57,13 @@ function truncateTinyMessage(message: string): string {
 }
 
 export function stripCodeBlocks(message: string): string {
-	const cleaned = message
-		.replace(FENCED_CODE_BLOCK, " ")
-		.replace(/[ \t]+/g, " ")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+	const cleaned = collapseWhitespace(message.replace(FENCED_CODE_BLOCK, " "));
 	return cleaned.length >= MIN_STRIPPED_TITLE_CHARS ? cleaned : message;
 }
 
 export function cleanTinyMessage(message: string): string {
-	return stripCodeBlocks(shortenHashes(stripXmlBlocks(stripAnsi(message))));
+	const fenceStripped = stripCodeBlocks(stripAnsi(windowEdges(message, RAW_SCAN_EDGE_CHARS)));
+	return collapseWhitespace(shortenHashes(stripXmlBlocks(windowEdges(fenceStripped, CLEAN_WINDOW_EDGE_CHARS))));
 }
 
 export function preprocessTinyMessage(message: string): string {

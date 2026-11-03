@@ -6,6 +6,25 @@ import { opencodeGoUsageProvider } from "./opencode-go";
 afterEach(() => vi.restoreAllMocks());
 
 describe("OpenCode Go usage polling", () => {
+	it("maps first-party inference URLs to Zen account usage without rewriting custom gateways", async () => {
+		for (const [baseUrl, expected] of [
+			["https://opencode.ai/inference/go/v1/", "https://opencode.ai/zen/go/v1/usage"],
+			["https://gateway.example/prefix/inference/go/v1", "https://gateway.example/prefix/inference/go/v1/usage"],
+		]) {
+			let requested = "";
+			await opencodeGoUsageProvider.fetchUsage(
+				{ provider: "opencode-go", baseUrl, credential: { type: "api_key", apiKey: "key" } },
+				{
+					fetch: async input => {
+						requested = String(input);
+						return Response.json({ usage: {} });
+					},
+				},
+			);
+			expect(requested).toBe(expected);
+		}
+	});
+
 	it("attributes background usage requests with the client and install session", async () => {
 		spyOn(utils, "getInstallId").mockReturnValue("test-install-id");
 		let requestHeaders = new Headers();

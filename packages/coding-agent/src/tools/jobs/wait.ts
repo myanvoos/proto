@@ -1,4 +1,4 @@
-import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import { type AgentToolUpdateCallback, TOOL_INTERRUPT_ABORT_REASON } from "@oh-my-pi/pi-agent-core";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobEvent, AsyncJobManager } from "../../async";
 import { sessionProjectCwd } from "../../eval/bridge-cwd";
@@ -78,6 +78,12 @@ export async function executeWait(
 	onUpdate?: AgentToolUpdateCallback<JobsDetails>,
 ): Promise<JobsResult> {
 	const manager = session.asyncJobManager;
+	if (signal?.aborted && signal.reason !== TOOL_INTERRUPT_ABORT_REASON) {
+		return {
+			content: [{ type: "text", text: "Wait interrupted; nothing was consumed." }],
+			details: { op: "wait", jobs: [] },
+		};
+	}
 	const ownerId = asyncJobOwner(session);
 	const bare = request.targets === undefined && request.mailbox === undefined;
 	const targets = request.targets ?? [];
@@ -140,6 +146,12 @@ export async function executeWait(
 	if (manager && (hasEvents || settledTargets)) return await consumeJobs(session, manager, ownerId, jobs, watchIds);
 
 	const running = jobs.filter(job => job.status === "running");
+	if (signal?.aborted) {
+		return {
+			content: [{ type: "text", text: "Wait interrupted; nothing was consumed." }],
+			details: { op: "wait", jobs: manager ? snapshot() : [] },
+		};
+	}
 	if (running.length === 0 && processes.length === 0) {
 		const hasPeer =
 			mailbox !== undefined &&

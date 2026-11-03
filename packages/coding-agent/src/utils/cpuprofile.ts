@@ -189,6 +189,6 @@ export function renderCpuProfile(text: string): string | null {
 	}
 
 	out.push("");
-	out.push("[Summarized view of a V8 .cpuprofile. Use ':raw' to read the original JSON.]");
+	out.push("[Summarized view of a V8 .cpuprofile. Use ':raw' or a line range to read the original JSON.]");
 	return out.join("\n");
 }

@@ -10,6 +10,7 @@ import type {
 	Context,
 	ImageContent,
 	Message,
+	Model,
 	ServiceTier,
 	StopReason,
 	TextContent,
@@ -26,6 +27,11 @@ import {
 	type OpenAIChatToolChoice,
 	openaiChatRequestSchema,
 } from "./openai-chat-server-schema";
+import {
+	geminiToolCallExtraContent,
+	rawGeminiToolCallSignature,
+	storeGeminiToolCallSignature,
+} from "./openai-completions";
 import { decodeDataUri } from "./openai-data-uri";
 
 export type { ParsedRequest };
@@ -255,7 +261,15 @@ function buildAssistantMessage(
 					args = { __raw: argsStr };
 				}
 			}
-			const call: ToolCall = { type: "toolCall", id: raw.id, name: fn.name, arguments: args };
+			// A Gemini tool call replays the signature its response carried; store it as this API's transport does.
+			const thoughtSignature = storeGeminiToolCallSignature(Reflect.get(raw, "extra_content"));
+			const call: ToolCall = {
+				type: "toolCall",
+				id: raw.id,
+				name: fn.name,
+				arguments: args,
+				...(thoughtSignature ? { thoughtSignature } : {}),
+			};
 			parts.push(call);
 		}
 	}
@@ -276,6 +290,29 @@ function buildAssistantMessage(
 		stopReason: "stop",
 		timestamp: now,
 	};
+}
+
+/**
+ * Stamp the replayed tool-call turns that carry a Gemini signature as `model`'s own: they came from this gateway
+ * model, and a turn labeled as a foreign model loses its signature in `transformMessages`. Native Gemini
+ * transports replay the raw signature; every other transport keeps the stored envelope.
+ */
+export function adoptReplayedGeminiSignatures(context: Context, model: Model): void {
+	const nativeGemini =
+		model.api === "google-generative-ai" || model.api === "google-vertex" || model.api === "google-gemini-cli";
+	for (const message of context.messages) {
+		if (message.role !== "assistant") continue;
+		if (!message.content.some(block => block.type === "toolCall" && block.thoughtSignature)) continue;
+		message.provider = model.provider;
+		message.api = model.api;
+		message.model = model.id;
+		if (!nativeGemini) continue;
+		for (const block of message.content) {
+			if (block.type === "toolCall" && block.thoughtSignature) {
+				block.thoughtSignature = rawGeminiToolCallSignature(block.thoughtSignature);
+			}
+		}
+	}
 }
 
 function pushToolResultMessages(
@@ -374,11 +411,15 @@ export function encodeResponse(message: AssistantMessage, requestedModelId: stri
 		responseMessage.reasoning_content = reasoning;
 	}
 	if (toolCalls.length > 0) {
-		responseMessage.tool_calls = toolCalls.map(tc => ({
-			id: tc.id,
-			type: "function",
-			function: { name: tc.name, arguments: stringifyArgs(tc.arguments) },
-		}));
+		responseMessage.tool_calls = toolCalls.map(tc => {
+			const extraContent = geminiToolCallExtraContent(tc.thoughtSignature);
+			return {
+				id: tc.id,
+				type: "function",
+				function: { name: tc.name, arguments: stringifyArgs(tc.arguments) },
+				...(extraContent ? { extra_content: extraContent } : {}),
+			};
+		});
 	}
 
 	return {
@@ -468,6 +509,9 @@ function makeId(): string {
 	return `chatcmpl-${randomUUID()}`;
 }
 
+const STREAM_KEEPALIVE_INTERVAL_MS = 15_000;
+const SSE_KEEPALIVE = ": keepalive\n\n";
+
 export function encodeStream(
 	events: AssistantMessageEventStream,
 	requestedModelId: string,
@@ -483,6 +527,13 @@ export function encodeStream(
 		cancelled = true;
 	};
 	control?.signal?.addEventListener("abort", markCancelled, { once: true });
+	let keepaliveTimer: NodeJS.Timeout | undefined;
+	const stopKeepalive = () => {
+		if (keepaliveTimer !== undefined) {
+			clearInterval(keepaliveTimer);
+			keepaliveTimer = undefined;
+		}
+	};
 
 	const baseChunk = (delta: Record<string, unknown>, finishReason: string | null) => ({
 		id,
@@ -514,10 +565,26 @@ export function encodeStream(
 		async start(controller) {
 			const toolIndexByContentIndex = new Map<number, number>();
 
-			const sentToolMeta = new Map<number, { id: string; name: string; hasArgumentBytes: boolean }>();
+			const sentToolMeta = new Map<
+				number,
+				{ id: string; name: string; hasArgumentBytes: boolean; signed: boolean }
+			>();
 			let nextToolIndex = 0;
 			let hasToolCalls = false;
 			let finishReason: string = "stop";
+
+			keepaliveTimer = setInterval(() => {
+				try {
+					if (cancelled) {
+						stopKeepalive();
+						return;
+					}
+					controller.enqueue(encoder.encode(SSE_KEEPALIVE));
+				} catch {
+					// Controller already closed/errored (client gone); stop the timer.
+					stopKeepalive();
+				}
+			}, STREAM_KEEPALIVE_INTERVAL_MS);
 
 			try {
 				if (cancelled) {
@@ -548,7 +615,13 @@ export function encodeStream(
 							toolIndexByContentIndex.set(event.contentIndex, idx);
 							const partial = event.partial.content[event.contentIndex];
 							const call = partial && partial.type === "toolCall" ? partial : undefined;
-							sentToolMeta.set(idx, { id: call?.id ?? "", name: call?.name ?? "", hasArgumentBytes: false });
+							sentToolMeta.set(idx, {
+								id: call?.id ?? "",
+								name: call?.name ?? "",
+								hasArgumentBytes: false,
+								signed: Boolean(call?.thoughtSignature),
+							});
+							const extraContent = geminiToolCallExtraContent(call?.thoughtSignature);
 							writeSse(
 								controller,
 								baseChunk(
@@ -559,6 +632,7 @@ export function encodeStream(
 												id: call?.id ?? "",
 												type: "function",
 												function: { name: call?.name ?? "", arguments: "" },
+												...(extraContent ? { extra_content: extraContent } : {}),
 											},
 										],
 									},
@@ -596,7 +670,15 @@ export function encodeStream(
 							const correctArguments = sent.hasArgumentBytes
 								? undefined
 								: stringifyArgs(event.toolCall.arguments);
-							if (correctId !== undefined || correctName !== undefined || correctArguments !== undefined) {
+							const extraContent = sent.signed
+								? undefined
+								: geminiToolCallExtraContent(event.toolCall.thoughtSignature);
+							if (
+								correctId !== undefined ||
+								correctName !== undefined ||
+								correctArguments !== undefined ||
+								extraContent !== undefined
+							) {
 								writeSse(
 									controller,
 									baseChunk(
@@ -604,6 +686,7 @@ export function encodeStream(
 											tool_calls: [
 												{
 													index: idx,
+													...(extraContent ? { extra_content: extraContent } : {}),
 													...(correctId !== undefined ? { id: correctId } : {}),
 													...(correctName !== undefined || correctArguments !== undefined
 														? {
@@ -664,11 +747,13 @@ export function encodeStream(
 					controller.close();
 				}
 			} finally {
+				stopKeepalive();
 				control?.signal?.removeEventListener("abort", markCancelled);
 			}
 		},
 		cancel(reason) {
 			cancelled = true;
+			stopKeepalive();
 			control?.signal?.removeEventListener("abort", markCancelled);
 			control?.onCancel?.(reason);
 		},

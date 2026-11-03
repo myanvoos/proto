@@ -1,7 +1,3 @@
-
-
-
-
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
 use uucore::checksum::AlgoKind;
@@ -10,7 +6,6 @@ use crate::{
 	cksum,
 	host::{Host, Utility, matches_parser, util},
 };
-
 
 pub(crate) struct Md5sum {
 	matches: ArgMatches,
@@ -31,9 +26,6 @@ fn app() -> clap::Command {
 	cksum::command(Md5sum::NAME, false)
 }
 
-
 pub(crate) fn md5sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Md5sum, SE>()
 }
-
-

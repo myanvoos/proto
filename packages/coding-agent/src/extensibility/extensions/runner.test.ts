@@ -194,6 +194,7 @@ test("cancelling a side request releases a stalled provider hook without quarant
 			onResponse: (response, model, signal) => runner.emitAfterProviderResponse(response, model, signal),
 			onSseEvent: undefined,
 			obfuscator: undefined,
+			runToolCallIds: () => new Set(),
 		});
 		const controller = new AbortController();
 		const options = boundary.prepareSimpleStreamOptions({ signal: controller.signal });
@@ -214,4 +215,53 @@ test("cancelling a side request releases a stalled provider hook without quarant
 			held.resolve(undefined);
 		}
 	}
+});
+
+test("session stop preserves continuation feedback from every handler", async () => {
+	const runner = makeRunner(
+		makeExtension({
+			session_stop: [
+				async () => ({ continue: true, reason: "first feedback" }),
+				async () => ({ continue: true, additionalContext: "second feedback" }),
+			],
+		}),
+	);
+	const result = await runner.emit({
+		type: "session_stop",
+		messages: [],
+		turn_id: 1,
+		session_id: "test",
+		stop_hook_active: false,
+		signal: new AbortController().signal,
+	});
+	expect(result?.continue).toBe(true);
+	expect(result?.additionalContext).toContain("first feedback");
+	expect(result?.additionalContext).toContain("second feedback");
+});
+
+test("a blocking stop handler takes precedence over previously accumulated continuation feedback", async () => {
+	let ranAfterBlock = false;
+	const runner = makeRunner(
+		makeExtension({
+			session_stop: [
+				async () => ({ continue: true, reason: "continue first" }),
+				async () => ({ decision: "block", reason: "operator gate" }),
+				async () => {
+					ranAfterBlock = true;
+					return { continue: true, reason: "never run" };
+				},
+			],
+		}),
+	);
+	const result = await runner.emit({
+		type: "session_stop",
+		messages: [],
+		turn_id: 1,
+		session_id: "test",
+		stop_hook_active: false,
+		signal: new AbortController().signal,
+	});
+	expect(result?.decision).toBe("block");
+	expect(result?.reason).toBe("operator gate");
+	expect(ranAfterBlock).toBe(false);
 });

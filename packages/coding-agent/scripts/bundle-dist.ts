@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { buildJsKernel } from "../src/eval/js/node-runtime";
 import { buildDocsIndexPayload } from "./generate-docs-index";
+import { createJsonParsePlugin } from "./json-parse-plugin";
 
 const packageDir = path.join(import.meta.dir, "..");
 const shebang = "#!/usr/bin/env bun\n";
@@ -49,6 +50,7 @@ async function cleanBundleOutputs(outDir: string): Promise<void> {
 					entry === "docs-index.generated.txt" ||
 					entry.endsWith(".node") ||
 					entry.endsWith(".js.map") ||
+					/\.json-[^/]+\.zst$/.test(entry) ||
 					(entry.startsWith("chunk-") && entry.endsWith(".js")) ||
 					(entry.startsWith("CHANGELOG-") && entry.endsWith(".md")) ||
 					legacyHtmlExportAssetPattern.test(entry),
@@ -70,6 +72,7 @@ export async function bundleCodingAgent(outDir = path.join(packageDir, "dist")):
 		splitting: true,
 		naming: { chunk: "template-split-[hash].[ext]" },
 		external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
+		plugins: [createJsonParsePlugin()],
 		define: {
 			"process.env.PI_BUNDLED": JSON.stringify("true"),
 			"process.env.PI_DOCS_EMBED": JSON.stringify(docsPayload.payload),

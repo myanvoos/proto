@@ -80,3 +80,8 @@ test("thinkingLoopDetail ignores unrelated failures", () => {
 	expect(thinkingLoopDetail("500 upstream exploded (type=server_error)")).toBeUndefined();
 	expect(thinkingLoopDetail(undefined)).toBeUndefined();
 });
+
+test("spaced punctuation runaways are caught without flagging digit padding", () => {
+	expect(detect("?! ".repeat(600), 17)).toMatch(/repeated an exact/);
+	expect(detect("00 ".repeat(600), 17)).toBeNull();
+});

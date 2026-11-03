@@ -7,33 +7,25 @@ use std::{
 use brush_core::{ExecutionResult, builtins, error, history};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct FcCommand {
-
 	#[arg(short = 'l')]
 	list: bool,
-
 
 	#[arg(short = 'n', requires = "list")]
 	no_line_numbers: bool,
 
-
 	#[arg(short = 'r')]
 	reverse: bool,
-
 
 	#[arg(short = 's')]
 	substitute: bool,
 
-
 	#[arg(short = 'e', value_name = "ENAME")]
 	editor: Option<String>,
 
-
 	#[arg(value_name = "FIRST", allow_hyphen_values = true)]
 	first: Option<String>,
-
 
 	#[arg(value_name = "LAST", allow_hyphen_values = true)]
 	last: Option<String>,
@@ -70,7 +62,6 @@ impl FcCommand {
 
 		let (first_idx, last_idx, reverse) = self.resolve_range(history)?;
 
-
 		let indices: Vec<usize> = if reverse {
 			(first_idx..=last_idx).rev().collect()
 		} else {
@@ -80,10 +71,8 @@ impl FcCommand {
 		for idx in indices {
 			if let Some(item) = history.get(idx) {
 				if self.no_line_numbers {
-
 					writeln!(context.stdout(), "\t {}", item.command_line)?;
 				} else {
-
 					writeln!(context.stdout(), "{}\t {}", idx + 1, item.command_line)?;
 				}
 			}
@@ -122,11 +111,8 @@ impl FcCommand {
 			let temp_file = FcTempFile::create()?;
 			fs::write(temp_file.path(), commands)?;
 
-			let edit_cmd = format!(
-				"{} {}",
-				editor.as_deref().unwrap_or("vi"),
-				shell_quote_path(temp_file.path())
-			);
+			let edit_cmd =
+				format!("{} {}", editor.as_deref().unwrap_or("vi"), shell_quote_path(temp_file.path()));
 			let source_info = brush_core::SourceInfo::from("(fc editor)");
 			let edit_result = context
 				.shell
@@ -191,27 +177,21 @@ impl FcCommand {
 			.history()
 			.ok_or_else(|| brush_core::Error::from(brush_core::ErrorKind::HistoryNotEnabled))?;
 
-
 		let (pattern, replacement) = self
 			.first
 			.as_ref()
 			.and_then(|s| s.split_once('='))
 			.map_or((None, None), |(p, r)| (Some(p), Some(r)));
 
-
 		let cmd_spec = if pattern.is_some() {
-
 			self.last.as_deref()
 		} else {
-
 			self.first.as_deref()
 		};
-
 
 		let cmd_line = if let Some(spec) = cmd_spec {
 			Self::find_command_by_specifier(history, spec)?
 		} else {
-
 			let effective_count = effective_history_count(history);
 			history
 				.get(effective_count.saturating_sub(1))
@@ -219,18 +199,13 @@ impl FcCommand {
 				.ok_or_else(|| brush_core::Error::from(error::ErrorKind::HistoryItemNotFound))?
 		};
 
-
 		let final_cmd = if let (Some(pat), Some(rep)) = (pattern, replacement) {
 			cmd_line.replace(pat, rep)
 		} else {
 			cmd_line
 		};
 
-
 		writeln!(context.stderr(), "{final_cmd}")?;
-
-
-
 
 		let history_mut = context
 			.shell
@@ -240,12 +215,10 @@ impl FcCommand {
 
 		let source_info = brush_core::SourceInfo::from("(history)");
 
-
 		let result = context
 			.shell
 			.run_string(final_cmd.clone(), &source_info, &context.params)
 			.await?;
-
 
 		context.shell.add_to_history(&final_cmd)?;
 
@@ -258,7 +231,6 @@ impl FcCommand {
 	) -> Result<(usize, usize, bool), brush_core::Error> {
 		let effective_count = effective_history_count(history);
 		let max_idx = effective_count.saturating_sub(1);
-
 
 		let first_idx = self
 			.first
@@ -273,7 +245,6 @@ impl FcCommand {
 				}
 			});
 
-
 		let default_last = if self.list { max_idx } else { first_idx };
 		let last_idx = self
 			.last
@@ -282,30 +253,17 @@ impl FcCommand {
 			.transpose()?
 			.unwrap_or(default_last);
 
-
 		let (first_idx, last_idx, force_reverse) = if first_idx > last_idx {
 			(last_idx, first_idx, true)
 		} else {
 			(first_idx, last_idx, false)
 		};
 
-
 		Ok((first_idx.min(max_idx), last_idx.min(max_idx), force_reverse || self.reverse))
 	}
 
-
-
-
-
-
-
-
-
 	fn resolve_position(history: &history::History, spec: &str) -> Result<usize, brush_core::Error> {
-
-
 		let Ok(num) = spec.parse::<i64>() else {
-
 			return Self::find_command_by_prefix(history, spec);
 		};
 
@@ -314,22 +272,12 @@ impl FcCommand {
 		#[expect(clippy::cast_sign_loss)]
 		#[expect(clippy::cast_possible_truncation)]
 		let result = match num.cmp(&0) {
-			std::cmp::Ordering::Equal => {
-
-				effective_count.saturating_sub(1)
-			},
+			std::cmp::Ordering::Equal => effective_count.saturating_sub(1),
 			std::cmp::Ordering::Greater => {
-
 				let idx = (num - 1) as usize;
-				if idx < effective_count {
-					idx
-				} else {
-
-					0
-				}
+				if idx < effective_count { idx } else { 0 }
 			},
 			std::cmp::Ordering::Less => {
-
 				let offset = (-num) as usize;
 				effective_count.saturating_sub(offset)
 			},
@@ -337,14 +285,6 @@ impl FcCommand {
 
 		Ok(result)
 	}
-
-
-
-
-
-
-
-
 
 	fn find_command_by_specifier(
 		history: &history::History,
@@ -357,20 +297,10 @@ impl FcCommand {
 			.ok_or_else(|| brush_core::Error::from(error::ErrorKind::HistoryItemNotFound))
 	}
 
-
-
-
-
-
-
-
-
 	fn find_command_by_prefix(
 		history: &history::History,
 		prefix: &str,
 	) -> Result<usize, brush_core::Error> {
-
-
 		let effective_count = effective_history_count(history);
 
 		for idx in (0..effective_count).rev() {
@@ -403,11 +333,13 @@ impl FcTempFile {
 			}
 		}
 
-		Err(std::io::Error::new(
-			std::io::ErrorKind::AlreadyExists,
-			"failed to create a unique fc temporary file",
+		Err(
+			std::io::Error::new(
+				std::io::ErrorKind::AlreadyExists,
+				"failed to create a unique fc temporary file",
+			)
+			.into(),
 		)
-		.into())
 	}
 
 	fn path(&self) -> &Path {
@@ -433,7 +365,6 @@ fn shell_quote_path(path: &Path) -> String {
 	quoted.push('\'');
 	quoted
 }
-
 
 fn effective_history_count(history: &history::History) -> usize {
 	history.count().saturating_sub(1)

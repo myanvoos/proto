@@ -102,6 +102,15 @@ describe("InteractiveMode failed teardown escape", () => {
 		expect(disposeSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("exits normally when Ctrl-D shutdown reaches an extension's guarded process.exit", async () => {
+		disposeSpy.mockResolvedValueOnce(undefined);
+		quitSpy.mockRejectedValueOnce(new Error("process.exit is guarded"));
+		await mode.shutdown();
+		expect(quitSpy).toHaveBeenCalledWith(0);
+		expect(exitSpy).toHaveBeenCalledWith(0);
+		expect(showErrorSpy).not.toHaveBeenCalled();
+	});
+
 	it("falls back to the native exit when guarded quit rejects", async () => {
 		await mode.shutdown();
 		quitSpy.mockRejectedValueOnce(new Error("process.exit is guarded"));

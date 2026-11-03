@@ -1,6 +1,6 @@
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { configHelp as commandHelp } from "../cli/command-help";
-import { type ConfigAction, type ConfigCommandArgs, runConfigCommand } from "../cli/config-cli";
+import { type ConfigAction, type ConfigCommandArgs, type ConfigScope, runConfigCommand } from "../cli/config-cli";
 import { initTheme } from "../modes/theme/theme";
 
 export default class Config extends Command {
@@ -20,6 +20,7 @@ export default class Config extends Command {
 			value,
 			flags: {
 				json: flags.json,
+				scope: flags.scope as ConfigScope | undefined,
 				config: flags.config,
 			},
 		};

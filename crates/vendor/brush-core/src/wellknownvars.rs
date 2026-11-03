@@ -15,22 +15,13 @@ const BASH_MACHINE: &str = "unknown";
 
 const DEFAULT_LINENO: usize = 1;
 
-
-
-
-
-
-
 pub(crate) fn inherit_env_vars(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 ) -> Result<(), error::Error> {
 	for (k, v) in sys::env::get_host_env_vars() {
-
 		if let Some(func_name) = k.strip_prefix("BASH_FUNC_")
 			&& let Some(func_name) = func_name.strip_suffix("%%")
 		{
-
-
 			if shell.define_func_from_str(func_name, v.as_str()).is_ok()
 				&& let Some(func) = shell.func_mut(func_name)
 			{
@@ -39,7 +30,6 @@ pub(crate) fn inherit_env_vars(
 
 			continue;
 		}
-
 
 		if k == "OLDPWD" {
 			continue;
@@ -62,7 +52,6 @@ pub(crate) fn init_well_known_vars(
 		.env_mut()
 		.set_global("BRUSH_VERSION", ShellVariable::new(shell_version.unwrap_or_default()))?;
 
-
 	if let Some(shell_name) = shell.current_shell_name().map(|s| s.to_string()) {
 		shell
 			.env_mut()
@@ -71,7 +60,6 @@ pub(crate) fn init_well_known_vars(
 		shell.update_last_arg_variable(Some(shell_name));
 	}
 
-
 	let mut bashopts_var = ShellVariable::new(ShellValue::Dynamic {
 		getter: |shell| shell.options().shopt_optstr().into(),
 		setter: |_| (),
@@ -79,14 +67,12 @@ pub(crate) fn init_well_known_vars(
 	bashopts_var.set_readonly();
 	shell.env_mut().set_global("BASHOPTS", bashopts_var)?;
 
-
 	#[cfg(not(target_family = "wasm"))]
 	{
 		let mut bashpid_var = ShellVariable::new(ShellValue::String(std::process::id().to_string()));
 		bashpid_var.treat_as_integer();
 		shell.env_mut().set_global("BASHPID", bashpid_var)?;
 	}
-
 
 	shell.env_mut().set_global(
 		"BASH_ALIASES",
@@ -107,7 +93,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	shell.env_mut().set_global(
 		"BASH_ARGC",
 		ShellVariable::new(ShellValue::Dynamic {
@@ -116,7 +101,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	shell.env_mut().set_global(
 		"BASH_ARGV",
 		ShellVariable::new(ShellValue::Dynamic {
@@ -124,7 +108,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
 
 	shell.env_mut().set_global(
 		"BASH_ARGV0",
@@ -137,7 +120,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
 
 	shell.env_mut().set_global(
 		"BASH_CMDS",
@@ -152,10 +134,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
-
-
-
 	shell.env_mut().set_global(
 		"BASH_LINENO",
 		ShellVariable::new(ShellValue::Dynamic {
@@ -163,7 +141,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
 
 	shell.env_mut().set_global(
 		"BASH_SOURCE",
@@ -173,7 +150,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	shell.env_mut().set_global(
 		"BASH_SUBSHELL",
 		ShellVariable::new(ShellValue::Dynamic {
@@ -181,7 +157,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
 
 	let mut bash_versinfo_var = ShellVariable::new(ShellValue::indexed_array_from_strs(
 		[
@@ -199,16 +174,12 @@ pub(crate) fn init_well_known_vars(
 		.env_mut()
 		.set_global("BASH_VERSINFO", bash_versinfo_var)?;
 
-
-
-
 	shell.env_mut().set_global(
 		"BASH_VERSION",
 		ShellVariable::new(std::format!(
 			"{BASH_MAJOR}.{BASH_MINOR}.{BASH_PATCH}({BASH_BUILD})-{BASH_RELEASE}"
 		)),
 	)?;
-
 
 	let mut default_comp_wordbreaks = String::from(" \t\n\"\'><=;|&(:");
 	if shell.options().enable_hostname_completion {
@@ -218,7 +189,6 @@ pub(crate) fn init_well_known_vars(
 	shell
 		.env_mut()
 		.set_global("COMP_WORDBREAKS", ShellVariable::new(default_comp_wordbreaks))?;
-
 
 	shell.env_mut().set_global(
 		"DIRSTACK",
@@ -235,7 +205,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	shell.env_mut().set_global(
 		"EPOCHREALTIME",
 		ShellVariable::new(ShellValue::Dynamic {
@@ -249,7 +218,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
 
 	shell.env_mut().set_global(
 		"EPOCHSECONDS",
@@ -265,13 +233,11 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	if let Ok(euid) = sys::users::get_effective_uid() {
 		let mut euid_var = ShellVariable::new(ShellValue::String(format!("{euid}")));
 		euid_var.treat_as_integer().set_readonly();
 		shell.env_mut().set_global("EUID", euid_var)?;
 	}
-
 
 	shell.env_mut().set_global(
 		"FUNCNAME",
@@ -280,9 +246,6 @@ pub(crate) fn init_well_known_vars(
 			setter: |_| (),
 		}),
 	)?;
-
-
-
 
 	shell.env_mut().set_global(
 		"GROUPS",
@@ -295,7 +258,6 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	let mut histcmd_var = ShellVariable::new(ShellValue::Dynamic {
 		getter: |shell| {
 			shell
@@ -307,7 +269,6 @@ pub(crate) fn init_well_known_vars(
 	histcmd_var.treat_as_integer();
 	shell.env_mut().set_global("HISTCMD", histcmd_var)?;
 
-
 	if !shell.env().is_set("HISTFILE")
 		&& let Some(home_dir) = shell.home_dir()
 	{
@@ -317,7 +278,6 @@ pub(crate) fn init_well_known_vars(
 			ShellVariable::new(ShellValue::String(histfile.to_string_lossy().to_string())),
 		)?;
 	}
-
 
 	shell.env_mut().set_global(
 		"HOSTNAME",
@@ -329,16 +289,13 @@ pub(crate) fn init_well_known_vars(
 		),
 	)?;
 
-
 	shell
 		.env_mut()
 		.set_global("HOSTTYPE", ShellVariable::new(std::env::consts::ARCH.to_string()))?;
 
-
 	shell
 		.env_mut()
 		.set_global("IFS", ShellVariable::new(" \t\n"))?;
-
 
 	shell.env_mut().set_global(
 		"LINENO",
@@ -348,11 +305,9 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	shell
 		.env_mut()
 		.set_global("MACHTYPE", ShellVariable::new(BASH_MACHINE))?;
-
 
 	if !shell.env().is_set("OLDPWD") {
 		let mut oldpwd_var =
@@ -361,21 +316,13 @@ pub(crate) fn init_well_known_vars(
 		shell.env_mut().set_global("OLDPWD", oldpwd_var)?;
 	}
 
-
 	shell
 		.env_mut()
 		.set_global("OPTERR", ShellVariable::new("1"))?;
 
-
 	let mut optind_var = ShellVariable::new("1");
 	optind_var.treat_as_integer();
 	shell.env_mut().set_global("OPTIND", optind_var)?;
-
-
-
-
-
-
 
 	let os_type = match std::env::consts::OS {
 		"linux" => "linux-gnu",
@@ -392,7 +339,6 @@ pub(crate) fn init_well_known_vars(
 		.env_mut()
 		.set_global("OSTYPE", ShellVariable::new(os_type))?;
 
-
 	if !shell.env().is_set("PATH") {
 		let default_path_str = std::env::join_paths(sys::fs::get_default_executable_search_paths())
 			.unwrap_or_else(|_| PathBuf::from("").into());
@@ -400,10 +346,6 @@ pub(crate) fn init_well_known_vars(
 			.env_mut()
 			.set_global("PATH", ShellVariable::new(default_path_str))?;
 	}
-
-
-
-
 
 	shell.env_mut().set_global(
 		"PIPESTATUS",
@@ -417,19 +359,16 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	if let Some(ppid) = sys::terminal::get_parent_process_id() {
 		let mut ppid_var = ShellVariable::new(ppid.to_string());
 		ppid_var.treat_as_integer().set_readonly();
 		shell.env_mut().set_global("PPID", ppid_var)?;
 	}
 
-
 	let mut random_var =
 		ShellVariable::new(ShellValue::Dynamic { getter: get_random_value, setter: |_| () });
 	random_var.treat_as_integer();
 	shell.env_mut().set_global("RANDOM", random_var)?;
-
 
 	shell.env_mut().set_global(
 		"SECONDS",
@@ -447,17 +386,13 @@ pub(crate) fn init_well_known_vars(
 		}),
 	)?;
 
-
 	if !shell.env().is_set("SHELL") {
-
-
 		if let Some(default_shell) = sys::users::get_current_user_default_shell() {
 			shell
 				.env_mut()
 				.set_global("SHELL", ShellVariable::new(default_shell.to_string_lossy().to_string()))?;
 		}
 	}
-
 
 	let mut shellopts_var = ShellVariable::new(ShellValue::Dynamic {
 		getter: |shell| shell.options().seto_optstr().into(),
@@ -466,19 +401,16 @@ pub(crate) fn init_well_known_vars(
 	shellopts_var.set_readonly();
 	shell.env_mut().set_global("SHELLOPTS", shellopts_var)?;
 
-
 	let input_shlvl = shell.env_str("SHLVL").unwrap_or_else(|| "0".into());
 	let updated_shlvl = input_shlvl.as_ref().parse::<u32>().unwrap_or(0) + 1;
 	let mut shlvl_var = ShellVariable::new(updated_shlvl.to_string());
 	shlvl_var.export();
 	shell.env_mut().set_global("SHLVL", shlvl_var)?;
 
-
 	let mut random_var =
 		ShellVariable::new(ShellValue::Dynamic { getter: get_srandom_value, setter: |_| () });
 	random_var.treat_as_integer();
 	shell.env_mut().set_global("SRANDOM", random_var)?;
-
 
 	if shell.options().interactive {
 		if !shell.env().is_set("PS1") {
@@ -494,25 +426,16 @@ pub(crate) fn init_well_known_vars(
 		}
 	}
 
-
 	if !shell.env().is_set("PS4") {
 		shell
 			.env_mut()
 			.set_global("PS4", ShellVariable::new("+ "))?;
 	}
 
-
-
-
-
-
-
-
 	let pwd = shell.working_dir().to_string_lossy().to_string();
 	let mut pwd_var = ShellVariable::new(pwd);
 	pwd_var.export();
 	shell.env_mut().set_global("PWD", pwd_var)?;
-
 
 	if let Ok(uid) = sys::users::get_current_uid() {
 		let mut uid_var = ShellVariable::new(ShellValue::String(format!("{uid}")));
@@ -523,17 +446,12 @@ pub(crate) fn init_well_known_vars(
 	Ok(())
 }
 
-
-
 fn get_current_user_gids() -> Vec<u32> {
 	let mut groups = sys::users::get_user_group_ids().unwrap_or_default();
-
-
 
 	if let Ok(gid) = sys::users::get_effective_gid() {
 		if let Some(index) = groups.iter().position(|&g| g == gid) {
 			if index > 0 {
-
 				groups.remove(index);
 				groups.insert(0, gid);
 			}
@@ -563,13 +481,11 @@ fn get_funcname_value(shell: &dyn ShellState) -> variables::ShellValue {
 	if stack.iter_function_calls().next().is_none() {
 		ShellValue::Unset(variables::ShellValueUnsetType::IndexedArray)
 	} else {
-
 		stack
 			.iter()
 			.filter_map(|frame| match &frame.frame_type {
 				crate::callstack::FrameType::Function(func) => Some(func.function_name.as_str()),
 				crate::callstack::FrameType::Script(script) => {
-
 					if matches!(script.call_type, crate::callstack::ScriptCallType::Source) {
 						Some("source")
 					} else {
@@ -588,8 +504,6 @@ fn get_funcname_value(shell: &dyn ShellState) -> variables::ShellValue {
 
 fn get_bash_lineno_value(shell: &dyn ShellState) -> variables::ShellValue {
 	let stack = shell.call_stack();
-
-
 
 	if stack.iter_function_calls().next().is_none() {
 		ShellValue::Unset(variables::ShellValueUnsetType::IndexedArray)
@@ -631,8 +545,6 @@ fn get_bash_source_value(shell: &dyn ShellState) -> variables::ShellValue {
 			.map_or_else(Vec::new, |frame| vec![frame.source_info.source.clone()])
 			.into()
 	} else {
-
-
 		stack
 			.iter()
 			.filter_map(|frame| match &frame.frame_type {
@@ -640,7 +552,6 @@ fn get_bash_source_value(shell: &dyn ShellState) -> variables::ShellValue {
 					Some(func.function.source().source.clone())
 				},
 				crate::callstack::FrameType::Script(script) => {
-
 					if matches!(script.call_type, crate::callstack::ScriptCallType::Source) {
 						Some(script.source_info.source.clone())
 					} else {
@@ -693,8 +604,6 @@ fn get_bash_argv_value(shell: &dyn ShellState) -> variables::ShellValue {
 		};
 
 		if include {
-
-
 			for arg in frame.args.iter().rev() {
 				argv.push(arg.clone());
 			}

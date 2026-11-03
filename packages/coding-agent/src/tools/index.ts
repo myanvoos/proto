@@ -106,6 +106,8 @@ export interface ToolSession {
 	getCredentialSourceSessionId?: () => string | undefined;
 
 	contextFiles?: ContextFileEntry[];
+	noContextFiles?: boolean;
+	getPromptCacheKey?: () => string | undefined;
 
 	workspaceTree?: WorkspaceTree;
 
@@ -150,6 +152,8 @@ export interface ToolSession {
 		| "ensureOnDisk"
 		| "flush"
 		| "getBranch"
+		| "getArtifactContent"
+		| "getSessionId"
 		| "getEntries"
 		| "getCustomEntries"
 		| "iterateCustomEntries"

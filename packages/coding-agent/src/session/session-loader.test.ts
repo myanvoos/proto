@@ -220,3 +220,33 @@ test("blob admission estimates expansion without loading blobs and rejects unkno
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("an image reference discovered later inside a replay blob reuses the load's completed read", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-load-blob-cache-"));
+	try {
+		const store = new BlobStore(dir);
+		const image = store.putSync(Buffer.from("deduplicated image"));
+		const replay = store.putSync(
+			Buffer.from(JSON.stringify({ images: [{ data: image.ref, mimeType: "image/png" }] })),
+		);
+		const entry: FileEntry = {
+			type: "custom",
+			id: "image-cache",
+			parentId: null,
+			timestamp: "now",
+			customType: "test",
+			data: {
+				images: [{ data: image.ref, mimeType: "image/png" }],
+				replay: { __protoReplayBlob: replay.ref },
+			},
+		};
+		const reads = spyOn(store, "get");
+		await resolveBlobRefsInEntries([entry], store);
+		expect(reads.mock.calls.filter(([hash]) => hash === image.hash)).toHaveLength(1);
+		expect(entry.data).toMatchObject({
+			replay: { images: [{ data: Buffer.from("deduplicated image").toString("base64") }] },
+		});
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

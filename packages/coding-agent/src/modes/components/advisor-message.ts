@@ -1,9 +1,11 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
+import { isSettingsInitialized, settings } from "../../config/settings";
 import {
 	createCachedComponent,
 	formatBadge,
+	formatExpandHint,
 	replaceTabs,
 	type ToolUIColor,
 	wrapTextWithAnsi,
@@ -51,7 +53,7 @@ export function createAdvisorMessageCard(
 	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
 	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} blocker${blockers === 1 ? "" : "s"}`));
 
-	return createCachedComponent(
+	const card = createCachedComponent(
 		getExpanded,
 		(width, expanded) => {
 			const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} Advisor`));
@@ -101,4 +103,33 @@ export function createAdvisorMessageCard(
 		},
 		{ paddingX: 1 },
 	);
+	let priorRows: readonly string[] | undefined;
+	let priorCap = -1;
+	let shown: readonly string[] = [];
+	return {
+		render(width) {
+			const lines = card.render(width);
+			const cap =
+				!getExpanded() && isSettingsInitialized()
+					? Math.max(0, Math.floor(settings.get("display.advisorCollapsedLines")))
+					: 0;
+			if (lines === priorRows && cap === priorCap) return shown;
+			priorRows = lines;
+			priorCap = cap;
+			shown =
+				cap > 0 && lines.length > cap + 1
+					? [...lines.slice(0, cap), truncateToWidth(uiTheme.fg("dim", ` … ${formatExpandHint(uiTheme)}`), width)]
+					: lines;
+			return shown;
+		},
+		invalidate() {
+			priorRows = undefined;
+			card.invalidate?.();
+		},
+		releaseRenderCaches() {
+			priorRows = undefined;
+			shown = [];
+			card.releaseRenderCaches?.();
+		},
+	};
 }

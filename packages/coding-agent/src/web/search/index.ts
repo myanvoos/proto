@@ -14,6 +14,7 @@ import { formatAge } from "../../tools/render-utils";
 import { throwIfAborted } from "../../tools/tool-errors";
 import type { SearchProvider, SearchProviderCandidate } from "./provider";
 import * as searchProvider from "./provider";
+import { targetsX, xSearchAvailable } from "./providers/xai";
 import { applyQueryConstraints, getQueryConstraintLabels, parseSearchQuery, type StructuredQuery } from "./query";
 import {
 	formatConstraintLine,
@@ -48,9 +49,24 @@ export interface SearchQueryParams extends SearchToolParams {
 	provider?: SearchProviderId | "auto";
 }
 
-export function formatForLLM(response: SearchResponse): string {
+export function formatForLLM(
+	response: SearchResponse,
+	failures: readonly { provider: Pick<SearchProvider, "id" | "label">; error: unknown }[] = [],
+): string {
 	const normalized = mergeSearchReferences(response);
 	const parts: string[] = [];
+	if (failures.length) {
+		const notes = failures.slice(0, 3).map(failure => {
+			const message = searchProvider
+				.formatSearchProviderFailure(failure.error, failure.provider)
+				.replace(/\s+/g, " ")
+				.trim();
+			return `${failure.provider.label}: ${truncate(message, 180)}`;
+		});
+		parts.push(
+			`Search fallback: ${notes.join("; ")}${failures.length > 3 ? `; +${failures.length - 3} more` : ""}. Served by ${response.provider}.`,
+		);
+	}
 	const hasReferences = normalized.sources.length > 0 || (normalized.citations?.length ?? 0) > 0;
 	const answer = normalized.answer
 		? hasReferences
@@ -175,6 +191,8 @@ async function executeSearch(
 	}
 
 	const parsedQuery = parseSearchQuery(params.query);
+	if ((!explicitProvider || explicitProvider === "auto") && targetsX(parsedQuery))
+		candidates.sort((a, b) => Number(b.id === "xai") - Number(a.id === "xai"));
 
 	let antigravityEndpointMode: "auto" | "production" | "sandbox" | undefined;
 	try {
@@ -278,7 +296,7 @@ async function executeSearch(
 				throw new SearchProviderError(provider.id, `${provider.label} returned no renderable search content.`, 204);
 			}
 
-			const text = formatForLLM(finalResponse);
+			const text = formatForLLM(finalResponse, failures);
 
 			return {
 				content: [{ type: "text" as const, text }],
@@ -360,7 +378,12 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 
 	constructor(session: ToolSession) {
 		this.#session = session;
-		this.description = prompt.render(webSearchDescription);
+		this.description = prompt.render(webSearchDescription, {
+			xSearch:
+				!searchProvider.isSearchProviderExcluded("xai") &&
+				!!session.authStorage &&
+				xSearchAvailable(session.authStorage),
+		});
 	}
 
 	async execute(

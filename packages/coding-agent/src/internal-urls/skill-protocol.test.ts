@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -60,5 +60,39 @@ test("ordinary and encoded skill paths resolve after exactly one decode", async 
 			expect(result.content).toBe(content);
 			expect(result.sourcePath).toBe(sourcePath);
 		}
+	});
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+test("a plugin upgrade deleting a skill after stat reloads the current instruction file once", async () => {
+	await withSkill(async (handler, skill) => {
+		const replacement = path.join(skill.baseDir, "new-entry.txt");
+		await Bun.write(replacement, "upgraded skill body");
+		const stat = fs.stat;
+		let removed = false;
+		spyOn(fs, "stat").mockImplementation(
+			new Proxy(stat, {
+				async apply(target, thisArg, args) {
+					const result = await Reflect.apply(target, thisArg, args);
+					if (!removed && args[0] === skill.filePath) {
+						removed = true;
+						await fs.unlink(skill.filePath);
+					}
+					return result;
+				},
+			}),
+		);
+		let reloads = 0;
+		const resource = await handler.resolve(parseInternalUrl("skill://demo"), {
+			skills: [skill],
+			reloadSkills: async () => {
+				reloads++;
+				return [{ ...skill, filePath: replacement }];
+			},
+		});
+		expect(resource.content).toBe("upgraded skill body");
+		expect(resource.sourcePath).toBe(replacement);
+		expect(reloads).toBe(1);
 	});
 });

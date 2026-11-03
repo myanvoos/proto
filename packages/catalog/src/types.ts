@@ -128,6 +128,9 @@ export type OpenAIReasoningDisableMode =
 export type OpenAIStreamMarkupHealingPattern = "kimi" | "dsml" | "qwen" | "thinking";
 
 export interface OpenAICompat {
+	/** Do not infer a reasoning dial when discovery explicitly advertises none. */
+	trustExplicitThinkingOnly?: boolean;
+
 	supportsStore?: boolean;
 
 	supportsDeveloperRole?: boolean;
@@ -225,6 +228,9 @@ export interface OpenAICompat {
 
 	supportsReasoningSummary?: boolean;
 
+	/** Per-model stored-response chaining; call options/environment keep precedence. */
+	statefulResponses?: boolean;
+
 	supportsSamplingParams?: boolean;
 
 	supportsPenaltyAndStopParams?: boolean;
@@ -256,6 +262,11 @@ export interface OpenAICompat {
 }
 
 export interface AnthropicCompat {
+	/** Explicit native off form for adaptive models that support it. */
+	disabledThinking?: "disabled";
+	maxImageDimension?: number;
+	maxImagePayloadBytes?: number;
+
 	streamIdleTimeoutMs?: number;
 
 	disableStrictTools?: boolean;
@@ -292,6 +303,9 @@ export interface AnthropicCompat {
 
 	replayUnsignedThinking?: boolean;
 
+	/** Pad thinking-less assistant turns only for explicitly configured strict replay validators. */
+	requiresThinkingPresence?: boolean;
+
 	requiresThinkingEnabled?: boolean;
 
 	escapeBuiltinToolNames?: boolean;
@@ -300,6 +314,9 @@ export interface AnthropicCompat {
 }
 
 export interface BedrockCompat {
+	/** Explicit native off form for adaptive models that support it. */
+	disabledThinking?: "disabled";
+	supportsThinkingBindingControls?: boolean;
 	promptCacheMode?: "none" | "automatic" | "explicit";
 
 	supportsLongPromptCacheRetention?: boolean;
@@ -315,6 +332,8 @@ export interface BedrockCompat {
 }
 
 export interface ResolvedBedrockCompat {
+	disabledThinking?: "disabled";
+	supportsThinkingBindingControls: boolean;
 	promptCacheMode: NonNullable<BedrockCompat["promptCacheMode"]>;
 	supportsLongPromptCacheRetention: boolean;
 	promptCacheMinimumTokens: number;
@@ -348,6 +367,8 @@ export interface VercelGatewayRouting {
 type ResolvedToolStrictMode = NonNullable<OpenAICompat["toolStrictMode"]> | "mixed";
 
 export interface ResolvedOpenAISharedCompat {
+	trustExplicitThinkingOnly: boolean;
+
 	supportsDeveloperRole: boolean;
 	supportsStrictMode: boolean;
 	supportsReasoningEffort: boolean;
@@ -409,11 +430,13 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 	Required<
 		Omit<
 			OpenAICompat,
+			| "trustExplicitThinkingOnly"
 			| "supportsDeveloperRole"
 			| "supportsReasoningEffort"
 			| "reasoningEffortMap"
 			| "supportsReasoningParams"
 			| "supportsReasoningSummary"
+			| "statefulResponses"
 			| "supportsSamplingParams"
 			| "supportsPenaltyAndStopParams"
 			| "thinkingFormat"
@@ -491,6 +514,7 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsObfuscationOptOut: boolean;
 
 	supportsReasoningSummary: boolean;
+	statefulResponses?: boolean;
 	/** `configuration_update` input items may change reasoning effort mid-conversation (GPT-6 Astra only; others 400). */
 	supportsConfigurationUpdate: boolean;
 	streamIdleTimeoutMs?: number;
@@ -501,7 +525,8 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 
 export type ResolvedOpenRouterCompat = ResolvedOpenAICompat & ResolvedOpenAIResponsesCompat;
 
-export type ResolvedAnthropicCompat = Required<Omit<AnthropicCompat, "streamIdleTimeoutMs">> & {
+export type ResolvedAnthropicCompat = Required<Omit<AnthropicCompat, "streamIdleTimeoutMs" | "disabledThinking">> & {
+	disabledThinking?: "disabled";
 	streamIdleTimeoutMs?: number;
 
 	officialEndpoint: boolean;
@@ -601,6 +626,7 @@ export interface ModelCost extends TokenCost {
 }
 
 export type ModelTokenizer =
+	| "cl100k"
 	| "claude-v3"
 	| "claude-v47"
 	| "claude-v5"
@@ -610,12 +636,21 @@ export type ModelTokenizer =
 	| "kimi-k2"
 	| "glm5";
 
+export interface AntigravityModelWireProfile {
+	modelEnum?: string;
+	maxOutputTokens?: number;
+	thinkingLevel?: "LOW" | "MEDIUM" | "HIGH";
+	thinkingBudget?: number;
+}
+
 export interface Model<TApi extends Api = Api> {
 	id: string;
 
 	requiresGlyphTokenization?: boolean;
 
 	requestModelId?: string;
+
+	antigravityWireProfiles?: Readonly<Record<string, AntigravityModelWireProfile>>;
 
 	reasoningMode?: "pro";
 	name: string;
@@ -628,6 +663,15 @@ export interface Model<TApi extends Api = Api> {
 	input: ("text" | "image" | "audio" | "video")[];
 
 	imageInputDecoder?: "stb";
+
+	/** Configured maximum images per request for custom endpoints. */
+	imageCountBudget?: number;
+
+	/** False when the host sends tool schemas outside the model-visible prompt. */
+	toolSchemasInContext?: boolean;
+
+	/** Account startup selection advertised by provider discovery. */
+	isProviderDefault?: boolean;
 
 	supportsTools?: boolean;
 
@@ -672,6 +716,9 @@ export interface Model<TApi extends Api = Api> {
 	 * provider publishes no per-model tier list.
 	 */
 	serviceTiers?: readonly string[];
+
+	/** Published token-cost multiplier for optional processing tiers. */
+	serviceTierCost?: Readonly<Partial<Record<"flex" | "priority" | "ultrafast", number>>>;
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
 

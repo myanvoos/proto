@@ -2,7 +2,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use pi_iso::{BackendKind, ChangeKind, Diff, FileChange, IsoError, IsolationBackend};
 
-use crate::js;
+use crate::{js, task};
 
 const ISO_UNAVAILABLE_PREFIX: &str = "ISO_UNAVAILABLE:";
 const ISO_UNAVAILABLE_WITH_LEADING_SPACE: &str = " ISO_UNAVAILABLE:";
@@ -65,30 +65,34 @@ pub const fn iso_backend() -> IsoBackendKind {
 }
 
 #[napi(catch_unwind)]
-pub fn iso_probe(kind: Option<IsoBackendKind>) -> IsoProbeResult {
-	let resolved = kind.map_or_else(BackendKind::native, from_napi_kind);
-	let backend = pi_iso::backend(resolved);
-	let probe = backend.probe();
-	IsoProbeResult {
-		available: probe.available,
-		reason:    probe.reason,
-		kind:      to_napi_kind(resolved),
-	}
+pub fn iso_probe(kind: Option<IsoBackendKind>) -> task::Promise<IsoProbeResult> {
+	task::blocking("iso_probe", (), move |_| {
+		let resolved = kind.map_or_else(BackendKind::native, from_napi_kind);
+		let backend = pi_iso::backend(resolved);
+		let probe = backend.probe();
+		Ok(IsoProbeResult {
+			available: probe.available,
+			reason:    probe.reason,
+			kind:      to_napi_kind(resolved),
+		})
+	})
 }
 
 #[napi(catch_unwind)]
-pub fn iso_resolve(preferred: Option<IsoBackendKind>) -> IsoResolveResult {
-	let resolution = pi_iso::resolve(preferred.map(from_napi_kind));
-	IsoResolveResult {
-		kind:       to_napi_kind(resolution.kind),
-		candidates: resolution
-			.candidates
-			.into_iter()
-			.map(to_napi_kind)
-			.collect(),
-		fell_back:  resolution.fell_back,
-		reason:     resolution.reason,
-	}
+pub fn iso_resolve(preferred: Option<IsoBackendKind>) -> task::Promise<IsoResolveResult> {
+	task::blocking("iso_resolve", (), move |_| {
+		let resolution = pi_iso::resolve(preferred.map(from_napi_kind));
+		Ok(IsoResolveResult {
+			kind:       to_napi_kind(resolution.kind),
+			candidates: resolution
+				.candidates
+				.into_iter()
+				.map(to_napi_kind)
+				.collect(),
+			fell_back:  resolution.fell_back,
+			reason:     resolution.reason,
+		})
+	})
 }
 
 #[napi]

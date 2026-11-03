@@ -50,6 +50,8 @@ export const handleNuGet: SpecialHandler = async (
 		const packageName = decodeURIComponent(match[1]);
 		const requestedVersion = match[2] ? decodeURIComponent(match[2]) : null;
 		const fetchedAt = new Date().toISOString();
+		const searchUrl = `https://api.nuget.org/v3/query?q=packageid:${encodeURIComponent(packageName)}&prerelease=true&take=1`;
+		const searchPromise = loadPage(searchUrl, { timeout: Math.min(timeout, 5), signal }).catch(() => null);
 
 		const apiUrl = `https://api.nuget.org/v3/registration5-gz-semver2/${packageName.toLowerCase()}/index.json`;
 		const result = await loadPage(apiUrl, { timeout, signal });
@@ -105,10 +107,9 @@ export const handleNuGet: SpecialHandler = async (
 		}
 
 		let totalDownloads: number | null = null;
-		const searchUrl = `https://api.nuget.org/v3/query?q=packageid:${encodeURIComponent(packageName)}&prerelease=true&take=1`;
-		const searchResult = await loadPage(searchUrl, { timeout: Math.min(timeout, 5), signal });
+		const searchResult = await searchPromise;
 
-		if (searchResult.ok) {
+		if (searchResult?.ok) {
 			const searchData = tryParseJson<{ data?: Array<{ totalDownloads?: number }> }>(searchResult.content);
 			if (searchData) totalDownloads = searchData.data?.[0]?.totalDownloads ?? null;
 		}

@@ -3,12 +3,10 @@ use std::borrow::Cow;
 use brush_core::{ExecutionResult, Shell, ShellValue, builtins, variables::ShellValueUnsetType};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct UnsetCommand {
 	#[clap(flatten)]
 	name_interpretation: UnsetNameInterpretation,
-
 
 	names: Vec<String>,
 }
@@ -16,14 +14,11 @@ pub(crate) struct UnsetCommand {
 #[derive(Parser)]
 #[clap(group = clap::ArgGroup::new("name-interpretation").multiple(false).required(false))]
 pub(crate) struct UnsetNameInterpretation {
-
 	#[arg(short = 'f', group = "name-interpretation")]
 	shell_functions: bool,
 
-
 	#[arg(short = 'v', group = "name-interpretation")]
 	shell_variables: bool,
-
 
 	#[arg(short = 'n', group = "name-interpretation")]
 	name_references: bool,
@@ -55,8 +50,6 @@ impl builtins::Command for UnsetCommand {
 		#[expect(clippy::needless_continue)]
 		for name in &self.names {
 			if unspecified || self.name_interpretation.shell_variables {
-
-
 				if let Ok(parameter) =
 					brush_parser::word::parse_parameter(name, &context.shell.parser_options())
 				{
@@ -80,7 +73,6 @@ impl builtins::Command for UnsetCommand {
 					}
 				}
 			}
-
 
 			if unspecified || self.name_interpretation.shell_functions {
 				if context.shell.undefine_func(name) {
@@ -113,13 +105,11 @@ fn unset_name_reference(
 	}
 }
 
-
 fn unset_array_index(
 	shell: &mut Shell<impl brush_core::ShellExtensions>,
 	name: &str,
 	index: &str,
 ) -> Result<bool, brush_core::Error> {
-
 	let is_assoc_array = if let Some((_, var)) = shell.env().get(name) {
 		matches!(
 			var.value(),
@@ -129,17 +119,13 @@ fn unset_array_index(
 		false
 	};
 
-
-
 	let index_to_use: Cow<'_, str> = if is_assoc_array {
 		index.into()
 	} else {
-
 		let index_as_expr = brush_parser::arithmetic::parse(index)?;
 		let evaluated_index = shell.eval_arithmetic(&index_as_expr)?;
 		evaluated_index.to_string().into()
 	};
-
 
 	shell.env_mut().unset_index(name, index_to_use.as_ref())
 }

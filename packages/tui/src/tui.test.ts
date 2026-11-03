@@ -397,7 +397,13 @@ const resized = tuiTerminal.writes.join("");
 void delayedCallback;
 console.log(JSON.stringify({ ids, transmits: [...resized.matchAll(/a=t,[^\\x1b]*i=(\\d+)/g)].map(match => Number(match[1])) }));
 `;
-	const env: Record<string, string | undefined> = { ...Bun.env, PI_NO_SYNC_OUTPUT: "1" };
+	const env: Record<string, string | undefined> = {
+		...Bun.env,
+		PI_NO_SYNC_OUTPUT: "1",
+		KITTY_WINDOW_ID: "test-window",
+		TERM_PROGRAM: "kitty",
+		TERM: "xterm-kitty",
+	};
 	for (const key of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "PI_TUI_SYNC_OUTPUT"]) {
 		delete env[key];
 	}

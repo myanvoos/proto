@@ -1,5 +1,3 @@
-
-
 use std::{
 	collections::{HashMap, HashSet},
 	fmt::Write as _,
@@ -26,7 +24,6 @@ enum TopSortKey {
 	Time,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum TopStat {
 	Pid,
@@ -51,7 +48,6 @@ enum TopStat {
 	#[value(alias = "comm")]
 	Command,
 }
-
 
 const DEFAULT_TOP_STATS: &[TopStat] = &[
 	TopStat::Pid,
@@ -84,7 +80,6 @@ impl TopStat {
 		}
 	}
 
-
 	fn width(self) -> usize {
 		match self {
 			Self::Pid => 7,
@@ -100,48 +95,38 @@ impl TopStat {
 	}
 }
 
-
 #[derive(Parser)]
 #[command(name = "top", version, about = "Display processes", disable_help_flag = false)]
 pub(crate) struct TopCommand {
-
 	#[arg(short = 'b', long)]
 	batch: bool,
-
 
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'l', long = "samples", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
 
-
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'n', long = "iterations", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
-
 
 	#[cfg(target_os = "macos")]
 	#[arg(short = 's', long = "delay", default_value_t = 1.0)]
 	delay: f64,
 
-
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'd', long = "delay", default_value_t = 3.0)]
 	delay: f64,
-
 
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'n', long = "rows")]
 	rows: Option<usize>,
 
-
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'r', long = "rows")]
 	rows: Option<usize>,
 
-
 	#[arg(short = 'p', long = "pid", value_delimiter = ',')]
 	pids: Vec<i32>,
-
 
 	#[arg(short = 'u', long = "user")]
 	user: Option<u32>,
@@ -151,10 +136,8 @@ pub(crate) struct TopCommand {
 	#[cfg_attr(not(target_os = "macos"), arg(default_value_t = TopSortKey::Cpu))]
 	sort: TopSortKey,
 
-
 	#[arg(short = 'c', long = "full-command")]
 	full_command: bool,
-
 
 	#[arg(long = "stats", value_enum, value_delimiter = ',', ignore_case = true)]
 	stats: Vec<TopStat>,
@@ -174,7 +157,6 @@ struct TopProcessRow {
 	command:       String,
 }
 
-
 const TOP_LONG_OPTIONS: &[&str] = &[
 	"batch",
 	"samples",
@@ -189,8 +171,6 @@ const TOP_LONG_OPTIONS: &[&str] = &[
 	"help",
 	"version",
 ];
-
-
 
 fn normalize_top_flag(arg: String) -> String {
 	if let Some(rest) = arg.strip_prefix('-')
@@ -494,5 +474,3 @@ fn format_top_time(duration: Duration) -> String {
 	let hundredths = duration.subsec_millis() / 10;
 	format!("{minutes}:{seconds:02}.{hundredths:02}")
 }
-
-

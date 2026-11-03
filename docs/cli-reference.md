@@ -234,6 +234,8 @@ The ACP server answers with JSON-RPC errors rather than pretending a request or 
 
 While session recovery retries a failing provider, each attempt is sent as an `agent_thought_chunk` reading `Provider error (retry N/M in Xs): …` — the same line print mode writes to stderr — so a retried turn is never silent.
 
+ACP clients receive automatic compaction transitions as `_proto/compaction/start` and `_proto/compaction/end` extension notifications, including maintenance outside an active prompt. Start carries `sessionId`, `reason`, and `action`; end carries `sessionId`, `action`, `aborted`, and `willRetry`, with optional `skipped`, `errorMessage`, and `tokensBefore`. Transitions that occur during session startup are delivered in order after bootstrap updates.
+
 ## Subcommands
 
 Run `proto <command> --help` for each command's own flags and examples.

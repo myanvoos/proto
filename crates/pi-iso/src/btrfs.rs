@@ -58,13 +58,35 @@ impl IsolationBackend for BtrfsBackend {
 mod imp {
 	use std::{
 		fs,
+		os::unix::fs::MetadataExt,
 		path::{Path, PathBuf},
 		process::{Command, Stdio},
+		sync::atomic::{AtomicBool, Ordering},
 	};
 
-	use crate::{IsoError, IsoResult, ProbeResult};
+	use crate::{IsoError, IsoResult, ProbeResult, statfs_magic};
+
+	/// `statfs` magic of a btrfs filesystem.
+	const BTRFS_SUPER_MAGIC: u32 = 0x9123_683e;
+	/// Inode number of every btrfs subvolume's root directory.
+	const SUBVOLUME_ROOT_INO: u64 = 256;
+
+	/// Whether the btrfs CLI runs is a host fact, so it is probed once per
+	/// process.
+	static CLI_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 	pub fn probe() -> ProbeResult {
+		if CLI_AVAILABLE.load(Ordering::Relaxed) {
+			return ProbeResult::available();
+		}
+		let probe = probe_cli();
+		if probe.available {
+			CLI_AVAILABLE.store(true, Ordering::Relaxed);
+		}
+		probe
+	}
+
+	fn probe_cli() -> ProbeResult {
 		match Command::new("btrfs")
 			.arg("version")
 			.stdin(Stdio::null())
@@ -86,6 +108,18 @@ mod imp {
 
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
 		let lower = canonical_existing_dir(lower)?;
+		// `btrfs subvolume snapshot` only snapshots a subvolume root; answer
+		// that from `stat`/`statfs` instead of spawning it to find out.
+		let is_subvolume_root = fs::metadata(&lower)
+			.is_ok_and(|meta| meta.ino() == SUBVOLUME_ROOT_INO)
+			&& statfs_magic(&lower) == Some(BTRFS_SUPER_MAGIC);
+		if !is_subvolume_root {
+			return Err(IsoError::unavailable(format!(
+				"btrfs snapshot unsupported for {} -> {}: not a btrfs subvolume",
+				lower.display(),
+				merged.display()
+			)));
+		}
 		prepare_destination(merged)?;
 
 		let output = Command::new("btrfs")

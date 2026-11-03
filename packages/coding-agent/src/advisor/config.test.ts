@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverAdvisorConfigs, loadWatchdogConfigFile } from "./config";
+import { discoverAdvisorConfigs, loadWatchdogConfigFile, serializeWatchdogConfig } from "./config";
 
 // One malformed WATCHDOG.yml entry used to fail the whole document: every advisor in the file vanished, and the
 // editor opened empty, so its next save wiped the healthy entries too.
@@ -44,6 +44,21 @@ describe("WATCHDOG.yml per-entry validation", () => {
 		const doc = await loadWatchdogConfigFile(file);
 		expect(doc.advisors.map(advisor => advisor.name)).toEqual(["Good"]);
 		expect(doc.warnings).toEqual(discovered.warnings);
+	});
+
+	it("round-trips session scope and explicit reasoning exclusion without losing healthy siblings", async () => {
+		const file = path.join(project, "WATCHDOG.yml");
+		await Bun.write(
+			file,
+			"advisors:\n  - name: Evidence\n    scope: subagent\n    includeReasoning: false\n  - name: Invalid\n    scope: typo\n",
+		);
+		const discovered = await discoverAdvisorConfigs(project, agentDir);
+		expect(discovered.advisors).toMatchObject([{ name: "Evidence", scope: "subagent", includeReasoning: false }]);
+		expect(discovered.warnings).toHaveLength(1);
+		await Bun.write(file, serializeWatchdogConfig(await loadWatchdogConfigFile(file)));
+		expect((await discoverAdvisorConfigs(project, agentDir)).advisors).toMatchObject([
+			{ name: "Evidence", scope: "subagent", includeReasoning: false },
+		]);
 	});
 
 	it.each([

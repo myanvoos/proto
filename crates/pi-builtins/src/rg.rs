@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	io::{self, Read, Write},
@@ -24,7 +13,11 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
 	BinaryDetection, Encoding, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
-use crate::host::{Host, StreamWriter, Utility};
+
+use crate::{
+	grep::{BoundedSearchReader, describe_search_error},
+	host::{Host, StreamWriter, Utility},
+};
 
 const SIGPIPE_EXIT_CODE: i32 = 141;
 
@@ -44,22 +37,17 @@ use ignore::{
 	args_override_self = true
 )]
 pub(crate) struct Rg {
-
 	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
 	patterns: Vec<String>,
-
 
 	#[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
 	pattern_files: Vec<OsString>,
 
-
 	#[arg(short = 'z', long = "search-zip", overrides_with = "no_search_zip")]
 	search_zip: bool,
 
-
 	#[arg(long = "no-search-zip", overrides_with = "search_zip")]
 	no_search_zip: bool,
-
 
 	#[arg(
 		long = "engine",
@@ -68,7 +56,6 @@ pub(crate) struct Rg {
 	)]
 	engine: Option<RegexEngine>,
 
-
 	#[arg(
 		short = 'P',
 		long = "pcre2",
@@ -76,411 +63,314 @@ pub(crate) struct Rg {
 	)]
 	pcre2: bool,
 
-
 	#[arg(long = "no-pcre2", overrides_with_all = ["engine", "pcre2"])]
 	no_pcre2: bool,
-
 
 	#[arg(short = 'E', long = "encoding", value_name = "ENCODING", overrides_with = "no_encoding")]
 	encoding: Option<String>,
 
-
 	#[arg(long = "no-encoding", overrides_with = "encoding")]
 	no_encoding: bool,
-
 
 	#[arg(long = "crlf", overrides_with = "no_crlf")]
 	crlf: bool,
 
-
 	#[arg(long = "no-crlf", overrides_with = "crlf")]
 	no_crlf: bool,
-
 
 	#[arg(long = "no-unicode", overrides_with = "unicode")]
 	no_unicode: bool,
 
-
 	#[arg(long = "unicode", overrides_with = "no_unicode", hide = true)]
 	unicode: bool,
-
 
 	#[arg(short = 'F', long = "fixed-strings")]
 	fixed_strings: bool,
 
-
 	#[arg(long = "no-fixed-strings")]
 	no_fixed_strings: bool,
-
 
 	#[arg(short = 'i', long = "ignore-case", overrides_with_all = ["case_sensitive", "smart_case"])]
 	ignore_case: bool,
 
-
 	#[arg(short = 's', long = "case-sensitive", overrides_with_all = ["ignore_case", "smart_case"])]
 	case_sensitive: bool,
-
 
 	#[arg(short = 'S', long = "smart-case", overrides_with_all = ["ignore_case", "case_sensitive"])]
 	smart_case: bool,
 
-
 	#[arg(short = 'v', long = "invert-match")]
 	invert_match: bool,
-
 
 	#[arg(short = 'w', long = "word-regexp")]
 	word_regexp: bool,
 
-
 	#[arg(short = 'x', long = "line-regexp")]
 	line_regexp: bool,
-
 
 	#[arg(short = 'm', long = "max-count", value_name = "NUM")]
 	max_count: Option<u64>,
 
-
 	#[arg(short = 'U', long = "multiline")]
 	multiline: bool,
-
 
 	#[arg(long = "multiline-dotall")]
 	multiline_dotall: bool,
 
-
 	#[arg(short = 'a', long = "text")]
 	text: bool,
-
 
 	#[arg(long = "binary")]
 	binary: bool,
 
-
 	#[arg(short = 'u', long = "unrestricted", action = ArgAction::Count)]
 	unrestricted: u8,
-
 
 	#[arg(short = 'L', long = "follow", overrides_with = "no_follow")]
 	follow: bool,
 
-
 	#[arg(long = "no-follow", overrides_with = "follow")]
 	no_follow: bool,
-
 
 	#[arg(long = "glob-case-insensitive", overrides_with = "no_glob_case_insensitive")]
 	glob_case_insensitive: bool,
 
-
 	#[arg(long = "no-glob-case-insensitive", overrides_with = "glob_case_insensitive", hide = true)]
 	no_glob_case_insensitive: bool,
-
 
 	#[arg(short = 'g', long = "glob", value_name = "GLOB")]
 	globs: Vec<String>,
 
-
 	#[arg(long = "iglob", value_name = "GLOB")]
 	iglobs: Vec<String>,
-
 
 	#[arg(short = '.', long = "hidden")]
 	hidden: bool,
 
-
 	#[arg(long = "no-hidden")]
 	no_hidden: bool,
-
 
 	#[arg(long = "no-ignore")]
 	no_ignore: bool,
 
-
 	#[arg(long = "ignore")]
 	ignore: bool,
-
 
 	#[arg(long = "ignore-file", value_name = "PATH")]
 	ignore_files: Vec<OsString>,
 
-
 	#[arg(long = "no-ignore-dot")]
 	no_ignore_dot: bool,
-
 
 	#[arg(long = "ignore-dot")]
 	ignore_dot: bool,
 
-
 	#[arg(long = "no-ignore-exclude")]
 	no_ignore_exclude: bool,
-
 
 	#[arg(long = "ignore-exclude")]
 	ignore_exclude: bool,
 
-
 	#[arg(long = "no-ignore-global")]
 	no_ignore_global: bool,
-
 
 	#[arg(long = "ignore-global")]
 	ignore_global: bool,
 
-
 	#[arg(long = "no-ignore-parent")]
 	no_ignore_parent: bool,
-
 
 	#[arg(long = "ignore-parent")]
 	ignore_parent: bool,
 
-
 	#[arg(long = "no-ignore-vcs")]
 	no_ignore_vcs: bool,
-
 
 	#[arg(long = "ignore-vcs")]
 	ignore_vcs: bool,
 
-
 	#[arg(long = "no-require-git")]
 	no_require_git: bool,
-
 
 	#[arg(long = "require-git")]
 	require_git: bool,
 
-
 	#[arg(long = "one-file-system", overrides_with = "no_one_file_system")]
 	one_file_system: bool,
-
 
 	#[arg(long = "no-one-file-system", overrides_with = "one_file_system", hide = true)]
 	no_one_file_system: bool,
 
-
 	#[arg(short = 'd', long = "max-depth", alias = "maxdepth", value_name = "NUM")]
 	max_depth: Option<usize>,
-
 
 	#[arg(long = "max-filesize", value_name = "NUM")]
 	max_filesize: Option<String>,
 
-
 	#[arg(short = 't', long = "type", value_name = "TYPE")]
 	types: Vec<String>,
-
 
 	#[arg(short = 'T', long = "type-not", value_name = "TYPE")]
 	type_nots: Vec<String>,
 
-
 	#[arg(long = "type-add", value_name = "TYPESPEC")]
 	type_adds: Vec<String>,
-
 
 	#[arg(long = "type-clear", value_name = "TYPE")]
 	type_clears: Vec<String>,
 
-
 	#[arg(short = 'A', long = "after-context", value_name = "NUM")]
 	after_context: Option<usize>,
-
 
 	#[arg(short = 'B', long = "before-context", value_name = "NUM")]
 	before_context: Option<usize>,
 
-
 	#[arg(short = 'C', long = "context", value_name = "NUM")]
 	context: Option<usize>,
-
 
 	#[arg(short = 'n', long = "line-number", overrides_with = "no_line_number")]
 	line_number: bool,
 
-
 	#[arg(short = 'N', long = "no-line-number", overrides_with = "line_number")]
 	no_line_number: bool,
-
 
 	#[arg(long = "column", overrides_with = "no_column")]
 	column: bool,
 
-
 	#[arg(long = "no-column", overrides_with = "column")]
 	no_column: bool,
-
 
 	#[arg(short = 'b', long = "byte-offset", overrides_with = "no_byte_offset")]
 	byte_offset: bool,
 
-
 	#[arg(long = "no-byte-offset", overrides_with = "byte_offset", hide = true)]
 	no_byte_offset: bool,
-
 
 	#[arg(short = 'H', long = "with-filename")]
 	with_filename: bool,
 
-
 	#[arg(short = 'I', long = "no-filename")]
 	no_filename: bool,
-
 
 	#[arg(short = 'l', long = "files-with-matches")]
 	files_with_matches: bool,
 
-
 	#[arg(long = "files-without-match")]
 	files_without_match: bool,
-
 
 	#[arg(short = 'c', long = "count")]
 	count: bool,
 
-
 	#[arg(long = "count-matches")]
 	count_matches: bool,
 
+	#[arg(long = "include-zero", overrides_with = "no_include_zero")]
+	include_zero: bool,
 
+	/// Print counts only for files with matches.
+	#[arg(long = "no-include-zero", overrides_with = "include_zero", hide = true)]
+	no_include_zero: bool,
 	#[arg(short = 'o', long = "only-matching")]
-	only_matching: bool,
-
+	only_matching:   bool,
 
 	#[arg(short = 'r', long = "replace", value_name = "REPLACEMENT")]
 	replacement: Option<OsString>,
 
-
 	#[arg(long = "json", overrides_with = "no_json")]
 	json: bool,
-
 
 	#[arg(long = "no-json", overrides_with = "json", hide = true)]
 	no_json: bool,
 
-
 	#[arg(short = 'q', long = "quiet")]
 	quiet: bool,
-
 
 	#[arg(long = "vimgrep")]
 	vimgrep: bool,
 
-
 	#[arg(short = '0', long = "null")]
 	null: bool,
-
 
 	#[arg(long = "null-data")]
 	null_data: bool,
 
-
 	#[arg(long = "line-buffered", overrides_with = "no_line_buffered")]
 	line_buffered: bool,
-
 
 	#[arg(long = "no-line-buffered", overrides_with = "line_buffered", hide = true)]
 	no_line_buffered: bool,
 
-
 	#[arg(long = "files")]
 	files: bool,
-
 
 	#[arg(long = "type-list")]
 	type_list: bool,
 
-
 	#[arg(long = "no-messages")]
 	no_messages: bool,
-
 
 	#[arg(long = "messages")]
 	messages: bool,
 
-
 	#[arg(long = "sort", value_name = "SORTBY")]
 	sort: Option<String>,
-
 
 	#[arg(long = "sortr", value_name = "SORTBY")]
 	sortr: Option<String>,
 
-
 	#[arg(long = "sort-files")]
 	sort_files: bool,
-
 
 	#[arg(long = "no-sort-files")]
 	no_sort_files: bool,
 
-
 	#[arg(long = "passthru", alias = "passthrough")]
 	passthru: bool,
-
 
 	#[arg(long = "trim")]
 	trim: bool,
 
-
 	#[arg(long = "no-trim")]
 	no_trim: bool,
-
 
 	#[arg(short = 'M', long = "max-columns", value_name = "NUM")]
 	max_columns: Option<usize>,
 
-
 	#[arg(long = "max-columns-preview")]
 	max_columns_preview: bool,
-
 
 	#[arg(long = "no-max-columns-preview")]
 	no_max_columns_preview: bool,
 
-
 	#[arg(long = "color", value_name = "WHEN")]
 	_color: Option<String>,
-
 
 	#[arg(long = "colors", value_name = "COLOR_SPEC")]
 	_colors: Vec<String>,
 
-
 	#[arg(long = "heading")]
 	_heading: bool,
-
 
 	#[arg(long = "no-heading")]
 	_no_heading: bool,
 
-
 	#[arg(short = 'p', long = "pretty")]
 	_pretty: bool,
-
 
 	#[arg(long = "stats")]
 	_stats: bool,
 
-
 	#[arg(long = "no-stats")]
 	_no_stats: bool,
-
 
 	#[arg(long = "no-config")]
 	_no_config: bool,
 
-
-
 	#[arg(short = 'j', long = "threads", value_name = "NUM")]
 	_threads: Option<usize>,
 
-
 	#[arg(long = "path-separator", value_name = "SEPARATOR")]
 	path_separator: Option<String>,
-
 
 	#[arg(value_name = "ARGS")]
 	args: Vec<OsString>,
@@ -504,6 +394,7 @@ struct SearchOptions {
 	byte_offset:         bool,
 	count:               bool,
 	count_matches:       bool,
+	include_zero:        bool,
 	files_with_matches:  bool,
 	files_without_match: bool,
 	only_matching:       bool,
@@ -791,6 +682,9 @@ impl<M: Matcher, W: Write> Sink for RgSink<'_, M, W> {
 				}
 			}
 		} else if self.opts.count || self.opts.count_matches {
+			if !self.any_match && !self.opts.include_zero {
+				return Ok(());
+			}
 			if self.display.is_some() {
 				self.write_path()?;
 				if !self.opts.null_paths {
@@ -816,9 +710,11 @@ fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
 	&bytes[start..]
 }
 
-
-
-fn write_display_bytes<W: Write>(out: &mut W, bytes: &[u8], separator: Option<u8>) -> io::Result<()> {
+fn write_display_bytes<W: Write>(
+	out: &mut W,
+	bytes: &[u8],
+	separator: Option<u8>,
+) -> io::Result<()> {
 	let Some(separator) = separator else {
 		return out.write_all(bytes);
 	};
@@ -836,14 +732,12 @@ fn parse_path_separator(spec: Option<&str>) -> Result<Option<u8>, String> {
 		None | Some("") => Ok(None),
 		Some(separator) if separator.len() == 1 => Ok(Some(separator.as_bytes()[0])),
 		Some(separator) => Err(format!(
-			"error parsing flag --path-separator: a path separator must be exactly one byte, but the given separator is {} bytes",
+			"error parsing flag --path-separator: a path separator must be exactly one byte, but the \
+			 given separator is {} bytes",
 			separator.len()
 		)),
 	}
 }
-
-
-
 
 fn effective_line_number(cli: &Rg) -> bool {
 	if cli.no_line_number {
@@ -973,7 +867,8 @@ fn build_searcher(cli: &Rg, opts: &SearchOptions, mode: BinaryMode) -> Result<Se
 		.binary_detection(binary_detection(cli, mode))
 		.max_matches(cli.max_count)
 		.encoding(encoding)
-		.bom_sniffing(bom_sniffing);
+		.bom_sniffing(bom_sniffing)
+		.heap_limit(Some(crate::grep::SEARCH_HEAP_LIMIT));
 	if cli.null_data {
 		builder.line_terminator(LineTerminator::byte(b'\0'));
 	} else if cli.crlf && !cli.no_crlf {
@@ -983,17 +878,18 @@ fn build_searcher(cli: &Rg, opts: &SearchOptions, mode: BinaryMode) -> Result<Se
 }
 
 fn read_pattern_file(host: &mut Host, path: &OsStr) -> Result<Vec<String>, String> {
-	let mut text = String::new();
-	if path == OsStr::new("-") {
-		host.stdin
-			.read_to_string(&mut text)
-			.map_err(|err| format!("rg: -: {err}"))?;
+	let bytes = if path == OsStr::new("-") {
+		crate::grep::read_pattern_source(&mut host.stdin)
 	} else {
-		let resolved = host.resolve(path);
-		brush_core::heldfiles::open_read(&resolved)
-			.and_then(|mut file| file.read_to_string(&mut text))
-			.map_err(|err| format!("rg: {}: {err}", path.to_string_lossy()))?;
-	}
+		host
+			.open_read(path)
+			.and_then(crate::grep::read_pattern_source)
+	};
+	let text = bytes
+		.and_then(|bytes| {
+			String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+		})
+		.map_err(|err| format!("rg: {}: {err}", path.to_string_lossy()))?;
 	Ok(text
 		.lines()
 		.map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
@@ -1029,6 +925,7 @@ fn search_options(cli: &Rg) -> SearchOptions {
 		byte_offset: cli.byte_offset,
 		count: cli.count && !count_matches,
 		count_matches,
+		include_zero: cli.include_zero,
 		files_with_matches: cli.files_with_matches && !cli.files_without_match,
 		files_without_match: cli.files_without_match,
 		only_matching: cli.only_matching,
@@ -1041,7 +938,6 @@ fn search_options(cli: &Rg) -> SearchOptions {
 		max_columns: cli.max_columns,
 		max_columns_preview: cli.max_columns_preview && !cli.no_max_columns_preview,
 		null_paths: cli.null,
-
 
 		path_separator: None,
 		no_messages: cli.no_messages && !cli.messages,
@@ -1235,7 +1131,11 @@ fn build_walk(host: &mut Host, cli: &Rg, root: &Path) -> Result<RgWalk, String> 
 		.gitignore(!no_ignore)
 		.skip_git(!no_ignore)
 		.skip_node_modules(false)
-		.follow_links(pi_walker::FollowLinks::from(cli.follow && !cli.no_follow))
+		.follow_links(if cli.follow && !cli.no_follow {
+			pi_walker::FollowLinks::Always
+		} else {
+			pi_walker::FollowLinks::Roots
+		})
 		.detail(if filters.max_filesize.is_some() {
 			pi_walker::WalkDetail::Full
 		} else {
@@ -1272,6 +1172,7 @@ fn process_reader<M: Matcher, R: Read, W: Write>(
 	stats: &mut Stats,
 	out: &mut W,
 ) -> io::Result<bool> {
+	let reader = BoundedSearchReader::new(reader, searcher, matcher);
 	if opts.json {
 		let mut builder = JSONBuilder::new();
 		builder.replacement(opts.replacement.clone());
@@ -1335,11 +1236,15 @@ fn process_file<M: Matcher, W: Write>(
 				.map_err(|error| io::Error::other(error.to_string()))
 				.and_then(|reader| process_reader(matcher, searcher, reader, display, opts, stats, out))
 		} else {
-			host.held_files().open_read(path)
+			host
+				.held_files()
+				.open_read(path)
 				.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
 		}
 	} else {
-		host.held_files().open_read(path)
+		host
+			.held_files()
+			.open_read(path)
 			.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
 	};
 	match result {
@@ -1350,10 +1255,13 @@ fn process_file<M: Matcher, W: Write>(
 			Ok(SearchOutcome { any_match, had_error: false })
 		},
 		Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),
-		Err(error) => Ok(SearchOutcome {
-			any_match: false,
-			had_error: report_path_error(host, display, path, error, opts),
-		}),
+		Err(error) => {
+			let message = describe_search_error(&error);
+			Ok(SearchOutcome {
+				any_match: false,
+				had_error: report_path_error(host, display, path, &message, opts),
+			})
+		},
 	}
 }
 
@@ -1361,7 +1269,7 @@ fn report_path_error(
 	host: &mut Host,
 	display: Option<&[u8]>,
 	fallback: &Path,
-	err: io::Error,
+	err: &str,
 	opts: &SearchOptions,
 ) -> bool {
 	if !opts.no_messages {
@@ -1501,8 +1409,7 @@ fn search_dir<M: Matcher, W: Write>(
 		|error| {
 			had_error.set(true);
 			if !opts.no_messages {
-				let _ =
-					writeln!(walk_err, "rg: {}: {}", error.path.display(), error.error);
+				let _ = writeln!(walk_err, "rg: {}: {}", error.path.display(), error.error);
 			}
 			Ok(pi_walker::WalkDecision::Include)
 		},
@@ -1511,8 +1418,6 @@ fn search_dir<M: Matcher, W: Write>(
 			Some(Ok(SearchOutcome { any_match: any_match.get(), had_error: had_error.get() }))
 		},
 		Err(pi_walker::WalkError::Interrupted(_)) if host.is_cancelled() => {
-
-
 			had_error.set(true);
 			Some(Ok(SearchOutcome { any_match: any_match.get(), had_error: true }))
 		},
@@ -1526,14 +1431,13 @@ fn search_dir<M: Matcher, W: Write>(
 			if !opts.no_messages {
 				let _ = writeln!(host.stderr, "rg: {err}");
 			}
-			Some(Ok(SearchOutcome {
-				any_match: any_match.get(),
-				had_error: had_error.get(),
-			}))
+			Some(Ok(SearchOutcome { any_match: any_match.get(), had_error: had_error.get() }))
 		},
 	};
 	streamed.unwrap_or_else(|| {
-		search_collected_files(host, cli, matcher, searcher, operand, root, show_names, opts, stats, out)
+		search_collected_files(
+			host, cli, matcher, searcher, operand, root, show_names, opts, stats, out,
+		)
 	})
 }
 
@@ -1744,7 +1648,7 @@ fn execute_search<M: Matcher, W: Write>(
 				Err(error) => {
 					had_error = true;
 					if !opts.no_messages {
-						let _ = writeln!(host.stderr, "rg: <stdin>: {error}");
+						let _ = writeln!(host.stderr, "rg: <stdin>: {}", describe_search_error(&error));
 					}
 				},
 			}
@@ -1817,8 +1721,7 @@ fn execute_search<M: Matcher, W: Write>(
 			Err(error) => {
 				had_error = true;
 				if !opts.no_messages {
-					let _ =
-						writeln!(host.stderr, "rg: {}: {error}", operand.to_string_lossy());
+					let _ = writeln!(host.stderr, "rg: {}: {error}", operand.to_string_lossy());
 				}
 			},
 		}
@@ -1834,7 +1737,10 @@ fn execute_search<M: Matcher, W: Write>(
 			return SIGPIPE_EXIT_CODE;
 		}
 	}
-	if out.flush().is_err_and(|error| error.kind() == io::ErrorKind::BrokenPipe) {
+	if out
+		.flush()
+		.is_err_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+	{
 		return SIGPIPE_EXIT_CODE;
 	}
 	if opts.quiet {
@@ -1860,91 +1766,92 @@ impl Utility for Rg {
 
 	fn run(self, host: &mut Host) -> i32 {
 		let cli = self;
-	let mut opts = search_options(&cli);
-	match parse_path_separator(cli.path_separator.as_deref()) {
-		Ok(separator) => opts.path_separator = separator,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "rg: {error}");
-			return 2;
-		},
-	}
-	if opts.json
-		&& (cli.files
-			|| cli.type_list
-			|| opts.count
-			|| opts.count_matches
-			|| opts.files_with_matches
-			|| opts.files_without_match
-			|| opts.quiet
-			|| cli.only_matching
-			|| cli.vimgrep)
-	{
-		let _ = writeln!(host.stderr, "rg: --json cannot be combined with summary modes");
-		return 2;
-	}
-	let mut out = if cli.line_buffered && !cli.no_line_buffered {
-		StreamWriter::line(host.stdout_clone())
-	} else if cli.no_line_buffered {
-		StreamWriter::block(host.stdout_clone())
-	} else {
-		host.stdout_writer()
-	};
-	let (patterns, mut paths) = match resolve_patterns(host, &cli) {
-		Ok(resolved) => resolved,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "{error}");
-			return 2;
-		},
-	};
-	if cli.type_list {
-		return match print_type_list(&cli, &mut out) {
-			Ok(()) => 0,
+		let mut opts = search_options(&cli);
+		match parse_path_separator(cli.path_separator.as_deref()) {
+			Ok(separator) => opts.path_separator = separator,
 			Err(error) => {
 				let _ = writeln!(host.stderr, "rg: {error}");
-				2
+				return 2;
+			},
+		}
+		if opts.json
+			&& (cli.files
+				|| cli.type_list
+				|| opts.count
+				|| opts.count_matches
+				|| opts.files_with_matches
+				|| opts.files_without_match
+				|| opts.quiet
+				|| cli.only_matching
+				|| cli.vimgrep)
+		{
+			let _ = writeln!(host.stderr, "rg: --json cannot be combined with summary modes");
+			return 2;
+		}
+		let mut out = if cli.line_buffered && !cli.no_line_buffered {
+			StreamWriter::line(host.stdout_clone())
+		} else if cli.no_line_buffered {
+			StreamWriter::block(host.stdout_clone())
+		} else {
+			host.stdout_writer()
+		};
+		let (patterns, mut paths) = match resolve_patterns(host, &cli) {
+			Ok(resolved) => resolved,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "{error}");
+				return 2;
 			},
 		};
-	}
-	let pattern_stdin_consumed = cli.pattern_files.iter().any(|file| file == OsStr::new("-"));
-	default_paths(
-		&mut paths,
-		!cli.files && !pattern_stdin_consumed && host.stdin_is_search_input(),
-	);
-	opts.line_number = effective_line_number(&cli);
-	if cli.files {
-		let outcome = list_files(host, &cli, &paths, opts.path_separator, &mut out);
-		let _ = out.flush();
-		return if outcome.had_error {
-			2
-		} else if outcome.any_match {
-			0
-		} else {
-			1
+		if cli.type_list {
+			return match print_type_list(&cli, &mut out) {
+				Ok(()) => 0,
+				Err(error) => {
+					let _ = writeln!(host.stderr, "rg: {error}");
+					2
+				},
+			};
+		}
+		let pattern_stdin_consumed = cli.pattern_files.iter().any(|file| file == OsStr::new("-"));
+		default_paths(
+			&mut paths,
+			!cli.files && !pattern_stdin_consumed && host.stdin_is_search_input(),
+		);
+		opts.line_number = effective_line_number(&cli);
+		if cli.files {
+			let outcome = list_files(host, &cli, &paths, opts.path_separator, &mut out);
+			let _ = out.flush();
+			return if outcome.had_error {
+				2
+			} else if outcome.any_match {
+				0
+			} else {
+				1
+			};
+		}
+		if patterns.is_empty() {
+			return 1;
+		}
+		let matcher = match build_matcher(host, &patterns, &cli) {
+			Ok(matcher) => matcher,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "rg: {error}");
+				return 2;
+			},
 		};
-	}
-	if patterns.is_empty() {
-		return 1;
-	}
-	let matcher = match build_matcher(host, &patterns, &cli) {
-		Ok(matcher) => matcher,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "rg: {error}");
-			return 2;
-		},
-	};
-	match &matcher {
-		CompiledMatcher::Rust(matcher) => execute_search(host, &cli, matcher, &paths, &opts, &mut out),
-		CompiledMatcher::Pcre(matcher) => execute_search(host, &cli, matcher, &paths, &opts, &mut out),
+		match &matcher {
+			CompiledMatcher::Rust(matcher) => {
+				execute_search(host, &cli, matcher, &paths, &opts, &mut out)
+			},
+			CompiledMatcher::Pcre(matcher) => {
+				execute_search(host, &cli, matcher, &paths, &opts, &mut out)
+			},
+		}
 	}
 }
-}
-
-
 
 use brush_core::{ShellExtensions, builtins::Registration};
 
 use crate::host::util;
-
 
 pub(crate) fn rg_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Rg, SE>()

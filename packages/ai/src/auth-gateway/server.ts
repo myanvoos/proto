@@ -1,4 +1,5 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { extractHttpStatusFromError, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
 import type { AuthStorage } from "../auth-storage";
@@ -35,7 +36,12 @@ import type {
 } from "./types";
 import { DEFAULT_AUTH_GATEWAY_BIND } from "./types";
 
-export type ModelResolver = (modelId: string) => Model<Api> | undefined;
+export interface ModelResolveOptions {
+	api?: Api;
+	accepts?: (model: Model<Api>) => boolean;
+}
+
+export type ModelResolver = (modelId: string, options?: ModelResolveOptions) => Model<Api> | undefined;
 
 export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
 	storage: AuthStorage;
@@ -43,22 +49,21 @@ export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
 	resolveModel: ModelResolver;
 
 	listModels?: () => Iterable<Model<Api>>;
+	excludeProviders?: ReadonlySet<string>;
 }
 
-const FORMAT_ROUTES: Record<string, { module: FormatModule; label: string }> = {
-	"/v1/chat/completions": { module: openaiChat, label: "openai-chat" },
-	"/v1/messages": { module: anthropicMessages, label: "anthropic-messages" },
-	"/v1/responses": { module: openaiResponses, label: "openai-responses" },
+const FORMAT_ROUTES: Record<string, { module: FormatModule; label: string; api: Api }> = {
+	"/v1/chat/completions": { module: openaiChat, label: "openai-chat", api: "openai-completions" },
+	"/v1/messages": { module: anthropicMessages, label: "anthropic-messages", api: "anthropic-messages" },
+	"/v1/responses": { module: openaiResponses, label: "openai-responses", api: "openai-responses" },
 };
 
-function deriveSessionId(modelId: string, context: Context): string {
+function deriveSessionId(modelId: string, context: Context, toolsJson = serializeTools(context)): string {
 	const parts: string[] = [modelId];
 	if (context.systemPrompt && context.systemPrompt.length > 0) {
 		parts.push(context.systemPrompt.join("\n\n"));
 	}
-	if (context.tools && context.tools.length > 0) {
-		parts.push(JSON.stringify(context.tools));
-	}
+	if (toolsJson !== undefined) parts.push(toolsJson);
 	const first = context.messages?.[0];
 	if (first) {
 		parts.push(JSON.stringify({ role: first.role, content: first.content }));
@@ -66,6 +71,10 @@ function deriveSessionId(modelId: string, context: Context): string {
 	const seed = parts.join("\u0000");
 
 	return deterministicUuid(seed);
+}
+
+function serializeTools(context: Context): string | undefined {
+	return context.tools && context.tools.length > 0 ? JSON.stringify(context.tools) : undefined;
 }
 
 // A blank client key counts as absent: honouring it would collapse every caller
@@ -90,7 +99,25 @@ function resolveGatewayAccount(storage: AuthStorage, provider: string, sessionId
 	return `key:${Bun.hash(apiKey).toString(36)}`;
 }
 
-function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: AbortSignal): SimpleStreamOptions {
+/** Clamp unsupported effort tiers, carrying budgets unless the destination already has one. */
+function normalizeGatewayThinking(model: Model<Api>, options: SimpleStreamOptions): void {
+	const requested = options.reasoning;
+	if (requested === undefined) return;
+	const efforts = getSupportedEfforts(model);
+	if (efforts.length === 0 || efforts.includes(requested)) return;
+	if (model.thinking?.effortMap?.[requested] !== undefined) return;
+	if (model.compat && "reasoningEffortMap" in model.compat && model.compat.reasoningEffortMap[requested] !== undefined)
+		return;
+	const reasoning = clampThinkingLevelForModel(model, requested) ?? requested;
+	options.reasoning = reasoning;
+	const budgets = options.thinkingBudgets;
+	if (reasoning !== requested && budgets?.[requested] !== undefined && budgets[reasoning] === undefined) {
+		options.thinkingBudgets = { ...budgets, [reasoning]: budgets[requested] };
+	}
+}
+
+function buildStreamOptions(parsed: ParsedFormatRequest, model: Model<Api>, signal: AbortSignal): SimpleStreamOptions {
+	const api = model.api;
 	// Gateway clients execute the tools they declared, so Cursor hands those
 	// calls back instead of waiting on a local executor.
 	const opts: SimpleStreamOptions = { signal, cursorExternalToolExecutor: true };
@@ -138,8 +165,9 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 	if (options.thinkingBudgets) {
 		opts.thinkingBudgets = { ...(opts.thinkingBudgets ?? {}), ...options.thinkingBudgets };
 	}
+	normalizeGatewayThinking(model, opts);
 	if (options.explicitThinkingBudgetTokens !== undefined) {
-		const effort = options.reasoning ?? Effort.High;
+		const effort = opts.reasoning ?? Effort.High;
 		opts.thinkingBudgets = {
 			...(opts.thinkingBudgets ?? {}),
 			[effort]: options.explicitThinkingBudgetTokens,
@@ -191,15 +219,20 @@ async function refreshGatewayApiKeyAfterAuthError(
 			apiKey: oldKey,
 			signal,
 		});
-		logger.debug("auth-gateway retrying provider request after usage-limit block", {
-			format,
-			provider,
-			peer,
-			switched,
-			retryAfterMs,
-			retryAtMs,
-			error: message,
-		});
+		logger.debug(
+			switched
+				? "auth-gateway retrying provider request after usage-limit block"
+				: "auth-gateway usage-limit block, returning the error without retry",
+			{
+				format,
+				provider,
+				peer,
+				switched,
+				retryAfterMs,
+				retryAtMs,
+				error: message,
+			},
+		);
 		if (!switched) return undefined;
 		return storage.getApiKey(provider, sessionId, { modelId: model.id, signal });
 	}
@@ -224,7 +257,7 @@ function buildGatewayApiKeyResolver(
 	onResolvedKey: (apiKey: string) => void,
 ): ApiKeyResolver {
 	let lastKey = initialKey;
-	return async ({ lastChance, error, signal }) => {
+	return async ({ lastChance, error, signal, previousKey }) => {
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
 			lastKey = initialKey;
@@ -245,7 +278,7 @@ function buildGatewayApiKeyResolver(
 			model,
 			sessionId,
 			model.provider,
-			lastKey,
+			previousKey ?? lastKey,
 			error,
 			sig,
 			format,
@@ -295,7 +328,7 @@ function mirrorRequestAbort(req: Request): AbortController {
 }
 
 async function handleFormatEndpoint(
-	route: { module: FormatModule; label: string },
+	route: { module: FormatModule; label: string; api: Api },
 	bootOpts: AuthGatewayBootOptions,
 	req: Request,
 	peer: string,
@@ -323,7 +356,7 @@ async function handleFormatEndpoint(
 		return route.module.formatError(400, "invalid_request_error", "Missing top-level `model` field");
 	}
 
-	const model = bootOpts.resolveModel(modelId);
+	const model = bootOpts.resolveModel(modelId, { api: route.api });
 	if (!model) {
 		return route.module.formatError(404, "invalid_request_error", `Unknown model: ${modelId}`);
 	}
@@ -332,6 +365,7 @@ async function handleFormatEndpoint(
 	let parsed: ParsedFormatRequest;
 	try {
 		parsed = route.module.parseRequest(body, req.headers);
+		if (route.module === openaiChat) openaiChat.adoptReplayedGeminiSignatures(parsed.context, model);
 	} catch (error) {
 		if (controller.signal.aborted) return clientClosedResponse(route);
 		const message = error instanceof Error ? error.message : String(error);
@@ -367,7 +401,8 @@ async function handleFormatEndpoint(
 	}
 
 	const clientKey = normalizeClientSessionKey(parsed.options.promptCacheKey);
-	const sessionId = clientKey ?? deriveSessionId(parsed.modelId, parsed.context);
+	const toolsJson = clientKey === undefined ? serializeTools(parsed.context) : undefined;
+	const sessionId = clientKey ?? deriveSessionId(parsed.modelId, parsed.context, toolsJson);
 	parsed.options.promptCacheKey = sessionId;
 
 	let apiKey: string | undefined;
@@ -391,13 +426,14 @@ async function handleFormatEndpoint(
 		);
 	}
 
-	const streamOpts = buildStreamOptions(parsed, model.api, controller.signal);
+	const streamOpts = buildStreamOptions(parsed, model, controller.signal);
 	// The lease keeps the entry out of eviction's reach until this request is
 	// done with it, so it MUST be released on every exit path.
 	const lease = sessionStates.acquire({
 		clientKey,
 		model,
 		context: parsed.context,
+		toolsJson,
 		account: resolveGatewayAccount(bootOpts.storage, model.provider, sessionId, apiKey),
 	});
 	streamOpts.providerSessionState = lease.states;
@@ -548,7 +584,8 @@ async function handlePiNative(
 	const client = resolveClientIdentity(req.headers);
 
 	const clientKey = normalizeClientSessionKey(parsed.options.sessionId);
-	const sessionId = clientKey ?? deriveSessionId(parsed.modelId, parsed.context);
+	const toolsJson = clientKey === undefined ? serializeTools(parsed.context) : undefined;
+	const sessionId = clientKey ?? deriveSessionId(parsed.modelId, parsed.context, toolsJson);
 	parsed.options.sessionId = sessionId;
 
 	let apiKey: string | undefined;
@@ -576,6 +613,7 @@ async function handlePiNative(
 		clientKey,
 		model,
 		context: parsed.context,
+		toolsJson,
 		account: resolveGatewayAccount(bootOpts.storage, model.provider, sessionId, apiKey),
 	});
 	const streamOpts: SimpleStreamOptions = {
@@ -585,6 +623,7 @@ async function handlePiNative(
 		cursorExternalToolExecutor: true,
 		providerSessionState: lease.states,
 	};
+	normalizeGatewayThinking(model, streamOpts);
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
 		bootOpts.storage,
 		model,
@@ -697,15 +736,16 @@ async function handlePiNative(
 	}
 }
 
-async function handleUsage(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
-	const reports = (await storage.fetchUsageReports?.({ signal })) ?? [];
-
-	const trimmed = reports.map(({ raw: _raw, ...rest }) => rest);
+async function handleUsage(opts: AuthGatewayBootOptions, signal: AbortSignal): Promise<Response> {
+	const reports = (await opts.storage.fetchUsageReports?.({ signal })) ?? [];
+	const trimmed = reports
+		.filter(report => !opts.excludeProviders?.has(report.provider))
+		.map(({ raw: _raw, ...rest }) => rest);
 	return json(200, { generatedAt: Date.now(), reports: trimmed });
 }
 
-async function handleCredentialsCheck(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
-	const credentials = await storage.checkCredentials({ signal });
+async function handleCredentialsCheck(opts: AuthGatewayBootOptions, signal: AbortSignal): Promise<Response> {
+	const credentials = await opts.storage.checkCredentials({ signal, excludeProviders: opts.excludeProviders });
 	return json(200, { generatedAt: Date.now(), credentials });
 }
 
@@ -795,11 +835,11 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 				peer = resolvePeer(req, socketPeer, opts.trustProxyHeaders);
 
 				if (req.method === "GET" && pathname === "/v1/usage") {
-					return withCors(await handleUsage(opts.storage, req.signal), req);
+					return withCors(await handleUsage(opts, req.signal), req);
 				}
 
 				if (req.method === "GET" && pathname === "/v1/credentials/check") {
-					return withCors(await handleCredentialsCheck(opts.storage, req.signal), req);
+					return withCors(await handleCredentialsCheck(opts, req.signal), req);
 				}
 
 				const formatRoute = FORMAT_ROUTES[pathname];

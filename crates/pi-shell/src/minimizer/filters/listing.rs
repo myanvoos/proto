@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::LazyLock};
+use std::{
+	collections::{BTreeMap, HashSet},
+	path::Path,
+	sync::LazyLock,
+};
 
 use regex::Regex;
 
@@ -1143,37 +1147,31 @@ fn strip_python_lines(lines: &[&str], input_len: usize) -> String {
 }
 
 fn compact_summary_output(input: &str, program: &str) -> String {
-	let lines: Vec<&str> = input.lines().collect();
+	let mut lines: Vec<&str> = input.lines().collect();
 	if lines.len() <= 30 {
 		return input.to_string();
 	}
 
-	let input = if program == "df" {
-		let kept: Vec<&str> = lines
-			.into_iter()
-			.filter(|line| {
-				let trimmed = line.trim_start();
-				if trimmed.starts_with("overlay") || trimmed.starts_with("none") {
-					return trimmed.split_whitespace().last() == Some("/");
-				}
-				!trimmed.starts_with("tmpfs")
-					&& !trimmed.starts_with("devtmpfs")
-					&& !trimmed.starts_with("udev")
-					&& !trimmed.starts_with("shm")
-			})
-			.collect();
-		kept.join("\n")
-	} else {
-		lines.join("\n")
-	};
+	if program == "df" {
+		lines.retain(|line| {
+			let trimmed = line.trim_start();
+			if trimmed.starts_with("overlay") || trimmed.starts_with("none") {
+				// Keep container root: overlay/none mounted at "/"
+				return trimmed.split_whitespace().last() == Some("/");
+			}
+			!trimmed.starts_with("tmpfs")
+				&& !trimmed.starts_with("devtmpfs")
+				&& !trimmed.starts_with("udev")
+				&& !trimmed.starts_with("shm")
+		});
+	}
 
-	let lines: Vec<&str> = input.lines().collect();
-	let windowed = primitives::head_tail_lines(&input, 12, 12);
+	let windowed = primitives::head_tail_of_lines(&lines, 12, 12);
+	let shown: HashSet<&str> = windowed.lines().collect();
+	let mut emitted = HashSet::new();
 	let mut out = String::new();
-	for line in lines.iter().copied().filter(|line| is_summary_line(line)) {
-		if !windowed.lines().any(|existing| existing == line)
-			&& !out.lines().any(|existing| existing == line)
-		{
+	for &line in &lines {
+		if is_summary_line(line) && !shown.contains(line) && emitted.insert(line) {
 			out.push_str(line);
 			out.push('\n');
 		}
@@ -1183,14 +1181,25 @@ fn compact_summary_output(input: &str, program: &str) -> String {
 }
 
 fn is_summary_line(line: &str) -> bool {
-	let trimmed = line.trim();
-	let lower = trimmed.to_ascii_lowercase();
-	trimmed == "total"
-		|| lower.starts_with("total ")
-		|| lower.ends_with(" total")
-		|| lower.starts_with("filesystem")
-		|| lower.contains(" mounted on")
-		|| lower.contains(" files ")
+	let trimmed = line.trim().as_bytes();
+	let contains = |needle: &[u8]| {
+		trimmed
+			.windows(needle.len())
+			.any(|window| window.eq_ignore_ascii_case(needle))
+	};
+	trimmed == b"total"
+		|| trimmed
+			.get(..6)
+			.is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"total "))
+		|| trimmed
+			.len()
+			.checked_sub(6)
+			.is_some_and(|start| trimmed[start..].eq_ignore_ascii_case(b" total"))
+		|| trimmed
+			.get(..10)
+			.is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"filesystem"))
+		|| contains(b" mounted on")
+		|| contains(b" files ")
 }
 
 fn has_content(text: &str) -> bool {

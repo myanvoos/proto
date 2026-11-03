@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Added
+
+- Observe exact request-boundary system-prompt blocks for session capture and cold revival.
+
+### Fixed
+
+- Keep parallel tool calls paired with their arguments, preserve cancellation receipts and deliver queued wakeups without losing final reports.
+- Recover malformed DSML calls and long deadlines without damaging surrounding prose.
+- Preserve retained conversation/tool results during remote compaction, reject truncated summaries and avoid redundant small-context compaction.
+- Keep pruning and image-aware context accounting conservative, and apply tool-description pruning changes on subsequent requests.
+- Expose real turn-boundary context to loop guards so injected progress resets stalled-call detection without treating tool results as new prompts.
+
+
 ## [19.2.0] - 2026-10-03
 
 ### Added

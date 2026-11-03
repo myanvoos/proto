@@ -1,4 +1,5 @@
 import type { Context, ImageContent, Message, Model, ProviderPayload, TextContent } from "@oh-my-pi/pi-ai";
+import { decodeBase64ImageData } from "@oh-my-pi/pi-ai/utils/image-data";
 import {
 	formatBytes,
 	isRecord,
@@ -249,11 +250,9 @@ async function decodeProbe(buffer: Uint8Array): Promise<void> {
 
 /** Why an image cannot be decoded, or `null` when it decodes. Rethrows a `busy` resource error: no verdict yet. */
 export async function imageDecodeFailureReason(image: ImageContent): Promise<string | null> {
-	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) return "invalid base64 image data";
-	const bytes = Buffer.from(image.data, "base64");
-	if (bytes.length === 0) return "empty image data";
-	if (bytes.toString("base64").replace(/=+$/, "") !== image.data.replace(/=+$/, ""))
-		return "invalid base64 image data";
+	const decoded = decodeBase64ImageData(image.data);
+	if (decoded.reason !== undefined) return decoded.reason;
+	const { bytes } = decoded;
 	const detected = parseImageMetadata(bytes);
 	const declared = image.mimeType.toLowerCase();
 	if (detected && detected.mimeType !== (declared === "image/jpg" ? "image/jpeg" : declared)) {
@@ -474,7 +473,8 @@ export async function loadImageAttachmentInput(
 	options: LoadImageAttachmentInputOptions,
 ): Promise<LoadedImageInput | null> {
 	const maxBytes = options.maxBytes ?? MAX_IMAGE_INPUT_BYTES;
-	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(options.image.mimeType)) {
+	const mimeType = options.image.mimeType.toLowerCase();
+	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(mimeType)) {
 		return null;
 	}
 
@@ -486,7 +486,7 @@ export async function loadImageAttachmentInput(
 	await assertDecodableImage(options.image.data, options.label);
 
 	let outputData = options.image.data;
-	let outputMimeType = options.image.mimeType;
+	let outputMimeType = mimeType;
 	let outputBytes = inputBytes;
 	let dimensionNote: string | undefined;
 

@@ -9,6 +9,7 @@ interface HookInputOptions {
 	tui?: TUI;
 	timeout?: number;
 	onTimeout?: () => void;
+	secret?: boolean;
 }
 
 export class HookInputComponent extends OverlayPanel implements Focusable {
@@ -48,6 +49,7 @@ export class HookInputComponent extends OverlayPanel implements Focusable {
 		}
 
 		this.#input = new Input();
+		this.#input.mask = opts?.secret ?? false;
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "enter submit  esc cancel"), 0, 0));

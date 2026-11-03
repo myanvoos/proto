@@ -3,13 +3,14 @@ import {
 	type Component,
 	EDITOR_LIMITS,
 	extractPrintableText,
-	fuzzyMatch,
+	FuzzyQuery,
+	FuzzyText,
 	Input,
 	matchesKey,
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
-import { formatBytes, isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatBytes, isRecord, oklabDistance, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import {
@@ -27,7 +28,15 @@ import { bottomBorder, getDialogViewport, OverlayPanel, renderDialogContent, row
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
 function sanitizeTreeText(value: string): string {
-	return sanitizeText(value.replace(/[\r\n\t]/g, " "));
+	return sanitizeText(value.replace(/[\r\n\t\u2028\u2029]/g, " "));
+}
+
+function assistantLabelColor(): "success" | "statusLinePath" | "muted" {
+	const accent = theme.getColorHex("accent");
+	return (
+		(["success", "statusLinePath"] as const).find(color => oklabDistance(theme.getColorHex(color), accent) >= 0.05) ??
+		"muted"
+	);
 }
 
 function normalizeTreeText(value: string): string {
@@ -150,6 +159,7 @@ class TreeList implements Component {
 	#selectedIndex = 0;
 	#filterMode: FilterMode;
 	#searchQuery = "";
+	#searchText = new WeakMap<SessionTreeNode, FuzzyText>();
 	#searchRejection: string | undefined;
 	#toolCallMap: Map<string, ToolCallInfo> = new Map();
 	#multipleRoots = false;
@@ -332,7 +342,8 @@ class TreeList implements Component {
 			this.#lastSelectedId = this.#filteredNodes[this.#selectedIndex]?.node.entry.id ?? this.#lastSelectedId;
 		}
 
-		const searchTokens = this.#searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+		const queryText = this.#searchQuery.trim();
+		const searchQuery = new FuzzyQuery(queryText);
 
 		this.#filteredNodes = this.#flatNodes.filter(flatNode => {
 			const entry = flatNode.node.entry;
@@ -383,18 +394,22 @@ class TreeList implements Component {
 
 			if (!passesFilter) return false;
 
-			if (searchTokens.length > 0) {
-				const nodeText = this.#getSearchableText(flatNode.node);
-				return searchTokens.every(token => fuzzyMatch(token, nodeText).matches);
+			if (queryText.length > 0) {
+				let indexed = this.#searchText.get(flatNode.node);
+				if (!indexed) {
+					indexed = new FuzzyText(this.#getSearchableText(flatNode.node));
+					this.#searchText.set(flatNode.node, indexed);
+				}
+				return indexed.match(searchQuery).matches;
 			}
 
 			return true;
 		});
 
-		if (searchTokens.length > 0) {
+		if (queryText.length > 0) {
 			this.#filteredAgents = this.#agents.filter(agent => {
 				const haystack = `${agent.title} ${agent.kindLabel} ${agent.status} ${agent.model ?? ""}`;
-				return searchTokens.every(token => fuzzyMatch(token, haystack).matches);
+				return searchQuery.match(haystack).matches;
 			});
 		} else {
 			this.#filteredAgents = this.#agents;
@@ -531,6 +546,7 @@ class TreeList implements Component {
 		for (const flatNode of this.#flatNodes) {
 			if (flatNode.node.entry.id === entryId) {
 				flatNode.node.label = label;
+				this.#searchText.delete(flatNode.node);
 				break;
 			}
 		}
@@ -634,6 +650,7 @@ class TreeList implements Component {
 			const renderedIndent = displayIndent - scrollOffset;
 			const connectorPositionDisplay = hasConnector ? renderedIndent - 1 : -1;
 
+			const gutters = new Map(flatNode.gutters.map(gutter => [gutter.position, gutter]));
 			const totalChars = renderedIndent * 3;
 			const prefixChars: string[] = [];
 			for (let i = 0; i < totalChars; i++) {
@@ -641,7 +658,7 @@ class TreeList implements Component {
 				const originalLevel = level + scrollOffset;
 				const posInLevel = i % 3;
 
-				const gutter = flatNode.gutters.find(g => g.position === originalLevel);
+				const gutter = gutters.get(originalLevel);
 				if (gutter) {
 					if (posInLevel === 0) {
 						prefixChars.push(gutter.show ? theme.tree.vertical : " ");
@@ -722,7 +739,8 @@ class TreeList implements Component {
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = this.#extractContent(msgWithContent.content);
-					result = theme.fg("accent", compact ? "U: " : "user: ") + content;
+					result = theme.fg("accent", `${compact ? "U: " : "user: "}${content}`);
+					if (!isSelected) result = theme.bold(result);
 				} else if (role === "developer") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = this.#extractContent(msgWithContent.content);
@@ -731,22 +749,25 @@ class TreeList implements Component {
 					const presentation = resolveAssistantErrorPresentation(msg);
 					if (presentation.kind === "compact-recovered") {
 						result =
-							theme.fg("success", compact ? "A: " : "assistant: ") +
+							theme.fg(assistantLabelColor(), compact ? "A: " : "assistant: ") +
 							theme.fg("dim", normalize(presentation.text));
 						break;
 					}
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
 					const textContent = this.#extractContent(msgWithContent.content);
 					if (textContent) {
-						result = theme.fg("success", compact ? "A: " : "assistant: ") + textContent;
+						result = theme.fg(assistantLabelColor(), compact ? "A: " : "assistant: ") + textContent;
 					} else if (presentation.kind === "full") {
 						result =
-							theme.fg("success", compact ? "A: " : "assistant: ") +
+							theme.fg(assistantLabelColor(), compact ? "A: " : "assistant: ") +
 							theme.fg("error", truncateCodePoints(normalize(presentation.text), 80));
 					} else if (msgWithContent.stopReason === "aborted") {
-						result = theme.fg("success", compact ? "A: " : "assistant: ") + theme.fg("muted", "(aborted)");
+						result =
+							theme.fg(assistantLabelColor(), compact ? "A: " : "assistant: ") + theme.fg("muted", "(aborted)");
 					} else {
-						result = theme.fg("success", compact ? "A: " : "assistant: ") + theme.fg("muted", "(no content)");
+						result =
+							theme.fg(assistantLabelColor(), compact ? "A: " : "assistant: ") +
+							theme.fg("muted", "(no content)");
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };
@@ -779,7 +800,7 @@ class TreeList implements Component {
 				if (entry.customType === "advisor") {
 					const { qualifier, text } = advisorTreeDisplay(entry.details);
 					const label = qualifier ? `advisor (${qualifier}): ` : "advisor: ";
-					result = theme.fg("customMessageLabel", label) + normalize(text);
+					result = theme.fg("customMessageLabel", label) + theme.fg("muted", normalize(text));
 					break;
 				}
 				const content =
@@ -791,7 +812,7 @@ class TreeList implements Component {
 								.join("");
 				result =
 					theme.fg("customMessageLabel", `[${normalize(entry.customType)}]: `) +
-					normalize(stripSystemWrapper(content));
+					theme.fg("muted", normalize(stripSystemWrapper(content)));
 				break;
 			}
 			case "compaction": {

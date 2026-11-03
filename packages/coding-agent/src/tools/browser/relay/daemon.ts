@@ -1,24 +1,59 @@
+/**
+ * Broker-owned browser relay daemon.
+ *
+ * The MV3 extension can only dial OUT (service workers cannot listen on
+ * sockets), so a native process must own the relay port. Instead of making
+ * the user run `proto browser-relay` by hand, the relay kind lazily starts one
+ * under a profile-independent, machine-global daemon broker. Every relay
+ * consumer holds a connection to that broker, so one project exiting cannot
+ * tear down the fixed-port singleton while another project still uses it.
+ *
+ * A manually started relay may already own the port. Consumers still acquire
+ * the global broker lease before probing, then adopt that external server
+ * without attempting another bind.
+ */
 import { logger } from "@oh-my-pi/pi-utils";
+import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { daemonClientForGlobal } from "../../../launch/client";
-import { describeQuietly, stopQuietly, waitReady } from "../../../launch/ensure";
+import { describeDaemon, stopQuietly, waitReady } from "../../../launch/ensure";
 import { resolveWorkerSpawnCmd } from "../../../subprocess/worker-client";
 import { throwIfAborted } from "../../tool-errors";
-import { probeCdpStatus } from "../attach";
+import { probeCdpResponse, probeCdpStatus } from "../attach";
+import { DEFAULT_RELAY_URL } from "./kind";
+import { relayCdpClientsOf, relayVersionOf } from "./probe";
+import { isOlderProtoVersion } from "./protocol";
 
-const RELAY_DAEMON_NAME = "proto.browser.relay";
+const DEFAULT_RELAY_PORT = new URL(DEFAULT_RELAY_URL).port;
+
+/** Broker daemon name for the relay on `port`; one per port, so relays on different ports never replace each other. */
+function relayDaemonName(port: string): string {
+	return port === DEFAULT_RELAY_PORT ? "proto.browser.relay" : `proto.browser.relay.${port}`;
+}
+
+function relayPort(cdpUrl: string): string | null {
+	try {
+		return String(new URL(cdpUrl).port || 80);
+	} catch {
+		return null;
+	}
+}
+
 const RELAY_BROKER_SCOPE = "browser-relay";
-
+/** Matches the serve banner (`proto browser relay listening on http://…`). */
 const READY_LOG_PATTERN = String.raw`browser relay listening on http://\S+`;
 const READY_TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 1_500;
-
+/** probe→describe→start rounds; bounds cross-process races and wedged-relay replacement. */
 const ENSURE_ATTEMPTS = 3;
 
-export async function probeRelayServer(cdpUrl: string): Promise<boolean> {
-	const status = await probeCdpStatus(`${cdpUrl}/json/version`, { timeoutMs: PROBE_TIMEOUT_MS });
+/** True when the relay HTTP server answers /json/version at all (200 = extension connected, 503 = waiting for it). */
+export async function probeRelayServer(cdpUrl: string, signal?: AbortSignal): Promise<boolean> {
+	const status = await probeCdpStatus(`${cdpUrl}/json/version`, { timeoutMs: PROBE_TIMEOUT_MS, signal });
+	throwIfAborted(signal);
 	return status === 503 || (status !== null && status >= 200 && status < 300);
 }
 
+/** Auto-start is only safe for endpoints this machine can own. */
 export function isLoopbackRelayUrl(cdpUrl: string): boolean {
 	try {
 		const { hostname } = new URL(cdpUrl);
@@ -28,29 +63,36 @@ export function isLoopbackRelayUrl(cdpUrl: string): boolean {
 	}
 }
 
+/**
+ * Ensure a relay server answers at `cdpUrl`, starting the broker-owned daemon
+ * when nothing is serving. Returns true once the HTTP endpoint responds — the
+ * extension handshake (503 → 200) is the caller's wait. False when the relay
+ * could not be started (broker unavailable or start rounds exhausted).
+ */
 export async function ensureRelayDaemon(opts: { cdpUrl: string; signal?: AbortSignal }): Promise<boolean> {
-	let port: string;
-	try {
-		port = String(new URL(opts.cdpUrl).port || 80);
-	} catch {
-		return false;
-	}
-
+	const port = relayPort(opts.cdpUrl);
+	if (port === null) return false;
+	const name = relayDaemonName(port);
+	// Open the lazy client before probing. Merely caching SocketDaemonClient
+	// would not create the broker connection (and therefore would hold no lease).
 	const client = await daemonClientForGlobal(RELAY_BROKER_SCOPE);
 	throwIfAborted(opts.signal);
 	await client.request({ op: "ping" }, opts.signal);
-	if (await probeRelayServer(opts.cdpUrl)) return true;
+	if (await probeRelayServer(opts.cdpUrl, opts.signal)) return true;
 	const spawn = resolveWorkerSpawnCmd("browser-relay");
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
-
-		if (await probeRelayServer(opts.cdpUrl)) return true;
-		const existing = await describeQuietly(client, RELAY_DAEMON_NAME, "Browser relay", opts.signal);
+		// A manual serve or concurrent global-broker start may have won the
+		// port since the last round; adopt it instead of fighting the bind.
+		if (await probeRelayServer(opts.cdpUrl, opts.signal)) return true;
+		const description = await describeDaemon(client, name, "Browser relay", opts.signal);
+		if (description.status === "unknown") return false;
+		const existing = description.status === "found" ? description.daemon : undefined;
 		if (existing && existing.state !== "exited" && existing.state !== "failed") {
-			if (existing.readyAt === undefined) await waitReady(client, RELAY_DAEMON_NAME, "Browser relay", opts.signal);
-			if (await probeRelayServer(opts.cdpUrl)) return true;
-
-			await stopQuietly(client, RELAY_DAEMON_NAME, "Browser relay", opts.signal);
+			if (existing.readyAt === undefined) await waitReady(client, name, "Browser relay", opts.signal);
+			if (await probeRelayServer(opts.cdpUrl, opts.signal)) return true;
+			// Live record but nothing listening: replace the wedged daemon.
+			await stopQuietly(client, name, "Browser relay", opts.signal, existing.id);
 			continue;
 		}
 		try {
@@ -58,7 +100,7 @@ export async function ensureRelayDaemon(opts: { cdpUrl: string; signal?: AbortSi
 				{
 					op: "start",
 					spec: {
-						name: RELAY_DAEMON_NAME,
+						name,
 						application: spawn.cmd[0]!,
 						args: [...spawn.cmd.slice(1), "--port", port],
 						env: {},
@@ -73,16 +115,95 @@ export async function ensureRelayDaemon(opts: { cdpUrl: string; signal?: AbortSi
 				opts.signal,
 			);
 			if (started.op !== "start") continue;
-			if (await probeRelayServer(opts.cdpUrl)) return true;
-			await stopQuietly(client, RELAY_DAEMON_NAME, "Browser relay", opts.signal);
+			if (await probeRelayServer(opts.cdpUrl, opts.signal)) return true;
+			await stopQuietly(client, name, "Browser relay", opts.signal, started.daemon.id);
 		} catch (error) {
 			throwIfAborted(opts.signal);
-
+			// Lost a cross-process start race; the next round adopts the winner.
 			logger.debug("Browser relay start contention", {
-				name: RELAY_DAEMON_NAME,
+				name,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
 	return false;
+}
+
+/**
+ * Replace the broker-owned relay at `cdpUrl` with one from this PROTO version
+ * when it comes from an older one; with `idleOnly`, only while it reports no
+ * CDP client connected. True once the old relay has stopped (the caller's wait
+ * reports whether the new one serves) or another process already replaced it
+ * or stopped it to replace it. False when a relay the broker does not run
+ * serves there (a manually started relay is left alone), the relay comes from
+ * a newer PROTO (a concurrently running newer proto owns it), an `idleOnly` relay
+ * has a client or does not report its clients, or the old relay did not stop.
+ */
+export async function restartRelayDaemon(opts: {
+	cdpUrl: string;
+	signal?: AbortSignal;
+	idleOnly?: boolean;
+}): Promise<boolean> {
+	const port = relayPort(opts.cdpUrl);
+	if (port === null) return false;
+	const name = relayDaemonName(port);
+	const client = await daemonClientForGlobal(RELAY_BROKER_SCOPE);
+	const description = await describeDaemon(client, name, "Browser relay", opts.signal);
+	if (description.status === "unknown") return false;
+	const existing = description.status === "found" ? description.daemon : undefined;
+	if (!existing || existing.state === "exited" || existing.state === "failed") {
+		// Another proto may have stopped the old relay and not yet registered its
+		// replacement; start or adopt it unless a relay the broker does not run serves.
+		const serving = await probeRelayServer(opts.cdpUrl, opts.signal);
+		throwIfAborted(opts.signal);
+		if (serving) return (await relayStatusAt(opts.cdpUrl, opts.signal))?.version === VERSION;
+		// Returns true even if the start fails: the caller's next wait then reports
+		// the relay unreachable, which is accurate, rather than out of date.
+		await ensureRelayDaemon(opts);
+		return true;
+	}
+	// Another proto of this version may have replaced it since the caller's probe,
+	// possibly with a relay that has not printed its ready line yet.
+	if (existing.readyAt === undefined) await waitReady(client, name, "Browser relay", opts.signal);
+	const status = await relayStatusAt(opts.cdpUrl, opts.signal);
+	if (status?.version === VERSION) return true;
+	// A newer proto running alongside this one owns a newer relay; replacing it
+	// would only make the two versions take turns killing each other's relay.
+	if (status !== null && !isOlderProtoVersion(status.version, VERSION)) return false;
+	// The last read before the stop: a client that connected since the caller's
+	// probe keeps the relay. One connecting during the stop request itself loses
+	// its connection, as on any relay restart.
+	if (opts.idleOnly && status?.cdpClients !== 0) return false;
+	// Stops only the generation judged outdated, not one another proto started since.
+	const stopped = await stopQuietly(client, name, "Browser relay", opts.signal, existing.id);
+	if (stopped?.state === "exited" || stopped?.state === "failed") {
+		// As above: a failed start surfaces as unreachable on the caller's wait.
+		await ensureRelayDaemon(opts);
+		return true;
+	}
+	if (stopped === undefined || stopped.id === existing.id) return false;
+	if (stopped.readyAt === undefined) await waitReady(client, name, "Browser relay", opts.signal);
+	return true;
+}
+
+/**
+ * The PROTO version (empty for a relay too old to report one) and connected CDP
+ * client count the relay at `cdpUrl` reports on `/json/version`, ready or
+ * waiting for its extension; null when nothing parseable answers.
+ */
+async function relayStatusAt(
+	cdpUrl: string,
+	signal: AbortSignal | undefined,
+): Promise<{ version: string; cdpClients: number | null } | null> {
+	const response = await probeCdpResponse(`${cdpUrl}/json/version`, { timeoutMs: PROBE_TIMEOUT_MS, signal });
+	throwIfAborted(signal);
+	if (!response) return null;
+	try {
+		const parsed: unknown = JSON.parse(response.body);
+		return typeof parsed === "object" && parsed !== null
+			? { version: relayVersionOf(parsed), cdpClients: relayCdpClientsOf(parsed) }
+			: null;
+	} catch {
+		return null;
+	}
 }

@@ -141,5 +141,5 @@ export interface GenerateContentResponse {
 	responseId?: string;
 	promptFeedback?: PromptFeedback;
 
-	error?: { code?: number; message?: string; status?: string };
+	error?: { code?: number; message?: string; status?: string; details?: unknown[] };
 }

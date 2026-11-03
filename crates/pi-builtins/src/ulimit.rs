@@ -268,7 +268,12 @@ impl ResourceDescription {
 		}
 	}
 
-	fn set(&self, limits: &mut ResourceLimits, set_hard: bool, value: LimitValue) -> std::io::Result<()> {
+	fn set(
+		&self,
+		limits: &mut ResourceLimits,
+		set_hard: bool,
+		value: LimitValue,
+	) -> std::io::Result<()> {
 		let (soft, hard) = self.resource.get(limits)?;
 		let value = match value {
 			LimitValue::Soft => soft,
@@ -284,7 +289,6 @@ impl ResourceDescription {
 			self.resource.set(limits, value, hard)
 		}
 	}
-
 
 	fn print(
 		&self,
@@ -308,7 +312,6 @@ impl ResourceDescription {
 			.unwrap_or_else(|e| format!("{e}"));
 		writeln!(context.stdout(), "{:<26}{:>16} {}", self.description, unit, resource)
 	}
-
 
 	fn help(&self) -> String {
 		format!(
@@ -353,85 +356,79 @@ impl FromStr for LimitValue {
 	}
 }
 
-
-
-
-
 #[derive(Parser, Debug)]
 pub(crate) struct ULimitCommand {
-
 	#[arg(short = 'S')]
-	soft:       bool,
+	soft: bool,
 
 	#[arg(short = 'H')]
-	hard:       bool,
+	hard: bool,
 
 	#[arg(short = 'a')]
-	all:        bool,
+	all: bool,
 
 	#[arg(short = 'b', default_missing_value = "", num_args(0..=1), help = ResourceDescription::SBSIZE)]
-	sbsize:     Option<LimitValue>,
+	sbsize: Option<LimitValue>,
 
 	#[arg(short = 'c', default_missing_value = "", num_args(0..=1), help = ResourceDescription::CORE)]
-	core:       Option<LimitValue>,
+	core: Option<LimitValue>,
 
 	#[arg(short = 'd', default_missing_value = "", num_args(0..=1), help = ResourceDescription::DATA)]
-	data:       Option<LimitValue>,
+	data: Option<LimitValue>,
 
 	#[arg(short = 'e', default_missing_value = "", num_args(0..=1), help = ResourceDescription::NICE)]
-	nice:       Option<LimitValue>,
+	nice: Option<LimitValue>,
 
 	#[arg(short = 'f', default_missing_value = "", num_args(0..=1), help = ResourceDescription::FSIZE)]
-	file_size:  Option<LimitValue>,
+	file_size: Option<LimitValue>,
 
 	#[arg(short = 'i', default_missing_value = "", num_args(0..=1), help = ResourceDescription::SIGPENDING)]
 	sigpending: Option<LimitValue>,
 
 	#[arg(short = 'l', default_missing_value = "", num_args(0..=1), help = ResourceDescription::MEMLOCK)]
-	memlock:    Option<LimitValue>,
+	memlock: Option<LimitValue>,
 
 	#[arg(short = 'k', default_missing_value = "", num_args(0..=1), help = ResourceDescription::KQUEUES)]
-	kqueues:    Option<LimitValue>,
+	kqueues: Option<LimitValue>,
 
 	#[arg(short = 'm', default_missing_value = "", num_args(0..=1), help = ResourceDescription::RSS)]
-	rss:        Option<LimitValue>,
+	rss: Option<LimitValue>,
 
 	#[arg(short = 'n', default_missing_value = "", num_args(0..=1), help = ResourceDescription::NOFILE)]
-	file_open:  Option<LimitValue>,
+	file_open: Option<LimitValue>,
 
 	#[arg(short = 'p', default_missing_value = "", num_args(0..=1), help = ResourceDescription::PIPE)]
-	pipe:       Option<LimitValue>,
+	pipe: Option<LimitValue>,
 
 	#[arg(short = 'q', default_missing_value = "", num_args(0..=1), help = ResourceDescription::MSGQUEUE)]
-	msgqueue:   Option<LimitValue>,
+	msgqueue: Option<LimitValue>,
 
 	#[arg(short = 'r', default_missing_value = "", num_args(0..=1), help = ResourceDescription::RTPRIO)]
-	rtprio:     Option<LimitValue>,
+	rtprio: Option<LimitValue>,
 
 	#[arg(short = 's', default_missing_value = "", num_args(0..=1), help = ResourceDescription::STACK)]
-	stack:      Option<LimitValue>,
+	stack: Option<LimitValue>,
 
 	#[arg(short = 't', default_missing_value = "", num_args(0..=1), help = ResourceDescription::CPU)]
-	cpu:        Option<LimitValue>,
+	cpu: Option<LimitValue>,
 
 	#[arg(short = 'u', default_missing_value = "", num_args(0..=1), help = ResourceDescription::NPROC)]
-	nproc:      Option<LimitValue>,
+	nproc: Option<LimitValue>,
 
 	#[arg(short = 'v', default_missing_value = "", num_args(0..=1), help = ResourceDescription::VMEM)]
-	vmem:       Option<LimitValue>,
+	vmem: Option<LimitValue>,
 
 	#[arg(short = 'x', default_missing_value = "", num_args(0..=1), help = ResourceDescription::LOCKS)]
-	file_lock:  Option<LimitValue>,
+	file_lock: Option<LimitValue>,
 
 	#[arg(short = 'P', default_missing_value = "", num_args(0..=1), help = ResourceDescription::NPTS)]
-	npts:       Option<LimitValue>,
+	npts: Option<LimitValue>,
 
 	#[arg(short = 'R', default_missing_value = "", num_args(0..=1), help = ResourceDescription::RTTIME)]
-	rttime:     Option<LimitValue>,
+	rttime: Option<LimitValue>,
 
 	#[arg(short = 'T', default_missing_value = "", num_args(0..=1), help = ResourceDescription::THREADS)]
-	threads:    Option<LimitValue>,
-
+	threads: Option<LimitValue>,
 
 	limit: Option<LimitValue>,
 }

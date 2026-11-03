@@ -1,8 +1,3 @@
-
-
-
-
-
 use core::fmt::{self, Display, Formatter};
 use std::{
 	cell::RefCell,
@@ -17,38 +12,30 @@ use std::{
 
 use brush_core::{ShellExtensions, builtins::Registration, openfiles::OpenFile};
 use clap::{ArgMatches, Command, CommandFactory, FromArgMatches, Parser, error::ErrorKind};
+use cli::Cli;
+use filter::{FileReports, Filter};
 use jaq_core::{Ctx, RcIter, load};
 use jaq_json::Val;
 
 use crate::host::{Host, Utility, util};
-
-use cli::Cli;
-use filter::{FileReports, Filter};
 
 mod cli {
 
 	use core::fmt;
 	use std::{ffi::OsString, path::PathBuf};
 
-
-
 	type Args = std::vec::IntoIter<OsString>;
 
 	#[derive(Debug, Default)]
 	pub struct Cli {
-
 		pub null_input: bool,
 
+		pub raw_input: bool,
 
-		pub raw_input:  bool,
+		pub slurp: bool,
 
-
-
-		pub slurp:      bool,
-
-
-		pub compact_output:    bool,
-		pub raw_output:        bool,
+		pub compact_output: bool,
+		pub raw_output:     bool,
 
 		pub join_output:       bool,
 		pub in_place:          bool,
@@ -58,32 +45,20 @@ mod cli {
 		pub tab:               bool,
 		pub indent:            usize,
 
-
-		pub from_file:    bool,
-
+		pub from_file: bool,
 
 		pub library_path: Vec<PathBuf>,
-
 
 		pub arg:       Vec<(String, String)>,
 		pub argjson:   Vec<(String, String)>,
 		pub slurpfile: Vec<(String, OsString)>,
 		pub rawfile:   Vec<(String, OsString)>,
 
+		pub filter: Option<Filter>,
+		pub files:  Vec<PathBuf>,
+		pub args:   Vec<String>,
 
-
-
-		pub filter:      Option<Filter>,
-		pub files:       Vec<PathBuf>,
-		pub args:        Vec<String>,
-
-		pub run_tests:   Option<Vec<PathBuf>>,
-
-
-
-
-
-
+		pub run_tests: Option<Vec<PathBuf>>,
 
 		pub exit_status: bool,
 		pub version:     bool,
@@ -108,7 +83,6 @@ mod cli {
 				match mode {
 					Mode::Files => self.files.push(arg.into()),
 					Mode::Args => self.args.push(arg.into_string()?),
-
 				}
 			}
 			Ok(())
@@ -117,7 +91,6 @@ mod cli {
 		fn long(&mut self, mode: &mut Mode, arg: &str, args: &mut Args) -> Result<(), Error> {
 			let int = |s: OsString| s.into_string().ok()?.parse().ok();
 			match arg {
-
 				"" => args.try_for_each(|arg| self.positional(mode, arg))?,
 
 				"null-input" => self.short('n', args)?,
@@ -173,7 +146,9 @@ mod cli {
 				'M' => self.monochrome_output = true,
 
 				'f' => self.from_file = true,
-				'L' => self.library_path.push(args.next().ok_or(Error::Path("-L"))?.into()),
+				'L' => self
+					.library_path
+					.push(args.next().ok_or(Error::Path("-L"))?.into()),
 				'e' => self.exit_status = true,
 				'V' => self.version = true,
 				'h' => self.help = true,
@@ -189,7 +164,6 @@ mod cli {
 			args.next();
 			while let Some(arg) = args.next() {
 				match arg.to_str() {
-
 					Some(s) => match s.strip_prefix("--") {
 						Some(rest) => cli.long(&mut mode, rest, &mut args)?,
 						None => match s.strip_prefix("-") {
@@ -197,8 +171,6 @@ mod cli {
 							None => cli.positional(&mode, arg)?,
 						},
 					},
-
-
 
 					None => cli.positional(&mode, arg)?,
 				}
@@ -238,7 +210,6 @@ mod cli {
 		}
 	}
 
-
 	impl From<OsString> for Error {
 		fn from(e: OsString) -> Self {
 			Self::Utf8(e)
@@ -252,13 +223,11 @@ mod cli {
 		Ok((key, val))
 	}
 
-
 	enum Mode {
 		Args,
 
 		Files,
 	}
-
 }
 
 mod filter {
@@ -287,21 +256,9 @@ mod filter {
 		static HALT: Cell<Option<i32>> = const { Cell::new(None) };
 	}
 
-
 	pub fn take_halt() -> Option<i32> {
 		HALT.with(Cell::take)
 	}
-
-
-
-
-
-
-
-
-
-
-
 
 	fn overrides() -> impl Iterator<Item = jaq_std::Filter<Native<Val>>> {
 		use jaq_core::box_iter::box_once;
@@ -313,14 +270,12 @@ mod filter {
 		}
 
 		fn debug_msg(v: &Val) {
-
 			super::with_runtime(|runtime| {
 				let _ = writeln!(runtime.stderr, "[\"DEBUG:\", {v}]");
 			});
 		}
 
 		fn stderr_msg(v: &Val) {
-
 			if let Some(s) = v.as_str() {
 				super::with_runtime(|runtime| {
 					let _ = write!(runtime.stderr, "{s}");
@@ -334,33 +289,28 @@ mod filter {
 
 		let run_funs: [jaq_std::Filter<RunPtr<Val>>; 3] = [
 			("env", jaq_std::v(0), |_, _| {
-				let env = super::runtime_env().into_iter()
+				let env = super::runtime_env()
+					.into_iter()
 					.map(|(k, v)| (k.into(), Val::from(v)));
 				box_once(Ok(Val::obj(env.collect())))
 			}),
 			("halt", jaq_std::v(0), |_, _| halt_with(0, "halt")),
-			("halt_error", jaq_std::v(1), |_, mut cv| {
-				match cv.0.pop_var().as_isize() {
-					Some(code) => {
-
-
-						if let Some(s) = cv.1.as_str() {
-							super::with_runtime(|runtime| {
-								let _ = write!(runtime.stdout, "{s}");
-							});
-						} else {
-							super::with_runtime(|runtime| {
-								let _ = writeln!(runtime.stdout, "{}", cv.1);
-							});
-						}
-						halt_with(code as i32, "halt_error")
-					},
-					None => box_once(Err(Exn::from(CoreError::typ(cv.1, "integer")))),
-				}
+			("halt_error", jaq_std::v(1), |_, mut cv| match cv.0.pop_var().as_isize() {
+				Some(code) => {
+					if let Some(s) = cv.1.as_str() {
+						super::with_runtime(|runtime| {
+							let _ = write!(runtime.stdout, "{s}");
+						});
+					} else {
+						super::with_runtime(|runtime| {
+							let _ = writeln!(runtime.stdout, "{}", cv.1);
+						});
+					}
+					halt_with(code as i32, "halt_error")
+				},
+				None => box_once(Err(Exn::from(CoreError::typ(cv.1, "integer")))),
 			}),
 		];
-
-
 
 		let upd_funs: [jaq_std::Filter<(RunPtr<Val>, UpdatePtr<Val>)>; 2] = [
 			(
@@ -429,7 +379,6 @@ mod filter {
 		})
 		.map_err(load_errors)?;
 
-
 		let funs = overrides().chain(jaq_std::funs()).chain(jaq_json::funs());
 		let compiler = Compiler::default()
 			.with_funs(funs)
@@ -437,10 +386,6 @@ mod filter {
 		let filter = compiler.compile(modules).map_err(compile_errors)?;
 		Ok((vals, filter))
 	}
-
-
-
-
 
 	pub(crate) fn run(
 		cli: &Cli,
@@ -461,8 +406,6 @@ mod filter {
 		let ctx = Ctx::new(vars, &iter);
 
 		for item in if cli.null_input { &null } else { &iter } {
-
-
 			if super::runtime_cancelled() {
 				break;
 			}
@@ -553,7 +496,6 @@ mod filter {
 	}
 
 	fn report_lex(code: &str, (expected, found): load::lex::Error<&str>) -> Report {
-
 		let found = &found[..found.char_indices().nth(1).map_or(found.len(), |(i, _)| i)];
 
 		let found_range = load::span(code, found);
@@ -629,26 +571,21 @@ mod filter {
 			})
 		}
 	}
-
 }
 
 mod read {
 	use std::{
-		io::{self, BufRead},
+		io::{self, BufRead, Read},
 		path::Path,
 	};
 
 	use super::{Cli, Val};
 
-
-
-	pub fn load_file(path: impl AsRef<Path>) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
+	pub fn load_file(
+		path: impl AsRef<Path>,
+	) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
 		let path = path.as_ref();
-		let file = brush_core::heldfiles::open_read(path)?;
-		match unsafe { memmap2::Mmap::map(&file) } {
-			Ok(mmap) => Ok(Box::new(mmap)),
-			Err(_) => Ok(Box::new(brush_core::heldfiles::read(path)?)),
-		}
+		Ok(Box::new(brush_core::heldfiles::read(path)?))
 	}
 
 	pub fn invalid_data(e: impl std::error::Error + Send + Sync + 'static) -> std::io::Error {
@@ -656,20 +593,49 @@ mod read {
 	}
 
 	fn json_slice(slice: &[u8]) -> impl Iterator<Item = io::Result<Val>> + '_ {
-		let mut lexer = hifijson::SliceLexer::new(slice);
+		let mut lexer = hifijson::SliceLexer::new(json_bytes(slice));
 		core::iter::from_fn(move || {
 			use hifijson::token::Lex;
 			Some(Val::parse(lexer.ws_token()?, &mut lexer).map_err(invalid_data))
 		})
 	}
 
-	fn json_read<'a>(read: impl BufRead + 'a) -> impl Iterator<Item = io::Result<Val>> + 'a {
+	fn json_bytes(bytes: &[u8]) -> &[u8] {
+		bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)
+	}
+
+	fn json_reader(mut read: impl BufRead) -> io::Result<impl BufRead> {
+		use std::io::Read;
+		let mut prefix = [0; 3];
+		let mut len = 0;
+		while len < prefix.len() {
+			let available = read.fill_buf()?;
+			let n = available.len().min(prefix.len() - len);
+			if n == 0 {
+				break;
+			}
+			prefix[len..len + n].copy_from_slice(&available[..n]);
+			read.consume(n);
+			len += n;
+			if prefix[..len] != b"\xef\xbb\xbf"[..len] {
+				break;
+			}
+		}
+		let keep = if prefix == *b"\xef\xbb\xbf" { 0 } else { len };
+		Ok(io::Cursor::new(prefix).take(keep as u64).chain(read))
+	}
+
+	fn json_read<'a>(read: impl BufRead + 'a) -> Box<dyn Iterator<Item = io::Result<Val>> + 'a> {
+		let read = match json_reader(read) {
+			Ok(read) => read,
+			Err(error) => return Box::new(std::iter::once(Err(error))),
+		};
 		let mut lexer = hifijson::IterLexer::new(read.bytes());
-		core::iter::from_fn(move || {
+		Box::new(core::iter::from_fn(move || {
 			use hifijson::token::Lex;
 			let v = Val::parse(lexer.ws_token()?, &mut lexer);
 			Some(v.map_err(|e| core::mem::take(&mut lexer.error).unwrap_or_else(|| invalid_data(e))))
-		})
+		}))
 	}
 
 	pub fn json_array(path: impl AsRef<Path>) -> io::Result<Val> {
@@ -719,7 +685,6 @@ mod read {
 			Box::new(iter)
 		}
 	}
-
 }
 
 mod output {
@@ -825,29 +790,27 @@ mod output {
 			fmt_val(f, &opts, 0, val)
 		};
 
+		let mut rendered = Vec::new();
 		match val {
-			Val::Str(s) if cli.raw_output || cli.join_output => write!(w, "{s}")?,
-			_ => write!(w, "{}", FormatterFn(f))?,
+			Val::Str(s) if cli.raw_output || cli.join_output => {
+				rendered.extend_from_slice(s.as_bytes())
+			},
+			_ => write!(&mut rendered, "{}", FormatterFn(f))?,
 		};
-
-		if cli.join_output {
-
-
-			w.flush()
-		} else {
-			writeln!(w)
+		if !cli.join_output {
+			rendered.push(b'\n');
 		}
-	}
+		w.write_all(&rendered)?;
 
+		if cli.join_output { w.flush() } else { Ok(()) }
+	}
 
 	pub fn with_stdout<T>(stdout: &mut dyn Write, f: impl FnOnce(&mut dyn Write) -> T) -> T {
 		let res = f(stdout);
 		let _ = stdout.flush();
 		res
 	}
-
 }
-
 
 pub(crate) struct Jq {
 	cli: Cli,
@@ -855,20 +818,11 @@ pub(crate) struct Jq {
 
 impl FromArgMatches for Jq {
 	fn from_arg_matches(_matches: &ArgMatches) -> Result<Self, clap::Error> {
-		Err(clap::Error::raw(
-			ErrorKind::InvalidValue,
-			"jq uses its order-preserving argument parser",
-		))
+		Err(clap::Error::raw(ErrorKind::InvalidValue, "jq uses its order-preserving argument parser"))
 	}
 
-	fn update_from_arg_matches(
-		&mut self,
-		_matches: &ArgMatches,
-	) -> Result<(), clap::Error> {
-		Err(clap::Error::raw(
-			ErrorKind::InvalidValue,
-			"jq uses its order-preserving argument parser",
-		))
+	fn update_from_arg_matches(&mut self, _matches: &ArgMatches) -> Result<(), clap::Error> {
+		Err(clap::Error::raw(ErrorKind::InvalidValue, "jq uses its order-preserving argument parser"))
 	}
 }
 
@@ -895,18 +849,21 @@ impl Parser for Jq {
 		I: IntoIterator<Item = T>,
 		T: Into<OsString> + Clone,
 	{
-		let cli = Cli::parse(itr.into_iter().map(Into::into).collect()).map_err(|error| {
-			clap::Error::raw(ErrorKind::InvalidValue, format!("Error: {error}\n"))
-		})?;
+		let cli = Cli::parse(itr.into_iter().map(Into::into).collect())
+			.map_err(|error| clap::Error::raw(ErrorKind::InvalidValue, format!("Error: {error}\n")))?;
 		if cli.version {
-			return Err(command("jaq")
-				.try_get_matches_from(["jaq", "--version"])
-				.expect_err("--version always short-circuits"));
+			return Err(
+				command("jaq")
+					.try_get_matches_from(["jaq", "--version"])
+					.expect_err("--version always short-circuits"),
+			);
 		}
 		if cli.help {
-			return Err(command("jaq")
-				.try_get_matches_from(["jaq", "--help"])
-				.expect_err("--help always short-circuits"));
+			return Err(
+				command("jaq")
+					.try_get_matches_from(["jaq", "--help"])
+					.expect_err("--help always short-circuits"),
+			);
 		}
 		Ok(Self { cli })
 	}
@@ -935,6 +892,9 @@ impl Utility for Jq {
 		match result {
 			Ok(exit) => exit,
 			Err(error) => {
+				if let Some(flag) = host.reported_error_flag() {
+					flag.store(true, Ordering::Relaxed);
+				}
 				color::set(cli.color_if(|| stdout_is_terminal));
 				let _ = write!(host.stderr, "{error}");
 				error.report()
@@ -953,7 +913,12 @@ fn resolve_cli_paths(cli: &mut Cli, host: &Host) {
 	for path in &mut cli.files {
 		*path = host.resolve(&*path);
 	}
-	for path in cli.rawfile.iter_mut().chain(&mut cli.slurpfile).map(|(_, path)| path) {
+	for path in cli
+		.rawfile
+		.iter_mut()
+		.chain(&mut cli.slurpfile)
+		.map(|(_, path)| path)
+	{
 		*path = host.resolve(&*path).into_os_string();
 	}
 	if let Some(paths) = &mut cli.run_tests {
@@ -966,7 +931,7 @@ fn resolve_cli_paths(cli: &mut Cli, host: &Host) {
 struct Runtime {
 	stdout: OpenFile,
 	stderr: OpenFile,
-	env: Vec<(String, String)>,
+	env:    Vec<(String, String)>,
 	cancel: Arc<AtomicBool>,
 }
 
@@ -981,7 +946,10 @@ impl RuntimeGuard {
 		let runtime = Runtime {
 			stdout: host.stdout_clone(),
 			stderr: host.stderr_clone(),
-			env: host.env().map(|(key, value)| (key.to_owned(), value.to_owned())).collect(),
+			env:    host
+				.env()
+				.map(|(key, value)| (key.to_owned(), value.to_owned()))
+				.collect(),
 			cancel: host.cancel_flag(),
 		};
 		RUNTIME.with(|slot| {
@@ -1006,12 +974,20 @@ fn with_runtime<T>(f: impl FnOnce(&mut Runtime) -> T) -> T {
 }
 
 fn runtime_env() -> Vec<(String, String)> {
-	RUNTIME.with(|slot| slot.borrow().as_ref().expect("jq runtime is installed").env.clone())
+	RUNTIME.with(|slot| {
+		slot
+			.borrow()
+			.as_ref()
+			.expect("jq runtime is installed")
+			.env
+			.clone()
+	})
 }
 
 fn runtime_cancelled() -> bool {
 	RUNTIME.with(|slot| {
-		slot.borrow()
+		slot
+			.borrow()
 			.as_ref()
 			.expect("jq runtime is installed")
 			.cancel
@@ -1039,18 +1015,12 @@ mod color {
 fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, Error> {
 	if let Some(test_files) = &cli.run_tests {
 		return Ok(match test_files.last() {
-			Some(file) => {
-				run_tests(
-					io::BufReader::new(brush_core::heldfiles::open_read(file)?),
-					&mut host.stdout,
-					&mut host.stderr,
-				)
-			},
-			None => run_tests(
-				io::BufReader::new(&mut host.stdin),
+			Some(file) => run_tests(
+				io::BufReader::new(brush_core::heldfiles::open_read(file)?),
 				&mut host.stdout,
 				&mut host.stderr,
 			),
+			None => run_tests(io::BufReader::new(&mut host.stdin), &mut host.stdout, &mut host.stderr),
 		});
 	}
 
@@ -1078,9 +1048,6 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 	} else {
 		let mut last = None;
 		for file in &cli.files {
-
-
-
 			let path = file.as_path();
 			let file =
 				read::load_file(path).map_err(|e| Error::Io(Some(path.display().to_string()), e))?;
@@ -1088,8 +1055,6 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 			let inputs = read::slice(cli, &file);
 			if cli.in_place {
 				let observation = host.prepare_write(path)?;
-
-
 
 				let location = path.parent().unwrap();
 				let mut tmp = tempfile::Builder::new()
@@ -1099,7 +1064,6 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 				last = filter::run(cli, &filter, ctx.clone(), inputs, |output| {
 					output::print(tmp.as_file_mut(), cli, &output)
 				})?;
-
 
 				std::mem::drop(file);
 				let perms = std::fs::metadata(path)?.permissions();
@@ -1200,7 +1164,6 @@ impl Display for Error {
 }
 
 impl Error {
-
 	fn report(&self) -> i32 {
 		match self {
 			Self::FalseOrNull => 1,
@@ -1237,11 +1200,7 @@ fn run_test(test: load::test::Test<String>) -> Result<(Val, Val), Error> {
 	Ok((expect?, obtain.map_err(Error::Jaq)?))
 }
 
-fn run_tests(
-	read: impl BufRead,
-	stdout: &mut dyn Write,
-	stderr: &mut dyn Write,
-) -> i32 {
+fn run_tests(read: impl BufRead, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
 	let lines = read.lines().map(Result::unwrap);
 	let tests = load::test::Parser::new(lines);
 
@@ -1268,10 +1227,6 @@ fn run_tests(
 	i32::from(total > passed)
 }
 
-
-
 pub(crate) fn jq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Jq, SE>()
 }
-
-

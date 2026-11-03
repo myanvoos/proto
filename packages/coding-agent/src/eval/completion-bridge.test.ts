@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "bun:test";
 import * as path from "node:path";
 import * as agentCore from "@oh-my-pi/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { ArtifactManager } from "../session/artifacts";
@@ -370,4 +371,44 @@ test("a completion fan-out keeps at most 32 provider requests in flight", async 
 	release.resolve();
 	expect((await Promise.all(calls)).map(result => result.text)).toEqual(Array(40).fill("provider result"));
 	expect(started).toBe(40);
+});
+
+test("slow completions honor configured effort and pass it to bare fallbacks", async () => {
+	const models = ["primary", "fallback"].map(id => ({
+		...model("p", id),
+		reasoning: true,
+		thinking: { mode: "effort" as const, efforts: ["low", "high"] },
+	})) as Model<Api>[];
+	const session = fallbackSession(models, {
+		modelRoles: { slow: "p/primary:low" },
+		"retry.fallbackChains": { slow: ["p/fallback"] },
+	});
+	const attempted = scriptedProvider({ primary: new Error("retry"), fallback: "answer" });
+	const provider = vi.spyOn(agentCore, "instrumentedCompleteSimple");
+	const result = await runEvalCompletion({ prompt: "q", model: "slow" }, { session });
+	expect(attempted).toEqual(["primary", "fallback"]);
+	expect(provider.mock.calls.map(call => call[2]?.reasoning)).toEqual([Effort.Low, Effort.Low]);
+	expect(result.text).toBe("answer");
+});
+
+test("slow off selector disables reasoning instead of restoring the tier default", async () => {
+	const selected = { ...model("p", "primary"), reasoning: true };
+	const session = fallbackSession([selected], { modelRoles: { slow: "p/primary:off" } });
+	scriptedProvider({ primary: "answer" });
+	await runEvalCompletion({ prompt: "q", model: "slow" }, { session });
+	expect(vi.spyOn(agentCore, "instrumentedCompleteSimple").mock.calls[0]?.[2]).toMatchObject({
+		disableReasoning: true,
+	});
+});
+
+test("a bare literal max-suffixed model id keeps the slow tier default effort", async () => {
+	const selected = {
+		...model("p", "primary:max"),
+		reasoning: true,
+		thinking: { mode: "effort" as const, efforts: [Effort.Low, Effort.High, Effort.Max] },
+	} as Model<Api>;
+	const session = fallbackSession([selected], { modelRoles: { slow: "primary:max" } });
+	scriptedProvider({ "primary:max": "answer" });
+	await runEvalCompletion({ prompt: "q", model: "slow" }, { session });
+	expect(vi.spyOn(agentCore, "instrumentedCompleteSimple").mock.calls[0]?.[2]?.reasoning).toBe(Effort.High);
 });

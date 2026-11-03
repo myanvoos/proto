@@ -52,6 +52,7 @@ export interface ReviewerRuntimeHost {
 	notifyQuotaExhausted?(): void;
 
 	getModelIdentity?(): string;
+	includeReasoning?: boolean;
 }
 
 export type { ReviewerRuntimeHost as AdvisorRuntimeHost };
@@ -97,7 +98,7 @@ const ADVISOR_OUTPUT_ONLY_HAZARDS: readonly AdvisorOutputHazard[] = [
 
 export function quarantineAdvisorUnsafeOutput(
 	message: AssistantMessage,
-	sourceText = "",
+	sourceText: string | (() => string) = "",
 	extractGeneratedText: ReviewerGeneratedTextExtractor = extractAdviseGeneratedText,
 	quarantinePrefix: string = ADVISOR_QUARANTINE_PREFIX,
 ): string | undefined {
@@ -116,10 +117,12 @@ export function quarantineAdvisorUnsafeOutput(
 	if (generatedText) {
 		const labels: string[] = [];
 		const matchedLabels: string[] = [];
+		let resolvedSource: string | undefined;
 		for (const hazard of ADVISOR_OUTPUT_ONLY_HAZARDS) {
 			if (!hazard.pattern.test(generatedText)) continue;
 			matchedLabels.push(hazard.label);
-			if (!hazard.pattern.test(sourceText)) labels.push(hazard.label);
+			resolvedSource ??= typeof sourceText === "string" ? sourceText : sourceText();
+			if (!hazard.pattern.test(resolvedSource)) labels.push(hazard.label);
 		}
 
 		if (
@@ -192,7 +195,8 @@ export class ReviewerRuntime {
 
 	readonly #refusalModelsTried = new Set<string>();
 
-	#includeThinking = true;
+	readonly #configuredIncludeThinking: boolean;
+	#includeThinking: boolean;
 	#modelIdentity: string | undefined;
 
 	#droppedBacklogs = 0;
@@ -213,6 +217,8 @@ export class ReviewerRuntime {
 		private readonly host: ReviewerRuntimeHost,
 		private readonly retryDelayMs = 1000,
 	) {
+		this.#configuredIncludeThinking = host.includeReasoning !== false;
+		this.#includeThinking = this.#configuredIncludeThinking;
 		this.#feed = new DeltaCursorFeed(host, {
 			includeThinking: () => this.#includeThinking,
 			scrubHistory: (obfuscator, sharedRegexSecretValues) =>
@@ -456,7 +462,7 @@ export class ReviewerRuntime {
 		const identity = this.host.getModelIdentity?.();
 		if (identity === undefined || identity === this.#modelIdentity) return;
 		this.#modelIdentity = identity;
-		this.#includeThinking = true;
+		this.#includeThinking = this.#configuredIncludeThinking;
 	}
 
 	#notifyWaiters(): void {
@@ -501,7 +507,7 @@ export class ReviewerRuntime {
 		recoveringOverflow: boolean,
 		signal: AbortSignal,
 	): Promise<{
-		batch: string | null;
+		batchText: string;
 		rawMessages: AgentMessage[];
 		preparedMessages: AgentMessage[];
 		finalTurns: number;
@@ -549,10 +555,12 @@ export class ReviewerRuntime {
 						pending: this.#pending.length,
 						backlog: this.#backlog,
 					});
+					const strikes = this.#consecutiveFailures;
 					this.#clearAdvisorContextAtCurrentCursor();
-					const { batch: rerendered, preparedMessages } = this.#prepareBatch(rawMessages, wip, batchText);
+					this.#consecutiveFailures = strikes;
+					const preparedMessages = this.#prepareBatch(rawMessages);
 					return {
-						batch: rerendered ?? (batchText || null),
+						batchText,
 						rawMessages,
 						preparedMessages,
 						finalTurns: turns,
@@ -575,9 +583,9 @@ export class ReviewerRuntime {
 			wip = late.at(-1)!.wip;
 		}
 
-		const { batch: preparedBatch, preparedMessages } = this.#prepareBatch(rawMessages, wip, batchText);
+		const preparedMessages = this.#prepareBatch(rawMessages);
 		return {
-			batch: preparedBatch ?? (batchText || null),
+			batchText,
 			rawMessages,
 			preparedMessages,
 			finalTurns: turns,
@@ -586,16 +594,8 @@ export class ReviewerRuntime {
 		};
 	}
 
-	#prepareBatch(
-		rawMessages: AgentMessage[],
-		wip: boolean,
-		fallback: string | null,
-	): { batch: string | null; preparedMessages: AgentMessage[] } {
-		const preparedMessages = rawMessages.filter(
-			message => !(message.role === "custom" && message.customType === "advisor"),
-		);
-		const batch = this.#feed.renderPrepared(preparedMessages, wip);
-		return { batch: batch ?? fallback, preparedMessages };
+	#prepareBatch(rawMessages: AgentMessage[]): AgentMessage[] {
+		return rawMessages.filter(message => !(message.role === "custom" && message.customType === "advisor"));
 	}
 
 	#terminalAssistantFailure(snapshot: number): AssistantMessage | undefined {
@@ -663,9 +663,15 @@ export class ReviewerRuntime {
 					continue;
 				}
 
-				const { batch, rawMessages, preparedMessages, finalTurns, wip, resetContext } = result;
+				const { batchText, rawMessages, preparedMessages, finalTurns, wip, resetContext } = result;
+				const includeThinking = this.#includeThinking;
+				let renderedBatch: string | null | undefined;
+				const batch = (): string => {
+					renderedBatch ??= this.#feed.renderPrepared(preparedMessages, wip, includeThinking) ?? batchText;
+					return renderedBatch;
+				};
 
-				if (this.disposed || batch === null) {
+				if (this.disposed || (!batchText && !batch())) {
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 					continue;
@@ -678,8 +684,8 @@ export class ReviewerRuntime {
 				try {
 					this.host.beginAdvisorUpdate?.(wip);
 
-					const splitMessages = this.#feed.renderChunks(preparedMessages, wip);
-					const promptInput: string | AgentMessage[] = splitMessages ?? batch;
+					const splitMessages = this.#feed.renderChunks(preparedMessages, wip, includeThinking);
+					const promptInput: string | AgentMessage[] = splitMessages ?? batch();
 					const prompt = this.agent.prompt(promptInput);
 					this.#promptInFlight = prompt;
 					try {
@@ -781,7 +787,7 @@ export class ReviewerRuntime {
 							this.#consecutiveFailures = 0;
 							this.#failureNotified = false;
 							this.#pending.unshift({
-								text: batch,
+								text: batch(),
 								rawMessages,
 								renderRevision: this.#feed.renderRevision,
 								turns: finalTurns,
@@ -835,7 +841,7 @@ export class ReviewerRuntime {
 						this.#consecutiveFailures = 0;
 						this.#failureNotified = false;
 						this.#pending.unshift({
-							text: batch,
+							text: batch(),
 							rawMessages,
 							renderRevision: this.#feed.renderRevision,
 							turns: finalTurns,
@@ -851,7 +857,7 @@ export class ReviewerRuntime {
 						this.#failureNotified = false;
 						this.#clearSeenContext();
 						this.#pending.unshift({
-							text: batch,
+							text: batch(),
 							rawMessages,
 							renderRevision: this.#feed.renderRevision,
 							turns: finalTurns,
@@ -883,7 +889,7 @@ export class ReviewerRuntime {
 							this.#notifyTurnAbandoned();
 							success = true;
 						} else {
-							const recoveryBatch = this.#feed.renderRaw(rawMessages, wip) ?? batch;
+							const recoveryBatch = this.#feed.renderRaw(rawMessages, wip) ?? batch();
 							this.#pending.unshift({
 								text: recoveryBatch,
 								rawMessages,
@@ -907,7 +913,7 @@ export class ReviewerRuntime {
 							success = true;
 						} else {
 							this.#pending.unshift({
-								text: batch,
+								text: batch(),
 								rawMessages,
 								renderRevision: this.#feed.renderRevision,
 								turns: finalTurns,
@@ -941,7 +947,7 @@ export class ReviewerRuntime {
 
 export { ReviewerRuntime as AdvisorRuntime };
 
-function isClassifierRefusal(message: AssistantMessage): boolean {
+export function isClassifierRefusal(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
 	const id = AIError.classifyMessage(message);
 	if (AIError.is(id, AIError.Flag.AccountPolicy)) return false;
@@ -1021,7 +1027,7 @@ function obfuscateAssistantMessage(
 			const args = obfuscateToolArguments(obfuscator, block.arguments, sharedRegexSecretValues);
 			if (args === block.arguments) return block;
 			changed = true;
-			return { ...block, arguments: args };
+			return { ...block, arguments: args, thoughtSignature: undefined };
 		}
 		return block;
 	});

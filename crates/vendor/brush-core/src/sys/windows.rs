@@ -7,7 +7,6 @@ pub use crate::sys::stubs::input;
 pub(crate) mod network;
 pub use crate::sys::stubs::{poll, resource};
 
-
 pub mod signal {
 	pub(crate) use tokio::signal::ctrl_c as await_ctrl_c;
 
@@ -17,7 +16,6 @@ pub mod signal {
 pub use crate::sys::tokio_process as process;
 pub mod terminal;
 pub(crate) mod users;
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {}

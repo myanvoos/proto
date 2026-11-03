@@ -1,7 +1,8 @@
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { $env, ptree, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { readResponseText } from "../response-body";
 import type { RenderResult, SpecialHandler } from "./types";
-import { buildResult, formatMediaDuration, loadPage, MAX_BYTES, readResponseText } from "./types";
+import { buildResult, formatMediaDuration, loadPage, MAX_BYTES } from "./types";
 
 interface GitHubUrl {
 	type:
@@ -28,7 +29,7 @@ interface GitHubUrl {
 }
 
 interface GitHubIssueComment {
-	user: { login: string };
+	user: { login: string } | null;
 	created_at: string;
 	body: string;
 }
@@ -203,7 +204,7 @@ async function renderGitHubIssue(
 		title: string;
 		number: number;
 		state: string;
-		user: { login: string };
+		user: { login: string } | null;
 		created_at: string;
 		updated_at: string;
 		body: string | null;
@@ -213,7 +214,7 @@ async function renderGitHubIssue(
 	};
 
 	let md = `# ${issue.title}\n\n`;
-	md += `**#${issue.number}** · ${issue.state} · opened by @${issue.user.login}\n`;
+	md += `**#${issue.number}** · ${issue.state} · opened by @${issue.user?.login ?? "ghost"}\n`;
 	md += `Created: ${issue.created_at} · Updated: ${issue.updated_at}\n`;
 	if (issue.labels.length > 0) {
 		md += `Labels: ${issue.labels.map(l => l.name).join(", ")}\n`;
@@ -236,7 +237,7 @@ async function renderGitHubIssue(
 				issue.comments > comments.length ? `${comments.length} of ${issue.comments}` : `${comments.length}`;
 			md += `## Comments (${commentCount})\n\n`;
 			for (const comment of comments) {
-				md += `### @${comment.user.login} · ${comment.created_at}\n\n`;
+				md += `### @${comment.user?.login ?? "ghost"} · ${comment.created_at}\n\n`;
 				md += `${comment.body}\n\n---\n\n`;
 			}
 		}
@@ -331,7 +332,7 @@ async function renderGitHubIssuesList(
 		number: number;
 		title: string;
 		state: string;
-		user: { login: string };
+		user: { login: string } | null;
 		created_at: string;
 		comments: number;
 		labels: Array<{ name: string }>;
@@ -344,7 +345,7 @@ async function renderGitHubIssuesList(
 		if (issue.pull_request) continue;
 		const labels = issue.labels.length > 0 ? ` [${issue.labels.map(l => l.name).join(", ")}]` : "";
 		md += `- **#${issue.number}** ${issue.title}${labels}\n`;
-		md += `  by @${issue.user.login} · ${issue.comments} comments · ${issue.created_at}\n\n`;
+		md += `  by @${issue.user?.login ?? "ghost"} · ${issue.comments} comments · ${issue.created_at}\n\n`;
 	}
 
 	return { content: md, ok: true };
@@ -417,7 +418,11 @@ async function renderGitHubRepo(
 	timeout: number,
 	signal?: AbortSignal,
 ): Promise<{ content: string; ok: boolean }> {
-	const repoResult = await fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}`, timeout, signal);
+	const [repoResult, treeResult, readmeResult] = await Promise.all([
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}`, timeout, signal),
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/git/trees/HEAD?recursive=1`, timeout, signal),
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/readme`, timeout, signal),
+	]);
 	if (!repoResult.ok) return { content: "", ok: false };
 
 	const repo = repoResult.data as {
@@ -426,7 +431,6 @@ async function renderGitHubRepo(
 		stargazers_count: number;
 		forks_count: number;
 		open_issues_count: number;
-		default_branch: string;
 		language: string | null;
 		license: { name: string } | null;
 	};
@@ -438,11 +442,6 @@ async function renderGitHubRepo(
 	if (repo.license) md += `License: ${repo.license.name}\n`;
 	md += `\n---\n\n`;
 
-	const treeResult = await fetchGitHubApi(
-		`/repos/${gh.owner}/${gh.repo}/git/trees/${repo.default_branch}?recursive=1`,
-		timeout,
-		signal,
-	);
 	if (treeResult.ok && treeResult.data) {
 		const tree = (treeResult.data as { tree: Array<{ path: string; type: string }> }).tree;
 		md += `## Files\n\n`;
@@ -457,7 +456,6 @@ async function renderGitHubRepo(
 		md += "```\n\n";
 	}
 
-	const readmeResult = await fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/readme`, timeout, signal);
 	if (readmeResult.ok && readmeResult.data) {
 		const readme = readmeResult.data as { content: string; encoding: string };
 		if (readme.encoding === "base64") {
@@ -567,7 +565,7 @@ async function fetchGitHubJobLogs(
 	jobId: number,
 	timeout: number,
 	signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<{ content: string; truncated: boolean } | null> {
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -580,7 +578,7 @@ async function fetchGitHubJobLogs(
 		headers,
 		signal,
 	});
-	return result.ok && result.content ? result.content : null;
+	return result.ok && result.content ? { content: result.content, truncated: Boolean(result.truncated) } : null;
 }
 
 async function renderGitHubActionsRun(
@@ -588,7 +586,10 @@ async function renderGitHubActionsRun(
 	timeout: number,
 	signal?: AbortSignal,
 ): Promise<{ content: string; ok: boolean }> {
-	const runResult = await fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/runs/${gh.runId}`, timeout, signal);
+	const [runResult, jobsResult] = await Promise.all([
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/runs/${gh.runId}`, timeout, signal),
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/runs/${gh.runId}/jobs?per_page=100`, timeout, signal),
+	]);
 	if (!runResult.ok || !runResult.data) return { content: "", ok: false };
 
 	const run = runResult.data as GitHubActionsRun;
@@ -596,11 +597,6 @@ async function renderGitHubActionsRun(
 	md += renderActionsRunMeta(run);
 	md += `\n---\n\n`;
 
-	const jobsResult = await fetchGitHubApi(
-		`/repos/${gh.owner}/${gh.repo}/actions/runs/${gh.runId}/jobs?per_page=100`,
-		timeout,
-		signal,
-	);
 	if (jobsResult.ok && jobsResult.data) {
 		const jobs = (jobsResult.data as { jobs?: GitHubActionsJob[] }).jobs ?? [];
 		md += `## Jobs (${jobs.length})\n\n`;
@@ -620,13 +616,16 @@ async function renderGitHubActionsJob(
 	gh: GitHubUrl,
 	timeout: number,
 	signal?: AbortSignal,
-): Promise<{ content: string; ok: boolean }> {
+): Promise<{ content: string; ok: boolean; truncated?: boolean }> {
 	const jobResult = await fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/jobs/${gh.jobId}`, timeout, signal);
 	if (!jobResult.ok || !jobResult.data) return { content: "", ok: false };
 
 	const job = jobResult.data as GitHubActionsJob;
 
-	const runResult = await fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/runs/${job.run_id}`, timeout, signal);
+	const [runResult, logs] = await Promise.all([
+		fetchGitHubApi(`/repos/${gh.owner}/${gh.repo}/actions/runs/${job.run_id}`, timeout, signal),
+		fetchGitHubJobLogs(gh.owner, gh.repo, job.id, timeout, signal),
+	]);
 	const run = runResult.ok && runResult.data ? (runResult.data as GitHubActionsRun) : null;
 
 	let md = `# ${escapeCell(job.name)}\n\n`;
@@ -645,13 +644,12 @@ async function renderGitHubActionsJob(
 	const steps = renderActionsSteps(job.steps);
 	if (steps) md += `## Steps\n\n${steps}`;
 
-	const logs = await fetchGitHubJobLogs(gh.owner, gh.repo, job.id, timeout, signal);
 	md += `## Logs\n\n`;
 	md += logs
-		? stripActionsLogTimestamps(logs)
+		? stripActionsLogTimestamps(logs.content)
 		: "*Logs unavailable — requires a GITHUB_TOKEN/GH_TOKEN with read access, or the run's logs have expired.*\n";
 
-	return { content: md, ok: true };
+	return { content: md, ok: true, truncated: logs?.truncated };
 }
 
 export const handleGitHub: SpecialHandler = async (
@@ -678,6 +676,7 @@ export const handleGitHub: SpecialHandler = async (
 					fetchedAt,
 					notes,
 					contentType: "text/plain",
+					truncated: result.truncated,
 				});
 			}
 			break;
@@ -747,7 +746,13 @@ export const handleGitHub: SpecialHandler = async (
 			notes.push(`Fetched via GitHub API`);
 			const result = await renderGitHubActionsJob(gh, timeout, signal);
 			if (result.ok) {
-				return buildResult(result.content, { url, method: "github-actions-job", fetchedAt, notes });
+				return buildResult(result.content, {
+					url,
+					method: "github-actions-job",
+					fetchedAt,
+					notes,
+					truncated: result.truncated,
+				});
 			}
 			break;
 		}

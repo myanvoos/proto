@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir, MAIN_CONFIG_FILENAMES } from "./dirs";
+import { getAgentDir, getProjectDir, MAIN_CONFIG_FILENAMES } from "./dirs";
 import { $env, filterChildShellEnv } from "./env";
 import { $which } from "./which";
 
@@ -15,6 +15,21 @@ export interface ShellConfigOptions {
 	configSource?: string;
 }
 let cachedShellConfig: ShellConfig | null = null;
+let capturedChildShellEnv: Record<string, string> | undefined;
+let spawnEnvProjectDir: string | undefined;
+
+/** Capture main-session lifecycle exports before another in-process session changes process.env. */
+export function refreshShellConfigCache(): void {
+	spawnEnvProjectDir ??= getProjectDir();
+	capturedChildShellEnv = filterChildShellEnv(Bun.env, spawnEnvProjectDir);
+	cachedShellConfig = null;
+}
+
+export function __resetShellConfigCacheForTests(): void {
+	capturedChildShellEnv = undefined;
+	spawnEnvProjectDir = undefined;
+	cachedShellConfig = null;
+}
 
 /** Whether a path is a regular file with effective execute permission (a directory passes `X_OK` too). */
 export function isExecutable(filePath: string): boolean {
@@ -29,8 +44,9 @@ export function isExecutable(filePath: string): boolean {
 
 function buildSpawnEnv(shell: string): Record<string, string> {
 	const noCI = $env.PI_BASH_NO_CI || $env.CLAUDE_BASH_NO_CI;
+	spawnEnvProjectDir ??= getProjectDir();
 	return {
-		...filterChildShellEnv(Bun.env),
+		...(capturedChildShellEnv ?? filterChildShellEnv(Bun.env, spawnEnvProjectDir)),
 		SHELL: shell,
 		GIT_EDITOR: "true",
 		GPG_TTY: "not a tty",

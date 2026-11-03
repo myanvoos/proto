@@ -127,3 +127,18 @@ test("relative and tilde cwd values resolve against the session cwd and the home
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("bash exposes its call identity and replaces stale inherited identity on the next call", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-call-identity-"));
+	try {
+		const bash = new BashTool({ ...stubSession(dir), getSessionFile: () => "sessions/current.jsonl" });
+		await bash.execute("seed", { command: "export PI_TOOL_CALL_ID=stale PI_SESSION_ID=stale" });
+		const result = await bash.execute("identity", {
+			command: `printf '%s|%s|%s\n' "$PI_TOOL_CALL_ID" "$PI_SESSION_ID" "$PI_SESSION_FILE"`,
+		});
+		expect(firstLine(result)).toBe(`identity|bash-cwd:${dir}|${path.resolve("sessions/current.jsonl")}`);
+	} finally {
+		await disposeBashSessions(`bash-cwd:${dir}`);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});

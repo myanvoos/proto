@@ -1,5 +1,3 @@
-
-
 use std::{collections::HashMap, path::PathBuf};
 
 pub use shell_builder::State as ShellBuilderState;
@@ -12,17 +10,13 @@ use crate::{
 };
 
 impl<SE: extensions::ShellExtensions, S: shell_builder::IsComplete> ShellBuilder<SE, S> {
-
-
 	pub async fn build(self) -> Result<Shell<SE>, error::Error> {
 		let mut options = self.build_settings();
 
 		let profile = std::mem::take(&mut options.profile);
 		let rc = std::mem::take(&mut options.rc);
 
-
 		let mut shell = Shell::new(options)?;
-
 
 		if !profile.skip() || !rc.skip() {
 			shell.load_config(&profile, &rc).await?;
@@ -33,18 +27,15 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::IsComplete> ShellBuilder
 }
 
 impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, S> {
-
 	pub fn disable_option(mut self, option: impl Into<String>) -> Self {
 		self.disabled_options.push(option.into());
 		self
 	}
 
-
 	pub fn enable_option(mut self, option: impl Into<String>) -> Self {
 		self.enabled_options.push(option.into());
 		self
 	}
-
 
 	pub fn disable_options(mut self, options: impl IntoIterator<Item: Into<String>>) -> Self {
 		self
@@ -53,7 +44,6 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
 		self
 	}
 
-
 	pub fn enable_options(mut self, options: impl IntoIterator<Item: Into<String>>) -> Self {
 		self
 			.enabled_options
@@ -61,18 +51,15 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
 		self
 	}
 
-
 	pub fn disable_shopt_option(mut self, option: impl Into<String>) -> Self {
 		self.disabled_shopt_options.push(option.into());
 		self
 	}
 
-
 	pub fn enable_shopt_option(mut self, option: impl Into<String>) -> Self {
 		self.enabled_shopt_options.push(option.into());
 		self
 	}
-
 
 	pub fn disable_shopt_options(mut self, options: impl IntoIterator<Item: Into<String>>) -> Self {
 		self
@@ -81,7 +68,6 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
 		self
 	}
 
-
 	pub fn enable_shopt_options(mut self, options: impl IntoIterator<Item: Into<String>>) -> Self {
 		self
 			.enabled_shopt_options
@@ -89,12 +75,10 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
 		self
 	}
 
-
 	pub fn builtin(mut self, name: impl Into<String>, reg: builtins::Registration<SE>) -> Self {
 		self.builtins.insert(name.into(), reg);
 		self
 	}
-
 
 	pub fn builtins(
 		mut self,
@@ -104,13 +88,11 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
 		self
 	}
 
-
 	pub fn var(mut self, name: impl Into<String>, variable: ShellVariable) -> Self {
 		self.vars.insert(name.into(), variable);
 		self
 	}
 }
-
 
 #[derive(Default, bon::Builder)]
 #[builder(
@@ -128,7 +110,6 @@ impl<SE: extensions::ShellExtensions, S: shell_builder::State> ShellBuilder<SE, 
     )
 )]
 pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultShellExtensions> {
-
 	#[builder(field)]
 	pub disabled_options: Vec<String>,
 
@@ -143,8 +124,6 @@ pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultSh
 
 	#[builder(field)]
 	pub builtins: HashMap<String, builtins::Registration<SE>>,
-
-
 
 	#[builder(field)]
 	pub vars: HashMap<String, ShellVariable>,
@@ -176,7 +155,6 @@ pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultSh
 	#[builder(default)]
 	pub rc: RcLoadBehavior,
 
-
 	#[builder(default)]
 	pub do_not_inherit_env: bool,
 
@@ -188,7 +166,6 @@ pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultSh
 
 	#[builder(default)]
 	pub external_cmd_leads_session: bool,
-
 
 	pub working_dir: Option<PathBuf>,
 
@@ -204,7 +181,6 @@ pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultSh
 	pub shell_name: Option<String>,
 
 	pub shell_args: Option<Vec<String>>,
-
 
 	pub shell_product_display_str: Option<String>,
 
@@ -269,17 +245,15 @@ impl<SE: extensions::ShellExtensions> Default for Shell<SE> {
 			fs_observations: fsobserve::FsObservationLog::default(),
 			history: None,
 			resource_limits: crate::rlimits::ResourceLimits::default(),
+			umask: None,
 		}
 	}
 }
 
 impl Shell {
-
 	pub fn builder() -> ShellBuilder<extensions::DefaultShellExtensions, shell_builder::Empty> {
 		CreateOptions::builder()
 	}
-
-
 
 	pub fn builder_with_extensions<SE: extensions::ShellExtensions>()
 	-> ShellBuilder<SE, shell_builder::Empty> {

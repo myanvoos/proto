@@ -4,6 +4,7 @@ import {
 	logger,
 	postmortem,
 	Snowflake,
+	untilAborted,
 	withTimeout,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
@@ -12,12 +13,19 @@ import { callSessionTool } from "../../eval/js/tool-bridge";
 import { webpExclusionForModel } from "../../utils/image-loading";
 import type { ToolSession } from "../index";
 import { expandPath } from "../path-utils";
-import { ToolAbortError, ToolError } from "../tool-errors";
-import { pickElectronTarget, shouldPreserveConnectedBrowserFocus } from "./attach";
+import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
+import { isChromiumBrowserExecutable, pickElectronTarget } from "./attach";
 import type { CmuxTab } from "./cmux/cmux-tab";
 import { mapWaitUntil } from "./cmux/rpc";
-import { DEFAULT_VIEWPORT } from "./launch";
-import { closeCdpTarget, forgetSharedTarget, recordSharedTarget, type SharedTargetScope } from "./orphan-registry";
+import { browserConnection, DEFAULT_VIEWPORT } from "./launch";
+import {
+	closeCdpTarget,
+	closeRelayTarget,
+	forgetSharedTarget,
+	forgetSharedTargets,
+	recordSharedTarget,
+	type SharedTargetScope,
+} from "./orphan-registry";
 import {
 	type BrowserHandle,
 	type BrowserKindTag,
@@ -26,22 +34,26 @@ import {
 	type PuppeteerBrowserHandle,
 	releaseBrowser,
 } from "./registry";
-import type {
-	ReadyInfo,
-	RunErrorPayload,
-	RunResultOk,
-	SessionSnapshot,
-	Transferable,
-	Transport,
-	WorkerInbound,
-	WorkerInitPayload,
-	WorkerOutbound,
+import { stopSharedBrowserIfUnreachable } from "./shared-daemon";
+import {
+	type AttachPage,
+	ownsPage,
+	type ReadyInfo,
+	type RunErrorPayload,
+	type RunResultOk,
+	type SessionSnapshot,
+	type Transferable,
+	type Transport,
+	type WorkerInbound,
+	type WorkerInitPayload,
+	type WorkerOutbound,
 } from "./tab-protocol";
 
 interface WorkerHandle {
 	send(msg: WorkerInbound, transferList?: Transferable[]): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
+	onExit(handler: (exitCode: number) => void): () => void;
 	terminate(): Promise<void>;
 	readonly mode: "worker" | "inline";
 }
@@ -74,7 +86,10 @@ interface TabSessionBase<TBrowser extends BrowserHandle = BrowserHandle> {
 interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle> {
 	backend: "worker";
 	worker: WorkerHandle;
-	activateForScreenshot: boolean;
+	ownsPage: boolean;
+	workerRecovery?: Promise<boolean>;
+	workerExitedAt?: number;
+	workerExitNotice?: string;
 }
 
 interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
@@ -104,6 +119,7 @@ interface AcquireTabOptions {
 export interface AcquireTabResult {
 	tab: TabSession;
 	created: boolean;
+	note?: string;
 }
 
 interface RunInTabOptions {
@@ -134,6 +150,17 @@ const READY_BUDGET_FLOOR_MS = 500;
 const killedTabs = new Map<string, string>();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
+class RendererCrashedError extends ToolError {}
+class NavigationTimeoutError extends ToolError {}
+class DebuggerDetachedError extends ToolError {
+	constructor(
+		message: string,
+		readonly when: "before-run" | "during-run",
+		readonly reason: string,
+	) {
+		super(message);
+	}
+}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -206,6 +233,7 @@ async function acquireTabImpl(
 	killedTabs.delete(name);
 
 	let tempHold = false;
+	await waitForWorkerRecovery(name, opts.timeoutMs, opts.signal);
 	const existing = tabs.get(name);
 	if (existing) {
 		if (existing.browser === browser && existing.state === "alive") {
@@ -226,23 +254,45 @@ async function acquireTabImpl(
 						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf === undefined ? "undefined" : String(dsf)} });`,
 					);
 				}
-				if (opts.url) {
-					reuseSteps.push(
-						`await tab.goto(${JSON.stringify(opts.url)}, { waitUntil: ${JSON.stringify(opts.waitUntil ?? "load")} });`,
-					);
+				const reuse = async (): Promise<void> => {
+					if (reuseSteps.length) {
+						await runInTabWithSnapshot(
+							name,
+							{
+								code: reuseSteps.join("\n"),
+								timeoutMs: Math.max(1, opts.timeoutMs - Math.round(performance.now() - startedAt)),
+								signal: opts.signal,
+							},
+							{ cwd: getProjectDir() },
+						);
+					}
+					if (opts.url) await navigateOpenedTab(name, existing, opts, startedAt, false);
+				};
+				let recoveredRenderer = false;
+				try {
+					await reuse();
+				} catch (error) {
+					if (
+						!(error instanceof RendererCrashedError) ||
+						tabs.get(name) !== existing ||
+						existing.state !== "alive"
+					)
+						throw error;
+					recoveredRenderer = true;
+					await reuse();
 				}
-				if (reuseSteps.length) {
-					await runInTabWithSnapshot(
-						name,
-						{
-							code: reuseSteps.join("\n"),
-							timeoutMs: opts.timeoutMs,
-							signal: opts.signal,
-						},
-						{ cwd: getProjectDir() },
-					);
-				}
-				return { tab: tabs.get(name)!, created: false };
+				const reused = tabs.get(name)!;
+				const note =
+					[
+						recoveredRenderer
+							? "The renderer had crashed; the tab was reattached and its page reloaded."
+							: undefined,
+						reused.backend === "worker" ? reused.workerExitNotice : undefined,
+					]
+						.filter(Boolean)
+						.join("\n") || undefined;
+				if (reused.backend === "worker") reused.workerExitNotice = undefined;
+				return { tab: reused, created: false, note };
 			}
 		} else {
 			if (existing.browser === browser) {
@@ -321,15 +371,51 @@ async function acquireTabImpl(
 		pending: new Map(),
 		dialogPolicy: opts.dialogs,
 		kindTag: browser.kind.kind,
-		activateForScreenshot: initPayload.mode === "headless" || initPayload.activateForScreenshot !== false,
+		ownsPage: ownsPage(initPayload),
 		ownerSessionId: opts.ownerSessionId,
 	};
-	worker.onMessage(msg => handleTabMessage(tab, msg));
+	attachTabWorker(tab, worker);
 	tabs.set(name, tab);
 	// Durable ownership lets another live process reap this page if this one dies before closing it.
 	const scope = sharedScopeOf(browser);
 	if (scope) void recordSharedTarget(scope, info.targetId);
+	if (opts.url) await navigateOpenedTab(name, tab, opts, startedAt, true);
 	return { tab, created: true };
+}
+
+async function navigateOpenedTab(
+	name: string,
+	tab: TabSession,
+	opts: AcquireTabOptions,
+	startedAt: number,
+	created: boolean,
+): Promise<void> {
+	try {
+		const remainingMs = Math.max(1, opts.timeoutMs - Math.round(performance.now() - startedAt));
+		await runInTabWithSnapshot(
+			name,
+			{
+				code: `await tab.goto(${JSON.stringify(opts.url)}, { waitUntil: ${JSON.stringify(opts.waitUntil ?? "load")} });`,
+				timeoutMs: remainingMs,
+				signal: opts.signal,
+			},
+			{ cwd: getProjectDir() },
+		);
+		throwIfAborted(opts.signal);
+	} catch (error) {
+		if (
+			!opts.signal?.aborted &&
+			error instanceof NavigationTimeoutError &&
+			tabs.get(name) === tab &&
+			tab.state === "alive"
+		) {
+			throw new ToolError(
+				`${error.message}\nTab ${JSON.stringify(name)} stays open on what loaded; use action:"run" with this name to inspect or continue it.`,
+			);
+		}
+		if (created && tabs.get(name) === tab) await releaseTab(name, { kill: false }).catch(() => undefined);
+		throw error;
+	}
 }
 
 async function acquireCmuxTab(
@@ -423,10 +509,16 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 
 async function runInTabWithSnapshot(
 	name: string,
-	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession },
+	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession; retryAfterDetach?: boolean },
 	snapshot: SessionSnapshot,
 ): Promise<RunResultOk> {
+	const original = tabs.get(name);
+	const waitStartedAt = performance.now();
+	await waitForWorkerRecovery(name, opts.timeoutMs, opts.signal);
 	const tab = tabs.get(name);
+	if (original && tab && tab !== original)
+		throw new ToolError(`Tab ${JSON.stringify(name)} was closed while its worker was being reattached`);
+	opts = { ...opts, timeoutMs: Math.max(1, opts.timeoutMs - Math.round(performance.now() - waitStartedAt)) };
 	if (!tab || tab.state === "dead") {
 		const killed = killedTabs.get(name);
 		throw new ToolError(
@@ -435,9 +527,14 @@ async function runInTabWithSnapshot(
 				: `Tab ${JSON.stringify(name)} is not alive. Open it first with action:"open".`,
 		);
 	}
-	if (tab.pending.size > 0) throw new ToolError(`Tab ${JSON.stringify(name)} is busy`);
+	if (tab.pending.size > 0)
+		throw new ToolError(
+			`Tab ${JSON.stringify(name)} is busy; await its current run before starting another call on the same tab`,
+		);
+	const runStartedAt = performance.now();
 	const id = Snowflake.next();
 	const { promise, resolve, reject } = Promise.withResolvers<RunResultOk>();
+	void promise.catch(() => undefined);
 
 	const closeAc = new AbortController();
 	const pending: PendingRun = {
@@ -481,13 +578,86 @@ async function runInTabWithSnapshot(
 			session: snapshot,
 		});
 		try {
-			return await raceWithTimeout(
+			const result = await raceWithTimeout(
 				promise,
 				opts.timeoutMs + GRACE_MS,
 				"Browser code execution hung past grace; tab killed",
 				async reason => await forceKillTab(name, reason),
 			);
+			if (result.recoverTab) {
+				const reattached = await recoverWorkerTab(
+					tab,
+					opts.timeoutMs,
+					"Browser request interception cleanup failed; tab closed",
+				);
+				result.displays.push({
+					type: "text",
+					text: reattached
+						? "Browser request interception could not be reset after this run; the tab was reattached. Run globals, element IDs, and request interception state were reset; any open dialog was dismissed and any pending load was stopped."
+						: "Browser request interception could not be reset after this run; the tab was closed.",
+				});
+			}
+			if (tab.workerExitNotice) {
+				result.displays.unshift({ type: "text", text: tab.workerExitNotice });
+				tab.workerExitNotice = undefined;
+			}
+			return result;
 		} catch (error) {
+			if (error instanceof RendererCrashedError) {
+				for (const controller of pending.toolCalls.values()) controller.abort(error);
+				const reattached = await untilAborted(opts.signal, () =>
+					trackWorkerRecovery(
+						tab,
+						recoverWorkerTab(tab, opts.timeoutMs, "Browser tab renderer crashed; tab closed"),
+					),
+				);
+				throw new RendererCrashedError(
+					reattached
+						? `${error.message}. The tab was reattached and its page reloaded; run globals and element IDs were reset.`
+						: `${error.message}; the tab could not be reattached and was closed.`,
+				);
+			}
+			if (error instanceof DebuggerDetachedError) {
+				for (const controller of pending.toolCalls.values()) controller.abort(error);
+				const landed = error.when === "during-run" ? "; input sent before the detach may already have landed" : "";
+				if (tab.worker.mode === "inline" && tabs.get(name) === tab && tab.state === "alive") {
+					const closed = waitForClosed(tab).catch(() => undefined);
+					safeSend(tab, { type: "close" });
+					await closed;
+				}
+				if (error.reason === "canceled_by_user" || tab.worker.mode === "inline") {
+					if (tabs.get(name) === tab) await forceKillTab(name, `${error.message}; tab released`);
+					throw new ToolError(
+						`${error.message}${landed}. The tab was released; reopen it after Chrome permits debugging again.`,
+					);
+				}
+				const remainingMs = (): number =>
+					Math.max(0, opts.timeoutMs - Math.round(performance.now() - runStartedAt));
+				const reattached = await untilAborted(opts.signal, () =>
+					trackWorkerRecovery(
+						tab,
+						recycleTimedOutWorkerTab(tab, Math.max(1, remainingMs()), false).catch(() => false),
+					),
+				);
+				if (!reattached) {
+					if (tabs.get(name) === tab)
+						await forceKillTab(name, "Chrome detached the debugger and the tab could not be reattached");
+					throw new ToolError(
+						`${error.message}${landed}. The tab could not be reattached: it may have closed, or Chrome refused debugging while another extension's frame was open. Reopen it once Chrome permits debugging.`,
+					);
+				}
+				if (error.when === "before-run" && opts.retryAfterDetach !== false && remainingMs() > 0) {
+					tab.pending.delete(id);
+					return await runInTabWithSnapshot(
+						name,
+						{ ...opts, timeoutMs: remainingMs(), retryAfterDetach: false },
+						snapshot,
+					);
+				}
+				throw new ToolError(
+					`${error.message}${landed}. The tab was reattached without reloading; run globals and element IDs were reset. Retry the call only if its earlier actions are safe to repeat.`,
+				);
+			}
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
 			if (runTimedOut || error instanceof RecoverableWorkerError) {
@@ -589,6 +759,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 	}
 	let cleanupError: unknown;
 	let forced = false;
+	let targetCloseFailed = false;
 	if (wasAlive) {
 		try {
 			tab.worker.send({ type: "close" });
@@ -598,15 +769,17 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		}
 	}
 	await tab.worker.terminate().catch(() => undefined);
-	if (forced && tab.kindTag === "headless") {
+	if (tab.ownsPage && (forced || tab.kindTag === "relay")) {
 		try {
-			await waitForTabCleanup(
+			targetCloseFailed = !(await waitForTabCleanup(
 				tab,
 				timeoutMs,
 				`orphan CDP target ${JSON.stringify(tab.targetId)} (Page.close)`,
-				closeOrphanTarget(tab),
-			);
+				closeOrphanTarget(tab, timeoutMs / 2),
+			));
+			if (targetCloseFailed) throw new ToolError(`Could not confirm closure of tab ${JSON.stringify(name)}`);
 		} catch (error) {
+			targetCloseFailed = true;
 			cleanupError = error;
 		}
 	}
@@ -621,7 +794,10 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 	} finally {
 		tabs.delete(name);
 		const scope = sharedScopeOf(tab.browser);
-		if (scope) void forgetSharedTarget(scope, tab.targetId);
+		if (scope) {
+			if (targetCloseFailed) recheckSharedBrowser(scope);
+			else void forgetSharedTarget(scope, tab.targetId);
+		}
 	}
 	if (cleanupError) throw cleanupError;
 	return true;
@@ -673,29 +849,35 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 			emulateViewport: browser.kind.headless,
 			viewport: opts.viewport,
 			dialogs: opts.dialogs,
-			url: opts.url,
-			waitUntil: opts.waitUntil,
 			timeoutMs: opts.timeoutMs,
 		};
 	}
 
 	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
-	const activateForScreenshot = !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
-	const page = await pickElectronTarget(browser.browser, {
-		matcher: opts.target,
-		preferVisible: !activateForScreenshot,
-	});
-	const targetId = await targetIdForPage(page);
+	let page: AttachPage;
+	if (
+		(browser.kind.kind === "relay" ||
+			(browser.kind.kind === "spawned" && isChromiumBrowserExecutable(browser.kind.path))) &&
+		!opts.target
+	) {
+		page = { kind: "create" };
+	} else {
+		const picked = await pickElectronTarget(browser.browser, {
+			matcher: opts.target,
+			preferVisible: userDriven && !opts.target,
+			relayJson: browser.kind.kind === "relay" ? browser.cdpUrl : undefined,
+			signal: opts.signal,
+		});
+		page = { kind: "borrowed", targetId: await targetIdForPage(picked) };
+	}
 	return {
 		mode: "attach",
+		userDriven,
 		browserWSEndpoint,
 		safeDir,
-		targetId,
+		page,
 		dialogs: opts.dialogs,
-		url: opts.url,
-		waitUntil: opts.waitUntil,
 		timeoutMs: opts.timeoutMs,
-		activateForScreenshot,
 	};
 }
 
@@ -703,7 +885,7 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 	if (msg.type === "result") {
 		const pending = tab.pending.get(msg.id);
 		if (!pending) return;
-		tab.pending.delete(msg.id);
+		// The run owns its pending entry until any recovery finishes.
 		if (msg.ok) {
 			pending.resolve(msg.payload);
 			return;
@@ -780,76 +962,200 @@ function toErrorPayload(error: unknown): RunErrorPayload {
 	return { name: "Error", message: String(error), isAbort: false, isToolError: false };
 }
 
-async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number): Promise<void> {
+async function recoverWorkerTab(tab: WorkerTabSession, timeoutMs: number, failureReason: string): Promise<boolean> {
+	try {
+		if (tab.worker.mode === "inline") {
+			if (tabs.get(tab.name) === tab) await forceKillTab(tab.name, failureReason);
+			return false;
+		}
+		return await recycleTimedOutWorkerTab(tab, timeoutMs + GRACE_MS);
+	} catch (error) {
+		logger.warn("Failed to recycle browser tab worker", { name: tab.name, error: String(error) });
+		if (tabs.get(tab.name) === tab) await forceKillTab(tab.name, failureReason);
+		return false;
+	}
+}
+
+function trackWorkerRecovery(tab: WorkerTabSession, run: Promise<boolean>): Promise<boolean> {
+	const tracked = run.finally(() => {
+		if (tab.workerRecovery === tracked) tab.workerRecovery = undefined;
+	});
+	tab.workerRecovery = tracked;
+	return tracked;
+}
+
+async function waitForWorkerRecovery(name: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+	const tab = tabs.get(name);
+	if (tab?.backend !== "worker" || !tab.workerRecovery) return;
+	await raceWithTimeout(
+		untilAborted(signal, () => tab.workerRecovery!),
+		timeoutMs,
+		`Tab ${JSON.stringify(name)}'s worker is still being reattached after ${timeoutMs}ms`,
+	);
+}
+
+class WorkerMessageError extends ToolError {}
+
+function attachTabWorker(tab: WorkerTabSession, worker: WorkerHandle): void {
+	worker.onMessage(msg => {
+		if (tab.worker === worker) handleTabMessage(tab, msg);
+	});
+	let lastError: Error | undefined;
+	worker.onError(error => {
+		if (!(error instanceof WorkerMessageError)) lastError = error;
+	});
+	worker.onExit(exitCode => {
+		if (tabs.get(tab.name) !== tab || tab.worker !== worker || tab.state !== "alive" || releaseInflight.has(tab))
+			return;
+		const cause = lastError && (/^error: (.+)$/m.exec(lastError.message)?.[1] ?? lastError.message.split("\n", 1)[0]);
+		const exited = `Browser tab worker exited unexpectedly (exit code ${exitCode}${cause ? `, ${cause}` : ""})`;
+		const looping = tab.workerExitedAt !== undefined && Date.now() - tab.workerExitedAt < 10_000;
+		tab.workerExitedAt = Date.now();
+		const idle = tab.pending.size === 0;
+		const error = postmortem.markExpectedCleanupError(
+			new ToolError(
+				`${exited}; the tab is being reattached to the same page. Run globals and element ids are reset.`,
+			),
+		);
+		for (const pending of tab.pending.values()) {
+			for (const controller of pending.toolCalls.values()) controller.abort(error);
+			pending.closeAc?.abort(error);
+			pending.reject(error);
+		}
+		if (looping) {
+			void forceKillTab(tab.name, `${exited} again after replacement; tab closed`).catch(error =>
+				logger.warn("Failed to close crashed browser tab", { error: String(error) }),
+			);
+			return;
+		}
+		const recovery = recycleTimedOutWorkerTab(tab, 10_000, false)
+			.then(reattached => {
+				if (reattached && idle)
+					tab.workerExitNotice = `${exited} since the last call; the tab was reattached without reloading. Run globals and element ids were reset.`;
+				return reattached;
+			})
+			.catch(async error => {
+				logger.warn("Failed to reattach browser tab worker", { name: tab.name, error: String(error) });
+				if (tabs.get(tab.name) === tab) await forceKillTab(tab.name, `${exited}; reattachment failed, tab closed`);
+				return false;
+			})
+			.finally(() => {
+				if (tab.workerRecovery === recovery) tab.workerRecovery = undefined;
+			});
+		tab.workerRecovery = recovery;
+	});
+}
+
+async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number, recover = true): Promise<boolean> {
 	const startedAt = performance.now();
 	const oldWorker = tab.worker;
-	await oldWorker.terminate().catch(() => undefined);
-	const browserWSEndpoint = tab.browser.browser.wsEndpoint();
-	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
-	const payload: WorkerInitPayload = {
-		mode: "attach",
-		browserWSEndpoint,
-		safeDir: getPuppeteerDir(),
-		targetId: tab.targetId,
-		dialogs: tab.dialogPolicy,
-
-		recover: true,
-		emulateFocus: tab.kindTag === "headless",
-		timeoutMs,
-		activateForScreenshot: tab.activateForScreenshot,
-	};
-	let worker = await spawnTabWorker();
+	holdBrowser(tab.browser);
 	try {
-		const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
-		tab.worker = worker;
-		tab.info = info;
-		tab.state = "alive";
-		worker.onMessage(msg => handleTabMessage(tab, msg));
-	} catch (error) {
-		await worker.terminate().catch(() => undefined);
-		if (initBudgetExhausted(timeoutMs, startedAt)) throw error;
-		worker = await spawnInlineWorker();
-		try {
+		await oldWorker.terminate().catch(() => undefined);
+		const browserWSEndpoint = tab.browser.browser.wsEndpoint();
+		if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+		const payload: WorkerInitPayload = {
+			mode: "attach",
+			userDriven: tab.kindTag === "connected" || tab.kindTag === "relay",
+			browserWSEndpoint,
+			safeDir: getPuppeteerDir(),
+			page: { kind: tab.ownsPage ? "owned" : "borrowed", targetId: tab.targetId },
+			dialogs: tab.dialogPolicy,
+			recover,
+			timeoutMs,
+		};
+		const adopt = async (worker: WorkerHandle): Promise<boolean> => {
 			const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
+			if (tabs.get(tab.name) !== tab || tab.state !== "alive" || releaseInflight.has(tab)) {
+				await worker.terminate().catch(() => undefined);
+				return false;
+			}
 			tab.worker = worker;
 			tab.info = info;
-			tab.state = "alive";
-			worker.onMessage(msg => handleTabMessage(tab, msg));
-		} catch (inlineError) {
+			attachTabWorker(tab, worker);
+			return true;
+		};
+		let worker = await spawnTabWorker();
+		try {
+			return await adopt(worker);
+		} catch (error) {
 			await worker.terminate().catch(() => undefined);
-			const finalError = new ToolError(
-				`Failed to recycle timed-out browser tab worker (inline fallback also failed): ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
-			);
-			Object.defineProperty(finalError, "cause", { value: error, configurable: true });
-			throw finalError;
+			if (initBudgetExhausted(timeoutMs, startedAt) || isReportedInitFailure(error)) throw error;
+			worker = await spawnInlineWorker();
+			try {
+				return await adopt(worker);
+			} catch (inlineError) {
+				await worker.terminate().catch(() => undefined);
+				throw new ToolError(
+					`Failed to reattach browser tab worker: ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
+					{ cause: error },
+				);
+			}
 		}
+	} finally {
+		await releaseBrowser(tab.browser, { kill: false });
 	}
 }
 
 async function forceKillTab(name: string, reason: string): Promise<void> {
 	const tab = tabs.get(name);
 	if (!tab) return;
+	const ongoing = releaseInflight.get(tab);
+	if (ongoing) {
+		await ongoing.catch(() => undefined);
+		return;
+	}
 	killedTabs.set(name, reason);
 	tab.state = "dead";
 	const error = postmortem.markExpectedCleanupError(new ToolError(reason));
-	for (const pending of tab.pending.values()) pending.reject(error);
-	tab.pending.clear();
-	if (tab.backend === "cmux") {
-		await releaseBrowser(tab.browser, { kill: false });
-		tabs.delete(name);
-		return;
+	for (const pending of tab.pending.values()) {
+		for (const controller of pending.toolCalls.values()) controller.abort(error);
+		pending.closeAc?.abort(error);
+		pending.reject(error);
 	}
-	await tab.worker.terminate().catch(() => undefined);
-	if (tab.kindTag === "headless") await closeOrphanTarget(tab);
-	await releaseBrowser(tab.browser, { kill: false });
-	tabs.delete(name);
-	const scope = sharedScopeOf(tab.browser);
-	if (scope) void forgetSharedTarget(scope, tab.targetId);
+	tab.pending.clear();
+	const teardown = forceKillTabTeardown(tab).then(() => true);
+	releaseInflight.set(tab, teardown);
+	try {
+		await teardown;
+	} finally {
+		if (releaseInflight.get(tab) === teardown) releaseInflight.delete(tab);
+	}
+}
+
+async function forceKillTabTeardown(tab: TabSession): Promise<void> {
+	let targetClosed = true;
+	if (tab.backend === "worker") {
+		await tab.worker.terminate().catch(() => undefined);
+		if (tab.ownsPage) {
+			targetClosed = await waitForTabCleanup(
+				tab,
+				DEFAULT_TAB_CLOSE_TIMEOUT_MS,
+				`orphan CDP target ${JSON.stringify(tab.targetId)} (Page.close)`,
+				closeOrphanTarget(tab, DEFAULT_TAB_CLOSE_TIMEOUT_MS / 2),
+			).catch(() => false);
+		}
+	}
+	try {
+		await releaseBrowser(tab.browser, { kill: false });
+	} finally {
+		if (tabs.get(tab.name) === tab) tabs.delete(tab.name);
+		const scope = sharedScopeOf(tab.browser);
+		if (scope) {
+			if (targetClosed) void forgetSharedTarget(scope, tab.targetId);
+			else recheckSharedBrowser(scope);
+		}
+	}
 }
 
 // Closes via the browser CDP session: `page.close()` on a page whose navigation wedged waits for the protocol timeout.
-async function closeTargetById(browser: PuppeteerBrowserHandle, targetId: string): Promise<void> {
-	await closeCdpTarget(browser.browser, targetId);
+async function closeTargetById(
+	browser: PuppeteerBrowserHandle,
+	targetId: string,
+	confirmTimeoutMs?: number,
+): Promise<boolean> {
+	if (browser.kind.kind === "relay") return await closeRelayTarget(browserConnection(browser.browser), targetId);
+	return await closeCdpTarget(browser.browser, targetId, confirmTimeoutMs);
 }
 
 // Only the project-shared broker Chromium outlives its creating process, so only it needs cross-process reaping.
@@ -859,8 +1165,14 @@ function sharedScopeOf(browser: BrowserHandle): SharedTargetScope | undefined {
 	return { projectDir: browser.sharedDaemon.projectDir, daemonName: browser.sharedDaemon.name };
 }
 
-async function closeOrphanTarget(tab: WorkerTabSession): Promise<void> {
-	await closeTargetById(tab.browser, tab.targetId);
+function recheckSharedBrowser(scope: SharedTargetScope): void {
+	void stopSharedBrowserIfUnreachable(scope).then(stopped => {
+		if (stopped) void forgetSharedTargets(scope);
+	});
+}
+
+async function closeOrphanTarget(tab: WorkerTabSession, confirmTimeoutMs?: number): Promise<boolean> {
+	return await closeTargetById(tab.browser, tab.targetId, confirmTimeoutMs);
 }
 
 // Fire-and-forget so cleanup never delays the caller's error; the browser is held across the close so a concurrent
@@ -910,13 +1222,19 @@ async function targetIdForTarget(target: Target): Promise<string> {
 }
 
 function errorFromPayload(payload: RunErrorPayload): Error {
-	const error = payload.recoverTab
-		? new RecoverableWorkerError(payload.message)
-		: payload.isAbort
-			? new ToolAbortError()
-			: payload.isToolError
-				? new ToolError(payload.message)
-				: new Error(payload.message);
+	const error = payload.rendererCrashed
+		? new RendererCrashedError(payload.message)
+		: payload.debuggerDetached
+			? new DebuggerDetachedError(payload.message, payload.debuggerDetached.when, payload.debuggerDetached.reason)
+			: payload.navigationTimeout
+				? new NavigationTimeoutError(payload.message)
+				: payload.recoverTab
+					? new RecoverableWorkerError(payload.message)
+					: payload.isAbort
+						? new ToolAbortError()
+						: payload.isToolError
+							? new ToolError(payload.message)
+							: new Error(payload.message);
 	error.name = payload.name;
 	if (payload.stack) error.stack = payload.stack;
 	return error;
@@ -963,6 +1281,7 @@ async function spawnTabWorker(): Promise<WorkerHandle> {
 }
 
 function wrapBunWorker(worker: Worker): WorkerHandle {
+	let terminated = false;
 	return {
 		mode: "worker",
 		send(msg, transferList) {
@@ -976,7 +1295,7 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 		onError(handler) {
 			const onError = (event: ErrorEvent): void => handler(errorFromWorkerEvent(event));
 			const onMessageError = (event: MessageEvent): void =>
-				handler(new ToolError(`Tab worker message error: ${String(event.data)}`));
+				handler(new WorkerMessageError(`Tab worker message error: ${String(event.data)}`));
 			worker.addEventListener("error", onError);
 			worker.addEventListener("messageerror", onMessageError);
 			return () => {
@@ -984,7 +1303,15 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 				worker.removeEventListener("messageerror", onMessageError);
 			};
 		},
+		onExit(handler) {
+			const onClose = (event: CloseEvent): void => {
+				if (!terminated) handler(event.code);
+			};
+			worker.addEventListener("close", onClose);
+			return () => worker.removeEventListener("close", onClose);
+		},
 		async terminate() {
+			terminated = true;
 			worker.terminate();
 		},
 	};
@@ -1006,7 +1333,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 		close: () => {},
 	};
 	const { WorkerCore } = await import("./tab-worker");
-	new WorkerCore(workerTransport, false);
+	const core = new WorkerCore(workerTransport, false);
 	return {
 		mode: "inline",
 		send: msg =>
@@ -1018,7 +1345,10 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			return () => hostListeners.delete(handler);
 		},
 		onError: () => () => {},
-		async terminate() {},
+		onExit: () => () => {},
+		async terminate() {
+			core.terminate();
+		},
 	};
 }
 

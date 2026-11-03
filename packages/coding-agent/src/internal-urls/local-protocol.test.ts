@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { LocalProtocolHandler, type LocalProtocolOptions } from "./local-protocol";
+import * as os from "node:os";
+import * as path from "node:path";
+import { LocalProtocolHandler, type LocalProtocolOptions, resolveLocalRoot } from "./local-protocol";
 
 afterEach(() => LocalProtocolHandler.resetOverrideForTests());
 
@@ -19,4 +21,10 @@ test("protocol overrides retain the newest live session under out-of-order dispo
 	releaseSecondAgain();
 	expect(LocalProtocolHandler.resolveOptions()).toBe(first);
 	releaseFirstAgain();
+});
+
+test("dot session identities cannot move fallback local storage outside its per-session root", () => {
+	for (const id of [".", "..", ""]) {
+		expect(resolveLocalRoot({ getSessionId: () => id })).toBe(path.join(os.tmpdir(), "proto-local", "session"));
+	}
 });

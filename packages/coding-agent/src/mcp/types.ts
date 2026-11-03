@@ -1,3 +1,4 @@
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { SourceMeta } from "../capability/types";
 
 export interface JsonRpcRequest {
@@ -142,6 +143,7 @@ export interface MCPInitializeResult {
 
 export interface MCPToolDefinition {
 	name: string;
+	annotations?: ToolAnnotations;
 	description?: string;
 	inputSchema: {
 		type: "object";
@@ -195,8 +197,15 @@ export interface MCPToolCallResult {
 	_meta?: Record<string, unknown>;
 }
 
+export interface MCPProgress {
+	progress: number;
+	total?: number;
+	message?: string;
+}
+
 export interface MCPRequestOptions {
 	signal?: AbortSignal;
+	onProgress?: (progress: MCPProgress) => void;
 }
 
 export interface MCPTransport {

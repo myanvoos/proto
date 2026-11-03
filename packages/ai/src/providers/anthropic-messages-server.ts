@@ -454,9 +454,37 @@ function mapStopReasonOut(reason: StopReason, hasToolUse: boolean): "end_turn" |
 	}
 }
 
+function collapseFallbackSegmentsKeepFirst(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	let firstReasoningSegment = -1;
+	let segment = 0;
+	for (const block of content) {
+		if (block.type === "fallback") segment++;
+		else if (block.type === "thinking" || block.type === "redactedThinking") {
+			firstReasoningSegment = segment;
+			break;
+		}
+	}
+	if (firstReasoningSegment === -1) {
+		return content.filter(block => block.type !== "fallback");
+	}
+	const collapsed: AssistantMessage["content"] = [];
+	segment = 0;
+	for (const block of content) {
+		if (block.type === "fallback") {
+			segment++;
+			continue;
+		}
+		if ((block.type === "thinking" || block.type === "redactedThinking") && segment !== firstReasoningSegment) {
+			continue;
+		}
+		collapsed.push(block);
+	}
+	return collapsed;
+}
+
 function encodeContentBlocks(message: AssistantMessage): Record<string, unknown>[] {
 	const blocks: Record<string, unknown>[] = [];
-	for (const c of message.content) {
+	for (const c of collapseFallbackSegmentsKeepFirst(message.content)) {
 		switch (c.type) {
 			case "text":
 				blocks.push({ type: "text", text: c.text });
@@ -567,6 +595,8 @@ export function encodeStream(
 			// deltas by snapshot index, so later blocks shift down by the number of
 			// suppressed blocks before them (identity while nothing is suppressed).
 			const suppressed = new Set<number>();
+			let reasoningSeen = false;
+			let suppressLaterReasoning = false;
 			const wireIndex = (contentIndex: number): number => {
 				let shift = 0;
 				for (const index of suppressed) {
@@ -605,6 +635,15 @@ export function encodeStream(
 				while (nextContentIndexToInspect < limit) {
 					const contentIndex = nextContentIndexToInspect++;
 					const content = message.content[contentIndex];
+					if (content?.type === "fallback") {
+						suppressed.add(contentIndex);
+						if (reasoningSeen) suppressLaterReasoning = true;
+						continue;
+					}
+					if (content?.type === "redactedThinking") {
+						suppressed.add(contentIndex);
+						continue;
+					}
 					if (content?.type !== "anthropicServerTool") continue;
 					ensureStart(message);
 					const index = wireIndex(contentIndex);
@@ -677,6 +716,11 @@ export function encodeStream(
 							break;
 						case "thinking_start": {
 							emitServerToolBlocksBefore(ev.partial, ev.contentIndex);
+							if (suppressLaterReasoning) {
+								suppressed.add(ev.contentIndex);
+								break;
+							}
+							reasoningSeen = true;
 							ensureStart(ev.partial);
 							const index = wireIndex(ev.contentIndex);
 							open.set(ev.contentIndex, { index, kind: "thinking" });
@@ -690,6 +734,7 @@ export function encodeStream(
 							break;
 						}
 						case "thinking_delta":
+							if (suppressed.has(ev.contentIndex)) break;
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
@@ -699,6 +744,7 @@ export function encodeStream(
 							);
 							break;
 						case "thinking_end": {
+							if (suppressed.has(ev.contentIndex)) break;
 							const c = ev.partial.content[ev.contentIndex];
 							if (c?.type === "thinking" && c.thinkingSignature) {
 								controller.enqueue(

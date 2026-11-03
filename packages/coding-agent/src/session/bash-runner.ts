@@ -259,6 +259,11 @@ export class BashRunner {
 			this.#sessionOwners.set(transition.newTarget.sessionId, transition.newTarget.owner);
 		}
 		transition.resolveNew(currentDestination);
+		if (success && transition.oldSessionId !== manager.getSessionId()) {
+			void this.#retireSessionTarget(transition.oldTarget).catch(error => {
+				logger.warn("Failed to release previous session shells", { error: String(error) });
+			});
+		}
 		if (transition.detachedManager && (oldDestination.kind !== "detached" || transition.oldTarget.refs === 0)) {
 			void transition.detachedManager.close().catch(error => {
 				logger.warn("Failed to close detached bash session writer", { error: String(error) });
@@ -280,7 +285,7 @@ export class BashRunner {
 		result: BashResult,
 		options?: { excludeFromContext?: boolean },
 	): BashExecutionMessage {
-		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
+		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).minimized(result.minimized).get();
 		return {
 			role: "bashExecution",
 			command,
@@ -304,6 +309,18 @@ export class BashRunner {
 		if (target.refs <= 0) throw new Error("Bash session target released more than once");
 		target.refs--;
 		if (target.refs === 0 && target.destination?.kind === "detached") await target.destination.manager.close();
+		await this.#retireSessionTarget(target);
+	}
+
+	async #retireSessionTarget(target: BashSessionTarget): Promise<void> {
+		if (
+			target.refs !== 0 ||
+			target.owner === this.#sessionTarget.owner ||
+			this.#sessionOwners.get(target.sessionId) !== target.owner
+		)
+			return;
+		this.#sessionOwners.delete(target.sessionId);
+		await disposeBashSessions(target.sessionId, target.owner);
 	}
 
 	#appendMessage(destination: BashAppendDestination, message: BashExecutionMessage): void {

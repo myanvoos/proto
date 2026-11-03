@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	fs::{self, File, OpenOptions},
@@ -23,7 +16,6 @@ const OPT_APPEND: &str = "append";
 const ARG_FILE: &str = "file";
 const CHUNK_SIZE: usize = 64 * 1024;
 
-
 pub(crate) struct Sponge {
 	matches: ArgMatches,
 }
@@ -34,8 +26,6 @@ impl Utility for Sponge {
 	const NAME: &'static str = "sponge";
 
 	fn run(self, host: &mut Host) -> i32 {
-
-
 		let buffer = match soak_stdin(host) {
 			Ok(buffer) => buffer,
 			Err(SoakError::Cancelled) => return 130,
@@ -46,7 +36,11 @@ impl Utility for Sponge {
 		};
 
 		let Some(file) = self.matches.get_one::<OsString>(ARG_FILE) else {
-			if let Err(err) = host.stdout.write_all(&buffer).and_then(|()| host.stdout.flush()) {
+			if let Err(err) = host
+				.stdout
+				.write_all(&buffer)
+				.and_then(|()| host.stdout.flush())
+			{
 				host.error(format_args!("stdout: {err}"), 1);
 				return 1;
 			}
@@ -66,7 +60,7 @@ impl Utility for Sponge {
 		match result {
 			Ok(()) => 0,
 			Err(err) => {
-			host.error(format_args!("{}: {err}", file.to_string_lossy()), 1);
+				host.error(format_args!("{}: {err}", file.to_string_lossy()), 1);
 				1
 			},
 		}
@@ -105,8 +99,6 @@ enum SoakError {
 	Io(io::Error),
 }
 
-
-
 fn soak_stdin(host: &mut Host) -> Result<Vec<u8>, SoakError> {
 	let mut buffer = Vec::new();
 	let mut chunk = vec![0u8; CHUNK_SIZE].into_boxed_slice();
@@ -130,9 +122,6 @@ fn append_to(target: &Path, buffer: &[u8], host: &Host) -> io::Result<()> {
 	file.flush()
 }
 
-
-
-
 fn replace_atomically(target: &Path, buffer: &[u8]) -> io::Result<()> {
 	let (temp_path, mut temp) = create_sibling_temp(target)?;
 	let result = write_and_swap(target, &temp_path, &mut temp, buffer);
@@ -155,8 +144,6 @@ fn write_and_swap(
 	}
 	fs::rename(temp_path, target)
 }
-
-
 
 fn create_sibling_temp(target: &Path) -> io::Result<(PathBuf, File)> {
 	static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -183,15 +170,9 @@ fn create_sibling_temp(target: &Path) -> io::Result<(PathBuf, File)> {
 			Err(err) => return Err(err),
 		}
 	}
-	Err(io::Error::new(
-		io::ErrorKind::AlreadyExists,
-		"could not create temporary file",
-	))
+	Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not create temporary file"))
 }
-
 
 pub(crate) fn sponge_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sponge, SE>()
 }
-
-

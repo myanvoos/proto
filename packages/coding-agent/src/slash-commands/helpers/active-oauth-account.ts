@@ -65,12 +65,13 @@ export function limitMatchesActiveAccount(
 		if (activeOrgId !== reportOrgId) return false;
 		if (!activeAccountId && !activeEmail && !activeProjectId) return true;
 	}
+	const reportEmail = normalizeIdentityValue(metadata.email);
+	if (activeEmail && reportEmail) return activeEmail === reportEmail;
 	if (activeAccountId) {
 		const reportAccountId = normalizeIdentityValue(metadata.accountId) ?? normalizeIdentityValue(metadata.account_id);
 		if (reportAccountId === activeAccountId) return true;
 		if (normalizeIdentityValue(limit.scope.accountId) === activeAccountId) return true;
 	}
-	if (activeEmail && normalizeIdentityValue(metadata.email) === activeEmail) return true;
 	if (activeProjectId) {
 		if (normalizeIdentityValue(metadata.projectId) === activeProjectId) return true;
 		if (normalizeIdentityValue(limit.scope.projectId) === activeProjectId) return true;

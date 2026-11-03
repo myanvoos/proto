@@ -5,6 +5,7 @@ import type TurndownService from "@oh-my-pi/pi-utils/turndown";
 
 import type { AgentStorage } from "../../session/agent-storage";
 import { ToolAbortError } from "../../tools/tool-errors";
+import { decodeBody, readResponseBytes } from "../response-body";
 
 export { formatNumber } from "@oh-my-pi/pi-utils/format";
 
@@ -26,7 +27,6 @@ export type SpecialHandler = (
 	storage?: AgentStorage | null,
 ) => Promise<RenderResult | null>;
 
-export const MAX_OUTPUT_CHARS = 500_000;
 export const MAX_BYTES = 50 * 1024 * 1024;
 
 const USER_AGENTS = [
@@ -35,28 +35,10 @@ const USER_AGENTS = [
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
-function isBotBlocked(status: number, content: string): boolean {
-	if (status === 403 || status === 503) {
-		const lower = content.toLowerCase();
-		return (
-			lower.includes("cloudflare") ||
-			lower.includes("captcha") ||
-			lower.includes("challenge") ||
-			lower.includes("blocked") ||
-			lower.includes("access denied") ||
-			lower.includes("bot detection")
-		);
-	}
-	return false;
-}
+const REFUSAL_STATUSES = new Set([403, 429, 503, 999]);
 
-export function finalizeOutput(content: string): { content: string; truncated: boolean } {
-	const cleaned = content.replace(/\n{3,}/g, "\n\n").trim();
-	const truncated = cleaned.length > MAX_OUTPUT_CHARS;
-	return {
-		content: cleaned.slice(0, MAX_OUTPUT_CHARS),
-		truncated,
-	};
+export function finalizeOutput(content: string): string {
+	return content.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 interface LoadPageOptions {
@@ -70,7 +52,7 @@ interface LoadPageOptions {
 	skipBodyForContentType?: (contentType: string) => boolean;
 }
 
-interface LoadPageResult {
+export interface LoadPageResult {
 	content: string;
 	contentType: string;
 	finalUrl: string;
@@ -93,25 +75,6 @@ function parseRetryAfterMs(value: string | null): number {
 	const date = Date.parse(value);
 	if (!Number.isNaN(date)) return Math.min(Math.max(date - Date.now(), 0), RETRY_AFTER_MAX_MS);
 	return 1_000;
-}
-
-function charsetFromContentType(header: string): string | undefined {
-	return /charset\s*=\s*"?([\w-]+)"?/i.exec(header)?.[1];
-}
-
-function decodeBody(bytes: Uint8Array, contentTypeHeader: string): string {
-	let label = charsetFromContentType(contentTypeHeader);
-	if (!label) {
-		label = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(
-			new TextDecoder("latin1" as Bun.Encoding).decode(bytes.subarray(0, 2048)),
-		)?.[1];
-	}
-	if (label && !/^utf-?8$/i.test(label)) {
-		try {
-			return new TextDecoder(label as Bun.Encoding).decode(bytes);
-		} catch {}
-	}
-	return new TextDecoder().decode(bytes);
 }
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -137,55 +100,6 @@ function validateNetworkTarget(url: string): { ok: true } | { ok: false; error: 
 	return { ok: true };
 }
 
-export interface ReadResponseBytesResult {
-	bytes: Uint8Array;
-	truncated: boolean;
-}
-
-/** Read a response body without trusting its Content-Length header. */
-export async function readResponseBytes(response: Response, maxBytes: number): Promise<ReadResponseBytesResult> {
-	const limit = Number.isFinite(maxBytes) && maxBytes >= 0 ? Math.floor(maxBytes) : MAX_BYTES;
-	if (!response.body) return { bytes: new Uint8Array(), truncated: false };
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	let truncated = false;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			if (total + value.byteLength > limit) {
-				const accepted = Math.max(0, limit - total);
-				if (accepted > 0) {
-					chunks.push(value.subarray(0, accepted));
-					total += accepted;
-				}
-				truncated = true;
-				await reader.cancel("response body limit exceeded").catch(() => {});
-				break;
-			}
-			chunks.push(value);
-			total += value.byteLength;
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return { bytes, truncated };
-}
-
-export async function readResponseText(response: Response, maxBytes: number): Promise<string | null> {
-	const result = await readResponseBytes(response, maxBytes);
-	if (result.truncated) return null;
-	return new TextDecoder().decode(result.bytes);
-}
-
 export async function loadPage(url: string, options: LoadPageOptions = {}): Promise<LoadPageResult> {
 	const {
 		timeout = 20,
@@ -198,12 +112,15 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 	} = options;
 	let lastError: string | undefined;
 	let retried429 = false;
+	const callerHeaders = new Headers(headers);
+	const rotates = !callerHeaders.has("user-agent");
 	for (let attempt = 0; attempt < USER_AGENTS.length; attempt++) {
 		if (signal?.aborted) {
 			throw new ToolAbortError();
 		}
 
 		const userAgent = USER_AGENTS[attempt];
+		const lastAgent = !rotates || attempt === USER_AGENTS.length - 1;
 		const requestSignal = ptree.combineSignals(signal, timeout * 1000);
 		let currentUrl = url;
 		let currentMethod = method;
@@ -215,16 +132,19 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 					return { content: "", contentType: "", finalUrl: currentUrl, ok: false, error: target.error };
 				}
 
+				const requestHeaders = new Headers({
+					"User-Agent": userAgent,
+					Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+					"Accept-Language": "en-US,en;q=0.5",
+					"Accept-Encoding": "identity",
+				});
+				callerHeaders.forEach((value, key) => {
+					requestHeaders.set(key, value);
+				});
 				const requestInit: RequestInit = {
 					signal: requestSignal,
 					method: currentMethod,
-					headers: {
-						"User-Agent": userAgent,
-						Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-						"Accept-Language": "en-US,en;q=0.5",
-						"Accept-Encoding": "identity",
-						...headers,
-					},
+					headers: requestHeaders,
 					redirect: "manual",
 				};
 
@@ -293,6 +213,11 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 					continue;
 				}
 
+				if (REFUSAL_STATUSES.has(response.status) && !lastAgent) {
+					await response.body?.cancel().catch(() => {});
+					break;
+				}
+
 				if (response.status === 429 && !retried429) {
 					retried429 = true;
 					const delayMs = parseRetryAfterMs(response.headers.get("retry-after"));
@@ -318,15 +243,11 @@ export async function loadPage(url: string, options: LoadPageOptions = {}): Prom
 				}
 
 				if (!response.body) {
-					return { content: "", contentType, finalUrl: currentUrl, ok: false, status: response.status };
+					return { content: "", contentType, finalUrl: currentUrl, ok: response.ok, status: response.status };
 				}
 
 				const { bytes: bodyBytes, truncated } = await readResponseBytes(response, maxBytes);
 				const content = decodeBody(bodyBytes, rawContentType);
-
-				if (isBotBlocked(response.status, content) && attempt < USER_AGENTS.length - 1) {
-					break;
-				}
 
 				if (!response.ok) {
 					return { content, contentType, finalUrl: currentUrl, ok: false, status: response.status, truncated };
@@ -368,7 +289,15 @@ export async function htmlToBasicMarkdown(html: string): Promise<string> {
 
 export function buildResult(
 	md: string,
-	opts: { url: string; finalUrl?: string; method: string; fetchedAt: string; notes?: string[]; contentType?: string },
+	opts: {
+		url: string;
+		finalUrl?: string;
+		method: string;
+		fetchedAt: string;
+		notes?: string[];
+		contentType?: string;
+		truncated?: boolean;
+	},
 ): RenderResult {
 	const output = finalizeOutput(md);
 	return {
@@ -376,9 +305,9 @@ export function buildResult(
 		finalUrl: opts.finalUrl ?? opts.url,
 		contentType: opts.contentType ?? "text/markdown",
 		method: opts.method,
-		content: output.content,
+		content: output,
 		fetchedAt: opts.fetchedAt,
-		truncated: output.truncated,
+		truncated: Boolean(opts.truncated),
 		notes: opts.notes ?? [],
 	};
 }

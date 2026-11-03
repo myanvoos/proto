@@ -696,7 +696,11 @@ export class Settings {
 
 	async #reloadPersistedLayers(): Promise<void> {
 		for (;;) {
-			await this.flush();
+			try {
+				await this.flush();
+			} catch (error) {
+				logger.warn("Settings: pending writes retained during reload", { error: String(error) });
+			}
 			const mutationGeneration = this.#persistedMutationGeneration;
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
@@ -718,8 +722,31 @@ export class Settings {
 			if (projectResult.status === "rejected") throw projectResult.reason;
 			if (overlayResult.status === "rejected") throw overlayResult.reason;
 
-			this.#configPath = globalResult.value.configPath;
-			this.#global = globalResult.value.settings ?? {};
+			const configPath = globalResult.value.configPath;
+			const global =
+				globalResult.value.settings ??
+				(configPath !== null && this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+			for (const key of this.#modified) {
+				const segments = key.split(".");
+				setByPath(global, segments, getByPath(this.#global, segments));
+			}
+			for (const role of this.#modifiedGlobalModelRoles) {
+				setByPath(global, ["modelRoles", role], this.#modelRolesFromLayer(this.#global)[role]);
+			}
+			for (const role of this.#modifiedProjectModelRoles) {
+				setByPath(
+					projectResult.value.settings,
+					["modelRoles", role],
+					this.#modelRolesFromLayer(this.#project)[role],
+				);
+				setByPath(
+					projectResult.value.fileSettings,
+					["modelRoles", role],
+					this.#modelRolesFromLayer(this.#project)[role],
+				);
+			}
+			this.#configPath = configPath;
+			this.#global = global;
 			this.#project = projectResult.value.settings;
 			this.#projectFileSettings = projectResult.value.fileSettings;
 			this.#projectShellPathSource = projectResult.value.shellPathSource;
@@ -992,6 +1019,18 @@ export class Settings {
 		if (this.#modelRoleLayerOwns(this.#configOverlay, role)) return "overlay";
 		if (this.#modelRoleLayerOwns(this.#projectSettingsForMerge(), role)) return "project";
 		if (this.#modelRoleLayerOwns(this.#global, role)) return "global";
+		return "default";
+	}
+
+	/** Own stored values only, without defaults, runtime overrides or --config overlays. */
+	getLayerSettings(scope: "global" | "project"): RawSettings {
+		return structuredClone(scope === "global" ? this.#global : this.#project);
+	}
+
+	getSource(key: SettingPath): "project" | "global" | "default" {
+		const segments = SETTING_PATH_SEGMENTS[key];
+		if (getByPath(this.#projectSettingsForMerge(), segments) !== undefined) return "project";
+		if (getByPath(this.#global, segments) !== undefined) return "global";
 		return "default";
 	}
 
@@ -1324,7 +1363,10 @@ export class Settings {
 		const nativeProject = quarantineInvalid
 			? await this.#loadYaml(projectConfigPath)
 			: (this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false)) ??
-				{});
+				(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(this.#projectFileSettings) : {}));
+		if (!quarantineInvalid && this.#quarantinedYamlTargets.has(projectConfigPath)) {
+			merged = this.#deepMerge(merged, nativeProject);
+		}
 		const nativeModelRoles = getByPath(nativeProject, ["modelRoles"]);
 		if (nativeModelRoles !== undefined) {
 			merged = this.#deepMerge(merged, { modelRoles: nativeModelRoles });
@@ -1489,6 +1531,16 @@ export class Settings {
 			this.#legacyLastChangelogVersion ??= raw.lastChangelogVersion;
 		}
 		delete raw.lastChangelogVersion;
+
+		const retry = isRecord(raw.retry) ? raw.retry : undefined;
+		const chains = retry && isRecord(retry.fallbackChains) ? retry.fallbackChains : undefined;
+		const web = chains?.web;
+		if (chains && Array.isArray(web)) {
+			const index = web.findIndex(
+				(selector, i) => selector === "openai-codex/gpt-5.6" && web[i + 1] === "openai-codex/gpt-5.5",
+			);
+			if (index !== -1) chains.web = [...web.slice(0, index), "openai-codex/gpt-5.6-sol", ...web.slice(index + 2)];
+		}
 
 		const startupObj = isRecord(raw.startup) ? (raw.startup as Record<string, unknown>) : undefined;
 		const legacyCollapseChangelog = typeof raw.collapseChangelog === "boolean" ? raw.collapseChangelog : undefined;

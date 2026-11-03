@@ -17,9 +17,11 @@ import {
 	type MCPFailureStage,
 	MCPTransportError,
 	mcpTraceIdFromHeaders,
+	nonRetryableMCPTransportError,
 	normalizeMCPTransportError,
 	sanitizeMCPDiagnostic,
 } from "../errors";
+import { routeProgressNotification, withProgressToken } from "../progress";
 import { RequestIdAllocator } from "../request-id";
 import {
 	createMCPTimeout,
@@ -171,6 +173,7 @@ export class HttpTransport implements MCPTransport {
 	#sseConnection: AbortController | null = null;
 	#lifetime = new AbortController();
 	readonly #requestIds = new RequestIdAllocator();
+	readonly #progressCallbacks = new Map<string | number, NonNullable<MCPRequestOptions["onProgress"]>>();
 
 	#protocolVersion: string | null = null;
 
@@ -448,6 +451,7 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		if ("method" in message && !("id" in message)) {
+			routeProgressNotification(message.method, message.params, token => this.#progressCallbacks.get(token));
 			this.onNotification?.(message.method, message.params);
 		}
 	}
@@ -490,11 +494,12 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		const id = this.#requestIds.next(this.config.requestIdFormat);
+		if (options?.onProgress) this.#progressCallbacks.set(id, options.onProgress);
 		const body = {
 			jsonrpc: "2.0" as const,
 			id,
 			method,
-			params: params ?? {},
+			params: options?.onProgress ? withProgressToken(params, id) : (params ?? {}),
 		};
 
 		const generated: Record<string, string> = {
@@ -587,8 +592,13 @@ export class HttpTransport implements MCPTransport {
 				throw normalizeMCPTransportError(timeoutError, { transport: "http", stage, traceId, requestAccepted });
 			}
 			if (options?.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
-			throw normalizeMCPTransportError(error, { transport: "http", stage, traceId, requestAccepted });
+			const normalized = normalizeMCPTransportError(error, { transport: "http", stage, traceId, requestAccepted });
+			// A reset or EOF may follow the server reading the POST.
+			throw normalized.failure === "reset" || normalized.failure === "eof"
+				? nonRetryableMCPTransportError(normalized)
+				: normalized;
 		} finally {
+			this.#progressCallbacks.delete(id);
 			operation.clear();
 			releaseCaller?.();
 		}

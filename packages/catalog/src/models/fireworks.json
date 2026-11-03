@@ -1,13 +1,14 @@
 {
 	"deepseek-v4-flash": {
 		"id": "deepseek-v4-flash",
-		"name": "deepseek-v4-flash",
+		"name": "DeepSeek V4 Flash",
 		"api": "openai-completions",
 		"provider": "fireworks",
 		"baseUrl": "https://api.fireworks.ai/inference/v1",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0.14,
@@ -32,6 +33,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -112,6 +114,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -194,6 +197,7 @@
 		"tps": 67.1,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -274,6 +278,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -361,6 +366,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -450,6 +456,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -539,6 +546,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -628,6 +636,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -715,6 +724,7 @@
 		"tps": 69.1,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -802,6 +812,7 @@
 		"tps": 69.1,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -883,6 +894,7 @@
 		"tps": 196.3,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -956,6 +968,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1044,6 +1057,7 @@
 		"tps": 110.6,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1096,7 +1110,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "kimi-k2.5",
+		"name": "Kimi K2.5",
 		"api": "openai-completions",
 		"provider": "fireworks",
 		"baseUrl": "https://api.fireworks.ai/inference/v1",
@@ -1133,6 +1147,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1223,6 +1238,7 @@
 		"tps": 35.7,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1314,6 +1330,7 @@
 		"tps": 35.7,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1405,6 +1422,7 @@
 		"tps": 59.9,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1495,6 +1513,7 @@
 		"tps": 59.9,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1584,6 +1603,7 @@
 		"tps": 36.7,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1640,6 +1660,101 @@
 		},
 		"supportsComputerUse": false
 	},
+	"kimi-k3-fast": {
+		"id": "kimi-k3-fast",
+		"name": "Kimi K3 Fast",
+		"api": "openai-completions",
+		"provider": "fireworks",
+		"baseUrl": "https://api.fireworks.ai/inference/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.5,
+			"output": 22.5,
+			"cacheRead": 0.45,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
+		},
+		"tokenizer": "kimi-k2",
+		"requiresGlyphTokenization": false,
+		"int": 43.6,
+		"tps": 36.7,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": true,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "firepass",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": false,
+			"toolStrictMode": "mixed",
+			"toolSchemaFlavor": "moonshot-mfjs",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": true
+		},
+		"supportsComputerUse": false
+	},
 	"minimax-m2.5": {
 		"id": "minimax-m2.5",
 		"name": "MiniMax-M2.5",
@@ -1673,6 +1788,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1755,6 +1871,7 @@
 		"tps": 63.1,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1843,6 +1960,7 @@
 		"tps": 101.6,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -1930,6 +2048,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -2016,6 +2135,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -2102,6 +2222,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -2189,6 +2310,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2276,6 +2398,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2366,6 +2489,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2455,6 +2579,7 @@
 		"tps": 63.5,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2542,6 +2667,7 @@
 		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -2632,6 +2758,7 @@
 		"tps": 39.2,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

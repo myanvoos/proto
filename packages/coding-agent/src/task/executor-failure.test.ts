@@ -46,6 +46,7 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 	return {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		baseSystemPrompt: ["test"],
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -70,6 +71,7 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},
@@ -192,6 +194,7 @@ test.each([
 	const session = {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		baseSystemPrompt: ["test"],
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -223,6 +226,7 @@ test.each([
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: (observer: typeof wakeObserver) => {
 			wakeObserver = observer;
 		},
@@ -331,6 +335,7 @@ test("a successful yield survives a session disposal that outlives the cleanup d
 	const session = {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		baseSystemPrompt: ["test"],
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -366,6 +371,7 @@ test("a successful yield survives a session disposal that outlives the cleanup d
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: () => disposal.promise,
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},

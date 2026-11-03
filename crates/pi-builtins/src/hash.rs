@@ -5,26 +5,20 @@ use clap::Parser;
 
 #[derive(Parser)]
 pub(crate) struct HashCommand {
-
 	#[arg(short = 'd')]
 	remove: bool,
-
 
 	#[arg(short = 'l')]
 	display_as_usable_input: bool,
 
-
 	#[arg(short = 'p', value_name = "PATH")]
 	path_to_use: Option<PathBuf>,
-
 
 	#[arg(short = 'r')]
 	remove_all: bool,
 
-
 	#[arg(short = 't')]
 	display_paths: bool,
-
 
 	names: Vec<String>,
 }
@@ -76,14 +70,11 @@ impl builtins::Command for HashCommand {
 			}
 		} else {
 			for name in &self.names {
-
 				let _ = context.shell.program_location_cache_mut().unset(name);
-
 
 				if name.contains('/') {
 					continue;
 				}
-
 
 				if context
 					.shell

@@ -1,22 +1,17 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import {
-	type ApiKey,
-	type FetchImpl,
-	getEnvApiKey,
-	getOpenRouterHeaders,
-	isOfficialCodexApiUrl,
-	type Model,
-	withAuth,
-} from "@oh-my-pi/pi-ai";
+import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { applySessionHeader } from "@oh-my-pi/pi-ai/providers/inference-headers";
 import { materializeModelHeaders } from "@oh-my-pi/pi-ai/utils/model-headers";
 import { fetchAntigravityImageModel } from "@oh-my-pi/pi-catalog/discovery/antigravity";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
 	getCodexAccountId,
+	isOfficialCodexApiUrl,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 	URL_PATHS,
@@ -680,6 +675,9 @@ async function findImageApiKey(
 async function loadImageFromPath(imagePath: string, cwd: string): Promise<InlineImageData> {
 	const resolved = resolveReadPath(imagePath, cwd);
 	try {
+		const stat = await fs.stat(resolved);
+		if (!stat.isFile()) throw new Error(`Cannot load '${imagePath}': not a regular file.`);
+		if (stat.size > MAX_IMAGE_SIZE) throw new Error(`Image file too large: ${imagePath}`);
 		const buffer = await Bun.file(resolved).bytes();
 		if (buffer.length > MAX_IMAGE_SIZE) {
 			throw new Error(`Image file too large: ${imagePath}`);
@@ -917,6 +915,7 @@ function buildOpenAIImageHeaders(model: Model, apiKey: string, sessionId: string
 	const headers = new Headers(model.headers ?? {});
 	headers.set("Content-Type", "application/json");
 	headers.set("Authorization", `Bearer ${apiKey}`);
+	applySessionHeader(headers, model.compat, sessionId);
 
 	if (model.api === "openai-codex-responses" || model.provider === "openai-codex") {
 		const accountId = getCodexAccountId(apiKey);
@@ -1049,7 +1048,7 @@ function buildAntigravityRequest(
 				{ category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_ONLY_HIGH" },
 			],
 		},
-		requestType: "agent",
+
 		requestId: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
 		userAgent: "antigravity",
 	};

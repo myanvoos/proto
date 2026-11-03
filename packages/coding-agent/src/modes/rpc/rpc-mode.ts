@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, Snowflake } from "@oh-my-pi/pi-utils";
@@ -19,6 +20,7 @@ import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/m
 import { getSessionHostRpcSink } from "../../session-host/transport";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
+import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import type { EventBus } from "../../utils/event-bus";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
@@ -35,6 +37,7 @@ import { claimRpcInput, readRpcInputFrames, validateRpcCommand } from "./rpc-inp
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
+	RpcAbortAndRestoreQueueResult,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -310,13 +313,13 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 
 	const command = parsed as RpcCommand;
 
-	if (command.type === "bash") {
+	if (command.type === "bash" || command.type === "abort_branch_summary") {
 		const task = (async () => {
 			try {
 				deps.output(await deps.handleCommand(command));
 			} catch (err: unknown) {
 				const message = err instanceof Error ? err.message : String(err);
-				deps.output(deps.errorResponse(command.id, "bash", message));
+				deps.output(deps.errorResponse(command.id, command.type, message));
 			}
 		})();
 		deps.trackBackgroundTask?.(task);
@@ -344,7 +347,7 @@ export class RpcInputDispatcher {
 			if (dispatchRpcControlFrame(parsed, this.#deps)) return;
 
 			const command = parsed as RpcCommand;
-			if (isRecord(parsed) && parsed.type === "bash") {
+			if (isRecord(parsed) && (parsed.type === "bash" || parsed.type === "abort_branch_summary")) {
 				dispatchRpcInputFrame(command, this.#deps);
 				return;
 			}
@@ -418,6 +421,45 @@ export class RpcShutdownCoordinator {
 		}
 		return this.#shutdown;
 	}
+}
+
+export function fitAbortAndRestoreQueueResponse(
+	id: string | undefined,
+	restored: RpcAbortAndRestoreQueueResult,
+	maxBytes: number,
+): RpcResponse {
+	const response = (data: RpcAbortAndRestoreQueueResult): RpcResponse => ({
+		id,
+		type: "response",
+		command: "abort_and_restore_queue",
+		success: true,
+		data,
+	});
+	const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+	const full = response(restored);
+	if (bytes(full) <= maxBytes) return full;
+	const imagesDropped = [...restored.steering, ...restored.followUp].some(entry => entry.images?.length);
+	const flags = imagesDropped ? { imagesDropped: true as const } : {};
+	const textOnly = {
+		steering: restored.steering.map(({ text }) => ({ text })),
+		followUp: restored.followUp.map(({ text }) => ({ text })),
+	};
+	if (imagesDropped) {
+		const withoutImages = response({ ...textOnly, ...flags });
+		if (bytes(withoutImages) <= maxBytes) return withoutImages;
+	}
+	const fitted: RpcAbortAndRestoreQueueResult = { steering: [], followUp: [], ...flags, truncated: true };
+	// Exact: each entry adds its own JSON plus a comma after the first in its array.
+	let remaining = maxBytes - bytes(response(fitted));
+	for (const queue of ["steering", "followUp"] as const) {
+		for (const entry of textOnly[queue]) {
+			const cost = bytes(entry) + (fitted[queue].length > 0 ? 1 : 0);
+			if (cost > remaining) return response(fitted);
+			fitted[queue].push(entry);
+			remaining -= cost;
+		}
+	}
+	return response(fitted);
 }
 
 type RpcSubagentResetRegistry = Pick<RpcSubagentRegistry, "clear">;
@@ -778,7 +820,13 @@ export async function runRpcMode(
 				this.output,
 				dialogOptions,
 				undefined,
-				{ method: "input", title, placeholder, timeout: dialogOptions?.timeout },
+				{
+					method: "input",
+					title,
+					placeholder,
+					timeout: dialogOptions?.timeout,
+					...(dialogOptions?.secret === undefined ? {} : { secret: dialogOptions.secret }),
+				},
 				response => parseValueDialogResponse(response, dialogOptions),
 			);
 		}
@@ -857,6 +905,10 @@ export async function runRpcMode(
 			return "";
 		}
 
+		getEditorComponent(): undefined {
+			return undefined;
+		}
+
 		async editor(
 			title: string,
 			prefill?: string,
@@ -895,6 +947,23 @@ export async function runRpcMode(
 
 	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
 	setToolUIContext?.(rpcUiContext, true);
+
+	// Startup extensions may await a dialog. Read their replies immediately and hold
+	// ordinary commands until initialization has finished.
+	let heldFrames: unknown[] | undefined = [];
+	const inputRead = readRpcInputFrames(
+		input,
+		parsed => {
+			if (!heldFrames) inputDispatcher.dispatch(parsed);
+			else if (isRpcExtensionUIResponse(parsed)) pendingExtensionRequests.get(parsed.id)?.resolve(parsed);
+			else heldFrames.push(parsed);
+		},
+		message => output(error(undefined, "parse", message)),
+	);
+	const rejectStartupDialogs = () => {
+		if (heldFrames) pendingExtensionRequests.rejectAll("RPC client disconnected during startup");
+	};
+	void inputRead.then(rejectStartupDialogs, rejectStartupDialogs);
 
 	await initializeExtensions(session, {
 		mode: "rpc",
@@ -1299,12 +1368,80 @@ export async function runRpcMode(
 				}
 			}
 
+			case "abort_and_restore_queue": {
+				const restored = session.clearQueue({ forInterrupt: true });
+				await session.abort({ reason: USER_INTERRUPT_LABEL });
+				return fitAbortAndRestoreQueueResponse(id, restored, MAX_RPC_FRAME_BYTES - 1);
+			}
+
+			case "navigate_tree": {
+				if (!session.sessionManager.getEntry(command.entryId))
+					return error(id, command.type, `Entry ${command.entryId} not found`, "entry_not_found");
+				try {
+					const result = await session.navigateTree(command.entryId, {
+						summarize: command.summarize,
+						customInstructions: command.customInstructions,
+						allowAskReopen: true,
+						requireIdle: true,
+					});
+					if (result.reopenAsk)
+						return error(
+							id,
+							command.type,
+							"Re-answering an ask is not available over RPC; select another entry",
+							"ask_reanswer_unsupported",
+						);
+					return success(id, command.type, {
+						cancelled: result.cancelled,
+						aborted: result.aborted,
+						editorText: result.editorText,
+						editorImages: result.editorImages,
+					});
+				} catch (err) {
+					if (err instanceof AgentBusyError) return error(id, command.type, err.message, "session_busy");
+					throw err;
+				}
+			}
+			case "abort_branch_summary":
+				session.abortBranchSummary();
+				return success(id, command.type);
+			case "set_label":
+				if (!session.sessionManager.getEntry(command.entryId))
+					return error(id, command.type, `Entry ${command.entryId} not found`, "entry_not_found");
+				session.sessionManager.appendLabelChange(command.entryId, command.label);
+				return success(id, command.type);
+			case "get_logout_accounts":
+				return success(id, command.type, {
+					accounts: await listLogoutAccounts(
+						session.modelRegistry.authStorage,
+						command.providerId,
+						session.sessionId,
+					),
+				});
+			case "logout": {
+				if (!Number.isInteger(command.credentialId))
+					return error(id, command.type, "credentialId must be an integer");
+				const result = await logoutCredential(
+					session.modelRegistry,
+					command.providerId,
+					command.credentialId,
+					session.sessionId,
+				);
+				if (!result.removed)
+					return error(
+						id,
+						command.type,
+						`Credential ${command.credentialId} is not stored for ${command.providerId}`,
+					);
+				return success(id, command.type, { remainingSource: result.remainingSource });
+			}
+
 			case "get_login_providers": {
 				const providers = getOAuthProviders().map(provider => ({
 					id: provider.id,
 					name: provider.name,
 					available: provider.available,
-					authenticated: session.modelRegistry.authStorage.hasAuth(provider.id),
+					authenticated: session.modelRegistry.authStorage.hasAuth(provider.storeCredentialsAs ?? provider.id),
 				}));
 				return success(id, "get_login_providers", { providers });
 			}
@@ -1352,7 +1489,10 @@ export async function runRpcMode(
 						},
 					});
 
-					await session.modelRegistry.refreshProvider(command.providerId, "online");
+					await session.modelRegistry.refreshProvider(
+						knownProvider.storeCredentialsAs ?? knownProvider.id,
+						"online",
+					);
 					return success(id, "login", { providerId: command.providerId });
 				} catch (err: unknown) {
 					return error(id, "login", err instanceof Error ? err.message : String(err));
@@ -1387,11 +1527,10 @@ export async function runRpcMode(
 		afterSerialCommand: () => shutdownCoordinator.checkShutdownRequested(),
 	});
 
-	await readRpcInputFrames(
-		input ?? Bun.stdin.stream(),
-		parsed => inputDispatcher.dispatch(parsed),
-		message => output(error(undefined, "parse", message)),
-	);
+	const startupFrames = heldFrames;
+	heldFrames = undefined;
+	for (const frame of startupFrames) inputDispatcher.dispatch(frame);
+	await inputRead;
 
 	pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
 	hostToolBridge.close("RPC client disconnected before host tool execution completed");

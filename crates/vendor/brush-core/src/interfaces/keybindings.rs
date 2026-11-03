@@ -3,10 +3,8 @@ use std::{
 	fmt::{self, Display, Formatter},
 };
 
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum KeyAction {
-
 	ShellCommand(String),
 
 	DoInputFunction(InputFunction),
@@ -32,8 +30,6 @@ impl Display for KeyAction {
 		}
 	}
 }
-
-
 
 #[derive(
 	Clone,
@@ -232,10 +228,8 @@ pub enum InputFunction {
 	YankPop,
 }
 
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum KeySequence {
-
 	Strokes(Vec<KeyStroke>),
 
 	Bytes(Vec<Vec<u8>>),
@@ -256,7 +250,6 @@ impl Display for KeySequence {
 					} else if *byte == b'\x1b' {
 						write!(f, r"\e")?;
 					} else if *byte >= 0x01 && *byte <= 0x1a {
-
 						let letter = (b'a' + (*byte - 1)) as char;
 						write!(f, r"\C-{letter}")?;
 					} else {
@@ -271,7 +264,6 @@ impl Display for KeySequence {
 }
 
 impl From<KeyStroke> for KeySequence {
-
 	fn from(value: KeyStroke) -> Self {
 		Self::Strokes(vec![value])
 	}
@@ -280,14 +272,13 @@ impl From<KeyStroke> for KeySequence {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 
 pub struct KeyStroke {
-
-	pub alt:     bool,
+	pub alt: bool,
 
 	pub control: bool,
 
-	pub shift:   bool,
+	pub shift: bool,
 
-	pub key:     Key,
+	pub key: Key,
 }
 
 impl Display for KeyStroke {
@@ -298,16 +289,12 @@ impl Display for KeyStroke {
 		if self.control {
 			write!(f, "\\C-")?;
 		}
-		if self.shift {
-
-
-		}
+		if self.shift {}
 		self.key.fmt(f)
 	}
 }
 
 impl From<Key> for KeyStroke {
-
 	fn from(value: Key) -> Self {
 		Self { alt: false, control: false, shift: false, key: value }
 	}
@@ -316,7 +303,6 @@ impl From<Key> for KeyStroke {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 
 pub enum Key {
-
 	Character(char),
 
 	Backspace,
@@ -379,37 +365,16 @@ impl Display for Key {
 	}
 }
 
-
 pub trait KeyBindings: Send {
-
 	fn get_current(&self) -> HashMap<KeySequence, KeyAction>;
-
 
 	fn get_untranslated(&self, bytes: &[u8]) -> Option<&KeyAction>;
 
-
-
-
-
-
-
 	fn bind(&mut self, seq: KeySequence, action: KeyAction) -> Result<(), std::io::Error>;
-
-
-
-
-
 
 	fn try_unbind(&mut self, seq: KeySequence) -> bool;
 
-
-
-
-
-
-
 	fn define_macro(&mut self, seq: KeySequence, target: KeySequence) -> Result<(), std::io::Error>;
-
 
 	fn get_macros(&self) -> HashMap<KeySequence, KeySequence>;
 }

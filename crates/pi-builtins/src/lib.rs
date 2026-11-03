@@ -1,5 +1,3 @@
-
-
 #[cfg(feature = "builtin.alias")]
 mod alias;
 #[cfg(feature = "builtin.bg")]
@@ -57,13 +55,17 @@ mod history;
 #[cfg(feature = "builtin.jobs")]
 mod jobs;
 
-
+#[cfg(all(any(feature = "util.python", feature = "util.node"), unix))]
+mod kernel_cell;
+mod kernel_route;
 #[cfg(all(feature = "builtin.kill", unix))]
 mod kill;
 #[cfg(feature = "builtin.let")]
 mod let_;
 #[cfg(feature = "builtin.mapfile")]
 mod mapfile;
+#[cfg(all(feature = "util.node", unix))]
+mod node;
 #[cfg(feature = "builtin.popd")]
 mod popd;
 #[cfg(all(feature = "builtin.printf", unix))]
@@ -72,11 +74,6 @@ mod printf;
 mod pushd;
 #[cfg(feature = "builtin.pwd")]
 mod pwd;
-#[cfg(all(any(feature = "util.python", feature = "util.node"), unix))]
-mod kernel_cell;
-mod kernel_route;
-#[cfg(all(feature = "util.node", unix))]
-mod node;
 #[cfg(all(feature = "util.python", unix))]
 mod python;
 #[cfg(feature = "builtin.read")]
@@ -112,17 +109,29 @@ mod unset;
 #[cfg(feature = "builtin.wait")]
 mod wait;
 
-#[cfg(any(feature = "util.grep", feature = "util.sed"))]
+#[cfg(any(feature = "util.grep", feature = "util.sed", feature = "util.nl"))]
 mod bre;
 mod builder;
 mod embedded_code;
 mod factory;
+#[cfg(feature = "util.fold")]
+mod fold;
 mod host;
+#[cfg(feature = "util.id")]
+mod id;
+#[cfg(any(feature = "builtin.read", feature = "builtin.mapfile"))]
+mod line_input;
+#[cfg(any(feature = "util.fold", feature = "util.sort"))]
+mod locale;
+#[cfg(feature = "util.od")]
+mod od;
+#[cfg(feature = "util.rmdir")]
+mod rmdir;
+#[cfg(any(feature = "util.date", feature = "util.uptime"))]
+mod time_zone;
 mod unimp;
-
-
-
-
+#[cfg(feature = "util.uptime")]
+mod uptime;
 
 #[cfg(feature = "util.b2sum")]
 mod b2sum;
@@ -135,27 +144,14 @@ mod basename;
 #[cfg(feature = "util.cat")]
 mod cat;
 
-
 #[cfg(feature = "util.cksum")]
 mod cksum;
-#[cfg(feature = "util.md5sum")]
-mod md5sum;
-#[cfg(feature = "util.sha1sum")]
-mod sha1sum;
-#[cfg(feature = "util.sha224sum")]
-mod sha224sum;
-#[cfg(feature = "util.sha256sum")]
-mod sha256sum;
-#[cfg(feature = "util.sha384sum")]
-mod sha384sum;
-#[cfg(feature = "util.sha512sum")]
-mod sha512sum;
 #[cfg(feature = "util.cmp")]
 mod cmp;
-#[cfg(feature = "util.comm")]
-mod comm;
 #[cfg(feature = "util.combine")]
 mod combine;
+#[cfg(feature = "util.comm")]
+mod comm;
 #[cfg(feature = "util.cut")]
 mod cut;
 #[cfg(feature = "util.date")]
@@ -186,40 +182,50 @@ mod jq;
 mod ln;
 #[cfg(feature = "util.ls")]
 mod ls;
+#[cfg(feature = "util.md5sum")]
+mod md5sum;
 #[cfg(feature = "util.mkdir")]
 mod mkdir;
 #[cfg(feature = "util.mktemp")]
 mod mktemp;
 #[cfg(feature = "util.mv")]
 mod mv;
+#[cfg(feature = "util.nl")]
+mod nl;
+#[cfg(feature = "util.nohup")]
+mod nohup;
 #[cfg(feature = "util.nproc")]
 mod nproc;
 #[cfg(feature = "util.paste")]
 mod paste;
-#[cfg(feature = "util.nohup")]
-mod nohup;
 #[cfg(feature = "util.pgrep")]
 mod pgrep;
 #[cfg(feature = "util.pidwait")]
 mod pidwait;
 #[cfg(feature = "util.pkill")]
 mod pkill;
+#[cfg(feature = "util.sha1sum")]
+mod sha1sum;
+#[cfg(feature = "util.sha224sum")]
+mod sha224sum;
+#[cfg(feature = "util.sha256sum")]
+mod sha256sum;
+#[cfg(feature = "util.sha384sum")]
+mod sha384sum;
+#[cfg(feature = "util.sha512sum")]
+mod sha512sum;
 
 #[cfg(feature = "util.proc-match")]
 mod proc_match;
+#[cfg(feature = "util.proc-match")]
+mod proc_select;
 
+#[cfg(feature = "util.printenv")]
+mod printenv;
 #[cfg(feature = "util.procs")]
 mod proc_snapshot;
 #[cfg(feature = "util.ps")]
 mod ps;
-#[cfg(feature = "util.sleep")]
-mod sleep;
-#[cfg(feature = "util.timeout")]
-mod timeout;
-#[cfg(feature = "util.top")]
-mod top;
-#[cfg(feature = "util.printenv")]
-mod printenv;
 #[cfg(feature = "util.readlink")]
 mod readlink;
 #[cfg(feature = "util.realpath")]
@@ -232,6 +238,8 @@ mod rm;
 mod sed;
 #[cfg(feature = "util.seq")]
 mod seq;
+#[cfg(feature = "util.sleep")]
+mod sleep;
 #[cfg(feature = "util.sort")]
 mod sort;
 #[cfg(feature = "util.sponge")]
@@ -244,6 +252,10 @@ mod tac;
 mod tail;
 #[cfg(feature = "util.tee")]
 mod tee;
+#[cfg(feature = "util.timeout")]
+mod timeout;
+#[cfg(feature = "util.top")]
+mod top;
 #[cfg(feature = "util.touch")]
 mod touch;
 #[cfg(feature = "util.tr")]
@@ -272,20 +284,10 @@ pub use embedded_code::{CodeCell, CodeLanguage, EmbeddedCode, FileWrite, scan_em
 pub use factory::{BuiltinSet, default_builtins, process_builtins, utility_builtins};
 pub use host::{panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available};
 pub use kernel_route::kernel_builtin_alias;
-
-
-
+#[cfg(feature = "util.procs")]
+pub use proc_snapshot::sys as proc_sys;
 #[cfg(feature = "util.procs")]
 pub use proc_snapshot::{ProcInfo, ProcessStatus};
-
-
-
-
-
-
-
-
-
 
 #[macro_export]
 macro_rules! minus_or_plus_flag_arg {
@@ -320,3 +322,6 @@ macro_rules! minus_or_plus_flag_arg {
         }
     };
 }
+
+#[cfg(all(test, unix, feature = "utils"))]
+mod upstream_sync_tests;

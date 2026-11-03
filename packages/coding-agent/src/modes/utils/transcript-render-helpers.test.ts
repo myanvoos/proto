@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Text } from "@oh-my-pi/pi-tui";
 import type { AsyncJobEvent } from "../../async/job-manager";
 import { Settings } from "../../config/settings";
 import type { CustomMessage } from "../../session/messages";
@@ -9,7 +10,7 @@ import {
 	type PersistedMonitorEvent,
 } from "../../session/monitor-event";
 import { initTheme } from "../theme/theme";
-import { buildAsyncResultBlock, buildMonitorEventBlock } from "./transcript-render-helpers";
+import { buildAsyncResultBlock, buildAsyncResultComponent, buildMonitorEventBlock } from "./transcript-render-helpers";
 
 await Settings.init();
 await initTheme(false, false, "proto");
@@ -117,4 +118,24 @@ test("async result block distinguishes failed jobs from completed ones", () => {
 		.replace(ANSI, "");
 	expect(success).toContain("Background job completed");
 	expect(success).not.toContain("Background job failed");
+});
+
+test("registered async-result renderers own completion cards and hidden activity stays hidden", () => {
+	const message = asyncResultMessage([{ jobId: "bg_1", status: "completed" }]);
+	const custom = buildAsyncResultComponent(message, () => new Text("Extension summary"));
+	expect(Bun.stripANSI(custom.render(100).join("\n"))).toContain("Extension summary");
+	expect(Bun.stripANSI(custom.render(100).join("\n"))).not.toContain("Background job completed");
+	custom.setToolActivityVisible(false);
+	expect(custom.render(100)).toEqual([]);
+	for (const renderer of [
+		() => undefined,
+		() => {
+			throw new Error("broken extension");
+		},
+	]) {
+		const fallback = buildAsyncResultComponent(message, renderer);
+		expect(Bun.stripANSI(fallback.render(100).join("\n"))).toContain("Background job completed");
+		fallback.setToolActivityVisible(false);
+		expect(fallback.render(100)).toEqual([]);
+	}
 });

@@ -85,6 +85,60 @@ async function within<T>(promise: Promise<T>, timeoutMs = 10_000): Promise<T> {
 	}
 }
 
+test("explicit Python kernel start keeps compound heredoc edits tracked outside the shell cwd", async () => {
+	using temp = TempDir.createSync("@context-python-receipts-");
+	const session = await createSession(temp.path());
+	const cwd = path.join(temp.path(), "work");
+	const config = path.join(temp.path(), "home", ".proto", "agent", "models.yml");
+	await fs.mkdir(cwd);
+	await Bun.write(config, "providers: before\n");
+	const interpreter = Bun.which("python3.13") ?? Bun.which("python3");
+	if (!interpreter) throw new Error("Python interpreter unavailable");
+	const started = await handleContextControl(session, {
+		resource: "kernel",
+		op: "start",
+		language: "python",
+		lane: "main",
+		interpreter,
+		cwd,
+		target: { kind: "local" },
+	});
+	const result = await new BashTool(session).execute("compound-python-receipt", {
+		cwd,
+		lane: "main",
+		command: [
+			"python <<'PY'",
+			"from pathlib import Path",
+			`config = Path(${JSON.stringify(config)})`,
+			"before = config.read_text()",
+			"config.write_text(before.replace('before', 'after'))",
+			"marker = 73",
+			"assert callable(defs)",
+			"PY",
+			"printf 'catalog' > catalog.json",
+			"python <<'PY'",
+			"assert marker == 73",
+			"assert config.read_text() == 'providers: after\\n'",
+			"print('kernel-reused')",
+			"PY",
+		].join("\n"),
+	});
+	const text = result.content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("\n");
+	expect(result.isError, text).not.toBe(true);
+	expect(text).toContain("kernel-reused");
+	expect(await Bun.file(config).text()).toBe("providers: after\n");
+	expect(result.details?.statusEvents?.filter(event => event.op === "write" && event.path === config)).toHaveLength(1);
+	expect(text).toContain("<kernel> note:");
+	const inspected = await handleContextControl(session, {
+		resource: "kernel",
+		op: "inspect",
+		language: "python",
+		lane: "main",
+	});
+	if (started.resource !== "kernel" || inspected.resource !== "kernel") throw new Error("Expected kernel controls");
+	expect(inspected.kernel?.generation).toBe(started.kernel?.generation);
+}, 30_000);
+
 describe("context argument validation", () => {
 	test("rejects fields and operations that do not belong to the resource before any effect", () => {
 		for (const args of [

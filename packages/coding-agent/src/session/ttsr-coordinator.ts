@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { isRecord, prompt, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
-import type { Rule } from "../capability/rule";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "../capability/rule";
 import type { Settings } from "../config/settings";
 import type { TtsrManager, TtsrMatch, TtsrMatchContext, TtsrMatchSource } from "../export/ttsr";
 import type { JudgeFn, MatchEvidence, ToolCallRecord } from "../export/ttsr-matcher";
@@ -245,6 +245,7 @@ export class TtsrCoordinator {
 					name: match.rule.name,
 					path: this.#displayRulePath(match.rule.path),
 					content: match.rule.content,
+					builtin: match.rule._source?.provider === BUILTIN_DEFAULTS_PROVIDER_ID,
 					evidence: formatEvidence(match.evidence),
 				}),
 			)

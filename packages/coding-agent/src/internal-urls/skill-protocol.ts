@@ -4,8 +4,10 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { resolveContainedPath } from "../discovery/contained-path";
 import { getActiveSkills } from "../extensibility/skills";
+import { MCPManager } from "../mcp/manager";
 import { isMarkdownPath } from "../utils/lang-from-path";
 import { buildDirectoryResource } from "./filesystem-resource";
+import { readMcpResource } from "./mcp-protocol";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
 function getContentType(filePath: string): InternalResource["contentType"] {
@@ -43,6 +45,10 @@ export class SkillProtocolHandler implements ProtocolHandler {
 
 		const skill = skills.find(s => s.name === skillName);
 		if (!skill) {
+			const manager = MCPManager.instance();
+			const resource =
+				manager && (await readMcpResource(manager, url, { exact: true, waitMs: 5_000, signal: context?.signal }));
+			if (resource) return { ...resource, unbounded: false };
 			const available = skills.map(s => s.name);
 			const availableStr = available.length > 0 ? available.join(", ") : "none";
 			throw new Error(`Unknown skill: ${skillName}\nAvailable: ${availableStr}`);
@@ -94,7 +100,15 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			throw new Error(`skill:// URL must resolve to a file or directory: ${url.href}`);
 		}
 
-		const content = await Bun.file(targetPath).text();
+		let content: string;
+		try {
+			content = await Bun.file(targetPath).text();
+		} catch (error) {
+			if (!isEnoent(error) || !context?.reloadSkills) throw error;
+			// Plugin publication may remove the old target after stat succeeded.
+			const skills = await context.reloadSkills();
+			return this.resolve(url, { ...context, skills, reloadSkills: undefined });
+		}
 		return {
 			url: url.href,
 			content,

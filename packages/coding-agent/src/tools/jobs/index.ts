@@ -3,8 +3,9 @@ import type { AgentTool, AgentToolContext, AgentToolUpdateCallback } from "@oh-m
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob } from "../../async";
+import { raceJobSettlement } from "../../async/auto-background";
 import { sessionProjectCwd } from "../../eval/bridge-cwd";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { ExecutionRef, JobRef, ProcessRef, WatchRef } from "../../jobs/contracts";
@@ -186,8 +187,11 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 	readonly parameters = jobsSchema;
 	readonly strict = true;
 	readonly loadMode = "essential";
+	readonly handlesToolInterrupt = (params: Partial<JobsParams>): boolean => params.op === "wait";
 	readonly interruptible = (params: Partial<JobsParams>): boolean =>
-		params.op === "wait" || (params.op === "logs" && params.follow === true);
+		params.op === "wait" ||
+		(params.op === "logs" && params.follow === true) ||
+		(params.op === "start" && params.ready !== undefined);
 
 	readonly examples: readonly ToolExample<JobsParams>[] = [
 		{ caption: "Snapshot your jobs, watches and this session's processes", call: { op: "list" } },
@@ -251,7 +255,7 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 		params: JobsParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<JobsDetails>,
-		_context?: AgentToolContext,
+		context?: AgentToolContext,
 	): Promise<JobsResult> {
 		const op = params.op;
 		const invalid = validationError(op, params as Record<string, unknown>);
@@ -262,7 +266,7 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 			case "inspect":
 				return this.#inspect(params.target!, params.afterEvent, signal);
 			case "start":
-				return this.#start(params, signal);
+				return this.#start(params, signal, context?.toolCall?.steeringSignal);
 			case "logs":
 			case "input":
 			case "signal":
@@ -397,14 +401,33 @@ export class JobsTool implements AgentTool<typeof jobsSchema, JobsDetails> {
 		};
 	}
 
-	async #start(params: JobsParams, signal?: AbortSignal): Promise<JobsResult> {
+	async #start(params: JobsParams, signal?: AbortSignal, steeringSignal?: AbortSignal): Promise<JobsResult> {
 		const disabled = this.#launchDisabled("start");
 		if (disabled) return disabled;
 		if (params.ready && Object.keys(params.ready).some(key => !["log", "port", "host", "timeoutMs"].includes(key))) {
 			return jobsErrorResult("Unknown readiness parameter.", "start");
 		}
 		const { op: _op, ...rest } = params;
-		return this.#launch("start", { ...rest, op: "start" } as LaunchParams, signal);
+		const start = this.#launch("start", { ...rest, op: "start" } as LaunchParams, signal);
+		if (params.ready === undefined || steeringSignal === undefined) return start;
+		const settled = await raceJobSettlement(start, undefined, undefined, steeringSignal);
+		if (!("kind" in settled)) return settled;
+		// The broker still owns the launch. Do not invent an immutable process id before it acknowledges one.
+		void start.catch(error =>
+			logger.warn("Process launch failed after readiness wait was interrupted", {
+				name: params.name,
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
+		return {
+			content: [
+				{
+					type: "text",
+					text: `${params.name}: launch in progress\nReadiness wait interrupted to handle an incoming message. The launch continues; use jobs list to obtain its process reference, then inspect or follow its logs.`,
+				},
+			],
+			details: { op: "start" },
+		};
 	}
 
 	async #processControl(

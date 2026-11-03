@@ -13,6 +13,13 @@ import { buildLineEntriesWithBlockContext, type LineEntry } from "../utils/block
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { type LineRange, shouldExpandRangeContext } from "./path-utils";
 import type { ReadToolDetails, ReadTruncationStats } from "./read";
+import {
+	isMultiRange,
+	isRawSelector,
+	type ParsedSelector,
+	resolveTailSelector,
+	selToOffsetLimit,
+} from "./read-selector";
 import { formatBytes } from "./render-utils";
 import { toolResult } from "./tool-result";
 
@@ -129,26 +136,43 @@ export function formatSummaryElisionFooter(
 }
 export const READ_CHUNK_SIZE = 8 * 1024;
 
+export interface InMemoryTextOptions {
+	details?: ReadToolDetails;
+	sourcePath?: string;
+	rangeContextPath?: string;
+	sourceUrl?: string;
+	sourceInternal?: string;
+	entityLabel: string;
+	ignoreResultLimits?: boolean;
+	raw?: boolean;
+}
+
+export function buildInMemorySelectorResult(
+	session: ToolSession,
+	text: string,
+	selector: ParsedSelector,
+	options: InMemoryTextOptions,
+): AgentToolResult<ReadToolDetails> {
+	selector = resolveTailSelector(selector, countTextLines(text));
+	const raw = isRawSelector(selector);
+	if (isMultiRange(selector) && selector.kind === "lines") {
+		return buildInMemoryMultiRangeResult(session, text, selector.ranges, { ...options, raw });
+	}
+	const { offset, limit } = selToOffsetLimit(selector);
+	return buildInMemoryTextResult(session, text, offset, limit, { ...options, raw });
+}
+
 export function buildInMemoryTextResult(
 	session: ToolSession,
 	text: string,
 	offset: number | undefined,
 	limit: number | undefined,
-	options: {
-		details?: ReadToolDetails;
-		sourcePath?: string;
-		rangeContextPath?: string;
-		sourceUrl?: string;
-		sourceInternal?: string;
-		entityLabel: string;
-		ignoreResultLimits?: boolean;
-		raw?: boolean;
-	},
+	options: InMemoryTextOptions,
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw });
 	const details = options.details ?? {};
 	const addressableLines = splitAddressableFileLines(text);
-	const preserveWholeRaw = options.raw === true && offset === undefined && limit === undefined;
+	const preserveWholeRaw = options.raw === true && limit === undefined;
 	const allLines = preserveWholeRaw ? text.split("\n") : addressableLines;
 	const totalLines = addressableLines.length;
 	details.totalLines = totalLines;
@@ -173,6 +197,8 @@ export function buildInMemoryTextResult(
 		resultBuilder.sourceInternal(options.sourceInternal);
 	}
 
+	if (options.raw && totalLines === 0 && offset === undefined && limit === undefined)
+		return resultBuilder.text("").done();
 	if (startLine >= totalLines) {
 		const suggestion =
 			totalLines === 0
@@ -202,6 +228,7 @@ export function buildInMemoryTextResult(
 	if (rawTrailingNewline) truncation.totalLines = countTextLines(selectedContent);
 
 	const shouldAddLineNumbers = displayMode.lineNumbers;
+	details.rowPrefixes = shouldAddLineNumbers;
 	const formatText = (content: string, startNum: number): string => {
 		const lineCount = countTextLines(content);
 		details.displayContent = {
@@ -272,7 +299,8 @@ export function buildInMemoryTextResult(
 	} else if (
 		userLimitedLines !== undefined &&
 		startLine + userLimitedLines < allLines.length &&
-		(expandContext || rawDisplay)
+		expandContext &&
+		!rawDisplay
 	) {
 		const remaining = allLines.length - (startLine + userLimitedLines);
 		const nextOffset = startLine + userLimitedLines + 1;
@@ -329,6 +357,7 @@ export function buildInMemoryMultiRangeResult(
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
 	const shouldAddLineNumbers = displayMode.lineNumbers;
+	details.rowPrefixes = shouldAddLineNumbers;
 
 	const resultBuilder = toolResult(details);
 	if (options.sourcePath) resultBuilder.sourcePath(options.sourcePath);
@@ -352,7 +381,9 @@ export function buildInMemoryMultiRangeResult(
 
 	let outputText = "";
 	if (options.raw === true) {
-		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
+		outputText = rawParts.join("\n");
+		if (ranges.some(range => range.endLine === undefined && range.startLine <= totalLines) && text.endsWith("\n"))
+			outputText += "\n";
 	} else if (visibleSpans.length > 0) {
 		const contextPath = options.rangeContextPath ?? options.sourcePath;
 		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, {
@@ -371,7 +402,7 @@ export function buildInMemoryMultiRangeResult(
 		outputText = formatLineEntriesWithMode(entries, shouldAddLineNumbers);
 	}
 	const notices: string[] = [];
-	for (const range of outOfBounds) {
+	for (const range of options.raw ? [] : outOfBounds) {
 		const bound = range.endLine !== undefined ? `${range.startLine}-${range.endLine}` : `${range.startLine}`;
 		notices.push(`[Range ${bound} is beyond end of ${options.entityLabel} (${totalLines} lines total); skipped]`);
 	}

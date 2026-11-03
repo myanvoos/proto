@@ -5,7 +5,7 @@ import { readFile } from "../capability/fs";
 
 export const MAX_AT_IMPORT_DEPTH = 5;
 
-const AT_IMPORT_REGEX = /(^|[ \t])@([./~A-Za-z0-9_-][^\s]*)/g;
+const AT_IMPORT_REGEX = /(^|[ \t])@([./~A-Za-z0-9_-](?:\\ |[^\s])*)/g;
 
 const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 
@@ -88,7 +88,7 @@ async function expandLine(
 		matches.push({
 			start: atPos,
 			end: atPos + 1 + trimmedToken.length,
-			importPath: trimmedToken,
+			importPath: trimmedToken.replace(/\\ /g, " "),
 		});
 	}
 

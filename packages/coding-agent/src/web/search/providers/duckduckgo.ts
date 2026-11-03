@@ -46,6 +46,16 @@ function decodeHtmlText(value: string): string {
 function unwrapResultUrl(href: string): string | undefined {
 	if (!href) return undefined;
 	const decoded = href.replace(/&amp;/gi, "&");
+	try {
+		const target = new URL(decoded, "https://duckduckgo.com");
+		if (
+			(target.hostname === "duckduckgo.com" || target.hostname === "www.duckduckgo.com") &&
+			target.pathname === "/y.js"
+		)
+			return undefined;
+	} catch {
+		return undefined;
+	}
 	const wrapMatch = decoded.match(/[?&]uddg=([^&]+)/);
 	if (wrapMatch) {
 		try {

@@ -172,6 +172,47 @@ export class SecretObfuscator {
 		return this.#hasAny;
 	}
 
+	/** A prefix that preserves whole-text redaction for secrets starting before the visible limit. Mints nothing. */
+	redactionPrefixEnd(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number {
+		if (!this.#hasAny || text.length <= limit) return text.length;
+		const { key: fullMatches, end: regexEnd } = this.#regexMatchesBefore(text, limit);
+		let end = Math.max(limit, regexEnd);
+		const extendThrough = (literal: string): void => {
+			if (!literal) return;
+			for (let at = text.indexOf(literal); at !== -1 && at < limit; at = text.indexOf(literal, at + 1)) {
+				end = Math.max(end, at + literal.length);
+			}
+		};
+		for (const literal of this.#configuredSecretValues) extendThrough(literal);
+		for (const literal of sharedRegexSecretValues ?? []) extendThrough(literal);
+		// Lookahead, word boundaries and end anchors can depend on text past the matched span.
+		while (end < text.length && this.#regexMatchesBefore(text.slice(0, end), limit).key !== fullMatches) {
+			end = Math.min(text.length, end * 2);
+		}
+		return end;
+	}
+
+	#regexMatchesBefore(text: string, limit: number): { key: string; end: number } {
+		let key = "";
+		let end = 0;
+		for (const [index, entry] of this.#regexEntries.entries()) {
+			entry.regex.lastIndex = 0;
+			for (;;) {
+				const match = entry.regex.exec(text);
+				if (match === null || match.index >= limit) break;
+				if (match[0].length === 0) {
+					entry.regex.lastIndex++;
+					continue;
+				}
+				const matchEnd = match.index + match[0].length;
+				key += `${index}:${match.index}:${matchEnd},`;
+				end = Math.max(end, matchEnd);
+			}
+			entry.regex.lastIndex = 0;
+		}
+		return { key, end };
+	}
+
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string {
 		if (!this.#hasAny) return text;
 		this.#currentRegexSecretValues = this.collectRegexSecretValuesForObfuscation(text);

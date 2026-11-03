@@ -15,12 +15,6 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWork
 
 use super::super::error::{CoreResult, DesktopError};
 
-const EVENT_RECORD_LENGTH: usize = 248;
-const EVENT_RECORD_LENGTH_BYTE: u8 = 0xf8;
-const EVENT_RECORD_KIND: u8 = 0x0d;
-const WINDOW_ID_OFFSET: usize = 0x3c;
-const FOCUS_MARKER_OFFSET: usize = 0x8a;
-
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct ProcessSerialNumber {
@@ -30,7 +24,7 @@ struct ProcessSerialNumber {
 
 type SLEventPostToPidFn = unsafe extern "C" fn(pid_t, *mut c_void);
 type SLEventSetIntegerValueFieldFn = unsafe extern "C" fn(*mut c_void, u32, i64);
-type SLPSPostEventRecordToFn = unsafe extern "C" fn(*const ProcessSerialNumber, *const u8) -> i32;
+type GetProcessPIDFn = unsafe extern "C" fn(*const ProcessSerialNumber, *mut pid_t) -> i32;
 type SLPSGetFrontProcessFn = unsafe extern "C" fn(*mut ProcessSerialNumber) -> i32;
 type CGSMainConnectionIDFn = unsafe extern "C" fn() -> u32;
 type SLSGetWindowOwnerFn = unsafe extern "C" fn(u32, u32, *mut u32) -> i32;
@@ -68,16 +62,15 @@ struct RequiredSpi {
 	post_to_pid:         SLEventPostToPidFn,
 	public_post_to_pid:  Option<SLEventPostToPidFn>,
 	set_integer:         SLEventSetIntegerValueFieldFn,
-	post_record:         SLPSPostEventRecordToFn,
-	get_front:           SLPSGetFrontProcessFn,
 	set_window_location: CGEventSetWindowLocationFn,
-	psn:                 PsnLookup,
+	main_connection:     CGSMainConnectionIDFn,
 }
 
 #[derive(Clone, Copy)]
 struct ForegroundSpi {
 	set_front: SLPSSetFrontProcessWithOptionsFn,
 	get_front: SLPSGetFrontProcessFn,
+	get_pid:   Option<GetProcessPIDFn>,
 	psn:       PsnLookup,
 }
 
@@ -109,25 +102,14 @@ fn required() -> CoreResult<&'static RequiredSpi> {
 
 fn resolve_required() -> Option<RequiredSpi> {
 	ensure_skylight_loaded()?;
-	let psn = PsnLookup {
-		main_connection:     Some(symbol(c"CGSMainConnectionID")?),
-		get_window_owner:    symbol(c"SLSGetWindowOwner"),
-		get_connection_psn:  symbol(c"SLSGetConnectionPSN"),
-		get_process_for_pid: symbol(c"GetProcessForPID"),
-	};
-	if !psn.can_resolve() {
-		return None;
-	}
 	let post_to_pid: SLEventPostToPidFn = symbol(c"SLEventPostToPid")?;
 	Some(RequiredSpi {
 		post_to_pid,
 		public_post_to_pid: symbol::<SLEventPostToPidFn>(c"CGEventPostToPid")
 			.filter(|public| *public as usize != post_to_pid as usize),
 		set_integer: symbol(c"SLEventSetIntegerValueField")?,
-		post_record: symbol(c"SLPSPostEventRecordTo")?,
-		get_front: symbol(c"_SLPSGetFrontProcess")?,
 		set_window_location: symbol(c"CGEventSetWindowLocation")?,
-		psn,
+		main_connection: symbol(c"CGSMainConnectionID")?,
 	})
 }
 
@@ -145,6 +127,7 @@ fn resolve_foreground() -> Option<ForegroundSpi> {
 	Some(ForegroundSpi {
 		set_front: symbol(c"_SLPSSetFrontProcessWithOptions")?,
 		get_front: symbol(c"_SLPSGetFrontProcess")?,
+		get_pid: symbol(c"GetProcessPID"),
 		psn,
 	})
 }
@@ -218,40 +201,44 @@ pub(super) fn post_keyboard(pid: pid_t, event: &CGEvent) -> CoreResult<()> {
 	Ok(())
 }
 
-pub(super) fn activate_without_raise(pid: pid_t, wid: u32) -> CoreResult<()> {
+/// The front process as `WindowServer` reports it, without initializing
+/// `AppKit`.
+pub(super) fn front_pid() -> Option<pid_t> {
+	let spi = FOREGROUND.as_ref()?;
+	let mut psn = ProcessSerialNumber::default();
+	let mut pid = 0;
+	if unsafe { (spi.get_front)(&mut psn) } == 0
+		&& unsafe { (spi.get_pid?)(&psn, &mut pid) } == 0
+		&& pid > 0
+	{
+		Some(pid)
+	} else {
+		None
+	}
+}
+
+/// Tell only the target application that it is active. Unlike focus records,
+/// this leaves the user's `WindowServer` keyboard context untouched.
+pub(super) fn activate_application(pid: pid_t, wid: u32, event: &CGEvent) -> CoreResult<()> {
 	let spi = required()?;
-	let mut previous = ProcessSerialNumber::default();
-
-	if unsafe { (spi.get_front)(&mut previous) } != 0 {
-		return Err(DesktopError::background_unavailable(format!(
-			"window {wid} could not resolve the front process for background input; retry with \
-			 delivery:\"foreground\" or use ax actions",
-		)));
+	unsafe {
+		(spi.set_integer)(event_ptr(event), 51, i64::from(wid));
+		(spi.set_integer)(event_ptr(event), 52, i64::from((spi.main_connection)()));
+		(spi.set_integer)(event_ptr(event), 83, 1);
+		(spi.post_to_pid)(pid, event_ptr(event));
 	}
-	let target = process_psn(spi.psn, pid, wid).ok_or_else(|| {
-		DesktopError::background_unavailable(format!(
-			"window {wid} could not resolve its process serial number for background input; retry \
-			 with delivery:\"foreground\" or use ax actions",
-		))
-	})?;
-	let mut record = [0u8; EVENT_RECORD_LENGTH];
-	record[0x04] = EVENT_RECORD_LENGTH_BYTE;
-	record[0x08] = EVENT_RECORD_KIND;
-	record[WINDOW_ID_OFFSET..WINDOW_ID_OFFSET + 4].copy_from_slice(&wid.to_le_bytes());
-	record[FOCUS_MARKER_OFFSET] = 0x02;
-
-	let defocused = unsafe { (spi.post_record)(&previous, record.as_ptr()) } == 0;
-	record[FOCUS_MARKER_OFFSET] = 0x01;
-
-	let focused = unsafe { (spi.post_record)(&target, record.as_ptr()) } == 0;
-	if !defocused || !focused {
-		return Err(DesktopError::background_unavailable(format!(
-			"window {wid} rejected the 248-byte SkyLight focus-without-raise record; retry with \
-			 delivery:\"foreground\" or use ax actions",
-		)));
-	}
-	thread::sleep(Duration::from_millis(50));
 	Ok(())
+}
+
+pub(super) fn require_front_window(pid: pid_t, wid: u32) -> CoreResult<()> {
+	if front_pid() == Some(pid) && super::ax::focused_window_id(pid) == Some(wid) {
+		Ok(())
+	} else {
+		Err(DesktopError::input_failed(format!(
+			"window {wid} is not the confirmed front key window of process {pid}; no further input \
+			 was sent"
+		)))
+	}
 }
 
 pub(super) fn with_foreground<T>(
@@ -275,7 +262,8 @@ pub(super) fn with_foreground<T>(
 	thread::sleep(Duration::from_millis(40));
 	let result = action();
 	thread::sleep(Duration::from_millis(40));
-	if previous_known {
+	let mut current = ProcessSerialNumber::default();
+	if previous_known && unsafe { (spi.get_front)(&mut current) } == 0 && current == target {
 		unsafe { (spi.set_front)(&previous, 0, 0x400) };
 	}
 	result
@@ -299,7 +287,11 @@ fn with_public_foreground<T>(pid: pid_t, action: impl FnOnce() -> CoreResult<T>)
 	thread::sleep(Duration::from_millis(40));
 	let result = action();
 	thread::sleep(Duration::from_millis(40));
-	if let Some(previous) = previous {
+	if workspace
+		.frontmostApplication()
+		.is_some_and(|app| app.processIdentifier() == pid)
+		&& let Some(previous) = previous
+	{
 		#[allow(
 			deprecated,
 			reason = "restoring the prior frontmost app requires the same activation option"

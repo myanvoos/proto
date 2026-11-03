@@ -8,6 +8,7 @@ import {
 	daemonClientForProject,
 } from "../launch/client";
 import type { DaemonSnapshot } from "../launch/protocol";
+import { isSharedBrowserDaemonName, restartSharedBrowser } from "../tools/browser/shared-daemon";
 import {
 	collectReports,
 	daemonLabel,
@@ -172,6 +173,11 @@ async function runAction(cmd: PsCommandArgs, name: string): Promise<void> {
 				return;
 			}
 			case "restart": {
+				if (isSharedBrowserDaemonName(name)) {
+					const daemon = await restartSharedBrowser(client, name);
+					printDaemonResult(cmd, "Restarted", daemon);
+					return;
+				}
 				const result = await client.request({ op: "restart", name });
 				if (result.op !== "restart") throw new Error(`Unexpected broker response ${result.op}`);
 				printDaemonResult(cmd, "Restarted", result.daemon);

@@ -16,7 +16,12 @@ import {
 	normalizeCustomMessagePayload,
 	PREWALK_PLAN_MESSAGE_TYPE,
 } from "./messages";
-import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
+import {
+	type CompactionEntry,
+	EPHEMERAL_MODEL_CHANGE_ROLE,
+	resolveSessionLeafId,
+	type SessionEntry,
+} from "./session-entries";
 
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
@@ -84,7 +89,13 @@ export interface BuildSessionContextOptions {
 
 	collapseCompactedHistory?: boolean;
 
-	keepDanglingToolCalls?: boolean;
+	inFlightToolCallIds?: ReadonlySet<string>;
+}
+
+export interface TranscriptSessionContextOptions {
+	collapseCompactedHistory?: boolean;
+	keepInFlightToolCalls?: boolean;
+	window?: BuildSessionContextOptions["window"];
 }
 
 export interface StrippedToolCallsMarker {
@@ -155,6 +166,7 @@ export function buildSessionContext(
 		}
 	}
 
+	leafId ??= leafId === null ? null : resolveSessionLeafId(entries);
 	let leaf: SessionEntry | undefined;
 	if (leafId === null) {
 		return {
@@ -226,7 +238,7 @@ export function buildSessionContext(
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			if (!hasExplicitDefaultModel) {
+			if (!hasExplicitDefaultModel && entry.message.model !== "<synthetic>") {
 				models.default = `${entry.message.provider}/${entry.message.model}`;
 			}
 		} else if (entry.type === "compaction") {
@@ -411,7 +423,8 @@ export function buildSessionContext(
 			let displayStartIdx = keptStartIdx;
 			if (options?.transcript) {
 				for (let i = keptStartIdx; i < compactionIdx; i++) {
-					if (isTurnStartEntry(path[i])) {
+					const entry = path[i];
+					if (isTurnStartEntry(entry) && (entry.type !== "custom_message" || entry.attribution === "user")) {
 						displayStartIdx = i;
 						break;
 					}
@@ -450,9 +463,8 @@ export function buildSessionContext(
 		}
 	}
 
-	const keepDangling = options?.transcript === true && options.keepDanglingToolCalls === true;
 	const seenToolCallIds = new Set<string>();
-	const pairedToolResultIds = new Set<string>();
+	const pairedToolResultIds = new Set<string>(options?.inFlightToolCallIds);
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i];
 		if (message.role === "assistant") {
@@ -473,37 +485,31 @@ export function buildSessionContext(
 			pairedToolResultIds.add(message.toolCallId);
 		}
 	}
-
-	if (!keepDangling) {
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const message = messages[i];
-			if (message.role !== "assistant") continue;
-			let strippedToolCalls = 0;
-			for (const block of message.content) {
-				if (block.type === "toolCall" && !pairedToolResultIds.has(block.id)) strippedToolCalls++;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "assistant") continue;
+		let strippedToolCalls = 0;
+		for (const block of message.content) {
+			if (block.type === "toolCall" && !pairedToolResultIds.has(block.id)) strippedToolCalls++;
+		}
+		if (strippedToolCalls === 0) continue;
+		const normalized = message.content
+			.filter(
+				block =>
+					!(block.type === "toolCall" && !pairedToolResultIds.has(block.id)) && block.type !== "redactedThinking",
+			)
+			.map(block =>
+				block.type === "thinking" && block.thinkingSignature ? { ...block, thinkingSignature: undefined } : block,
+			);
+		if (normalized.length === 0 && !options?.transcript) {
+			messages.splice(i, 1);
+			entryIds.splice(i, 1);
+		} else {
+			const rewritten = { ...message, content: normalized };
+			if (options?.transcript) {
+				(rewritten as AgentMessage & StrippedToolCallsMarker).strippedToolCalls = strippedToolCalls;
 			}
-			if (strippedToolCalls === 0) continue;
-			const normalized = message.content
-				.filter(
-					block =>
-						!(block.type === "toolCall" && !pairedToolResultIds.has(block.id)) &&
-						block.type !== "redactedThinking",
-				)
-				.map(block =>
-					block.type === "thinking" && block.thinkingSignature
-						? { ...block, thinkingSignature: undefined }
-						: block,
-				);
-			if (normalized.length === 0 && !options?.transcript) {
-				messages.splice(i, 1);
-				entryIds.splice(i, 1);
-			} else {
-				const rewritten = { ...message, content: normalized };
-				if (options?.transcript) {
-					(rewritten as AgentMessage & StrippedToolCallsMarker).strippedToolCalls = strippedToolCalls;
-				}
-				messages[i] = rewritten;
-			}
+			messages[i] = rewritten;
 		}
 	}
 

@@ -3,46 +3,32 @@ use std::{fs::File, io::Write, path::PathBuf};
 use brush_core::{ExecutionExitCode, ExecutionResult, builtins, history};
 use clap::Parser;
 
-
-
 #[derive(Parser)]
 #[expect(clippy::option_option)]
 pub(crate) struct HistoryCommand {
-
 	#[arg(short = 'c')]
 	clear_history: bool,
-
-
-
 
 	#[arg(short = 'd', value_name = "OFFSET")]
 	delete_offset: Option<i64>,
 
-
 	#[arg(short = 'a', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_session_to_file: Option<Option<String>>,
-
-
 
 	#[arg(short = 'n', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_rest_of_file_to_session: Option<Option<String>>,
 
-
 	#[arg(short = 'r', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	append_file_to_session: Option<Option<String>>,
-
 
 	#[arg(short = 'w', group = "anrw", num_args = 0..=1, value_name = "HIST_FILE")]
 	write_session_to_file: Option<Option<String>>,
 
-
 	#[arg(short = 'p', num_args = 0.., value_name = "ARG")]
 	expand_args: Option<Vec<String>>,
 
-
 	#[arg(short = 's', num_args = 0.., value_name = "ARG")]
 	append_args_to_session: Option<Vec<String>>,
-
 
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	args: Vec<String>,
@@ -60,7 +46,6 @@ impl builtins::Command for HistoryCommand {
 		&self,
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, Self::Error> {
-
 		let config = HistoryConfig {
 			default_history_file_path: context.shell.history_file_path(),
 			time_format:               context.shell.history_time_format(),
@@ -99,7 +84,6 @@ impl HistoryCommand {
 			}
 
 			if offset > 0 {
-
 				let index = (offset - 1) as usize;
 				if !history.remove_nth_item(index) {
 					writeln!(stderr, "index past end of history")?;
@@ -124,12 +108,7 @@ impl HistoryCommand {
 				config.default_history_file_path,
 				append_option.as_ref(),
 			) {
-				history.flush(
-					file_path,
-					true,
-					true,
-					config.time_format.is_some(),
-				)?;
+				history.flush(file_path, true, true, config.time_format.is_some())?;
 			}
 
 			return Ok(ExecutionResult::success());
@@ -159,12 +138,7 @@ impl HistoryCommand {
 			if let Some(file_path) =
 				get_effective_history_file_path(config.default_history_file_path, write_option.as_ref())
 			{
-				history.flush(
-					file_path,
-					false,
-					false,
-					config.time_format.is_some(),
-				)?;
+				history.flush(file_path, false, false, config.time_format.is_some())?;
 			}
 
 			return Ok(ExecutionResult::success());
@@ -201,11 +175,11 @@ fn expand_history_args(
 
 	for arg in args {
 		if let Ok(expanded) = expand_history_arg(history, arg) {
-  				writeln!(stdout, "{expanded}")?;
-  			} else {
-  				writeln!(stderr, "history: {arg}: history expansion failed")?;
-  				result = ExecutionResult::general_error();
-  			}
+			writeln!(stdout, "{expanded}")?;
+		} else {
+			writeln!(stderr, "history: {arg}: history expansion failed")?;
+			result = ExecutionResult::general_error();
+		}
 	}
 
 	Ok(result)
@@ -361,11 +335,7 @@ fn find_history_event(
 	match_result.ok_or(())
 }
 
-fn select_history_words(
-	event: &str,
-	selector: char,
-	number: Option<usize>,
-) -> Result<String, ()> {
+fn select_history_words(event: &str, selector: char, number: Option<usize>) -> Result<String, ()> {
 	let words: Vec<&str> = event.split_whitespace().collect();
 	match selector {
 		'0'..='9' => {
@@ -422,8 +392,6 @@ fn display_history(
 			}
 		}
 
-
-
 		std::writeln!(
 			stdout,
 			"{:>5}  {formatted_timestamp}{}",
@@ -465,5 +433,3 @@ fn get_effective_history_file_path(
 ) -> Option<PathBuf> {
 	option.map_or_else(|| default_history_file_path, |file_path| Some(PathBuf::from(file_path)))
 }
-
-

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { registerCustomApi, unregisterCustomApis } from "../api-registry";
+import * as AIError from "../error";
 import { streamSimple } from "../stream";
 import type { Api, Context, FetchImpl, Model } from "../types";
 import { getStreamingPartialJson } from "../utils/block-symbols";
@@ -387,4 +388,141 @@ describe("OpenAI Completions cached prompt tokens", () => {
 		});
 		expect(usage).toMatchObject({ input: 3, cacheRead: 8, output: 3 });
 	});
+});
+
+describe("OpenAI-compatible terminal failure signals", () => {
+	it("drops degenerate output and preserves the thinking-loop flag from a repetition stop", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor([
+				{ choices: [{ delta: { reasoning_content: "loop loop loop" } }] },
+				{ choices: [{ delta: {}, finish_reason: "stop", stop_reason: "repetition_detected" }] },
+				{ choices: [{ delta: {}, finish_reason: "stop" }] },
+				"[DONE]",
+			]),
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.content).toEqual([]);
+		expect(result.errorId !== undefined && AIError.is(result.errorId, AIError.Flag.ThinkingLoop)).toBe(true);
+	});
+
+	it("does not revive a native malformed-function failure when the gateway later reports stop", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor([
+				{ choices: [{ delta: {}, native_finish_reason: "MALFORMED_FUNCTION_CALL", finish_reason: "stop" }] },
+				{ choices: [{ delta: {}, finish_reason: "stop" }] },
+				"[DONE]",
+			]),
+		}).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("MALFORMED_FUNCTION_CALL");
+	});
+
+	it("surfaces the routed provider detail from a captured OpenRouter HTTP failure", async () => {
+		const routed = buildModel({
+			...model,
+			compat: model.compatConfig,
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+		});
+		const fetchImpl = Object.assign(
+			async () =>
+				new Response(
+					JSON.stringify({
+						error: {
+							message: "Access denied by security policy",
+							metadata: { raw: "Routed provider rejected reasoning_content" },
+						},
+					}),
+					{ status: 403, headers: { "content-type": "application/json" } },
+				),
+			{ preconnect: fetch.preconnect },
+		);
+		const result = await streamOpenAICompletions(routed, context, { apiKey: "test-key", fetch: fetchImpl }).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("Routed provider rejected reasoning_content");
+	});
+});
+
+describe("OpenAI-compatible reused tool stream indices", () => {
+	it("routes interleaved parallel call fragments by id when every call uses index zero", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor([
+				{
+					choices: [
+						{ delta: { tool_calls: [{ index: 0, id: "a", function: { name: "alpha", arguments: '{"a":' } }] } },
+					],
+				},
+				{
+					choices: [
+						{ delta: { tool_calls: [{ index: 0, id: "b", function: { name: "beta", arguments: '{"b":' } }] } },
+					],
+				},
+				{ choices: [{ delta: { tool_calls: [{ index: 0, id: "a", function: { arguments: "1}" } }] } }] },
+				{ choices: [{ delta: { tool_calls: [{ index: 0, id: "b", function: { arguments: "2}" } }] } }] },
+				{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+				"[DONE]",
+			]),
+		}).result();
+		expect(result.stopReason).toBe("toolUse");
+		expect(result.content.filter(block => block.type === "toolCall")).toMatchObject([
+			{ id: "a", name: "alpha", arguments: { a: 1 } },
+			{ id: "b", name: "beta", arguments: { b: 2 } },
+		]);
+	});
+
+	it("does not create a second call when an argument-only fragment changes its id", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor([
+				{
+					choices: [
+						{ delta: { tool_calls: [{ index: 0, id: "a", function: { name: "alpha", arguments: '{"a":' } }] } },
+					],
+				},
+				{
+					choices: [
+						{ delta: { tool_calls: [{ index: 0, id: "new-fragment-id", function: { arguments: "1}" } }] } },
+					],
+				},
+				{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+				"[DONE]",
+			]),
+		}).result();
+		expect(result.content.filter(block => block.type === "toolCall")).toMatchObject([
+			{ name: "alpha", arguments: { a: 1 } },
+		]);
+	});
+
+	it("rejects the Responses-only 12h cache policy instead of sending it to Chat Completions", async () => {
+		const result = await streamOpenAICompletions(
+			buildModel({ ...model, compat: { ...model.compatConfig, supportsPromptCacheBreakpoints: true } }),
+			context,
+			{
+				apiKey: "test-key",
+				sessionId: "cache",
+				promptCache: { mode: "implicit", ttl: "12h" },
+				fetch: fetchFor([]),
+			},
+		).result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("12h prompt caching is only available on the Responses API");
+	});
+});
+
+it("Mistral uses the caller prompt-cache key rather than its isolated routing session", async () => {
+	const target = { ...model, provider: "mistral", id: "mistral-large-latest" };
+	let payload: { prompt_cache_key?: string } | undefined;
+	await streamOpenAICompletions(target, context, {
+		apiKey: "test",
+		sessionId: "isolated-side-turn",
+		promptCacheKey: "shared-parent-prefix",
+		fetch: fetchFor([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }, "[DONE]"]),
+		onPayload: body => {
+			payload = body as { prompt_cache_key?: string };
+		},
+	}).result();
+	expect(payload?.prompt_cache_key).toBe("shared-parent-prefix");
 });

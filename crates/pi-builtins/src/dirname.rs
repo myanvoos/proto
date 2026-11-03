@@ -1,7 +1,3 @@
-
-
-
-
 use std::{borrow::Cow, ffi::OsString, io::Write};
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -14,7 +10,6 @@ mod options {
 	pub const ZERO: &str = "zero";
 	pub const DIR: &str = "dir";
 }
-
 
 pub(crate) struct Dirname {
 	matches: ArgMatches,
@@ -42,7 +37,8 @@ impl Utility for Dirname {
 			let Some(path_bytes) = os_bytes(path.as_os_str()) else {
 				host.error(
 					format!(
-						"invalid UTF-8 input {} encountered when converting to bytes on a platform that doesn't expose byte arguments",
+						"invalid UTF-8 input {} encountered when converting to bytes on a platform that \
+						 doesn't expose byte arguments",
 						path.quote()
 					),
 					1,
@@ -51,8 +47,7 @@ impl Utility for Dirname {
 			};
 			let result = dirname_string_manipulation(path_bytes);
 
-			if host.stdout.write_all(&result).is_err()
-				|| write!(host.stdout, "{line_ending}").is_err()
+			if host.stdout.write_all(&result).is_err() || write!(host.stdout, "{line_ending}").is_err()
 			{
 				return 1;
 			}
@@ -64,33 +59,12 @@ impl Utility for Dirname {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn dirname_string_manipulation(path_bytes: &[u8]) -> Cow<'_, [u8]> {
 	if path_bytes.is_empty() {
 		return Cow::Borrowed(b".");
 	}
 
 	let mut bytes = path_bytes;
-
 
 	let all_slashes = bytes.iter().all(|&b| b == b'/');
 	if all_slashes {
@@ -101,18 +75,15 @@ fn dirname_string_manipulation(path_bytes: &[u8]) -> Cow<'_, [u8]> {
 		bytes = &bytes[..bytes.len() - 1];
 	}
 
-
 	if bytes.ends_with(b".") && bytes.len() >= 2 {
 		let dot_pos = bytes.len() - 1;
 		if bytes[dot_pos - 1] == b'/' {
-
 			let mut slash_start = dot_pos - 1;
 			while slash_start > 0 && bytes[slash_start - 1] == b'/' {
 				slash_start -= 1;
 			}
 
 			if slash_start == 0 {
-
 				return if path_bytes.starts_with(b"/") {
 					Cow::Borrowed(b"/")
 				} else {
@@ -123,11 +94,8 @@ fn dirname_string_manipulation(path_bytes: &[u8]) -> Cow<'_, [u8]> {
 		}
 	}
 
-
 	if let Some(last_slash_pos) = bytes.iter().rposition(|&b| b == b'/') {
-
 		let mut result = &bytes[..last_slash_pos];
-
 
 		while result.len() > 1 && result.ends_with(b"/") {
 			result = &result[..result.len() - 1];
@@ -140,10 +108,8 @@ fn dirname_string_manipulation(path_bytes: &[u8]) -> Cow<'_, [u8]> {
 		return Cow::Borrowed(result);
 	}
 
-
 	Cow::Borrowed(b".")
 }
-
 
 fn app() -> Command {
 	Command::new(Dirname::NAME)
@@ -172,9 +138,6 @@ fn app() -> Command {
 		)
 }
 
-
 pub(crate) fn dirname_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Dirname, SE>()
 }
-
-

@@ -242,3 +242,75 @@ test("a failed writer creation restores a missing index entry", async () => {
 		await client.end();
 	}
 });
+
+class DeferredBackend extends CountingBackend {
+	gate = Promise.withResolvers<void>();
+	started = Promise.withResolvers<void>();
+	failRemoval = false;
+
+	override async writeFull(): Promise<void> {
+		this.started.resolve();
+		await this.gate.promise;
+	}
+
+	override async remove(): Promise<void> {
+		this.started.resolve();
+		await this.gate.promise;
+		if (this.failRemoval) throw new Error("partially removed");
+	}
+}
+
+test("resume confirmation excludes a newly queued sync write until its backend commits", async () => {
+	const backend = new DeferredBackend();
+	const storage = new IndexedSessionStorage(backend);
+	await storage.initialize();
+	const file = "/sessions/new.jsonl";
+	storage.writeTextSync(file, CONTENT);
+	await backend.started.promise;
+	expect(storage.existsSync(file)).toBe(true);
+	expect(storage.existsConfirmedSync(file)).toBe(false);
+	backend.gate.resolve();
+	await storage.drain();
+	expect(storage.existsConfirmedSync(file)).toBe(true);
+});
+
+test("a superseded atomic write never confirms the optimistic file beneath a newer pending write", async () => {
+	const backend = new DeferredBackend();
+	const storage = new IndexedSessionStorage(backend);
+	await storage.initialize();
+	const file = "/sessions/superseded.jsonl";
+	let current = true;
+	const first = storage.writeTextAtomic(file, "discarded", { commitGuard: () => current });
+	// Queue after the first operation has installed its optimistic entry, before its task runs.
+	await Promise.resolve();
+	current = false;
+	storage.writeTextSync(file, CONTENT);
+	await backend.started.promise;
+	await first;
+	expect(storage.existsConfirmedSync(file)).toBe(false);
+	backend.gate.resolve();
+	await storage.drain();
+	expect(storage.existsConfirmedSync(file)).toBe(true);
+});
+
+test("a partially failed removal stays unconfirmed until a full replacement commits", async () => {
+	const backend = new DeferredBackend();
+	backend.failRemoval = true;
+	const storage = new IndexedSessionStorage(backend);
+	await storage.initialize();
+	expect(storage.existsConfirmedSync(PATH)).toBe(true);
+	const removed = storage.unlink(PATH);
+	await backend.started.promise;
+	expect(storage.existsConfirmedSync(PATH)).toBe(false);
+	backend.gate.resolve();
+	await expect(removed).rejects.toThrow("partially removed");
+	expect(storage.existsSync(PATH)).toBe(true);
+	await storage.refresh();
+	expect(storage.existsConfirmedSync(PATH)).toBe(false);
+	const writer = storage.openWriter(PATH);
+	await writer.append("tail");
+	await writer.close();
+	expect(storage.existsConfirmedSync(PATH)).toBe(false);
+	await storage.writeTextAtomic(PATH, CONTENT);
+	expect(storage.existsConfirmedSync(PATH)).toBe(true);
+});

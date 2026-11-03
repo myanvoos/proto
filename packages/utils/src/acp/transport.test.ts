@@ -1,6 +1,63 @@
 import { expect, test } from "bun:test";
 import { type AnyMessage, RequestError, RpcConnection } from "./transport";
 
+test("permission cancellation aborts opted-in handlers and suppresses their late result", async () => {
+	const inbound = new TransformStream<AnyMessage, AnyMessage>();
+	const outbound = new TransformStream<AnyMessage, AnyMessage>();
+	const started = Promise.withResolvers<void>();
+	let observed: AbortSignal | undefined;
+	const connection = new RpcConnection(
+		{ readable: inbound.readable, writable: outbound.writable },
+		async (method, _params, notification, signal) => {
+			if (notification) return;
+			if (method === "ping") return { pong: true };
+			observed = signal;
+			started.resolve();
+			const aborted = Promise.withResolvers<void>();
+			signal!.addEventListener("abort", () => aborted.resolve(), { once: true });
+			await aborted.promise;
+			return { late: true };
+		},
+		{ honorsInboundCancellation: true },
+	);
+	const writer = inbound.writable.getWriter();
+	const reader = outbound.readable.getReader();
+	await writer.write({ jsonrpc: "2.0", id: 7, method: "permission" });
+	await started.promise;
+	await writer.write({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: 7 } });
+	expect(observed?.aborted).toBe(true);
+	expect((await reader.read()).value).toMatchObject({ id: 7, error: { code: -32800 } });
+	await writer.write({ jsonrpc: "2.0", id: 9, method: "ping" });
+	expect((await reader.read()).value).toEqual({ jsonrpc: "2.0", id: 9, result: { pong: true } });
+	await writer.close();
+	await connection.closed;
+});
+
+test("cancellation does not hide results from handlers that did not opt in", async () => {
+	const inbound = new TransformStream<AnyMessage, AnyMessage>();
+	const outbound = new TransformStream<AnyMessage, AnyMessage>();
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const connection = new RpcConnection(
+		{ readable: inbound.readable, writable: outbound.writable },
+		async (_method, _params, notification) => {
+			if (notification) return;
+			started.resolve();
+			await release.promise;
+			return { completed: true };
+		},
+	);
+	const writer = inbound.writable.getWriter();
+	const reader = outbound.readable.getReader();
+	await writer.write({ jsonrpc: "2.0", id: 8, method: "work" });
+	await started.promise;
+	await writer.write({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: 8 } });
+	release.resolve();
+	expect((await reader.read()).value).toEqual({ jsonrpc: "2.0", id: 8, result: { completed: true } });
+	await writer.close();
+	await connection.closed;
+});
+
 test("a clean EOF answers accepted requests before the connection closes", async () => {
 	const inbound = new TransformStream<AnyMessage, AnyMessage>();
 	const outbound = new TransformStream<AnyMessage, AnyMessage>();

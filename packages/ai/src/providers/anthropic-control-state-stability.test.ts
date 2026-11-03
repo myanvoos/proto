@@ -144,7 +144,7 @@ describe("Anthropic control state across one session's requests", () => {
 		expectCacheStableContinuation(firstRequest, secondRequest);
 	});
 
-	it("does not rewrite an already-sent tool control when a later effort change lands on its slot", async () => {
+	it("moves a stranded tool control after an interrupted reply without rewriting its payload or effort", async () => {
 		const state = new Map<string, ProviderSessionState>();
 		const turn0 = [user("start")];
 		await capture(state, turn0, Effort.Low, { tools: [tool("read"), tool("grep")] });
@@ -176,9 +176,19 @@ describe("Anthropic control state across one session's requests", () => {
 			{ tools: [tool("read")] },
 		);
 
-		expectCacheStableContinuation(toolChange, steered);
-		// Not rewriting the sent control must not drop the steer's effort either:
-		// it goes out exactly once, as its own control message.
+		// A tool control followed by a user is rejected by Anthropic: after an interrupted
+		// empty reply it moves to the next response slot, while the stable prefix stays put.
+		expect(steered.messages.slice(0, loop.length).map(withoutCacheControl)).toEqual(
+			toolChange.messages.slice(0, loop.length).map(withoutCacheControl),
+		);
+		expect(withoutCacheControl(steered.messages.at(-1))).toEqual(withoutCacheControl(toolChange.messages.at(-1)));
 		expect(steered.messages.flatMap(message => message.output_config?.effort ?? [])).toEqual(["medium"]);
+		const continued = await capture(
+			state,
+			[...loop, assistant([], "aborted"), user("stop, do it differently", true), reply("done"), user("next")],
+			Effort.Medium,
+			{ tools: [tool("read")] },
+		);
+		expectCacheStableContinuation(steered, continued);
 	});
 });

@@ -39,58 +39,44 @@ crate::minus_or_plus_flag_arg!(
 );
 crate::minus_or_plus_flag_arg!(MakeExportedFlag, 'x', "Mark the variable for export.");
 
-
 #[derive(Parser)]
 #[clap(override_usage = "declare [OPTIONS] [DECLARATIONS]...")]
 pub(crate) struct DeclareCommand {
-
 	#[arg(short = 'f')]
 	function_names_or_defs_only: bool,
-
 
 	#[arg(short = 'F')]
 	function_names_only: bool,
 
-
 	#[arg(short = 'g')]
 	create_global: bool,
-
-
-
 
 	#[arg(short = 'I')]
 	locals_inherit_from_prev_scope: bool,
 
-
 	#[arg(short = 'p')]
 	print: bool,
 
-
-
 	#[clap(flatten)]
-	make_indexed_array: MakeIndexedArrayFlag,
+	make_indexed_array:             MakeIndexedArrayFlag,
 	#[clap(flatten)]
-	make_associative_array: MakeAssociativeArrayFlag,
+	make_associative_array:         MakeAssociativeArrayFlag,
 	#[clap(flatten)]
 	capitalize_value_on_assignment: CapitalizeValueOnAssignmentFlag,
 	#[clap(flatten)]
-	make_integer: MakeIntegerFlag,
+	make_integer:                   MakeIntegerFlag,
 	#[clap(flatten)]
-	lowercase_value_on_assignment: LowercaseValueOnAssignmentFlag,
+	lowercase_value_on_assignment:  LowercaseValueOnAssignmentFlag,
 	#[clap(flatten)]
-	make_nameref: MakeNameRefFlag,
+	make_nameref:                   MakeNameRefFlag,
 	#[clap(flatten)]
-	make_readonly: MakeReadonlyFlag,
+	make_readonly:                  MakeReadonlyFlag,
 	#[clap(flatten)]
-	make_traced: MakeTracedFlag,
+	make_traced:                    MakeTracedFlag,
 	#[clap(flatten)]
-	uppercase_value_on_assignment: UppercaseValueOnAssignmentFlag,
+	uppercase_value_on_assignment:  UppercaseValueOnAssignmentFlag,
 	#[clap(flatten)]
-	make_exported: MakeExportedFlag,
-
-
-
-
+	make_exported:                  MakeExportedFlag,
 
 	#[clap(skip)]
 	declarations: Vec<brush_core::CommandArg>,
@@ -145,11 +131,9 @@ impl builtins::Command for DeclareCommand {
 				}
 			}
 		} else {
-
 			if !self.function_names_only && !self.function_names_or_defs_only {
 				self.display_matching_env_declarations(&context, verb)?;
 			}
-
 
 			if !matches!(verb, DeclareVerb::Local | DeclareVerb::Readonly)
 				&& (!self.print || self.function_names_only || self.function_names_or_defs_only)
@@ -196,7 +180,6 @@ impl DeclareCommand {
 				}
 				Ok(true)
 			} else {
-
 				Ok(false)
 			}
 		} else if let Some(variable) = context.shell.env().get_using_policy(name, lookup) {
@@ -240,32 +223,24 @@ impl DeclareCommand {
 			return self.try_display_declaration(context, declaration, verb);
 		}
 
-
 		let (name, assigned_index, initial_value, name_is_array) =
 			Self::declaration_to_name_and_value(declaration)?;
 
-
 		if name == "-" && matches!(verb, DeclareVerb::Local) {
-
-
-
 			tracing::warn!("not yet implemented: local -");
 			return Ok(true);
 		}
-
 
 		if !env::valid_variable_name(name.as_str()) {
 			writeln!(context.stderr(), "{}: {name}: not a valid variable name", context.command_name)?;
 			return Ok(false);
 		}
 
-
 		let lookup = if create_var_local {
 			EnvironmentLookup::OnlyInCurrentLocal
 		} else {
 			EnvironmentLookup::Anywhere
 		};
-
 
 		if let Some(var) = context
 			.shell
@@ -282,7 +257,6 @@ impl DeclareCommand {
 			self.apply_attributes_before_update(var)?;
 
 			if let Some(initial_value) = initial_value {
-
 				var.assign(initial_value, assigned_index.is_some())?;
 			}
 
@@ -355,9 +329,6 @@ impl DeclareCommand {
 
 		match declaration {
 			brush_core::CommandArg::String(s) => {
-
-
-
 				#[allow(
 					clippy::unwrap_in_result,
 					clippy::unwrap_used,
@@ -433,21 +404,13 @@ impl DeclareCommand {
 		context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 		verb: DeclareVerb,
 	) -> Result<(), brush_core::Error> {
-
-
-
-
-
-
 		#[expect(clippy::type_complexity)]
 		let mut filters: Vec<Box<dyn Fn((&String, &ShellVariable)) -> bool>> =
 			vec![Box::new(|(_, v)| v.is_enumerable())];
 
-
 		if matches!(verb, DeclareVerb::Readonly) {
 			filters.push(Box::new(|(_, v)| v.is_readonly()));
 		}
-
 
 		if let Some(value) = self.make_indexed_array.to_bool() {
 			filters.push(Box::new(move |(_, v)| {
@@ -478,7 +441,7 @@ impl DeclareCommand {
 		if let Some(value) = self.make_readonly.to_bool() {
 			filters.push(Box::new(move |(_, v)| v.is_readonly() == value));
 		}
-		if let Some(value) = self.make_readonly.to_bool() {
+		if let Some(value) = self.make_traced.to_bool() {
 			filters.push(Box::new(move |(_, v)| v.is_trace_enabled() == value));
 		}
 		if let Some(value) = self.uppercase_value_on_assignment.to_bool() {
@@ -495,8 +458,6 @@ impl DeclareCommand {
 		} else {
 			EnvironmentLookup::Anywhere
 		};
-
-
 
 		for (name, variable) in context
 			.shell

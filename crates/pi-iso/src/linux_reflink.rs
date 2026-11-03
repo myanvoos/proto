@@ -190,10 +190,11 @@ mod imp {
 	}
 
 	fn clone_file(src: &Path, dst: &Path) -> IsoResult<()> {
-		let meta = fs::symlink_metadata(src)
-			.map_err(|err| IsoError::other(format!("symlink_metadata {}: {err}", src.display())))?;
 		let src_file = File::open(src)
 			.map_err(|err| IsoError::other(format!("open {}: {err}", src.display())))?;
+		let meta = src_file
+			.metadata()
+			.map_err(|err| IsoError::other(format!("metadata {}: {err}", src.display())))?;
 		let dst_file = OpenOptions::new()
 			.write(true)
 			.create_new(true)
@@ -207,8 +208,17 @@ mod imp {
 			return Err(map_clone_error(src, dst, err));
 		}
 
-		preserve_permissions(dst, &meta)?;
-		let _ = set_times_nofollow(dst, &meta);
+		dst_file
+			.set_permissions(meta.permissions())
+			.map_err(|err| IsoError::other(format!("permissions {}: {err}", dst.display())))?;
+		let mut times = fs::FileTimes::new();
+		if let Ok(accessed) = meta.accessed() {
+			times = times.set_accessed(accessed);
+		}
+		if let Ok(modified) = meta.modified() {
+			times = times.set_modified(modified);
+		}
+		let _ = dst_file.set_times(times);
 		Ok(())
 	}
 

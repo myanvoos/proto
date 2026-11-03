@@ -30,10 +30,11 @@ export async function execCommand(
 		stderr: "full",
 	});
 
+	const killed = Boolean(result.exitError?.aborted);
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,
-		code: result.exitCode ?? 0,
-		killed: Boolean(result.exitError?.aborted),
+		code: killed ? -1 : (result.exitCode ?? -1),
+		killed,
 	};
 }

@@ -217,7 +217,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `localProtocolOptions` (optional calling-session `local://` root mapping for external tool bridges)
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
-- `compact(instructionsOrOptions?)` — accepts a string or `{ customInstructions, mode, onComplete, onError }`
+- `compact(instructionsOrOptions?)` — accepts a string or `{ customInstructions, mode, onComplete, onError }; returns `Promise<void>`. In non-interactive sessions, failures reject unless `onError` handles them. Supplying `onError` makes callback-only requests safe, including cancellation; exceptions thrown by callbacks still reject.`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()` — in interactive mode, exits at the next settled boundary (after streaming, queued messages, pending submissions and async work finish), even when no terminal input arrives
 - `getSystemPrompt()`

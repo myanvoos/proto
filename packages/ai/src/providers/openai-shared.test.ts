@@ -3,7 +3,12 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { ResponseStreamEvent } from "./openai-responses-wire";
-import { createInitialResponsesAssistantMessage, processResponsesStream } from "./openai-shared";
+import {
+	applyOpenAIResponsesServiceTierCost,
+	applyProviderReportedCost,
+	createInitialResponsesAssistantMessage,
+	processResponsesStream,
+} from "./openai-shared";
 
 function responsesModel(): Model<"openai-responses"> {
 	return buildModel({
@@ -328,4 +333,105 @@ describe("OpenAI Responses payloadless proxy frames", () => {
 			]),
 		).rejects.toBeInstanceOf(TypeError);
 	});
+});
+
+describe("Responses lossy terminal frames", () => {
+	it("keeps successive summary parts separate when the proxy omits indices", async () => {
+		const { output, deltas } = await runRecorded([
+			event({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } }),
+			event({ type: "response.reasoning_summary_text.delta", delta: "First" }),
+			event({ type: "response.reasoning_summary_part.done" }),
+			event({ type: "response.reasoning_summary_text.delta", delta: "Second" }),
+			event({ type: "response.reasoning_summary_text.done", text: "Second" }),
+			event({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [] } }),
+			completed,
+		]);
+		expect(output.content).toMatchObject([{ type: "thinking", thinking: "First\n\nSecond" }]);
+		expect(deltas.join("")).toBe("First\n\nSecond");
+	});
+
+	it("keeps completed custom input when the terminal item sends an empty input", async () => {
+		const output = await runResponses([
+			event({
+				type: "response.output_item.added",
+				item: { type: "custom_tool_call", id: "ct_1", call_id: "call_1", name: "edit", input: "" },
+			}),
+			event({ type: "response.custom_tool_call_input.delta", delta: "partial" }),
+			event({ type: "response.custom_tool_call_input.done", input: "complete patch" }),
+			event({
+				type: "response.output_item.done",
+				item: { type: "custom_tool_call", id: "ct_1", call_id: "call_1", name: "edit", input: "" },
+			}),
+			completed,
+		]);
+		expect(output.content).toMatchObject([{ type: "toolCall", arguments: { input: "complete patch" } }]);
+	});
+
+	it("keeps delta arguments across empty argument and output completion payloads", async () => {
+		const output = await runResponses([
+			functionCallAdded("fA", "cA", "alpha"),
+			functionCallDelta("fA", '{"a":1}'),
+			functionCallArgumentsDone("fA", ""),
+			functionCallDone("fA", "cA", "alpha", ""),
+			completed,
+		]);
+		expect(output.content).toMatchObject([{ type: "toolCall", arguments: { a: 1 } }]);
+		expect(output.stopReason).toBe("toolUse");
+	});
+
+	it("stores repaired arguments in native history only after normalizing the completed call", async () => {
+		const output = createInitialResponsesAssistantMessage("openai-responses", "openai-test", "test-model");
+		const native: unknown[] = [];
+		async function* source(): AsyncGenerator<ResponseStreamEvent> {
+			yield functionCallAdded("fA", "cA", "alpha");
+			yield functionCallDone("fA", "cA", "alpha", "{a:1}");
+			yield completed;
+		}
+		await processResponsesStream(source(), output, new AssistantMessageEventStream(), responsesModel(), {
+			onOutputItemDone: item => native.push(item),
+		});
+		expect(native).toMatchObject([{ type: "function_call", arguments: '{"a":1}' }]);
+	});
+});
+
+describe("OpenRouter reported BYOK cost", () => {
+	it("counts upstream provider spend plus the charged fee without losing token cost proportions", () => {
+		const usage = createInitialResponsesAssistantMessage("openai-responses", "openrouter", "model").usage;
+		usage.cost.input = 2;
+		usage.cost.output = 1;
+		usage.cost.total = 3;
+		applyProviderReportedCost({ provider: "openrouter" }, usage, {
+			cost: 0.3,
+			is_byok: true,
+			cost_details: { upstream_inference_cost: 6 },
+		});
+		expect(usage.cost.total).toBeCloseTo(6.3);
+		expect(usage.cost.input).toBeCloseTo(4.2);
+		expect(usage.cost.output).toBeCloseTo(2.1);
+	});
+
+	it("uses a valid charge when malformed upstream BYOK spend cannot be accounted", () => {
+		const usage = createInitialResponsesAssistantMessage("openai-responses", "openrouter", "model").usage;
+		applyProviderReportedCost({ provider: "openrouter" }, usage, {
+			cost: 0.2,
+			is_byok: true,
+			cost_details: { upstream_inference_cost: -1 },
+		});
+		expect(usage.cost.total).toBe(0.2);
+		expect(usage.cost.input).toBe(0.2);
+	});
+});
+
+it("OpenAI billing uses the catalog's served-tier rate before generic priority defaults", () => {
+	const usage = createInitialResponsesAssistantMessage("openai-responses", "openai", "gpt-6-astra").usage;
+	usage.cost = { input: 2, output: 3, cacheRead: 1, cacheWrite: 0, total: 6 };
+	const served = applyOpenAIResponsesServiceTierCost(
+		{ id: "gpt-6-astra", api: "openai-responses", provider: "openai", serviceTierCost: { ultrafast: 6 } },
+		usage,
+		"ultrafast",
+		"default",
+	);
+	expect(served).toBe("ultrafast");
+	expect(usage.cost).toEqual({ input: 12, output: 18, cacheRead: 6, cacheWrite: 0, total: 36 });
+	expect(usage.premiumRequests).toBe(1);
 });

@@ -89,3 +89,17 @@ test("buildStatusFooter keeps outcome markers and never prints execution diagnos
 	const hidden = buildStatusFooter({ status: "error", exitCode: 2, truncation: undefined, hiddenLineCount: 2 });
 	expect(renderFooter(hidden)).toContain("… 2 earlier lines");
 });
+
+test("completed user shell cards expose minimizer byte reductions without terminal-control injection", () => {
+	const footer = buildStatusFooter({
+		status: "complete",
+		exitCode: 0,
+		truncation: undefined,
+		hiddenLineCount: 0,
+		minimized: { filter: "git\x1b]0;bad\x07\nfilter", inputBytes: 4096, outputBytes: 128 },
+	});
+	const output = renderFooter(footer);
+	expect(output).toContain("Minimized: git filter");
+	expect(output).toContain("4.0KB → 128B");
+	expect(output).not.toContain("\x1b]");
+});

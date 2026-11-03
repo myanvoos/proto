@@ -1,5 +1,3 @@
-
-
 use std::{
 	borrow::Cow,
 	collections::{HashSet, VecDeque},
@@ -10,28 +8,23 @@ use brush_parser::ast::SourceLocation;
 
 use crate::{functions, traps};
 
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptCall {
-
-	pub call_type:   ScriptCallType,
+	pub call_type: ScriptCallType,
 
 	pub source_info: crate::SourceInfo,
 }
 
 impl ScriptCall {
-
 	pub fn name(&self) -> Cow<'_, str> {
 		self.source_info.source.as_str().into()
 	}
 }
 
-
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScriptCallType {
-
 	Source,
 
 	Run,
@@ -46,12 +39,9 @@ impl std::fmt::Display for ScriptCall {
 	}
 }
 
-
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FrameType {
-
 	Script(ScriptCall),
 
 	Function(FunctionCall),
@@ -66,7 +56,6 @@ pub enum FrameType {
 }
 
 impl FrameType {
-
 	pub fn name(&self) -> Cow<'_, str> {
 		match self {
 			Self::Script(call) => call.name(),
@@ -78,36 +67,29 @@ impl FrameType {
 		}
 	}
 
-
 	pub const fn is_function(&self) -> bool {
 		matches!(self, Self::Function(..))
 	}
-
 
 	pub const fn is_script(&self) -> bool {
 		matches!(self, Self::Script(..))
 	}
 
-
 	pub const fn is_trap_handler(&self) -> bool {
 		matches!(self, Self::TrapHandler(_))
 	}
-
 
 	pub const fn is_interactive_session(&self) -> bool {
 		matches!(self, Self::InteractiveSession)
 	}
 
-
 	pub const fn is_command_string(&self) -> bool {
 		matches!(self, Self::CommandString)
 	}
 
-
 	pub const fn is_sourced_script(&self) -> bool {
 		matches!(self, Self::Script(call) if matches!(call.call_type, ScriptCallType::Source))
 	}
-
 
 	pub const fn is_run_script(&self) -> bool {
 		matches!(self, Self::Script(call) if matches!(call.call_type, ScriptCallType::Run))
@@ -127,18 +109,15 @@ impl std::fmt::Display for FrameType {
 	}
 }
 
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionCall {
-
 	pub function_name: String,
 
-	pub function:      functions::Registration,
+	pub function: functions::Registration,
 }
 
 impl FunctionCall {
-
 	pub fn name(&self) -> Cow<'_, str> {
 		self.function_name.as_str().into()
 	}
@@ -150,43 +129,26 @@ impl std::fmt::Display for FunctionCall {
 	}
 }
 
-
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Frame {
+	pub frame_type: FrameType,
 
-	pub frame_type:          FrameType,
+	pub source_info: crate::SourceInfo,
 
+	pub entry: Option<Arc<crate::SourcePosition>>,
 
+	pub current: Option<Arc<crate::SourcePosition>>,
 
-	pub source_info:         crate::SourceInfo,
-
-
-
-	pub entry:               Option<Arc<crate::SourcePosition>>,
-
-
-
-
-
-
-	pub current:             Option<Arc<crate::SourcePosition>>,
-
-
-	pub args:                Vec<String>,
-
+	pub args: Vec<String>,
 
 	pub current_line_offset: usize,
 }
 
 impl Frame {
-
-
 	pub fn adjusted_source_info(&self) -> crate::SourceInfo {
 		self.pos_as_source_info(None)
 	}
-
-
 
 	pub fn current_pos_as_source_info(&self) -> crate::SourceInfo {
 		self.pos_as_source_info(self.current.as_ref())
@@ -229,14 +191,12 @@ impl Frame {
 		crate::SourceInfo { source: self.source_info.source.clone(), start: new_start }
 	}
 
-
 	pub fn current_line(&self) -> Option<usize> {
 		let start_line = self.source_info.start.as_ref().map_or(1, |pos| pos.line);
 		let current_line = self.current.as_ref().map(|pos| pos.line)?;
 
 		Some(start_line.saturating_sub(1) + current_line + self.current_line_offset)
 	}
-
 
 	pub fn current_frame_relative_line(&self) -> Option<usize> {
 		let current_line = self.current.as_ref().map(|pos| pos.line)?;
@@ -246,18 +206,12 @@ impl Frame {
 	}
 }
 
-
 #[derive(Default)]
 pub struct FormatOptions {
-
-	pub show_args:         bool,
+	pub show_args: bool,
 
 	pub show_entry_points: bool,
 }
-
-
-
-
 
 pub struct FormatCallStack<'a> {
 	stack:   &'a CallStack,
@@ -265,13 +219,6 @@ pub struct FormatCallStack<'a> {
 }
 
 impl<'a> FormatCallStack<'a> {
-
-
-
-
-
-
-
 	pub const fn new(stack: &'a CallStack, options: &'a FormatOptions) -> Self {
 		Self { stack, options }
 	}
@@ -282,7 +229,6 @@ impl std::fmt::Display for FormatCallStack<'_> {
 		self.stack.fmt_with_options(f, self.options)
 	}
 }
-
 
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -295,20 +241,9 @@ pub struct CallStack {
 }
 
 impl CallStack {
-
-
-
-
-
 	pub const fn format<'a>(&'a self, options: &'a FormatOptions) -> FormatCallStack<'a> {
 		FormatCallStack::new(self, options)
 	}
-
-
-
-
-
-
 
 	fn fmt_with_options(
 		&self,
@@ -378,12 +313,9 @@ impl std::ops::Index<usize> for CallStack {
 }
 
 impl CallStack {
-
 	pub fn new() -> Self {
 		Self::default()
 	}
-
-
 
 	pub fn pop(&mut self) -> Option<Frame> {
 		let frame = self.frames.pop_front()?;
@@ -403,15 +335,9 @@ impl CallStack {
 		Some(frame)
 	}
 
-
-
 	pub fn current_frame(&self) -> Option<&Frame> {
 		self.frames.front()
 	}
-
-
-
-
 
 	pub fn current_pos_as_source_info(&self) -> crate::SourceInfo {
 		let Some(frame) = self.frames.front() else {
@@ -421,18 +347,11 @@ impl CallStack {
 		frame.current_pos_as_source_info()
 	}
 
-
 	pub fn set_current_pos(&mut self, position: Option<Arc<crate::SourcePosition>>) {
 		if let Some(frame) = self.frames.front_mut() {
 			frame.current = position;
 		}
 	}
-
-
-
-
-
-
 
 	pub(crate) fn increment_current_line_offset(&mut self, delta: usize) {
 		let Some(frame) = self.frames.front_mut() else {
@@ -441,13 +360,6 @@ impl CallStack {
 
 		frame.current_line_offset += delta;
 	}
-
-
-
-
-
-
-
 
 	pub fn push_script(
 		&mut self,
@@ -472,12 +384,6 @@ impl CallStack {
 		}
 	}
 
-
-
-
-
-
-
 	pub fn push_trap_handler(
 		&mut self,
 		signal: traps::TrapSignal,
@@ -497,7 +403,6 @@ impl CallStack {
 		self.active_trap_signals.insert(signal);
 	}
 
-
 	pub fn push_eval(&mut self) {
 		self.frames.push_front(Frame {
 			frame_type:          FrameType::Eval,
@@ -508,7 +413,6 @@ impl CallStack {
 			entry:               None,
 		});
 	}
-
 
 	pub fn push_command_string(&mut self) {
 		self.frames.push_front(Frame {
@@ -521,7 +425,6 @@ impl CallStack {
 		});
 	}
 
-
 	pub fn push_interactive_session(&mut self) {
 		self.frames.push_front(Frame {
 			frame_type:          FrameType::InteractiveSession,
@@ -532,13 +435,6 @@ impl CallStack {
 			entry:               None,
 		});
 	}
-
-
-
-
-
-
-
 
 	pub fn push_function(
 		&mut self,
@@ -561,7 +457,6 @@ impl CallStack {
 		self.func_call_depth += 1;
 	}
 
-
 	pub fn iter_function_calls(&self) -> impl Iterator<Item = &FunctionCall> {
 		self.iter().filter_map(|frame| {
 			if let FrameType::Function(call) = &frame.frame_type {
@@ -571,7 +466,6 @@ impl CallStack {
 			}
 		})
 	}
-
 
 	pub fn iter_script_calls(&self) -> impl Iterator<Item = &ScriptCall> {
 		self.iter().filter_map(|frame| {
@@ -583,8 +477,6 @@ impl CallStack {
 		})
 	}
 
-
-
 	pub fn in_sourced_script(&self) -> bool {
 		self
 			.iter_script_calls()
@@ -592,74 +484,51 @@ impl CallStack {
 			.is_some_and(|call| matches!(call.call_type, ScriptCallType::Source))
 	}
 
-
 	pub const fn function_call_depth(&self) -> usize {
 		self.func_call_depth
 	}
-
 
 	pub const fn script_source_depth(&self) -> usize {
 		self.script_source_depth
 	}
 
-
-
 	pub fn is_trap_signal_active(&self, signal: traps::TrapSignal) -> bool {
 		self.active_trap_signals.contains(&signal)
 	}
-
-
-
 
 	pub fn clear_active_trap_signals(&mut self) {
 		self.active_trap_signals.clear();
 	}
 
-
 	pub const fn is_trap_delivery_suppressed(&self) -> bool {
 		self.trap_delivery_suppress_count > 0
 	}
-
-
-
 
 	pub const fn acquire_trap_delivery_block(&mut self) {
 		self.trap_delivery_suppress_count += 1;
 	}
 
-
-
 	pub const fn release_trap_delivery_block(&mut self) {
 		self.trap_delivery_suppress_count = self.trap_delivery_suppress_count.saturating_sub(1);
 	}
-
-
 
 	pub fn in_function(&self) -> bool {
 		self.iter_function_calls().next().is_some()
 	}
 
-
 	pub fn depth(&self) -> usize {
 		self.frames.len()
 	}
-
 
 	pub fn is_empty(&self) -> bool {
 		self.frames.is_empty()
 	}
 
-
-
 	pub fn iter(&self) -> impl Iterator<Item = &Frame> {
 		self.frames.iter()
 	}
-
-
 
 	pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Frame> {
 		self.frames.iter_mut()
 	}
 }
-
-

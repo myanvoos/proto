@@ -3,54 +3,35 @@ use std::{collections::HashMap, io::Write};
 use brush_core::{ExecutionResult, builtins, env, variables};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct GetOptsCommand {
-
 	options_string: String,
 
-
 	variable_name: String,
-
 
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
 	args: Vec<String>,
 }
 
-
-
-
 const VAR_GETOPTS_NEXT_CHAR_INDEX: &str = "__GETOPTS_NEXT_CHAR";
 const VAR_GETOPTS_LAST_OPTIND: &str = "__GETOPTS_LAST_OPTIND";
 const DEFAULT_NEXT_CHAR_INDEX: usize = 1;
 
-
 struct GetOptsResult {
-
-
 	variable_value: String,
 
+	optarg: Option<String>,
 
-	optarg:         Option<String>,
+	optind: usize,
 
-	optind:         usize,
-
-
-	exit_code:      ExecutionResult,
+	exit_code: ExecutionResult,
 }
 
-
 struct OptionSpec {
-
-	defs:          HashMap<char, bool>,
-
+	defs: HashMap<char, bool>,
 
 	silent_errors: bool,
 }
-
-
-
-
 
 fn parse_option_spec(spec: &str) -> OptionSpec {
 	let mut defs = HashMap::<char, bool>::new();
@@ -62,7 +43,6 @@ fn parse_option_spec(spec: &str) -> OptionSpec {
 			if let Some(last_char) = last_char {
 				defs.insert(last_char, true);
 			} else if defs.is_empty() {
-
 				silent_errors = true;
 			}
 			continue;
@@ -72,8 +52,6 @@ fn parse_option_spec(spec: &str) -> OptionSpec {
 			e.insert(false);
 			last_char = Some(c);
 		} else {
-
-
 			last_char = None;
 		}
 	}
@@ -83,10 +61,6 @@ fn parse_option_spec(spec: &str) -> OptionSpec {
 
 impl builtins::Command for GetOptsCommand {
 	type Error = brush_core::Error;
-
-
-
-
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
@@ -103,7 +77,6 @@ impl builtins::Command for GetOptsCommand {
 		&self,
 		mut context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
-
 		if !env::valid_variable_name(&self.variable_name) {
 			writeln!(
 				context.stderr(),
@@ -116,15 +89,11 @@ impl builtins::Command for GetOptsCommand {
 
 		let spec = parse_option_spec(&self.options_string);
 
-
 		let next_index_signed = context
 			.shell
 			.env_str("OPTIND")
 			.and_then(|s| brush_core::int_utils::parse::<i32>(s.as_ref(), 10).ok())
 			.unwrap_or(1);
-
-
-
 
 		let last_optind = context
 			.shell
@@ -136,10 +105,6 @@ impl builtins::Command for GetOptsCommand {
 
 		#[allow(clippy::cast_sign_loss)]
 		let next_index = next_index_signed.max(1) as usize;
-
-
-
-
 
 		let owned_args;
 		let args_to_parse = if !self.args.is_empty() {
@@ -155,33 +120,25 @@ impl builtins::Command for GetOptsCommand {
 	}
 }
 
-
-
-
-
-
 fn parse_next_option<SE: brush_core::ShellExtensions>(
 	context: &mut brush_core::ExecutionContext<'_, SE>,
 	spec: &OptionSpec,
 	args_to_parse: &[String],
 	mut next_index: usize,
 ) -> Result<GetOptsResult, brush_core::Error> {
-
 	if next_index > args_to_parse.len() {
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
 			optarg:         None,
 
-			optind:         args_to_parse.len() + 1,
-			exit_code:      ExecutionResult::general_error(),
+			optind:    args_to_parse.len() + 1,
+			exit_code: ExecutionResult::general_error(),
 		});
 	}
 
 	let arg = args_to_parse[next_index - 1].as_str();
 
-
 	if !arg.starts_with('-') || arg == "--" || arg == "-" {
-
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
 			optarg:         None,
@@ -194,13 +151,10 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		});
 	}
 
-
 	let mut next_char_index = context
 		.shell
 		.env_str(VAR_GETOPTS_NEXT_CHAR_INDEX)
 		.map_or(DEFAULT_NEXT_CHAR_INDEX, |s| s.parse().unwrap_or(DEFAULT_NEXT_CHAR_INDEX));
-
-
 
 	let mut c = arg.chars().nth(next_char_index);
 	if c.is_none() {
@@ -208,7 +162,6 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		c = arg.chars().nth(next_char_index);
 	}
 	let Some(c) = c else {
-
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
 			optarg:         None,
@@ -222,7 +175,6 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 
 	let mut variable_value;
 	let optarg;
-
 
 	if let Some(takes_arg) = spec.defs.get(&c) {
 		variable_value = String::from(c);
@@ -246,13 +198,9 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 	}
 
 	let optind = if is_last_char_in_option {
-
-
 		context.shell.env_mut().unset(VAR_GETOPTS_NEXT_CHAR_INDEX)?;
 		next_index + 1
 	} else {
-
-
 		context.shell.env_mut().update_or_add(
 			VAR_GETOPTS_NEXT_CHAR_INDEX,
 			variables::ShellValueLiteral::Scalar((next_char_index + 1).to_string()),
@@ -269,8 +217,6 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 	Ok(GetOptsResult { variable_value, optarg, optind, exit_code: ExecutionResult::success() })
 }
 
-
-
 #[allow(clippy::too_many_arguments)]
 fn resolve_option_argument<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,
@@ -282,11 +228,8 @@ fn resolve_option_argument<SE: brush_core::ShellExtensions>(
 	is_last_char_in_option: bool,
 	mut next_index: usize,
 ) -> Result<(String, Option<String>, bool, usize), brush_core::Error> {
-
-
 	if is_last_char_in_option {
 		if next_index >= args_to_parse.len() {
-
 			let (variable_value, optarg) = if spec.silent_errors {
 				(String::from(":"), Some(String::from(c)))
 			} else {
@@ -306,7 +249,6 @@ fn resolve_option_argument<SE: brush_core::ShellExtensions>(
 	}
 }
 
-
 fn report_unknown_option<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,
 	spec: &OptionSpec,
@@ -325,14 +267,11 @@ fn report_unknown_option<SE: brush_core::ShellExtensions>(
 	Ok((String::from("?"), optarg))
 }
 
-
-
 fn update_variables<SE: brush_core::ShellExtensions>(
 	context: &mut brush_core::ExecutionContext<'_, SE>,
 	variable_name: &str,
 	result: GetOptsResult,
 ) -> Result<ExecutionResult, brush_core::Error> {
-
 	context.shell.env_mut().update_or_add(
 		variable_name,
 		variables::ShellValueLiteral::Scalar(result.variable_value),
@@ -340,7 +279,6 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 		brush_core::env::EnvironmentLookup::Anywhere,
 		brush_core::env::EnvironmentScope::Global,
 	)?;
-
 
 	if let Some(optarg) = result.optarg {
 		context.shell.env_mut().update_or_add(
@@ -353,7 +291,6 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 	} else {
 		context.shell.env_mut().unset("OPTARG")?;
 	}
-
 
 	let optind_str = result.optind.to_string();
 	context.shell.env_mut().update_or_add(
@@ -376,8 +313,6 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 
 	Ok(result.exit_code)
 }
-
-
 
 fn is_opterr_enabled<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,

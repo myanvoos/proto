@@ -1,11 +1,7 @@
-
-
-
-
-
 use std::{
 	borrow::Cow,
 	ffi::{OsStr, OsString},
+	fmt,
 	io::{self, Read, Write},
 	path::{Path, PathBuf},
 };
@@ -19,13 +15,11 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
 	BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
+
 use crate::{
 	bre,
 	host::{Host, Utility, util},
 };
-
-
-
 
 pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
 	match host.var("PROTO_PCRE2_JIT") {
@@ -44,218 +38,165 @@ pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
 	args_override_self = true
 )]
 struct GrepArgs {
-
 	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
 	patterns: Vec<String>,
-
 
 	#[arg(short = 'f', long = "file", value_name = "FILE")]
 	pattern_files: Vec<OsString>,
 
-
 	#[arg(short = 'E', long = "extended-regexp")]
 	extended: bool,
-
 
 	#[arg(short = 'G', long = "basic-regexp")]
 	basic: bool,
 
-
 	#[arg(short = 'F', long = "fixed-strings")]
 	fixed: bool,
-
 
 	#[arg(short = 'P', long = "perl-regexp")]
 	perl: bool,
 
-
 	#[arg(short = 'i', short_alias = 'y', long = "ignore-case")]
 	ignore_case: bool,
-
 
 	#[arg(long = "no-ignore-case")]
 	no_ignore_case: bool,
 
-
 	#[arg(short = 'v', long = "invert-match")]
 	invert: bool,
-
 
 	#[arg(short = 'w', long = "word-regexp")]
 	word: bool,
 
-
 	#[arg(short = 'x', long = "line-regexp")]
 	line_regexp: bool,
-
 
 	#[arg(short = 'c', long = "count")]
 	count: bool,
 
-
 	#[arg(short = 'l', long = "files-with-matches")]
 	files_with_matches: bool,
-
 
 	#[arg(short = 'L', long = "files-without-match")]
 	files_without_match: bool,
 
-
 	#[arg(short = 'm', long = "max-count", value_name = "NUM", allow_hyphen_values = true)]
 	max_count: Option<i64>,
-
 
 	#[arg(short = 'o', long = "only-matching")]
 	only_matching: bool,
 
-
 	#[arg(short = 'q', long = "quiet", visible_alias = "silent")]
 	quiet: bool,
-
 
 	#[arg(short = 's', long = "no-messages")]
 	no_messages: bool,
 
-
 	#[arg(short = 'b', long = "byte-offset")]
 	byte_offset: bool,
-
 
 	#[arg(short = 'H', long = "with-filename")]
 	with_filename: bool,
 
-
 	#[arg(short = 'h', long = "no-filename")]
 	no_filename: bool,
-
 
 	#[arg(long = "label", value_name = "LABEL")]
 	label: Option<OsString>,
 
-
 	#[arg(short = 'n', long = "line-number")]
 	line_number: bool,
-
 
 	#[arg(short = 'T', long = "initial-tab")]
 	initial_tab: bool,
 
-
 	#[arg(short = 'Z', long = "null")]
 	null_paths: bool,
-
 
 	#[arg(short = 'A', long = "after-context", value_name = "NUM")]
 	after_context: Option<usize>,
 
-
 	#[arg(short = 'B', long = "before-context", value_name = "NUM")]
 	before_context: Option<usize>,
-
 
 	#[arg(short = 'C', long = "context", value_name = "NUM")]
 	context: Option<usize>,
 
-
 	#[arg(long = "group-separator", value_name = "STRING")]
 	group_separator: Option<String>,
-
 
 	#[arg(long = "no-group-separator")]
 	no_group_separator: bool,
 
-
 	#[arg(short = 'a', long = "text")]
 	text: bool,
-
 
 	#[arg(short = 'I')]
 	binary_without_match: bool,
 
-
 	#[arg(long = "binary-files", value_name = "TYPE")]
 	binary_files: Option<BinaryFiles>,
-
 
 	#[arg(short = 'D', long = "devices", value_name = "ACTION")]
 	devices: Option<DeviceAction>,
 
-
 	#[arg(short = 'd', long = "directories", value_name = "ACTION")]
 	directories: Option<DirectoryAction>,
-
 
 	#[arg(long = "include", value_name = "GLOB")]
 	include: Vec<String>,
 
-
 	#[arg(long = "exclude", value_name = "GLOB")]
 	exclude: Vec<String>,
-
 
 	#[arg(long = "exclude-from", value_name = "FILE")]
 	exclude_from: Vec<OsString>,
 
-
 	#[arg(long = "exclude-dir", value_name = "GLOB")]
 	exclude_dir: Vec<String>,
-
 
 	#[arg(long = "include-dir", value_name = "GLOB")]
 	include_dir: Vec<String>,
 
-
 	#[arg(short = 'r', long = "recursive")]
 	recursive: bool,
-
 
 	#[arg(short = 'R', long = "dereference-recursive")]
 	dereference_recursive: bool,
 
-
 	#[arg(short = 'O')]
 	follow_command_line: bool,
-
 
 	#[arg(short = 'p')]
 	no_follow: bool,
 
-
 	#[arg(short = 'S')]
 	follow_all: bool,
-
 
 	#[arg(long = "line-buffered")]
 	line_buffered: bool,
 
-
 	#[arg(short = 'U', long = "binary")]
 	binary_io: bool,
 
-
 	#[arg(short = 'z', long = "null-data")]
 	null_data: bool,
-
 
 	#[allow(dead_code, reason = "accepted BSD grep compatibility option")]
 	#[arg(long = "mmap")]
 	mmap: bool,
 
-
 	#[allow(dead_code, reason = "accepted GNU grep compatibility option")]
 	#[arg(short = 'u')]
 	unix_byte_offsets: bool,
-
 
 	#[allow(dead_code, reason = "clap consumes help before options are inspected")]
 	#[arg(long = "help", action = clap::ArgAction::Help)]
 	help: Option<bool>,
 
-
 	#[allow(dead_code, reason = "clap consumes version before options are inspected")]
 	#[arg(short = 'V', long = "version", action = clap::ArgAction::Version)]
 	version: Option<bool>,
-
 
 	#[allow(dead_code, reason = "color is intentionally disabled for builtin output")]
 	#[arg(
@@ -268,26 +209,30 @@ struct GrepArgs {
 	)]
 	color: Option<String>,
 
-
 	#[arg(value_name = "ARGS")]
 	args: Vec<OsString>,
 }
 
-
 pub(crate) struct Grep {
-	cli: GrepArgs,
+	cli:     GrepArgs,
 	matches: ArgMatches,
 }
 
 impl CommandFactory for Grep {
-	fn command() -> clap::Command { GrepArgs::command() }
-	fn command_for_update() -> clap::Command { GrepArgs::command_for_update() }
+	fn command() -> clap::Command {
+		GrepArgs::command()
+	}
+
+	fn command_for_update() -> clap::Command {
+		GrepArgs::command_for_update()
+	}
 }
 
 impl FromArgMatches for Grep {
 	fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
 		Ok(Self { cli: GrepArgs::from_arg_matches(matches)?, matches: matches.clone() })
 	}
+
 	fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), clap::Error> {
 		self.cli.update_from_arg_matches(matches)?;
 		self.matches = matches.clone();
@@ -324,7 +269,6 @@ enum MatchMode {
 	Fixed,
 	Perl,
 }
-
 
 struct Options {
 	line_number:         bool,
@@ -532,8 +476,6 @@ fn resolve_follow_links(cli: &GrepArgs, matches: &ArgMatches) -> pi_walker::Foll
 }
 
 fn resolve_binary_files(cli: &GrepArgs, matches: &ArgMatches) -> BinaryFiles {
-
-
 	let mut selected = (0, BinaryFiles::Text);
 	choose_latest(&mut selected, last_index(matches, "text"), BinaryFiles::Text);
 	choose_latest(
@@ -559,11 +501,29 @@ fn resolve_max_count(cli: &GrepArgs) -> Result<Option<u64>, String> {
 }
 
 fn option_takes_next_value(arg: &str) -> bool {
-	matches!(arg, "-e" | "-f" | "-m" | "-A" | "-B" | "-C" | "-D" | "-d"
-		| "--regexp" | "--file" | "--max-count" | "--after-context" | "--before-context"
-		| "--context" | "--label" | "--group-separator" | "--binary-files" | "--devices"
-		| "--directories" | "--include" | "--exclude" | "--exclude-from" | "--exclude-dir"
-		| "--include-dir")
+	matches!(
+		arg,
+		"-e"
+			| "-f" | "-m"
+			| "-A" | "-B"
+			| "-C" | "-D"
+			| "-d" | "--regexp"
+			| "--file"
+			| "--max-count"
+			| "--after-context"
+			| "--before-context"
+			| "--context"
+			| "--label"
+			| "--group-separator"
+			| "--binary-files"
+			| "--devices"
+			| "--directories"
+			| "--include"
+			| "--exclude"
+			| "--exclude-from"
+			| "--exclude-dir"
+			| "--include-dir"
+	)
 }
 
 fn normalize_context_args(argv: Vec<OsString>) -> Vec<OsString> {
@@ -576,10 +536,18 @@ fn normalize_context_args(argv: Vec<OsString>) -> Vec<OsString> {
 			normalized.push(arg);
 			continue;
 		}
-		let Some(text) = arg.to_str() else { normalized.push(arg); continue };
-		if text == "--" { literal = true; normalized.push(arg); continue }
+		let Some(text) = arg.to_str() else {
+			normalized.push(arg);
+			continue;
+		};
+		if text == "--" {
+			literal = true;
+			normalized.push(arg);
+			continue;
+		}
 		if let Some(digits) = text.strip_prefix('-')
-			&& !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+			&& !digits.is_empty()
+			&& digits.bytes().all(|byte| byte.is_ascii_digit())
 		{
 			normalized.push(OsString::from(format!("--context={digits}")));
 			continue;
@@ -589,8 +557,6 @@ fn normalize_context_args(argv: Vec<OsString>) -> Vec<OsString> {
 	}
 	normalized
 }
-
-
 
 fn escape_literal(pat: &str) -> String {
 	const META: &[char] =
@@ -604,8 +570,6 @@ fn escape_literal(pat: &str) -> String {
 	}
 	out
 }
-
-
 
 fn build_default_matcher<P: AsRef<str>, F: AsRef<str>>(
 	builder: &RegexMatcherBuilder,
@@ -629,7 +593,9 @@ fn build_default_matcher<P: AsRef<str>, F: AsRef<str>>(
 			}
 		})
 		.collect();
-	builder.build_many(&sanitized).map_err(|_| error.to_string())
+	builder
+		.build_many(&sanitized)
+		.map_err(|_| error.to_string())
 }
 
 fn build_matcher(
@@ -682,8 +648,10 @@ fn build_matcher(
 		return build_default_matcher(&builder, &translated, patterns).map(CompiledMatcher::Rust);
 	}
 
-	let patterns: Vec<Cow<'_, str>> =
-		patterns.iter().map(|pattern| bre::ere_literalize_braces(pattern)).collect();
+	let patterns: Vec<Cow<'_, str>> = patterns
+		.iter()
+		.map(|pattern| bre::ere_literalize_braces(pattern))
+		.collect();
 	if let Some(pattern) = patterns
 		.iter()
 		.find(|pattern| bre::ere_repetition_operand_missing(pattern))
@@ -696,7 +664,6 @@ fn build_matcher(
 		.map(CompiledMatcher::Rust)
 		.map_err(|error| error.to_string())
 }
-
 
 struct GrepSink<'a, M: Matcher, W: Write> {
 	out:         &'a mut W,
@@ -912,7 +879,6 @@ impl<M: Matcher, W: Write> Sink for GrepSink<'_, M, W> {
 	}
 }
 
-
 fn process_reader<M: Matcher, R: Read, W: Write>(
 	matcher: &M,
 	searcher: &mut Searcher,
@@ -923,6 +889,7 @@ fn process_reader<M: Matcher, R: Read, W: Write>(
 ) -> io::Result<bool> {
 	let mut sink =
 		GrepSink { out, matcher, display, opts, match_count: 0, any_match: false, binary: false };
+	let reader = BoundedSearchReader::new(reader, searcher, matcher);
 	searcher.search_reader(matcher, reader, &mut sink)?;
 	Ok(sink.any_match)
 }
@@ -935,11 +902,6 @@ fn display_path_for_operand(operand: &OsStr, resolved: &Path, path: &Path) -> Pa
 		Path::new(operand).join(rel)
 	}
 }
-
-
-
-
-
 
 const SIGPIPE_EXIT_CODE: i32 = 141;
 
@@ -967,15 +929,15 @@ fn search_file_path<M: Matcher, W: Write>(
 					Ok(matched)
 				},
 
-
 				Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),
 				Err(error) => {
 					*had_error = true;
 					if !opts.no_messages {
 						let _ = writeln!(
 							host.stderr,
-							"grep: {}: {error}",
-							display_path.to_string_lossy()
+							"grep: {}: {}",
+							display_path.to_string_lossy(),
+							describe_search_error(&error)
 						);
 					}
 					Ok(false)
@@ -985,11 +947,7 @@ fn search_file_path<M: Matcher, W: Write>(
 		Err(error) => {
 			*had_error = true;
 			if !opts.no_messages {
-				let _ = writeln!(
-					host.stderr,
-					"grep: {}: {error}",
-					display_path.to_string_lossy()
-				);
+				let _ = writeln!(host.stderr, "grep: {}: {error}", display_path.to_string_lossy());
 			}
 			Ok(false)
 		},
@@ -1013,7 +971,6 @@ fn grep_walk_request(root: &Path, follow_links: pi_walker::FollowLinks) -> pi_wa
 		.cache(false)
 		.filter(pi_walker::WalkFilter::all())
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn search_dir<M: Matcher, W: Write>(
@@ -1080,12 +1037,7 @@ fn search_dir<M: Matcher, W: Write>(
 			had_error_state.set(true);
 			if !opts.no_messages {
 				let display_path = display_path_for_operand(operand, resolved, error.path);
-				let _ = writeln!(
-					walk_err,
-					"grep: {}: {}",
-					display_path.to_string_lossy(),
-					error.error
-				);
+				let _ = writeln!(walk_err, "grep: {}: {}", display_path.to_string_lossy(), error.error);
 			}
 			Ok(pi_walker::WalkDecision::Include)
 		},
@@ -1094,14 +1046,12 @@ fn search_dir<M: Matcher, W: Write>(
 	match walk {
 		Ok(pi_walker::WalkStatus::Complete | pi_walker::WalkStatus::Stopped) => Ok(any),
 
-
 		Err(pi_walker::WalkError::Interrupted(error))
 			if error.kind() == io::ErrorKind::BrokenPipe =>
 		{
 			Err(error)
 		},
 		Err(pi_walker::WalkError::Interrupted(_)) if host.is_cancelled() => {
-
 			*had_error = true;
 			Ok(any)
 		},
@@ -1116,11 +1066,7 @@ fn search_dir<M: Matcher, W: Write>(
 			*had_error = true;
 			if !opts.no_messages {
 				let display_path = display_path_for_operand(operand, resolved, &path);
-				let _ = writeln!(
-					host.stderr,
-					"grep: {}: {message}",
-					display_path.to_string_lossy()
-				);
+				let _ = writeln!(host.stderr, "grep: {}: {message}", display_path.to_string_lossy());
 			}
 			Ok(any)
 		},
@@ -1128,15 +1074,12 @@ fn search_dir<M: Matcher, W: Write>(
 }
 
 fn read_auxiliary_file(host: &mut Host, path: &OsStr) -> Result<Vec<u8>, String> {
-	let mut bytes = Vec::new();
 	let result = if path == OsStr::new("-") {
-		host.stdin.read_to_end(&mut bytes)
+		read_pattern_source(&mut host.stdin)
 	} else {
-		brush_core::heldfiles::open_read(host.resolve(path)).and_then(|mut file| file.read_to_end(&mut bytes))
+		host.open_read(path).and_then(read_pattern_source)
 	};
-	result
-		.map(|_| bytes)
-		.map_err(|error| format!("{}: {error}", path.to_string_lossy()))
+	result.map_err(|error| format!("{}: {error}", path.to_string_lossy()))
 }
 
 fn pattern_file_lines(bytes: &[u8]) -> Vec<String> {
@@ -1149,7 +1092,10 @@ fn pattern_file_lines(bytes: &[u8]) -> Vec<String> {
 		.collect()
 }
 
-fn resolve_patterns(host: &mut Host, cli: &GrepArgs) -> Result<(Vec<String>, Vec<OsString>), String> {
+fn resolve_patterns(
+	host: &mut Host,
+	cli: &GrepArgs,
+) -> Result<(Vec<String>, Vec<OsString>), String> {
 	let has_explicit_patterns = !cli.patterns.is_empty() || !cli.pattern_files.is_empty();
 	let mut patterns = Vec::new();
 	let mut files = Vec::new();
@@ -1224,11 +1170,127 @@ fn compile_rules(mut specs: Vec<RuleSpec>) -> Result<Vec<PathRule>, String> {
 		.collect()
 }
 
-fn build_path_rules(host: &mut Host, cli: &GrepArgs, matches: &ArgMatches) -> Result<PathRules, String> {
+fn build_path_rules(
+	host: &mut Host,
+	cli: &GrepArgs,
+	matches: &ArgMatches,
+) -> Result<PathRules, String> {
 	let (files, dirs) = collect_rule_specs(host, cli, matches)?;
 	Ok(PathRules { files: compile_rules(files)?, dirs: compile_rules(dirs)? })
 }
 
+pub(crate) const MAX_LINE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Says what happened when a search stopped at [`MAX_LINE_BYTES`]; any other
+/// error reads as reported. `whole_file` is set when the searcher buffers the
+/// whole file (multi-line search) rather than one line.
+pub(crate) const SEARCH_HEAP_LIMIT: usize = MAX_LINE_BYTES + (1 << 20);
+
+/// A search stopped because one record outgrew [`MAX_LINE_BYTES`].
+#[derive(Debug)]
+pub(crate) struct LineLimitExceeded {
+	/// The searcher buffers the whole file (multi-line search), not one line.
+	whole_file: bool,
+}
+
+impl fmt::Display for LineLimitExceeded {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let what = if self.whole_file {
+			"file larger than"
+		} else {
+			"line longer than"
+		};
+		write!(f, "{what} {} MiB, not searched", MAX_LINE_BYTES >> 20)
+	}
+}
+
+impl std::error::Error for LineLimitExceeded {}
+
+/// Enforces [`MAX_LINE_BYTES`] on what a searcher reads, failing with a typed
+/// [`LineLimitExceeded`] instead of letting the searcher's buffer grow.
+///
+/// In line mode it tracks the unterminated run since the last terminator; in
+/// whole-file mode (no terminator) every byte counts. It wraps the raw input,
+/// beneath grep-searcher's decoder, so the error reaches the caller unchanged.
+pub(crate) struct BoundedSearchReader<R> {
+	inner:      R,
+	/// `None` bounds the whole input rather than one line.
+	terminator: Option<u8>,
+	run:        usize,
+}
+
+impl<R: Read> BoundedSearchReader<R> {
+	/// Bounds `inner` the way `searcher` will buffer it for `matcher`.
+	pub(crate) fn new<M: Matcher>(inner: R, searcher: &Searcher, matcher: M) -> Self {
+		let terminator =
+			(!searcher.multi_line_with_matcher(matcher)).then(|| searcher.line_terminator().as_byte());
+		Self { inner, terminator, run: 0 }
+	}
+}
+
+impl<R: Read> Read for BoundedSearchReader<R> {
+	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+		let n = self.inner.read(buf)?;
+		let chunk = &buf[..n];
+		// Lines strictly inside one read are shorter than the read, which the
+		// searcher's heap limit already bounds; only the run crossing into
+		// this read and the one left open at its end can grow without bound.
+		let (crossing, open) = match self.terminator {
+			Some(byte) => match memchr::memchr(byte, chunk) {
+				Some(first) => {
+					(self.run + first, n - memchr::memrchr(byte, chunk).map_or(0, |last| last + 1))
+				},
+				None => (self.run + n, self.run + n),
+			},
+			None => (self.run + n, self.run + n),
+		};
+		if crossing.max(open) > MAX_LINE_BYTES {
+			return Err(io::Error::other(LineLimitExceeded { whole_file: self.terminator.is_none() }));
+		}
+		self.run = open;
+		Ok(n)
+	}
+}
+
+/// The message for a failed search: [`LineLimitExceeded`] says which bound it
+/// hit, anything else reads as reported.
+pub(crate) fn describe_search_error(error: &io::Error) -> String {
+	match error
+		.get_ref()
+		.and_then(|inner| inner.downcast_ref::<LineLimitExceeded>())
+	{
+		Some(limit) => limit.to_string(),
+		None => error.to_string(),
+	}
+}
+
+/// Reads a pattern file (`-f`), refusing one larger than [`MAX_LINE_BYTES`] so
+/// a huge file or an endless stdin cannot exhaust the host's memory.
+pub(crate) fn read_pattern_source(mut reader: impl Read) -> io::Result<Vec<u8>> {
+	let mut bytes = Vec::new();
+	// Read the limit exactly, then probe for one more byte: a `take(limit + 1)`
+	// would make the buffer double to twice the limit.
+	(&mut reader)
+		.take(MAX_LINE_BYTES as u64)
+		.read_to_end(&mut bytes)?;
+	if bytes.len() == MAX_LINE_BYTES {
+		let mut probe = [0u8; 1];
+		loop {
+			match reader.read(&mut probe) {
+				Ok(0) => break,
+				Ok(_) => {
+					return Err(io::Error::other(format!(
+						"pattern file larger than {} MiB",
+						MAX_LINE_BYTES >> 20
+					)));
+				},
+				Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
+				Err(error) => return Err(error),
+			}
+		}
+	}
+	Ok(bytes)
+}
 fn build_searcher(cli: &GrepArgs, opts: &Options, max_count: Option<u64>) -> Searcher {
 	let binary_detection = if cli.null_data || opts.binary_files == BinaryFiles::Text {
 		BinaryDetection::none()
@@ -1244,7 +1306,8 @@ fn build_searcher(cli: &GrepArgs, opts: &Options, max_count: Option<u64>) -> Sea
 		.after_context(opts.after)
 		.invert_match(cli.invert)
 		.binary_detection(binary_detection)
-		.max_matches(max_count);
+		.max_matches(max_count)
+		.heap_limit(Some(SEARCH_HEAP_LIMIT));
 	if cli.null_data {
 		builder.line_terminator(LineTerminator::byte(b'\0'));
 	}
@@ -1285,16 +1348,8 @@ fn execute_search<M: Matcher>(
 				.as_deref()
 				.unwrap_or_else(|| OsStr::new("(standard input)"))
 				.as_encoded_bytes();
-			match process_reader(
-				matcher,
-				&mut searcher,
-				&mut host.stdin,
-				display,
-				opts,
-				&mut out,
-			) {
+			match process_reader(matcher, &mut searcher, &mut host.stdin, display, opts, &mut out) {
 				Ok(matched) => any_match |= matched,
-
 
 				Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
 					return SIGPIPE_EXIT_CODE;
@@ -1302,7 +1357,11 @@ fn execute_search<M: Matcher>(
 				Err(error) => {
 					had_error = true;
 					if !opts.no_messages {
-						let _ = writeln!(host.stderr, "grep: (standard input): {error}");
+						let _ = writeln!(
+							host.stderr,
+							"grep: (standard input): {}",
+							describe_search_error(&error)
+						);
 					}
 				},
 			}
@@ -1338,11 +1397,7 @@ fn execute_search<M: Matcher>(
 				DirectoryAction::Skip => {},
 				DirectoryAction::Read => {
 					had_error = true;
-					let _ = writeln!(
-						host.stderr,
-						"grep: {}: Is a directory",
-						operand.to_string_lossy()
-					);
+					let _ = writeln!(host.stderr, "grep: {}: Is a directory", operand.to_string_lossy());
 				},
 			},
 			Ok(metadata) => {
@@ -1370,8 +1425,7 @@ fn execute_search<M: Matcher>(
 			Err(error) => {
 				had_error = true;
 				if !opts.no_messages {
-					let _ =
-						writeln!(host.stderr, "grep: {}: {error}", operand.to_string_lossy());
+					let _ = writeln!(host.stderr, "grep: {}: {error}", operand.to_string_lossy());
 				}
 			},
 		}
@@ -1415,123 +1469,119 @@ impl Utility for Grep {
 		let cli = self.cli;
 		let matches = self.matches;
 
-	let (mut patterns, mut files) = match resolve_patterns(host, &cli) {
-		Ok(resolved) => resolved,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "grep: {error}");
-			return 2;
-		},
-	};
-	let directory_action = resolve_directory_action(&cli, &matches);
-	if files.is_empty() {
-		files.push(OsString::from(if directory_action == DirectoryAction::Recurse {
-			"."
+		let (mut patterns, mut files) = match resolve_patterns(host, &cli) {
+			Ok(resolved) => resolved,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "grep: {error}");
+				return 2;
+			},
+		};
+		let directory_action = resolve_directory_action(&cli, &matches);
+		if files.is_empty() {
+			files.push(OsString::from(if directory_action == DirectoryAction::Recurse {
+				"."
+			} else {
+				"-"
+			}));
+		}
+
+		let max_count = match resolve_max_count(&cli) {
+			Ok(max_count) => max_count,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "grep: {error}");
+				return 2;
+			},
+		};
+		let rules = match build_path_rules(host, &cli, &matches) {
+			Ok(rules) => rules,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "grep: {error}");
+				return 2;
+			},
+		};
+		let matcher = match build_matcher(
+			host,
+			&patterns,
+			&cli,
+			resolve_match_mode(&matches),
+			resolve_ignore_case(&matches),
+		) {
+			Ok(matcher) => matcher,
+			Err(error) => {
+				let _ = writeln!(host.stderr, "grep: {error}");
+				return 2;
+			},
+		};
+		patterns.clear();
+
+		let (files_with_matches, files_without_match) = resolve_file_list_modes(&matches);
+		let suppress_context =
+			cli.count || files_with_matches || files_without_match || cli.quiet || cli.only_matching;
+		let (before, after) = if suppress_context {
+			(0, 0)
 		} else {
-			"-"
-		}));
-	}
+			resolve_context(&cli, &matches)
+		};
+		let prefix_filename = resolve_filename_prefix(&matches)
+			.unwrap_or(directory_action == DirectoryAction::Recurse || files.len() > 1);
+		let opts = Options {
+			line_number: cli.line_number,
+			byte_offset: cli.byte_offset,
+			count: cli.count,
+			files_with_matches,
+			files_without_match,
+			only_matching: cli.only_matching,
+			before,
+			after,
+			no_messages: cli.no_messages,
+			quiet: cli.quiet,
+			prefix_filename,
+			initial_tab: cli.initial_tab,
+			null_paths: cli.null_paths,
+			record_terminator: if cli.null_data { b'\0' } else { b'\n' },
+			group_separator: resolve_group_separator(&cli, &matches),
+			line_buffered: cli.line_buffered,
+			binary_files: resolve_binary_files(&cli, &matches),
+		};
+		let follow_links = resolve_follow_links(&cli, &matches);
 
-	let max_count = match resolve_max_count(&cli) {
-		Ok(max_count) => max_count,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "grep: {error}");
-			return 2;
-		},
-	};
-	let rules = match build_path_rules(host, &cli, &matches) {
-		Ok(rules) => rules,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "grep: {error}");
-			return 2;
-		},
-	};
-	let matcher = match build_matcher(
-		host,
-		&patterns,
-		&cli,
-		resolve_match_mode(&matches),
-		resolve_ignore_case(&matches),
-	) {
-		Ok(matcher) => matcher,
-		Err(error) => {
-			let _ = writeln!(host.stderr, "grep: {error}");
-			return 2;
-		},
-	};
-	patterns.clear();
-
-	let (files_with_matches, files_without_match) = resolve_file_list_modes(&matches);
-	let suppress_context =
-		cli.count || files_with_matches || files_without_match || cli.quiet || cli.only_matching;
-	let (before, after) = if suppress_context {
-		(0, 0)
-	} else {
-		resolve_context(&cli, &matches)
-	};
-	let prefix_filename = resolve_filename_prefix(&matches)
-		.unwrap_or(directory_action == DirectoryAction::Recurse || files.len() > 1);
-	let opts = Options {
-		line_number: cli.line_number,
-		byte_offset: cli.byte_offset,
-		count: cli.count,
-		files_with_matches,
-		files_without_match,
-		only_matching: cli.only_matching,
-		before,
-		after,
-		no_messages: cli.no_messages,
-		quiet: cli.quiet,
-		prefix_filename,
-		initial_tab: cli.initial_tab,
-		null_paths: cli.null_paths,
-		record_terminator: if cli.null_data { b'\0' } else { b'\n' },
-		group_separator: resolve_group_separator(&cli, &matches),
-		line_buffered: cli.line_buffered,
-		binary_files: resolve_binary_files(&cli, &matches),
-	};
-	let follow_links = resolve_follow_links(&cli, &matches);
-
-	match matcher {
-		CompiledMatcher::Rust(matcher) => execute_search(
-			host,
-			&cli,
-			&matcher,
-			&files,
-			directory_action,
-			follow_links,
-			&rules,
-			&opts,
-			max_count,
-		),
-		CompiledMatcher::Pcre(matcher) => execute_search(
-			host,
-			&cli,
-			&matcher,
-			&files,
-			directory_action,
-			follow_links,
-			&rules,
-			&opts,
-			max_count,
-		),
+		match matcher {
+			CompiledMatcher::Rust(matcher) => execute_search(
+				host,
+				&cli,
+				&matcher,
+				&files,
+				directory_action,
+				follow_links,
+				&rules,
+				&opts,
+				max_count,
+			),
+			CompiledMatcher::Pcre(matcher) => execute_search(
+				host,
+				&cli,
+				&matcher,
+				&files,
+				directory_action,
+				follow_links,
+				&rules,
+				&opts,
+				max_count,
+			),
+		}
 	}
 }
-}
-
 
 pub(crate) fn grep_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Grep, SE>()
 }
 
-
-
-
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use grep_matcher::Matcher;
 
 	use super::*;
+	use crate::host::run_util;
 
 	fn matches(pattern: &str, extended: bool, text: &str) -> bool {
 		let pattern = if extended {
@@ -1547,6 +1597,84 @@ mod tests {
 			.expect("match succeeds")
 	}
 
+	#[cfg(unix)]
+	pub(crate) fn tree_with_sparse_file() -> tempfile::TempDir {
+		let tree = tempfile::tempdir().unwrap();
+		std::fs::write(tree.path().join("small"), "needle\n").unwrap();
+		let big = std::fs::File::create(tree.path().join("big")).unwrap();
+		big.set_len(64 * MAX_LINE_BYTES as u64).unwrap();
+		tree
+	}
+
+	/// A file with no line terminator used to make grep buffer it whole: on a
+	/// sparse file that is an endless line of NUL bytes, and the host process
+	/// grew until the kernel killed it. Now that file is a per-file error and
+	/// the walk still reports matches in the other files.
+	#[cfg(unix)]
+	#[test]
+	fn line_longer_than_the_limit_is_a_file_error_not_unbounded_memory() {
+		let tree = tree_with_sparse_file();
+
+		let (code, capture) = run_util::<Grep>(&["-rl", "needle", "."], "", tree.path());
+
+		assert_eq!(code, 2, "an unreadable file makes the status 2, as in GNU grep");
+		assert_eq!(capture.out(), "./small\n");
+		let err = capture.err();
+		assert!(err.contains("grep: ./big: line longer than 256 MiB, not searched"), "{err}");
+	}
+
+	/// `-f` used to read the whole pattern file into memory, so pointing it at
+	/// a sparse file (or an endless stdin) killed the host. Now an over-size
+	/// pattern file is refused before anything is searched.
+	#[cfg(unix)]
+	#[test]
+	fn pattern_file_larger_than_the_limit_is_refused() {
+		let tree = tree_with_sparse_file();
+
+		let (code, capture) = run_util::<Grep>(&["-f", "big", "small"], "", tree.path());
+
+		assert_eq!(code, 2);
+		assert_eq!(capture.out(), "");
+		let err = capture.err();
+		assert!(err.contains("grep: big: pattern file larger than 256 MiB"), "{err}");
+	}
+	fn drain_bounded(input: impl Read, terminator: Option<u8>) -> Option<String> {
+		let mut reader = BoundedSearchReader { inner: input, terminator, run: 0 };
+		let mut buf = vec![0u8; 64 * 1024];
+		loop {
+			match reader.read(&mut buf) {
+				Ok(0) => return None,
+				Ok(_) => {},
+				Err(error) => {
+					assert!(
+						error
+							.get_ref()
+							.is_some_and(|inner| inner.is::<LineLimitExceeded>()),
+						"untyped error: {error}"
+					);
+					return Some(describe_search_error(&error));
+				},
+			}
+		}
+	}
+
+	/// The bound counts the unterminated run, including one that a terminator
+	/// later in the same read closes: a line one byte over fails with the typed
+	/// error whether or not it is ever terminated, and a terminator resets it.
+	#[test]
+	fn line_bound_fails_one_byte_past_the_limit_with_a_typed_error() {
+		let limit = MAX_LINE_BYTES as u64;
+		let line = || io::repeat(b'x').take(limit);
+
+		assert_eq!(drain_bounded(line().chain(&b"\n"[..]).chain(line()), Some(b'\n')), None);
+		let over = Some("line longer than 256 MiB, not searched".to_owned());
+		assert_eq!(drain_bounded(line().chain(&b"x"[..]), Some(b'\n')), over);
+		assert_eq!(drain_bounded(line().chain(&b"x\nshort\n"[..]), Some(b'\n')), over);
+		assert_eq!(
+			drain_bounded(line().chain(&b"\n"[..]).chain(line()).chain(&b"\n"[..]), None),
+			Some("file larger than 256 MiB, not searched".to_owned())
+		);
+	}
 	#[test]
 	fn basic_and_extended_metacharacters_have_inverse_grep_meanings() {
 		let cases = [

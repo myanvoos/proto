@@ -16,6 +16,7 @@ interface TrackerFixture {
 function createTracker(options: {
 	hasActiveMonitors: boolean;
 	prewalkWillHandoff?: boolean;
+	activeToolNames?: string[];
 	settings?: Settings;
 }): TrackerFixture {
 	const appended: Message[] = [];
@@ -41,7 +42,7 @@ function createTracker(options: {
 		promptGeneration: () => 1,
 		hasPendingAsyncWake: () => false,
 		hasActiveMonitors: () => options.hasActiveMonitors,
-		getActiveToolNames: () => ["checklist"],
+		getActiveToolNames: () => options.activeToolNames ?? ["checklist"],
 		getEnabledToolNames: () => ["checklist"],
 		toolRegistry: () => new Map<string, AgentTool>(),
 		prewalkWillHandoff: () => options.prewalkWillHandoff ?? false,
@@ -118,4 +119,48 @@ test("an armed prewalk handoff owns checklist creation, so the eager prelude sta
 		createTracker({ hasActiveMonitors: false, prewalkWillHandoff: false, settings: eager }),
 	);
 	expect(noop.createEagerChecklistPrelude(prompt)?.message.role).toBe("custom");
+});
+
+test("inactive checklist tools do not restart a stopped agent with reminders", async () => {
+	const fixture = createTracker({ hasActiveMonitors: false, activeToolNames: [] });
+	expect(await fixture.tracker.checkCompletion(finishedTurn)).toBe(false);
+	expect(fixture.continues).toBe(0);
+});
+
+for (const [text, waiting] of [
+	["**Would you like me to continue?**", true],
+	["~~Would you like me to continue?~~", false],
+	["Which approach do you prefer?\n- One file\n- Two files", true],
+	["What is complete?\n- Parser fixed\n- Tests pass", false],
+	["Which approach do you prefer?\n- One file\n- Two files\n\nI recommend the first.", true],
+	["Do you need another check?\n\nNo, the suite already passed.", false],
+	["Tell me which option to use.\n\nRepository unchanged.", true],
+	["Anything else? Done for now.", false],
+	["Finally, answer validation is complete.", false],
+	["Separately, tell me when to proceed.", true],
+	["Что вы предпочитаете? Отдельно скажите, когда продолжить.", true],
+] as const) {
+	test(`unfinished work ${waiting ? "waits for the user" : "continues"} after ${JSON.stringify(text)}`, async () => {
+		const fixture = createTracker({ hasActiveMonitors: false });
+		expect(await fixture.tracker.checkCompletion({ ...finishedTurn, content: [{ type: "text", text }] })).toBe(
+			!waiting,
+		);
+		expect(fixture.continues).toBe(waiting ? 0 : 1);
+	});
+}
+
+test("touching the checklist re-arms the exhausted mid-run nudge budget", () => {
+	const fixture = createTracker({ hasActiveMonitors: false });
+	const mutate = () => {
+		for (let i = 0; i < 12; i++) fixture.tracker.onToolResult("write", false);
+	};
+	mutate();
+	expect(fixture.tracker.takeMidRunNudge()).not.toBeNull();
+	mutate();
+	expect(fixture.tracker.takeMidRunNudge()).not.toBeNull();
+	mutate();
+	expect(fixture.tracker.takeMidRunNudge()).toBeNull();
+	fixture.tracker.onToolResult("checklist", false);
+	mutate();
+	expect(fixture.tracker.takeMidRunNudge()).not.toBeNull();
 });

@@ -203,7 +203,7 @@ function submitHarness(
 function focusedSubmitHarness() {
 	vi.spyOn(commandUsage, "recordSlashCommandUsage").mockImplementation(() => {});
 	const statuses: string[] = [];
-	const prompted: Array<{ text: string; streamingBehavior: string }> = [];
+	const prompted: Array<{ text: string; streamingBehavior?: string; synthetic?: boolean }> = [];
 	let modelSelectors = 0;
 	const editor = {
 		onSubmit: undefined as ((text: string) => Promise<void>) | undefined,
@@ -232,8 +232,12 @@ function focusedSubmitHarness() {
 	const viewSession = {
 		isStreaming: false,
 		queuedMessageCount: 0,
-		prompt: (text: string, options: { streamingBehavior: string }) => {
-			prompted.push({ text, streamingBehavior: options.streamingBehavior });
+		prompt: (text: string, options: { streamingBehavior?: string; synthetic?: boolean }) => {
+			prompted.push({
+				text,
+				streamingBehavior: options.streamingBehavior,
+				...(options.synthetic ? { synthetic: true } : {}),
+			});
 			return Promise.resolve();
 		},
 	} as unknown as AgentSession;
@@ -260,6 +264,7 @@ function focusedSubmitHarness() {
 	return {
 		submit: (text: string) => editor.onSubmit?.(text) ?? Promise.resolve(),
 		followUp: () => controller.handleFollowUp(),
+		viewSession,
 		editor,
 		statuses,
 		prompted,
@@ -268,6 +273,16 @@ function focusedSubmitHarness() {
 		},
 	};
 }
+
+test("continuing a busy focused agent never queues a visible synthetic user message", async () => {
+	const harness = focusedSubmitHarness();
+	Object.defineProperty(harness.viewSession, "isStreaming", { value: true });
+	await harness.submit("c");
+	expect(harness.prompted).toHaveLength(1);
+	expect(harness.prompted[0]?.synthetic).toBe(true);
+	expect(harness.prompted[0]?.streamingBehavior).toBeUndefined();
+	expect(harness.prompted[0]?.text).not.toBe("c");
+});
 
 test("a focused agent takes plain messages as steers and follow-ups instead of the main session", async () => {
 	const harness = focusedSubmitHarness();
@@ -676,15 +691,17 @@ test("dequeue restores only the newest queued message and keeps the rest queued 
 			this.text = text;
 		},
 	};
+	const session = {
+		peekLastQueuedMessage: () => ({ text: "second" }),
+		popLastQueuedMessage: () => {
+			steering.pop();
+			return { text: "second" };
+		},
+	};
 	const context = {
 		editor,
-		session: {
-			peekLastQueuedMessage: () => ({ text: "second" }),
-			popLastQueuedMessage: () => {
-				steering.pop();
-				return { text: "second" };
-			},
-		},
+		session,
+		viewSession: session,
 		locallySubmittedUserSignatures: new Set(["first\u00000", "second\u00000"]),
 		compactionQueuedMessages: [],
 		showStatus: (text: string) => statuses.push(text),
@@ -762,4 +779,24 @@ test("a rejected image marker does not retain the unattached image or reference 
 	} finally {
 		await fs.rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("SSH clipboard shortcuts never read the remote host clipboard", async () => {
+	const readText = vi.fn(async () => "remote secret");
+	const readImage = vi.fn(async () => null);
+	const statuses: string[] = [];
+	const controller = new InputController(
+		{ showStatus: (message: string) => statuses.push(message) } as unknown as InteractiveModeContext,
+		{
+			readText,
+			readImage,
+			isTerminalLocal: () => false,
+		},
+	);
+	expect(await controller.handleImagePaste()).toBe(false);
+	await controller.handleClipboardTextRawPaste();
+	expect(readText).not.toHaveBeenCalled();
+	expect(readImage).not.toHaveBeenCalled();
+	expect(statuses).toHaveLength(2);
+	expect(statuses.every(status => status.includes("SSH host"))).toBe(true);
 });

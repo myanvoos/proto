@@ -90,6 +90,8 @@ const BLOB_PATH_PATTERN = /^\/([0-9a-f]{32})\.[a-z0-9]{1,5}$/;
 const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
 const INDEX_SAVE_DEBOUNCE_MS = 500;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const UNBOUNDED_TOUCH_INTERVAL_MS = 60 * 1000;
+let asyncTmpCounter = 0;
 
 class BlobAdmissionError extends Error {}
 
@@ -108,6 +110,8 @@ export class BlobRegistry {
 	#persist: BlobPersistence | undefined;
 	#sessionStore: SessionBlobStore | undefined;
 	#saveTimer: Timer | undefined;
+	#saveSeq = 0;
+	#saving = false;
 	#lastSweep = 0;
 	#bytesServed = 0;
 	#hits = 0;
@@ -186,12 +190,12 @@ export class BlobRegistry {
 		if (this.#saveTimer) return;
 		this.#saveTimer = setTimeout(() => {
 			this.#saveTimer = undefined;
-			this.#saveIndex(persist);
+			void this.#saveIndexAsync(persist);
 		}, INDEX_SAVE_DEBOUNCE_MS);
 		this.#saveTimer.unref?.();
 	}
 
-	#saveIndex(persist: BlobPersistence): void {
+	#serializeIndex(): string {
 		const entries: PersistedEntry[] = [];
 		for (const [key, token] of this.#tokenByKey) {
 			const entry = this.#entries.get(token);
@@ -209,23 +213,57 @@ export class BlobRegistry {
 				...(entry.publication ? { publication: entry.publication } : {}),
 			});
 		}
+		return JSON.stringify({
+			version: 2,
+			entries,
+			counters: {
+				bytesServed: this.#bytesServed,
+				hits: this.#hits,
+				misses: this.#misses,
+				duplicateTokenGets: this.#duplicateTokenGets,
+			},
+			recentFetches: this.#recentFetches,
+		});
+	}
+
+	/**
+	 * Debounced background save: stage asynchronously, then rename atomically.
+	 * The rename is synchronous so it orders against {@link flush}; a write
+	 * superseded by a later serialization is dropped instead of clobbering it.
+	 */
+	async #saveIndexAsync(persist: BlobPersistence): Promise<void> {
+		if (this.#saving) {
+			this.#scheduleSave();
+			return;
+		}
+		this.#saving = true;
+		const seq = ++this.#saveSeq;
+		// Unique per save: registries in this process or other daemons may share `indexPath`.
+		const tmpPath = `${persist.indexPath}.${process.pid}.${++asyncTmpCounter}.${Date.now()}.tmp`;
+		try {
+			await Bun.write(tmpPath, this.#serializeIndex());
+			if (seq === this.#saveSeq) {
+				fs.renameSync(tmpPath, persist.indexPath);
+			} else {
+				await fs.promises.rm(tmpPath, { force: true });
+			}
+		} catch (error) {
+			logger.warn("blob-broker: failed to persist url index", {
+				indexPath: persist.indexPath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		} finally {
+			this.#saving = false;
+		}
+	}
+
+	/** Synchronous atomic save for shutdown, where pending async I/O would be lost. */
+	#saveIndexSync(persist: BlobPersistence): void {
+		this.#saveSeq++;
 		const tmpPath = `${persist.indexPath}.tmp`;
 		try {
 			fs.mkdirSync(path.dirname(persist.indexPath), { recursive: true });
-			fs.writeFileSync(
-				tmpPath,
-				JSON.stringify({
-					version: 2,
-					entries,
-					counters: {
-						bytesServed: this.#bytesServed,
-						hits: this.#hits,
-						misses: this.#misses,
-						duplicateTokenGets: this.#duplicateTokenGets,
-					},
-					recentFetches: this.#recentFetches,
-				}),
-			);
+			fs.writeFileSync(tmpPath, this.#serializeIndex());
 			fs.renameSync(tmpPath, persist.indexPath);
 		} catch (error) {
 			logger.warn("blob-broker: failed to persist url index", {
@@ -268,7 +306,10 @@ export class BlobRegistry {
 	}
 
 	#touch(entry: StoredBlob): void {
-		entry.touchedAt = this.#now();
+		const now = this.#now();
+		const ttl = this.#persist?.ttlMs ?? 0;
+		if (now - entry.touchedAt < (ttl > 0 ? ttl / 10 : UNBOUNDED_TOUCH_INTERVAL_MS)) return;
+		entry.touchedAt = now;
 		this.#scheduleSave();
 	}
 
@@ -620,9 +661,9 @@ export class BlobRegistry {
 	}
 
 	flush(): void {
-		if (!this.#saveTimer || !this.#persist) return;
+		if (!this.#persist || (!this.#saveTimer && !this.#saving)) return;
 		clearTimeout(this.#saveTimer);
 		this.#saveTimer = undefined;
-		this.#saveIndex(this.#persist);
+		this.#saveIndexSync(this.#persist);
 	}
 }

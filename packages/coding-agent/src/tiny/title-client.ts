@@ -151,6 +151,7 @@ export class TinyTitleClient {
 	#unsubscribeError: (() => void) | null = null;
 	#pending = new Map<string, PendingRequest>();
 	#failedModels = new Set<TinyLocalModelKey>();
+	#loadingModels = new Set<TinyLocalModelKey>();
 	#progressListeners = new Set<(event: TinyTitleProgressEvent) => void>();
 	#nextRequestId = 0;
 	#refed = false;
@@ -315,6 +316,7 @@ export class TinyTitleClient {
 			else pending.resolve({ ok: false });
 		}
 		this.#pending.clear();
+		for (const modelKey of this.#loadingModels) this.#emitProgress({ modelKey, status: "error" });
 		this.#refed = false;
 		try {
 			await worker?.terminate();
@@ -415,6 +417,8 @@ export class TinyTitleClient {
 	}
 
 	#emitProgress(event: TinyTitleProgressEvent): void {
+		if (event.status === "ready" || event.status === "error") this.#loadingModels.delete(event.modelKey);
+		else this.#loadingModels.add(event.modelKey);
 		for (const listener of this.#progressListeners) listener(event);
 	}
 

@@ -26,6 +26,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -68,7 +69,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -111,6 +112,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -196,6 +198,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -280,6 +283,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -365,6 +369,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -450,6 +455,7 @@
 			]
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -498,6 +504,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": false,
@@ -595,6 +602,7 @@
 			"defaultLevel": "xhigh"
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -643,6 +651,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": false,
 			"whenThinking": {
+				"trustExplicitThinkingOnly": false,
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
 				"supportsMultipleSystemMessages": false,
@@ -740,6 +749,7 @@
 			"requiresEffort": true
 		},
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

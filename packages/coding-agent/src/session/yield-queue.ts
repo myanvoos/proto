@@ -101,6 +101,21 @@ export class YieldQueue {
 		return false;
 	}
 
+	/** Whether draining would deliver an entry, excluding completions consumed elsewhere. */
+	hasDeliverable(kind: string): boolean {
+		const entries = this.#entries.get(kind);
+		if (!entries?.length) return false;
+		const isStale = this.#dispatchers.get(kind)?.isStale;
+		if (!isStale) return true;
+		return entries.some(entry => {
+			try {
+				return !isStale(entry.value);
+			} catch {
+				return false;
+			}
+		});
+	}
+
 	requestIdleFlush(): void {
 		for (const [kind, dispatcher] of this.#dispatchers) {
 			if (!dispatcher.skipIdleFlush && this.has(kind)) {

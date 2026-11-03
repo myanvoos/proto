@@ -3,8 +3,8 @@ import { $env, extractCitationSnippet } from "@oh-my-pi/pi-utils";
 import { resolveXAIHttpTransport, type XAIHttpProvider, type XAIHttpTransport } from "../../../lib/xai-http";
 import type { SearchCitation, SearchResponse, SearchSource, SearchUsage } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
-import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
-import { clampNumResults } from "../utils";
+import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery } from "../query";
+import { clampNumResults, recencyAfterDate } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
@@ -93,19 +93,70 @@ function domainFilterList(sites: readonly string[]): string[] {
 	return [...hosts];
 }
 
+const FROM_PATTERN = /^from:@?([A-Za-z0-9_]{1,15})$/i;
+function isXSite(site: string): boolean {
+	const host = site.split("/", 1)[0].toLowerCase();
+	return ["x.com", "twitter.com"].some(domain => host === domain || host.endsWith(`.${domain}`));
+}
+function xSiteHandle(site: string): string | undefined {
+	const segment = site.split("/")[1];
+	return isXSite(site) &&
+		segment &&
+		/^[A-Za-z0-9_]{1,15}$/.test(segment) &&
+		!["home", "explore", "search", "i", "intent", "share", "settings"].includes(segment.toLowerCase())
+		? segment
+		: undefined;
+}
+function xHandleFilter(parsed: StructuredQuery): { allowed: string[]; excluded: string[] } {
+	const allowed = new Set<string>();
+	const excluded = new Set<string>();
+	for (const term of parsed.terms) {
+		const handle = term.phrase ? undefined : FROM_PATTERN.exec(term.text)?.[1];
+		if (handle) (term.negated ? excluded : allowed).add(handle);
+	}
+	for (const site of parsed.sites) {
+		const handle = xSiteHandle(site);
+		if (handle) allowed.add(handle);
+	}
+	for (const site of parsed.excludedSites) {
+		const handle = xSiteHandle(site);
+		if (handle) excluded.add(handle);
+	}
+	return { allowed: [...allowed].slice(0, 20), excluded: allowed.size ? [] : [...excluded].slice(0, 20) };
+}
+export function targetsX(parsed: StructuredQuery): boolean {
+	return xHandleFilter(parsed).allowed.length > 0 || (parsed.sites.length > 0 && parsed.sites.every(isXSite));
+}
+export function xSearchAvailable(authStorage: AuthStorage): boolean {
+	return shouldPreferXAIOAuth(authStorage) || authStorage.hasAuth("xai");
+}
+function searchTools(parsed: StructuredQuery, recency: SearchParams["recency"]): Record<string, unknown>[] {
+	const handles = xHandleFilter(parsed);
+	const webSites = parsed.sites.filter(site => !isXSite(site));
+	const unscoped = parsed.sites.length === 0;
+	const tools: Record<string, unknown>[] = [];
+	if (webSites.length > 0 || (unscoped && handles.allowed.length === 0)) {
+		const webSearch: Record<string, unknown> = { type: "web_search" };
+		if (webSites.length) webSearch.filters = { allowed_domains: domainFilterList(webSites) };
+		else if (parsed.excludedSites.length)
+			webSearch.filters = { excluded_domains: domainFilterList(parsed.excludedSites) };
+		tools.push(webSearch);
+	}
+	const xExcluded = parsed.excludedSites.some(site => isXSite(site) && !xSiteHandle(site));
+	if (webSites.length < parsed.sites.length || handles.allowed.length > 0 || (unscoped && !xExcluded)) {
+		const xSearch: Record<string, unknown> = { type: "x_search" };
+		if (handles.allowed.length) xSearch.allowed_x_handles = handles.allowed;
+		else if (handles.excluded.length) xSearch.excluded_x_handles = handles.excluded;
+		if (parsed.after) xSearch.from_date = parsed.after;
+		else if (recency && !parsed.before) xSearch.from_date = recencyAfterDate(recency);
+		if (parsed.before) xSearch.to_date = parsed.before;
+		tools.push(xSearch);
+	}
+	return tools;
+}
 function buildRequestBody(params: SearchParams): Record<string, unknown> {
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
-	const webSearchTool: Record<string, unknown> = { type: "web_search" };
-	let query = params.query;
-	if (parsed.hasDirectives) {
-		query = formatQuery(parsed, XAI_QUERY_SYNTAX);
-
-		if (parsed.sites.length > 0) {
-			webSearchTool.filters = { allowed_domains: domainFilterList(parsed.sites) };
-		} else if (parsed.excludedSites.length > 0) {
-			webSearchTool.filters = { excluded_domains: domainFilterList(parsed.excludedSites) };
-		}
-	}
+	const query = parsed.hasDirectives ? formatQuery(parsed, XAI_QUERY_SYNTAX) : params.query;
 
 	const body: Record<string, unknown> = {
 		model: XAI_WEB_SEARCH_MODEL,
@@ -113,7 +164,8 @@ function buildRequestBody(params: SearchParams): Record<string, unknown> {
 			{ role: "system", content: params.systemPrompt },
 			{ role: "user", content: query },
 		],
-		tools: [webSearchTool],
+		tools: searchTools(parsed, params.recency),
+		tool_choice: "required",
 		reasoning: { effort: XAI_WEB_SEARCH_REASONING_EFFORT },
 	};
 
@@ -213,7 +265,7 @@ function collectAnnotationSources(
 			citations,
 			seenUrls,
 			annotation.url,
-			annotation.title,
+			annotation.title && !/^\d+$/.test(annotation.title.trim()) ? annotation.title : undefined,
 			annotation.cited_text ??
 				annotation.text ??
 				extractCitationSnippet(contentText, annotation.start_index, annotation.end_index),

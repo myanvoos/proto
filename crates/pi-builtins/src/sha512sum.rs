@@ -1,7 +1,3 @@
-
-
-
-
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::ArgMatches;
 use uucore::checksum::AlgoKind;
@@ -10,7 +6,6 @@ use crate::{
 	cksum,
 	host::{Host, Utility, matches_parser, util},
 };
-
 
 pub(crate) struct Sha512sum {
 	matches: ArgMatches,
@@ -30,7 +25,6 @@ impl Utility for Sha512sum {
 fn app() -> clap::Command {
 	cksum::command(Sha512sum::NAME, false)
 }
-
 
 pub(crate) fn sha512sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Sha512sum, SE>()

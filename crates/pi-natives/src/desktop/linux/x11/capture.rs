@@ -297,6 +297,11 @@ impl X11Capture {
 					.map(|display| display.pixel_y.saturating_add(display.pixel_height))
 					.max()
 					.unwrap_or(1);
+				if let [display] = displays.as_slice() {
+					let image =
+						self.capture_root(display.x, display.y, display.width, display.height)?;
+					return Ok((image, FrameGeometry::for_displays(&displays)));
+				}
 				let mut composite = RgbaImage::new(width, height);
 				for display in &displays {
 					let image =

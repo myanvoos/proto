@@ -54,6 +54,9 @@ function asyncJobSession(
 	const session = {
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
+		get baseSystemPrompt() {
+			return this.agent.state.systemPrompt;
+		},
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {}, getSubagentUsage: () => emptySubagentUsageTotals() },
@@ -88,6 +91,7 @@ function asyncJobSession(
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
+		holdIrcWakes: () => () => {},
 		setWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
 		subscribeRunState: () => () => {},

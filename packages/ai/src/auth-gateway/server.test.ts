@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { unregisterCustomApis } from "../api-registry";
 import { AuthStorage } from "../auth-storage";
 import { createMockModel, type MockModel, type MockResponse, registerMockApi } from "../providers/mock";
 import type { Context, ProviderSessionState, SimpleStreamOptions } from "../types";
-import type { ClientUsageIdentity } from "../usage";
+import type { ClientUsageIdentity, UsageReport } from "../usage";
 import { startAuthGateway } from "./server";
 import type { AuthGatewayServerHandle } from "./types";
 
@@ -207,4 +208,54 @@ describe("auth-gateway bearer confinement", () => {
 		expect(allowed.status).toBe(200);
 		expect(calls).toHaveLength(1);
 	});
+});
+
+it("clamps unsupported gateway thinking levels without losing the caller budget or overriding a destination budget", async () => {
+	await handle.close();
+	const thinkingModel = Object.assign(model, {
+		reasoning: true,
+		thinking: { mode: "budget" as const, efforts: [Effort.Low, Effort.High] },
+	});
+	handle = startAuthGateway({
+		storage,
+		bind: "127.0.0.1:0",
+		bearerTokens: [TOKEN],
+		resolveModel: () => thinkingModel,
+	});
+	for (const budgets of [{ minimal: 1024 }, { minimal: 1024, low: 2048 }]) {
+		const response = await post("/v1/pi/stream", {
+			modelId: model.id,
+			context: { messages: [] },
+			stream: false,
+			options: { reasoning: "minimal", thinkingBudgets: budgets },
+		});
+		expect(response.status).toBe(200);
+		await response.json();
+		expect(calls.at(-1)?.options?.reasoning).toBe(Effort.Low);
+		expect(calls.at(-1)?.options?.thinkingBudgets?.low).toBe(budgets.low ?? budgets.minimal);
+	}
+});
+
+it("keeps disabled accounts out of gateway usage and never probes their credentials", async () => {
+	await handle.close();
+	const reports: UsageReport[] = ["enabled", "disabled"].map(provider => ({
+		provider,
+		fetchedAt: Date.now(),
+		limits: [],
+		raw: { secret: provider },
+	}));
+	vi.spyOn(storage, "fetchUsageReports").mockResolvedValue(reports);
+	const checked = vi.spyOn(storage, "checkCredentials").mockResolvedValue([]);
+	handle = startAuthGateway({
+		storage,
+		bind: "127.0.0.1:0",
+		bearerTokens: [TOKEN],
+		resolveModel: () => model,
+		excludeProviders: new Set(["disabled"]),
+	});
+	const usage = await fetch(`${handle.url}/v1/usage`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+	expect(await usage.json()).toMatchObject({ reports: [{ provider: "enabled" }] });
+	const body = await fetch(`${handle.url}/v1/credentials/check`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+	expect(body.status).toBe(200);
+	expect(checked.mock.calls[0]?.[0]?.excludeProviders?.has("disabled")).toBe(true);
 });

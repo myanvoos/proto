@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Settings } from "../config/settings";
-import { renderHtmlToText } from "./fetch";
+import type { ToolSession } from "../sdk";
+import * as scraperTypes from "../web/scrapers/types";
+import * as scraperUtils from "../web/scrapers/utils";
+import { fetchReadUrl, renderHtmlToText } from "./fetch";
 
 const originalJinaApiKey = Bun.env.JINA_API_KEY;
 
@@ -95,4 +98,33 @@ ${paragraphs}
 		expect(result.content).toContain("![Titled chart]");
 		expect(result.content).toContain("Paragraph 4 holds real article text");
 	});
+});
+
+test("a binary-looking first response renders the decoded HTML returned by its refetch", async () => {
+	const html = `<html><body><article><h1>Recovered article</h1><p>${"Readable refetched content. ".repeat(30)}</p></article></body></html>`;
+	const loadPage = spyOn(scraperTypes, "loadPage").mockResolvedValue({
+		ok: true,
+		status: 200,
+		finalUrl: "https://example.com/refetch",
+		content: "\0".repeat(100),
+		contentType: "text/html; charset=utf-8",
+		truncated: false,
+	});
+	const fetchBinary = spyOn(scraperUtils, "fetchBinary").mockResolvedValue({
+		ok: true,
+		buffer: new TextEncoder().encode(html),
+	});
+	try {
+		const session = {
+			settings: { get: (key: string) => (key === "providers.fetch" ? "native" : 300), getStorage: () => null },
+			getActiveModel: () => undefined,
+		} as unknown as ToolSession;
+		const result = await fetchReadUrl(session, { path: "https://example.com/refetch" });
+		expect(result.content).toContain("Recovered article");
+		expect(result.content).toContain("Readable refetched content");
+		expect(result.details.method).not.toBe("binary");
+	} finally {
+		loadPage.mockRestore();
+		fetchBinary.mockRestore();
+	}
 });

@@ -93,6 +93,17 @@ describe("Gemini thought signatures over OpenAI-compatible gateways", () => {
 		expect(assistant).not.toHaveProperty("reasoning_details");
 	});
 
+	it("replays reasoning_signature without losing the independent per-call signature", async () => {
+		const assistant = await replayedAssistant({
+			reasoning_signature: "message-reasoning-sig",
+			tool_calls: [toolCallDelta({ google: { thought_signature: "tool-sig" } })],
+		});
+		expect(assistant).toMatchObject({
+			reasoning_signature: "message-reasoning-sig",
+			tool_calls: [{ extra_content: { google: { thought_signature: "tool-sig" } } }],
+		});
+	});
+
 	it("replays the Vertex namespace and the thought_signature alias under their own names", async () => {
 		const assistant = await replayedAssistant({
 			role: "assistant",

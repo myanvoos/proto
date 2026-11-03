@@ -18,7 +18,7 @@ import { emptyUsageStatistics } from "../../../session/session-entries";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import * as git from "../../../utils/git";
-import { sanitizeStatusText } from "../../shared";
+import { sanitizeHookStatusText } from "../../shared";
 import { withIcon } from "../../theme/icon-label";
 import { theme } from "../../theme/theme";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
@@ -1489,7 +1489,7 @@ export class StatusLineComponent implements Component {
 		if (!showHooks || this.#hookStatuses.size === 0) return [];
 		const sortedStatuses = Array.from(this.#hookStatuses.entries())
 			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
+			.map(([, text]) => sanitizeHookStatusText(text));
 		return [truncateToWidth(sortedStatuses.join(" "), width)];
 	}
 }

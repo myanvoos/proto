@@ -47,6 +47,10 @@ pub struct ListWorkspaceOptions<'env> {
 
 	pub collect_agents_md: Option<bool>,
 
+	pub report_directory_errors: Option<bool>,
+
+	pub prune_excluded_dirs: Option<bool>,
+
 	pub timeout_ms: Option<u32>,
 
 	pub signal: Option<Unknown<'env>>,
@@ -59,44 +63,46 @@ pub struct ListWorkspaceResult {
 	pub agents_md_files: Vec<String>,
 
 	pub truncated: bool,
+
+	pub directory_errors: Option<Vec<WorkspaceDirectoryError>>,
+}
+
+#[napi(object)]
+pub struct WorkspaceDirectoryError {
+	pub path:  String,
+	pub error: String,
 }
 
 struct WorkspaceConfig {
-	root:              PathBuf,
-	max_depth:         usize,
-	walk_max_depth:    usize,
-	include_hidden:    bool,
-	use_gitignore:     bool,
-	collect_agents_md: bool,
+	root:                    PathBuf,
+	max_depth:               usize,
+	walk_max_depth:          usize,
+	include_hidden:          bool,
+	use_gitignore:           bool,
+	collect_agents_md:       bool,
+	report_directory_errors: bool,
+	prune_excluded_dirs:     bool,
 }
 
 fn build_workspace_walk_request(config: &WorkspaceConfig) -> pi_walker::WalkRequest {
 	pi_walker::WalkRequest::new(config.root.clone())
 		.hidden(config.include_hidden)
 		.gitignore(config.use_gitignore)
-		.skip_git(true)
-		.skip_node_modules(true)
+		.skip_git(config.prune_excluded_dirs)
+		.skip_node_modules(config.prune_excluded_dirs)
 		.follow_links(pi_walker::FollowLinks::Never)
 		.detail(pi_walker::WalkDetail::Full)
+		.detail_max_depth(config.max_depth)
+		.unignored_file_name(config.collect_agents_md.then_some(AGENTS_MD_FILENAME))
 		.order(pi_walker::WalkOrder::Path)
 		.emit_root(false)
 		.depth(1, config.walk_max_depth)
-		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
+		.directory_errors(if config.report_directory_errors {
+			pi_walker::DirectoryErrorMode::Visit
+		} else {
+			pi_walker::DirectoryErrorMode::SkipSkippable
+		})
 		.cache(false)
-}
-
-fn glob_match_from_path(root: &Path, path: &Path) -> Option<GlobMatch> {
-	let relative = pi_walker::normalize_relative_path(root, path);
-	if relative.is_empty() {
-		return None;
-	}
-	let (file_type, mtime, size) = pi_walker::classify_file_type(path)?;
-	Some(GlobMatch {
-		path: relative.into_owned(),
-		file_type: crate::iofs::from_walker_file_type(file_type),
-		mtime,
-		size: size.map(|value| value as f64),
-	})
 }
 
 fn is_file_or_file_symlink(path: &Path, file_type: FileType) -> bool {
@@ -205,7 +211,7 @@ fn insert_bounded_entry(entries: &mut BTreeMap<String, GlobMatch>, entry: GlobMa
 	}
 }
 
-fn is_excluded_workspace_entry(relative: &str, file_type: FileType) -> bool {
+fn is_excluded_workspace_entry(relative: &str, file_type: FileType, prune_dirs: bool) -> bool {
 	let mut components = relative
 		.split('/')
 		.filter(|component| !component.is_empty())
@@ -215,38 +221,14 @@ fn is_excluded_workspace_entry(relative: &str, file_type: FileType) -> bool {
 			return true;
 		}
 		let is_final_component = components.peek().is_none();
-		if EXCLUDED_DIR_SET.contains(component) && (!is_final_component || file_type == FileType::Dir)
+		if prune_dirs
+			&& EXCLUDED_DIR_SET.contains(component)
+			&& (!is_final_component || file_type == FileType::Dir)
 		{
 			return true;
 		}
 	}
 	false
-}
-
-fn collect_agents_md_in_directory(
-	config: &WorkspaceConfig,
-	directory: &Path,
-	directory_depth: usize,
-	entries: &mut WorkspaceEntries,
-) {
-	if !config.collect_agents_md {
-		return;
-	}
-	let candidate = directory.join(AGENTS_MD_FILENAME);
-	let Some(entry) = glob_match_from_path(&config.root, &candidate) else {
-		return;
-	};
-	if !is_file_or_file_symlink(&candidate, entry.file_type) {
-		return;
-	}
-	let tree_depth = directory_depth + 1;
-	if tree_depth <= config.max_depth {
-		entries.add_entry(entry.clone());
-	}
-
-	if (AGENTS_MD_MIN_DEPTH..=AGENTS_MD_MAX_DEPTH).contains(&directory_depth) {
-		entries.add_agents_md_file(entry.path);
-	}
 }
 
 fn sort_dedup_entries(entries: &mut Vec<GlobMatch>) {
@@ -264,14 +246,26 @@ fn run_list_workspace(
 	ct: task::CancelToken,
 ) -> Result<ListWorkspaceResult> {
 	let mut entries = WorkspaceEntries::new();
-	collect_agents_md_in_directory(&config, &config.root, 0, &mut entries);
+	let mut directory_errors = Vec::new();
+	if config.report_directory_errors {
+		std::fs::read_dir(&config.root).map_err(|error| {
+			Error::from_reason(format!(
+				"Native directory scan failed for {}: {error}",
+				config.root.display()
+			))
+		})?;
+	}
 
 	build_workspace_walk_request(&config)
 		.for_each_entry_with_heartbeat(
 			|| ct.heartbeat(),
 			|entry| {
 				let file_type = iofs::from_walker_file_type(entry.file_type);
-				if is_excluded_workspace_entry(entry.relative_path, file_type) {
+				if is_excluded_workspace_entry(
+					entry.relative_path,
+					file_type,
+					config.prune_excluded_dirs,
+				) {
 					return Ok(if file_type == FileType::Dir {
 						pi_walker::WalkDecision::SkipDescend
 					} else {
@@ -280,13 +274,22 @@ fn run_list_workspace(
 				}
 
 				let entry_depth = entry.depth;
-				if file_type == FileType::Dir {
-					collect_agents_md_in_directory(
-						&config,
-						entry.absolute_path.as_ref(),
-						entry_depth,
-						&mut entries,
-					);
+				if config.collect_agents_md {
+					if file_type == FileType::Dir && entry_depth == config.walk_max_depth {
+						let candidate = entry.absolute_path.join(AGENTS_MD_FILENAME);
+						if (AGENTS_MD_MIN_DEPTH..=AGENTS_MD_MAX_DEPTH).contains(&entry_depth)
+							&& std::fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file())
+						{
+							entries.add_agents_md_file(
+								pi_walker::normalize_relative_path(&config.root, &candidate).into_owned(),
+							);
+						}
+					} else if entry.relative_path.rsplit('/').next() == Some(AGENTS_MD_FILENAME)
+						&& (AGENTS_MD_MIN_DEPTH..=AGENTS_MD_MAX_DEPTH).contains(&(entry_depth - 1))
+						&& is_file_or_file_symlink(entry.absolute_path.as_ref(), file_type)
+					{
+						entries.add_agents_md_file(entry.relative_path.to_owned());
+					}
 				}
 
 				if entry_depth <= config.max_depth {
@@ -300,12 +303,31 @@ fn run_list_workspace(
 
 				Ok(pi_walker::WalkDecision::Include)
 			},
-			|_error| Ok(pi_walker::WalkDecision::Include),
+			|error| {
+				if config.report_directory_errors {
+					if error.path == config.root {
+						return Err(Error::from_reason(format!(
+							"Native directory scan failed: {}",
+							error.error
+						)));
+					}
+					directory_errors.push(WorkspaceDirectoryError {
+						path:  pi_walker::normalize_relative_path(&config.root, error.path).into_owned(),
+						error: error.error.to_string(),
+					});
+				}
+				Ok(pi_walker::WalkDecision::Include)
+			},
 		)
 		.map_err(iofs::map_walker_error)?;
 
 	let (entries, agents_md_files, truncated) = entries.finish();
-	Ok(ListWorkspaceResult { entries, agents_md_files, truncated })
+	Ok(ListWorkspaceResult {
+		entries,
+		agents_md_files,
+		truncated,
+		directory_errors: (!directory_errors.is_empty()).then_some(directory_errors),
+	})
 }
 
 #[napi(catch_unwind, js_name = "listWorkspace")]
@@ -316,6 +338,8 @@ pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWo
 		hidden,
 		gitignore,
 		collect_agents_md,
+		report_directory_errors,
+		prune_excluded_dirs,
 		timeout_ms,
 		signal,
 	} = options;
@@ -337,8 +361,59 @@ pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWo
 				include_hidden: hidden.unwrap_or(false),
 				use_gitignore: gitignore.unwrap_or(true),
 				collect_agents_md,
+				report_directory_errors: report_directory_errors.unwrap_or(false),
+				prune_excluded_dirs: prune_excluded_dirs.unwrap_or(true),
 			},
 			ct,
 		)
 	})
+}
+
+#[cfg(test)]
+mod workspace_regressions {
+	use super::*;
+	fn config(root: &Path, depth: usize) -> WorkspaceConfig {
+		WorkspaceConfig {
+			root:                    root.to_path_buf(),
+			max_depth:               depth,
+			walk_max_depth:          depth,
+			include_hidden:          true,
+			use_gitignore:           false,
+			collect_agents_md:       false,
+			report_directory_errors: true,
+			prune_excluded_dirs:     false,
+		}
+	}
+	#[test]
+	fn explicit_directory_lists_dependency_and_build_dirs() {
+		let root = tempfile::tempdir().unwrap();
+		std::fs::create_dir(root.path().join("node_modules")).unwrap();
+		std::fs::create_dir(root.path().join("target")).unwrap();
+		let result =
+			run_list_workspace(config(root.path(), 1), task::CancelToken::default()).unwrap();
+		let paths: Vec<_> = result
+			.entries
+			.iter()
+			.map(|entry| entry.path.as_str())
+			.collect();
+		assert_eq!(paths, ["node_modules", "target"]);
+	}
+	#[cfg(unix)]
+	#[test]
+	fn unreadable_child_is_marked_and_unreadable_depth_zero_root_rejects() {
+		use std::os::unix::fs::PermissionsExt;
+		if unsafe { libc::geteuid() } == 0 {
+			return;
+		}
+		let root = tempfile::tempdir().unwrap();
+		let child = root.path().join("locked");
+		std::fs::create_dir(&child).unwrap();
+		std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0)).unwrap();
+		let result = run_list_workspace(config(root.path(), 2), task::CancelToken::default());
+		let root_result = run_list_workspace(config(&child, 0), task::CancelToken::default());
+		std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
+		let errors = result.unwrap().directory_errors.unwrap();
+		assert_eq!(errors[0].path, "locked");
+		assert!(root_result.is_err());
+	}
 }

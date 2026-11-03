@@ -33,6 +33,8 @@ export interface PrewalkCoordinatorHost {
 	sessionManager: SessionManager;
 	model(): Model | undefined;
 	configuredThinkingLevel(): ThinkingLevel | undefined;
+	restoreThinkingLevel(level: ThinkingLevel | undefined): void;
+	resolveDefaultPrewalk(): Prewalk | undefined;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	setModelTemporary(model: Model, thinkingLevel?: ThinkingLevel, options?: { ephemeral?: boolean }): Promise<void>;
 	setActiveToolsByName(names: string[]): Promise<void>;
@@ -52,6 +54,14 @@ export class PrewalkCoordinator {
 	#planInjected = false;
 	#continuePending = false;
 	#checklistSeen = false;
+	#handoff:
+		| {
+				source: Model;
+				sourceThinkingLevel: ThinkingLevel | undefined;
+				target: Model;
+				targetThinkingLevel: ThinkingLevel | undefined;
+		  }
+		| undefined;
 
 	constructor(host: PrewalkCoordinatorHost, options: PrewalkCoordinatorOptions = {}) {
 		this.#host = host;
@@ -82,6 +92,59 @@ export class PrewalkCoordinator {
 		this.#planInjected = false;
 		this.#continuePending = false;
 		this.#checklistSeen = false;
+	}
+
+	/** Explicit model or effort selections take ownership from a completed prewalk. */
+	releaseHandoff(): void {
+		this.#handoff = undefined;
+	}
+
+	/** Restore the planning model and re-arm the configured handoff for a new session. */
+	async resetForNewSession(enabled: boolean): Promise<void> {
+		const handoff = this.#handoff;
+		const current = this.#host.model();
+		const restoreSource =
+			enabled &&
+			handoff !== undefined &&
+			current?.provider === handoff.target.provider &&
+			current?.id === handoff.target.id &&
+			this.#host.configuredThinkingLevel() === handoff.targetThinkingLevel;
+		this.#scrubPlanNudge(undefined, true);
+		this.#clearPrewalkState();
+		this.releaseHandoff();
+		if (!enabled) return;
+		if (restoreSource && handoff) {
+			try {
+				await this.#host.setModelTemporary(handoff.source, handoff.sourceThinkingLevel, { ephemeral: true });
+				this.#host.restoreThinkingLevel(handoff.sourceThinkingLevel);
+			} catch (error) {
+				this.#host.emitNotice(
+					"warning",
+					`Prewalk: could not restore ${handoff.source.provider}/${handoff.source.id}: ${error instanceof Error ? error.message : String(error)}`,
+					"prewalk",
+				);
+			}
+		}
+		const prewalk = this.#host.resolveDefaultPrewalk();
+		if (!prewalk) return;
+		if (this.#isNoop(prewalk)) {
+			this.#disarmNoop(prewalk);
+			return;
+		}
+		this.#prewalk = prewalk;
+	}
+
+	/** Cancel pending guidance without changing the model or delivered continuation history. */
+	disarm(): void {
+		const active = this.#prewalk;
+		if (!active) return;
+		this.#scrubPlanNudge(undefined, true);
+		this.#clearPrewalkState();
+		this.#host.emitNotice(
+			"info",
+			`Prewalk: disarmed; staying on the active model instead of switching to ${active.target.provider}/${active.target.id}.`,
+			"prewalk",
+		);
 	}
 
 	#disarmNoop(prewalk: Prewalk): void {
@@ -150,8 +213,18 @@ export class PrewalkCoordinator {
 			this.#disarmNoop(prewalk);
 			return;
 		}
+		const source = this.#host.model();
+		const sourceThinkingLevel = this.#host.configuredThinkingLevel();
 		await this.#host.setModelTemporary(target, prewalk.thinkingLevel, { ephemeral: true });
 		this.#clearPrewalkState();
+		if (source) {
+			this.#handoff = {
+				source,
+				sourceThinkingLevel,
+				target,
+				targetThinkingLevel: this.#host.configuredThinkingLevel(),
+			};
+		}
 		this.#host.emitNotice(
 			"info",
 			`Prewalk: switched to ${target.provider}/${target.id} after first ${action.toolName} call.`,
@@ -206,16 +279,27 @@ export class PrewalkCoordinator {
 		return true;
 	}
 
-	#scrubPlanNudge(liveMessages: AgentMessage[]): void {
-		if (!this.#planInjected) return;
+	#scrubPlanNudge(liveMessages?: AgentMessage[], includeContinuation = false): void {
 		const isPlanNudge = isPrewalkPlanNudge;
-		for (let index = liveMessages.length - 1; index >= 0; index--) {
-			if (!isPlanNudge(liveMessages[index])) continue;
-			invalidateMessageCache(liveMessages[index]);
-			liveMessages.splice(index, 1);
+		if (liveMessages) {
+			for (let index = liveMessages.length - 1; index >= 0; index--) {
+				if (!isPlanNudge(liveMessages[index])) continue;
+				invalidateMessageCache(liveMessages[index]);
+				liveMessages.splice(index, 1);
+			}
 		}
 		const stateMessages = this.#host.agent.state.messages;
 		const filtered = stateMessages.filter(message => !isPlanNudge(message));
 		if (filtered.length !== stateMessages.length) this.#host.agent.replaceMessages(filtered);
+		const isPendingNudge = (message: AgentMessage): boolean =>
+			isPlanNudge(message) ||
+			(includeContinuation && message.role === "custom" && message.customType === PREWALK_CONTINUE_MESSAGE_TYPE);
+		const steering = this.#host.agent.peekSteeringQueue();
+		if (steering.some(isPendingNudge)) {
+			this.#host.agent.replaceQueues(
+				steering.filter(message => !isPendingNudge(message)),
+				[...this.#host.agent.peekFollowUpQueue()],
+			);
+		}
 	}
 }

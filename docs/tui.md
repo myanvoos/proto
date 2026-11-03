@@ -184,7 +184,7 @@ Custom tools and extension tools can return components from:
 `options` currently includes:
 
 - `expanded: boolean`
-- `isPartial: boolean`
+- `isPartial: boolean` (always `false` for `renderResult`: a running call's partial results are not painted; the card keeps its call preview and spinner until the settled result arrives)
 - `spinnerFrame?: number`
 
 For extension tools, the `renderCall` `options` argument also answers the `Theme` API (`fg`, `bold`, `symbol`, …), so renderers ported from upstream pi — declared `renderCall(args, theme, context)` — keep working unchanged.

@@ -39,6 +39,7 @@ interface ContextBreakdown {
 }
 
 export interface NonMessageTokenSource {
+	readonly model?: Model;
 	readonly systemPrompt?: string[];
 	readonly agent?: {
 		readonly state?: {
@@ -94,7 +95,17 @@ export function estimateToolSchemaTokens(
 	return tokenizer.countTokens(fragments);
 }
 
+/** Schemas already hosted server-side do not occupy the model's prompt window. */
+export function estimateContextToolSchemaTokens(
+	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
+	tokenizer: Tokenizer,
+	model: Model | undefined,
+): number {
+	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer);
+}
+
 interface NonMessageTokenCache {
+	toolSchemasInContext: boolean;
 	systemPromptRef: readonly string[];
 	toolsRef: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
 	skillsRef: readonly Skill[];
@@ -122,17 +133,27 @@ function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: To
 	const systemPromptRef = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const skillsRef = session.skills ?? EMPTY_SKILLS;
+	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
 	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
 	if (
 		entry &&
 		entry.systemPromptRef === systemPromptRef &&
 		entry.toolsRef === toolsRef &&
 		entry.skillsRef === skillsRef &&
-		entry.tokenizerRef === tokenizer
+		entry.tokenizerRef === tokenizer &&
+		entry.toolSchemasInContext === toolSchemasInContext
 	) {
 		return entry;
 	}
-	entry = { systemPromptRef, toolsRef, skillsRef, tokenizerRef: tokenizer, tokens: undefined, breakdown: undefined };
+	entry = {
+		systemPromptRef,
+		toolsRef,
+		skillsRef,
+		tokenizerRef: tokenizer,
+		toolSchemasInContext,
+		tokens: undefined,
+		breakdown: undefined,
+	};
 	cachedSession[NON_MESSAGE_TOKEN_CACHE] = entry;
 	return entry;
 }
@@ -144,7 +165,7 @@ export function computeNonMessageTokens(session: NonMessageTokenSource, tokenize
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const tokens =
 		tokenizer.countTokens(Array.from(systemPromptParts, part => part ?? "")) +
-		estimateToolSchemaTokens(tools, tokenizer);
+		estimateContextToolSchemaTokens(tools, tokenizer, session.model);
 	entry.tokens = tokens;
 	return tokens;
 }
@@ -165,7 +186,7 @@ export function computeNonMessageBreakdown(
 		renderedSkills(session.skills ?? EMPTY_SKILLS, tools, session.getMountedXdevToolNames?.()),
 		tokenizer,
 	);
-	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer);
+	const toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model);
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
 	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);

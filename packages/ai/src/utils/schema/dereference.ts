@@ -1,14 +1,56 @@
+import { parseLocalRefPointer } from "@oh-my-pi/omptype";
 import { isJsonObject, type JsonObject } from "./types";
 
+const SCHEMA_MAP_KEYS: Record<string, true> = {
+	properties: true,
+	patternProperties: true,
+	dependencies: true,
+	dependentSchemas: true,
+};
+const SCHEMA_ARRAY_KEYS: Record<string, true> = { anyOf: true, oneOf: true, allOf: true, prefixItems: true };
+const SCHEMA_VALUE_KEYS: Record<string, true> = {
+	items: true,
+	additionalItems: true,
+	contains: true,
+	contentSchema: true,
+	propertyNames: true,
+	if: true,
+	then: true,
+	else: true,
+	not: true,
+	additionalProperties: true,
+	unevaluatedItems: true,
+	unevaluatedProperties: true,
+};
+
+function dereferenceKeyword(
+	key: string,
+	value: unknown,
+	root: JsonObject,
+	visiting: Set<string>,
+	state: DereferenceState,
+): unknown {
+	if (Object.hasOwn(SCHEMA_MAP_KEYS, key) && isJsonObject(value)) {
+		const result: JsonObject = {};
+		for (const name in value) result[name] = dereferenceNode(value[name], root, visiting, state);
+		return result;
+	}
+	if ((Object.hasOwn(SCHEMA_ARRAY_KEYS, key) || key === "items") && Array.isArray(value)) {
+		return value.map(item => dereferenceNode(item, root, visiting, state));
+	}
+	if (Object.hasOwn(SCHEMA_VALUE_KEYS, key)) return dereferenceNode(value, root, visiting, state);
+	return value;
+}
+
 function resolveLocalRef(ref: string, root: JsonObject): JsonObject | undefined {
-	const match = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
-	if (!match) return undefined;
-
-	const [, defsKey, name] = match;
-	const defs = root[defsKey!];
+	// Only handle local refs: #/$defs/Name or #/definitions/Name
+	const pointer = parseLocalRefPointer(ref);
+	if (pointer === undefined || pointer.length !== 2) return undefined;
+	const defsKey = pointer[0];
+	if (defsKey !== "$defs" && defsKey !== "definitions") return undefined;
+	const defs = root[defsKey];
 	if (!isJsonObject(defs)) return undefined;
-
-	const resolved = defs[name!];
+	const resolved = defs[pointer[1]!];
 	return isJsonObject(resolved) ? resolved : undefined;
 }
 
@@ -20,7 +62,6 @@ interface DereferenceState {
 
 function dereferenceNode(node: unknown, root: JsonObject, visiting: Set<string>, state: DereferenceState): unknown {
 	if (!isJsonObject(node)) return node;
-	if (Array.isArray(node)) return node.map(item => dereferenceNode(item, root, visiting, state));
 
 	const ref = node.$ref;
 	if (typeof ref === "string") {
@@ -45,8 +86,11 @@ function dereferenceNode(node: unknown, root: JsonObject, visiting: Set<string>,
 			}
 		}
 		if (!hasSiblings || !isJsonObject(inlined)) return inlined;
-		const merged: JsonObject = { ...inlined, ...node };
-		delete merged.$ref;
+		const merged: JsonObject = { ...inlined };
+		for (const key in node) {
+			if (key === "$ref" || key === "$defs" || key === "definitions") continue;
+			merged[key] = dereferenceKeyword(key, node[key], root, visiting, state);
+		}
 		return merged;
 	}
 
@@ -56,13 +100,7 @@ function dereferenceNode(node: unknown, root: JsonObject, visiting: Set<string>,
 
 		if (key === "$defs" || key === "definitions") continue;
 
-		if (Array.isArray(value)) {
-			result[key] = value.map(item => dereferenceNode(item, root, visiting, state));
-		} else if (isJsonObject(value)) {
-			result[key] = dereferenceNode(value, root, visiting, state);
-		} else {
-			result[key] = value;
-		}
+		result[key] = dereferenceKeyword(key, value, root, visiting, state);
 	}
 	return result;
 }

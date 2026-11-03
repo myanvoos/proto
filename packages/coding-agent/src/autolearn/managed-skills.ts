@@ -66,12 +66,21 @@ function serializeSkillMutation<T>(name: string, op: () => Promise<T>): Promise<
 }
 
 async function assertManagedRootSafe(): Promise<void> {
-	const rootStat = await fs.lstat(getManagedSkillsDir()).catch(err => {
+	const root = getManagedSkillsDir();
+	const rootStat = await fs.lstat(root).catch(err => {
 		if (isEnoent(err)) return null;
 		throw err;
 	});
-	if (rootStat?.isSymbolicLink()) {
-		throw new Error("The managed-skills root is a symlink; refusing to operate outside the managed directory.");
+	// Operators may point the store at a shared directory; per-skill link guards still apply.
+	if (!rootStat?.isSymbolicLink()) return;
+	const targetStat = await fs.stat(root).catch(err => {
+		if (isEnoent(err)) {
+			throw new Error(`The managed-skills root ${root} is a broken symlink; refusing to write.`);
+		}
+		throw err;
+	});
+	if (!targetStat.isDirectory()) {
+		throw new Error(`The managed-skills root ${root} links to a non-directory; refusing to write.`);
 	}
 }
 

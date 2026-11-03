@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import sideQuestionPrompt from "../../prompts/system/side-question.md" with { type: "text" };
 import { copyToClipboard } from "../../utils/clipboard";
@@ -9,6 +9,7 @@ interface SideQuestionRequest {
 	component: SideQuestionPanelComponent;
 	abortController: AbortController;
 	question: string;
+	images?: ImageContent[];
 	leafId: string | null;
 	sessionId: string;
 }
@@ -37,6 +38,7 @@ function assistantMessageWithReplyText(assistantMessage: AssistantMessage, reply
 export class SideQuestionController {
 	#activeRequest: SideQuestionRequest | undefined;
 	#lastQuestion: string | undefined;
+	#lastImages: ImageContent[] | undefined;
 	#lastReplyText: string | undefined;
 	#lastAssistantMessage: AssistantMessage | undefined;
 	#lastLeafId: string | null | undefined;
@@ -121,7 +123,7 @@ export class SideQuestionController {
 		this.#branchInFlight = true;
 		request.component.markBranching();
 		try {
-			await this.ctx.handleSideQuestionBranch(question, assistantMessage, leafId, sessionId);
+			await this.ctx.handleSideQuestionBranch(question, assistantMessage, leafId, sessionId, this.#lastImages);
 			return true;
 		} finally {
 			this.#branchInFlight = false;
@@ -143,7 +145,7 @@ export class SideQuestionController {
 		this.#closeActiveRequest({ abort: true });
 	}
 
-	async start(question: string): Promise<void> {
+	async start(question: string, images?: ImageContent[]): Promise<void> {
 		const trimmedQuestion = question.trim();
 		if (!trimmedQuestion) {
 			this.ctx.showStatus("Usage: /side <question>");
@@ -166,6 +168,7 @@ export class SideQuestionController {
 			}),
 			abortController: new AbortController(),
 			question: trimmedQuestion,
+			images,
 			leafId: this.ctx.sessionManager.getLeafId(),
 			sessionId: this.ctx.sessionManager.getSessionId(),
 		};
@@ -181,6 +184,8 @@ export class SideQuestionController {
 			const promptText = prompt.render(sideQuestionPrompt, { question: request.question });
 			const { replyText, assistantMessage } = await this.ctx.session.runEphemeralTurn({
 				promptText,
+				promptImages: request.images,
+				dedupeReply: false,
 				onTextDelta: delta => {
 					if (this.#isActiveRequest(request)) {
 						request.component.appendText(delta);
@@ -197,6 +202,7 @@ export class SideQuestionController {
 			const copyText = request.component.getCopyText();
 			if (copyText !== undefined) {
 				this.#lastQuestion = request.question;
+				this.#lastImages = request.images;
 				this.#lastReplyText = replyText;
 				this.#lastCopyText = copyText;
 				this.#lastAssistantMessage = assistantMessageWithReplyText(assistantMessage, replyText);
@@ -232,6 +238,7 @@ export class SideQuestionController {
 
 	#clearCompletedState(): void {
 		this.#lastQuestion = undefined;
+		this.#lastImages = undefined;
 		this.#lastReplyText = undefined;
 		this.#lastAssistantMessage = undefined;
 		this.#lastCopyText = undefined;

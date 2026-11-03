@@ -6,9 +6,11 @@ import type { Browser } from "puppeteer-core";
 import { gracefulKillTreeOnce } from "../tools/browser/attach";
 import {
 	createChromiumUserDataDir,
-	ensureChromiumExecutable,
+	DISABLE_AUTOMATION_CONTROLLED_ARG,
+	ensureSignInChromiumExecutable,
 	loadPuppeteer,
 	removeUserDataDir,
+	stealthIgnoreDefaultArgs,
 } from "../tools/browser/launch";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
@@ -29,7 +31,7 @@ export async function captureBrowserSession(
 	let userDataDir: string | undefined;
 	try {
 		const [puppeteer, executablePath] = await untilAborted(lifetime, () =>
-			Promise.all([loadPuppeteer(), ensureChromiumExecutable()]),
+			Promise.all([loadPuppeteer(), ensureSignInChromiumExecutable()]),
 		);
 		userDataDir = await createChromiumUserDataDir(executablePath);
 		lifetime.throwIfAborted();
@@ -40,8 +42,13 @@ export async function captureBrowserSession(
 			headless: false,
 			defaultViewport: null,
 			pipe: true,
-			ignoreDefaultArgs: ["--no-sandbox", "--disable-setuid-sandbox", "--ignore-certificate-errors"],
-			args: [`--user-data-dir=${userDataDir}`],
+			ignoreDefaultArgs: [
+				...stealthIgnoreDefaultArgs(executablePath),
+				"--no-sandbox",
+				"--disable-setuid-sandbox",
+				"--ignore-certificate-errors",
+			],
+			args: [DISABLE_AUTOMATION_CONTROLLED_ARG, `--user-data-dir=${userDataDir}`],
 			signal: lifetime,
 			timeout: 30_000,
 		});

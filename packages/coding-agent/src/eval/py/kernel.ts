@@ -46,6 +46,8 @@ const SHUTDOWN_GRACE_MS = 1_000;
 const STARTUP_TIMEOUT_MS = 10_000;
 
 const INTERRUPT_ESCALATION_MS = 5_000;
+/** Bounds escalation and shutdown before callers abandon a cancelled Python cell. */
+export const PYTHON_KERNEL_CANCEL_BUDGET_MS = INTERRUPT_ESCALATION_MS + 3 * SHUTDOWN_GRACE_MS;
 const AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 const AVAILABILITY_PROBE_KILL_GRACE_MS = 250;
 

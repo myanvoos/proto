@@ -15,6 +15,9 @@ const cachedSnapshotPaths = new LRUCache<string, string>({
 	},
 });
 const SNAPSHOT_TIMEOUT_MS = 2_000;
+const inflightSnapshots = new Map<string, Promise<string | null>>();
+const failedSnapshots = new LRUCache<string, number>({ max: SNAPSHOT_CACHE_MAX_ENTRIES });
+const SNAPSHOT_FAILURE_RETRY_MS = 60_000;
 
 const BRUSH_INCOMPATIBLE_ALIAS_BODY = /[()|&;<>`]/;
 
@@ -79,24 +82,28 @@ function snapshotCacheKey(shell: string, rcFile: string, env: Record<string, str
 function generateSnapshotScript(shell: string, snapshotPath: string, rcFile: string): string {
 	const hasRcFile = fs.existsSync(rcFile);
 	const isZsh = shell.includes("zsh");
-	const commonToolsRegex =
-		"^(ls|dir|vdir|cat|head|tail|less|more|grep|egrep|fgrep|rg|find|fd|locate|sed|awk|perl|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|ln|pwd|readlink|stat|cut|sort|uniq|xargs|tee|tr|basename|dirname)$";
+	const commonTools =
+		"ls|dir|vdir|cat|head|tail|less|more|grep|egrep|fgrep|rg|find|fd|locate|sed|awk|perl|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|ln|pwd|readlink|stat|cut|sort|uniq|xargs|tee|tr|basename|dirname";
+	const commonFunctionRegex = `^(${commonTools})$`;
+	const commonAliasRegex = `^(alias )?(${commonTools})=`;
 
 	const escapedPath = snapshotPath.replace(/'/g, "'\\''");
 
-	const functionExtractor = isZsh
-		? `# Force autoload all functions first
-typeset -f > /dev/null 2>&1
-# Get user function names - filter system/private ones
-typeset +f 2>/dev/null | grep -vE '^(_|__)' | grep -vE '${commonToolsRegex}' | while read func; do
-   typeset -f "$func" 2>/dev/null
-done`
-		: `# Force autoload all functions first
-declare -f > /dev/null 2>&1
-# Get user function names - filter system/private ones
-declare -F 2>/dev/null | cut -d' ' -f3 | grep -vE '^(_|__)' | grep -vE '${commonToolsRegex}' | while read func; do
-   declare -f "$func" 2>/dev/null
-done`;
+	const listFunctionNames = isZsh ? "typeset +f" : "declare -F | command cut -d' ' -f3";
+	const printFunction = isZsh ? "typeset -f" : "declare -f";
+	const functionExtractor = `# Force autoload all functions first
+${printFunction} > /dev/null 2>&1
+__proto_all=$(${listFunctionNames} 2>/dev/null | command sort -u)
+__proto_next=$(printf '%s\\n' "$__proto_all" | command grep -vE '^(_|__)' | command grep -vE '${commonFunctionRegex}')
+__proto_kept=$(command mktemp)
+while [ -n "$__proto_next" ]; do
+   printf '%s\\n' "$__proto_next" >> "$__proto_kept"
+   __proto_next=$(printf '%s\\n' "$__proto_next" | while IFS= read -r __proto_f; do ${printFunction} "$__proto_f" 2>/dev/null; done \\
+      | command grep -oE '[A-Za-z_][A-Za-z0-9_.-]*' | command sort -u | command grep -xF -f <(printf '%s\\n' "$__proto_all") \\
+      | command grep -vE '${commonFunctionRegex}' | command grep -vxF -f "$__proto_kept")
+done
+while IFS= read -r __proto_f; do ${printFunction} "$__proto_f" 2>/dev/null; done < "$__proto_kept"
+command rm -f "$__proto_kept"`;
 
 	const optionsScript = isZsh
 		? `
@@ -157,7 +164,7 @@ ${optionsScript}
 
 # Export aliases (limit to 1000)
 echo "# Aliases" >> "$SNAPSHOT_FILE"
-alias 2>/dev/null | grep -vE '^alias (${commonToolsRegex})=' | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"
+alias 2>/dev/null | grep -vE '${commonAliasRegex}' | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"
 
 # Export PATH
 echo "export PATH='$PATH'" >> "$SNAPSHOT_FILE"
@@ -185,6 +192,28 @@ export async function getOrCreateSnapshot(
 		cachedSnapshotPaths.delete(cacheKey);
 	}
 
+	const inflight = inflightSnapshots.get(cacheKey);
+	if (inflight) return inflight;
+	if (performance.now() < (failedSnapshots.get(cacheKey) ?? 0)) return null;
+	const creation = createSnapshot(shell, snapshotEnv, rcFile, cacheKey, timeoutMs)
+		.catch(() => null)
+		.then(snapshotPath => {
+			inflightSnapshots.delete(cacheKey);
+			if (snapshotPath) failedSnapshots.delete(cacheKey);
+			else failedSnapshots.set(cacheKey, performance.now() + SNAPSHOT_FAILURE_RETRY_MS);
+			return snapshotPath;
+		});
+	inflightSnapshots.set(cacheKey, creation);
+	return creation;
+}
+
+async function createSnapshot(
+	shell: string,
+	snapshotEnv: Record<string, string | undefined>,
+	rcFile: string,
+	cacheKey: string,
+	timeoutMs: number,
+): Promise<string | null> {
 	const uid = process.getuid?.();
 	const snapshotDir = path.join(
 		os.tmpdir(),

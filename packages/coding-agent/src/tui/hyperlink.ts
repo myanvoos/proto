@@ -25,22 +25,22 @@ export function fileUriForTerminal(
 	filePath: string,
 	opts: { line?: number; col?: number } | undefined,
 	terminalId: TerminalId,
-): string {
-	if (terminalId === "vscode") {
-		const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-		const position =
-			opts?.line === undefined ? "" : opts.col === undefined ? `:${opts.line}` : `:${opts.line}:${opts.col}`;
-		return `vscode://file${encodedPath}${position}`;
+): string | undefined {
+	try {
+		if (terminalId === "vscode") {
+			const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+			const position =
+				opts?.line === undefined ? "" : opts.col === undefined ? `:${opts.line}` : `:${opts.line}:${opts.col}`;
+			return `vscode://file${encodedPath}${position}`;
+		}
+		const uri = url.pathToFileURL(filePath);
+		if (terminalId === "orca" && opts?.line !== undefined) {
+			uri.hash = `L${opts.line}${opts.col !== undefined ? `C${opts.col}` : ""}`;
+		}
+		return uri.href;
+	} catch {
+		return undefined;
 	}
-	const uri = url.pathToFileURL(filePath);
-	if (terminalId === "orca" && opts?.line !== undefined) {
-		uri.hash = `L${opts.line}${opts.col !== undefined ? `C${opts.col}` : ""}`;
-	}
-	return uri.href;
-}
-
-function buildFileUri(filePath: string, opts?: { line?: number; col?: number }): string {
-	return fileUriForTerminal(filePath, opts, TERMINAL.id);
 }
 
 export function isHyperlinkEnabled(): boolean {
@@ -97,7 +97,8 @@ export function urlHyperlinkAlways(url: string, displayText: string): string {
 }
 
 export function fileHyperlink(filePath: string, displayText: string, opts?: { line?: number; col?: number }): string {
-	return wrapHyperlink(buildFileUri(filePath, opts), displayText);
+	const uri = fileUriForTerminal(filePath, opts, TERMINAL.id);
+	return uri ? wrapHyperlink(uri, displayText) : displayText;
 }
 
 /** Resolve only session-local Markdown destinations; null suppresses an invalid or unavailable local link. */
@@ -111,7 +112,7 @@ export function resolveLocalHyperlink(
 		const { path, sel } = splitPathAndSel(input);
 		const resolved = resolveLocalUrlToPath(path, options);
 		const line = selectorLineRanges(sel)?.[0].startLine;
-		return buildFileUri(resolved, { line });
+		return fileUriForTerminal(resolved, { line }, TERMINAL.id) ?? null;
 	} catch {
 		return null;
 	}

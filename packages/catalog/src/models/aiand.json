@@ -16,7 +16,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 393216,
+		"maxTokens": 1000000,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -25,13 +25,12 @@
 				"max"
 			]
 		},
-		"int": 34.3,
-		"tps": 219.8,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -74,7 +73,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -98,7 +97,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 393216,
+		"maxTokens": 1000000,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -107,13 +106,12 @@
 				"max"
 			]
 		},
-		"int": 36,
-		"tps": 109.2,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": true,
@@ -156,7 +154,7 @@
 			"supportsStrictMode": false,
 			"toolStrictMode": "mixed",
 			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
+			"streamMarkupHealingPattern": "dsml",
 			"reasoningDeltasMayBeCumulative": false,
 			"emptyLengthFinishIsContextError": false,
 			"usesOpenAIToolCallIdLimit": false,
@@ -197,6 +195,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -276,13 +275,12 @@
 				"max"
 			]
 		},
-		"int": 27,
-		"tps": 67.9,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -364,13 +362,12 @@
 				"max"
 			]
 		},
-		"int": 25.8,
-		"tps": 90.9,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -459,6 +456,7 @@
 		"tps": 36.7,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -547,6 +545,7 @@
 		"requiresGlyphTokenization": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -623,12 +622,11 @@
 				"high"
 			]
 		},
-		"int": 11.6,
-		"tps": 161.6,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -696,7 +694,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 81920,
+		"maxTokens": 65536,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -706,13 +704,12 @@
 				"high"
 			]
 		},
-		"int": 21.4,
-		"tps": 57.9,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -796,6 +793,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,
@@ -878,6 +876,7 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": false,
 		"compat": {
+			"trustExplicitThinkingOnly": false,
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
 			"supportsMultipleSystemMessages": false,

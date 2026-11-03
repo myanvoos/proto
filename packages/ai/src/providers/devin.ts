@@ -1,4 +1,5 @@
-import { gunzipSync, gzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { gunzipSync, gzip } from "node:zlib";
 import {
 	AssignModelRequestSchema,
 	AssignModelResponseSchema,
@@ -28,7 +29,7 @@ import {
 import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import { isGeminiModelId } from "@oh-my-pi/pi-catalog/identity/family";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata, devinWireMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
+import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
 import { decodeDevinUnaryMessage } from "@oh-my-pi/pi-catalog/wire/devin-proto";
 import { isRecord, logger, parseStreamingJsonThrottled, sanitizeText } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
@@ -53,7 +54,13 @@ import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
 import { parseToolCallArguments } from "../utils/tool-call-arguments";
-import { transformMessages } from "./transform-messages";
+import {
+	CONNECT_COMPRESSED_FLAG,
+	CONNECT_END_STREAM_FLAG,
+	ConnectFrameDecoder,
+	frameConnectMessage,
+} from "./connect-frame";
+import { isResponsesFamilyApi, responsesCallComponent, transformMessages } from "./transform-messages";
 import { mediaOmissionNote } from "./vision-guard";
 
 export const DEVIN_API_URL = DEVIN_DEFAULT_BASE_URL;
@@ -69,10 +76,8 @@ export interface DevinOptions extends StreamOptions {
 const CHAT_MESSAGE_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 const DEVIN_ASSIGN_MODEL_PATH = "/exa.api_server_pb.ApiServerService/AssignModel";
 const DEVIN_AUTH_PATH = "/exa.auth_pb.AuthService/GetUserJwt";
-const DEVIN_DEFAULT_STOP_PATTERNS = ["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"];
-
-const CONNECT_COMPRESSED_FLAG = 0x01;
-const CONNECT_END_STREAM_FLAG = 0x02;
+const gzipAsync = promisify(gzip);
+const MIN_COMPRESSED_BODY_BYTES = 1024;
 
 const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
 
@@ -128,8 +133,6 @@ function createDevinHttpError(operation: string, response: Response, payload: Ui
 	);
 }
 
-const EMPTY_BUFFER = Buffer.alloc(0);
-
 type DevinDoneReason = "stop" | "length" | "toolUse";
 
 function mapDevinStopReason(reason: StopReason, hasToolCalls: boolean, provider: string): DevinDoneReason {
@@ -170,56 +173,6 @@ function mapDevinStopReason(reason: StopReason, hasToolCalls: boolean, provider:
 				provider,
 				kind: "runtime",
 			});
-	}
-}
-
-class GrowingBuffer {
-	#space: Buffer | undefined;
-	#start = 0;
-	#end = 0;
-
-	get length(): number {
-		return this.#end - this.#start;
-	}
-
-	get bytes(): Buffer {
-		return this.#space?.subarray(this.#start, this.#end) ?? EMPTY_BUFFER;
-	}
-
-	append(chunk: Uint8Array): void {
-		const n = chunk.length;
-		if (n === 0) return;
-		if (!this.#space) {
-			this.#space = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-			this.#end = n;
-			return;
-		}
-
-		const space = this.#space;
-		const required = this.#end + n;
-		if (space.length < required) {
-			const length = this.length;
-			const nextSize = Math.max(length + n, space.length * 2);
-			const next = Buffer.allocUnsafe(nextSize);
-			next.set(space.subarray(this.#start, this.#end));
-			this.#space = next;
-			this.#start = 0;
-			this.#end = length;
-		}
-
-		this.#space!.set(chunk, this.#end);
-		this.#end += n;
-	}
-
-	consume(n: number): void {
-		if (n <= 0) return;
-		if (n >= this.length) {
-			this.#space = undefined;
-			this.#start = 0;
-			this.#end = 0;
-			return;
-		}
-		this.#start += n;
 	}
 }
 
@@ -299,7 +252,15 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				apiKey: auth.apiKey,
 				userJwt: auth.userJwt,
 				cascadeId: options?.conversationId ?? options?.sessionId ?? crypto.randomUUID(),
-				messages: transformMessages(context.messages, model),
+				messages: transformMessages(
+					context.messages,
+					model,
+					(id, _target, origin) =>
+						(isResponsesFamilyApi(origin.api) ? responsesCallComponent(id) : id)
+							.replace(/[^a-zA-Z0-9_-]/g, "_")
+							.slice(0, 40),
+					40,
+				),
 			};
 			// Router models (`adaptive`) are not valid chat uids: AssignModel resolves them and the
 			// chat request sharing the cascade id must carry the returned uid plus assignment JWT.
@@ -308,26 +269,27 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				assignment = await assignDevinModel(model, turn, chatBaseUrl, fetchImpl, options?.signal);
 				output.upstreamModel = assignment.modelUid;
 			}
-			const request = buildDevinChatRequest(model, context, options, turn, assignment);
+			let request = buildDevinChatRequest(model, context, options, turn, assignment);
+			const replacementRequest = await options?.onPayload?.(request, model);
+			if (replacementRequest !== undefined) request = replacementRequest as typeof request;
 			const reqBytes = toBinary(GetChatMessageRequestSchema, request);
-			const gz = gzipSync(reqBytes);
+			const compress = reqBytes.byteLength >= MIN_COMPRESSED_BODY_BYTES;
+			const chatBody = compress ? await gzipAsync(reqBytes) : reqBytes;
+			const compressedBytes = compress ? chatBody.byteLength : undefined;
 			logger.debug("devin: sending chat request", {
 				model: model.id,
 				tools: context.tools?.length ?? 0,
 				requestBytes: reqBytes.byteLength,
-				compressedBytes: gz.byteLength,
+				compressedBytes,
 			});
-			const frame = Buffer.alloc(5 + gz.length);
-			frame[0] = CONNECT_COMPRESSED_FLAG;
-			frame.writeUInt32BE(gz.length, 1);
-			frame.set(gz, 5);
+			const frame = frameConnectMessage(chatBody, compress ? CONNECT_COMPRESSED_FLAG : 0);
 
 			const response = await fetchImpl(chatBaseUrl + CHAT_MESSAGE_PATH, {
 				method: "POST",
 				headers: {
 					"content-type": "application/connect+proto",
 					"connect-protocol-version": "1",
-					"connect-content-encoding": "gzip",
+					...(compress ? { "connect-content-encoding": "gzip" } : {}),
 					"accept-encoding": "identity",
 					"user-agent": "connect-go/1.18.1 (go1.26.3)",
 					"connect-accept-encoding": "gzip",
@@ -351,27 +313,21 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			stream.push({ type: "start", partial: output });
 
 			const reader = body.getReader();
-			const pending = new GrowingBuffer();
+			const frameDecoder = new ConnectFrameDecoder({
+				limit: {
+					maxPayloadBytes: MAX_CONNECT_FRAME_PAYLOAD,
+					error: length =>
+						new AIError.ProviderResponseError(
+							`Devin Connect frame length ${length} exceeds ${MAX_CONNECT_FRAME_PAYLOAD}-byte cap`,
+							{ provider: model.provider, kind: "envelope" },
+						),
+				},
+			});
 			let sawEndStream = false;
 
 			for (;;) {
 				const { done, value } = await reader.read();
-				if (value && value.length > 0) pending.append(value);
-
-				while (pending.length >= 5) {
-					const bytes = pending.bytes;
-					const flag = bytes[0];
-					const len = bytes.readUInt32BE(1);
-					if (len > MAX_CONNECT_FRAME_PAYLOAD) {
-						throw new AIError.ProviderResponseError(
-							`Devin Connect frame length ${len} exceeds ${MAX_CONNECT_FRAME_PAYLOAD}-byte cap`,
-							{ provider: model.provider, kind: "envelope" },
-						);
-					}
-					if (pending.length < 5 + len) break;
-					const payload = bytes.subarray(5, 5 + len);
-					pending.consume(5 + len);
-
+				for (const { flags: flag, payload } of frameDecoder.decode(value)) {
 					if (sawEndStream) {
 						throw new AIError.ProviderResponseError(
 							"Devin Connect stream contained data after its end-stream envelope",
@@ -393,7 +349,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 								...(trailerError.detail ? { detail: trailerError.detail } : {}),
 								rawTrailer: trailerError.raw,
 								requestBytes: reqBytes.byteLength,
-								compressedBytes: gz.byteLength,
+								compressedBytes,
 								tools: context.tools?.length ?? 0,
 								messages: context.messages.length,
 								hadOutput: firstTokenTime !== undefined,
@@ -433,7 +389,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 										model: model.id,
 										historyBytes,
 										requestBytes: reqBytes.byteLength,
-										compressedBytes: gz.byteLength,
+										compressedBytes,
 									});
 								}
 							}
@@ -555,9 +511,9 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				if (done) break;
 			}
 
-			if (pending.length > 0) {
+			if (frameDecoder.bufferedBytes > 0) {
 				throw new AIError.ProviderResponseError(
-					`Devin Connect stream ended with ${pending.length} buffered bytes from an incomplete frame`,
+					`Devin Connect stream ended with ${frameDecoder.bufferedBytes} buffered bytes from an incomplete frame`,
 					{ provider: model.provider, kind: "incomplete-stream" },
 				);
 			}
@@ -642,16 +598,8 @@ async function fetchDevinAuthMetadata(
 	signal: AbortSignal | undefined,
 ): Promise<{ userJwt: string; apiKey: string; baseUrl?: string }> {
 	const sessionMetadata = create(MetadataSchema, devinCliMetadata(apiKey));
-	let wireApiKey = sessionMetadata.apiKey;
-	let attempt = await requestDevinAuth(sessionMetadata, baseUrl, fetchImpl, signal);
-	// Legacy Windsurf API keys are rejected with the session-token prefix; retry them raw.
-	if (attempt.response.status === 401) {
-		const rawMetadata = create(MetadataSchema, devinWireMetadata(apiKey));
-		if (rawMetadata.apiKey && rawMetadata.apiKey !== sessionMetadata.apiKey) {
-			attempt = await requestDevinAuth(rawMetadata, baseUrl, fetchImpl, signal);
-			wireApiKey = rawMetadata.apiKey;
-		}
-	}
+	const wireApiKey = sessionMetadata.apiKey;
+	const attempt = await requestDevinAuth(sessionMetadata, baseUrl, fetchImpl, signal);
 	const { response, payload } = attempt;
 	if (!response.ok) throw createDevinHttpError("auth", response, payload);
 	const decoded = decodeDevinUnaryMessage(GetUserJwtResponseSchema, payload);
@@ -679,7 +627,7 @@ async function assignDevinModel(
 	signal: AbortSignal | undefined,
 ): Promise<ModelAssignment> {
 	const request = create(AssignModelRequestSchema, {
-		metadata: create(MetadataSchema, devinWireMetadata(turn.apiKey)),
+		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey)),
 		modelRouterUid: model.requestModelId ?? model.id,
 		cascadeId: turn.cascadeId,
 		chatMessagePrompt: buildRouterPrompt(turn.messages),
@@ -727,10 +675,6 @@ function buildDevinChatRequest(
 	turn: DevinTurn,
 	assignment: ModelAssignment | undefined,
 ) {
-	const stopPatterns =
-		options?.stopSequences && options.stopSequences.length > 0
-			? [...DEVIN_DEFAULT_STOP_PATTERNS, ...options.stopSequences]
-			: DEVIN_DEFAULT_STOP_PATTERNS;
 	const chatModelUid = assignment?.modelUid ?? options?.chatModelUid ?? model.requestModelId ?? model.id;
 	// Devin's Gemini backend enforces Google's schema dialect and rejects JSON Schema type arrays
 	// (`["number", "null"]`) as an opaque `invalid_argument`. Router assignments use the server's
@@ -738,7 +682,7 @@ function buildDevinChatRequest(
 	const googleToolSchema =
 		isGeminiModelId(model.id) || isGeminiModelId(chatModelUid) || chatModelUid.startsWith("MODEL_GOOGLE_GEMINI_");
 	return create(GetChatMessageRequestSchema, {
-		metadata: create(MetadataSchema, devinWireMetadata(turn.apiKey, turn.userJwt)),
+		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey, turn.userJwt)),
 		prompt: normalizeSystemPrompts(context.systemPrompt).join("\n\n"),
 		chatMessagePrompts: buildChatMessagePrompts(turn.messages, turn.cascadeId, model),
 		chatModelUid,
@@ -753,13 +697,11 @@ function buildDevinChatRequest(
 		configuration: create(CompletionConfigurationSchema, {
 			numCompletions: 1n,
 			maxTokens: BigInt(options?.maxTokens ?? model.maxTokens ?? 64000),
-			maxNewlines: 200n,
-			temperature: options?.temperature ?? 0.4,
-			firstTemperature: options?.temperature ?? 0.4,
-			topK: 50n,
-			topP: options?.topP ?? 1,
-			stopPatterns,
-			fimEotProbThreshold: 1,
+			maxNewlines: 400n,
+			temperature: options?.temperature ?? 1,
+			topK: 40n,
+			topP: Math.fround(options?.topP ?? 0.95),
+			stopPatterns: options?.stopSequences ?? [],
 		}),
 		tools: (context.tools ?? []).map((tool: Tool) => {
 			const schema = toolWireSchema(tool);
@@ -828,10 +770,11 @@ function buildChatMessagePrompts(
 			if (!promptText && !thinkingText && !signature && toolCalls.length === 0) continue;
 			prompts.push(
 				create(ChatMessagePromptSchema, {
+					// Native assistant ids are bare UUIDs, like every other history row.
 					messageId:
 						isNativeDevinMessage && msg.responseId
 							? msg.responseId
-							: `bot-${deterministicUuid(`${cascadeId}\0${index}\0assistant`)}`,
+							: deterministicUuid(`${cascadeId}\0${index}\0assistant`),
 					source: ChatMessageSource.SYSTEM,
 					prompt: promptText,
 					thinking: thinkingText,

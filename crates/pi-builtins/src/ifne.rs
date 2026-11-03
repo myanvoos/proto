@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use std::{
 	ffi::OsString,
 	io::{self, ErrorKind, Read, Write},
@@ -20,7 +12,6 @@ use crate::host::{Host, Utility, matches_parser, util};
 
 const USAGE: &str = "usage: ifne [-n] command [args...]";
 const CHUNK: usize = 64 * 1024;
-
 
 pub(crate) struct Ifne {
 	matches: ArgMatches,
@@ -43,8 +34,6 @@ impl Utility for Ifne {
 			let _ = writeln!(host.stderr, "{USAGE}");
 			return 1;
 		}
-
-
 
 		let mut first = [0u8; 1];
 		let got = loop {
@@ -71,17 +60,11 @@ impl Utility for Ifne {
 
 		if empty != invert {
 			if empty {
-
 				return 0;
 			}
 
 			let cancel = host.cancel_flag();
-			return match copy_cancellable(
-				&mut host.stdin,
-				&mut host.stdout,
-				Some(first[0]),
-				&cancel,
-			) {
+			return match copy_cancellable(&mut host.stdin, &mut host.stdout, Some(first[0]), &cancel) {
 				Ok(()) => 0,
 				Err(CopyError::Cancelled) => 130,
 				Err(CopyError::Io(err)) => {
@@ -94,7 +77,6 @@ impl Utility for Ifne {
 		spawn_and_pump(host, &command, if empty { None } else { Some(first[0]) })
 	}
 }
-
 
 fn app() -> ClapCommand {
 	ClapCommand::new(Ifne::NAME)
@@ -115,7 +97,6 @@ fn app() -> ClapCommand {
 				.num_args(0..),
 		)
 }
-
 
 fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i32 {
 	let mut child = match Command::new(&command[0])
@@ -140,9 +121,6 @@ fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i
 	let mut child_stderr = child.stderr.take().expect("piped stderr");
 	let cancel = host.cancel_flag();
 
-
-
-
 	let (out_buf, err_buf, pump) = std::thread::scope(|scope| {
 		let out = scope.spawn(move || {
 			let mut buf = Vec::new();
@@ -155,11 +133,8 @@ fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i
 			buf
 		});
 
-
 		let pump = match copy_cancellable(&mut host.stdin, &mut child_stdin, first, &cancel) {
-			Err(CopyError::Io(err)) if err.kind() != ErrorKind::BrokenPipe => {
-				Err(CopyError::Io(err))
-			},
+			Err(CopyError::Io(err)) if err.kind() != ErrorKind::BrokenPipe => Err(CopyError::Io(err)),
 			Err(CopyError::Cancelled) => Err(CopyError::Cancelled),
 			_ => Ok(()),
 		};
@@ -197,7 +172,6 @@ enum CopyError {
 	Io(io::Error),
 }
 
-
 fn copy_cancellable(
 	src: &mut impl Read,
 	dst: &mut impl Write,
@@ -221,8 +195,6 @@ fn copy_cancellable(
 	}
 }
 
-
-
 fn exit_code(status: std::process::ExitStatus) -> i32 {
 	if let Some(code) = status.code() {
 		return code;
@@ -237,9 +209,6 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 	1
 }
 
-
 pub(crate) fn ifne_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Ifne, SE>()
 }
-
-

@@ -490,3 +490,46 @@ test("custom message entries keep the initiating message's timestamp across a re
 	expect(stamped?.timestamp).toBe(submittedAt);
 	expect(Number.isFinite(unstamped?.timestamp)).toBe(true);
 });
+
+test("off-branch work preserves the active branch across reload and a fork selected from the background branch", async () => {
+	const storage = new MemorySessionStorage();
+	const manager = SessionManager.create("/project", "/sessions", storage);
+	const root = manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+	const active = manager.appendMessage({ role: "user", content: "active work", timestamp: 2 });
+	const background = manager.appendMessageToBranch({ role: "user", content: "background result", timestamp: 3 }, root);
+	expect(manager.getBranch().map(entry => entry.id)).toEqual([root, active]);
+	await manager.ensureOnDisk();
+	const reopened = await SessionManager.open(manager.getSessionFile()!, "/sessions", storage, {
+		initialCwd: "/project",
+	});
+	try {
+		expect(reopened.getLeafId()).toBe(active);
+		expect(
+			reopened.buildSessionContext().messages.map(message => (message.role === "user" ? message.content : "")),
+		).toEqual(["root", "active work"]);
+		reopened.createBranchedSession(background);
+		expect(reopened.getLeafId()).toBe(background);
+		await reopened.ensureOnDisk();
+		const fork = await SessionManager.open(reopened.getSessionFile()!, "/sessions", storage, {
+			initialCwd: "/project",
+		});
+		try {
+			expect(fork.getBranch().map(entry => entry.id)).toEqual([root, background]);
+		} finally {
+			await fork.close();
+		}
+	} finally {
+		await reopened.close();
+		await manager.close();
+	}
+});
+
+test("released in-memory artifacts cannot be read or reallocated by late saves", async () => {
+	const manager = SessionManager.inMemory("/project");
+	const id = await manager.saveArtifact("retained artifact", "bash");
+	expect(manager.getArtifactContent(id!)).toBe("retained artifact");
+	manager.releaseRetainedEntries();
+	expect(manager.getArtifactContent(id!)).toBeNull();
+	expect(await manager.saveArtifact("late payload", "bash")).toBeUndefined();
+	expect(await manager.allocateArtifactPath("bash")).toEqual({});
+});

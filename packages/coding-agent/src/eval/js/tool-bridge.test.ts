@@ -246,3 +246,19 @@ test("bridged checklist calls report whether they committed a new plan", async (
 		["checklist", false],
 	]);
 });
+
+test("wire aliases cannot bypass checkpoint and rewind direct-tool guards", async () => {
+	const session = { getCheckpointState: () => ({ goal: "g" }) } as unknown as ToolSession;
+	const checkpoint = new CheckpointTool(session);
+	const execute = vi.spyOn(checkpoint, "execute");
+	(session as { getToolForEvalBridge: (name: string) => unknown }).getToolForEvalBridge = name =>
+		name === "protolens://save" ? checkpoint : undefined;
+	try {
+		await expect(callSessionTool("protolens://save", { goal: "g" }, { session })).rejects.toThrow(
+			"direct `checkpoint` tool",
+		);
+		expect(execute).not.toHaveBeenCalled();
+	} finally {
+		execute.mockRestore();
+	}
+});

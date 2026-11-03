@@ -299,7 +299,8 @@ const cases: Array<{ name: string; initial: ResizeStep; steps: ResizeStep[]; rap
 			[100, 6],
 		],
 		rapid: true,
-		replays: 0,
+		// Returning to the initial width still needs one replay after intermediate reflow.
+		replays: 1,
 	},
 ];
 

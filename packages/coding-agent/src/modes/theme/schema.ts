@@ -14,6 +14,7 @@ const themeColorsSchema = type({
 	muted: "string | number",
 	dim: "string | number",
 	text: "string | number",
+	"assistantMessageText?": "string | number",
 	thinkingText: "string | number",
 	selectedBg: "string | number",
 	userMessageBg: "string | number",
@@ -124,6 +125,7 @@ export type ThemeColor =
 	| "muted"
 	| "dim"
 	| "text"
+	| "assistantMessageText"
 	| "thinkingText"
 	| "userMessageText"
 	| "customMessageText"
@@ -191,6 +193,7 @@ const THEME_COLOR_RECORD = {
 	muted: true,
 	dim: true,
 	text: true,
+	assistantMessageText: true,
 	thinkingText: true,
 	userMessageText: true,
 	customMessageText: true,

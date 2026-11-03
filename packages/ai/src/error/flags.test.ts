@@ -8,6 +8,7 @@ import {
 	create,
 	Flag,
 	is,
+	isCacheControlUnsupported,
 	isContextOverflow,
 	isGitHubCopilotPolicyDenial,
 	isUsageLimit,
@@ -255,5 +256,72 @@ describe("ClinePass error handling", () => {
 		const raw = "400 User is not subscribed to required model plan";
 		expect(rewriteClinePassError(raw, "cline-pass")).toContain("requires a ClinePass subscription");
 		expect(rewriteClinePassError(raw, "openrouter")).toBe(raw);
+	});
+});
+
+describe("proxy cache rejection classification", () => {
+	it("retries explicit member refusals but not invalid cache values or empty text", () => {
+		expect(isCacheControlUnsupported(new ProviderHttpError('json: unknown field "cache_control"', 400))).toBe(true);
+		expect(isCacheControlUnsupported(new ProviderHttpError("unsupported_parameter: cache_control.ttl", 400))).toBe(
+			true,
+		);
+		expect(
+			isCacheControlUnsupported(
+				new ProviderHttpError("invalid_request_error: cache_control value must be ephemeral", 400),
+			),
+		).toBe(false);
+		expect(
+			isCacheControlUnsupported(new ProviderHttpError("unsupported cache_control on empty text block", 400)),
+		).toBe(false);
+		expect(isCacheControlUnsupported(new ProviderHttpError("unsupported cache_control", 403))).toBe(false);
+	});
+
+	it("keeps transport wording on terminal client errors non-retryable", () => {
+		const error = new ProviderHttpError("server_error: connection refused", 400, {
+			cause: new Error("unexpected EOF"),
+		});
+		expect(retriable(classify(error))).toBe(false);
+		expect(retriable(classify(new Error("websocket closed before response.completed")))).toBe(true);
+		expect(retriable(classify(new Error("stream ended before message_delta")))).toBe(true);
+	});
+
+	it("retries intermittent multimodal decode errors but not ordinary validation", () => {
+		expect(retriable(classify(new ProviderHttpError("Download multimodal file timed out", 400)))).toBe(true);
+		expect(retriable(classify(new ProviderHttpError("Invalid multimodal file type", 400)))).toBe(false);
+	});
+});
+
+describe("Google structured quota precedence", () => {
+	it("daily and zero-entitlement violations override short-window and generic rate limits", () => {
+		const errorInfo = { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "RATE_LIMIT_EXCEEDED" };
+		const quota = (violations: unknown[]) =>
+			JSON.stringify({
+				error: {
+					status: "RESOURCE_EXHAUSTED",
+					details: [errorInfo, { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations }],
+				},
+			});
+		expect(parseRateLimitReason(quota([{ quotaId: "requestsPerMinute" }, { quotaId: "requestsPerDay" }]))).toBe(
+			"QUOTA_EXHAUSTED",
+		);
+		expect(parseRateLimitReason(quota([{ quotaId: "requestsPerMinute", quotaValue: 0 }]))).toBe("QUOTA_EXHAUSTED");
+		expect(parseRateLimitReason(quota([{ quotaMetric: "requests_per_100_seconds", quotaValue: "100" }]))).toBe(
+			"RATE_LIMIT_EXCEEDED",
+		);
+	});
+
+	it("keeps model capacity transient and uses standalone retry advice", () => {
+		const body = (details: unknown[]) => JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", details } });
+		expect(
+			parseRateLimitReason(
+				body([{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "MODEL_CAPACITY_EXHAUSTED" }]),
+			),
+		).toBe("MODEL_CAPACITY_EXHAUSTED");
+		expect(
+			parseRateLimitReason(body([{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "600s" }])),
+		).toBe("QUOTA_EXHAUSTED");
+		expect(
+			parseRateLimitReason(body([{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "5s" }])),
+		).toBe("RATE_LIMIT_EXCEEDED");
 	});
 });

@@ -1,7 +1,3 @@
-
-
-
-
 use std::{io::Write, thread};
 
 use brush_core::{ShellExtensions, builtins::Registration};
@@ -12,7 +8,6 @@ use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
 static OPT_ALL: &str = "all";
 static OPT_IGNORE: &str = "ignore";
-
 
 pub(crate) struct Nproc {
 	matches: ArgMatches,
@@ -36,8 +31,6 @@ impl Utility for Nproc {
 		};
 
 		let limit = match host.var("PROTO_THREAD_LIMIT") {
-
-
 			Some(threads) => match threads.parse() {
 				Ok(0) | Err(_) => usize::MAX,
 				Ok(n) => n,
@@ -49,16 +42,12 @@ impl Utility for Nproc {
 			num_cpus_all()
 		} else {
 			match host.var("PROTO_NUM_THREADS") {
-				Some(threads) => {
-
-
-					match threads.split_terminator(',').next() {
-						None => available_parallelism(),
-						Some(value) => match value.trim().parse() {
-							Ok(0) | Err(_) => available_parallelism(),
-							Ok(n) => n,
-						},
-					}
+				Some(threads) => match threads.split_terminator(',').next() {
+					None => available_parallelism(),
+					Some(value) => match value.trim().parse() {
+						Ok(0) | Err(_) => available_parallelism(),
+						Ok(n) => n,
+					},
 				},
 				None => available_parallelism(),
 			}
@@ -83,9 +72,9 @@ fn app() -> Command {
 	Command::new("nproc")
 		.version("0.8.0")
 		.about(
-			"Print the number of cores available to the current process.\nIf the PROTO_NUM_THREADS or \
-			 PROTO_THREAD_LIMIT environment variables are set, then\nthey will determine the minimum \
-			 and maximum returned value respectively.",
+			"Print the number of cores available to the current process.\nIf the PROTO_NUM_THREADS \
+			 or PROTO_THREAD_LIMIT environment variables are set, then\nthey will determine the \
+			 minimum and maximum returned value respectively.",
 		)
 		.override_usage(format_usage("nproc [OPTIONS]..."))
 		.infer_long_args(true)
@@ -105,8 +94,6 @@ fn app() -> Command {
 
 #[cfg(unix)]
 fn num_cpus_all() -> usize {
-
-
 	unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) }
 		.try_into()
 		.ok()
@@ -119,14 +106,10 @@ fn num_cpus_all() -> usize {
 	available_parallelism()
 }
 
-
 fn available_parallelism() -> usize {
 	thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
-
 pub(crate) fn nproc_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Nproc, SE>()
 }
-
-

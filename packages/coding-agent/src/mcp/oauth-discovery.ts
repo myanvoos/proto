@@ -3,7 +3,6 @@ import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { MCPOAuthNetworkTimeoutError, withMCPOAuthNetworkTimeout } from "./oauth-flow";
 
 const DISCOVERY_FETCH_TIMEOUT_MS = 10_000;
-const MAX_DISCOVERY_DEPTH = 8;
 const MAX_DISCOVERY_FETCHES = 64;
 const MAX_DISCOVERY_REDIRECTS = 5;
 const DISCOVERY_REDIRECT_STATUSES: Record<number, true> = {
@@ -504,8 +503,8 @@ function issuerMatchesBase(metadataIssuer: unknown, baseUrl: string): boolean {
 	return normalizedIssuer === normalizedBase;
 }
 
-function readMetadataScopes(metadata: Record<string, unknown>): string | undefined {
-	if (Array.isArray(metadata.scopes_supported)) {
+function readMetadataScopes(metadata: Record<string, unknown>, includeSupportedScopes = true): string | undefined {
+	if (includeSupportedScopes && Array.isArray(metadata.scopes_supported)) {
 		const joined = metadata.scopes_supported.filter((scope): scope is string => typeof scope === "string").join(" ");
 		if (joined) return joined;
 	}
@@ -523,6 +522,32 @@ export async function fetchResourceMetadataScopes(
 	return metadata ? readMetadataScopes(metadata) : undefined;
 }
 
+export interface OAuthIssuerRejection {
+	authServer: string;
+	advertisedBy: string;
+	issuer: string;
+}
+
+export class OAuthIssuerMismatchError extends Error {
+	constructor(readonly rejections: OAuthIssuerRejection[]) {
+		super(
+			`Could not discover OAuth endpoints: ${rejections
+				.map(
+					r =>
+						`authorization server ${r.authServer} (advertised by ${r.advertisedBy}) returned metadata with issuer ${r.issuer}`,
+				)
+				.join("; ")} (RFC 8414 §3.3 requires an exact match).`,
+		);
+		this.name = "OAuthIssuerMismatchError";
+	}
+}
+
+function readAuthorizationServers(metadata: Record<string, unknown>): string[] {
+	return Array.isArray(metadata.authorization_servers)
+		? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
+		: [];
+}
+
 export async function discoverOAuthEndpoints(
 	serverUrl: string,
 	authServerUrl?: string,
@@ -535,7 +560,6 @@ export async function discoverOAuthEndpoints(
 		resourceMetadataUrl,
 		{ protectedResource: opts.protectedResource, protectedScopes: opts.protectedScopes },
 		discoveryContext(serverUrl, opts),
-		0,
 	);
 }
 
@@ -545,13 +569,10 @@ async function discoverOAuthEndpointsWithContext(
 	resourceMetadataUrl: string | undefined,
 	protectedMetadata: { protectedResource?: string; protectedScopes?: string },
 	context: OAuthDiscoveryContext,
-	depth: number,
 ): Promise<OAuthEndpoints | null> {
-	if (depth > MAX_DISCOVERY_DEPTH) return null;
 	const issuerWellKnownPaths = [
 		"/.well-known/oauth-authorization-server",
 		"/.well-known/openid-configuration",
-		"/.well-known/oauth-protected-resource",
 		"/oauth/metadata",
 		"/.mcp/auth",
 		"/authorize",
@@ -566,35 +587,56 @@ async function discoverOAuthEndpointsWithContext(
 		"/.mcp/auth",
 		"/authorize",
 	];
-	const urlsToQuery: Array<{ url: string; issuerCandidate: boolean; allowTrustedOrigin: boolean }> = [];
+	const urlsToQuery: Array<{
+		url: string;
+		issuerCandidate: boolean;
+		allowTrustedOrigin: boolean;
+		advertisedBy?: string;
+	}> = [];
+	const visitedResources = new Set<string>();
+	const issuerRejections = new Map<string, OAuthIssuerRejection>();
+	let advertisedAuthServers: Set<string> | undefined;
 	let protectedResource = protectedMetadata.protectedResource;
 	let protectedScopes = protectedMetadata.protectedScopes;
-	const addDiscoveryBase = (value: string | undefined, issuerCandidate: boolean, allowTrustedOrigin = false): void => {
+	const addDiscoveryBase = (
+		value: string | undefined,
+		issuerCandidate: boolean,
+		allowTrustedOrigin = false,
+		advertisedBy?: string,
+	): void => {
 		if (!value) return;
 		const canonical = canonicalizeDiscoveryBase(value, context.trustedOrigin, allowTrustedOrigin);
-		if (!canonical || context.visitedAuthServers.has(canonical)) return;
-		context.visitedAuthServers.add(canonical);
-		urlsToQuery.push({ url: canonical, issuerCandidate, allowTrustedOrigin });
+		const visited = issuerCandidate ? context.visitedAuthServers : visitedResources;
+		if (!canonical || visited.has(canonical)) return;
+		visited.add(canonical);
+		urlsToQuery.push({ url: canonical, issuerCandidate, allowTrustedOrigin, advertisedBy });
 	};
-
+	const adoptResourceMetadata = (metadata: Record<string, unknown>, metadataUrl: string): boolean => {
+		const authServers = readAuthorizationServers(metadata);
+		protectedScopes = readMetadataScopes(metadata) ?? protectedScopes;
+		if (typeof metadata.resource === "string" && metadata.resource.trim() !== "")
+			protectedResource = metadata.resource;
+		if (authServers.length === 0) return false;
+		advertisedAuthServers ??= new Set(
+			authServers
+				.map(value => canonicalizeDiscoveryBase(value, context.trustedOrigin))
+				.filter((value): value is string => value !== undefined),
+		);
+		for (const authServer of authServers) addDiscoveryBase(authServer, true, false, metadataUrl);
+		return true;
+	};
 	if (resourceMetadataUrl) {
 		const metadata = await fetchDiscoveryMetadata(resourceMetadataUrl, context);
-		if (metadata) {
-			protectedScopes = readMetadataScopes(metadata) ?? protectedScopes;
-			if (typeof metadata.resource === "string" && metadata.resource.trim() !== "") {
-				protectedResource = metadata.resource;
-			}
-			const authServers = Array.isArray(metadata.authorization_servers)
-				? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
-				: [];
-			for (const authServer of authServers) addDiscoveryBase(authServer, true);
-		}
+		if (metadata) adoptResourceMetadata(metadata, resourceMetadataUrl);
 	}
-
 	addDiscoveryBase(authServerUrl, true);
-	addDiscoveryBase(serverUrl, false, true);
+	if (!advertisedAuthServers) addDiscoveryBase(serverUrl, false, true);
 
-	const findEndpoints = (metadata: Record<string, unknown>): OAuthEndpoints | null => {
+	const findEndpoints = (
+		metadata: Record<string, unknown>,
+		includeSupportedScopes: boolean,
+	): OAuthEndpoints | null => {
+		const metadataScopes = readMetadataScopes(metadata, includeSupportedScopes);
 		if (metadata.authorization_endpoint && metadata.token_endpoint) {
 			const resource = typeof metadata.resource === "string" ? metadata.resource : protectedResource;
 			return {
@@ -612,7 +654,7 @@ async function discoverOAuthEndpointsWithContext(
 								: typeof metadata.public_client_id === "string"
 									? metadata.public_client_id
 									: undefined,
-				scopes: protectedScopes ?? readMetadataScopes(metadata),
+				scopes: protectedScopes ?? metadataScopes,
 				resource,
 			};
 		}
@@ -636,7 +678,7 @@ async function discoverOAuthEndpointsWithContext(
 									: typeof oauthData.public_client_id === "string"
 										? oauthData.public_client_id
 										: undefined,
-					scopes: protectedScopes ?? readMetadataScopes(oauthData),
+					scopes: protectedScopes ?? metadataScopes ?? readMetadataScopes(oauthData, includeSupportedScopes),
 					resource,
 				};
 			}
@@ -644,7 +686,8 @@ async function discoverOAuthEndpointsWithContext(
 		return null;
 	};
 
-	for (const base of urlsToQuery) {
+	bases: for (const base of urlsToQuery) {
+		if (base.issuerCandidate && advertisedAuthServers && !advertisedAuthServers.has(base.url)) continue;
 		const wellKnownPaths = base.issuerCandidate ? issuerWellKnownPaths : resourceWellKnownPaths;
 		for (const path of wellKnownPaths) {
 			for (const url of buildWellKnownUrls(path, base.url, base.issuerCandidate)) {
@@ -655,37 +698,24 @@ async function discoverOAuthEndpointsWithContext(
 					base.issuerCandidate &&
 					(path === "/.well-known/oauth-authorization-server" || path === "/.well-known/openid-configuration");
 				const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, base.url) : true;
-				const endpoints = issuerOk ? findEndpoints(metadata) : null;
-				if (endpoints) return endpoints;
-
-				if (path !== "/.well-known/oauth-protected-resource") continue;
-				const authServers = Array.isArray(metadata.authorization_servers)
-					? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
-					: [];
-				const discoveredProtectedResource =
-					typeof metadata.resource === "string" && metadata.resource.trim() !== ""
-						? metadata.resource
-						: protectedResource;
-
-				for (const discoveredAuthServer of authServers) {
-					const canonical = canonicalizeDiscoveryBase(discoveredAuthServer, context.trustedOrigin);
-					if (!canonical || context.visitedAuthServers.has(canonical)) continue;
-					const discovered = await discoverOAuthEndpointsWithContext(
-						serverUrl,
-						canonical,
-						undefined,
-						{
-							protectedResource: discoveredProtectedResource,
-							protectedScopes: readMetadataScopes(metadata) ?? protectedScopes,
-						},
-						context,
-						depth + 1,
-					);
-					if (discovered) return discovered;
+				if (!issuerOk && base.advertisedBy && !issuerRejections.has(base.url)) {
+					issuerRejections.set(base.url, {
+						authServer: base.url,
+						advertisedBy: base.advertisedBy,
+						issuer: String(metadata.issuer),
+					});
 				}
+				const resourceMetadata =
+					path === "/.well-known/oauth-protected-resource" ||
+					(!base.issuerCandidate && (path === "/oauth/metadata" || path === "/.mcp/auth"));
+				const endpoints = issuerOk ? findEndpoints(metadata, resourceMetadata) : null;
+				if (endpoints) return endpoints;
+				if (path === "/.well-known/oauth-protected-resource" && adoptResourceMetadata(metadata, url.toString()))
+					continue bases;
 			}
 		}
 	}
+	if (issuerRejections.size > 0) throw new OAuthIssuerMismatchError([...issuerRejections.values()]);
 	return null;
 }
 

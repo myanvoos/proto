@@ -58,7 +58,10 @@ function installFakeProcess(options: FakeProcessOptions = {}): {
 		stdout,
 		stderr,
 		exited: exited.promise,
-		kill: stop,
+		kill: (signal?: string | number) => {
+			killCalls.push({ pid, signal });
+			stop();
+		},
 	} as unknown as Subprocess<"pipe", "pipe", "pipe">;
 
 	spyOn(Bun, "spawn").mockReturnValue(proc);
@@ -95,7 +98,7 @@ test("an unterminated oversized stdout frame closes the transport and kills the 
 		expect(transport.connected).toBe(false);
 		expect(errors).toHaveLength(1);
 		expect(errors[0]?.message).toContain("frame exceeded");
-		expect(killCalls[0]).toEqual({ pid: -pid, signal: "SIGTERM" });
+		expect(killCalls[0]).toEqual({ pid: process.platform === "darwin" ? pid : -pid, signal: "SIGTERM" });
 	} finally {
 		await transport.close();
 	}
@@ -281,14 +284,14 @@ test("a timed-out request kills the wedged child process", async () => {
 	try {
 		await expect(transport.request("tools/call")).rejects.toThrow("Request timeout after 250ms");
 		expect(transport.connected).toBe(false);
-		expect(killCalls[0]).toEqual({ pid: -pid, signal: "SIGTERM" });
+		expect(killCalls[0]).toEqual({ pid: process.platform === "darwin" ? pid : -pid, signal: "SIGTERM" });
 	} finally {
 		await transport.close();
 	}
 });
 
 test.each([
-	["EOF", "process.exit(23)", "eof", true],
+	["EOF", "process.exit(23)", "eof", false],
 	["malformed JSON", "console.log('{not-json')", "malformed_response", false],
 ] as const)("subprocess %s preserves actionable failure classification", async (_label, action, failure, retryable) => {
 	const transport = new StdioTransport({
@@ -300,6 +303,82 @@ test.each([
 	await transport.connect();
 	try {
 		await expect(transport.request("tools/list")).rejects.toMatchObject({ transport: "stdio", failure, retryable });
+	} finally {
+		await transport.close();
+	}
+});
+
+test("aborting a dispatched stdio tool sends cancellation without cancelling initialize", async () => {
+	const frames: Array<{ id?: string | number; method: string; params: { requestId?: string | number } }> = [];
+	installFakeProcess({
+		stdin: {
+			write: chunk => {
+				frames.push(JSON.parse(chunk));
+				return 0;
+			},
+			flush: () => 0,
+			end: () => {},
+		},
+	});
+	const transport = new StdioTransport({ type: "stdio", command: "fake-mcp-server" });
+	await transport.connect();
+	try {
+		for (const method of ["initialize", "tools/call"]) {
+			const controller = new AbortController();
+			const request = transport.request(method, {}, { signal: controller.signal });
+			controller.abort(new Error("operator cancelled"));
+			await expect(request).rejects.toThrow("operator cancelled");
+		}
+		const toolRequest = frames.find(frame => frame.method === "tools/call");
+		const cancellations = frames.filter(frame => frame.method === "notifications/cancelled");
+		expect(cancellations).toHaveLength(1);
+		expect(cancellations[0]?.params.requestId).toBe(toolRequest?.id);
+	} finally {
+		await transport.close();
+	}
+});
+
+test("stdio progress is correlated by request token without mutating caller metadata", async () => {
+	let stdout: ReadableStreamDefaultController<Uint8Array> | undefined;
+	const frames: Array<{
+		id: string | number;
+		params: { _meta?: { progressToken?: string | number; caller?: boolean } };
+	}> = [];
+	installFakeProcess({
+		startStdout: controller => {
+			stdout = controller;
+		},
+		stdin: {
+			write: chunk => {
+				const request = JSON.parse(chunk);
+				frames.push(request);
+				for (const payload of [
+					{ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "wrong", progress: 99 } },
+					{
+						jsonrpc: "2.0",
+						method: "notifications/progress",
+						params: { progressToken: request.id, progress: 2, total: 4, message: "working" },
+					},
+					{ jsonrpc: "2.0", id: request.id, result: { completed: true } },
+				])
+					stdout?.enqueue(new TextEncoder().encode(`${JSON.stringify(payload)}\n`));
+				return 0;
+			},
+			flush: () => 0,
+			end: () => {},
+		},
+	});
+	const transport = new StdioTransport({ type: "stdio", command: "fake-mcp-server" });
+	await transport.connect();
+	try {
+		const progress: unknown[] = [];
+		const params = { _meta: { caller: true } };
+		expect(await transport.request("tools/call", params, { onProgress: update => progress.push(update) })).toEqual({
+			completed: true,
+		});
+		expect(progress).toEqual([{ progress: 2, total: 4, message: "working" }]);
+		expect(frames[0]?.params._meta).toEqual({ caller: true, progressToken: frames[0]?.id });
+		expect(params).toEqual({ _meta: { caller: true } });
 	} finally {
 		await transport.close();
 	}

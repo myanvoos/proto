@@ -10,7 +10,6 @@ use itertools::Itertools as _;
 use strum::IntoEnumIterator;
 use tokio::sync::Mutex;
 
-
 #[derive(Clone, ValueEnum)]
 enum BindKeyMap {
 	#[clap(name = "emacs-standard", alias = "emacs")]
@@ -36,10 +35,8 @@ impl BindKeyMap {
 	}
 }
 
-
 #[derive(Parser)]
 pub(crate) struct BindCommand {
-
 	#[arg(short = 'm')]
 	keymap: Option<BindKeyMap>,
 
@@ -54,7 +51,6 @@ pub(crate) struct BindCommand {
 
 	#[arg(short = 'S')]
 	list_key_seqs_that_invoke_macros: bool,
-
 
 	#[arg(short = 's')]
 	list_key_seqs_that_invoke_macros_reusable: bool,
@@ -88,22 +84,17 @@ pub(crate) struct BindCommand {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BindError {
-
 	#[error("unknown function: {0}")]
 	UnknownFunction(String),
-
 
 	#[error("unknown key binding function: {0}")]
 	UnknownKeyBindingFunction(String),
 
-
 	#[error("unimplemented: {0}")]
 	Unimplemented(&'static str),
 
-
 	#[error("I/O error occurred")]
 	IoError(#[from] std::io::Error),
-
 
 	#[error(transparent)]
 	BindingParseError(#[from] brush_parser::BindingParseError),
@@ -130,9 +121,6 @@ impl builtins::Command for BindCommand {
 			tracing::debug!(target: trace_categories::INPUT,
                  "bind: key bindings not supported in this config");
 
-
-
-
 			Ok(ExecutionExitCode::Success.into())
 		}
 	}
@@ -154,24 +142,23 @@ impl BindCommand {
 		}
 
 		if self.list_funcs_and_bindings {
-			display_funcs_and_bindings(&*bindings, context, false )?;
+			display_funcs_and_bindings(&*bindings, context, false)?;
 		}
 
 		if self.list_funcs_and_bindings_reusable {
-			display_funcs_and_bindings(&*bindings, context, true )?;
+			display_funcs_and_bindings(&*bindings, context, true)?;
 		}
 
 		if self.list_key_seqs_that_invoke_macros {
-			display_macros(&*bindings, context, false )?;
+			display_macros(&*bindings, context, false)?;
 		}
 
 		if self.list_key_seqs_that_invoke_macros_reusable {
-			display_macros(&*bindings, context, true )?;
+			display_macros(&*bindings, context, true)?;
 		}
 
 		if self.list_vars {
 			let options = &context.shell.completion_config().fallback_options;
-
 
 			writeln!(
 				context.stdout(),
@@ -187,7 +174,6 @@ impl BindCommand {
 
 		if self.list_vars_reusable {
 			let options = &context.shell.completion_config().fallback_options;
-
 
 			writeln!(context.stdout(), "set mark-directories {}", to_onoff(options.mark_directories))?;
 			writeln!(
@@ -241,7 +227,6 @@ impl BindCommand {
 
 		if !self.key_seq_bindings.is_empty() {
 			if self.keymap.as_ref().is_some_and(|k| k.is_vi()) {
-
 				return Ok(ExecutionResult::success());
 			}
 
@@ -253,7 +238,6 @@ impl BindCommand {
 
 		if let Some(key_sequence) = &self.key_sequence {
 			if self.keymap.as_ref().is_some_and(|k| k.is_vi()) {
-
 				return Ok(ExecutionResult::success());
 			}
 
@@ -268,7 +252,6 @@ impl BindCommand {
 }
 
 fn parse_key_sequence(input: &str) -> Result<interfaces::KeySequence, BindError> {
-
 	let input = input.trim();
 
 	let parsed = brush_parser::readline_binding::parse_key_sequence(input)?;
@@ -284,10 +267,7 @@ fn parse_key_sequence_and_shell_command(
 		 "parsing key binding entry: '{input}'"
 	);
 
-
 	let input = input.trim();
-
-
 
 	let binding = brush_parser::readline_binding::parse_key_sequence_shell_cmd_binding(input)?;
 	let abstract_seq = key_sequence_to_abstract_strokes(&binding.seq)?;
@@ -309,11 +289,7 @@ fn parse_key_sequence_and_readline_target(
 		 "parsing key binding entry: '{input}'"
 	);
 
-
 	let input = input.trim();
-
-
-
 
 	let binding = brush_parser::readline_binding::parse_key_sequence_readline_binding(input)?;
 	let abstract_seq = key_sequence_to_abstract_strokes(&binding.seq)?;
@@ -357,7 +333,6 @@ fn bind_key_sequence_to_readline_target(
 			);
 
 			if matches!(func, interfaces::InputFunction::ViEditingMode) {
-
 				return Ok(());
 			}
 
@@ -380,14 +355,11 @@ fn key_sequence_to_abstract_strokes(
 ) -> Result<interfaces::KeySequence, BindError> {
 	let phys_strokes = brush_parser::readline_binding::key_sequence_to_strokes(seq)?;
 
-
 	let mut abstract_strokes = vec![];
 	let mut key_code_bytes = vec![];
 	let mut uninterpretable = false;
 	for mut phys_stroke in phys_strokes {
 		let mut key = sys::input::try_get_key_from_key_code(phys_stroke.key_code.as_slice());
-
-
 
 		if key.is_none() && phys_stroke.key_code.len() > 1 && phys_stroke.key_code[0] == b'\x1b' {
 			key = sys::input::try_get_key_from_key_code(&phys_stroke.key_code[1..]);
@@ -396,11 +368,9 @@ fn key_sequence_to_abstract_strokes(
 			}
 		}
 
-
 		let mut raw_bytes = phys_stroke.key_code.clone();
 		if phys_stroke.control {
 			for byte in &mut raw_bytes {
-
 				*byte &= 0x1f;
 			}
 		}
@@ -514,5 +484,3 @@ fn find_key_seqs_bound_to_function(
 
 	Ok(found_seqs)
 }
-
-

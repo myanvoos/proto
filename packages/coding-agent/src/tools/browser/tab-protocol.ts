@@ -43,6 +43,12 @@ export interface SessionSnapshot {
 	excludeWebP?: boolean;
 }
 
+export type AttachPage = { kind: "create"; nearTargetId?: string } | { kind: "owned" | "borrowed"; targetId: string };
+
+export function ownsPage(payload: WorkerInitPayload): boolean {
+	return payload.mode === "headless" || payload.page.kind !== "borrowed";
+}
+
 export type WorkerInitPayload =
 	| {
 			mode: "headless";
@@ -51,25 +57,19 @@ export type WorkerInitPayload =
 			emulateViewport?: boolean;
 			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 			timeoutMs: number;
 	  }
 	| {
 			mode: "attach";
 			browserWSEndpoint: string;
 			safeDir: string;
-			targetId: string;
+			page: AttachPage;
 			dialogs?: "accept" | "dismiss";
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 			timeoutMs: number;
 
 			recover?: boolean;
-			/** Restore focus emulation when recycling a proto-owned tab, never a borrowed user tab. */
-			emulateFocus?: boolean;
 
-			activateForScreenshot?: boolean;
+			userDriven?: boolean;
 	  };
 
 export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunErrorPayload };
@@ -92,6 +92,7 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {
@@ -102,6 +103,9 @@ export interface RunErrorPayload {
 	isAbort: boolean;
 
 	recoverTab?: boolean;
+	navigationTimeout?: boolean;
+	rendererCrashed?: boolean;
+	debuggerDetached?: { when: "before-run" | "during-run"; reason: string };
 }
 
 export type WorkerOutbound =

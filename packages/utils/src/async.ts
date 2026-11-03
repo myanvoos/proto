@@ -18,6 +18,16 @@ export async function sleepLong(delayMs: number, signal?: AbortSignal): Promise<
 	}
 }
 
+/** Wait against a wall-clock deadline, including time spent suspended. */
+export async function sleepUntil(deadlineMs: number, signal?: AbortSignal): Promise<void> {
+	while (true) {
+		signal?.throwIfAborted();
+		const remaining = deadlineMs - Date.now();
+		if (!(remaining > 0)) return;
+		await scheduler.wait(Math.min(remaining, 1_000), { signal });
+	}
+}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string, signal?: AbortSignal): Promise<T> {
 	if (signal?.aborted) {
 		const reason = signal.reason instanceof Error ? signal.reason : new Error("Aborted");

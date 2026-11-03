@@ -317,7 +317,7 @@ export const toolChoiceSchema = type("'auto' | 'none' | 'required'")
 export const reasoningConfigSchema = type({
 	"effort?": "string",
 
-	"summary?": "'auto' | 'concise' | 'detailed' | 'none'",
+	"summary?": "'auto' | 'concise' | 'detailed' | 'none' | null",
 });
 
 export const stopSchema = type("string | string[] | null");
@@ -328,12 +328,12 @@ export const openaiResponsesRequestSchema = type({
 	"instructions?": "string | null",
 	"tools?": toolSchema.or(computerToolSchema).or(builtinToolSchema).array(),
 	"tool_choice?": toolChoiceSchema,
-	"max_output_tokens?": "number",
-	"temperature?": "number",
-	"top_p?": "number",
+	"max_output_tokens?": "number | null",
+	"temperature?": "number | null",
+	"top_p?": "number | null",
 	"stop?": stopSchema,
 	"stream?": "boolean",
-	"reasoning?": reasoningConfigSchema,
+	"reasoning?": reasoningConfigSchema.or("null"),
 	"store?": "boolean",
 	"previous_response_id?": "string",
 	"parallel_tool_calls?": "boolean",

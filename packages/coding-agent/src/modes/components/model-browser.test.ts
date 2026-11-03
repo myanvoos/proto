@@ -3,7 +3,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "../../config/settings";
 import { initThemeSync } from "../theme/theme";
-import { ModelBrowser, type ModelBrowserItem } from "./model-browser";
+import { ModelBrowser, type ModelBrowserItem, sortModelItems } from "./model-browser";
 
 initThemeSync();
 
@@ -95,4 +95,26 @@ test("typing free finds zero-cost models whose id never says free, but not inval
 	expect(browser.getSelected()?.selector).toBe("nvidia/nemotron-3-nano");
 	expect(rows.some(row => row.includes("claude-sonnet-4-5"))).toBe(false);
 	expect(rows.some(row => row.includes("negative"))).toBe(false);
+});
+
+test("model search refreshes prepared candidates without losing the active query", () => {
+	const browser = new ModelBrowser(Settings.isolated(), { showProvider: false });
+	browser.setItems([item("gpt-old", {}), item("claude-old", {})]);
+	browser.setQuery("gpt");
+	expect(browser.getSelected()?.id).toBe("gpt-old");
+	browser.setItems([item("gpt-new", {}), item("claude-new", {})]);
+	expect(browser.query).toBe("gpt");
+	expect(browser.visibleCount).toBe(1);
+	expect(browser.getSelected()?.id).toBe("gpt-new");
+});
+
+test("same-provider latest models sort alphabetically regardless of discovery order", () => {
+	for (const ids of [
+		["alpha-latest", "beta-latest"],
+		["beta-latest", "alpha-latest"],
+	]) {
+		const items = ids.map(id => item(id, {}));
+		sortModelItems(items);
+		expect(items.map(entry => entry.id)).toEqual(["alpha-latest", "beta-latest"]);
+	}
 });

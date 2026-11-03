@@ -9,24 +9,16 @@ use brush_core::{
 use clap::Parser;
 use itertools::Itertools;
 
-
 #[derive(Parser)]
 pub(crate) struct ExportCommand {
-
 	#[arg(short = 'f')]
 	names_are_functions: bool,
-
 
 	#[arg(short = 'n')]
 	unexport: bool,
 
-
 	#[arg(short = 'p')]
 	display_exported_names: bool,
-
-
-
-
 
 	#[clap(skip)]
 	declarations: Vec<brush_core::CommandArg>,
@@ -70,10 +62,7 @@ impl ExportCommand {
 	) -> Result<ExecutionResult, brush_core::Error> {
 		match decl {
 			brush_core::CommandArg::String(s) => {
-
 				if self.names_are_functions {
-
-
 					if let Some(func) = context.shell.func_mut(s) {
 						if self.unexport {
 							func.unexport();
@@ -84,10 +73,7 @@ impl ExportCommand {
 						writeln!(context.stderr(), "{s}: not a function")?;
 						return Ok(ExecutionExitCode::InvalidUsage.into());
 					}
-				}
-
-
-				else if let Some((_, variable)) = context.shell.env_mut().get_mut(s) {
+				} else if let Some((_, variable)) = context.shell.env_mut().get_mut(s) {
 					if self.unexport {
 						variable.unexport();
 					} else {
@@ -115,7 +101,6 @@ impl ExportCommand {
 					},
 				};
 
-
 				context.shell.env_mut().update_or_add(
 					name,
 					value,
@@ -140,7 +125,6 @@ impl ExportCommand {
 fn display_all_exported_vars(
 	context: &brush_core::ExecutionContext<'_, impl brush_core::ShellExtensions>,
 ) -> Result<(), brush_core::Error> {
-
 	for (name, variable) in context.shell.env().iter().sorted_by_key(|v| v.0) {
 		if variable.is_exported() {
 			let value = variable.value().try_get_cow_str(context.shell);

@@ -10,19 +10,20 @@ const repoRoot = path.resolve(packageDir, "..", "..");
 interface BundledPackage {
 	readonly dir: string;
 	readonly identifier: string;
+	readonly rootWildcard?: "flat" | "nested";
 }
 
 const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 	{ dir: "agent", identifier: "PiAgentCore" },
 	{ dir: "ai", identifier: "PiAi" },
+	{ dir: "catalog", identifier: "PiCatalog", rootWildcard: "flat" },
 	{ dir: "coding-agent", identifier: "PiCodingAgent" },
 	{ dir: "natives", identifier: "PiNatives" },
 	{ dir: "omptype", identifier: "Omptype" },
-	{ dir: "tui", identifier: "PiTui" },
+	{ dir: "tui", identifier: "PiTui", rootWildcard: "nested" },
 	{ dir: "utils", identifier: "PiUtils" },
 ];
 
-const SKIPPED_WILDCARD_BASENAMES = new Set(["index"]);
 const MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES = new Set(["worker-entry"]);
 
 interface BundledHostEntry {
@@ -54,7 +55,6 @@ function bindingForSubpath(identifier: string, subpath: string): string {
 }
 
 function isSafeWildcardBasename(basename: string): boolean {
-	if (SKIPPED_WILDCARD_BASENAMES.has(basename)) return false;
 	if (MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES.has(basename)) return false;
 	return /^[A-Za-z0-9_$-]+$/.test(basename);
 }
@@ -82,7 +82,7 @@ function exportImportTarget(value: unknown): string | null {
 	return null;
 }
 
-async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
+export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 	const entries: BundledHostEntry[] = [];
 	const seenKeys = new Set<string>();
 	const seenBindings = new Set<string>();
@@ -123,7 +123,8 @@ async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 			if (!sourcePattern) continue;
 			const pattern = parseWildcardPattern(exportKey, sourcePattern);
 			if (!pattern || !/\.(ts|tsx|mts|cts|js|mjs|cjs|jsx)$/.test(pattern.sourceSuffix)) continue;
-			if (pattern.exportPrefix === "" || pattern.exportPrefix === "/" || pattern.exportPrefix === "./") continue;
+			const rootWildcard = ["", "/", "./"].includes(pattern.exportPrefix);
+			if (rootWildcard && (exportKey !== "./*" || !pkg.rootWildcard)) continue;
 
 			const sourceDir = path.join(packageRoot, pattern.sourcePrefix);
 			try {
@@ -135,6 +136,7 @@ async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 				matches.sort();
 				for (const match of matches) {
 					if (!match.endsWith(pattern.sourceSuffix)) continue;
+					if (rootWildcard && pkg.rootWildcard === "flat" && match.includes("/")) continue;
 					const basename = match.slice(0, match.length - pattern.sourceSuffix.length);
 					const segments = basename.split("/");
 

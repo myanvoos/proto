@@ -1,5 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AsyncJob, AsyncJobEvent, AsyncJobManager } from "../../async";
 import { settings } from "../../config/settings";
@@ -44,7 +45,7 @@ export function ownedJob(
 	return refForJob(job).kind === ref.kind ? job : undefined;
 }
 
-function resolvedModelOf(job: AsyncJob): string | undefined {
+function workerProgressOf(job: AsyncJob): Record<string, unknown> | undefined {
 	if (job.type !== "worker") return undefined;
 	const progressValue = job.latestDetails?.progress;
 	if (!Array.isArray(progressValue)) return undefined;
@@ -53,17 +54,27 @@ function resolvedModelOf(job: AsyncJob): string | undefined {
 		if (!item || typeof item !== "object") continue;
 		const candidate = item as Record<string, unknown>;
 		if (!progressRecord) progressRecord = candidate;
-		if (candidate.id === job.id) {
+		if (candidate.id === (job.agentId ?? job.id)) {
 			progressRecord = candidate;
 			break;
 		}
 	}
-	const modelValue = progressRecord?.resolvedModel;
-	return typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
+	return progressRecord;
 }
 
 export function snapshotJob(manager: AsyncJobManager, job: AsyncJob, events?: AsyncJobEvent[]): JobSnapshot {
-	const resolvedModel = resolvedModelOf(job);
+	const progress = workerProgressOf(job);
+	const modelValue = progress?.resolvedModel;
+	const resolvedModel = typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
+	const metrics: JobSnapshot["progress"] = {};
+	if (job.status === "running" && progress) {
+		for (const key of ["requests", "cost", "contextTokens", "contextWindow"] as const) {
+			const value = progress[key];
+			if (typeof value === "number" && Number.isFinite(value) && value >= 0) metrics[key] = value;
+		}
+		const stage = progress.currentTool ?? progress.lastIntent;
+		if (typeof stage === "string" && stage.trim()) metrics.stage = stage.trim();
+	}
 	return {
 		ref: refForJob(job),
 		type: job.type,
@@ -73,6 +84,7 @@ export function snapshotJob(manager: AsyncJobManager, job: AsyncJob, events?: As
 		durationMs: Math.max(0, Date.now() - job.startTime),
 		...(job.agentId ? { agentId: job.agentId } : {}),
 		...(resolvedModel ? { resolvedModel } : {}),
+		...(Object.keys(metrics).length > 0 ? { progress: metrics } : {}),
 		...(job.monitor ? { watch: { ...job.monitor } } : {}),
 		...(events?.length ? { events } : {}),
 		...(job.resultText ? { resultText: job.resultText } : {}),
@@ -126,6 +138,18 @@ function refText(job: JobSnapshot): string {
 	return `{"kind":"${job.ref.kind}","id":"${job.ref.id}"}`;
 }
 
+function runningWorkerProgress(job: JobSnapshot): string {
+	if (job.status !== "running" || job.type !== "worker" || !job.progress) return "";
+	const { requests, cost, contextTokens, contextWindow, stage } = job.progress;
+	const parts: string[] = [];
+	if (requests) parts.push(`${requests} req`);
+	if (cost) parts.push(cost < 0.005 ? "<$0.01" : `$${cost.toFixed(2)}`);
+	if (contextTokens)
+		parts.push(`ctx ${formatNumber(contextTokens)}${contextWindow ? `/${formatNumber(contextWindow)}` : ""}`);
+	if (stage) parts.push(`stage: ${stage.replace(/\s+/g, " ")}`);
+	return parts.length ? ` — ${parts.join(" · ")}` : "";
+}
+
 /** Render snapshots for the model. Reading never acknowledges; callers that consume do so explicitly. */
 export async function describeJobs(session: ToolSession, jobs: JobSnapshot[]): Promise<string[]> {
 	const lines: string[] = [];
@@ -156,7 +180,7 @@ export async function describeJobs(session: ToolSession, jobs: JobSnapshot[]): P
 	if (running.length > 0) {
 		lines.push(`## Running (${running.length})\n`);
 		for (const job of running) {
-			lines.push(`- ${refText(job)} [${job.type}] — ${job.label}`);
+			lines.push(`- ${refText(job)} [${job.type}] — ${job.label}${runningWorkerProgress(job)}`);
 			if (job.watch) lines.push(`  ${describeWatch(job.watch)}`);
 		}
 	}

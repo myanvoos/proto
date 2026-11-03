@@ -3,7 +3,7 @@ import { parseKnownModel, semverEqual } from "../identity/classify";
 import { getBundledModels } from "../models";
 import { resolveCodexSubscriptionCost, resolveOpenAIDaybreakStandardCost } from "../openai-pricing";
 import type { FetchImpl, LongContextTokenCost, Model, ModelCost, ModelSpec } from "../types";
-import { discoveryFetch, isRecord, toNumber, toPositiveNumberOrNull } from "../utils";
+import { discoveryFetch, isRecord, parseServiceTierIds, toNumber, toPositiveNumberOrNull } from "../utils";
 import { CODEX_BASE_URL } from "../wire/codex";
 
 export const PI_CATALOG_BASE_URL = "https://pi.dev";
@@ -194,14 +194,7 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 
 	// codex-rs `ModelServiceTier { id, name, description }`; only the id reaches the wire.
 	// An explicit empty array is kept: it means the model offers no optional tier.
-	let serviceTiers: string[] | undefined;
-	if (Array.isArray(entry.service_tiers)) {
-		serviceTiers = [];
-		for (const tier of entry.service_tiers) {
-			const id = tier !== null && typeof tier === "object" && "id" in tier ? toNonEmptyString(tier.id) : null;
-			if (id && !serviceTiers.includes(id)) serviceTiers.push(id);
-		}
-	}
+	const serviceTiers = parseServiceTierIds(entry.service_tiers);
 
 	return {
 		slug,

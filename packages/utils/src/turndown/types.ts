@@ -10,6 +10,8 @@ export interface TurndownNode {
 	readonly previousSibling: TurndownNode | null;
 	readonly textContent: string | null;
 	readonly outerHTML?: string;
+	/** Position among the parent's element children, when the node implementation tracks it. */
+	readonly elementIndex?: number;
 	getAttribute(name: string): string | null;
 	hasAttribute(name: string): boolean;
 }
@@ -56,6 +58,11 @@ export type ReplacementFunction = (content: string, node: TurndownNode, options:
 export interface TurndownRule {
 	filter: RuleFilter;
 	replacement: ReplacementFunction;
+	/**
+	 * Set when `replacement` ignores its `content` argument; the service then skips
+	 * converting the node's children before calling it.
+	 */
+	skipContent?: boolean;
 }
 
 export type TurndownPlugin = (service: TurndownServiceLike) => void;

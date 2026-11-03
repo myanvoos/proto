@@ -42,6 +42,7 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 		try {
 			let projector: LeakedThinkingProjector | undefined;
 			for await (const event of inner) {
+				if ("partial" in event) projector?.sync(event.partial);
 				switch (event.type) {
 					case "start":
 						projector = new LeakedThinkingProjector(out, event.partial);
@@ -78,10 +79,7 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 					}
 					case "thinking_end": {
 						const block = event.partial.content[event.contentIndex];
-						projector?.thinkingEnd(
-							event.contentIndex,
-							block?.type === "thinking" ? block.thinkingSignature : undefined,
-						);
+						projector?.thinkingEnd(event.contentIndex, block?.type === "thinking" ? block : undefined);
 						break;
 					}
 					case "image_end":
@@ -109,6 +107,16 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 						return;
 					}
 					case "error": {
+						// An error message with empty content means the provider
+						// discarded the partial turn; forward it as-is rather than
+						// rebuild it from #partial, which would resurrect exactly what
+						// was discarded. Non-empty error content is still healed: a
+						// provider that reports partial output alongside the error did
+						// send that output.
+						if (projector !== undefined && event.error.content.length === 0) {
+							out.push({ type: "error", reason: event.reason, error: event.error });
+							return;
+						}
 						projector ??= new LeakedThinkingProjector(out, event.error);
 						const content = projector.finish(event.error);
 						out.push({ type: "error", reason: event.reason, error: { ...event.error, content } });
@@ -159,6 +167,12 @@ class LeakedThinkingProjector {
 		this.#out = out;
 		this.#partial = { ...seed, content: [] };
 		this.#out.push({ type: "start", partial: this.#partial });
+	}
+
+	sync(source: AssistantMessage): void {
+		const content = this.#partial.content;
+		Object.assign(this.#partial, source);
+		this.#partial.content = content;
 	}
 
 	text(srcIndex: number, delta: string, signature: string | undefined): void {
@@ -295,30 +309,41 @@ class LeakedThinkingProjector {
 		this.#out.push({ type: "thinking_delta", contentIndex: index, delta, partial: this.#partial });
 	}
 
-	thinkingEnd(srcIndex: number, signature: string | undefined): void {
+	thinkingEnd(srcIndex: number, source: ThinkingContent | undefined): void {
 		const index = this.#thinkingBlocks.get(srcIndex);
 		if (index === undefined) {
-			if (signature) this.#projectSignedThinking(srcIndex, "", signature);
+			if (source?.thinkingSignature) this.#projectSignedThinking(srcIndex, source);
 			return;
 		}
-		if (signature !== undefined) {
-			(this.#partial.content[index] as ThinkingContent).thinkingSignature = signature;
+		this.#appendThinkingTail(index, source);
+		if (source?.thinkingSignature !== undefined) {
+			(this.#partial.content[index] as ThinkingContent).thinkingSignature = source.thinkingSignature;
 		}
 		if (!this.#pendingThinkingEnds.delete(index)) return;
 		if (this.#thinking?.index === index) this.#thinking = undefined;
 		this.#emitThinkingEnd(index);
 	}
 
-	#projectSignedThinking(srcIndex: number, thinking: string, signature: string): void {
+	#projectSignedThinking(srcIndex: number, source: ThinkingContent): void {
 		this.#flushHealer();
 		this.#closeText();
 		this.#closeThinking();
-		this.#partial.content.push({ type: "thinking", thinking, thinkingSignature: signature });
+		this.#partial.content.push({ type: "thinking", thinking: "", thinkingSignature: source.thinkingSignature });
 		const index = this.#partial.content.length - 1;
 		this.#anchor(index, srcIndex);
 		this.#thinkingBlocks.set(srcIndex, index);
 		this.#out.push({ type: "thinking_start", contentIndex: index, partial: this.#partial });
+		this.#appendThinkingTail(index, source);
 		this.#emitThinkingEnd(index);
+	}
+
+	#appendThinkingTail(index: number, source: ThinkingContent | undefined): void {
+		const block = this.#partial.content[index] as ThinkingContent;
+		if (!source || source.thinking.length <= block.thinking.length || !source.thinking.startsWith(block.thinking))
+			return;
+		const delta = source.thinking.slice(block.thinking.length);
+		block.thinking += delta;
+		this.#out.push({ type: "thinking_delta", contentIndex: index, delta, partial: this.#partial });
 	}
 
 	image(srcIndex: number, content: ImageContent): void {
@@ -388,14 +413,14 @@ class LeakedThinkingProjector {
 	finish(message: AssistantMessage): AssistantMessage["content"] {
 		for (const [srcIndex] of this.#thinkingBlocks) {
 			const block = message.content[srcIndex];
-			this.thinkingEnd(srcIndex, block?.type === "thinking" ? block.thinkingSignature : undefined);
+			this.thinkingEnd(srcIndex, block?.type === "thinking" ? block : undefined);
 		}
 
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
 			const block = message.content[srcIndex];
 			if (block?.type !== "thinking" || !block.thinkingSignature) continue;
 			if (this.#thinkingBlocks.has(srcIndex)) continue;
-			this.#projectSignedThinking(srcIndex, block.thinking, block.thinkingSignature);
+			this.#projectSignedThinking(srcIndex, block);
 		}
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
 			const block = message.content[srcIndex];

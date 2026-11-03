@@ -89,6 +89,7 @@ export class ExtensionUiController {
 			setFooter: () => {},
 			setHeader: () => {},
 			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
+			getEditorComponent: () => this.ctx.getEditorComponent(),
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
@@ -114,10 +115,18 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
+				const messageCountBefore = this.ctx.session.messages.length;
 				const normalized = normalizeCustomMessagePayload(message);
 				this.ctx.session
 					.sendCustomMessage(normalized, options)
-					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
+					.then(() => {
+						const silentAppend = options?.deliverAs === "nextTurn" && options.triggerTurn !== true;
+						this.#applyCustomMessageDisplay(
+							wasStreaming,
+							normalized,
+							silentAppend ? messageCountBefore : undefined,
+						);
+					})
 					.catch((err: unknown) => {
 						this.ctx.showError(
 							`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -230,7 +239,11 @@ export class ExtensionUiController {
 			switchSession: async sessionPath => {
 				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
+				let modelFallbackWarning: string | undefined;
 				const result = await this.ctx.session.switchSession(sessionPath, {
+					onModelFallback: warning => {
+						modelFallbackWarning = warning;
+					},
 					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
 				});
 				if (!result) {
@@ -239,6 +252,7 @@ export class ExtensionUiController {
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadChecklist();
+				if (modelFallbackWarning) this.ctx.showWarning(modelFallbackWarning);
 				return { cancelled: false };
 			},
 		};
@@ -334,10 +348,18 @@ export class ExtensionUiController {
 		const actions: ExtensionActions = {
 			sendMessage: (message, options) => {
 				const wasStreaming = this.ctx.session.isStreaming;
+				const messageCountBefore = this.ctx.session.messages.length;
 				const normalized = normalizeCustomMessagePayload(message);
 				this.ctx.session
 					.sendCustomMessage(normalized, options)
-					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
+					.then(() => {
+						const silentAppend = options?.deliverAs === "nextTurn" && options.triggerTurn !== true;
+						this.#applyCustomMessageDisplay(
+							wasStreaming,
+							normalized,
+							silentAppend ? messageCountBefore : undefined,
+						);
+					})
 					.catch((err: unknown) => {
 						const errorText = `Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`;
 						this.ctx.showError(errorText);
@@ -446,7 +468,11 @@ export class ExtensionUiController {
 			switchSession: async sessionPath => {
 				this.ctx.prepareSessionSwitch();
 				this.clearHookWidgets();
+				let modelFallbackWarning: string | undefined;
 				const result = await this.ctx.session.switchSession(sessionPath, {
+					onModelFallback: warning => {
+						modelFallbackWarning = warning;
+					},
 					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
 				});
 				if (!result) {
@@ -454,6 +480,7 @@ export class ExtensionUiController {
 				}
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadChecklist();
+				if (modelFallbackWarning) this.ctx.showWarning(modelFallbackWarning);
 				return { cancelled: false };
 			},
 		};
@@ -508,17 +535,17 @@ export class ExtensionUiController {
 			let closed = false;
 			const draftEditor = this.ctx.editor;
 			const inputGuard =
-				draftEditor.getText().length > 0
+				draftEditor.getText().length > 0 || draftEditor.pasteInFlight
 					? {
-							isBlocked: () => draftEditor.getText().length > 0,
+							isBlocked: () => draftEditor.getText().length > 0 || draftEditor.pasteInFlight,
 							handleInput: (keyData: string) => {
 								draftEditor.handleDraftEdit(keyData);
 								if (draftEditor.getText().length === 0) this.ctx.editorContainer.removeChild(draftEditor);
 							},
-							hint: "Finish or clear the current prompt to answer",
+							hint: "typing edits your prompt",
 
-							syncPresentation: () => {
-								draftEditor.focused = draftEditor.getText().length > 0;
+							syncPresentation: (blocked: boolean) => {
+								draftEditor.focused = blocked;
 							},
 						}
 					: undefined;
@@ -679,6 +706,7 @@ export class ExtensionUiController {
 				{
 					timeout: dialogOptions?.timeout,
 					onTimeout: dialogOptions?.onTimeout,
+					secret: dialogOptions?.secret,
 					tui: this.ctx.ui,
 				},
 			);
@@ -901,10 +929,26 @@ export class ExtensionUiController {
 		});
 	};
 
-	#applyCustomMessageDisplay(wasStreaming: boolean, shouldDisplay: boolean | undefined): void {
-		if (!wasStreaming && shouldDisplay && this.ctx.initialChatRendered) {
-			this.ctx.rebuildChatFromMessages();
+	#applyCustomMessageDisplay(
+		wasStreaming: boolean,
+		message: { customType: string; display?: boolean },
+		silentAppendBaseline: number | undefined,
+	): void {
+		if (wasStreaming || !message.display || !this.ctx.initialChatRendered) return;
+		if (silentAppendBaseline !== undefined && !this.ctx.session.isStreaming) {
+			const messages = this.ctx.session.messages;
+			const appended = messages.at(-1);
+			if (
+				messages.length === silentAppendBaseline + 1 &&
+				appended?.role === "custom" &&
+				appended.customType === message.customType
+			) {
+				this.ctx.addMessageToChat(appended);
+				this.ctx.ui.requestRender();
+				return;
+			}
 		}
+		this.ctx.rebuildChatFromMessages();
 	}
 
 	#presentDialog<T = string>(

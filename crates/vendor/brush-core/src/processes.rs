@@ -1,8 +1,6 @@
-
-
-use futures::FutureExt;
 use std::io::Write;
 
+use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::{error, openfiles::OpenFile, sys};
@@ -13,29 +11,24 @@ struct CompletionMarker {
 	end_marker_suffix: String,
 }
 
-
 pub(crate) type WaitableChildProcess = std::pin::Pin<
 	Box<dyn futures::Future<Output = Result<std::process::Output, std::io::Error>> + Send + Sync>,
 >;
 
-
 pub struct ChildProcess {
-
-
 	exec_future: WaitableChildProcess,
 
-	reaped:      bool,
+	reaped: bool,
 
-	pid:         Option<sys::process::ProcessId>,
+	pid: Option<sys::process::ProcessId>,
 
-	pgid:        Option<sys::process::ProcessId>,
+	pgid: Option<sys::process::ProcessId>,
 
-	completion_marker: Option<CompletionMarker>,
+	completion_marker:   Option<CompletionMarker>,
 	command_observation: Option<crate::CommandObservation>,
 }
 
 impl ChildProcess {
-
 	pub fn new(
 		child: sys::process::Child,
 		pid: Option<sys::process::ProcessId>,
@@ -51,8 +44,7 @@ impl ChildProcess {
 		}
 	}
 
-
-    pub fn set_command_observation(&mut self, observation: crate::CommandObservation) {
+	pub fn set_command_observation(&mut self, observation: crate::CommandObservation) {
 		self.command_observation = Some(observation);
 	}
 
@@ -60,11 +52,9 @@ impl ChildProcess {
 		self.pid
 	}
 
-
 	pub const fn pgid(&self) -> Option<sys::process::ProcessId> {
 		self.pgid
 	}
-
 
 	pub(crate) fn set_completion_marker(
 		&mut self,
@@ -75,7 +65,6 @@ impl ChildProcess {
 		self.completion_marker =
 			Some(CompletionMarker { output, end_marker_prefix, end_marker_suffix });
 	}
-
 
 	pub async fn wait(
 		&mut self,
@@ -112,6 +101,18 @@ impl ChildProcess {
 					break Ok(ProcessWaitResult::Completed(output))
 				},
 				_ = &mut cancelled => {
+					// The embedding host terminates the process group/tree. Allow
+					// its TERM wave to finish without sending a duplicate TERM or
+					// racing it with an immediate hard kill.
+					#[cfg(unix)]
+					{
+						if let Ok(Ok(_)) = tokio::time::timeout(
+							std::time::Duration::from_secs(1),
+							&mut self.exec_future,
+						).await {
+							self.reaped = true;
+						}
+					}
 					self.kill();
 					self.write_completion_marker(130);
 					if let Some(observation) = self.command_observation.take() { observation.finish(None, None).await; }
@@ -133,7 +134,6 @@ impl ChildProcess {
 		}
 	}
 
-
 	fn kill(&mut self) {
 		if self.reaped {
 			return;
@@ -146,7 +146,6 @@ impl ChildProcess {
 				nix::sys::signal::Signal::SIGKILL,
 			);
 		}
-
 	}
 
 	fn write_completion_marker(&mut self, exit_code: i32) {
@@ -176,11 +175,9 @@ impl ChildProcess {
 
 impl Drop for ChildProcess {
 	fn drop(&mut self) {
-
 		self.kill();
 	}
 }
-
 
 fn completion_exit_code(status: &std::process::ExitStatus) -> i32 {
 	if let Some(code) = status.code() {
@@ -198,12 +195,48 @@ fn completion_exit_code(status: &std::process::ExitStatus) -> i32 {
 	127
 }
 
-
 pub enum ProcessWaitResult {
-
 	Completed(std::process::Output),
 
 	Stopped,
-
+	/// The process was killed due to cancellation.
 	Cancelled,
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use std::{
+		io::{Read, Seek, SeekFrom},
+		time::Duration,
+	};
+
+	use super::*;
+
+	#[tokio::test]
+	async fn cancellation_writes_marker_even_when_wait_fails_during_grace() {
+		let mut marker = tempfile::tempfile().expect("marker file");
+		let mut child = ChildProcess {
+			exec_future:         Box::pin(async {
+				tokio::time::sleep(Duration::from_millis(10)).await;
+				Err(std::io::Error::other("wait failed during cancellation"))
+			}),
+			reaped:              false,
+			pid:                 None,
+			pgid:                None,
+			command_observation: None,
+			completion_marker:   None,
+		};
+		child.set_completion_marker(
+			OpenFile::from(marker.try_clone().expect("marker writer")),
+			"<exit>".into(),
+			"</exit>".into(),
+		);
+		let cancel = CancellationToken::new();
+		cancel.cancel();
+		assert!(matches!(child.wait(Some(cancel)).await, Ok(ProcessWaitResult::Cancelled)));
+		marker.seek(SeekFrom::Start(0)).expect("rewind marker");
+		let mut output = String::new();
+		marker.read_to_string(&mut output).expect("read marker");
+		assert_eq!(output, "<exit>130</exit>");
+	}
 }

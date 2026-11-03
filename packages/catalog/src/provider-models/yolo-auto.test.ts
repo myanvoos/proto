@@ -15,14 +15,14 @@ function modelsFetch(ids: string[]): { authorizations: (string | null)[]; fetch:
 }
 
 describe("Yolo-Auto provider discovery", () => {
-	test("serves qwen3.8-flash and the yolo alias at the documented 256K deployment cap", async () => {
+	test("serves qwen3.8-27b and the yolo alias at the documented 256K deployment cap", async () => {
 		// `/v1/models` carries bare ids without limits; the global reference index would otherwise
-		// resolve `qwen3.8-flash` to the largest bundled window (1M).
-		const { authorizations, fetch } = modelsFetch(["qwen3.8-flash", "yolo"]);
+		// resolve `qwen3.8-27b` to the largest bundled window (1M).
+		const { authorizations, fetch } = modelsFetch(["qwen3.8-27b", "yolo"]);
 		const models = await yoloAutoModelManagerOptions({ apiKey: "yolo_test", fetch }).fetchDynamicModels?.();
 
 		expect(authorizations).toEqual(["Bearer yolo_test"]);
-		for (const id of ["qwen3.8-flash", "yolo"]) {
+		for (const id of ["qwen3.8-27b", "yolo"]) {
 			const spec = models?.find(model => model.id === id);
 			if (!spec) throw new Error(`yolo-auto/${id} missing from discovery`);
 			const model = buildModel(spec);

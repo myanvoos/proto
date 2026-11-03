@@ -4,7 +4,9 @@ import { getKittyGraphics } from "../kitty-graphics";
 import {
 	getCellDimensions,
 	getImageDimensions,
+	getTerminalBackgroundColor,
 	type ImageDimensions,
+	ImageProtocol,
 	imageFallback,
 	renderImage,
 	TERMINAL,
@@ -26,7 +28,6 @@ export interface ImageOptions {
 }
 
 const EMPTY_IDS: readonly number[] = [];
-const EMPTY_STALE_EPOCHS: ReadonlyArray<{ imageId: number; lastEpoch: number; placementIds: readonly number[] }> = [];
 const SAVE_CURSOR = "\x1b7";
 const RESTORE_CURSOR = "\x1b8";
 
@@ -34,20 +35,9 @@ const RESERVED_IMAGE_ROW = "\x1b[0m";
 
 export const DEFAULT_MAX_INLINE_IMAGES = 8;
 
-interface PlacementEmitState {
+interface PlacementGeometry {
 	widthPx: number;
 	heightPx: number;
-
-	/** Logical placement epoch (kept for compatibility with reset bookkeeping). */
-	epoch: number;
-	/** Wire placement id for the current coordinate incarnation. */
-	placementId: number;
-	/** Placement ids actually emitted since the last protocol reset. */
-	emittedPlacementIds: number[];
-
-	lastAttachTopFrameRow: number | undefined;
-
-	cellsArchived: boolean;
 }
 let nextImageBudgetSeed = Math.floor(Math.random() * 0xffffff);
 function nextImageIdSeed(): number {
@@ -98,9 +88,7 @@ export class ImageBudget {
 
 	#generation = 0;
 
-	#placementState = new Map<string, PlacementEmitState>();
-
-	#watchedPlacements = new Set<PlacementEmitState>();
+	#placementGeometry = new Map<string, PlacementGeometry>();
 
 	constructor(
 		cap: number = DEFAULT_MAX_INLINE_IMAGES,
@@ -463,8 +451,7 @@ export class ImageBudget {
 		this.#keyToId.clear();
 		this.#keyRefCounts.clear();
 		this.#generation++;
-		this.#placementState.clear();
-		this.#watchedPlacements.clear();
+		this.#placementGeometry.clear();
 		this.#passIds.length = 0;
 		this.#passObserved.clear();
 		this.#overlayObserved.clear();
@@ -578,93 +565,17 @@ export class ImageBudget {
 
 	registerPlacementGeometry(imageId: number, widthPx: number, heightPx: number, placementKey?: number): void {
 		const key = placementKey === undefined ? String(imageId) : `${imageId}:${placementKey}`;
-		const state = this.#placementState.get(key);
-		if (state) {
-			state.widthPx = widthPx;
-			state.heightPx = heightPx;
-			return;
-		}
-		this.#placementState.set(key, {
-			widthPx,
-			heightPx,
-			epoch: 1,
-			placementId: nextPlacementSalt(),
-			emittedPlacementIds: [],
-			lastAttachTopFrameRow: undefined,
-			cellsArchived: false,
-		});
+		this.#placementGeometry.set(key, { widthPx, heightPx });
 	}
 
-	observeCommitWatermark(committedTo: number): void {
-		if (committedTo < 0 || this.#watchedPlacements.size === 0) return;
-		for (const state of this.#watchedPlacements) {
-			if (state.lastAttachTopFrameRow !== undefined && committedTo > state.lastAttachTopFrameRow) {
-				state.cellsArchived = true;
-				this.#watchedPlacements.delete(state);
-			}
-		}
-	}
-
-	beginPlacementCoordinateEpoch(): void {
-		for (const state of this.#placementState.values()) state.lastAttachTopFrameRow = undefined;
-		this.#watchedPlacements.clear();
-	}
-
-	resolvePlacementEmit(
-		imageId: number,
-		attachTopFrameRow: number,
-		committedTo: number,
-		placementKey?: number,
-	): { placementId: number; widthPx: number; heightPx: number } | null {
+	getPlacementGeometry(imageId: number, placementKey?: number): PlacementGeometry | undefined {
 		const key = placementKey === undefined ? String(imageId) : `${imageId}:${placementKey}`;
-		const state = this.#placementState.get(key);
-		if (!state) return null;
-
-		if (committedTo >= 0 && state.lastAttachTopFrameRow !== undefined && committedTo > state.lastAttachTopFrameRow) {
-			state.cellsArchived = true;
-			this.#watchedPlacements.delete(state);
-		}
-		if (state.cellsArchived) {
-			state.epoch += 1;
-			state.placementId = nextPlacementSalt();
-			state.cellsArchived = false;
-			state.lastAttachTopFrameRow = undefined;
-		}
-		if (attachTopFrameRow >= 0) {
-			state.lastAttachTopFrameRow = attachTopFrameRow;
-			this.#watchedPlacements.add(state);
-		}
-		if (!state.emittedPlacementIds.includes(state.placementId)) {
-			state.emittedPlacementIds.push(state.placementId);
-		}
-		return { placementId: state.placementId, widthPx: state.widthPx, heightPx: state.heightPx };
-	}
-
-	resetPlacementEpochs(): ReadonlyArray<{ imageId: number; lastEpoch: number; placementIds: readonly number[] }> {
-		let stale: Array<{ imageId: number; lastEpoch: number; placementIds: readonly number[] }> | undefined;
-		for (const [placementKey, state] of this.#placementState) {
-			stale ??= [];
-			stale.push({
-				imageId: Number(placementKey.split(":", 1)[0]),
-				lastEpoch: state.epoch,
-				placementIds: [...state.emittedPlacementIds],
-			});
-			state.epoch = 1;
-			state.placementId = nextPlacementSalt();
-			state.emittedPlacementIds = [];
-			state.lastAttachTopFrameRow = undefined;
-			state.cellsArchived = false;
-		}
-		this.#watchedPlacements.clear();
-		return stale ?? EMPTY_STALE_EPOCHS;
+		return this.#placementGeometry.get(key);
 	}
 
 	#deletePlacementState(imageId: number): void {
-		for (const [key, state] of this.#placementState) {
-			if (key === String(imageId) || key.startsWith(`${imageId}:`)) {
-				this.#watchedPlacements.delete(state);
-				this.#placementState.delete(key);
-			}
+		for (const key of this.#placementGeometry.keys()) {
+			if (key === String(imageId) || key.startsWith(`${imageId}:`)) this.#placementGeometry.delete(key);
 		}
 	}
 
@@ -777,6 +688,7 @@ export class Image implements Component {
 	#cachedSuppressed = false;
 	#cachedBudgetGeneration = -1;
 	#cachedImageProtocol: typeof TERMINAL.imageProtocol = null;
+	#cachedBackgroundColor: number | undefined;
 	#cachedCellWidthPx = 0;
 	#cachedCellHeightPx = 0;
 	#cachedKittyUnicodePlaceholders = false;
@@ -822,6 +734,10 @@ export class Image implements Component {
 		this.#cachedWidth = undefined;
 	}
 
+	releaseRenderCaches(): void {
+		this.invalidate();
+	}
+
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
@@ -851,6 +767,7 @@ export class Image implements Component {
 	render(width: number): readonly string[] {
 		if (this.#disposed || this.#sourceRejected) return this.#fallbackLines(this.#sourceRejected);
 		const imageProtocol = TERMINAL.imageProtocol;
+		const backgroundColor = imageProtocol === ImageProtocol.Sixel ? getTerminalBackgroundColor() : undefined;
 		const hasProtocol = imageProtocol != null;
 		const cellDimensions = getCellDimensions();
 		const kittyUnicodePlaceholders = getKittyGraphics().unicodePlaceholders;
@@ -862,6 +779,7 @@ export class Image implements Component {
 			this.#cachedWidth === width &&
 			this.#cachedSuppressed === suppressed &&
 			this.#cachedImageProtocol === imageProtocol &&
+			this.#cachedBackgroundColor === backgroundColor &&
 			this.#cachedCellWidthPx === cellDimensions.widthPx &&
 			this.#cachedCellHeightPx === cellDimensions.heightPx &&
 			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
@@ -921,6 +839,7 @@ export class Image implements Component {
 		this.#cachedSuppressed = suppressed;
 		this.#cachedBudgetGeneration = this.#budget?.generation ?? -1;
 		this.#cachedImageProtocol = imageProtocol;
+		this.#cachedBackgroundColor = backgroundColor;
 		this.#cachedCellWidthPx = cellDimensions.widthPx;
 		this.#cachedCellHeightPx = cellDimensions.heightPx;
 		this.#cachedKittyUnicodePlaceholders = kittyUnicodePlaceholders;

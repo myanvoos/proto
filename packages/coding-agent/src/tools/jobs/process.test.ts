@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import * as net from "node:net";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../../async";
 import { Settings } from "../../config/settings";
@@ -18,7 +19,11 @@ afterEach(() => {
 
 /** Runs `body` against a real broker isolated in a temporary runtime directory. */
 async function withBroker(
-	body: (run: (params: JobsParams) => Promise<JobsResult>, client: launchClient.DaemonBrokerClient) => Promise<void>,
+	body: (
+		run: (params: JobsParams) => Promise<JobsResult>,
+		client: launchClient.DaemonBrokerClient,
+		jobs: JobsTool,
+	) => Promise<void>,
 ): Promise<void> {
 	await using dir = await TempDir.create("@proto-jobs-process-");
 	const client = await launchClient.createDaemonBrokerClient(dir.path(), { runtimeDir: dir.join("run") });
@@ -36,7 +41,7 @@ async function withBroker(
 	} as unknown as ToolSession;
 	const jobs = new JobsTool(session);
 	try {
-		await body(params => jobs.execute("call", params), client);
+		await body(params => jobs.execute("call", params), client, jobs);
 	} finally {
 		await manager.dispose({ timeoutMs: 3_000 });
 		await client.request({ op: "shutdown" }).finally(() => client.close());
@@ -62,7 +67,7 @@ test("watching a process observes it without owning it, and a restart retires ev
 			application: process.execPath,
 			args: ["-e", SERVICE],
 			pty: false,
-			ready: { log: "READY", timeoutMs: 10_000 },
+			ready: { log: "READY", port: 0, timeoutMs: 10_000 },
 		});
 		expect(started.details?.process?.daemon?.state).toBe("ready");
 		const first = started.details!.ref as ProcessRef;
@@ -218,3 +223,57 @@ test("a detached process is watched through its captured file output", async () 
 		}
 	});
 }, 60_000);
+
+test("a queued steer releases service readiness without stopping the launched process", async () => {
+	const spawned = Promise.withResolvers<void>();
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => {
+			spawned.resolve();
+			return new Response("ok");
+		},
+	});
+	try {
+		await withBroker(async (run, client, jobs) => {
+			const steering = new AbortController();
+			const pending = jobs.execute(
+				"start",
+				{
+					op: "start",
+					name: "steerable",
+					application: process.execPath,
+					pty: false,
+					args: [
+						"-e",
+						`await fetch(${JSON.stringify(server.url.toString())}); console.log("BOOTED"); for await (const line of console) { if(line === "go") console.log("READY"); }`,
+					],
+					ready: { log: "READY", timeoutMs: 10_000 },
+				},
+				undefined,
+				undefined,
+				{ toolCall: { steeringSignal: steering.signal } } as AgentToolContext,
+			);
+			await spawned.promise;
+			steering.abort();
+			const interrupted = await pending;
+			expect(text(interrupted)).toContain("Readiness wait interrupted");
+			expect(interrupted.details?.ref).toBeUndefined();
+			const listed = await run({ op: "list", kind: "process" });
+			const daemon = listed.details?.process?.daemons?.find(item => item.name === "steerable");
+			if (!daemon) throw new Error("Launched process must remain visible");
+			const target: ProcessRef = { kind: "process", id: daemon.id, name: daemon.name };
+			await run({ op: "input", target, text: "go" });
+			const ready = await client.request({
+				op: "wait",
+				name: daemon.name,
+				expectedId: daemon.id,
+				for: "ready",
+				timeoutMs: 10_000,
+			});
+			expect(ready.op === "wait" && ready.daemon.state).toBe("ready");
+			await run({ op: "cancel", target });
+		});
+	} finally {
+		server.stop(true);
+	}
+});

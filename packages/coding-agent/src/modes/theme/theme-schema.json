@@ -143,6 +143,10 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Default text color (usually empty string)"
 				},
+				"assistantMessageText": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Optional assistant prose color; omitted or empty keeps the terminal foreground"
+				},
 				"thinkingText": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Thinking text color"

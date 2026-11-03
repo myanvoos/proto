@@ -3,10 +3,8 @@ use std::io::Write;
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct BgCommand {
-
 	job_specs: Vec<String>,
 }
 

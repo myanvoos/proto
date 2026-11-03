@@ -34,6 +34,17 @@ export function summarizeConnectErrorDetails(details: unknown): string | undefin
 	return truncate(parts.join("; "), MAX_EXTRA_DETAIL_CHARS);
 }
 
+/** Only Cursor's own typed envelope can authorize replaying a failed request. */
+export function hasRetryableCursorErrorDetail(details: unknown): boolean {
+	if (!Array.isArray(details)) return false;
+	for (const entry of details) {
+		if (!isRecord(entry) || entry.type !== "aiserver.v1.ErrorDetails" || !isRecord(entry.debug)) continue;
+		const inner = entry.debug.details;
+		if (isRecord(inner) && inner.isRetryable === true) return true;
+	}
+	return false;
+}
+
 export function formatConnectEndStreamError(error: unknown): string {
 	const record = isRecord(error) ? error : {};
 	const code = typeof record.code === "string" && record.code ? record.code : "unknown";

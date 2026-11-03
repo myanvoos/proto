@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [19.2.1] - 2026-11-03
+
+### Added
+
+- Version-stamp extension installs and update/reload automatically while idle.
+
+### Fixed
+
+- Surface discarded-tab stalls and Chrome attachment refusals promptly.
+- Retain cross-origin iframe ownership and discoverability across relay sessions.
+- Create tool-owned tabs in the background and close late or cancelled creations safely.
+- Preserve pending cleanup and file-chooser ownership through reconnects without replying on replaced sockets.
+- Keep compatible relay versions usable and distinguish stale-relay recovery from disconnected-extension recovery.
+
+
 ## [18.5.0] - 2026-09-23
 
 ### Changed

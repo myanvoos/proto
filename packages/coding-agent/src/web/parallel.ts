@@ -1,6 +1,7 @@
 import { type FetchImpl, getEnvApiKey } from "@oh-my-pi/pi-ai";
 import type { AgentStorage } from "../session/agent-storage";
-import { MAX_BYTES, readResponseText } from "./scrapers/types";
+import { readResponseText } from "./response-body";
+import { MAX_BYTES } from "./scrapers/types";
 import { findCredential, withHardTimeout } from "./search/providers/utils";
 
 const PARALLEL_API_URL = "https://api.parallel.ai";

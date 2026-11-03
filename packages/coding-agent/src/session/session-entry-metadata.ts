@@ -111,7 +111,12 @@ function messageMetadata(message: AgentMessage): AgentMessage {
 }
 
 export function sessionEntryMetadata(entry: SessionEntry): SessionEntry {
-	const base = { id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp };
+	const base = {
+		id: entry.id,
+		parentId: entry.parentId,
+		timestamp: entry.timestamp,
+		activeLeafId: entry.activeLeafId,
+	};
 	switch (entry.type) {
 		case "message":
 			return { ...base, type: entry.type, message: messageMetadata(entry.message) };

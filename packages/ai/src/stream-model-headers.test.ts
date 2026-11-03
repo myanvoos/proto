@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { streamSimple } from "./stream";
+import { stream, streamSimple } from "./stream";
 import type { Context, FetchImpl, Model } from "./types";
 
 const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }] };
@@ -86,4 +86,34 @@ describe("request-time model header resolution", () => {
 		await Bun.sleep(0);
 		expect(seen).toHaveLength(0);
 	});
+});
+
+it("rejecting model identities omit sampling before direct and simple Google wire encoding", async () => {
+	for (const dispatch of [stream, streamSimple]) {
+		for (const [id, accepts] of [
+			["gpt-5.5", false],
+			["gemini-2.5-flash", true],
+		] as const) {
+			const model = buildModel({
+				id,
+				name: id,
+				api: "google-generative-ai",
+				provider: "custom-google",
+				baseUrl: "https://google.example.test",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 10000,
+				maxTokens: 1000,
+			});
+			let payload: { generationConfig?: { temperature?: number; topP?: number } } | undefined;
+			const fetch: FetchImpl = async (_input, init) => {
+				payload = JSON.parse(init?.body as string);
+				return new Response("{}", { status: 400 });
+			};
+			await dispatch(model, context, { apiKey: "test", fetch, temperature: 0.5, topP: 0.9 }).result();
+			expect(payload?.generationConfig?.temperature).toBe(accepts ? 0.5 : undefined);
+			expect(payload?.generationConfig?.topP).toBe(accepts ? 0.9 : undefined);
+		}
+	}
 });

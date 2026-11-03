@@ -1,5 +1,3 @@
-
-
 use std::io::Write;
 
 use brush_core::{
@@ -11,27 +9,22 @@ use brush_core::{
 use clap::Parser;
 
 use crate::proc_snapshot::HostProcesses;
-
 #[cfg(not(unix))]
 use crate::proc_snapshot::{ProcInfo, ProcessStatus};
 
-
 #[derive(Parser)]
 pub(crate) struct KillCommand {
-
 	#[arg(short = 's', value_name = "SIG_NAME")]
-	signal_name:      Option<String>,
+	signal_name: Option<String>,
 
 	#[arg(short = 'n', value_name = "SIG_NUM")]
-	signal_number:    Option<usize>,
+	signal_number: Option<usize>,
 
 	#[arg(short = 'l', short_alias = 'L')]
-	list_signals:     bool,
+	list_signals: bool,
 
 	#[arg(allow_hyphen_values = true)]
-	args:             Vec<String>,
-
-
+	args: Vec<String>,
 
 	#[arg(last = true, allow_hyphen_values = true)]
 	post_marker_args: Vec<String>,
@@ -97,9 +90,6 @@ impl builtins::Command for KillCommand {
 			None => default_signal,
 		};
 
-
-
-
 		let mut operands: Vec<&String> = Vec::new();
 		let mut options_done = self.signal_name.is_some() || self.signal_number.is_some();
 		let mut consumed_marker = false;
@@ -133,15 +123,12 @@ impl builtins::Command for KillCommand {
 			return Ok(ExecutionExitCode::InvalidUsage.into());
 		}
 
-
-
-
 		let host = signal.sends_signal().then(HostProcesses::resolve);
-		let blocks = |target: i32| host.as_ref().is_some_and(|host| blocks_target(host, target));
-
-
-
-
+		let blocks = |target: i32| {
+			host
+				.as_ref()
+				.is_some_and(|host| blocks_target(host, target))
+		};
 
 		#[cfg(not(unix))]
 		let running: Vec<i32> = if signal.sends_signal() {
@@ -154,10 +141,7 @@ impl builtins::Command for KillCommand {
 				.collect()
 		};
 		#[cfg(unix)]
-		let exists = |target: i32| {
-
-			unsafe { libc::kill(target, 0) == 0 }
-		};
+		let exists = |target: i32| unsafe { libc::kill(target, 0) == 0 };
 		#[cfg(not(unix))]
 		let exists = |target: i32| target > 0 && running.contains(&target);
 
@@ -172,6 +156,24 @@ impl builtins::Command for KillCommand {
 					had_failure = true;
 					continue;
 				};
+				if job.has_internal_tasks() {
+					match signal {
+						KillSignal::Probe => {},
+						KillSignal::Signal(signal) if ends_process(signal) => {
+							job.take_internal_tasks().await
+						},
+						KillSignal::Signal(_) => {
+							writeln!(
+								context.stderr(),
+								"{}: {}: failed to send signal",
+								context.command_name,
+								operand
+							)?;
+							had_failure = true;
+						},
+					}
+					continue;
+				}
 				if job.synthetic_pid().is_some() {
 					if !signal_in_shell_job(job, signal) {
 						writeln!(
@@ -189,7 +191,6 @@ impl builtins::Command for KillCommand {
 					let mut targets: Vec<i32> = job
 						.process_ids()
 						.filter_map(|pid| {
-
 							let pgid = unsafe { libc::getpgid(pid) };
 							(pgid > 0).then_some(-pgid)
 						})
@@ -253,6 +254,12 @@ impl builtins::Command for KillCommand {
 				.resolve_process_id(pid)
 				.filter(|job| job.synthetic_pid() == Some(pid))
 			{
+				if job.has_internal_tasks()
+					&& matches!(signal, KillSignal::Signal(signal) if ends_process(signal))
+				{
+					job.take_internal_tasks().await;
+					continue;
+				}
 				if !signal_in_shell_job(job, signal) {
 					writeln!(
 						context.stderr(),
@@ -303,13 +310,6 @@ impl builtins::Command for KillCommand {
 	}
 }
 
-
-
-
-
-
-
-
 fn signal_in_shell_job(job: &mut Job, signal: KillSignal) -> bool {
 	match signal {
 		KillSignal::Probe => !matches!(job.state, JobState::Done),
@@ -354,8 +354,6 @@ fn rewrite_attached_short_options(args: impl IntoIterator<Item = String>) -> Vec
 	out
 }
 
-
-
 fn split_attached(arg: &str) -> Option<(String, String)> {
 	let rest = arg.get(2..).filter(|rest| !rest.is_empty())?;
 	let split = match arg.get(..2)? {
@@ -366,15 +364,6 @@ fn split_attached(arg: &str) -> Option<(String, String)> {
 	};
 	split.then(|| (arg[..2].to_string(), rest.to_string()))
 }
-
-
-
-
-
-
-
-
-
 
 fn blocks_target(host: &HostProcesses, target: i32) -> bool {
 	if target == -1 || target == 0 {
@@ -412,8 +401,6 @@ fn print_kill_signals<'a>(
 	Ok(result)
 }
 
-
-
 enum PrintedSignal {
 	Name(&'static str),
 	Number(i32),
@@ -421,9 +408,6 @@ enum PrintedSignal {
 
 fn printed_signal(value: &str) -> std::result::Result<PrintedSignal, brush_core::Error> {
 	if let Ok(number) = value.parse::<i32>() {
-
-
-
 		let signal = TrapSignal::try_from(number).or_else(|err| {
 			if number > 128 {
 				TrapSignal::try_from(number - 128).map_err(|_| err)
@@ -432,19 +416,16 @@ fn printed_signal(value: &str) -> std::result::Result<PrintedSignal, brush_core:
 			}
 		})?;
 		Ok(PrintedSignal::Name(
-			signal.as_str().strip_prefix("SIG").unwrap_or(signal.as_str()),
+			signal
+				.as_str()
+				.strip_prefix("SIG")
+				.unwrap_or(signal.as_str()),
 		))
 	} else {
 		let signal = TrapSignal::try_from(value)?;
 		Ok(i32::try_from(signal).map_or(PrintedSignal::Name(signal.as_str()), PrintedSignal::Number))
 	}
 }
-
-
-
-
-
-
 
 #[derive(Clone, Copy)]
 enum KillSignal {
@@ -470,10 +451,6 @@ impl KillSignal {
 	}
 }
 
-
-
-
-
 #[allow(
 	dead_code,
 	reason = "shared with optional process-match builtins that may be feature-disabled"
@@ -494,5 +471,32 @@ pub(crate) fn signal_number(value: &str) -> Option<i32> {
 	match KillSignal::parse(value).ok()? {
 		KillSignal::Probe => Some(0),
 		KillSignal::Signal(signal) => i32::try_from(signal).ok(),
+	}
+}
+
+fn ends_process(signal: TrapSignal) -> bool {
+	#[cfg(unix)]
+	{
+		match i32::try_from(signal) {
+			Ok(
+				libc::SIGCHLD
+				| libc::SIGCONT
+				| libc::SIGSTOP
+				| libc::SIGTSTP
+				| libc::SIGTTIN
+				| libc::SIGTTOU
+				| libc::SIGURG
+				| libc::SIGWINCH,
+			) => false,
+			#[cfg(target_os = "macos")]
+			Ok(libc::SIGINFO | libc::SIGIO) => false,
+			Ok(number) => number > 0,
+			Err(_) => false,
+		}
+	}
+	// Every signal `kill` sends on Windows terminates the process.
+	#[cfg(not(unix))]
+	{
+		matches!(signal, TrapSignal::Signal(_))
 	}
 }

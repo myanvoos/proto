@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { isCompiledBinary, logger, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { isCompiledBinary, logger, untilAborted, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError, ToolError } from "../tool-errors";
@@ -8,6 +8,7 @@ import type { CmuxKind } from "./cmux/rpc";
 import { CmuxSocketClient } from "./cmux/socket-client";
 import {
 	BROWSER_PROTOCOL_TIMEOUT_MS,
+	connectPuppeteer,
 	DEFAULT_VIEWPORT,
 	launchHeadlessBrowser,
 	loadPuppeteer,
@@ -15,8 +16,9 @@ import {
 	type UserAgentOverride,
 } from "./launch";
 import { reapOrphanSharedTargets } from "./orphan-registry";
-import { ensureRelayDaemon, isLoopbackRelayUrl } from "./relay/daemon";
+import { ensureRelayDaemon, isLoopbackRelayUrl, restartRelayDaemon } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
+import { UPDATE_RELAY_EXTENSION, waitForRelayExtension } from "./relay/probe";
 import { ensureSharedBrowser } from "./shared-daemon";
 
 type PuppeteerBrowserKind =
@@ -30,8 +32,6 @@ export type BrowserKind = PuppeteerBrowserKind | CmuxKind;
 export type BrowserKindTag = BrowserKind["kind"];
 
 const HEADLESS_CLOSE_TIMEOUT_MS = 5_000;
-
-const RELAY_EXTENSION_WAIT_MS = 35_000;
 
 interface BrowserHandleCommon {
 	key: string;
@@ -68,7 +68,7 @@ interface ReleaseBrowserOptions {
 
 const browsers = new Map<string, BrowserHandle>();
 
-const pendingOpens = new Map<string, Promise<BrowserHandle>>();
+const pendingOpens = new Map<string, { settled: Promise<void> }>();
 
 export function browserKey(kind: BrowserKind): string {
 	switch (kind.kind) {
@@ -108,12 +108,28 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 
 		const pending = pendingOpens.get(key);
 		if (pending) {
-			await pending.catch(() => undefined);
+			await untilAborted(opts.signal, () => pending.settled);
 			continue;
 		}
-		const open = openBrowserHandle(kind, opts).finally(() => pendingOpens.delete(key));
-		pendingOpens.set(key, open);
-		const handle = await open;
+		const open = openBrowserHandle(kind, opts);
+		const settled = Promise.withResolvers<void>();
+		const entry = { settled: settled.promise };
+		// A cancelled app launch keeps its key until disposal kills the app, so a
+		// replacement cannot adopt an endpoint that cleanup is about to destroy.
+		const clearEntry = (): void => {
+			opts.signal?.removeEventListener("abort", clearEntry);
+			if (pendingOpens.get(key) === entry) pendingOpens.delete(key);
+			settled.resolve();
+		};
+		if (kind.kind !== "spawned") opts.signal?.addEventListener("abort", clearEntry, { once: true });
+		pendingOpens.set(key, entry);
+		let handle: BrowserHandle;
+		try {
+			handle = await open;
+		} catch (error) {
+			clearEntry();
+			throw error;
+		}
 
 		if (opts.signal?.aborted) {
 			await disposeBrowserHandle(handle, { kill: kind.kind === "spawned" }).catch(err => {
@@ -121,9 +137,11 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
+			clearEntry();
 			throw new ToolAbortError("Browser open aborted");
 		}
 		browsers.set(key, handle);
+		clearEntry();
 		return handle;
 	}
 }
@@ -171,7 +189,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		const cdpUrl = normalizeConnectedCdpUrl(kind.cdpUrl);
 		await waitForCdp(cdpUrl, 5_000, opts.signal);
 		const puppeteer = await loadPuppeteer();
-		const browser = await puppeteer.connect({
+		const browser = await connectPuppeteer(puppeteer, {
 			browserURL: cdpUrl,
 			defaultViewport: null,
 			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
@@ -188,24 +206,37 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	if (kind.kind === "relay") {
 		const cdpUrl = normalizeConnectedCdpUrl(kind.cdpUrl);
 
-		let autoStarted = false;
-		if (isLoopbackRelayUrl(cdpUrl) && (isCompiledBinary() || workerHostEntry() !== null)) {
-			autoStarted = await ensureRelayDaemon({ cdpUrl, signal: opts.signal });
+		const autoStart = isLoopbackRelayUrl(cdpUrl) && (isCompiledBinary() || workerHostEntry() !== null);
+		if (autoStart) await ensureRelayDaemon({ cdpUrl, signal: opts.signal });
+		let outcome = await waitForRelayExtension(cdpUrl, opts.signal);
+		if (outcome === "outdated-relay" && autoStart && (await restartRelayDaemon({ cdpUrl, signal: opts.signal }))) {
+			outcome = await waitForRelayExtension(cdpUrl, opts.signal);
+		} else if (outcome === "idle-older-relay" && autoStart) {
+			await restartRelayDaemon({ cdpUrl, signal: opts.signal, idleOnly: true });
+			outcome = await waitForRelayExtension(cdpUrl, opts.signal);
 		}
-
-		try {
-			await waitForCdp(cdpUrl, RELAY_EXTENSION_WAIT_MS, opts.signal);
-		} catch (err) {
-			if (err instanceof ToolAbortError) throw err;
-			if (err instanceof Error && err.name === "AbortError") throw err;
-			throw new ToolError(
-				autoStarted
-					? `proto browser relay is serving at ${cdpUrl} but its extension never connected. Install it with \`proto browser-relay install\` and check the toolbar badge shows "on".`
-					: `proto browser relay is not reachable at ${cdpUrl}. Start it with \`proto browser-relay\` (or check the endpoint), and make sure the PROTO Browser Relay extension is loaded in Chrome.`,
-			);
+		switch (outcome) {
+			case "unreachable":
+				throw new ToolError(
+					`proto browser relay is not reachable at ${cdpUrl}. Start it with \`proto browser-relay\` and load the PROTO Browser Relay extension in Chrome.`,
+				);
+			case "no-extension":
+				throw new ToolError(
+					`proto browser relay is serving at ${cdpUrl}, but its extension never connected. Install it with \`proto browser-relay install\` and check its toolbar badge shows "on".`,
+				);
+			case "extension-gone":
+				throw new ToolError(
+					`proto browser relay at ${cdpUrl} lost its extension. Open Chrome with the PROTO Browser Relay extension and check its toolbar badge shows "on".`,
+				);
+			case "outdated-relay":
+				throw new ToolError(
+					`The browser relay at ${cdpUrl} is out of date. Restart it under this proto version, then retry.`,
+				);
+			case "outdated-extension":
+				throw new ToolError(`The PROTO Browser Relay extension is out of date. ${UPDATE_RELAY_EXTENSION}`);
 		}
 		const puppeteer = await loadPuppeteer();
-		const browser = await puppeteer.connect({
+		const browser = await connectPuppeteer(puppeteer, {
 			browserURL: cdpUrl,
 			defaultViewport: null,
 			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
@@ -261,7 +292,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	const puppeteer = await loadPuppeteer();
 	let browser: Browser;
 	try {
-		browser = await puppeteer.connect({
+		browser = await connectPuppeteer(puppeteer, {
 			browserURL: cdpUrl,
 			defaultViewport: null,
 			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
@@ -365,7 +396,7 @@ async function openSharedHeadlessHandle(
 			);
 		}
 		const puppeteer = await loadPuppeteer();
-		const browser = await puppeteer.connect({
+		const browser = await connectPuppeteer(puppeteer, {
 			browserWSEndpoint: shared.wsEndpoint,
 			defaultViewport: kind.headless
 				? {

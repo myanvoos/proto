@@ -111,7 +111,7 @@ test("reading an origin with a port reaches that origin, with and without a sele
 	const ranged = await read.execute("port-origin-range", { path: `${origin}:2-3` });
 	expect(ranged.details?.finalUrl).toBe(`${origin}/`);
 	const overrun = textOf(await read.execute("port-origin-overrun", { path: `${origin}:9999` }));
-	expect(overrun).toContain("Line 9999 is beyond end of URL output (12 lines total)");
+	expect(overrun).toContain("Line 9999 is beyond end of URL output (6 lines total)");
 });
 
 test("HTTP error statuses and unreachable hosts are tool errors, and the error keeps the body", async () => {

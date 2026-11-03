@@ -184,11 +184,6 @@ export class SessionFocusController {
 			if (target.isStreaming) {
 				await this.ctx.eventController.dispatchEvent({ type: "agent_start" }, transcriptAnchor);
 			} else setTerminalTitleState("idle");
-			// Partial tool results are display-only events: replay each running tool's latest one over the rebuild.
-			for (const event of target.activeToolExecutionUpdates()) {
-				if (!current()) return false;
-				await this.ctx.eventController.dispatchEvent(event, transcriptAnchor);
-			}
 			if (!current()) return false;
 			this.ctx.updateEditorBorderColor();
 			this.ctx.ui.requestRender();

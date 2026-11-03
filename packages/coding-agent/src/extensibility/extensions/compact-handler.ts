@@ -1,4 +1,4 @@
-import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
+import { CompactionCancelledError, type CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { CompactOptions } from "./types";
 
@@ -7,7 +7,7 @@ interface AdvisoryCompactionSession {
 }
 
 interface CompactableSession extends AdvisoryCompactionSession {
-	compact(instructions?: string, options?: CompactOptions): Promise<unknown>;
+	compact(instructions?: string, options?: CompactOptions): Promise<CompactionResult>;
 }
 
 /**
@@ -40,7 +40,18 @@ export async function runExtensionCompact(
 	const options =
 		instructionsOrOptions && typeof instructionsOrOptions === "object" ? instructionsOrOptions : undefined;
 	const instructions = typeof instructionsOrOptions === "string" ? instructionsOrOptions : options?.customInstructions;
-	await session.compact(instructions, options);
+	const { onComplete, onError, ...compactOptions } = options ?? {};
+	let result: CompactionResult;
+	try {
+		// Own callbacks here: session.compact also rejects after reporting failures, and extensions may
+		// intentionally leave the promise detached when they supply an error callback.
+		result = await session.compact(instructions, options ? compactOptions : undefined);
+	} catch (error) {
+		if (!onError) throw error;
+		onError(error instanceof Error ? error : new Error(String(error)));
+		return;
+	}
+	onComplete?.(result);
 }
 
 interface SetModelCapableSession {

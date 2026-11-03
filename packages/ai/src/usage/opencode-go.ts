@@ -27,7 +27,8 @@ function normalizeBaseUrl(baseUrl?: string): string {
 	if (!baseUrl?.trim()) return DEFAULT_ENDPOINT;
 
 	const withoutTrailingSlash = baseUrl.trim().replace(/\/+$/, "");
-	return withoutTrailingSlash.replace(/\/v1$/i, "") || DEFAULT_ENDPOINT;
+	const normalized = withoutTrailingSlash.replace(/\/v1$/i, "");
+	return normalized === "https://opencode.ai/inference/go" ? DEFAULT_ENDPOINT : normalized || DEFAULT_ENDPOINT;
 }
 
 function resolveStatus(windowStatus: unknown, usedFraction: number): UsageStatus {

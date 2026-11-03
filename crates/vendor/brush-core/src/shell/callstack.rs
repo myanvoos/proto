@@ -1,28 +1,18 @@
-
-
 use crate::{ExecutionParameters, callstack, env, error, functions, trace_categories};
 
 impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
-
-
 	pub fn in_sourced_script(&self) -> bool {
 		self.call_stack.in_sourced_script()
 	}
-
-
 
 	pub fn in_function(&self) -> bool {
 		self.call_stack.in_function()
 	}
 
-
-
 	pub fn start_interactive_session(&mut self) -> Result<(), error::Error> {
 		self.call_stack.push_interactive_session();
 		Ok(())
 	}
-
-
 
 	pub fn end_interactive_session(&mut self) -> Result<(), error::Error> {
 		if self
@@ -38,13 +28,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-
-
 	pub fn start_command_string_mode(&mut self) {
 		self.call_stack.push_command_string();
 	}
-
-
 
 	pub fn end_command_string_mode(&mut self) -> Result<(), error::Error> {
 		if self
@@ -72,27 +58,13 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		self.call_stack.pop();
 	}
 
-
-
-
 	pub(crate) const fn acquire_trap_delivery_block(&mut self) {
 		self.call_stack.acquire_trap_delivery_block();
 	}
 
-
-
 	pub(crate) const fn release_trap_delivery_block(&mut self) {
 		self.call_stack.release_trap_delivery_block();
 	}
-
-
-
-
-
-
-
-
-
 
 	pub(crate) fn enter_function(
 		&mut self,
@@ -119,8 +91,6 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-
-
 	pub(crate) fn leave_function(&mut self) -> Result<(), error::Error> {
 		self.env.pop_scope(env::EnvironmentScope::Local)?;
 
@@ -141,12 +111,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		Ok(())
 	}
 
-
-
 	pub fn current_shell_args(&self) -> &[String] {
 		for frame in self.call_stack.iter() {
 			match frame.frame_type {
-
 				crate::callstack::FrameType::Function(..) => return &frame.args,
 
 				_ if frame.frame_type.is_run_script() => return &frame.args,
@@ -161,12 +128,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		self.args.as_slice()
 	}
 
-
-
 	pub fn current_shell_args_mut(&mut self) -> &mut Vec<String> {
 		for frame in self.call_stack.iter_mut() {
 			match frame.frame_type {
-
 				crate::callstack::FrameType::Function(..) => return &mut frame.args,
 
 				_ if frame.frame_type.is_run_script() => return &mut frame.args,

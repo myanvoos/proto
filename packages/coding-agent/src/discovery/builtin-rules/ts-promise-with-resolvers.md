@@ -5,13 +5,13 @@ interruptMode: never
 match:
   if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
   then:
-    regex: 'new Promise\('
+    regex: "\\bnew\\s+Promise(?=(?:<(?:[^<>()=]|=(?!>)|=>|<[^<>]*>|\\([^()]*\\))*>)?\\(\\s*(?:/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/\\s*)*(?:async\\s+(?:/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/\\s*)*)?(?:\\((?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*[^\\s)/]|function\\b[^(]*\\((?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*[^\\s)/]|(?!(?:function|async)(?![\\w$]))[A-Za-z_$][\\w$]*(?=[^\\w$])))"
     in: code
   else:
     all:
-      - regex: 'new Promise\('
+      - regex: "\\bnew\\s+Promise(?=(?:<(?:[^<>()=]|=(?!>)|=>|<[^<>]*>|\\([^()]*\\))*>)?\\(\\s*(?:/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/\\s*)*(?:async\\s+(?:/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/\\s*)*)?(?:\\((?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*[^\\s)/]|function\\b[^(]*\\((?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*[^\\s)/]|(?!(?:function|async)(?![\\w$]))[A-Za-z_$][\\w$]*(?=[^\\w$])))"
         in: [code, string]
-      - llm: "Does this content actually construct a promise with `new Promise(...)`, rather than quoting or discussing that constructor?"
+      - llm: "Does this content actually construct a promise with an executor that takes a resolver, rather than quoting or discussing it?"
 ---
 
 Prefer `Promise.withResolvers()` over `new Promise((resolve, reject) => ...)`: linear control flow; typed resolvers without callback nesting.

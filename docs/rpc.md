@@ -26,6 +26,7 @@ Behavior notes:
 - RPC/ACP host defaults cover worker isolation/execution, memory, advisor, tier, async-job, and bash auto-background settings. They are applied only when a path is not explicitly configured; project/global config, `--config`, and isolated settings remain authoritative. Checklist settings are not host-defaulted.
 - The process claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
+- Extension startup may await a dialog: `extension_ui_response` frames are handled immediately while ordinary commands wait in arrival order. Closing stdin rejects startup dialogs so initialization can finish.
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and the process exits with code `0`. Clients must keep reading stdout after closing stdin.
 - A session store that stops accepting writes is reported as a `notice` event (`level: "error"`, `source: "session-persistence"`) and mirrored on stderr. If the failure is still latched at shutdown, the transcript is not durable: the process writes that to stderr and exits with code `1`.
 - Responses/events are written as one JSON object per line.
@@ -115,6 +116,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "steer", message: string, images?: ImageContent[] }`
 - `{ id?, type: "follow_up", message: string, images?: ImageContent[] }`
 - `{ id?, type: "abort" }`
+- `{ id?, type: "abort_and_restore_queue" }`: withdraw queued user input before aborting; returns oldest-first `steering` and `followUp` entries, including images. Oversized attachments are omitted with `imagesDropped: true`; oversized text is reduced to an oldest-first prefix with `truncated: true`.
 - `{ id?, type: "abort_and_prompt", message: string, images?: ImageContent[] }`
 - `{ id?, type: "new_session", parentSession?: string }`
 
@@ -178,6 +180,9 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 - `{ id?, type: "get_session_stats" }`
 - `{ id?, type: "switch_session", sessionPath: string }`
 - `{ id?, type: "branch", entryId: string }`
+- `{ id?, type: "navigate_tree", entryId: string, summarize?: boolean, customInstructions?: string }`: navigate within the current file while idle; returns `cancelled`, optional `aborted`, and user draft `editorText`/`editorImages` when applicable. Invalid entries fail before any mutation; work starting during a summary makes navigation fail with `session_busy`. Ask re-answering is unsupported over RPC.
+- `{ id?, type: "abort_branch_summary" }`: interrupt an in-progress navigation summary without changing the leaf.
+- `{ id?, type: "set_label", entryId: string, label?: string }`: label an existing tree entry, or clear its label by omitting `label`.
 - `{ id?, type: "get_branch_messages" }`
 - `{ id?, type: "get_last_assistant_text" }`
 - `{ id?, type: "set_session_name", name: string }`
@@ -195,6 +200,8 @@ The bundled TypeScript `RpcClient.getMessages()` and Python `RpcClient.get_messa
 
 - `{ id?, type: "get_login_providers" }`
 - `{ id?, type: "login", providerId: string }`
+- `{ id?, type: "get_logout_accounts", providerId: string }`: list removable stored credentials, active first.
+- `{ id?, type: "logout", providerId: string, credentialId: number }`: remove exactly one stored credential and report `remainingSource` when another source still authenticates the provider.
 
 Login forwards ordinary OAuth input prompts only after the provider emits an
 authorization URL. Prompts marked `secret: true` are always rejected with a
@@ -471,6 +478,9 @@ previous set — schemes missing from the new list are unregistered.
 
 ## Event Stream Schema
 
+Manual compaction emits a matched `manual_compaction_start` / `manual_compaction_end` pair. The start may include the named `mode`; the end includes `aborted`, an optional committed `result`, or `skipped`/`errorMessage` for a no-op or failure. These events cover RPC compact commands and extension-triggered compaction.
+
+
 RPC mode forwards `AgentSessionEvent` objects from `AgentSession.subscribe(...)`.
 
 Common event types:
@@ -594,6 +604,7 @@ Extensions in RPC mode use request/response UI frames.
     description, emits a positionally aligned
     `optionDetails: Array<{ description?: string }>` array. Hosts that do not
     render descriptions can continue using `options` alone.
+  - Extension `input` dialogs may carry `secret: true`; hosts must mask their entry field. This does not enable secret OAuth login prompts, which remain rejected. The bundled client does not intercept secret extension inputs as OAuth codes.
 - `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`
 - `open_url` (emitted by RPC login flows)
 

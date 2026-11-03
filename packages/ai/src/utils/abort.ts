@@ -5,6 +5,8 @@ export interface AbortSourceTracker {
 	requestSignal: AbortSignal;
 	abortLocally(reason: Error): Error;
 	getLocalAbortReason(): Error | undefined;
+	/** The reason the caller passed to `abort()`, read from the caller's own signal, never the racy merged one. */
+	getCallerAbortReason(): string | undefined;
 	wasCallerAbort(): boolean;
 }
 
@@ -27,6 +29,9 @@ export function createAbortSourceTracker(callerSignal?: AbortSignal): AbortSourc
 			if (!localAbortReason || callerSignal?.aborted) return undefined;
 			return requestSignal.reason === localAbortReason ? localAbortReason : undefined;
 		},
+		getCallerAbortReason() {
+			return AIError.callerAbortReason(callerSignal);
+		},
 		wasCallerAbort() {
 			return callerSignal?.aborted === true;
 		},
@@ -41,6 +46,7 @@ export function raceWithSignal<T>(
 ): Promise<T> {
 	if (!signal) return onCleanup ? promise.finally(onCleanup) : promise;
 	if (signal.aborted) {
+		void promise.catch(() => {});
 		onCleanup?.();
 		return Promise.reject(createAbortError());
 	}

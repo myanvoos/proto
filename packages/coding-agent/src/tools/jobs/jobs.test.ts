@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { TOOL_INTERRUPT_ABORT_REASON } from "@oh-my-pi/pi-agent-core";
 import { type AsyncJobEvent, AsyncJobManager } from "../../async";
 import { Settings } from "../../config/settings";
 import { IrcBus } from "../../irc/bus";
@@ -96,6 +97,42 @@ function monitorJob(manager: AsyncJobManager, ownerId = OWNER) {
 	);
 	return { id, finish, emit: (value: string) => emit("output", value) };
 }
+
+test("running worker snapshots match progress by agent identity and show finite live metrics", async () => {
+	const { manager, run } = harness();
+	const job = pendingJob(manager, "worker", { agentId: "worker-a", id: "worker-a-t2" });
+	try {
+		manager.getJob(job.id)!.latestDetails = {
+			progress: [
+				{ id: "different-worker", resolvedModel: "wrong", requests: 99 },
+				{
+					id: "worker-a",
+					resolvedModel: "test/model",
+					requests: 12,
+					cost: 0.25,
+					contextTokens: 160_000,
+					contextWindow: 1_000_000,
+					currentTool: "read",
+					invalid: Number.NaN,
+				},
+			],
+		};
+		const running = await run({ op: "inspect", target: { kind: "job", id: job.id } });
+		expect(running.details?.jobs?.[0]).toMatchObject({
+			resolvedModel: "test/model",
+			progress: { requests: 12, cost: 0.25, contextTokens: 160_000, contextWindow: 1_000_000, stage: "read" },
+		});
+		expect(text(running)).toContain("12 req");
+		expect(text(running)).toContain("$0.25");
+		expect(text(running)).not.toContain("99 req");
+		job.finish.resolve("finished");
+		await manager.getJob(job.id)!.promise;
+		const settled = await run({ op: "inspect", target: { kind: "job", id: job.id } });
+		expect(settled.details?.jobs?.[0]?.progress).toBeUndefined();
+	} finally {
+		job.finish.resolve("done");
+	}
+});
 
 test("list observes a settled job without consuming its automatic delivery", async () => {
 	const { manager, run, delivered } = harness({ failFirstDelivery: true });
@@ -315,4 +352,33 @@ test("unwatching a command probe reaps its helper process", async () => {
 	const stopped = await run({ op: "unwatch", target: ref });
 	expect(stopped.details?.receipt?.status).toBe("settled");
 	expect(() => process.kill(pid, 0)).toThrow();
+});
+
+test("an already interrupted empty wait is not reported as idle or useless", async () => {
+	const { run } = harness();
+	const controller = new AbortController();
+	controller.abort();
+	const result = await run({ op: "wait" }, controller.signal);
+	expect(result.useless).not.toBe(true);
+	expect(text(result)).toContain("Wait interrupted");
+	expect(result.details?.timedOut).not.toBe(true);
+});
+
+test("only tool-interrupt wakeups may drain a queued watch event after their signal is aborted", async () => {
+	for (const toolInterrupt of [false, true]) {
+		const { manager, run, events } = harness();
+		const watch = monitorJob(manager);
+		watch.emit("queued wake");
+		const abort = new AbortController();
+		abort.abort(toolInterrupt ? TOOL_INTERRUPT_ABORT_REASON : new Error("user cancelled"));
+		const result = await run({ op: "wait", targets: [{ kind: "watch", id: watch.id }] }, abort.signal);
+		if (toolInterrupt) {
+			expect(result.details?.jobs?.[0]?.events?.map(event => event.text)).toEqual(["queued wake"]);
+		} else {
+			expect(text(result)).toContain("Wait interrupted");
+		}
+		await manager.drainDeliveries({ timeoutMs: 1_000 });
+		expect(events.map(event => event.text)).toEqual(toolInterrupt ? [] : ["queued wake"]);
+		watch.finish.resolve("done");
+	}
 });

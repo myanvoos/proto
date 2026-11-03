@@ -1,8 +1,20 @@
+import type { Dirent } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { Message } from "@oh-my-pi/pi-ai";
-import { forEachJsonlRecord, getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import {
+	forEachJsonlRecord,
+	getSessionsDir,
+	hasFsCode,
+	isEacces,
+	isEnoent,
+	isEnotdir,
+	logger,
+	parseJsonlLenient,
+	toError,
+} from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
 	lookupSessionInfo,
@@ -868,14 +880,54 @@ export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage
 	return scanSessionDirReadOnly(sessionDir, storage);
 }
 
+/** Keep aliases of the same transcript once; distinct copies remain distinct. */
+async function dedupeRealPaths(files: readonly string[]): Promise<string[]> {
+	const seen = new Set<string>();
+	const unique: string[] = [];
+	for (const file of files) {
+		const key = await fs.realpath(file).catch(() => path.resolve(file));
+		if (seen.has(key)) continue;
+		seen.add(key);
+		unique.push(file);
+	}
+	return unique;
+}
+
+/** Never escape through bucket symlinks; failure of one bucket must not erase healthy buckets. */
+async function scanBucketFiles(root: string, pattern: string): Promise<string[]> {
+	let entries: Dirent[];
+	try {
+		entries = await fs.readdir(root, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error) || isEnotdir(error)) return [];
+		throw error;
+	}
+	const files: string[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+		const start = files.length;
+		const directory = path.join(root, entry.name);
+		try {
+			for await (const name of new Bun.Glob(pattern).scan({ cwd: directory, followSymlinks: true })) {
+				files.push(path.join(directory, name));
+			}
+		} catch (error) {
+			if (isEnoent(error) || isEnotdir(error) || isEacces(error) || hasFsCode(error, "EPERM")) {
+				files.length = start;
+				continue;
+			}
+			throw error;
+		}
+	}
+	return files;
+}
+
 export async function listAllSessions(
 	storage: SessionStorage = new FileSessionStorage(),
 	sessionsRoot: string = getSessionsDir(),
 ): Promise<SessionInfo[]> {
 	try {
-		const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
-			path.join(sessionsRoot, name),
-		);
+		const files = await dedupeRealPaths(await scanBucketFiles(sessionsRoot, "*.jsonl"));
 		return await collectSessionsFromFiles(files, storage);
 	} catch {
 		return [];

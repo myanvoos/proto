@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { type } from "@oh-my-pi/omptype";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../config/model-registry";
@@ -36,6 +37,7 @@ async function createTracker(messages: Message[]): Promise<{
 	agent: Agent;
 	manager: SessionManager;
 	tracker: SessionStatsTracker;
+	host: SessionStatsTrackerHost;
 }> {
 	const authStorage = await AuthStorage.create(":memory:");
 	const manager = SessionManager.inMemory("/session-stats-test");
@@ -50,14 +52,22 @@ async function createTracker(messages: Message[]): Promise<{
 	});
 	const modelRegistry = new ModelRegistry(authStorage);
 	const host: SessionStatsTrackerHost = {
-		session: { systemPrompt: ["test system"] },
+		session: {
+			get systemPrompt() {
+				return agent.state.systemPrompt;
+			},
+			agent,
+			get model() {
+				return agent.state.model;
+			},
+		},
 		agent,
 		sessionManager: manager,
 		modelRegistry,
-		model: () => model,
+		model: () => agent.state.model,
 		sessionId: () => manager.getSessionId(),
 	};
-	return { authStorage, agent, manager, tracker: new SessionStatsTracker(host) };
+	return { authStorage, agent, manager, host, tracker: new SessionStatsTracker(host) };
 }
 
 async function expectSameAsLegacyBranchScan(
@@ -138,5 +148,66 @@ test("session stats skip assistant turns persisted without usage metadata", asyn
 	} finally {
 		await manager.close();
 		authStorage.close();
+	}
+});
+
+const schemaTool: AgentTool = {
+	name: "inspect",
+	label: "Inspect",
+	description: "Inspect the selected payload",
+	parameters: type({ payload: "string" }),
+	execute: async () => ({ content: [] }),
+};
+
+test("removing tool schemas subtracts their accounted tokens without subtracting unrelated prompt shrinkage", async () => {
+	const f = await createTracker([]);
+	try {
+		f.agent.setTools([schemaTool]);
+		const snapshot = f.tracker.nonMessageSnapshot();
+		const message = { ...assistantMessage(1, 1000), contextSnapshot: { promptTokens: 1000, ...snapshot } };
+		f.manager.appendMessage(message);
+		f.agent.appendMessage(message);
+		f.agent.setTools([]);
+		f.agent.setSystemPrompt([]);
+		expect(f.tracker.getContextUsage()?.tokens).toBe(1000 - snapshot.toolSchemaTokens);
+	} finally {
+		await f.manager.close();
+		f.authStorage.close();
+	}
+});
+
+test("a model switch to server-side tool schemas invalidates cached overhead but preserves the in-flight accounting", async () => {
+	const f = await createTracker([]);
+	try {
+		f.agent.setTools([schemaTool]);
+		const sent = f.tracker.nonMessageSnapshot();
+		f.tracker.setPendingSnapshot({ promptTokens: 1000, nonMessageTokens: sent.nonMessageTokens, cutoffCount: 0 });
+		f.agent.setModel({ ...model, toolSchemasInContext: false });
+		expect(f.tracker.nonMessageSnapshot()).toEqual(sent);
+		expect(f.tracker.getContextUsage()?.tokens).toBe(1000 - sent.toolSchemaTokens);
+		f.tracker.setPendingSnapshot(undefined);
+		expect(f.tracker.nonMessageSnapshot().toolSchemaTokens).toBe(0);
+	} finally {
+		await f.manager.close();
+		f.authStorage.close();
+	}
+});
+
+test("legacy provider snapshots do not guess how many removed schema tokens their prompt anchor included", async () => {
+	const f = await createTracker([]);
+	try {
+		f.agent.setTools([schemaTool]);
+		const snapshot = f.tracker.nonMessageSnapshot();
+		const message = {
+			...assistantMessage(1, 1000),
+			contextSnapshot: { promptTokens: 1000, nonMessageTokens: snapshot.nonMessageTokens },
+		};
+		f.manager.appendMessage(message);
+		f.agent.appendMessage(message);
+		f.agent.setTools([]);
+		expect(f.tracker.getContextUsage()?.tokens).toBe(1000);
+	} finally {
+		await f.manager.close();
+		f.authStorage.close();
 	}
 });

@@ -6,7 +6,7 @@ export type SemVer = {
 	patch: number;
 };
 
-export type GeminiKind = "pro" | "flash";
+export type GeminiKind = "pro" | "flash" | "argon";
 export type AnthropicKind = "opus" | "sonnet" | "haiku" | "fable" | "mythos";
 export type OpenAIVariant = "base" | "codex" | "codex-max" | "codex-mini" | "codex-spark" | "mini" | "max" | "nano";
 export type GlmVariant = "base" | "air" | "turbo" | "flash" | "flashx" | "preview";
@@ -85,7 +85,7 @@ export const parseGeminiModel = parser((modelId): GeminiModel | null => {
 	if (modelId.endsWith(GEMINI_SUFFIX)) {
 		modelId = modelId.slice(0, -GEMINI_SUFFIX.length);
 	}
-	const match = /gemini-(\d{1,2}(?:[.-]\d{1,2}){0,2})-(pro|flash)\b/.exec(modelId);
+	const match = /gemini-(\d{1,2}(?:[.-]\d{1,2}){0,2})-(pro|flash|argon)\b/.exec(modelId);
 	if (!match) {
 		return null;
 	}

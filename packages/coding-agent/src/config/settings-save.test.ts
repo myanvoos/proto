@@ -20,6 +20,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+	AgentStorage.close();
 	await tempDir.remove();
 });
 
@@ -274,5 +275,71 @@ describe("record entry writes", () => {
 			default: ["anthropic/claude-sonnet-4-5"],
 			slow: ["openai/gpt-5.2"],
 		});
+	});
+});
+
+it("reloads disjoint disk edits after a failed save without discarding the queued local change", async () => {
+	await writeConfig({ theme: { dark: "nord" } });
+	const settings = await load();
+	settings.set("theme.dark", "gruvbox");
+	await writeConfig({ theme: { dark: "nord" }, autoResume: true });
+	const open = fs.promises.open.bind(fs.promises);
+	const failure = vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+		if (String(filePath).startsWith(`${configPath()}.`) && String(filePath).endsWith(".tmp")) {
+			throw Object.assign(new Error("EACCES: injected save failure"), { code: "EACCES" });
+		}
+		return open(filePath, flags, mode);
+	});
+	try {
+		await settings.reloadFromDisk();
+		expect(settings.get("theme.dark")).toBe("gruvbox");
+		expect(settings.get("autoResume")).toBe(true);
+	} finally {
+		failure.mockRestore();
+	}
+	await settings.flush();
+	expect(await readConfig()).toMatchObject({ theme: { dark: "gruvbox" }, autoResume: true });
+});
+
+it("migrates only the retired adjacent web fallback pair without changing independent selectors", async () => {
+	await writeConfig({
+		retry: {
+			fallbackChains: {
+				web: ["custom/first", "openai-codex/gpt-5.6", "openai-codex/gpt-5.5", "custom/last"],
+				smol: ["openai-codex/gpt-5.6"],
+			},
+		},
+	});
+	const settings = await load();
+	expect(settings.get("retry.fallbackChains")).toEqual({
+		web: ["custom/first", "openai-codex/gpt-5.6-sol", "custom/last"],
+		smol: ["openai-codex/gpt-5.6"],
+	});
+});
+
+it("keeps last-good native project settings while a quarantined file has unsaved role changes", async () => {
+	const projectConfig = path.join(cwd, ".proto", "config.yml");
+	await Bun.write(projectConfig, "theme:\n  dark: nord\nmodelRoles:\n  worker: vendor/old\n");
+	const settings = await load();
+	settings.setProjectModelRole("worker", "vendor/new");
+	await Bun.write(projectConfig, "theme: [unterminated\n");
+	const open = fs.promises.open.bind(fs.promises);
+	const failure = vi.spyOn(fs.promises, "open").mockImplementation(async (filePath, flags, mode) => {
+		if (String(filePath).startsWith(`${projectConfig}.`) && String(filePath).endsWith(".tmp")) {
+			throw Object.assign(new Error("EACCES: injected project save failure"), { code: "EACCES" });
+		}
+		return open(filePath, flags, mode);
+	});
+	try {
+		await settings.reloadFromDisk();
+		expect(settings.get("theme.dark")).toBe("nord");
+		expect(settings.getModelRole("worker")).toBe("vendor/new");
+	} finally {
+		failure.mockRestore();
+	}
+	await settings.flush();
+	expect(YAML.parse(await Bun.file(projectConfig).text())).toMatchObject({
+		theme: { dark: "nord" },
+		modelRoles: { worker: "vendor/new" },
 	});
 });

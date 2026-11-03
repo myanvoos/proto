@@ -1,15 +1,11 @@
-
-
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use itertools::Itertools as _;
 
 use crate::{error, sys};
 
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TrapSignal {
-
 	Signal(sys::signal::Signal),
 
 	Debug,
@@ -49,7 +45,6 @@ impl Display for TrapSignal {
 }
 
 impl TrapSignal {
-
 	pub fn iterator() -> impl Iterator<Item = Self> {
 		const SIGNALS: &[TrapSignal] = &[TrapSignal::Debug, TrapSignal::Err, TrapSignal::Exit];
 
@@ -61,8 +56,6 @@ impl TrapSignal {
 		iter
 	}
 
-
-
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Signal(s) => s.as_str(),
@@ -73,12 +66,6 @@ impl TrapSignal {
 		}
 	}
 }
-
-
-
-
-
-
 
 pub fn format_signals(
 	mut f: impl std::io::Write,
@@ -92,7 +79,6 @@ pub fn format_signals(
 	Ok(())
 }
 
-
 impl FromStr for TrapSignal {
 	type Err = error::Error;
 
@@ -105,14 +91,10 @@ impl FromStr for TrapSignal {
 	}
 }
 
-
 impl TryFrom<i32> for TrapSignal {
 	type Error = error::Error;
 
 	fn try_from(value: i32) -> Result<Self, Self::Error> {
-
-
-
 		Ok(match value {
 			0 => Self::Exit,
 			value => Self::Signal(
@@ -122,7 +104,6 @@ impl TryFrom<i32> for TrapSignal {
 		})
 	}
 }
-
 
 impl TryFrom<&str> for TrapSignal {
 	type Error = error::Error;
@@ -137,9 +118,6 @@ impl TryFrom<&str> for TrapSignal {
 			"EXIT" => Self::Exit,
 			"RETURN" => Self::Return,
 			_ => {
-
-
-
 				if !s.starts_with("SIG") {
 					s.insert_str(0, "SIG");
 				}
@@ -150,7 +128,6 @@ impl TryFrom<&str> for TrapSignal {
 		})
 	}
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub struct TrapSignalNumberError;
@@ -167,26 +144,21 @@ impl TryFrom<TrapSignal> for i32 {
 	}
 }
 
-
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrapHandler {
-
-	pub command:     String,
+	pub command: String,
 
 	pub source_info: crate::SourceInfo,
 }
 
-
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrapHandlerConfig {
-
 	handlers: HashMap<TrapSignal, TrapHandler>,
 }
 
 impl TrapHandlerConfig {
-
 	pub fn iter_handlers(&self) -> impl Iterator<Item = (TrapSignal, &TrapHandler)> {
 		self
 			.handlers
@@ -194,26 +166,13 @@ impl TrapHandlerConfig {
 			.map(|(signal, handler)| (*signal, handler))
 	}
 
-
-
-
-
-
 	pub fn get_handler(&self, signal_type: TrapSignal) -> Option<&TrapHandler> {
 		self.handlers.get(&signal_type)
 	}
 
-
 	pub fn handles(&self, signal_type: TrapSignal) -> bool {
 		self.handlers.contains_key(&signal_type)
 	}
-
-
-
-
-
-
-
 
 	pub fn register_handler(
 		&mut self,
@@ -225,11 +184,6 @@ impl TrapHandlerConfig {
 			.handlers
 			.insert(signal_type, TrapHandler { command, source_info });
 	}
-
-
-
-
-
 
 	pub fn remove_handlers(&mut self, signal_type: TrapSignal) {
 		self.handlers.remove(&signal_type);

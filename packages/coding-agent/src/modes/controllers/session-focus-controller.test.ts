@@ -332,7 +332,7 @@ test("a failed focus attachment restores the main session subscription", async (
 	}
 });
 
-test("attaching repaints queued messages and replays running tools' latest partial results", async () => {
+test("attaching repaints queued messages without replaying running tools' partial results", async () => {
 	const update = { type: "tool_execution_update", toolCallId: "call-1", toolName: "bash", partialResult: {} };
 	const h = focusHarness();
 	h.addAgent("worker", [update]);
@@ -340,7 +340,7 @@ test("attaching repaints queued messages and replays running tools' latest parti
 		await h.controller.focusAgent("worker");
 
 		expect(h.pendingDisplays()).toBe(1);
-		expect(h.dispatched).toContain(update);
+		expect(h.dispatched).not.toContain(update);
 	} finally {
 		h.context.unsubscribe?.();
 		h.controller.dispose();

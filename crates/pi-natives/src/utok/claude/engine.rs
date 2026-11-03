@@ -11,14 +11,20 @@ pub struct PieceMatcher {
 	states:       Vec<State>,
 	edge_bytes:   Vec<u8>,
 	edge_targets: Vec<u32>,
-
-	root_goto: [u32; 256],
+	/// Dense transitions out of the root, which is the hottest state by far.
+	/// Zero (the root itself) where no piece starts with that byte.
+	root_goto:    [u32; 256],
+	/// Byte length of the longest piece: how far back the tiling DP reads.
+	max_len:      usize,
 }
 
+/// One automaton state: goto edges, the fail link, and the piece chain the DP
+/// reads. Sixteen bytes, so a transition and the match it reports share a cache
+/// line.
 struct State {
 	edge_start: u32,
-
-	fail: u32,
+	/// Longest proper suffix of this state's path that is also a state.
+	fail:       u32,
 
 	dict:       u32,
 	edge_count: u16,
@@ -87,7 +93,8 @@ impl Builder {
 				dict:       0,
 			})
 			.collect();
-		let mut matcher = PieceMatcher { states, edge_bytes, edge_targets, root_goto: [0; 256] };
+		let mut matcher =
+			PieceMatcher { states, edge_bytes, edge_targets, root_goto: [0; 256], max_len: 0 };
 		matcher.link(&self.terminal, &self.depth);
 		matcher
 	}
@@ -106,6 +113,7 @@ impl PieceMatcher {
 		while let Some(u) = queue.pop_front() {
 			let fail = self.states[u as usize].fail;
 			self.states[u as usize].out_len = if terminal[u as usize] {
+				self.max_len = self.max_len.max(depth[u as usize] as usize);
 				u16::try_from(depth[u as usize]).expect("piece length fits u16")
 			} else {
 				0
@@ -189,43 +197,94 @@ impl Iterator for Matches<'_> {
 	}
 }
 
-pub fn min_vocab_tile(
-	s: &[u8],
-	vocab: &PieceMatcher,
-	mut unit_cost: impl FnMut(usize, usize) -> u32,
-) -> u32 {
-	let n = s.len();
-	if n == 0 {
-		return 0;
-	}
-	let mut best = vec![0u32; n + 1];
-	let mut state = 0u32;
-	for end in 1..=n {
-		state = vocab.advance(state, s[end - 1]);
-
-		if end != n && is_continuation(s[end]) {
-			continue;
-		}
-		let mut start = end - 1;
-		while is_continuation(s[start]) {
-			start -= 1;
-		}
-		let single = end - start;
-		let mut cost = u32::MAX;
-		let mut spelled = false;
-		for len in vocab.matches(state) {
-			cost = cost.min(best[end - len] + 1);
-			spelled |= len == single;
-		}
-		if !spelled {
-			cost = cost.min(best[start] + unit_cost(start, end));
-		}
-		best[end] = cost;
-	}
-	best[n]
+/// Incremental min-cost tiling over the cost-1 vocabulary plus a guaranteed
+/// one-character floor, fed the marked stream in chunks
+/// ([`push`](Self::push)) so the stream is never materialized whole. A
+/// character no piece covers is priced by [`VocabCore::uncovered_cost`] (may
+/// be > 1: a 4-byte letter with no piece costs its byte tiling).
+///
+/// Long pieces make `best` non-monotone — covering a longer prefix can cost
+/// fewer tokens than covering a shorter one — so every piece ending at a
+/// position is scored, not just the longest. The one-character floor is needed
+/// only when no piece spells that character alone: any piece ending here covers
+/// at least the final character (a piece cannot start mid-character), and the
+/// character's own piece costs 1, never more than its floor.
+pub struct Tiler<'a> {
+	core:    &'a VocabCore,
+	/// `best[end & mask]`: min cost of the stream prefix ending at byte `end`.
+	/// It is read only at `end - len` for a piece ending at `end` and at the
+	/// start of the final character (≤ 4 bytes back), so a ring over that
+	/// reach replaces a stream-length array. Offsets inside a character are
+	/// never written or read, so their stale slots are harmless.
+	best:    Vec<u32>,
+	mask:    usize,
+	state:   u32,
+	/// Stream bytes consumed so far.
+	end:     usize,
+	/// The character being consumed: its bytes so far and its full length,
+	/// known from the lead byte (the stream is valid UTF-8).
+	ch:      [u8; 4],
+	ch_len:  usize,
+	ch_need: usize,
 }
 
+impl Tiler<'_> {
+	/// Consume the next stream bytes.
+	pub fn push(&mut self, bytes: &[u8]) {
+		// The DP runs on locals, written back once per chunk: kept in `self`
+		// across the calls in the loop, they were reloaded and stored per byte.
+		let core = self.core;
+		let vocab = &core.vocab;
+		let mask = self.mask;
+		let best = &mut self.best[..=mask];
+		let (mut state, mut end) = (self.state, self.end);
+		let (mut ch, mut ch_len, mut ch_need) = (self.ch, self.ch_len, self.ch_need);
+		for &b in bytes {
+			state = vocab.advance(state, b);
+			end += 1;
+			if !is_continuation(b) {
+				ch_len = 0;
+				ch_need = match b {
+					0x00..=0x7f => 1,
+					0xc0..=0xdf => 2,
+					0xe0..=0xef => 3,
+					_ => 4,
+				};
+			}
+			ch[ch_len & 3] = b;
+			ch_len += 1;
+			// Tiles start and end on character boundaries only; interior byte
+			// positions of a character are never a DP state.
+			if ch_len < ch_need {
+				continue;
+			}
+			let mut cost = u32::MAX;
+			let mut spelled = false;
+			for len in vocab.matches(state) {
+				cost = cost.min(best[(end - len) & mask] + 1);
+				spelled |= len == ch_len;
+			}
+			if !spelled {
+				cost = cost.min(best[(end - ch_len) & mask] + core.uncovered_cost(&ch[..ch_len]));
+			}
+			best[end & mask] = cost;
+		}
+		(self.state, self.end) = (state, end);
+		(self.ch, self.ch_len, self.ch_need) = (ch, ch_len, ch_need);
+	}
+
+	/// Token count of everything pushed (0 for an empty stream).
+	pub fn finish(&self) -> u32 {
+		self.best[self.end & self.mask]
+	}
+}
+
+/// What a codepoint costs when no piece covers it: a min-cost tiling of its
+/// UTF-8 bytes over the partial byte-prefix tokens, every single byte
+/// costing 1.
 struct ByteFloor {
+	/// Sorted sentinel-packed byte strings (≤ 4 bytes): membership is all that
+	/// is needed, since every token costs 1.
 	tokens:  Vec<u64>,
 	max_len: usize,
 }
@@ -410,31 +469,58 @@ impl VocabCore {
 		}
 	}
 
-	pub fn tile_cost(&self, stream: &[u8]) -> u32 {
-		min_vocab_tile(stream, &self.vocab, |start, end| self.uncovered_cost(&stream[start..end]))
+	/// A tiler for one marked stream: minimum token count over the vocabulary,
+	/// with markers costing one and uncovered characters falling to the byte
+	/// floor.
+	pub fn tiler(&self) -> Tiler<'_> {
+		let mask = (self.vocab.max_len.max(4) + 1).next_power_of_two() - 1;
+		Tiler {
+			core: self,
+			best: vec![0; mask + 1],
+			mask,
+			state: 0,
+			end: 0,
+			ch: [0; 4],
+			ch_len: 0,
+			ch_need: 0,
+		}
 	}
 
+	/// What a content-final run of `n_tail` frame-absorbed newlines costs
+	/// beyond the frame's own trailing token (ladder families only). The
+	/// v3/v4.7 frames append ⏎⏎ after the content and one token can span
+	/// into them, so the run the tokenizer sees is `n_tail + 2`; the
+	/// sonnet/fable-5 frame appends nothing (`appended = 0`). In both cases
+	/// the frame already pays for one token of the run.
 	pub fn ladder_tail_cost(&self, n_tail: usize, appended: usize) -> u32 {
 		if n_tail == 0 {
 			return 0;
 		}
 		let m = n_tail + appended;
-
-		let mut best = vec![0u32; m + 1];
+		// Min-token cover of a homogeneous run: only the pure-newline
+		// pieces can match (each costing one), and a newline left over
+		// costs one. The lengths are not contiguous (v4.7 jumps 16 → 24),
+		// so this is a coin DP, not a division by the longest piece.
+		// Ring over the longest ladder piece: no read reaches further back.
+		let mask =
+			(self.newline_ladder.last().map_or(1, |&l| l as usize) + 1).next_power_of_two() - 1;
+		let mut best = vec![0u32; mask + 1];
 		for end in 1..=m {
-			let mut cost = best[end - 1] + 1;
+			let mut cost = best[(end - 1) & mask] + 1;
 			for &len in &self.newline_ladder {
 				let len = len as usize;
 				if len > end {
 					break;
 				}
-				cost = cost.min(best[end - len] + 1);
+				cost = cost.min(best[(end - len) & mask] + 1);
 			}
-			best[end] = cost;
+			best[end & mask] = cost;
 		}
-		best[m] - 1
+		best[m & mask] - 1
 	}
 
+	/// The frame scalars this vocabulary file measures (v3/v4.7 defaults:
+	/// the frame ends in ⟨bow⟩ and pays the trailing-newline ladder).
 	pub const fn frame_params(&self) -> FrameParams {
 		FrameParams {
 			message_overhead: self.message_overhead,

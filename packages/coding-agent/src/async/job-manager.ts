@@ -153,6 +153,8 @@ interface AsyncJobDelivery {
 	bytes: number;
 	expiresAt: number;
 	expired?: boolean;
+	/** Survives row eviction until the parked sink has settled. */
+	suppressed?: boolean;
 }
 
 export interface AsyncJobDeliveryState {
@@ -687,6 +689,10 @@ export class AsyncJobManager {
 			if (job && job.type !== "monitor") this.#suppressedDeliveries.add(jobId);
 		}
 
+		for (const delivery of this.#inFlightDeliveries) {
+			if (uniqueJobIds.includes(delivery.jobId) && !delivery.event) delivery.suppressed = true;
+		}
+
 		const before = this.#deliveries.length;
 		for (const delivery of [...this.#deliveries]) {
 			if (this.#isDeliverySuppressed(delivery)) this.#releaseDelivery(delivery);
@@ -889,21 +895,25 @@ export class AsyncJobManager {
 		}
 	}
 
+	#jobIdInUse(id: string): boolean {
+		return this.#jobs.has(id) || this.#inFlightDeliveries.some(delivery => delivery.jobId === id);
+	}
+
 	#resolveJobId(preferredId?: string): string {
 		preferredId = preferredId?.trim();
 		if (!preferredId) {
 			while (true) {
 				const id = `bg_${this.#nextJobId++}`;
-				if (!this.#jobs.has(id)) return id;
+				if (!this.#jobIdInUse(id)) return id;
 			}
 		}
 
 		const base = preferredId.trim();
-		if (!this.#jobs.has(base)) return base;
+		if (!this.#jobIdInUse(base)) return base;
 
 		let suffix = 2;
 		let candidate = `${base}-${suffix}`;
-		while (this.#jobs.has(candidate)) {
+		while (this.#jobIdInUse(candidate)) {
 			suffix += 1;
 			candidate = `${base}-${suffix}`;
 		}
@@ -1134,7 +1144,11 @@ export class AsyncJobManager {
 	}
 
 	isDeliverySuppressed(jobId: string): boolean {
-		return this.#suppressedDeliveries.has(jobId) || this.#watchedJobs.has(jobId);
+		return (
+			this.#suppressedDeliveries.has(jobId) ||
+			this.#watchedJobs.has(jobId) ||
+			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId && delivery.suppressed === true)
+		);
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {

@@ -13,7 +13,10 @@ import {
 const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 const fallback = getBundledModel("openai", "gpt-4o-mini");
 
-function context(chains: RetryFallbackChains, roles: Record<string, string> = {}): RetryFallbackResolutionContext {
+function context(
+	chains: RetryFallbackChains,
+	roles: Readonly<Record<string, string | undefined>> = {},
+): RetryFallbackResolutionContext {
 	const models = [model, fallback].filter(candidate => candidate !== undefined);
 	return {
 		chains,
@@ -67,4 +70,19 @@ describe("installed fallback roles", () => {
 		expect(settings.getModelRole("default")).toBe("openai/gpt-4o-mini");
 		expect(getRetryFallbackRole(settings, "subagent:missing")).toBeUndefined();
 	});
+});
+
+it("an explicitly empty child chain blocks an overlapping default-role chain", () => {
+	const settings = Settings.isolated({
+		modelRoles: { default: "anthropic/claude-sonnet-4-5" },
+		"retry.fallbackChains": { default: ["openai/gpt-4o-mini"] },
+	});
+	installRetryFallbackRole(settings, "subagent:closed", { primary: "anthropic/claude-sonnet-4-5", chain: [] });
+	const restored = getRetryFallbackRole(settings, "subagent:closed");
+	expect(restored).toEqual({ primary: "anthropic/claude-sonnet-4-5", chain: [] });
+	const lookup = context(settings.get("retry.fallbackChains"), settings.getModelRoles());
+	expect(resolveRetryFallbackChainKey(lookup, "anthropic/claude-sonnet-4-5", model, "subagent:closed")).toBe(
+		"subagent:closed",
+	);
+	expect(findRetryFallbackCandidates(lookup, "subagent:closed", "anthropic/claude-sonnet-4-5", model)).toEqual([]);
 });

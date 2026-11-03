@@ -1,7 +1,3 @@
-
-
-
-
 use std::{
 	ffi::{OsStr, OsString},
 	io::{self, Write},
@@ -32,7 +28,6 @@ const OPT_CANONICALIZE_EXISTING: &str = "canonicalize-existing";
 const OPT_RELATIVE_TO: &str = "relative-to";
 const OPT_RELATIVE_BASE: &str = "relative-base";
 const ARG_FILES: &str = "files";
-
 
 #[derive(Clone, Debug)]
 struct NonEmptyOsStringParser;
@@ -66,7 +61,6 @@ impl ValueParserFactory for NonEmptyOsStringParser {
 	}
 }
 
-
 pub(crate) struct Realpath {
 	matches: ArgMatches,
 }
@@ -95,12 +89,8 @@ fn realpath_main(matches: &ArgMatches, host: &mut Host) -> i32 {
 	let can_mode = if matches.get_flag(OPT_CANONICALIZE_MISSING) {
 		MissingHandling::Missing
 	} else if matches.get_flag(OPT_CANONICALIZE_EXISTING) {
-
-
 		MissingHandling::Existing
 	} else {
-
-
 		MissingHandling::Normal
 	};
 	let resolve_mode = if strip {
@@ -239,9 +229,6 @@ fn app() -> Command {
 
 type PathIoError = (PathBuf, io::Error);
 
-
-
-
 fn prepare_relative_options(
 	matches: &ArgMatches,
 	host: &Host,
@@ -264,7 +251,6 @@ fn prepare_relative_options(
 	Ok((relative_to, relative_base))
 }
 
-
 fn canonicalize_relative_option(
 	relative: Option<PathBuf>,
 	host: &Host,
@@ -279,7 +265,6 @@ fn canonicalize_relative_option(
 	}
 }
 
-
 fn canonicalize_relative(
 	path: &Path,
 	can_mode: MissingHandling,
@@ -291,10 +276,6 @@ fn canonicalize_relative(
 	}
 	Ok(absolute)
 }
-
-
-
-
 
 fn resolve_path(
 	path: &Path,
@@ -313,11 +294,6 @@ fn resolve_path(
 	host.stdout.write_all(&[line_ending.into()])?;
 	host.stdout.flush()
 }
-
-
-
-
-
 
 fn process_relative(
 	path: PathBuf,
@@ -345,9 +321,6 @@ fn io_error_message(error: &io::Error) -> String {
 	message
 }
 
-
 pub(crate) fn realpath_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Realpath, SE>()
 }
-
-

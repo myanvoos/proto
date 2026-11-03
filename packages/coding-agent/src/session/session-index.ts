@@ -1,7 +1,15 @@
 import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getDbBusyTimeoutMs, getHistoryDbPath, logger } from "@oh-my-pi/pi-utils";
+import {
+	getDbBusyTimeoutMs,
+	getHistoryDbPath,
+	isSqliteBusyError,
+	logger,
+	readSalvageableRows,
+	type SqliteFileIdentity,
+	sqliteFileIdentity,
+} from "@oh-my-pi/pi-utils";
 
 const TITLE_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS session_titles (
@@ -47,6 +55,7 @@ export interface PersistedSessionScan {
 
 interface TitleIndexHandle {
 	dbPath: string;
+	identity: SqliteFileIdentity;
 	db: Database;
 	upsert: Statement;
 	select: Statement;
@@ -74,12 +83,17 @@ function closeHandle(): void {
 
 function openTitleIndex(): TitleIndexHandle | undefined {
 	const dbPath = getHistoryDbPath();
-	if (handle?.dbPath === dbPath) return handle;
+	if (handle?.dbPath === dbPath) {
+		const identity = sqliteFileIdentity(dbPath);
+		if (identity !== undefined && identity === handle.identity) return handle;
+		failedPath = undefined;
+	}
 	if (failedPath === dbPath) return undefined;
 	closeHandle();
+	let db: Database | undefined;
 	try {
 		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-		const db = new Database(dbPath);
+		db = new Database(dbPath);
 
 		db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
 		db.run(`PRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;\n${TITLE_TABLE_DDL}\n${SCAN_TABLE_DDL}`);
@@ -92,6 +106,7 @@ function openTitleIndex(): TitleIndexHandle | undefined {
 		}
 		handle = {
 			dbPath,
+			identity: sqliteFileIdentity(dbPath),
 			db,
 			upsert: db.prepare(`
 INSERT INTO session_titles (session_id, title, updated_at)
@@ -100,7 +115,7 @@ ON CONFLICT(session_id) DO UPDATE SET
 	title = excluded.title,
 	updated_at = excluded.updated_at
 			`),
-			select: db.prepare("SELECT title FROM session_titles WHERE session_id = ?"),
+			select: db.prepare("SELECT title FROM session_titles WHERE session_id = ? AND typeof(title) = 'text'"),
 			scanUpsert: db.prepare(`
 INSERT INTO session_scan (path, size, mtime_ms, version, payload, info, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
@@ -122,6 +137,10 @@ ON CONFLICT(path) DO UPDATE SET
 		failedPath = undefined;
 		return handle;
 	} catch (error) {
+		try {
+			db?.close();
+		} catch {}
+		if (isSqliteBusyError(error)) return undefined;
 		failedPath = dbPath;
 		logger.warn("Session title index unavailable", { dbPath, error: String(error) });
 		return undefined;
@@ -188,4 +207,35 @@ export function recordSessionScan(file: string, size: number, mtimeMs: number, p
 	} catch (error) {
 		logger.debug("Session scan index write failed", { file, error: String(error) });
 	}
+}
+
+/** Close before quarantine so cached readers cannot keep using the discarded inode. */
+export function closeSessionIndex(): void {
+	closeHandle();
+	failedPath = undefined;
+}
+
+/** Titles are user data; scan rows are derived and rebuilt rather than salvaged. */
+export function salvageSessionIndex(source: Database, target: Database): number {
+	target.run(TITLE_TABLE_DDL);
+	let rows: { session_id: unknown; title: unknown; updated_at: unknown }[];
+	try {
+		rows = readSalvageableRows(source, "session_titles", "session_id, title, updated_at");
+	} catch (error) {
+		logger.warn("Session title salvage failed", { error: String(error) });
+		return 0;
+	}
+	using insert = target.prepare(`
+INSERT INTO session_titles (session_id, title, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at
+WHERE excluded.updated_at > session_titles.updated_at
+	`);
+	let count = 0;
+	for (const row of rows) {
+		if (typeof row.session_id !== "string" || typeof row.title !== "string" || !Number.isSafeInteger(row.updated_at))
+			continue;
+		insert.run(row.session_id, row.title, row.updated_at as number);
+		count++;
+	}
+	return count;
 }

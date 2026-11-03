@@ -48,6 +48,7 @@ import {
 	AdvisorOutputQuarantinedError,
 	AdvisorTranscriptRecorder,
 	buildAdvisorQuarantineSourceText,
+	isClassifierRefusal,
 	quarantineAdvisorUnsafeOutput,
 	type ReviewerGeneratedTextExtractor,
 	type ReviewerRuntime,
@@ -56,7 +57,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString, formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
-import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
+import { estimateContextToolSchemaTokens } from "../modes/utils/context-usage";
 import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import { resolveCompactionMethodOrder } from "./compaction-methods";
@@ -127,15 +128,21 @@ export function planAdvisorUsageLimitWait(
 			credentialUnblockAtMs = Math.max(credentialUnblockAtMs, timing.blockedUntilMs);
 		}
 	}
-	const candidates: number[] = [];
-	if (credentialUnblockAtMs !== undefined) candidates.push(Math.max(0, credentialUnblockAtMs - nowMs));
-	if (timing.retryAtMs !== undefined) {
-		candidates.push(Math.max(0, timing.retryAtMs - nowMs) + ADVISOR_SIBLING_UNBLOCK_BUFFER_MS);
-	}
-	if (candidates.length === 0) return undefined;
-	const waitMs = Math.max(Math.min(...candidates), calculateRetryBackoffDelayMs(retry.baseDelayMs, attempt + 1));
-	if (retry.maxDelayMs > 0 && waitMs > retry.maxDelayMs) return undefined;
-	return waitMs;
+	const credentialWaitMs =
+		credentialUnblockAtMs === undefined ? undefined : Math.max(0, credentialUnblockAtMs - nowMs);
+	const siblingWaitMs = timing.retryAtMs === undefined ? undefined : Math.max(0, timing.retryAtMs - nowMs);
+	if (credentialWaitMs === undefined && siblingWaitMs === undefined) return undefined;
+	const backoffMs = calculateRetryBackoffDelayMs(retry.baseDelayMs, attempt + 1);
+	const earliestUnblockMs = Math.min(credentialWaitMs ?? Infinity, siblingWaitMs ?? Infinity);
+	// The selection buffer is not part of the provider's wait budget.
+	if (retry.maxDelayMs > 0 && Math.max(earliestUnblockMs, backoffMs) > retry.maxDelayMs) return undefined;
+	return Math.max(
+		Math.min(
+			credentialWaitMs ?? Infinity,
+			siblingWaitMs === undefined ? Infinity : siblingWaitMs + ADVISOR_SIBLING_UNBLOCK_BUFFER_MS,
+		),
+		backoffMs,
+	);
 }
 
 export interface AdvisorRetryFallbackState {
@@ -143,6 +150,7 @@ export interface AdvisorRetryFallbackState {
 	originalSelector: string;
 	originalThinkingLevel: ThinkingLevel;
 	lastAppliedThinkingLevel: ThinkingLevel;
+	pinned: boolean;
 }
 
 export interface ReviewerIdentity {
@@ -275,6 +283,7 @@ export class ReviewerTransport implements ReviewerInstance {
 	#currentAdvisorInput = "";
 	/** Usage-limit waits in the current episode, bounded by `retry.maxRetries`; a successful turn or reset clears it. */
 	#usageLimitRetries = 0;
+	#credentialSwitches = new Map<string, number>();
 
 	constructor(host: ReviewerTransportHost, options: ReviewerTransportOptions) {
 		const identity = options.identity;
@@ -383,7 +392,7 @@ export class ReviewerTransport implements ReviewerInstance {
 			transformAssistantMessage: message => {
 				this.#quarantinedAdvisorOutput = quarantineAdvisorUnsafeOutput(
 					message,
-					buildAdvisorQuarantineSourceText(this.#currentAdvisorInput, advisorAgent.state.messages),
+					() => buildAdvisorQuarantineSourceText(this.#currentAdvisorInput, advisorAgent.state.messages),
 					options.generatedTextExtractor,
 					options.quarantinePrefix,
 				);
@@ -529,25 +538,49 @@ export class ReviewerTransport implements ReviewerInstance {
 	}
 
 	resetForConversationBoundary(): void {
+		this.releaseRefusalPin();
 		this.agentUnsubscribe?.();
 		this.agentUnsubscribe = undefined;
 		this.resetRuntime("conversation-boundary");
 	}
 
 	/** Re-prime the runtime; an aborted usage-limit wait must not carry its spent budget into the reset view. */
-	resetRuntime(reason?: string): void {
+	resetRuntime(reason?: string, options: { compacted?: boolean } = {}): void {
+		if (options.compacted) this.releaseRefusalPin();
 		this.runtime.reset(reason);
-		this.#usageLimitRetries = 0;
+		this.#resetRecoveryBudgets();
 	}
 
-	/** A completed turn ends the usage-limit episode. */
+	/** Replaced reviewed history may be retried on a primary that refused the earlier context. */
+	releaseRefusalPin(): void {
+		if (this.retryFallback) this.retryFallback.pinned = false;
+	}
+
+	/** A completed or abandoned batch starts the next recovery episode with fresh budgets. */
 	noteTurnSucceeded(): void {
+		this.#resetRecoveryBudgets();
+	}
+
+	noteTurnAbandoned(): void {
+		this.#resetRecoveryBudgets();
+	}
+
+	#resetRecoveryBudgets(): void {
 		this.#usageLimitRetries = 0;
+		this.#credentialSwitches.clear();
+	}
+
+	#spendCredentialSwitch(provider: string): boolean {
+		const spent = this.#credentialSwitches.get(provider) ?? 0;
+		if (spent >= this.#host.modelRegistry.authStorage.listStoredCredentials(provider).length - 1) return false;
+		this.#credentialSwitches.set(provider, spent + 1);
+		return true;
 	}
 
 	async #maybeRestoreRetryFallbackPrimary(signal: AbortSignal): Promise<void> {
 		const fallback = this.retryFallback;
-		if (!fallback || getRetryFallbackRevertPolicy(this.#host.settings) !== "cooldown-expiry") return;
+		if (!fallback || fallback.pinned || getRetryFallbackRevertPolicy(this.#host.settings) !== "cooldown-expiry")
+			return;
 
 		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
 		if (!originalSelector) {
@@ -625,7 +658,7 @@ export class ReviewerTransport implements ReviewerInstance {
 				this.providerSessionId,
 				{ error: message, modelId: currentModel.id, signal },
 			);
-			if (switched) return true;
+			if (switched && this.#spendCredentialSwitch(currentModel.provider)) return true;
 		}
 
 		const retryAfterMs = extractProviderRetryHint(currentModel.provider, message);
@@ -645,7 +678,7 @@ export class ReviewerTransport implements ReviewerInstance {
 					signal,
 				},
 			);
-			if (outcome.switched) return true;
+			if (outcome.switched && this.#spendCredentialSwitch(currentModel.provider)) return true;
 			usageTiming = { ...outcome, retryAfterMs };
 		}
 		if (!assistantFailure && !accountPolicyDenial && !usageLimit) return false;
@@ -669,7 +702,11 @@ export class ReviewerTransport implements ReviewerInstance {
 			return decline();
 		}
 
-		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
+		const primaryRefused =
+			assistantFailure !== undefined &&
+			isClassifierRefusal(assistantFailure) &&
+			(this.retryFallback === undefined || this.retryFallback.originalSelector === currentSelector);
+		if (!primaryRefused) this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
 		for (const role of chainKeys) {
 			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
@@ -688,12 +725,14 @@ export class ReviewerTransport implements ReviewerInstance {
 				const nextThinkingLevel = this.setModel(candidate, requestedThinkingLevel);
 				if (this.retryFallback) {
 					this.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
+					this.retryFallback.pinned ||= primaryRefused;
 				} else {
 					this.retryFallback = {
 						role,
 						originalSelector: currentSelector,
 						originalThinkingLevel,
 						lastAppliedThinkingLevel: nextThinkingLevel,
+						pinned: primaryRefused,
 					};
 				}
 				this.retryFallbackPendingSuccess = true;
@@ -719,7 +758,7 @@ export class ReviewerTransport implements ReviewerInstance {
 		const waitMs = planAdvisorUsageLimitWait(timing, retry, this.#usageLimitRetries, Date.now());
 		if (waitMs === undefined) {
 			// The runtime latches now; the next episode after its reset starts with a fresh budget.
-			this.#usageLimitRetries = 0;
+			this.#resetRecoveryBudgets();
 			return false;
 		}
 		const attempt = this.#usageLimitRetries + 1;
@@ -786,12 +825,16 @@ export class ReviewerTransport implements ReviewerInstance {
 		const storedConversationTokens = agent.tokenizer.countMessages(messages, { excludeEncryptedReasoning: true });
 
 		const providerContextTokens = this.#estimateContextTokens(messages, agent.tokenizer) + incomingTokens;
-		const localContextTokens =
-			agent.tokenizer.countTokens(agent.state.systemPrompt) +
-			estimateToolSchemaTokens(agent.state.tools, agent.tokenizer) +
-			storedConversationTokens +
-			incomingTokens;
-		const contextTokens = compactionContextTokens(providerContextTokens, localContextTokens);
+		const fixedPromptTokens = agent.tokenizer.countTokens(agent.state.systemPrompt);
+		const contextTokensFor = (model: Model): number =>
+			compactionContextTokens(
+				providerContextTokens,
+				fixedPromptTokens +
+					estimateContextToolSchemaTokens(agent.state.tools, agent.tokenizer, model) +
+					storedConversationTokens +
+					incomingTokens,
+			);
+		const contextTokens = contextTokensFor(advisorModel);
 
 		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
 			return false;
@@ -801,7 +844,7 @@ export class ReviewerTransport implements ReviewerInstance {
 			const newModel = agent.state.model;
 			const newWindow = newModel.contextWindow ?? 0;
 			if (newWindow > 0) {
-				const stillNeedsCompaction = shouldCompact(contextTokens, newWindow, compactionSettings);
+				const stillNeedsCompaction = shouldCompact(contextTokensFor(newModel), newWindow, compactionSettings);
 				if (!stillNeedsCompaction) return false;
 			}
 		}
@@ -987,6 +1030,7 @@ export class ReviewerTransport implements ReviewerInstance {
 		} satisfies AdvisorCompactionSummaryMessage;
 
 		agent.replaceMessages([summaryMessage, ...recentMessages]);
+		this.releaseRefusalPin();
 		return false;
 	}
 	stats(name: string, cost: number): PerAdvisorStat {

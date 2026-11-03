@@ -1,10 +1,18 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Settings } from "../../config/settings";
 import { initThemeSync } from "../theme/theme";
 import { ReadToolGroupComponent } from "./read-tool-group";
 
 initThemeSync();
+
+let previousImageProtocol = TERMINAL.imageProtocol;
+beforeEach(() => {
+	previousImageProtocol = TERMINAL.imageProtocol;
+	setTerminalImageProtocol(null);
+});
+afterEach(() => setTerminalImageProtocol(previousImageProtocol));
 
 const png: ImageContent = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
 
@@ -20,7 +28,7 @@ test("a read result image renders below the read call it belongs to", () => {
 
 	const rendered = rows(group);
 	const callRow = rendered.findIndex(row => row.includes("Read") && row.includes("shot.png"));
-	const imageRow = rendered.findIndex(row => row.includes("[Image: image/png]"));
+	const imageRow = rendered.findIndex(row => row.includes("[Image:") && row.includes("image/png"));
 	expect(callRow).toBeGreaterThanOrEqual(0);
 	expect(imageRow).toBeGreaterThan(callRow);
 });
@@ -38,7 +46,9 @@ test("each read keeps its own image under its own row when several reads group t
 
 	const rendered = rows(group);
 	const lastCallRow = rendered.findLastIndex(row => row.includes("Read") || row.includes(".png"));
-	const imageRows = rendered.flatMap((row, index) => (row.includes("[Image: image/png]") ? [index] : []));
+	const imageRows = rendered.flatMap((row, index) =>
+		row.includes("[Image:") && row.includes("image/png") ? [index] : [],
+	);
 	expect(imageRows).toHaveLength(2);
 	expect(Math.min(...imageRows)).toBeGreaterThan(lastCallRow - imageRows.length);
 	expect(imageRows[0]).toBeLessThan(imageRows[1]!);
@@ -49,14 +59,14 @@ test("clearing a read's images drops its block and hiding tool activity hides bo
 	group.updateArgs({ path: "/tmp/shot.png" }, "call-1");
 	group.setToolResultImages("call-1", [png]);
 	group.updateResult({ content: [{ type: "text", text: "Read image file [image/png]" }] }, false, "call-1");
-	expect(rows(group).some(row => row.includes("[Image: image/png]"))).toBe(true);
+	expect(rows(group).some(row => row.includes("[Image:") && row.includes("image/png"))).toBe(true);
 
 	group.setToolActivityVisible(false);
 	expect(group.render(80)).toEqual([]);
 
 	group.setToolActivityVisible(true);
 	group.setToolResultImages("call-1", []);
-	expect(rows(group).some(row => row.includes("[Image: image/png]"))).toBe(false);
+	expect(rows(group).some(row => row.includes("[Image:") && row.includes("image/png"))).toBe(false);
 	expect(rows(group).some(row => row.includes("shot.png"))).toBe(true);
 });
 
@@ -84,4 +94,36 @@ test("grouped delimited read rows hyperlink to the per-target paths the read rep
 	} finally {
 		component.dispose();
 	}
+});
+
+test("grouped Markdown previews render prose and honor raw selectors that arrive after the result", () => {
+	const group = new ReadToolGroupComponent({ showContentPreview: true });
+	group.updateArgs({ path: "/tmp/README.md" }, "markdown");
+	group.updateResult(
+		{
+			content: [{ type: "text", text: "# Title\n\nSome **bold** text." }],
+			details: { contentType: "text/markdown" },
+		},
+		false,
+		"markdown",
+	);
+	const rendered = rows(group).join("\n");
+	expect(rendered).toContain("Some bold text.");
+	expect(rendered).not.toContain("**bold**");
+	group.updateArgs({ path: "/tmp/README.md:raw" }, "markdown");
+	expect(rows(group).join("\n")).toContain("**bold**");
+});
+
+test("raw read detail text cannot inject terminal commands into grouped previews", () => {
+	const group = new ReadToolGroupComponent({ showContentPreview: true });
+	group.updateArgs({ path: "/tmp/safe.txt" }, "unsafe");
+	group.updateResult(
+		{ content: [], details: { displayContent: { text: "visible\x1b]0;injected\x07 tail" } } },
+		false,
+		"unsafe",
+	);
+	const output = group.render(80).join("\n");
+	expect(output).toContain("visible");
+	expect(output).toContain("tail");
+	expect(output).not.toContain("\x1b]0;");
 });

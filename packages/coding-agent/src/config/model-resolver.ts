@@ -5,7 +5,7 @@ import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
+import { DEFAULT_MODEL_PER_PROVIDER, getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui/fuzzy";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -24,7 +24,7 @@ import {
 import type { Settings } from "./settings";
 
 function isKnownProvider(provider: string): provider is KnownProvider {
-	return provider in DEFAULT_MODEL_PER_PROVIDER;
+	return getCatalogProviderEntry(provider) !== undefined;
 }
 
 /**
@@ -49,6 +49,8 @@ export function pickDefaultAvailableModel(
 		});
 		if (concrete.length > 0) models = concrete;
 	}
+	const accountDefault = models.find(model => model.provider !== "cursor" && model.isProviderDefault);
+	if (accountDefault) return accountDefault;
 	const firstDefault = models.find(
 		model => isKnownProvider(model.provider) && DEFAULT_MODEL_PER_PROVIDER[model.provider] === model.id,
 	);
@@ -336,10 +338,12 @@ function applyUpstreamRouting(model: Model<Api>, upstream: string): Model<Api> {
 	} as ModelSpec<Api>);
 }
 
+const kProviderExactIndex = Symbol("model-resolver.providerExactIndex");
 const kProviderModelIndex = Symbol("model-resolver.providerIndex");
 const kProviderSpellingIndex = Symbol("model-resolver.providerSpellingIndex");
 const kProviderWireRouteIndex = Symbol("model-resolver.wireRouteIndex");
 type ModelsWithProviderIndex = readonly Model<Api>[] & {
+	[kProviderExactIndex]?: Map<string, Model<Api> | null>;
 	[kProviderModelIndex]?: Map<string, Model<Api> | null>;
 	[kProviderSpellingIndex]?: Map<string, Model<Api> | null>;
 	[kProviderWireRouteIndex]?: Map<string, Model<Api> | null>;
@@ -375,6 +379,15 @@ function getProviderModelIndex(availableModels: readonly Model<Api>[]): Map<stri
 	if (cached) return cached;
 	const index = buildProviderIndex(availableModels, id => id.toLowerCase());
 	tagged[kProviderModelIndex] = index;
+	return index;
+}
+
+function getProviderExactIndex(availableModels: readonly Model<Api>[]): Map<string, Model<Api> | null> {
+	const tagged = availableModels as ModelsWithProviderIndex;
+	const cached = tagged[kProviderExactIndex];
+	if (cached) return cached;
+	const index = buildProviderIndex(availableModels, id => id);
+	tagged[kProviderExactIndex] = index;
 	return index;
 }
 
@@ -419,9 +432,15 @@ export function resolveProviderModelReference(
 	availableModels: readonly Model<Api>[],
 ): Model<Api> | undefined {
 	const normalizedProvider = provider.trim().toLowerCase();
-	const normalizedModelId = modelId.trim().toLowerCase();
+	const trimmedModelId = modelId.trim();
+	const normalizedModelId = trimmedModelId.toLowerCase();
 	if (!normalizedProvider || !normalizedModelId) {
 		return undefined;
+	}
+
+	const exactCase = getProviderExactIndex(availableModels).get(`${normalizedProvider}\u0000${trimmedModelId}`);
+	if (exactCase) {
+		return exactCase;
 	}
 
 	const index = getProviderModelIndex(availableModels);
@@ -462,6 +481,18 @@ export function resolveProviderModelReference(
 		return spelled;
 	}
 
+	// Revision-pinned ids (Vertex `claude-opus-4-8@default`) are also named without
+	// their `@revision`; that is an alias only while the provider carries a single
+	// revision of the id, so the selector still resolves exactly or not at all.
+	if (!normalizedModelId.includes("@")) {
+		const revisionPrefix = `${normalizedModelId}@`;
+		const revisions = availableModels.filter(
+			model =>
+				model.provider.toLowerCase() === normalizedProvider && model.id.toLowerCase().startsWith(revisionPrefix),
+		);
+		if (revisions.length === 1) return revisions[0];
+	}
+
 	if (normalizedProvider !== "openrouter") {
 		return undefined;
 	}
@@ -485,10 +516,11 @@ interface ModelMatchPreferences {
 	providerOrder?: readonly string[];
 
 	deprioritizeProviders?: string[];
+	isKnownProvider?: (provider: string) => boolean;
 }
 
 export type ModelLookupRegistry = Pick<ModelRegistry, "getAvailable">;
-type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable">;
+type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable"> & Partial<Pick<ModelRegistry, "hasProvider">>;
 
 const kModelOrderIndex = Symbol("model-resolver.modelOrderIndex");
 type ModelsWithOrderIndex = readonly Model<Api>[] & {
@@ -514,6 +546,7 @@ interface ModelPreferenceContext {
 	providerPriorityRank: Map<string, number>;
 	deprioritizedProviders: Set<string>;
 	modelOrder: Map<string, number>;
+	isKnownProvider?: (provider: string) => boolean;
 }
 
 function buildPreferenceContext(
@@ -537,7 +570,14 @@ function buildPreferenceContext(
 	const deprioritizedProviders = new Set(preferences?.deprioritizeProviders ?? []);
 	const modelOrder = getModelOrderIndex(availableModels);
 
-	return { modelUsageRank, providerUsageRank, providerPriorityRank, deprioritizedProviders, modelOrder };
+	return {
+		modelUsageRank,
+		providerUsageRank,
+		providerPriorityRank,
+		deprioritizedProviders,
+		modelOrder,
+		isKnownProvider: preferences?.isKnownProvider,
+	};
 }
 
 export function getModelMatchPreferences(
@@ -558,6 +598,7 @@ function mergeModelMatchPreferences(
 		usageOrder: preferences?.usageOrder ?? settingsPreferences.usageOrder,
 		providerOrder: preferences?.providerOrder ?? settingsPreferences.providerOrder,
 		deprioritizeProviders: preferences?.deprioritizeProviders,
+		isKnownProvider: preferences?.isKnownProvider,
 	};
 }
 
@@ -703,40 +744,14 @@ function matchModel(
 
 	const slashIndex = modelPattern.indexOf("/");
 	if (slashIndex !== -1) {
-		const provider = modelPattern.substring(0, slashIndex);
-		const modelId = modelPattern.substring(slashIndex + 1);
-		const lowerProvider = provider.toLowerCase();
-		const providerModels = availableModels.filter(m => m.provider.toLowerCase() === lowerProvider);
-		if (providerModels.length === 0) {
-		} else {
-			if (splitUpstreamRouting(modelId) && providerModels.some(supportsUpstreamRouting)) {
-				return undefined;
-			}
-			const scored = providerModels
-				.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
-				.filter(entry => entry.match.matches);
-			if (scored.length === 0) {
-				return undefined;
-			}
-
-			scored.sort((a, b) => {
-				if (a.match.score !== b.match.score) return a.match.score - b.match.score;
-				const aKey = formatModelString(a.model);
-				const bKey = formatModelString(b.model);
-				const aUsage = context.modelUsageRank.get(aKey) ?? Number.POSITIVE_INFINITY;
-				const bUsage = context.modelUsageRank.get(bKey) ?? Number.POSITIVE_INFINITY;
-				if (aUsage !== bUsage) return aUsage - bUsage;
-
-				const aProviderUsage = context.providerUsageRank.get(a.model.provider) ?? Number.POSITIVE_INFINITY;
-				const bProviderUsage = context.providerUsageRank.get(b.model.provider) ?? Number.POSITIVE_INFINITY;
-				if (aProviderUsage !== bProviderUsage) return aProviderUsage - bProviderUsage;
-
-				const aOrder = context.modelOrder.get(aKey) ?? 0;
-				const bOrder = context.modelOrder.get(bKey) ?? 0;
-				return aOrder - bOrder;
-			});
-			return scored[0]?.model;
-		}
+		const provider = modelPattern.slice(0, slashIndex).toLowerCase();
+		// A qualified selector names one route, never a fuzzy alternative on another provider.
+		if (
+			availableModels.some(model => model.provider.toLowerCase() === provider) ||
+			isKnownProvider(provider) ||
+			context.isKnownProvider?.(provider)
+		)
+			return undefined;
 	}
 
 	const matches = availableModels.filter(
@@ -764,6 +779,21 @@ function matchModel(
 	if (!topId) return undefined;
 	const topCandidates = sortedById.filter(model => model.id === topId);
 	return pickPreferredModel(topCandidates, context);
+}
+
+export function providerModelHint(selector: string, models: readonly Model<Api>[]): string {
+	const slashIndex = selector.indexOf("/");
+	if (slashIndex === -1) return "";
+	const lowerProvider = selector.slice(0, slashIndex).toLowerCase();
+	const modelId = splitThinkingSuffix(selector.slice(slashIndex + 1), -1, MAX_THINKING_SUFFIX_OPTIONS).base;
+	const nearMatches = models
+		.filter(model => model.provider.toLowerCase() === lowerProvider)
+		.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
+		.filter(entry => entry.match.matches)
+		.sort((a, b) => a.match.score - b.match.score)
+		.slice(0, 3)
+		.map(entry => formatModelString(entry.model));
+	return nearMatches.length > 0 ? ` Did you mean ${nearMatches.join(", ")}?` : "";
 }
 
 interface ParsedModelResult {
@@ -1089,6 +1119,7 @@ export function resolveConfiguredModelPatterns(
 }
 interface AgentModelPatternResolutionOptions {
 	requestModel?: string | string[];
+	perCallRequest?: boolean;
 	settingsOverride?: string | string[];
 	agentModel?: string | string[];
 	settings?: Settings;
@@ -1106,9 +1137,26 @@ function resolveEffectiveAgentModelSelection(
 ): EffectiveAgentModelSelection {
 	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
 
-	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings);
+	let requestSource = requestModel;
+	const requestPatterns = options.perCallRequest
+		? normalizeModelPatternList(requestModel).flatMap((pattern, index, patterns) => {
+				const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
+				if (base !== "@default" && base !== "pi/default" && base !== "*")
+					return resolveConfiguredModelPatterns(pattern, settings);
+				requestSource = index === 0 ? undefined : patterns.slice(0, index);
+				const inherited = resolveConfiguredModelPatterns(
+					activeModelPattern ?? fallbackModelPattern ?? settings?.getModelRole("default"),
+					settings,
+				);
+				return level
+					? inherited.map(value =>
+							formatModelSelectorValue(splitThinkingSuffix(value, -1, MAX_THINKING_SUFFIX_OPTIONS).base, level),
+						)
+					: inherited;
+			})
+		: resolveConfiguredModelPatterns(requestModel, settings);
 	if (requestPatterns.length > 0) {
-		return { source: requestModel, patterns: requestPatterns };
+		return { source: requestSource, patterns: requestPatterns };
 	}
 
 	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings);
@@ -1233,7 +1281,7 @@ export function resolveAgentSpawnModelSelection(
 ): AgentSpawnModelResolution {
 	const settings = options.settings;
 	const requestWon = resolveConfiguredModelPatterns(options.requestModel, settings).length > 0;
-	const selection = resolveAgentModelSelection(options);
+	const selection = resolveAgentModelSelection({ ...options, perCallRequest: true });
 	const sourceRole = requestWon
 		? (resolveExplicitModelRole(options.settingsOverride, settings) ??
 			resolveExplicitModelRole(options.agentModel, settings))
@@ -1323,6 +1371,12 @@ export function resolveAgentAdvisorSelection(
 	return agentPattern ? { model: agentPattern } : undefined;
 }
 
+/** Resolve advisor aliases against the owner before assigning the child advisor role. */
+export function resolveAgentAdvisorRolePattern(pattern: string, settings?: ModelRoleLookup): string {
+	const expanded = resolveConfiguredModelPatterns(pattern, settings);
+	return expanded.length > 0 ? expanded.join(",") : pattern;
+}
+
 export interface ResolvedModelRoleValue {
 	model: Model<Api> | undefined;
 	thinkingLevel?: ThinkingLevel;
@@ -1377,12 +1431,14 @@ export function resolveModelRoleValue(
 }
 
 interface ExplicitThinkingSelectorOptions {
-	isLiteralModelId?: (provider: string, id: string) => boolean;
+	/** Exact ID lookup; an undefined provider checks unqualified IDs across the caller's model set. */
+	isLiteralModelId?: (provider: string | undefined, id: string) => boolean;
 }
 
 function isLiteralModelSelector(value: string, options?: ExplicitThinkingSelectorOptions): boolean {
 	const parsed = parseModelString(value);
-	return parsed !== undefined && options?.isLiteralModelId?.(parsed.provider, parsed.id) === true;
+	if (parsed) return options?.isLiteralModelId?.(parsed.provider, parsed.id) === true;
+	return options?.isLiteralModelId?.(undefined, value) === true;
 }
 
 export function extractExplicitThinkingSelector(
@@ -1398,7 +1454,7 @@ export function extractExplicitThinkingSelector(
 	let current = normalized;
 	while (!visited.has(current)) {
 		visited.add(current);
-		const rolePrefixLength = modelRoleAliasPrefixLength(current) ?? LEGACY_MODEL_ROLE_ALIAS_PREFIX.length;
+		const rolePrefixLength = modelRoleAliasPrefixLength(current) ?? 0;
 		const strictSelector = splitThinkingSuffix(current, rolePrefixLength).level;
 		if (strictSelector) {
 			return strictSelector;
@@ -1487,6 +1543,37 @@ export function resolveModelOverride(
 }
 
 // `disabledProviders` makes a provider unreachable however a model is named: catalog, role, or explicit pin.
+function parseSessionModelSelector(modelRegistry: ModelRegistry, selector: string) {
+	return parseModelString(selector, {
+		allowMaxSuffix: true,
+		isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+	});
+}
+
+/** Resolve a persisted selector without refreshing OAuth or running command-backed keys. */
+export function resolveSessionModelSelector(modelRegistry: ModelRegistry, selector: string) {
+	const parsed = parseSessionModelSelector(modelRegistry, selector);
+	if (!parsed) return undefined;
+	const model = modelRegistry.find(parsed.provider, parsed.id);
+	if (!model || !modelRegistry.hasConfiguredAuth(model)) return undefined;
+	return { model, thinkingLevel: parsed.thinkingLevel };
+}
+
+/** Configured and extension discovery providers that could supply a saved selector. */
+export function sessionModelDiscoveryProviders(
+	modelRegistry: ModelRegistry,
+	selectors: readonly string[],
+	disabledProviders: ReadonlySet<string>,
+): Set<string> {
+	const providers = new Set<string>();
+	for (const selector of selectors) {
+		const parsed = parseSessionModelSelector(modelRegistry, selector);
+		const provider = parsed && modelRegistry.getDiscoveryProviderId(parsed.provider);
+		if (provider && !disabledProviders.has(provider)) providers.add(provider);
+	}
+	return providers;
+}
+
 export function disabledProviderIds(settings?: Settings): ReadonlySet<string> {
 	return new Set(settings?.get("disabledProviders"));
 }
@@ -1497,6 +1584,7 @@ export async function resolveModelOverrideWithAuthFallback(
 	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
 	settings?: Settings,
 	sessionId?: string,
+	options?: { perCallModel?: boolean },
 ): Promise<{
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
@@ -1504,22 +1592,39 @@ export async function resolveModelOverrideWithAuthFallback(
 	authFallbackUsed: boolean;
 	warning?: string;
 }> {
+	if (modelPatterns.length === 0) return { explicitThinkingLevel: false, authFallbackUsed: false };
 	const disabledProviders = disabledProviderIds(settings);
-	let lookupRegistry: ModelLookupRegistry = modelRegistry;
-	if (disabledProviders.size > 0) {
-		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
-		lookupRegistry = { getAvailable: () => enabledModels };
-	}
+	const available = modelRegistry.getAvailable();
+	const enabledModels = filterAvailableModelsByEnabledPatterns(
+		available.filter(model => !disabledProviders.has(model.provider)),
+		settings?.get("enabledModels") ?? [],
+		settings,
+	);
+	const lookupRegistry: ModelLookupRegistry = { getAvailable: () => enabledModels };
 	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
-	if (!primary.model || !parentActiveModelPattern) {
+	if (!primary.model) return { ...primary, authFallbackUsed: false };
+	if (options?.perCallModel) {
+		for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
+			const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
+			if (!candidate.model) continue;
+			const key = await modelRegistry.getApiKey(candidate.model, sessionId);
+			if (key === kNoAuth || isAuthenticated(key)) return { ...candidate, authFallbackUsed: false };
+		}
 		return { ...primary, authFallbackUsed: false };
 	}
+	if (!parentActiveModelPattern) return { ...primary, authFallbackUsed: false };
 
 	const primaryKey = await modelRegistry.getApiKey(primary.model, sessionId);
 	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
 		return { ...primary, authFallbackUsed: false };
 	}
 
+	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
+		const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
+		if (!candidate.model || modelsAreEqual(candidate.model, primary.model)) continue;
+		const key = await modelRegistry.getApiKey(candidate.model, sessionId);
+		if (key === kNoAuth || isAuthenticated(key)) return { ...candidate, authFallbackUsed: false };
+	}
 	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
 	if (!fallback.model) {
 		return { ...primary, authFallbackUsed: false };
@@ -1664,10 +1769,11 @@ export function filterAvailableModelsByEnabledPatterns(
 	available: Model<Api>[],
 	patterns: readonly string[],
 	settings?: Settings,
+	preferences?: ModelMatchPreferences,
 ): Model<Api>[] {
 	if (patterns.length === 0) return available;
 
-	const context = buildPreferenceContext(available, undefined);
+	const context = buildPreferenceContext(available, preferences ?? getModelMatchPreferences(settings));
 	const allowedModels: Model<Api>[] = [];
 	const addAllowed = (model: Model<Api>) => {
 		allowedModels.push(model);
@@ -1699,6 +1805,7 @@ function findExactCliModel(
 	selector: string,
 	allModels: Model<Api>[],
 	availableModels: Model<Api>[],
+	preferences: ModelMatchPreferences | undefined,
 	options?: { catalogFallback?: boolean },
 ): Model<Api> | undefined {
 	const referenced = findExactModelReferenceMatch(selector, allModels);
@@ -1707,8 +1814,8 @@ function findExactCliModel(
 	const lower = selector.toLowerCase();
 	const isFlatMatch = (model: Model<Api>) =>
 		model.id.toLowerCase() === lower || formatModelString(model).toLowerCase() === lower;
-	const preferred = availableModels.find(m => isFlatMatch(m) && !isProviderLockedCrossMatch(selector, m));
-	if (preferred) return preferred;
+	const preferred = availableModels.filter(m => isFlatMatch(m) && !isProviderLockedCrossMatch(selector, m));
+	if (preferred.length > 0) return pickPreferredModel(preferred, buildPreferenceContext(availableModels, preferences));
 
 	if (options?.catalogFallback === false) return undefined;
 	return availableModels === allModels
@@ -1791,7 +1898,11 @@ function resolveCliModelInScope(
 	options: CliModelOptions & { cliModel: string },
 	scope: CliModelScope,
 ): ResolveCliModelResult {
-	const { cliProvider, cliModel, settings, preferences } = options;
+	const { cliProvider, cliModel, settings } = options;
+	const preferences = {
+		...mergeModelMatchPreferences(settings, options.preferences),
+		isKnownProvider: (id: string) => options.modelRegistry.hasProvider?.(id) ?? false,
+	};
 	const { all: allModels, available: availableModels } = scope;
 	if (allModels.length === 0) {
 		return {
@@ -1819,7 +1930,9 @@ function resolveCliModelInScope(
 
 	const trimmedModel = cliModel.trim();
 	if (!provider) {
-		const exact = findExactCliModel(trimmedModel, allModels, availableModels, { catalogFallback: false });
+		const exact = findExactCliModel(trimmedModel, allModels, availableModels, preferences, {
+			catalogFallback: false,
+		});
 		if (exact) {
 			return {
 				model: exact,
@@ -1835,7 +1948,9 @@ function resolveCliModelInScope(
 			MAX_THINKING_SUFFIX_OPTIONS,
 		);
 		if (exactThinkingLevel) {
-			const exactSuffixed = findExactCliModel(exactBase, allModels, availableModels, { catalogFallback: false });
+			const exactSuffixed = findExactCliModel(exactBase, allModels, availableModels, preferences, {
+				catalogFallback: false,
+			});
 			if (exactSuffixed) {
 				return {
 					model: exactSuffixed,
@@ -1957,7 +2072,7 @@ function resolveCliModelInScope(
 			selector: undefined,
 			thinkingLevel: undefined,
 			warning,
-			error: `Model "${display}" not found. Run "proto models" to see available models.`,
+			error: `Model "${display}" not found.${provider ? providerModelHint(display, candidates) : ""} Run "proto models" to see available models.`,
 		};
 	}
 

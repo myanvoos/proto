@@ -1,5 +1,11 @@
 import { type as arkType } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import {
+	type AgentTool,
+	type AgentToolContext,
+	type AgentToolResult,
+	type AgentToolUpdateCallback,
+	TOOL_INTERRUPT_ABORT_REASON,
+} from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import {
 	type Component,
@@ -21,7 +27,7 @@ import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
-import { formatErrorMessage, formatMeta, formatTitle, sanitizeCarriageReturns } from "./render-utils";
+import { formatErrorMessage, formatMeta, formatTitle, sanitizeCarriageReturns, wrapPrefixedLine } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
 
 export const OTHER_OPTION = "Other (type your own)";
@@ -75,6 +81,7 @@ interface QuestionResult {
 	customInput?: string;
 
 	note?: string;
+	noteOption?: string;
 
 	timedOut?: boolean;
 }
@@ -87,6 +94,7 @@ export interface AskToolDetails {
 	customInput?: string;
 
 	note?: string;
+	noteOption?: string;
 
 	timedOut?: boolean;
 
@@ -339,6 +347,7 @@ interface SelectionResult {
 	selectedOptions: string[];
 	customInput?: string;
 	note?: string;
+	noteOption?: string;
 	timedOut: boolean;
 	navigation?: "back" | "forward";
 	cancelled?: boolean;
@@ -501,7 +510,7 @@ async function askSingleQuestion(
 		while (true) {
 			const opts: ExtensionUISelectItem[] = questionOptions.map(opt => toSelectOption(opt));
 
-			if (!navigation?.allowForward && selected.size > 0) {
+			if (selected.size > 0) {
 				opts.push(doneLabel);
 			}
 			opts.push(OTHER_OPTION);
@@ -639,23 +648,24 @@ async function askSingleQuestion(
 }
 
 function formatQuestionResult(result: QuestionResult): string {
-	const noteSuffix = result.note ? ` (note: ${result.note})` : "";
-	if (result.customInput !== undefined) {
-		return `${result.id}: "${result.customInput}"${noteSuffix}`;
+	const noteOn = result.noteOption === undefined ? "" : ` on ${result.noteOption}`;
+	const noteSuffix = result.note ? ` (note${noteOn}: ${result.note})` : "";
+	const custom = result.customInput === undefined ? undefined : `"${result.customInput}"`;
+	if (result.selectedOptions.length === 0) {
+		if (custom !== undefined) return `${result.id}: ${custom}${noteSuffix}`;
+		return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
 	}
-	if (result.selectedOptions.length > 0) {
-		const suffix = `${result.timedOut ? " (auto-selected after timeout)" : ""}${noteSuffix}`;
-		return result.multi
-			? `${result.id}: [${result.selectedOptions.join(", ")}]${suffix}`
-			: `${result.id}: ${result.selectedOptions[0]}${suffix}`;
-	}
-	return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
+	const picked = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
+	const answer = custom === undefined ? picked : `${picked} + ${custom}`;
+	const timeoutSuffix = result.timedOut ? " (auto-selected after timeout)" : "";
+	return `${result.id}: ${answer}${timeoutSuffix}${noteSuffix}`;
 }
 
 function formatSingleQuestionResponse(result: {
 	selectedOptions: string[];
 	customInput?: string;
 	note?: string;
+	noteOption?: string;
 	timedOut?: boolean;
 	multi: boolean;
 }): string {
@@ -677,13 +687,14 @@ function formatSingleQuestionResponse(result: {
 		);
 	}
 	if (result.note) {
+		const label = `User added note${result.noteOption === undefined ? "" : ` on ${result.noteOption}`}:`;
 		responseParts.push(
 			result.note.includes("\n")
-				? `User added note:\n${result.note
+				? `${label}\n${result.note
 						.split("\n")
 						.map(line => `  ${line}`)
 						.join("\n")}`
-				: `User added note: ${result.note}`,
+				: `${label} ${result.note}`,
 		);
 	}
 	if (responseParts.length > 0) return responseParts.join("\n");
@@ -741,6 +752,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	];
 
 	readonly concurrency = "exclusive";
+	readonly interruptible = true;
 	readonly loadMode = "essential";
 
 	constructor(private readonly session: ToolSession) {
@@ -788,6 +800,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 		const timeoutSeconds = this.session.settings.get("ask.timeout");
 		const timeout = timeoutSeconds === 0 ? null : timeoutSeconds * 1000;
+		const cancelAsk: () => never = () => {
+			if (signal?.reason === TOOL_INTERRUPT_ABORT_REASON) throw new ToolAbortError("Ask interrupted by message");
+			context.abort();
+			throw new ToolAbortError("Ask tool was cancelled by the user");
+		};
 
 		this.#sendAskNotification();
 
@@ -824,8 +841,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 					);
 				const richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();
 				if (!richResult) {
-					context.abort();
-					throw new ToolAbortError("Ask tool was cancelled by the user");
+					cancelAsk();
 				}
 				if (richResult.kind === "chat") {
 					const questionText = params.questions.map(q => q.question).join("\n");
@@ -857,6 +873,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						selectedOptions: result.selectedOptions,
 						customInput: result.customInput,
 						note: result.note,
+						noteOption: result.noteOption,
 						timedOut: result.timedOut,
 					});
 				}
@@ -870,8 +887,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							result.selectedOptions.length === 0 &&
 							result.customInput === undefined)
 					) {
-						context.abort();
-						throw new ToolAbortError("Ask tool was cancelled by the user");
+						cancelAsk();
 					}
 					const details: AskToolDetails = {
 						question: result.question,
@@ -880,6 +896,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						selectedOptions: result.selectedOptions,
 						customInput: result.customInput,
 						note: result.note,
+						noteOption: result.noteOption,
 						timedOut: result.timedOut,
 					};
 					const responseText = formatSingleQuestionResponse(result);
@@ -890,7 +907,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				return { content: [{ type: "text" as const, text: responseText }], details };
 			} catch (error) {
 				if (error instanceof Error && error.name === "AbortError") {
-					throw new ToolAbortError("Ask input was cancelled");
+					throw new ToolAbortError(
+						signal?.reason === TOOL_INTERRUPT_ABORT_REASON
+							? "Ask interrupted by message"
+							: "Ask input was cancelled",
+					);
 				}
 				throw error;
 			}
@@ -922,7 +943,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				return { optionLabels, selectedOptions, customInput, note, navigation, cancelled, timedOut };
 			} catch (error) {
 				if (error instanceof Error && error.name === "AbortError") {
-					throw new ToolAbortError("Ask input was cancelled");
+					throw new ToolAbortError(
+						signal?.reason === TOOL_INTERRUPT_ABORT_REASON
+							? "Ask interrupted by message"
+							: "Ask input was cancelled",
+					);
 				}
 				throw error;
 			}
@@ -933,8 +958,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			const { optionLabels, selectedOptions, customInput, note, cancelled, timedOut } = await askQuestion(q);
 
 			if (!timedOut && (cancelled || (selectedOptions.length === 0 && customInput === undefined))) {
-				context.abort();
-				throw new ToolAbortError("Ask tool was cancelled by the user");
+				cancelAsk();
 			}
 			const details: AskToolDetails = {
 				question: q.question,
@@ -979,8 +1003,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			} = await askQuestion(q, { previous, navigation });
 
 			if (cancelled && !timedOut) {
-				context.abort();
-				throw new ToolAbortError("Ask tool was cancelled by the user");
+				cancelAsk();
 			}
 
 			resultsByIndex[questionIndex] = {
@@ -1162,7 +1185,10 @@ function renderAnswerOptionLines(
 		const labelStyled = renderInlineMarkdown(label, mdTheme, t =>
 			isSelected ? uiTheme.fg("toolOutput", t) : uiTheme.fg("muted", t),
 		);
-		out.push(` ${markerStyled} ${labelStyled}`);
+		const prefix = ` ${markerStyled} `;
+		out.push(
+			...wrapPrefixedLine(prefix, " ".repeat(visibleWidth(prefix)), labelStyled, outputBlockContentWidth(width)),
+		);
 	}
 	if (customInput !== undefined) out.push(...renderCustomInputLines(uiTheme, customInput));
 	if (note !== undefined) out.push(...renderNoteLines(uiTheme, note, width));

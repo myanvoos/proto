@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	$env,
 	$which,
 	atomicWriteFileWith,
 	getToolsDir,
@@ -169,7 +170,12 @@ async function getLatestVersion(repo: string, signal?: AbortSignal): Promise<str
 	let response: Response;
 	try {
 		response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-			headers: { "User-Agent": USER_AGENT },
+			headers: {
+				"User-Agent": USER_AGENT,
+				...($env.GITHUB_TOKEN || $env.GH_TOKEN
+					? { Authorization: `Bearer ${$env.GITHUB_TOKEN || $env.GH_TOKEN}` }
+					: {}),
+			},
 			signal: ptree.combineSignals(signal, TOOL_METADATA_TIMEOUT_MS),
 		});
 	} catch (err) {
@@ -288,6 +294,7 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 }
 
 async function installPythonPackage(pkg: string, signal?: AbortSignal): Promise<boolean> {
+	if (signal?.aborted) return false;
 	try {
 		const uv = $which("uv");
 		if (uv) {
@@ -298,6 +305,7 @@ async function installPythonPackage(pkg: string, signal?: AbortSignal): Promise<
 				stderr: "full",
 			});
 			if (result.exitCode === 0) return true;
+			if (signal?.aborted) return false;
 		}
 
 		const pip = $which("pip3") || $which("pip");
@@ -336,6 +344,7 @@ const toolInstallations = new Map<ToolName, Promise<string | undefined>>();
 export async function ensureTool(tool: ToolName, options?: EnsureToolOptions): Promise<string | undefined> {
 	const existingPath = getToolPath(tool);
 	if (existingPath) return existingPath;
+	if (options?.signal?.aborted) return undefined;
 
 	const pending = toolInstallations.get(tool);
 	if (pending) return await pending;
@@ -357,6 +366,7 @@ async function ensureToolOnce(tool: ToolName, silentOrOptions?: EnsureToolOption
 	if (existingPath) {
 		return existingPath;
 	}
+	if (signal?.aborted) return undefined;
 
 	if (os.platform() === "android") {
 		const pkgName = TERMUX_PACKAGES[tool] ?? tool;
@@ -373,6 +383,7 @@ async function ensureToolOnce(tool: ToolName, silentOrOptions?: EnsureToolOption
 		}
 		notify?.(`Installing ${pythonConfig.name}…`);
 		const success = await installPythonPackage(pythonConfig.package, signal);
+		if (signal?.aborted) return undefined;
 		if (success) {
 			const path = $which(pythonConfig.binaryName);
 			if (path) {

@@ -369,7 +369,11 @@ pub(crate) fn ere_literalize_braces(pattern: &str) -> std::borrow::Cow<'_, str> 
 		}
 	}
 
-	if rewrote { std::borrow::Cow::Owned(result) } else { std::borrow::Cow::Borrowed(pattern) }
+	if rewrote {
+		std::borrow::Cow::Owned(result)
+	} else {
+		std::borrow::Cow::Borrowed(pattern)
+	}
 }
 
 /// True when an ERE contains a repetition operator with nothing to repeat.

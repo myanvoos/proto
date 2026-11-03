@@ -1,18 +1,23 @@
 import { expect, test, vi } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import type { Component } from "@oh-my-pi/pi-tui";
+import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { SessionContext } from "../../session/session-context";
+import type { SessionMessageEntry } from "../../session/session-entries";
 import { CHECKLIST_STRIKE_TOTAL_FRAMES } from "../../tools/checklist";
 import type { AssistantMessageComponent } from "../components/assistant-message";
+import { ChatTranscriptBuilder } from "../components/chat-transcript-builder";
 import { ServedModelTracker } from "../components/served-model-marker";
 import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme, theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
+import { UiHelpers } from "../utils/ui-helpers";
 import { EventController } from "./event-controller";
 
 await Settings.init();
@@ -123,6 +128,106 @@ function visibleText(component: Component | undefined): string {
 		.filter(row => row.length > 0)
 		.join(" ");
 }
+
+test.each(["jobs", "bash"])(
+	"a timed-out jobs wait cannot pin scrollback after the next %s call",
+	async nextToolName => {
+		const { chatContainer, context } = createContext();
+		const controller = new EventController(context);
+		try {
+			await controller.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "wait-1",
+				toolName: "jobs",
+				args: { op: "wait" },
+			});
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "wait-1",
+				toolName: "jobs",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "still running" }],
+					details: { op: "wait", jobs: [{ id: "work-job", status: "running", type: "bash", label: "work" }] },
+				},
+			});
+			if (nextToolName === "bash") {
+				chatContainer.addChild({ render: () => ["output after waiting"] });
+			}
+			await controller.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: "next-call",
+				toolName: nextToolName,
+				args: nextToolName === "jobs" ? { op: "wait" } : { command: "echo next" },
+			});
+
+			if (nextToolName === "jobs") {
+				// Repeated waits replace the previous still-mutable snapshot.
+				expect(chatContainer.children).toHaveLength(1);
+			} else {
+				// A different tool preserves the wait, now eligible for scrollback.
+				const history = chatContainer.peekFlushBatch(RENDER_WIDTH);
+				expect(history?.rows).toContain("output after waiting");
+			}
+		} finally {
+			controller.dispose();
+			chatContainer.dispose();
+		}
+	},
+);
+
+test.each(["focused", "main"])(
+	"rebuilding the %s transcript does not leave a completed wait blocking scrollback",
+	path => {
+		const { chatContainer, context } = createContext();
+		const builder = new ChatTranscriptBuilder({
+			ui: context.ui as unknown as TUI,
+			requestRender: NOOP,
+			isBuiltInTool: () => true,
+		});
+		const messages: AgentMessage[] = [
+			snapshot([{ type: "toolCall", id: "wait-1", name: "jobs", arguments: { op: "wait" } }]),
+			{
+				role: "toolResult",
+				toolCallId: "wait-1",
+				toolName: "jobs",
+				content: [{ type: "text", text: "still running" }],
+				details: { op: "wait", jobs: [{ id: "work-job", status: "running", type: "bash", label: "work" }] },
+				isError: false,
+				timestamp: 2,
+			},
+			snapshot([{ type: "text", text: "Continue after the timeout." }], "stop"),
+		];
+		try {
+			let transcript: TranscriptContainer;
+			if (path === "focused") {
+				builder.rebuild(
+					messages.map(
+						(message, index): SessionMessageEntry => ({
+							type: "message",
+							id: `entry-${index}`,
+							parentId: index === 0 ? null : `entry-${index - 1}`,
+							timestamp: new Date(index).toISOString(),
+							message,
+						}),
+					),
+				);
+				transcript = builder.container;
+			} else {
+				const helpers = new UiHelpers(context);
+				context.addMessageToChat = helpers.addMessageToChat.bind(helpers);
+				const sessionContext: SessionContext = { messages, models: {}, injectedTtsrRules: [], mode: "normal" };
+				helpers.renderSessionContext(sessionContext);
+				transcript = chatContainer;
+			}
+			const history = Bun.stripANSI(transcript.peekFlushBatch(RENDER_WIDTH)?.rows.join("\n") ?? "");
+			expect(history).toContain("Continue after the timeout.");
+		} finally {
+			builder.dispose();
+			chatContainer.dispose();
+		}
+	},
+);
 
 test("assistant text that grows in the same update as its tool call renders in full", async () => {
 	const { chatContainer, context } = createContext();

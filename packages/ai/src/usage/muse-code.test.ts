@@ -27,6 +27,54 @@ afterEach(() => {
 });
 
 describe("Muse Code subscription usage", () => {
+	test("an idle paid subscription resets the rolling window and bounds weekly carry by its reset", async () => {
+		const now = 2_000_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(now);
+		const previous = await museCodeUsageProvider.fetchUsage(
+			{ provider: "muse-code", credential },
+			{
+				fetch: async () =>
+					Response.json({
+						is_subs_active: true,
+						subs_usage: {
+							window: { used_percent: 100, window_duration_mins: 300, resets_at: now / 1000 - 1 },
+							weekly: { used_percent: 75, resets_at: now / 1000 + 60 },
+						},
+					}),
+			},
+		);
+		if (!previous) throw new Error("Expected active report");
+		const idleContext = { previousReport: previous, fetch: async () => Response.json({ is_subs_active: true }) };
+		const idle = await museCodeUsageProvider.fetchUsage({ provider: "muse-code", credential }, idleContext);
+		expect(idle?.limits.map(limit => limit.amount.usedFraction)).toEqual([0, 0.75]);
+		expect(idle?.limits[0]?.window?.resetsAt).toBeUndefined();
+		vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+		const reset = await museCodeUsageProvider.fetchUsage({ provider: "muse-code", credential }, idleContext);
+		expect(reset?.limits.map(limit => limit.amount.usedFraction)).toEqual([0, 0]);
+		expect(reset?.limits[1]?.window?.resetsAt).toBe(now + 60_000 + 7 * 86_400_000);
+		const unbounded = { ...previous, limits: previous.limits.map(limit => ({ ...limit, window: undefined })) };
+		const bounded = await museCodeUsageProvider.fetchUsage(
+			{ provider: "muse-code", credential },
+			{ ...idleContext, previousReport: unbounded },
+		);
+		expect(bounded?.limits.map(limit => limit.id)).toEqual(["300m"]);
+	});
+
+	test("missing usage with a payment action or uncertain subscription is not misreported as idle", async () => {
+		for (const payload of [
+			{},
+			{ is_subs_active: true, require_payment: true },
+			{ is_subs_active: true, action_url: "https://pay.example" },
+			{ is_subs_active: true, require_payment_action_url: "https://pay.example" },
+		]) {
+			const report = await museCodeUsageProvider.fetchUsage(
+				{ provider: "muse-code", credential },
+				{ fetch: async () => Response.json(payload) },
+			);
+			expect(report).toBeNull();
+		}
+	});
+
 	test("maps the rolling and weekly quota windows from the key endpoint", async () => {
 		let authorization = "";
 		let requestBody: RequestInit["body"];

@@ -1,9 +1,6 @@
-
-
 use std::{io::IsTerminal, os::fd::AsFd, path::PathBuf};
 
 use crate::{error, openfiles, sys, terminal};
-
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -11,36 +8,17 @@ pub struct Config {
 }
 
 impl Config {
-
-
-
-
-
-
 	pub fn from_term(file: &openfiles::OpenFile) -> Result<Self, error::Error> {
 		let fd = file.try_borrow_as_fd()?;
 		let termios = nix::sys::termios::tcgetattr(fd)?;
 		Ok(Self { termios })
 	}
 
-
-
-
-
-
-
 	pub fn apply_to_term(&self, file: &openfiles::OpenFile) -> Result<(), error::Error> {
 		let fd = file.try_borrow_as_fd()?;
 		nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSANOW, &self.termios)?;
 		Ok(())
 	}
-
-
-
-
-
-
-
 
 	pub fn update(&mut self, settings: &terminal::Settings) {
 		if let Some(echo_input) = &settings.echo_input {
@@ -78,16 +56,13 @@ impl Config {
 	}
 }
 
-
 pub fn get_parent_process_id() -> Option<sys::process::ProcessId> {
 	Some(nix::unistd::getppid().as_raw())
 }
 
-
 pub fn get_process_group_id() -> Option<sys::process::ProcessId> {
 	Some(nix::unistd::getpgrp().as_raw())
 }
-
 
 pub fn get_foreground_pid() -> Option<sys::process::ProcessId> {
 	nix::unistd::tcgetpgrp(std::io::stdin())
@@ -95,29 +70,20 @@ pub fn get_foreground_pid() -> Option<sys::process::ProcessId> {
 		.map(|pgid| pgid.as_raw())
 }
 
-
 pub fn move_to_foreground(pid: sys::process::ProcessId) -> Result<(), error::Error> {
 	nix::unistd::tcsetpgrp(std::io::stdin(), nix::unistd::Pid::from_raw(pid))?;
 	Ok(())
 }
 
-
-
-
 pub fn move_self_to_foreground() -> Result<(), std::io::Error> {
 	if std::io::stdin().is_terminal() {
 		let pgid = nix::unistd::getpgid(None)?;
-
-
 
 		let _ = nix::unistd::tcsetpgrp(std::io::stdin(), pgid);
 	}
 
 	Ok(())
 }
-
-
-
 
 pub fn try_get_terminal_device_path() -> Option<PathBuf> {
 	nix::unistd::ttyname(std::io::stdin()).ok()

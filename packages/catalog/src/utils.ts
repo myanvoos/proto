@@ -1,4 +1,4 @@
-import { type FetchImpl, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import { type FetchImpl, isRecord, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 
 export { isRecord } from "@oh-my-pi/pi-utils";
 
@@ -33,6 +33,18 @@ export function toPositiveNumberOrNull(value: unknown): number | null {
 
 export function toBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
+}
+
+/** Preserve an explicit empty tier list; normalize strings and Codex tier objects. */
+export function parseServiceTierIds(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const ids: string[] = [];
+	for (const tier of value) {
+		const raw = isRecord(tier) ? tier.id : tier;
+		const id = typeof raw === "string" ? raw.trim() : "";
+		if (id && !ids.includes(id)) ids.push(id);
+	}
+	return ids;
 }
 
 export function isAnthropicOAuthToken(key: string): boolean {

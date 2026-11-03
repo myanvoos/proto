@@ -5,9 +5,11 @@ import {
 	type OverlayFocusOwner,
 	type OverlayHandle,
 	type OverlayOptions,
+	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatDuration } from "../../slash-commands/helpers/format";
+import { sanitizeStatusText } from "../shared";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt } from "../utils/keybinding-matchers";
 
@@ -54,6 +56,16 @@ function formatClock(ms: number): string {
 
 export function renderPauseScreen(width: number, height: number, elapsedMs: number, sessionName?: string): string[] {
 	const compact = width < MIN_FULL_WIDTH || height < MIN_FULL_HEIGHT;
+	width = Math.max(1, Math.trunc(width));
+	height = Math.max(1, Math.trunc(height));
+	if (sessionName) sessionName = sanitizeStatusText(sessionName);
+	if (height <= 3) {
+		const hint = theme.fg("dim", "esc resume");
+		const paused = theme.bold(theme.fg("accent", TITLE));
+		const clock = theme.fg("dim", `paused for ${formatClock(elapsedMs)}`);
+		const rows = height === 1 ? [`${hint} · ${clock}`] : height === 2 ? [paused, hint] : [paused, clock, hint];
+		return rows.map(line => truncateToWidth(line, width));
+	}
 	const content: string[] = [];
 
 	if (compact) {
@@ -92,7 +104,7 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 	const lines: string[] = new Array(topPad).fill("");
 	lines.push(...content);
 	while (lines.length < height) lines.push("");
-	return lines.slice(0, Math.max(1, height));
+	return lines.slice(0, Math.max(1, height)).map(line => truncateToWidth(line, width));
 }
 
 export class PauseScreenComponent implements Component, OverlayFocusOwner {

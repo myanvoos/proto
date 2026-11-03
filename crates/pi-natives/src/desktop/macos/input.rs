@@ -33,7 +33,6 @@ pub(super) struct MacInput {
 	clippy::non_send_fields_in_send_ty,
 	reason = "CGEventSource is an immutable CF object; `&mut self` receivers serialize all posting"
 )]
-
 unsafe impl Send for MacInput {}
 
 impl MacInput {
@@ -55,19 +54,25 @@ impl MacInput {
 		match target {
 			Target::Desktop => global_pointer(&self.source, event),
 			Target::Window(id) => {
+				let entry_front = skylight::front_pid();
 				let window = capture.window(id)?;
 				let (pid, wid) = window_identity(&window)?;
 				match mode {
 					DeliveryMode::Background => {
+						refuse_context_gesture(&window, &event)?;
 						background_guard(&window, pointer_kind(&event), pointer_button(&event))?;
-						if !window.focused {
-							skylight::activate_without_raise(pid, wid)?;
-						}
-						background_pointer(&self.source, pid, wid, &window, event)
+						let focus = BackgroundTarget { pid, wid, entry_front };
+						make_key_in_background(&self.source, &window, focus)?;
+						background_pointer(&self.source, pid, wid, &window, event, focus)
 					},
-					DeliveryMode::Foreground => {
-						skylight::with_foreground(pid, wid, || global_pointer(&self.source, event))
-					},
+					DeliveryMode::Foreground => skylight::with_foreground(pid, wid, || match event {
+						PointerEvent::Scroll { x, y, dx, dy } => {
+							global_scroll(&self.source, x, y, dx, dy, primer_side(&window, x), || {
+								skylight::require_front_window(pid, wid)
+							})
+						},
+						event => global_pointer(&self.source, event),
+					}),
 				}
 			},
 		}
@@ -84,20 +89,28 @@ impl MacInput {
 		mode: DeliveryMode,
 		capture: &MacCapture,
 	) -> CoreResult<()> {
+		if text.is_empty() {
+			return Ok(());
+		}
 		match target {
 			Target::Desktop => global_type(&self.source, text),
 			Target::Window(id) => {
+				let entry_front = skylight::front_pid();
 				let window = capture.window(id)?;
 				let (pid, wid) = window_identity(&window)?;
 				match mode {
 					DeliveryMode::Background => {
 						background_guard(&window, "keyboard", None)?;
-						prepare_background_keys(&window, pid, wid, capture)?;
-						background_type(&self.source, pid, text)
+						let focus = BackgroundTarget { pid, wid, entry_front };
+						prepare_background_keys(&self.source, &window, focus, capture)?;
+						background_type(&self.source, pid, text, || focus.require_keys(&window))
 					},
 					DeliveryMode::Foreground => skylight::with_foreground(pid, wid, || {
-						let _ = ax::prepare_foreground_input(&window);
-						global_type(&self.source, text)
+						ax::prepare_foreground_input(&window)?;
+						let mut sent = false;
+						type_text(&self.source, text, |event, down| {
+							post_foreground_key(event, down, pid, wid, &mut sent)
+						})
 					}),
 				}
 			},
@@ -115,20 +128,28 @@ impl MacInput {
 		mode: DeliveryMode,
 		capture: &MacCapture,
 	) -> CoreResult<()> {
+		for &key in keys {
+			key_code(key)?;
+		}
 		match target {
 			Target::Desktop => global_chord(&self.source, keys),
 			Target::Window(id) => {
+				let entry_front = skylight::front_pid();
 				let window = capture.window(id)?;
 				let (pid, wid) = window_identity(&window)?;
 				match mode {
 					DeliveryMode::Background => {
 						background_guard(&window, "keyboard", None)?;
-						prepare_background_keys(&window, pid, wid, capture)?;
-						background_chord(&self.source, pid, keys)
+						let focus = BackgroundTarget { pid, wid, entry_front };
+						prepare_background_keys(&self.source, &window, focus, capture)?;
+						background_chord(&self.source, pid, keys, || focus.require_keys(&window))
 					},
 					DeliveryMode::Foreground => skylight::with_foreground(pid, wid, || {
-						let _ = ax::prepare_foreground_input(&window);
-						global_chord(&self.source, keys)
+						ax::prepare_foreground_input(&window)?;
+						let mut sent = false;
+						key_chord(&self.source, keys, |event, down| {
+							post_foreground_key(event, down, pid, wid, &mut sent)
+						})
 					}),
 				}
 			},
@@ -149,12 +170,114 @@ fn window_identity(window: &DesktopWindow) -> CoreResult<(libc::pid_t, u32)> {
 	Ok((pid, wid))
 }
 
-fn prepare_background_keys(
-	window: &DesktopWindow,
+#[derive(Clone, Copy)]
+struct BackgroundTarget {
+	pid:         libc::pid_t,
+	wid:         u32,
+	entry_front: Option<libc::pid_t>,
+}
+
+impl BackgroundTarget {
+	fn require(self, window: &DesktopWindow) -> CoreResult<()> {
+		require_background_focus(self.entry_front, skylight::front_pid(), self.pid, self.wid, || {
+			ax::focused_window_id(self.pid)
+		})
+		.map_err(|reason| {
+			DesktopError::background_unavailable(format!(
+				"window {} ({}): {reason}; no further input was sent",
+				window.id, window.app,
+			))
+		})
+	}
+
+	fn require_keys(self, window: &DesktopWindow) -> CoreResult<()> {
+		self.require(window)?;
+		if ax::focused_window_id(self.pid) != Some(self.wid) {
+			return Err(DesktopError::background_unavailable(format!(
+				"window {} ({}) is not its application's confirmed key window; no further keys were \
+				 sent",
+				window.id, window.app,
+			)));
+		}
+		Ok(())
+	}
+}
+
+fn require_background_focus(
+	entry_front: Option<libc::pid_t>,
+	front: Option<libc::pid_t>,
 	pid: libc::pid_t,
 	wid: u32,
+	focused: impl FnOnce() -> Option<u32>,
+) -> Result<(), &'static str> {
+	match (entry_front, front) {
+		(None, _) | (_, None) => Err("the front application is unknown"),
+		(Some(entry), Some(front)) if front == pid && entry != pid => {
+			Err("the background application came to the front after input began")
+		},
+		(_, Some(front)) if front == pid && focused() != Some(wid) => {
+			Err("the target is not the front application's key window")
+		},
+		_ => Ok(()),
+	}
+}
+
+fn make_key_in_background(
+	source: &CGEventSource,
+	window: &DesktopWindow,
+	focus: BackgroundTarget,
+) -> CoreResult<()> {
+	focus.require(window)?;
+	// Re-keying an already focused window closes inline editors and popovers.
+	let already_key = ax::focused_window_id(focus.pid) == Some(focus.wid);
+	if skylight::front_pid() == Some(focus.pid) {
+		return Ok(());
+	}
+	let event = CGEvent::new(source.clone())
+		.map_err(|()| DesktopError::input_failed("failed to create a Quartz activation event"))?;
+	// AppKit-defined application-activated event, absent from CGEventType.
+	unsafe { set_event_type(event.as_ptr().cast(), 13) };
+	event.set_flags(CGEventFlags::from_bits_retain(0xc0000));
+	focus.require(window)?;
+	skylight::activate_application(focus.pid, focus.wid, &event)?;
+	if already_key {
+		thread::sleep(Duration::from_millis(50));
+		return focus.require(window);
+	}
+	let group = click_group_id();
+	let press = |kind| {
+		post_mouse(
+			focus.pid,
+			focus.wid,
+			window,
+			source.clone(),
+			kind,
+			CGMouseButton::Left,
+			f64::from(window.x) - 1.0,
+			f64::from(window.y) - 1.0,
+			1,
+			1,
+			0,
+			group,
+			CGEventFlags::CGEventFlagNull,
+		)
+	};
+	focus.require(window)?;
+	let result = press(CGEventType::LeftMouseDown);
+	let released = press(CGEventType::LeftMouseUp);
+	result.and(released)?;
+	thread::sleep(Duration::from_millis(50));
+	focus.require(window)
+}
+
+fn prepare_background_keys(
+	source: &CGEventSource,
+	window: &DesktopWindow,
+	focus: BackgroundTarget,
 	capture: &MacCapture,
 ) -> CoreResult<()> {
+	let wid = focus.wid;
+	focus.require(window)?;
 	let siblings = capture
 		.windows()?
 		.into_iter()
@@ -168,7 +291,8 @@ fn prepare_background_keys(
 		)));
 	}
 
-	skylight::activate_without_raise(pid, wid)
+	make_key_in_background(source, window, focus)?;
+	focus.require_keys(window)
 }
 
 const fn pointer_kind(event: &PointerEvent) -> &'static str {
@@ -216,12 +340,36 @@ fn background_guard(
 	Ok(())
 }
 
+fn refuse_context_gesture(window: &DesktopWindow, event: &PointerEvent) -> CoreResult<()> {
+	let opens_context = |button, modifiers: Modifiers| {
+		button == MouseButton::Right || (button == MouseButton::Left && modifiers.ctrl)
+	};
+	let refuse = match event {
+		PointerEvent::Click { button, count, modifiers, .. } => {
+			*count > 1 && opens_context(*button, *modifiers)
+		},
+		PointerEvent::Drag { button, modifiers, .. } => opens_context(*button, *modifiers),
+		_ => false,
+	};
+	if refuse {
+		Err(DesktopError::background_unavailable(format!(
+			"window {} ({}): this background gesture can hold a context menu open and take the \
+			 user's keyboard; no input was sent",
+			window.id, window.app,
+		)))
+	} else {
+		Ok(())
+	}
+}
+
 const LOCAL_EVENT_FILTER: u32 = 0x01 | 0x02 | 0x04;
 const SUPPRESSION_INTERVAL: u32 = 0;
 const REMOTE_MOUSE_DRAG: u32 = 1;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
+	#[link_name = "CGEventSetType"]
+	fn set_event_type(event: *mut std::ffi::c_void, kind: u32);
 	#[link_name = "CGEventSourceSetLocalEventsSuppressionInterval"]
 	fn set_local_events_suppression_interval(source: CGEventSourceRef, seconds: f64);
 	#[link_name = "CGEventSourceSetLocalEventsFilterDuringSuppressionState"]
@@ -304,10 +452,12 @@ fn background_pointer(
 	wid: u32,
 	window: &DesktopWindow,
 	event: PointerEvent,
+	focus: BackgroundTarget,
 ) -> CoreResult<()> {
+	focus.require(window)?;
 	match event {
 		PointerEvent::Click { x, y, button, count, modifiers } => {
-			background_click(source, pid, wid, window, x, y, button, count, modifiers)
+			background_click(source, pid, wid, window, x, y, button, count, modifiers, focus)
 		},
 		PointerEvent::Move { x, y } => {
 			let group = click_group_id();
@@ -328,10 +478,10 @@ fn background_pointer(
 			)
 		},
 		PointerEvent::Drag { path, button, modifiers } => {
-			background_drag(source, pid, wid, window, &path, button, modifiers)
+			background_drag(source, pid, wid, window, &path, button, modifiers, focus)
 		},
 		PointerEvent::Scroll { x, y, dx, dy } => {
-			background_scroll(source, pid, wid, window, x, y, dx, dy)
+			background_scroll(source, pid, wid, window, x, y, dx, dy, focus)
 		},
 	}
 }
@@ -346,12 +496,16 @@ fn background_click(
 	button: MouseButton,
 	count: u32,
 	modifiers: Modifiers,
+	focus: BackgroundTarget,
 ) -> CoreResult<()> {
 	let group = click_group_id();
 	let (cg_button, down, up, _, number) = button_types(button);
 	let flags = modifier_flags(modifiers);
 	pointer_prologue(pid, wid, window, source, x, y, group, flags)?;
 	for click_state in 1..=count.max(1) {
+		focus
+			.require(window)
+			.map_err(|error| sent_error(error, click_state > 1))?;
 		post_mouse(
 			pid,
 			wid,
@@ -416,38 +570,6 @@ fn pointer_prologue(
 		flags,
 	)?;
 	thread::sleep(Duration::from_millis(15));
-	post_mouse(
-		pid,
-		wid,
-		window,
-		source.clone(),
-		CGEventType::LeftMouseDown,
-		CGMouseButton::Left,
-		-1.0,
-		-1.0,
-		1,
-		1,
-		0,
-		group,
-		flags,
-	)?;
-	thread::sleep(Duration::from_millis(1));
-	post_mouse(
-		pid,
-		wid,
-		window,
-		source.clone(),
-		CGEventType::LeftMouseUp,
-		CGMouseButton::Left,
-		-1.0,
-		-1.0,
-		2,
-		1,
-		0,
-		group,
-		flags,
-	)?;
-	thread::sleep(Duration::from_millis(100));
 	Ok(())
 }
 
@@ -459,6 +581,7 @@ fn background_drag(
 	path: &[(f64, f64)],
 	button: MouseButton,
 	modifiers: Modifiers,
+	focus: BackgroundTarget,
 ) -> CoreResult<()> {
 	let Some(&(start_x, start_y)) = path.first() else {
 		return Err(DesktopError::input_failed("drag path must contain at least two points"));
@@ -470,59 +593,65 @@ fn background_drag(
 	let (cg_button, down, up, dragged, number) = button_types(button);
 	let flags = modifier_flags(modifiers);
 	pointer_prologue(pid, wid, window, source, start_x, start_y, group, flags)?;
-	post_mouse(
-		pid,
-		wid,
-		window,
-		source.clone(),
-		down,
-		cg_button,
-		start_x,
-		start_y,
-		3,
-		1,
-		number,
-		group,
-		flags,
-	)?;
-	for &(x, y) in &path[1..] {
-		thread::sleep(Duration::from_millis(16));
+	focus.require(window)?;
+	let mut location = (start_x, start_y);
+	let result = (|| {
 		post_mouse(
 			pid,
 			wid,
 			window,
 			source.clone(),
-			dragged,
+			down,
 			cg_button,
-			x,
-			y,
+			start_x,
+			start_y,
 			3,
 			1,
 			number,
 			group,
 			flags,
 		)?;
-	}
-	thread::sleep(Duration::from_millis(50));
-	let &(end_x, end_y) = path
-		.last()
-		.ok_or_else(|| DesktopError::input_failed("drag path is empty"))?;
-	post_mouse(
+		for &(x, y) in &path[1..] {
+			thread::sleep(Duration::from_millis(16));
+			focus
+				.require(window)
+				.map_err(|error| sent_error(error, true))?;
+			post_mouse(
+				pid,
+				wid,
+				window,
+				source.clone(),
+				dragged,
+				cg_button,
+				x,
+				y,
+				3,
+				1,
+				number,
+				group,
+				flags,
+			)?;
+			location = (x, y);
+		}
+		thread::sleep(Duration::from_millis(50));
+		Ok(())
+	})();
+	let released = post_mouse(
 		pid,
 		wid,
 		window,
 		source.clone(),
 		up,
 		cg_button,
-		end_x,
-		end_y,
+		location.0,
+		location.1,
 		3,
 		1,
 		number,
 		group,
 		flags,
-	)?;
-	Ok(())
+	);
+	result.and(released)
 }
 
 #[allow(
@@ -548,11 +677,7 @@ fn post_mouse(
 		.map_err(|()| DesktopError::input_failed("failed to create a Quartz pointer event"))?;
 
 	event.set_flags(flags);
-	let local = if x == -1.0 && y == -1.0 {
-		CGPoint::new(-1.0, -1.0)
-	} else {
-		CGPoint::new(x - f64::from(window.x), y - f64::from(window.y))
-	};
+	let local = CGPoint::new(x - f64::from(window.x), y - f64::from(window.y));
 	skylight::stamp_event(&event, pid, wid, local, phase, click_state, button_number, click_group)?;
 	skylight::post_dual(pid, &event)
 }
@@ -566,6 +691,7 @@ fn background_scroll(
 	y: f64,
 	dx: f64,
 	dy: f64,
+	focus: BackgroundTarget,
 ) -> CoreResult<()> {
 	let group = click_group_id();
 	post_mouse(
@@ -600,6 +726,7 @@ fn background_scroll(
 		0,
 		group,
 	)?;
+	focus.require(window)?;
 	skylight::post_dual(pid, &event)
 }
 
@@ -611,57 +738,122 @@ fn click_group_id() -> i64 {
 		.into()
 }
 
-fn background_type(source: &CGEventSource, pid: libc::pid_t, text: &str) -> CoreResult<()> {
-	type_text(source, text, |event| skylight::post_keyboard(pid, event))
+fn sent_error(error: DesktopError, sent: bool) -> DesktopError {
+	if sent {
+		DesktopError::input_failed(format!(
+			"{}; input was already partially sent; inspect before retrying",
+			error.message,
+		))
+	} else {
+		error
+	}
+}
+
+fn post_foreground_key(
+	event: &CGEvent,
+	down: bool,
+	pid: libc::pid_t,
+	wid: u32,
+	sent: &mut bool,
+) -> CoreResult<()> {
+	if down {
+		skylight::require_front_window(pid, wid).map_err(|error| sent_error(error, *sent))?;
+	}
+	post_global(event)?;
+	*sent |= down;
+	Ok(())
+}
+
+fn background_type(
+	source: &CGEventSource,
+	pid: libc::pid_t,
+	text: &str,
+	mut before_press: impl FnMut() -> CoreResult<()>,
+) -> CoreResult<()> {
+	let mut sent = false;
+	type_text(source, text, |event, down| {
+		if down {
+			before_press().map_err(|error| sent_error(error, sent))?;
+		}
+		skylight::post_keyboard(pid, event)?;
+		sent |= down;
+		Ok(())
+	})
 }
 
 fn global_type(source: &CGEventSource, text: &str) -> CoreResult<()> {
-	type_text(source, text, post_global)
+	type_text(source, text, |event, _| post_global(event))
 }
 
 fn type_text(
 	source: &CGEventSource,
 	text: &str,
-	mut post: impl FnMut(&CGEvent) -> CoreResult<()>,
+	mut post: impl FnMut(&CGEvent, bool) -> CoreResult<()>,
 ) -> CoreResult<()> {
 	for character in text.chars() {
 		let value = character.to_string();
-		for down in [true, false] {
+		let transition = |down, post: &mut dyn FnMut(&CGEvent, bool) -> CoreResult<()>| {
 			let event = CGEvent::new_keyboard_event(source.clone(), 0, down)
 				.map_err(|()| DesktopError::input_failed("failed to create a Quartz keyboard event"))?;
 			event.set_string(&value);
 			event.set_flags(CGEventFlags::CGEventFlagNull);
-			post(&event)?;
-			thread::sleep(Duration::from_millis(8));
-		}
+			post(&event, down)
+		};
+		let result = transition(true, &mut post);
+		thread::sleep(Duration::from_millis(8));
+		let released = transition(false, &mut post);
+		result.and(released)?;
+		thread::sleep(Duration::from_millis(8));
 	}
 	Ok(())
 }
 
-fn background_chord(source: &CGEventSource, pid: libc::pid_t, keys: &[KeyName]) -> CoreResult<()> {
-	key_chord(source, keys, |event| skylight::post_keyboard(pid, event))
+fn background_chord(
+	source: &CGEventSource,
+	pid: libc::pid_t,
+	keys: &[KeyName],
+	mut before_press: impl FnMut() -> CoreResult<()>,
+) -> CoreResult<()> {
+	let mut sent = false;
+	key_chord(source, keys, |event, down| {
+		if down {
+			before_press().map_err(|error| sent_error(error, sent))?;
+		}
+		skylight::post_keyboard(pid, event)?;
+		sent |= down;
+		Ok(())
+	})
 }
 
 fn global_chord(source: &CGEventSource, keys: &[KeyName]) -> CoreResult<()> {
-	key_chord(source, keys, post_global)
+	key_chord(source, keys, |event, _| post_global(event))
 }
 
 fn key_chord(
 	source: &CGEventSource,
 	keys: &[KeyName],
-	mut post: impl FnMut(&CGEvent) -> CoreResult<()>,
+	mut post: impl FnMut(&CGEvent, bool) -> CoreResult<()>,
 ) -> CoreResult<()> {
 	if keys.is_empty() {
 		return Err(DesktopError::invalid_key("key chord must not be empty"));
 	}
+	// Reject an unpressable later key before leaving any earlier modifier held.
+	for &key in keys {
+		key_code(key)?;
+	}
 	let mut active = Modifiers::default();
+	let mut pressed = 0;
+	let mut first_error = None;
 	for &key in keys {
 		update_modifier(&mut active, key, true);
-		post_key(source, key, true, modifier_flags(active), &mut post)?;
+		pressed += 1;
+		if let Err(error) = post_key(source, key, true, modifier_flags(active), &mut post) {
+			first_error = Some(error);
+			break;
+		}
 		thread::sleep(Duration::from_millis(8));
 	}
-	let mut first_error = None;
-	for &key in keys.iter().rev() {
+	for &key in keys[..pressed].iter().rev() {
 		update_modifier(&mut active, key, false);
 		if let Err(error) = post_key(source, key, false, modifier_flags(active), &mut post)
 			&& first_error.is_none()
@@ -678,13 +870,13 @@ fn post_key(
 	key: KeyName,
 	down: bool,
 	flags: CGEventFlags,
-	post: &mut impl FnMut(&CGEvent) -> CoreResult<()>,
+	post: &mut impl FnMut(&CGEvent, bool) -> CoreResult<()>,
 ) -> CoreResult<()> {
 	let code = key_code(key)?;
 	let event = CGEvent::new_keyboard_event(source.clone(), code, down)
 		.map_err(|()| DesktopError::input_failed("failed to create a Quartz keyboard event"))?;
 	event.set_flags(flags);
-	post(&event)
+	post(&event, down)
 }
 
 const fn update_modifier(modifiers: &mut Modifiers, key: KeyName, down: bool) {
@@ -883,32 +1075,86 @@ fn global_pointer(source: &CGEventSource, event: PointerEvent) -> CoreResult<()>
 				.ok_or_else(|| DesktopError::input_failed("drag path is empty"))?;
 			post_global_mouse(source, up, cg_button, end_x, end_y, 1, number, flags)
 		},
-		PointerEvent::Scroll { x, y, dx, dy } => {
-			post_global_mouse(
-				source,
-				CGEventType::MouseMoved,
-				CGMouseButton::Left,
-				x,
-				y,
-				0,
-				0,
-				CGEventFlags::CGEventFlagNull,
-			)?;
-			let wheel_x = finite_i32(dx, "horizontal scroll delta")?;
-			let wheel_y = finite_i32(dy, "vertical scroll delta")?;
-			let event = CGEvent::new_scroll_event(
-				source.clone(),
-				ScrollEventUnit::PIXEL,
-				2,
-				wheel_y,
-				wheel_x,
-				0,
-			)
-			.map_err(|()| DesktopError::input_failed("failed to create a Quartz scroll event"))?;
-			event.set_location(point(x, y)?);
-			post_global(&event)
-		},
+		PointerEvent::Scroll { x, y, dx, dy } => global_scroll(source, x, y, dx, dy, -1.0, || Ok(())),
 	}
+}
+
+const MAX_WHEEL_STEP: u32 = 30;
+const MAX_WHEEL_EVENTS: u32 = 40;
+const PRIMER_OFFSETS: [f64; 3] = [2.0, 1.0, 0.0];
+
+fn primer_side(window: &DesktopWindow, x: f64) -> f64 {
+	if x < f64::from(window.x) + f64::from(window.width) / 2.0 {
+		1.0
+	} else {
+		-1.0
+	}
+}
+
+fn global_scroll(
+	source: &CGEventSource,
+	x: f64,
+	y: f64,
+	dx: f64,
+	dy: f64,
+	approach: f64,
+	mut before_wheel: impl FnMut() -> CoreResult<()>,
+) -> CoreResult<()> {
+	let location = point(x, y)?;
+	let steps = wheel_steps(
+		finite_i32(dx, "horizontal scroll delta")?,
+		finite_i32(dy, "vertical scroll delta")?,
+	);
+	if steps.is_empty() {
+		return Ok(());
+	}
+	// Pixel-forwarding surfaces need actual pointer moves since activation,
+	// not only a cursor warp or a wheel stamped with a location.
+	for (index, offset) in PRIMER_OFFSETS.into_iter().enumerate() {
+		if index > 0 {
+			thread::sleep(Duration::from_millis(20));
+		}
+		before_wheel()?;
+		post_global_mouse(
+			source,
+			CGEventType::MouseMoved,
+			CGMouseButton::Left,
+			approach.mul_add(offset, location.x),
+			location.y,
+			0,
+			0,
+			CGEventFlags::CGEventFlagNull,
+		)?;
+	}
+	thread::sleep(Duration::from_millis(50));
+	for (index, &(wheel_x, wheel_y)) in steps.iter().enumerate() {
+		if index > 0 {
+			thread::sleep(Duration::from_millis(16));
+		}
+		before_wheel().map_err(|error| sent_error(error, index > 0))?;
+		let event =
+			CGEvent::new_scroll_event(source.clone(), ScrollEventUnit::PIXEL, 2, wheel_y, wheel_x, 0)
+				.map_err(|()| DesktopError::input_failed("failed to create a Quartz scroll event"))?;
+		event.set_location(location);
+		post_global(&event)?;
+	}
+	Ok(())
+}
+
+/// Keep per-event deltas below remote-surface caps without losing distance.
+fn wheel_steps(dx: i32, dy: i32) -> Vec<(i32, i32)> {
+	let count = dx
+		.unsigned_abs()
+		.max(dy.unsigned_abs())
+		.div_ceil(MAX_WHEEL_STEP)
+		.min(MAX_WHEEL_EVENTS);
+	let share =
+		|total: i32, index: u32| (i64::from(total) * i64::from(index) / i64::from(count)) as i32;
+	(0..count)
+		.map(|index| {
+			(share(dx, index + 1) - share(dx, index), share(dy, index + 1) - share(dy, index))
+		})
+		.collect()
 }
 
 #[allow(
@@ -959,4 +1205,137 @@ fn finite_i32(value: f64, name: &str) -> CoreResult<i32> {
 		)));
 	}
 	Ok(value.round() as i32)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn window() -> DesktopWindow {
+		DesktopWindow {
+			id:      "42".to_owned(),
+			title:   String::new(),
+			app:     "Test".to_owned(),
+			pid:     Some(7),
+			x:       100,
+			y:       50,
+			width:   300,
+			height:  200,
+			focused: false,
+		}
+	}
+
+	#[test]
+	fn scrolls_preserve_distance_without_exceeding_remote_wheel_caps() {
+		assert_eq!(wheel_steps(0, -300), vec![(0, -30); 10]);
+		assert_eq!(wheel_steps(0, 0), Vec::<(i32, i32)>::new());
+		for (dx, dy, count, largest) in [
+			(7, 95, 4, 30),
+			(-301, 44, 11, 30),
+			(0, -1201, 40, 31),
+			(i32::MIN, i32::MAX, 40, 53_687_092),
+		] {
+			let steps = wheel_steps(dx, dy);
+			assert_eq!(steps.len(), count);
+			assert!(
+				steps
+					.iter()
+					.all(|&(x, y)| x.unsigned_abs() <= largest && y.unsigned_abs() <= largest)
+			);
+			assert_eq!(steps.iter().map(|step| i64::from(step.0)).sum::<i64>(), i64::from(dx));
+			assert_eq!(steps.iter().map(|step| i64::from(step.1)).sum::<i64>(), i64::from(dy));
+		}
+		let window = window();
+		for x in [100.0, 101.0, 249.0, 250.0, 398.0, 399.0] {
+			let start = primer_side(&window, x).mul_add(PRIMER_OFFSETS[0], x);
+			assert!((100.0..400.0).contains(&start));
+		}
+	}
+
+	#[test]
+	fn background_input_never_rekeys_the_users_sibling_or_newly_selected_app() {
+		let unread =
+			|| -> Option<u32> { panic!("background focus does not need the target's key window") };
+		assert!(require_background_focus(Some(9), Some(9), 7, 42, unread).is_ok());
+		assert!(require_background_focus(Some(9), None, 7, 42, unread).is_err());
+		assert!(require_background_focus(None, Some(9), 7, 42, unread).is_err());
+		assert!(require_background_focus(Some(9), Some(7), 7, 42, unread).is_err());
+		assert!(require_background_focus(Some(7), Some(7), 7, 42, || Some(43)).is_err());
+		assert!(require_background_focus(Some(7), Some(7), 7, 42, || None).is_err());
+		assert!(require_background_focus(Some(7), Some(7), 7, 42, || Some(42)).is_ok());
+	}
+
+	#[test]
+	fn failed_chord_press_releases_attempted_modifiers_without_posting_later_keys() {
+		let source = source().expect("Quartz source");
+		let mut events = Vec::new();
+		let result =
+			key_chord(&source, &[KeyName::Ctrl, KeyName::Shift, KeyName::Enter], |event, down| {
+				let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+				let flags = event.get_flags();
+				events.push((
+					code,
+					down,
+					flags.contains(CGEventFlags::CGEventFlagControl),
+					flags.contains(CGEventFlags::CGEventFlagShift),
+				));
+				if code == 56 && down {
+					Err(DesktopError::input_failed("partial press"))
+				} else {
+					Ok(())
+				}
+			});
+		assert!(result.is_err());
+		assert_eq!(events, [
+			(59, true, true, false),
+			(56, true, true, true),
+			(56, false, true, false),
+			(59, false, false, false)
+		]);
+	}
+
+	#[test]
+	fn unpressable_later_chord_key_sends_no_initial_modifier() {
+		let source = source().expect("Quartz source");
+		let error = key_chord(&source, &[KeyName::Ctrl, KeyName::Char('é')], |_, _| {
+			panic!("invalid chords must be rejected before any event is posted")
+		})
+		.expect_err("unpressable key");
+		assert_eq!(error.code, super::super::super::error::ErrorCode::InvalidKey);
+	}
+
+	#[test]
+	fn empty_text_does_not_prepare_or_query_its_target() {
+		let mut input = MacInput::new().expect("Quartz source");
+		input
+			.type_text(
+				&Target::Window("not-a-window".to_owned()),
+				"",
+				DeliveryMode::Background,
+				&MacCapture::new(super::super::super::types::DisplaySelector::All),
+			)
+			.expect("no-op text");
+	}
+
+	#[test]
+	fn background_context_menu_gestures_refuse_before_input() {
+		let click = |button, count, ctrl| PointerEvent::Click {
+			x: 110.0,
+			y: 60.0,
+			button,
+			count,
+			modifiers: Modifiers { ctrl, ..Modifiers::default() },
+		};
+		assert!(refuse_context_gesture(&window(), &click(MouseButton::Right, 2, false)).is_err());
+		assert!(refuse_context_gesture(&window(), &click(MouseButton::Left, 2, true)).is_err());
+		assert!(refuse_context_gesture(&window(), &click(MouseButton::Left, 3, false)).is_ok());
+		assert!(
+			refuse_context_gesture(&window(), &PointerEvent::Drag {
+				path:      vec![(110.0, 60.0), (120.0, 70.0)],
+				button:    MouseButton::Right,
+				modifiers: Modifiers::default(),
+			})
+			.is_err()
+		);
+	}
 }

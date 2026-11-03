@@ -55,3 +55,61 @@ test("snapshot caching isolates HOME, PATH, and function-referenced environment"
 		await fs.rm(root, { recursive: true, force: true });
 	}
 });
+
+test("concurrent snapshot requests source an rc once and failed sources are retried after an rc edit", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "shell-snapshot-concurrent-"));
+	try {
+		const home = await createHome(root, "home");
+		const count = path.join(home, "sourced");
+		await Bun.write(path.join(home, ".bashrc"), `printf x >> '${count}'\nprobe_marker() { printf ready; }\n`);
+		const env = { HOME: home, PATH: "/usr/bin:/bin" };
+		const snapshots = await Promise.all(Array.from({ length: 4 }, () => getOrCreateSnapshot("/bin/bash", env)));
+		expect(snapshots.every(snapshot => snapshot === snapshots[0])).toBe(true);
+		expect(await Bun.file(count).text()).toBe("x");
+		await Bun.write(path.join(home, ".bashrc"), `printf y >> '${count}'\nexit 1\n`);
+		expect(await getOrCreateSnapshot("/bin/bash", env)).toBeNull();
+		expect(await getOrCreateSnapshot("/bin/bash", env)).toBeNull();
+		expect(await Bun.file(count).text()).toBe("xy");
+		await Bun.write(path.join(home, ".bashrc"), `printf z >> '${count}'\nprobe_marker() { printf repaired; }\n`);
+		const repaired = await getOrCreateSnapshot("/bin/bash", env);
+		expect(await Bun.file(repaired!).text()).toContain("repaired");
+		expect(await Bun.file(count).text()).toBe("xyz");
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+test("snapshot preserves private hyphenated function dependencies but not core command overrides", async () => {
+	const home = await fs.mkdtemp(path.join(os.tmpdir(), "snapshot-closure-"));
+	try {
+		await Bun.write(
+			path.join(home, ".bashrc"),
+			[
+				"__private-helper() { printf 'closure-ok'; }",
+				"public_wrapper() { __private-helper; }",
+				"ls() { printf 'wrong-core-command'; }",
+				'grep() { command grep "$@"; }',
+				"alias ls='wrong-alias'",
+			].join("\n"),
+		);
+		const snapshot = await getOrCreateSnapshot("/bin/bash", { HOME: home, PATH: "/usr/bin:/bin" });
+		expect(snapshot).not.toBeNull();
+		const child = Bun.spawn(
+			[
+				"/bin/bash",
+				"--noprofile",
+				"--norc",
+				"-c",
+				'source "$1"; public_wrapper; printf "\\n%s" "$(type -t ls)"',
+				"snapshot-test",
+				snapshot!,
+			],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		const output = await new Response(child.stdout).text();
+		expect(await child.exited).toBe(0);
+		expect(output).toBe("closure-ok\nfile");
+	} finally {
+		await fs.rm(home, { recursive: true, force: true });
+	}
+});

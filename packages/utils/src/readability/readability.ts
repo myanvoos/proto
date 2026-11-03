@@ -527,12 +527,11 @@ export class Readability<T = string> {
 			}
 		}
 		if (!top || top.tagName === "BODY") top = body;
-		while (
-			top.parentNode &&
-			(top.parentNode as ReadabilityElement).tagName !== "BODY" &&
-			(top.parentNode as ReadabilityElement).children.length === 1
-		)
-			top = top.parentNode as ReadabilityElement;
+		for (;;) {
+			const parent: ReadabilityElement | null = top.parentNode ? asElement(top.parentNode) : null;
+			if (!parent || parent.tagName === "BODY" || parent.tagName === "HTML" || parent.children.length !== 1) break;
+			top = parent;
+		}
 		const parent = top.parentNode as ReadabilityElement | null;
 		const article = this.#document.createElement("DIV");
 		const siblings = parent ? elements(parent.children) : [top];

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { getSessionsDir, TempDir } from "@oh-my-pi/pi-utils";
+import { getCustomSessionFilesDir, getSessionsDir, Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 import { createSessionLiveHeartbeat, type SessionLiveHeartbeat } from "../session/session-liveness";
 import { FileSessionStorage } from "../session/session-storage";
 import { runGcCommand } from "./gc-cli";
@@ -48,6 +48,26 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+
+test.each([false, true])("GC reclaims orphan rewrite temps without deleting fresh writes (custom=%s)", async custom => {
+	await using agentDir = await TempDir.create();
+	const target = custom
+		? path.join(agentDir.path(), "outside", "checkpoint.log")
+		: path.join(getSessionsDir(agentDir.path()), "project", "session.jsonl");
+	const oldTemp = path.join(path.dirname(target), `.${path.basename(target)}.${Snowflake.next()}.tmp`);
+	const freshTemp = path.join(path.dirname(target), `.${path.basename(target)}.${Snowflake.next()}.tmp`);
+	await Bun.write(oldTemp, "abandoned rewrite");
+	await Bun.write(freshTemp, "active rewrite");
+	await fs.utimes(oldTemp, new Date(0), new Date(0));
+	if (custom) await Bun.write(path.join(getCustomSessionFilesDir(agentDir.path()), "first-save"), target);
+	const preview = await runGcCommand({ flags: { ...ARCHIVE_FLAGS, agentDir: agentDir.path(), apply: false } });
+	expect(preview.archive).toMatchObject({ wouldDeleteTemps: 1, deletedTemps: 0 });
+	expect(await Bun.file(oldTemp).text()).toBe("abandoned rewrite");
+	const applied = await runGcCommand({ flags: { ...ARCHIVE_FLAGS, agentDir: agentDir.path(), apply: true } });
+	expect(applied.archive).toMatchObject({ wouldDeleteTemps: 1, deletedTemps: 1 });
+	expect(await Bun.file(oldTemp).exists()).toBe(false);
+	expect(await Bun.file(freshTemp).text()).toBe("active rewrite");
 });
 
 describe("GC archive active-session safety", () => {

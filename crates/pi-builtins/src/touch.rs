@@ -1,6 +1,3 @@
-
-
-
 #[cfg(unix)]
 use std::fs::OpenOptions;
 #[cfg(unix)]
@@ -14,6 +11,7 @@ use std::{
 	time::SystemTime,
 };
 
+use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{
 	Arg, ArgAction, ArgGroup, ArgMatches, Command,
 	builder::{PossibleValue, ValueParser},
@@ -26,12 +24,10 @@ use libc::O_NONBLOCK;
 use rustix::fs::Timestamps;
 #[cfg(unix)]
 use rustix::fs::futimens;
+use thiserror::Error as ThisError;
 #[cfg(target_os = "linux")]
 use uucore::libc;
 use uucore::{display::Quotable, parser::shortcut_value_parser::ShortcutValueParser};
-
-use brush_core::{ShellExtensions, builtins::Registration};
-use thiserror::Error as ThisError;
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
 
@@ -54,7 +50,12 @@ fn io_error(error: &std::io::Error) -> String {
 			ErrorKind::PermissionDenied => "Permission denied".into(),
 			ErrorKind::AlreadyExists => "Already exists".into(),
 			ErrorKind::WouldBlock => "Would block".into(),
-			_ => error.to_string().split(" (os error ").next().unwrap_or_default().into(),
+			_ => error
+				.to_string()
+				.split(" (os error ")
+				.next()
+				.unwrap_or_default()
+				.into(),
 		}
 	} else {
 		error.to_string()
@@ -65,39 +66,29 @@ fn io_context(error: std::io::Error, context: impl std::fmt::Display) -> TouchEr
 	TouchError::Message(format!("{context}: {}", io_error(&error)))
 }
 
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Options {
-
 	no_create: bool,
-
 
 	no_deref: bool,
 
-
 	source: Source,
-
 
 	date: Option<String>,
 
-
 	change_times: ChangeTimes,
-
 
 	strict: bool,
 }
 
 enum InputFile {
-
 	Path(PathBuf),
 
 	Stdout,
 }
 
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum ChangeTimes {
-
 	AtimeOnly,
 
 	MtimeOnly,
@@ -107,7 +98,6 @@ enum ChangeTimes {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum Source {
-
 	Reference(PathBuf),
 	Timestamp(FileTime),
 
@@ -115,7 +105,6 @@ enum Source {
 }
 
 mod options {
-
 
 	pub static SOURCES: &str = "sources";
 	pub mod sources {
@@ -144,11 +133,9 @@ mod format {
 
 	pub(crate) const YYYYMMDDHHMMS: &str = "%Y-%m-%d %H:%M:%S";
 
-
 	pub(crate) const YYYY_MM_DD_HH_MM: &str = "%Y-%m-%d %H:%M";
 
 	pub(crate) const YYYYMMDDHHMM: &str = "%Y%m%d%H%M";
-
 
 	pub(crate) const YYYYMMDDHHMM_OFFSET: &str = "%Y-%m-%d %H:%M %z";
 }
@@ -171,11 +158,9 @@ fn host_time_zone(host: &Host) -> TimeZone {
 		.unwrap_or(TimeZone::UTC)
 }
 
-
 fn all_digits(s: &str) -> bool {
 	s.as_bytes().iter().all(u8::is_ascii_digit)
 }
-
 
 fn get_year(s: &str) -> u8 {
 	let bytes = s.as_bytes();
@@ -184,7 +169,6 @@ fn get_year(s: &str) -> u8 {
 	let y2 = bytes[n - 1] - b'0';
 	10 * y1 + y2
 }
-
 
 fn is_first_filename_timestamp(
 	reference: Option<&OsString>,
@@ -197,16 +181,13 @@ fn is_first_filename_timestamp(
 		&& reference.is_none()
 		&& date.is_none()
 		&& files.len() >= 2
-
 		&& posix2_version == Some("199209")
 		&& files[0].to_str().is_some_and(is_timestamp)
 }
 
-
 fn is_timestamp(s: &str) -> bool {
 	all_digits(s) && (s.len() == 8 || (s.len() == 10 && (69..=99).contains(&get_year(s))))
 }
-
 
 fn shr2(s: &str) -> String {
 	let n = s.len();
@@ -216,7 +197,6 @@ fn shr2(s: &str) -> String {
 	result.push_str(a);
 	result
 }
-
 
 pub(crate) struct Touch {
 	matches: ArgMatches,
@@ -238,9 +218,11 @@ impl Utility for Touch {
 fn touch_main(matches: &ArgMatches, host: &mut Host) -> Result<(), TouchError> {
 	let mut filenames: Vec<&OsString> = matches
 		.get_many::<OsString>(ARG_FILES)
-		.ok_or_else(|| TouchError::Message(
-			"missing file operand\nTry 'touch --help' for more information.".into(),
-		))?
+		.ok_or_else(|| {
+			TouchError::Message(
+				"missing file operand\nTry 'touch --help' for more information.".into(),
+			)
+		})?
 		.collect();
 
 	let no_deref = matches.get_flag(options::NO_DEREF);
@@ -408,7 +390,6 @@ fn uu_app() -> Command {
 		)
 }
 
-
 fn touch(
 	files: &[InputFile],
 	opts: &Options,
@@ -443,14 +424,12 @@ fn touch(
 	let (atime, mtime) = if let Some(date) = &opts.date {
 		(
 			parse_date(
-				filetime_to_zoned(&atime, time_zone)
-					.ok_or(TouchError::InvalidFiletime(atime))?,
+				filetime_to_zoned(&atime, time_zone).ok_or(TouchError::InvalidFiletime(atime))?,
 				date,
 				time_zone,
 			)?,
 			parse_date(
-				filetime_to_zoned(&mtime, time_zone)
-					.ok_or(TouchError::InvalidFiletime(mtime))?,
+				filetime_to_zoned(&mtime, time_zone).ok_or(TouchError::InvalidFiletime(mtime))?,
 				date,
 				time_zone,
 			)?,
@@ -470,7 +449,6 @@ fn touch(
 	Ok(())
 }
 
-
 fn touch_file(
 	path: &Path,
 	is_stdout: bool,
@@ -479,10 +457,17 @@ fn touch_file(
 	mtime: FileTime,
 	host: &mut Host,
 ) -> Result<(), TouchError> {
-	let filename = if is_stdout { OsStr::new("-") } else { path.as_os_str() };
+	let filename = if is_stdout {
+		OsStr::new("-")
+	} else {
+		path.as_os_str()
+	};
 	let resolved = host.resolve(path);
-	let metadata_result =
-		if opts.no_deref { resolved.symlink_metadata() } else { resolved.metadata() };
+	let metadata_result = if opts.no_deref {
+		resolved.symlink_metadata()
+	} else {
+		resolved.metadata()
+	};
 	if !is_stdout && metadata_result.is_ok() {
 		host.note_write(&resolved);
 	}
@@ -497,8 +482,7 @@ fn touch_file(
 		}
 
 		if opts.no_deref {
-			let error =
-				format!("setting times of {}: No such file or directory", filename.quote());
+			let error = format!("setting times of {}: No such file or directory", filename.quote());
 			if opts.strict {
 				return Err(TouchError::Message(error));
 			}
@@ -506,9 +490,9 @@ fn touch_file(
 			return Ok(());
 		}
 
-		if let Err(error) = host.open_write(&resolved, OpenOptions::new().write(true).create(true).truncate(true)) {
-
-
+		if let Err(error) =
+			host.open_write(&resolved, OpenOptions::new().write(true).create(true).truncate(true))
+		{
 			let is_directory = path
 				.to_string_lossy()
 				.chars()
@@ -529,7 +513,6 @@ fn touch_file(
 			return Ok(());
 		}
 
-
 		if opts.source == Source::Now && opts.date.is_none() {
 			return Ok(());
 		}
@@ -538,10 +521,7 @@ fn touch_file(
 	update_times(path, &resolved, is_stdout, opts, atime, mtime)
 }
 
-
 fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
-
-
 	let time_access_only = if matches.contains_id(options::TIME) {
 		matches
 			.get_one::<String>(options::TIME)
@@ -562,7 +542,6 @@ fn determine_atime_mtime_change(matches: &ArgMatches) -> ChangeTimes {
 	}
 }
 
-
 fn update_times(
 	path: &Path,
 	resolved: &Path,
@@ -571,7 +550,6 @@ fn update_times(
 	atime: FileTime,
 	mtime: FileTime,
 ) -> Result<(), TouchError> {
-
 	let (atime, mtime) = match opts.change_times {
 		ChangeTimes::AtimeOnly => (
 			atime,
@@ -599,7 +577,6 @@ fn update_times(
 
 	#[cfg(unix)]
 	{
-
 		if !is_stdout && try_futimens_via_write_fd(resolved, atime, mtime).is_ok() {
 			return Ok(());
 		}
@@ -611,9 +588,9 @@ fn update_times(
 
 #[cfg(unix)]
 
-
 fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> std::io::Result<()> {
-	let file = brush_core::heldfiles::open(path, OpenOptions::new().write(true).custom_flags(O_NONBLOCK))?;
+	let file =
+		brush_core::heldfiles::open(path, OpenOptions::new().write(true).custom_flags(O_NONBLOCK))?;
 
 	let timestamps = Timestamps {
 		last_access:       rustix::fs::Timespec {
@@ -629,11 +606,9 @@ fn try_futimens_via_write_fd(path: &Path, atime: FileTime, mtime: FileTime) -> s
 	futimens(&file, &timestamps).map_err(|e| Error::from_raw_os_error(e.raw_os_error()))
 }
 
-
 fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
 	let metadata = if follow {
 		match fs::metadata(path) {
-
 			Ok(meta) => meta,
 
 			Err(e) if e.kind() == ErrorKind::NotFound => return Err(e),
@@ -651,15 +626,12 @@ fn stat(path: &Path, follow: bool) -> std::io::Result<(FileTime, FileTime)> {
 }
 
 fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
-
-
 	if let Ok(parsed) = strtime::parse(format::POSIX_LOCALE, s)
 		.and_then(|tm| tm.to_datetime())
 		.and_then(|dt| TimeZone::UTC.to_zoned(dt))
 	{
 		return Ok(timestamp_to_filetime(parsed.timestamp()));
 	}
-
 
 	for fmt in [
 		format::YYYYMMDDHHMMS,
@@ -675,7 +647,6 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 		}
 	}
 
-
 	if let Ok(filetime) = strtime::parse(format::ISO_8601, s)
 		.and_then(|tm| tm.to_date())
 		.and_then(|date| {
@@ -687,7 +658,6 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 	{
 		return Ok(filetime);
 	}
-
 
 	if s.bytes().next() == Some(b'@')
 		&& let Ok(ts) = &s[1..].parse::<i64>()
@@ -702,14 +672,12 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 	Err(TouchError::InvalidDateFormat(s.to_owned()))
 }
 
-
 fn prepend_century(s: &str) -> Result<String, TouchError> {
-	let first_two_digits = s[..2].parse::<u32>().map_err(|_| {
-		TouchError::Message(format!("invalid date ts format {}", s.quote()))
-	})?;
+	let first_two_digits = s[..2]
+		.parse::<u32>()
+		.map_err(|_| TouchError::Message(format!("invalid date ts format {}", s.quote())))?;
 	Ok(format!("{}{s}", if first_two_digits > 68 { 19 } else { 20 }))
 }
-
 
 fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError> {
 	use format::{YYYYMMDDHHMM, YYYYMMDDHHMM_DOT_SS};
@@ -733,11 +701,9 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 		.and_then(|parsed| parsed.to_datetime())
 		.map_err(|_| TouchError::Message(format!("invalid date ts format {}", ts.quote())))?;
 
-
 	if dt.second() == 59 && ts.ends_with(".60") {
 		dt += 1.second();
 	}
-
 
 	let local = time_zone
 		.to_ambiguous_zoned(dt)
@@ -746,7 +712,6 @@ fn parse_timestamp(s: &str, time_zone: &TimeZone) -> Result<FileTime, TouchError
 
 	Ok(timestamp_to_filetime(local.timestamp()))
 }
-
 
 fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	#[cfg(all(unix, not(target_os = "android")))]
@@ -763,9 +728,6 @@ fn pathbuf_from_stdout() -> Result<PathBuf, TouchError> {
 	}
 }
 
-
 pub(crate) fn touch_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Touch, SE>()
 }
-
-

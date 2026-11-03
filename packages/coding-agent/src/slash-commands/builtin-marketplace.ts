@@ -12,6 +12,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import { setInstalledPluginEnabled } from "../extensibility/plugins/toggle";
 import { MCPCommandController } from "../modes/controllers/mcp-command-controller";
 import type { InteractiveModeContext } from "../modes/types";
 import { refreshAgentDiscovery } from "../task";
@@ -418,22 +419,25 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 		acpInputHint: "[list|enable|disable]",
 		subcommands: [
 			{ name: "list", description: "List all installed plugins (npm + marketplace)" },
-			{ name: "enable", description: "Enable a marketplace plugin", usage: "<name@marketplace>" },
-			{ name: "disable", description: "Disable a marketplace plugin", usage: "<name@marketplace>" },
+			{ name: "enable", description: "Enable an installed plugin", usage: "<plugin>" },
+			{ name: "disable", description: "Disable an installed plugin", usage: "<plugin>" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			try {
 				if (verb === "enable" || verb === "disable") {
-					const parsed = parsePluginScopeArgs(
-						rest,
-						`Usage: /plugins ${verb} [--scope user|project] <name@marketplace>`,
-					);
+					const parsed = parsePluginScopeArgs(rest, `Usage: /plugins ${verb} [--scope user|project] <plugin>`);
 					if ("error" in parsed) return usage(parsed.error, runtime);
 					const manager = await createMarketplaceManager(runtime);
 					const isEnable = verb === "enable";
-					await manager.setPluginEnabled(parsed.pluginId, isEnable, parsed.scope);
+					await setInstalledPluginEnabled(parsed.pluginId, {
+						enabled: isEnable,
+						scope: parsed.scope,
+						marketplaceIds: new Set((await manager.listInstalledPlugins()).map(plugin => plugin.id)),
+						marketplace: manager,
+						npm: new PluginManager(),
+					});
 					await runtime.reloadPlugins();
 					await runtime.output(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
 					return commandConsumed();
@@ -468,92 +472,6 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 			} catch (err) {
 				return usage(`Plugin error: ${errorMessage(err)}`, runtime);
 			}
-		},
-		handleTui: async (command, runtime) => {
-			clearSubmittedText(runtime);
-			const args = command.args.trim().split(/\s+/);
-			const sub = args[0] || "list";
-			const rest = args.slice(1).join(" ").trim();
-
-			try {
-				const mgr = new MarketplaceManager({
-					marketplacesRegistryPath: getMarketplacesRegistryPath(),
-					installedRegistryPath: getInstalledPluginsRegistryPath(),
-					projectInstalledRegistryPath: await resolveOrDefaultProjectRegistryPath(
-						runtime.ctx.sessionManager.getCwd(),
-					),
-					marketplacesCacheDir: getMarketplacesCacheDir(),
-					pluginsCacheDir: getPluginsCacheDir(),
-					clearPluginRootsCache: clearPluginRootsAndCaches,
-				});
-
-				switch (sub) {
-					case "enable":
-					case "disable": {
-						const parsed = parsePluginScopeArgs(
-							rest ?? "",
-							`Usage: /plugins ${sub} [--scope user|project] <name@marketplace>`,
-						);
-						if ("error" in parsed) {
-							runtime.ctx.showStatus(parsed.error);
-							return;
-						}
-						const isEnable = sub === "enable";
-						await mgr.setPluginEnabled(parsed.pluginId, isEnable, parsed.scope);
-						runtime.ctx.showStatus(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
-						break;
-					}
-					default: {
-						const lines: string[] = [];
-
-						const npm = new PluginManager();
-						const npmPlugins = await npm.list();
-						if (npmPlugins.length > 0) {
-							lines.push("npm plugins:");
-							for (const p of npmPlugins) {
-								const status = p.enabled === false ? " (disabled)" : "";
-								lines.push(`  ${p.name}@${p.version}${status}`);
-							}
-						}
-
-						const mktPlugins = await mgr.listInstalledPlugins();
-						if (mktPlugins.length > 0) {
-							if (lines.length > 0) lines.push("");
-							lines.push("marketplace plugins:");
-							for (const p of mktPlugins) {
-								const entry = p.entries[0];
-								const status = entry?.enabled === false ? " (disabled)" : "";
-								const shadowed = p.shadowedBy ? " [shadowed]" : "";
-								lines.push(`  ${p.id} v${entry?.version ?? "?"}${status} [${p.scope}]${shadowed}`);
-							}
-						}
-
-						if (lines.length === 0) {
-							runtime.ctx.showStatus("No plugins installed");
-						} else {
-							runtime.ctx.showStatus(lines.join("\n"));
-						}
-						break;
-					}
-				}
-			} catch (err) {
-				runtime.ctx.showStatus(`Plugin error: ${err}`);
-			}
-		},
-	},
-	{
-		name: "reload-plugins",
-		description: "Reload all plugins (skills, commands, hooks, tools, agents, MCP)",
-		acpDescription: "Reload all plugins",
-		handle: async (_command, runtime) => {
-			await runtime.reloadPlugins();
-			await runtime.output("Plugins reloaded.");
-			return commandConsumed();
-		},
-		handleTui: async (_command, runtime) => {
-			await reloadTuiPluginState(runtime.ctx);
-			runtime.ctx.showStatus("Plugins reloaded.");
-			clearSubmittedText(runtime);
 		},
 	},
 ];

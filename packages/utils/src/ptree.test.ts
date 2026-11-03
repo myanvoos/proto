@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import { exec, spawn, TimeoutError, terminateProcess } from "./ptree";
 
@@ -118,6 +118,23 @@ console.log("probe-done");`;
 });
 
 describe("owned process termination", () => {
+	test("native termination failure still stops the owned child", async () => {
+		const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		const identity = Process.fromPid(child.pid)!;
+		const broken = spyOn(identity, "terminate").mockRejectedValue(new Error("native realm unavailable"));
+		try {
+			expect(await terminateProcess(child, identity, { gracefulMs: 0 })).toBe(true);
+			await child.exited;
+			await expectStopped(child.pid);
+		} finally {
+			broken.mockRestore();
+			if (child.exitCode === null) child.kill("SIGKILL");
+		}
+	});
+
 	test("terminates a detached orphan group within the supplied deadline", async () => {
 		const child = Bun.spawn(["sh", "-c", "sleep 30 & echo $!"], { detached: true, stdout: "pipe", stderr: "pipe" });
 		const identity = Process.fromPid(child.pid);

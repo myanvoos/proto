@@ -1,7 +1,7 @@
 use image::RgbaImage;
 
 use super::{
-	ax::{AxHandle, AxProps},
+	ax::{AxHandle, AxProps, WalkBounds},
 	error::{CoreResult, DesktopError},
 	frame::FrameGeometry,
 	keys::KeyName,
@@ -106,6 +106,14 @@ pub trait AxBackend {
 	fn window_root(&mut self, win: &DesktopWindow) -> CoreResult<AxHandle>;
 	fn props(&mut self, h: &AxHandle) -> CoreResult<AxProps>;
 	fn children(&mut self, h: &AxHandle) -> CoreResult<Vec<AxHandle>>;
+	/// Shares children reads and omits bounds on text-only snapshot walks.
+	fn walk_node(
+		&mut self,
+		h: &AxHandle,
+		_bounds: WalkBounds,
+	) -> CoreResult<(AxProps, Vec<AxHandle>)> {
+		Ok((self.props(h)?, self.children(h)?))
+	}
 	fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>>;
 	fn perform(&mut self, h: &AxHandle, action: &str) -> CoreResult<()>;
 	fn set_value(&mut self, h: &AxHandle, value: &str) -> CoreResult<()>;

@@ -1,5 +1,3 @@
-
-
 use std::{collections::HashMap, sync::LazyLock};
 
 use terminfo::capability as cap;
@@ -21,7 +19,6 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 	let mut map: HashMap<Vec<u8>, interfaces::Key> = HashMap::new();
 
 	if let Ok(ti) = terminfo::Database::from_env() {
-
 		let key_capabilities = [
 			key!(ti, interfaces::Key::F(1), cap::KeyF1<'_>),
 			key!(ti, interfaces::Key::F(2), cap::KeyF2<'_>),
@@ -46,8 +43,6 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 			key!(ti, interfaces::Key::PageUp, cap::KeyPPage<'_>),
 			key!(ti, interfaces::Key::PageDown, cap::KeyNPage<'_>),
 			key!(ti, interfaces::Key::BackTab, cap::BackTab<'_>),
-
-
 			key!(ti, interfaces::Key::Up, cap::CursorUp<'_>),
 			key!(ti, interfaces::Key::Down, cap::CursorDown<'_>),
 			key!(ti, interfaces::Key::Left, cap::CursorLeft<'_>),
@@ -66,12 +61,6 @@ fn build_terminfo_key_map() -> HashMap<Vec<u8>, interfaces::Key> {
 
 pub(crate) static TERMINFO_KEY_MAP: LazyLock<HashMap<Vec<u8>, interfaces::Key>> =
 	LazyLock::new(build_terminfo_key_map);
-
-
-
-
-
-
 
 pub fn try_get_key_from_key_code(key_code: &[u8]) -> Option<interfaces::Key> {
 	if let Some(key) = TERMINFO_KEY_MAP.get(key_code) {

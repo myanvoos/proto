@@ -132,7 +132,7 @@ describe("Devin Connect stream termination", () => {
 });
 
 describe("Devin legacy Windsurf credentials", () => {
-	it("retries auth with the raw API key and keeps it for chat", async () => {
+	it("sends legacy keys raw on the first auth request and reuses them for chat", async () => {
 		const authBytes = toBinary(GetUserJwtResponseSchema, create(GetUserJwtResponseSchema, { userJwt: "test-jwt" }));
 		const chatBytes = Buffer.concat([messageFrame(StopReason.STOP_PATTERN), endStreamFrame()]);
 		const authApiKeys: string[] = [];
@@ -149,8 +149,10 @@ describe("Devin legacy Windsurf credentials", () => {
 						: new Response(authBytes);
 				}
 				const length = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(1, false);
-				chatApiKey = fromBinary(GetChatMessageRequestSchema, gunzipSync(body.subarray(5, 5 + length))).metadata
-					?.apiKey;
+				chatApiKey = fromBinary(
+					GetChatMessageRequestSchema,
+					body[0] & 1 ? gunzipSync(body.subarray(5, 5 + length)) : body.subarray(5, 5 + length),
+				).metadata?.apiKey;
 				return new Response(chatBytes);
 			},
 			{ preconnect: fetch.preconnect },
@@ -159,7 +161,32 @@ describe("Devin legacy Windsurf credentials", () => {
 		const result = await streamDevin(model, context, { apiKey: "legacy-windsurf-key", fetch: fetchImpl }).result();
 
 		expect(result.stopReason).toBe("stop");
-		expect(authApiKeys).toEqual(["devin-session-token$legacy-windsurf-key", "legacy-windsurf-key"]);
+		expect(authApiKeys).toEqual(["legacy-windsurf-key"]);
 		expect(chatApiKey).toBe("legacy-windsurf-key");
 	});
+});
+
+it("Devin onPayload changes the actual protobuf request and short requests are not marked gzip", async () => {
+	let request: { temperature?: number; topP?: number; maxNewlines?: bigint; stopPatterns?: string[] } | undefined;
+	let encoding: string | null | undefined;
+	const fetchImpl: FetchImpl = async (input, init) => {
+		if (String(input).endsWith("/GetUserJwt"))
+			return new Response(toBinary(GetUserJwtResponseSchema, create(GetUserJwtResponseSchema, { userJwt: "jwt" })));
+		encoding = new Headers(init?.headers).get("connect-content-encoding");
+		const frame = new Uint8Array(init?.body as ArrayBuffer);
+		const payload = frame[0]! & 1 ? gunzipSync(frame.subarray(5)) : frame.subarray(5);
+		request = fromBinary(GetChatMessageRequestSchema, payload).configuration;
+		return new Response(Buffer.concat([messageFrame(StopReason.STOP_PATTERN), endStreamFrame()]));
+	};
+	const result = await streamDevin(model, context, {
+		apiKey: "test",
+		fetch: fetchImpl,
+		onPayload: body => {
+			const request = body as { configuration: { temperature: number } };
+			request.configuration.temperature = 0.25;
+		},
+	}).result();
+	expect(result.stopReason).toBe("stop");
+	expect(request).toMatchObject({ temperature: 0.25, topP: Math.fround(0.95), maxNewlines: 400n, stopPatterns: [] });
+	expect(encoding).toBeNull();
 });

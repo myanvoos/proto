@@ -178,3 +178,19 @@ export function $which(command: string, options?: WhichOptions): string | null {
 	}
 	return result;
 }
+
+/** All executable matches in PATH order, plus the macOS toolchain fallback. Uncached for candidate probing. */
+export function $whichAll(command: string, options?: Bun.WhichOptions): string[] {
+	const searchPath = options?.PATH ?? process.env.PATH ?? "";
+	const matches: string[] = [];
+	for (const directory of searchPath.split(path.delimiter)) {
+		if (!directory) continue;
+		const match = Bun.which(command, { cwd: options?.cwd, PATH: directory });
+		if (match && !matches.includes(match)) matches.push(match);
+	}
+	if (os.platform() === "darwin" && isXcodeBin(command)) {
+		const match = getMacosToolPaths().get(command);
+		if (match && !matches.includes(match)) matches.push(match);
+	}
+	return matches;
+}

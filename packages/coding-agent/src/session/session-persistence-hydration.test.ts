@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { BlobStore } from "./blob-store";
+import { BlobStore, parseBlobRef } from "./blob-store";
 import type { FileEntry } from "./session-entries";
 import { loadEntriesFromFile, resolveBlobRefsInEntries } from "./session-loader";
-import { PERSISTED_REPLAY_BLOB_KEY, prepareEntryForPersistence } from "./session-persistence";
+import { forgetExternalizedImages, PERSISTED_REPLAY_BLOB_KEY, prepareEntryForPersistence } from "./session-persistence";
 
 function messageEntry(content: unknown[], extra: Record<string, unknown> = {}): FileEntry {
 	return {
@@ -94,5 +94,21 @@ test("image content continues to externalize and hydrate through the existing im
 		expect(JSON.stringify(persisted).length).toBeLessThan(JSON.stringify(source).length);
 		await resolveBlobRefsInEntries([persisted], store);
 		expect(persisted).toEqual(source);
+	});
+});
+
+test("retrying a failed publication recreates image blobs that were collected before retry", async () => {
+	await withBlobStore(async store => {
+		const source = messageEntry([{ type: "image", data: "AQID".repeat(600), mimeType: "image/png" }]);
+		const first = prepareEntryForPersistence(source, store);
+		if (first.type !== "message" || first.message.role !== "assistant" || first.message.content[0]?.type !== "image")
+			throw new Error("Missing externalized image");
+		const hash = parseBlobRef(first.message.content[0].data);
+		if (!hash) throw new Error("Image did not externalize");
+		fs.unlinkSync(path.join(store.dir, hash));
+		forgetExternalizedImages(store);
+		const retry = prepareEntryForPersistence(source, store);
+		await resolveBlobRefsInEntries([retry], store);
+		expect(retry).toEqual(source);
 	});
 });

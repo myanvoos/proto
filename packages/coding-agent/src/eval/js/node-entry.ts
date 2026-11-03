@@ -9,7 +9,7 @@ import { decodeNodeKernelMessage, encodeNodeKernelMessage } from "./node-protoco
 import { WorkerCore } from "./worker-core";
 import type { Transport, WorkerInbound } from "./worker-protocol";
 
-const MIN_NODE_MAJOR = 22;
+const MIN_NODE_MAJOR = 24;
 
 const major = Number(process.versions.node.split(".")[0]);
 if (typeof Bun === "undefined" && !(major >= MIN_NODE_MAJOR)) {

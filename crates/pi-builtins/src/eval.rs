@@ -1,10 +1,8 @@
 use brush_core::{ExecutionResult, builtins};
 use clap::Parser;
 
-
 #[derive(Parser)]
 pub(crate) struct EvalCommand {
-
 	#[clap(allow_hyphen_values = true)]
 	args: Vec<String>,
 }
@@ -21,15 +19,7 @@ impl builtins::Command for EvalCommand {
 
 			tracing::debug!("Applying eval to: {:?}", args_concatenated);
 
-
-
-
-
 			let source_info = context.shell.call_stack().current_pos_as_source_info();
-
-
-
-
 
 			context
 				.shell

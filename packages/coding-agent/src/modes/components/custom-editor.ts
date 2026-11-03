@@ -27,6 +27,7 @@ import { MacOSSpellingProvider, type SpellingFeatures } from "../macos-spelling"
 import { hasMagicKeyword, highlightMagicKeywords } from "../magic-keywords";
 import { isQueuedMessageList, parseQueueShorthand, QUEUE_LIST_MARKER_RE } from "../queue-input";
 import { fgOrPlain, theme } from "../theme/theme";
+import { TypingWordTracker } from "../typing-word";
 
 type ConfigurableEditorAction = Extract<
 	AppKeybinding,
@@ -110,7 +111,7 @@ function normalizePastedPath(path: string): string {
 			return fileURLToPath(unquoted);
 		} catch {}
 	}
-	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
+	return (unquoted.startsWith("\\~/") ? unquoted.slice(1) : unquoted).replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
 }
 
 /** Only anchored paths count; `api/file/x.png` is ambiguous URL-ish text and stays text. */
@@ -260,6 +261,7 @@ const MAX_QUEUED_INPUT_CHUNKS = 128;
 
 export class CustomEditor extends Editor {
 	#spelling = new MacOSSpellingProvider();
+	#typing = new TypingWordTracker();
 	imageLinks?: readonly (string | undefined)[];
 
 	#pendingImages: ImageContent[] = [];
@@ -417,23 +419,29 @@ export class CustomEditor extends Editor {
 	#shimmerTimer: Timer | undefined;
 
 	#requestShimmerRepaint: (() => void) | undefined;
-	#queueDecorationText: string | undefined;
+	#decorationRevision = -1;
+	#decorationText = "";
+	#decorationHasMagicKeyword = false;
 	#decorationLines: readonly string[] = [""];
 	#queueShorthandActive = false;
 	#queueListActive = false;
 
 	override decorateText = (text: string, context: EditorTextDecorationContext): string => {
-		const editorText = this.getText();
-		const animated = this.focused && this.#shimmerEnabled() && hasMagicKeyword(editorText);
-		const phase = animated ? (Date.now() % CustomEditor.SHIMMER_PERIOD_MS) / CustomEditor.SHIMMER_PERIOD_MS : 0;
-		if (animated) this.#scheduleShimmerFrame();
-		if (this.#queueDecorationText !== editorText) {
-			this.#queueDecorationText = editorText;
+		if (this.#decorationRevision !== this.textRevision) {
+			this.#decorationRevision = this.textRevision;
+			this.#decorationText = this.getText();
+			this.#decorationHasMagicKeyword = hasMagicKeyword(this.#decorationText);
 			this.#decorationLines = this.getLines();
-			const queueBody = parseQueueShorthand(editorText);
+			const queueBody = parseQueueShorthand(this.#decorationText);
 			this.#queueShorthandActive = queueBody !== undefined;
 			this.#queueListActive = queueBody !== undefined && isQueuedMessageList(queueBody);
 		}
+		const editorText = this.#decorationText;
+		const caret = this.getCursor();
+		this.#typing.update(this.textRevision, this.#decorationLines, caret.line, caret.col, this.focused);
+		const animated = this.focused && this.#shimmerEnabled() && this.#decorationHasMagicKeyword;
+		const phase = animated ? (Date.now() % CustomEditor.SHIMMER_PERIOD_MS) / CustomEditor.SHIMMER_PERIOD_MS : 0;
+		if (animated) this.#scheduleShimmerFrame();
 		let sourceSearchOffset = 0;
 		const locateSource = (value: string): number => {
 			const offset = text.indexOf(value, sourceSearchOffset);
@@ -451,6 +459,7 @@ export class CustomEditor extends Editor {
 						lines: this.#decorationLines,
 						line: context.line,
 						startCol: context.startCol + sourceOffset,
+						typing: this.#typing.word,
 					},
 					span => highlightMagicKeywords(span, undefined, phase),
 				);
@@ -514,7 +523,8 @@ export class CustomEditor extends Editor {
 		this.#pendingInputBytes = 0;
 		this.#pasteHandler.clear();
 		this.#queuedPasteHandler.clear();
-		this.#queueDecorationText = undefined;
+		this.#decorationRevision = -1;
+		this.#decorationText = "";
 		this.#decorationLines = [""];
 		this.setShimmerRepaintHandler(undefined);
 		this.#spelling.onUpdate = undefined;
@@ -568,7 +578,7 @@ export class CustomEditor extends Editor {
 
 	#pasteInFlight = 0;
 
-	#pendingInput: string[] = [];
+	#pendingInput: { data: string; draft: boolean }[] = [];
 	#pendingInputBytes = 0;
 	#queuedPasteHandler = new BracketedPasteHandler({ byteLimit: MAX_QUEUED_INPUT_BYTES });
 	#actionKeys = new Map<ConfigurableEditorAction, KeyId[]>(
@@ -632,10 +642,13 @@ export class CustomEditor extends Editor {
 		const drained = this.#pendingInput;
 		this.#pendingInput = [];
 		this.#pendingInputBytes = 0;
-		for (const chunk of drained) this.handleInput(chunk);
+		for (const chunk of drained) {
+			if (chunk.draft) this.handleDraftEdit(chunk.data);
+			else this.handleInput(chunk.data);
+		}
 	}
 
-	#queueInput(data: string): void {
+	#queueInput(data: string, draft: boolean): void {
 		const bytes = Buffer.byteLength(data);
 		if (
 			this.#pendingInput.length >= MAX_QUEUED_INPUT_CHUNKS ||
@@ -644,22 +657,13 @@ export class CustomEditor extends Editor {
 			this.onInputRejected?.("Input queue is full (128 chunks / 256 KiB); incoming input was discarded");
 			return;
 		}
-		this.#pendingInput.push(materializeString(data));
+		this.#pendingInput.push({ data: materializeString(data), draft });
 		this.#pendingInputBytes += bytes;
 	}
 
 	override handleInput(data: string): void {
 		if (this.#disposed) return;
-		if (this.#pasteInFlight > 0 || this.#queuedPasteHandler.active) {
-			const paste = this.#queuedPasteHandler.process(data);
-			if (paste.handled) {
-				if (paste.rejected) this.onInputRejected?.("Queued paste exceeds 256 KiB and was discarded");
-				if (paste.pasteContent !== undefined)
-					this.#queueInput(`${BRACKETED_PASTE_START}${paste.pasteContent}${BRACKETED_PASTE_END}`);
-			} else this.#queueInput(data);
-			if (this.#pasteInFlight === 0 && !this.#queuedPasteHandler.active) this.#drainPendingInput();
-			return;
-		}
+		if (this.#queueBehindPaste(data, false)) return;
 
 		const hadBareQueuePrefix = this.textEquals("->") || this.textEquals("=>");
 		const kittyParsed = data.charCodeAt(0) === 0x1b ? parseKittySequence(data) : null;
@@ -668,34 +672,7 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		const paste = this.#pasteHandler.process(data);
-		if (paste.handled) {
-			if (paste.rejected) this.onInputRejected?.("Paste exceeds the 4 MiB UTF-8 limit and was discarded");
-			if (paste.pasteContent === undefined) return;
-			const content = paste.pasteContent;
-
-			if (content.length === 0 && this.onPasteImage) {
-				this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
-				return;
-			}
-			const imagePaths = extractImagePastePathsFromText(content);
-			if (imagePaths && this.onPasteImagePath) {
-				if (imagePaths.length > COMPOSER_IMAGE_LIMITS.count) {
-					this.onInputRejected?.("At most 32 image paths can be pasted at once");
-					return;
-				}
-				this.#trackAsyncPaste(
-					(async () => {
-						for (const p of imagePaths) await this.onPasteImagePath?.(p);
-					})(),
-				);
-				return;
-			}
-			this.pasteText(content);
-
-			this.#drainPendingInput();
-			return;
-		}
+		if (this.#routeBracketedPaste(data)) return;
 
 		const parsedKey = parseKey(data);
 		const canonical = parsedKey !== undefined ? canonicalKeyId(parsedKey) : undefined;
@@ -832,12 +809,68 @@ export class CustomEditor extends Editor {
 		}
 	}
 
+	/** True while an attachment paste is landing; later editing and submit keys wait for it. */
+	get pasteInFlight(): boolean {
+		return this.#pasteInFlight > 0;
+	}
+
+	#queueBehindPaste(data: string, draft: boolean): boolean {
+		if (this.#pasteInFlight > 0 || this.#queuedPasteHandler.active) {
+			const paste = this.#queuedPasteHandler.process(data);
+			if (paste.handled) {
+				if (paste.rejected) this.onInputRejected?.("Queued paste exceeds 256 KiB and was discarded");
+				if (paste.pasteContent !== undefined)
+					this.#queueInput(`${BRACKETED_PASTE_START}${paste.pasteContent}${BRACKETED_PASTE_END}`, draft);
+			} else this.#queueInput(data, draft);
+			if (this.#pasteInFlight === 0 && !this.#queuedPasteHandler.active) this.#drainPendingInput();
+			return true;
+		}
+		return false;
+	}
+
+	#routeBracketedPaste(data: string): boolean {
+		const paste = this.#pasteHandler.process(data);
+		if (paste.handled) {
+			if (paste.rejected) this.onInputRejected?.("Paste exceeds the 4 MiB UTF-8 limit and was discarded");
+			if (paste.pasteContent === undefined) return true;
+			const content = paste.pasteContent;
+
+			if (content.length === 0 && this.onPasteImage) {
+				this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
+				return true;
+			}
+			const imagePaths = extractImagePastePathsFromText(content);
+			if (imagePaths && this.onPasteImagePath) {
+				if (imagePaths.length > COMPOSER_IMAGE_LIMITS.count) {
+					this.onInputRejected?.("At most 32 image paths can be pasted at once");
+					return true;
+				}
+				this.#trackAsyncPaste(
+					(async () => {
+						for (const p of imagePaths) await this.onPasteImagePath?.(p);
+					})(),
+				);
+				return true;
+			}
+			this.pasteText(content);
+
+			this.#drainPendingInput();
+			return true;
+		}
+		return false;
+	}
+
 	handleDraftEdit(data: string): void {
+		if (this.#disposed || this.#queueBehindPaste(data, true) || this.#routeBracketedPaste(data)) return;
 		const parsed = parseKey(data);
 		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
 		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
 			if (this.onClear) this.onClear();
 			else this.setText("");
+			return;
+		}
+		if (canonical !== undefined && this.#matchesAction(canonical, "app.clipboard.pasteImage") && this.onPasteImage) {
+			this.#trackAsyncPaste(Promise.resolve(this.onPasteImage()));
 			return;
 		}
 		super.handleInput(data);

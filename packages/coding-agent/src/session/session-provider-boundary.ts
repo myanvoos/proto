@@ -19,7 +19,7 @@ import { stripPendingSecretPlaceholderSuffix } from "../secrets/placeholder";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { blobExtensionForImageMimeType } from "./blob-store";
 import { convertToLlm } from "./messages";
-import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
+import { buildSessionContext, type SessionContext, type TranscriptSessionContextOptions } from "./session-context";
 import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
@@ -41,6 +41,7 @@ export interface SessionProviderBoundaryHost {
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	obfuscator: SecretObfuscator | undefined;
+	runToolCallIds(): ReadonlySet<string>;
 }
 
 export class SessionProviderBoundary {
@@ -79,18 +80,24 @@ export class SessionProviderBoundary {
 	}
 
 	buildDisplaySessionContext(entries?: SessionEntry[]): SessionContext {
-		const sessionContext = entries ? buildSessionContext(entries) : this.#host.sessionManager.buildSessionContext();
+		const options = {
+			inFlightToolCallIds: this.#host.agent.state.isStreaming ? this.#host.runToolCallIds() : undefined,
+		};
+		const sessionContext = entries
+			? buildSessionContext(entries, undefined, undefined, options)
+			: this.#host.sessionManager.buildSessionContext(options);
 		return deobfuscateSessionContext(sessionContext, this.#host.obfuscator);
 	}
 
-	buildTranscriptSessionContext(
-		options?: Pick<BuildSessionContextOptions, "collapseCompactedHistory" | "keepDanglingToolCalls" | "window">,
-	): SessionContext {
+	buildTranscriptSessionContext(options?: TranscriptSessionContextOptions): SessionContext {
 		return deobfuscateSessionContext(
 			this.#host.sessionManager.buildSessionContext({
 				transcript: true,
 				collapseCompactedHistory: options?.collapseCompactedHistory,
-				keepDanglingToolCalls: options?.keepDanglingToolCalls,
+				inFlightToolCallIds:
+					options?.keepInFlightToolCalls && this.#host.agent.state.isStreaming
+						? this.#host.runToolCallIds()
+						: undefined,
 				window: options?.window,
 			}),
 			this.#host.obfuscator,

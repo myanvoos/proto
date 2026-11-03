@@ -22,6 +22,46 @@ function routedFetch(routes: Record<string, () => Response>, requested: string[]
 }
 
 describe("Antigravity usage", () => {
+	it("keeps Argon weekly quotas distinguishable from shared Gemini weekly quotas", async () => {
+		const report = await antigravityUsageProvider.fetchUsage(params, {
+			fetch: routedFetch(
+				{
+					retrieveUserQuotaSummary: () =>
+						Response.json({
+							groups: [
+								{
+									displayName: "Gemini Models",
+									buckets: [
+										{
+											bucketId: "gemini-weekly",
+											displayName: "Weekly Limit Remaining",
+											window: "weekly",
+											remainingFraction: 0.5,
+										},
+										{
+											bucketId: "gemini-argon-weekly",
+											displayName: "Weekly Limit Remaining",
+											window: "weekly",
+											remainingFraction: 0.2,
+										},
+									],
+								},
+							],
+						}),
+				},
+				[],
+			),
+		});
+		expect(report?.limits.find(limit => limit.id.endsWith(":gemini-weekly"))).toMatchObject({
+			label: "Gemini",
+			amount: { usedFraction: 0.5 },
+		});
+		expect(report?.limits.find(limit => limit.id.endsWith(":gemini-argon-weekly"))).toMatchObject({
+			label: "Gemini (Argon)",
+			amount: { usedFraction: 0.8 },
+		});
+	});
+
 	it("reads the quota summary and shares the third-party quota across Claude and GPT", async () => {
 		const requested: string[] = [];
 		const resetTime = new Date(Date.now() + 2 * HOUR_MS).toISOString();

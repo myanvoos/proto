@@ -18,14 +18,15 @@ import {
 	releaseBrowser,
 } from "./browser/registry";
 import { resolveRelayKind } from "./browser/relay/kind";
+import { relayExtensionNotice } from "./browser/relay/probe";
 import type { Observation, ScreenshotResult } from "./browser/tab-protocol";
 import {
 	type AcquireTabResult,
 	acquireTab,
 	dropHeadlessTabs,
 	getTab,
-	releaseAllTabs,
 	releaseTab,
+	releaseTabsForOwner,
 	runInTab,
 } from "./browser/tab-supervisor";
 import type { OutputMeta } from "./output-meta";
@@ -50,7 +51,9 @@ const DEFAULT_TAB_NAME = "main";
 const appSchema = type({
 	"path?": type("string").describe("binary path to spawn"),
 	"cdp_url?": type("string").describe("existing cdp endpoint"),
-	"relay?": type("boolean").describe("drive the user's own tabs via the proto browser relay"),
+	"relay?": type("boolean").describe(
+		"true drives the user's Chrome via the relay; false skips the configured or environment-enabled relay",
+	),
 	"args?": type("string[]").describe("extra cli args"),
 	"target?": type("string").describe("substring to pick a window"),
 });
@@ -71,7 +74,7 @@ const browserSchema = type({
 	"dialogs?": type("'accept' | 'dismiss'").describe("auto-handle dialogs"),
 	"code?": type("string").describe("js body to run in tab"),
 	"timeout?": type("number").describe("timeout in seconds"),
-	"all?": type("boolean").describe("release every managed tab"),
+	"all?": type("boolean").describe("release every tab owned by this session"),
 	"kill?": type("boolean").describe("also kill spawned-app browsers"),
 });
 
@@ -253,6 +256,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 		const deadlineStart = performance.now();
 		const timeoutSignal = AbortSignal.timeout(timeoutMs);
 		const openSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+		let stage = `launching or connecting to the browser (${describeKind(kind)})`;
 		try {
 			const browser = await untilAborted(openSignal, () =>
 				acquireBrowser(kind, {
@@ -270,7 +274,14 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 
 			holdBrowser(browser);
 			let result: AcquireTabResult;
+			let relayNotice: string | null = null;
 			try {
+				if (kind.kind === "relay") {
+					stage = "reading the relay extension version";
+					relayNotice = await untilAborted(openSignal, () => relayExtensionNotice(kind.cdpUrl, openSignal));
+					throwIfAborted(openSignal);
+				}
+				stage = `opening tab ${JSON.stringify(name)} (worker initialization or navigation)`;
 				result = await untilAborted(openSignal, () =>
 					acquireTab(name, browser, {
 						url: params.url,
@@ -287,7 +298,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 						deadlineStartMs: deadlineStart,
 						dialogs: params.dialogs,
 						signal: openSignal,
-						ownerSessionId: this.session.getSessionId?.() ?? undefined,
+						ownerSessionId: this.session.getEvalKernelOwnerId?.() ?? undefined,
 					}),
 				);
 			} catch (error) {
@@ -305,6 +316,8 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			const verb = result.created ? "Opened" : "Reused";
 			const lines = [
 				`${verb} tab ${JSON.stringify(name)} on ${describeBrowser(browser)}`,
+				result.note ?? null,
+				relayNotice,
 				`URL: ${url}`,
 				title ? `Title: ${title}` : null,
 			].filter((l): l is string => typeof l === "string");
@@ -312,7 +325,7 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			return toolResult(details).text(lines.join("\n")).done();
 		} catch (error) {
 			if (signal?.aborted) throw error instanceof ToolAbortError ? error : new ToolAbortError();
-			if (timeoutSignal.aborted) throw new ToolError(`Browser open timed out after ${timeoutMs}ms`);
+			if (timeoutSignal.aborted) throw new ToolError(`Browser open timed out after ${timeoutMs}ms while ${stage}`);
 			throw error;
 		}
 	}
@@ -326,7 +339,9 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 	): Promise<AgentToolResult<BrowserToolDetails>> {
 		const kill = !!params.kill;
 		if (params.all) {
-			const count = await untilAborted(signal, () => releaseAllTabs({ kill, timeoutMs }));
+			const count = await untilAborted(signal, () =>
+				releaseTabsForOwner(this.session.getEvalKernelOwnerId?.() ?? "", { kill, timeoutMs }),
+			);
 			details.result = `Released ${count} managed tab${count === 1 ? "" : "s"}`;
 			return toolResult(details).text(details.result).done();
 		}

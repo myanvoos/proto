@@ -10,6 +10,19 @@ function collectLinks(tokens: readonly Token[]): Token[] {
 	return links;
 }
 
+test("code spans close at backslash-preceded backticks but not longer runs", () => {
+	const marked = new Marked();
+	expect(marked.parse("`a\\`")).toBe("<p><code>a\\</code></p>\n");
+	expect(marked.parse("`a``b`")).toBe("<p><code>a``b</code></p>\n");
+});
+
+test("Unicode line separators and invalid backtick fence info remain visible prose", () => {
+	const marked = new Marked();
+	expect(marked.parse("before\u2028after\u2029end")).toBe("<p>before\u2028after\u2029end</p>\n");
+	expect(marked.parse("```bad`info\nbody")).not.toContain("<pre>");
+	expect(marked.parse("```bad`info\nbody")).toContain("body");
+});
+
 describe("reference link labels", () => {
 	for (const label of ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"]) {
 		test(`does not resolve inherited ${label} as a link definition`, () => {

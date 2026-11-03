@@ -156,6 +156,37 @@ pub(crate) fn command_failed(
 	IsoError::other(format!("{what} (exit {code}): {}", stderr.trim()))
 }
 
+/// The filesystem magic `statfs(2)` reports for `path` (e.g. btrfs
+/// `0x9123683E`), or `None` when the call fails. Magics are 32-bit; libc's
+/// `f_type` width varies by target and C library.
+#[cfg(target_os = "linux")]
+pub(crate) fn statfs_magic(path: &Path) -> Option<u32> {
+	use std::os::unix::ffi::OsStrExt;
+
+	let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+	let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+	// SAFETY: `path` is NUL-terminated and outlives the call; `stat` is a
+	// writable out-pointer of the right type.
+	if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+		return None;
+	}
+	// SAFETY: `statfs` returned 0, so it initialized `stat`.
+	Some(unsafe { stat.assume_init() }.f_type as u32)
+}
+
+/// Backend contract.
+///
+/// `lower` is the read-only source tree; `merged` is the destination where
+/// the writable view is materialised. Implementations are responsible for
+/// creating any auxiliary directories (e.g. overlayfs upper/work dirs) and
+/// for tearing them down in [`stop`](Self::stop).
+///
+/// `start` / `stop` are synchronous because the platform primitives they
+/// wrap (`mount`, `clonefile`, `PrjStartVirtualizing`) are blocking
+/// syscalls that callers are expected to drive from `spawn_blocking`.
+/// [`diff`](Self::diff) is async because it does heavy I/O — walking
+/// trees, reading files, spawning git — and benefits from the runtime
+/// interleaving requests with other work.
 #[async_trait]
 pub trait IsolationBackend: Send + Sync {
 	fn kind(&self) -> BackendKind;

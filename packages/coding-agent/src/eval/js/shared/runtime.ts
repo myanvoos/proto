@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import * as util from "node:util";
+import * as vm from "node:vm";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { KernelTarget } from "../../kernel-target";
 import type { KernelInvocation } from "../../types";
@@ -22,7 +23,7 @@ import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { NativeStdio } from "./native-stdio";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
-import { wrapCode } from "./rewrite-imports";
+import { diagnoseCellSyntaxError, wrapCode } from "./rewrite-imports";
 import { type LoadStateOptions, loadKernelState, runtimeInterpreter, type StateResult, saveKernelState } from "./state";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
@@ -259,10 +260,14 @@ export class JsRuntime {
 			drain?: () => Promise<void>;
 			stdin?: Readable;
 			stdinSocket?: string;
+			signal?: AbortSignal;
+			/** Marks the point after compilation where caller code will actually begin. */
+			onCodeStart?: () => void;
 			/** Rejecting it ends the run at once with its reason; work the cell left pending runs on detached. */
 			stop?: Promise<never>;
 		} = {},
 	): Promise<unknown> {
+		options.signal?.throwIfAborted();
 		this.#activateGlobals("run code");
 		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
 		const cell = ++this.#executionCount;
@@ -309,9 +314,27 @@ export class JsRuntime {
 		try {
 			this.#nativeStdio?.startInput(context.runId, options.stdinSocket);
 			const evaluation = this.#als.run(context, async () => {
-				const wrapped = await wrapCode(code, Object.keys(this.#scope));
+				const wrapped = await wrapCode(code, Object.keys(this.#scope)).catch(async error => {
+					throw (await diagnoseCellSyntaxError(code)) ?? error;
+				});
 				this.#nativeStdio?.start(context.runId);
-				const value = indirectEval(wrapped.source, filename);
+				// Compilation can yield while a browser run is cancelled; never evaluate it afterward.
+				options.signal?.throwIfAborted();
+				options.onCodeStart?.();
+				let value: unknown;
+				try {
+					value = indirectEval(wrapped.source, filename);
+				} catch (error) {
+					if (error instanceof SyntaxError) {
+						let compiled = false;
+						try {
+							new vm.Script(wrapped.source);
+							compiled = true;
+						} catch {}
+						if (!compiled) throw (await diagnoseCellSyntaxError(code)) ?? error;
+					}
+					throw error;
+				}
 				await awaitMaybePromise(value);
 				await options.drain?.();
 

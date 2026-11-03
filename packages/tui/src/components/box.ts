@@ -109,6 +109,11 @@ export class Box implements Component {
 		}
 	}
 
+	releaseRenderCaches(): void {
+		this.#invalidateCache();
+		for (const child of this.children) child.releaseRenderCaches?.();
+	}
+
 	dispose(): void {
 		for (const child of this.children) {
 			child.dispose?.();

@@ -472,6 +472,11 @@ export function projectSystemPromptToolMetadata(
 	return metadata;
 }
 
+/** Remove AGENTS.md while preserving the other context files and their metadata. */
+export function withoutAgentsMd<T extends { path: string }>(files: T[]): T[] {
+	return files.filter(file => path.basename(file.path).toLowerCase() !== "agents.md");
+}
+
 export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 
@@ -496,6 +501,10 @@ export interface BuildSystemPromptOptions {
 	additionalWorkspaceRoots?: string[];
 
 	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
+	/** Disable automatic context discovery; explicitly supplied files still load. */
+	noContextFiles?: boolean;
+	/** Exclude AGENTS.md from all context roots. */
+	excludeAgentsMd?: boolean;
 
 	skills?: readonly Skill[];
 
@@ -572,6 +581,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd,
 		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
+		noContextFiles = false,
+		excludeAgentsMd = false,
 		skills: providedSkills,
 		rules,
 		alwaysApplyRules,
@@ -597,7 +608,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedCustomPrompt: undefined as string | undefined,
 		resolvedAppendPrompt: undefined as string | undefined,
 		systemPromptCustomization: null as string | null,
-		contextFiles: dedupeContainedContextFiles(providedContextFiles ?? []),
+		contextFiles: dedupeContainedContextFiles(
+			excludeAgentsMd ? withoutAgentsMd(providedContextFiles ?? []) : (providedContextFiles ?? []),
+		),
 		skills: providedSkills ?? ([] as Skill[]),
 		workspaceTree: {
 			rootPath: resolvedCwd,
@@ -649,16 +662,19 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
 	const contextFilesPromise = (async () => {
-		const primary = providedContextFiles
-			? providedContextFiles
-			: await logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
+		const primary =
+			providedContextFiles ??
+			(noContextFiles
+				? []
+				: await logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd }));
 
 		const additionalRoots = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
-		if (additionalRoots.length === 0) return primary;
+		if (additionalRoots.length === 0 || noContextFiles) return excludeAgentsMd ? withoutAgentsMd(primary) : primary;
 		const extra = await Promise.all(
 			additionalRoots.map(root => loadProjectContextFiles({ cwd: root }).catch(() => [])),
 		);
-		return dedupeContainedContextFiles([...primary, ...extra.flat()]);
+		const merged = dedupeContainedContextFiles([...primary, ...extra.flat()]);
+		return excludeAgentsMd ? withoutAgentsMd(merged) : merged;
 	})();
 	const additionalRootsForTree = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
 	const workspaceTreePromise = (async () => {
@@ -736,7 +752,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("getAuxTools", auxToolsPromise, prepDefaults.auxTools),
 	]);
 	clearTimeout(deadlineTimer);
-	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
+	const agentsMdFiles =
+		noContextFiles || excludeAgentsMd
+			? []
+			: Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
 
 	if (timedOut.length > 0) {
 		logger.warn("System prompt preparation steps timed out; using minimal fallback for those steps", {
@@ -833,6 +852,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		model: includeModelInPrompt ? (model ?? "") : "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
+		intentGuidance: $env.PROTO_INTENT_PROMPT ?? "",
 		MAX_CONCURRENCY: normalizeConcurrencyLimit(orchestratorMaxConcurrency),
 		scoutAvailable,
 		fleetEnabled,

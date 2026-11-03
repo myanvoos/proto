@@ -16,6 +16,7 @@ import type { charmHyperProvider } from "./charm-hyper";
 import type { clinePassProvider } from "./cline-pass";
 import type { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
 import type { commandCodeProvider } from "./commandcode";
+import type { coralbricksProvider } from "./coralbricks";
 import type { coreWeaveProvider } from "./coreweave";
 import type { cursorProvider } from "./cursor";
 import type { deepinfraProvider } from "./deepinfra";
@@ -34,6 +35,7 @@ import type { googleGeminiCliProvider } from "./google-gemini-cli";
 import type { googleVertexProvider } from "./google-vertex";
 import type { groqProvider } from "./groq";
 import type { huggingfaceProvider } from "./huggingface";
+import type { inceptionProvider } from "./inception";
 import type { kagiProvider } from "./kagi";
 import type { kiloProvider } from "./kilo";
 import type { kimiCodeProvider } from "./kimi-code";
@@ -45,6 +47,7 @@ import type { minimaxProvider } from "./minimax";
 import type { minimaxCodeProvider } from "./minimax-code";
 import type { minimaxCodeCnProvider } from "./minimax-code-cn";
 import type { mistralProvider } from "./mistral";
+import type { modularProvider } from "./modular";
 import type { moonshotProvider } from "./moonshot";
 import type { museCodeProvider } from "./muse-code";
 import type { nanogptProvider } from "./nanogpt";
@@ -63,6 +66,8 @@ import type { perplexityProvider } from "./perplexity";
 import type { qianfanProvider } from "./qianfan";
 import type { qwenPortalProvider } from "./qwen-portal";
 import type { sakanaProvider } from "./sakana";
+import type { sambanovaProvider } from "./sambanova";
+import type { scalewayProvider } from "./scaleway";
 import type { siliconflowProvider } from "./siliconflow";
 import type { siliconflowCnProvider } from "./siliconflow-cn";
 import type { singularityApiDevProvider } from "./singularityapi-dev";
@@ -174,6 +179,11 @@ export type RegistryDefinition = [
 	typeof stepfunProvider,
 	typeof clinePassProvider,
 	typeof museCodeProvider,
+	typeof coralbricksProvider,
+	typeof sambanovaProvider,
+	typeof inceptionProvider,
+	typeof scalewayProvider,
+	typeof modularProvider,
 ][number];
 
 export const REGISTRY_IDS = [
@@ -263,6 +273,11 @@ export const REGISTRY_IDS = [
 	"amazon-bedrock",
 	"bedrock-mantle",
 	"gmi-cloud",
+	"coralbricks",
+	"sambanova",
+	"inception",
+	"scaleway",
+	"modular",
 ] as const;
 
 export function registryProviderIds(): readonly string[] {
@@ -271,6 +286,17 @@ export function registryProviderIds(): readonly string[] {
 
 export function loadProviderDefinition(id: string): RegistryDefinition | undefined {
 	switch (id) {
+		case "coralbricks":
+			return require("./coralbricks").coralbricksProvider;
+		case "sambanova":
+			return require("./sambanova").sambanovaProvider;
+		case "inception":
+			return require("./inception").inceptionProvider;
+		case "scaleway":
+			return require("./scaleway").scalewayProvider;
+		case "modular":
+			return require("./modular").modularProvider;
+
 		case "azure":
 			return require("./azure").azureProvider;
 		case "openai-codex":

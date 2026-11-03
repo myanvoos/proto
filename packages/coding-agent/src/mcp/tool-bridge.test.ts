@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as path from "node:path";
 import { connectToServer, disconnectServer } from "./client";
 import {
@@ -321,4 +321,66 @@ describe("MCP structured tool results", () => {
 		});
 		expect(texts).toEqual([JSON.stringify(structuredContent)]);
 	});
+});
+
+test("HTTP tools/call progress reaches tool updates, throttles intermediate reports, and always delivers completion", async () => {
+	const clock = spyOn(performance, "now").mockReturnValue(0);
+	const server = Bun.serve({
+		port: 0,
+		fetch: async request => {
+			const call = (await request.json()) as {
+				id: string | number;
+				params: { _meta: { progressToken: string | number } };
+			};
+			const progressToken = call.params._meta.progressToken;
+			const frames = [
+				{
+					jsonrpc: "2.0",
+					method: "notifications/progress",
+					params: { progressToken, progress: 0, total: 2, message: "starting" },
+				},
+				{
+					jsonrpc: "2.0",
+					method: "notifications/progress",
+					params: { progressToken, progress: 1, total: 2, message: "intermediate" },
+				},
+				{
+					jsonrpc: "2.0",
+					method: "notifications/progress",
+					params: { progressToken, progress: 2, total: 2, message: "finished" },
+				},
+				{ jsonrpc: "2.0", id: call.id, result: { content: [{ type: "text", text: "done" }] } },
+			];
+			return new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+				headers: { "Content-Type": "text/event-stream" },
+			});
+		},
+	});
+	const transport = new HttpTransport({ type: "http", url: server.url.href });
+	try {
+		await transport.connect();
+		const connection = { ...namedConnection("progress"), transport };
+		const tool = MCPTool.fromTools(connection, [{ name: "work", inputSchema: { type: "object" } }])[0]!;
+		const updates: string[] = [];
+		const result = await tool.execute(
+			"progress-call",
+			{},
+			update => {
+				updates.push(
+					update.content
+						.filter(block => block.type === "text")
+						.map(block => block.text)
+						.join(""),
+				);
+			},
+			{} as Parameters<MCPTool["execute"]>[3],
+		);
+		expect(updates).toEqual(["starting", "finished"]);
+		expect(result.isError).not.toBe(true);
+		expect(result.content).toEqual([{ type: "text", text: "done" }]);
+	} finally {
+		clock.mockRestore();
+		await transport.close();
+		server.stop(true);
+	}
 });

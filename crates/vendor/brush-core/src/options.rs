@@ -1,17 +1,11 @@
-
-
 use itertools::Itertools;
 
 use crate::{CreateOptions, extensions, namedoptions};
-
 
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[expect(clippy::module_name_repetitions)]
 pub struct RuntimeOptions {
-
-
-
 	pub export_variables_on_modification: bool,
 
 	pub notify_job_termination_immediately: bool,
@@ -50,9 +44,6 @@ pub struct RuntimeOptions {
 
 	pub shell_functions_inherit_debug_and_return_traps: bool,
 
-
-
-
 	pub emacs_mode: bool,
 
 	pub enable_command_history: bool,
@@ -64,9 +55,6 @@ pub struct RuntimeOptions {
 	pub posix_mode: bool,
 
 	pub vi_mode: bool,
-
-
-
 
 	pub array_expand_once: bool,
 
@@ -186,33 +174,23 @@ pub struct RuntimeOptions {
 
 	pub echo_builtin_expands_escape_sequences: bool,
 
+	pub interactive: bool,
 
+	pub read_commands_from_stdin: bool,
 
+	pub command_string_mode: bool,
 
-	pub interactive:                bool,
-
-	pub read_commands_from_stdin:   bool,
-
-	pub command_string_mode:        bool,
-
-	pub sh_mode:                    bool,
+	pub sh_mode: bool,
 
 	pub external_cmd_leads_session: bool,
 
-	pub max_function_call_depth:    Option<usize>,
+	pub max_function_call_depth: Option<usize>,
 }
 
 impl RuntimeOptions {
-
-
-
-
-
-
 	pub fn defaults_from<SE: extensions::ShellExtensions>(
 		create_options: &CreateOptions<SE>,
 	) -> Self {
-
 		let mut options = Self {
 			interactive: create_options.interactive,
 			disallow_overwriting_regular_files_via_output_redirection: create_options
@@ -253,13 +231,11 @@ impl RuntimeOptions {
 			..Self::default()
 		};
 
-
 		if create_options.interactive {
 			options.enable_bang_style_history_substitution = true;
 			options.emacs_mode = !create_options.no_editing;
 			options.expand_aliases = true;
 		}
-
 
 		for enabled_option in &create_options.enabled_options {
 			if let Some(option) =
@@ -275,7 +251,6 @@ impl RuntimeOptions {
 				option.set(&mut options, false);
 			}
 		}
-
 
 		for enabled_option in &create_options.enabled_shopt_options {
 			if let Some(shopt_option) =
@@ -295,8 +270,6 @@ impl RuntimeOptions {
 		options
 	}
 
-
-
 	pub fn option_flags(&self) -> String {
 		let mut cs = vec![];
 
@@ -308,12 +281,10 @@ impl RuntimeOptions {
 			}
 		}
 
-
 		cs.sort_by_key(|flag| option_flag_sort_key(*flag));
 
 		cs.into_iter().collect()
 	}
-
 
 	pub fn seto_optstr(&self) -> String {
 		let mut cs = vec![];
@@ -327,7 +298,6 @@ impl RuntimeOptions {
 		cs.sort_unstable();
 		cs.into_iter().join(":")
 	}
-
 
 	pub fn shopt_optstr(&self) -> String {
 		let mut cs = vec![];
@@ -343,16 +313,7 @@ impl RuntimeOptions {
 	}
 }
 
-
-
-
-
-
 const fn option_flag_sort_key(ch: char) -> (u8, char) {
-
-
-
-
 	let group = if ch.is_ascii_lowercase() && !matches!(ch, 'c' | 's') {
 		0
 	} else if ch.is_ascii_uppercase() {
@@ -363,5 +324,3 @@ const fn option_flag_sort_key(ch: char) -> (u8, char) {
 
 	(group, ch)
 }
-
-

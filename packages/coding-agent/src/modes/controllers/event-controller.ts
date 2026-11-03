@@ -2,6 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, type ImageContent, thinkingLoopDetail } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { isPromptCachePersistent } from "@oh-my-pi/pi-catalog/model-policy";
 import { type Component, isTerminalFocused, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import {
 	formatDuration,
@@ -150,6 +151,7 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
+	#compactionOwnsProgress = false;
 
 	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
 	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
@@ -185,6 +187,8 @@ export class EventController {
 			tool_execution_end: e => this.#handleToolExecutionEnd(e),
 			auto_compaction_start: e => this.#handleAutoCompactionStart(e),
 			auto_compaction_end: e => this.#handleAutoCompactionEnd(e),
+			manual_compaction_start: async () => {},
+			manual_compaction_end: async () => {},
 			auto_retry_start: e => this.#handleAutoRetryStart(e),
 			auto_retry_end: e => this.#handleAutoRetryEnd(e),
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
@@ -439,6 +443,37 @@ export class EventController {
 		}
 	}
 
+	/** Keep shared provider ids owned until the last content block receives its final id. */
+	#reconcileStreamedToolCallIds(content: AssistantMessage["content"]): void {
+		const finalIds = new Map<number, string>();
+		for (let index = 0; index < content.length; index++) {
+			const block = content[index]!;
+			if (block.type === "toolCall") finalIds.set(index, block.id);
+		}
+		for (const [index, id] of finalIds) {
+			const priorId = this.#streamedToolCallIdByIndex.get(index);
+			if (priorId !== undefined && priorId !== id) {
+				const staysOwned = [...finalIds].some(
+					([otherIndex, otherId]) =>
+						otherIndex !== index &&
+						(otherId === priorId || this.#streamedToolCallIdByIndex.get(otherIndex) === priorId),
+				);
+				if (staysOwned) {
+					const card = this.ctx.pendingTools.get(priorId);
+					for (const [keeperIndex, keeperId] of finalIds) {
+						const keeper = content[keeperIndex];
+						if (keeperId === priorId && keeperIndex !== index && keeper?.type === "toolCall") {
+							card?.updateArgs(keeper.arguments, priorId);
+						}
+					}
+				} else {
+					this.#migrateStreamedToolCallId(priorId, id);
+				}
+			}
+			this.#streamedToolCallIdByIndex.set(index, id);
+		}
+	}
+
 	/** Hand a read's images to its own card so they paint under that call. */
 	#attachReadToolImages(
 		component: ToolExecutionHandle,
@@ -463,9 +498,7 @@ export class EventController {
 		if (children.slice(anchorIndex + 1).some(child => !this.ctx.chatContainer.canRemoveBlock(child))) {
 			return false;
 		}
-		this.ctx.chatContainer.addChild(component);
-		children.splice(children.length - 1, 1);
-		children.splice(anchorIndex + 1, 0, component);
+		this.ctx.chatContainer.insertChildAt(component, anchorIndex + 1);
 		return true;
 	}
 
@@ -760,6 +793,7 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
 		this.ctx.statusLine.markActivityStart();
+		this.#compactionOwnsProgress = false;
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
 		setTerminalTitleState("working");
@@ -946,7 +980,7 @@ export class EventController {
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
 		if (
-			nextToolName === "fleet" &&
+			nextToolName === "jobs" &&
 			previous.isDisplaceableBlock() &&
 			this.ctx.chatContainer.canDisplaceBlock(previous)
 		) {
@@ -966,9 +1000,7 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableChecklistComponent = undefined;
-			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-				this.ctx.chatContainer.disposeAndRemoveChild(previous);
-			}
+			this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			previous.seal();
 			this.ctx.ui.requestRender();
 			return;
@@ -1018,15 +1050,7 @@ export class EventController {
 		} catch {}
 	}
 
-	#processStreamingToolCall(
-		contentIndex: number,
-		content: Extract<AssistantContentBlock, { type: "toolCall" }>,
-	): void {
-		const priorId = this.#streamedToolCallIdByIndex.get(contentIndex);
-		if (priorId !== undefined && priorId !== content.id) {
-			this.#migrateStreamedToolCallId(priorId, content.id);
-		}
-		this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
+	#processStreamingToolCall(content: Extract<AssistantContentBlock, { type: "toolCall" }>): void {
 		// Aliased spellings (`protolens://browser`, `mcp__srv__tool`) render under the canonical tool name;
 		// message history keeps the provider's wire name.
 		const tool = this.ctx.viewSession.getToolByName(content.name);
@@ -1133,7 +1157,12 @@ export class EventController {
 	// Updates are coalesced, so the surviving event can report a newly opened block while the block
 	// that was streaming before it also grew: that one is revisited too.
 	#processAssistantMessageUpdate(message: AssistantMessage, changedContentIndex?: number, fullPass = false): void {
-		if (fullPass) this.#resetStreamingAssistantState();
+		this.#reconcileStreamedToolCallIds(message.content);
+		if (fullPass) {
+			const toolCallIds = new Map(this.#streamedToolCallIdByIndex);
+			this.#resetStreamingAssistantState();
+			this.#streamedToolCallIdByIndex = toolCallIds;
+		}
 		if (!fullPass && message.content.length < this.#streamedAssistantContentLength) {
 			this.#resetStreamingAssistantState();
 			fullPass = true;
@@ -1178,7 +1207,7 @@ export class EventController {
 		for (const index of orderedIndices) {
 			const content = message.content[index]!;
 			if (content.type !== "toolCall" || !this.#streamedToolCallChanged(index, content)) continue;
-			this.#processStreamingToolCall(index, content);
+			this.#processStreamingToolCall(content);
 			this.#updateStreamingToolIntent(content);
 		}
 		this.#streamedAssistantContentLength = Math.max(this.#streamedAssistantContentLength, message.content.length);
@@ -1447,15 +1476,11 @@ export class EventController {
 	}
 
 	async #handleToolExecutionUpdate(
-		event: Extract<AgentSessionEvent, { type: "tool_execution_update" }>,
+		_event: Extract<AgentSessionEvent, { type: "tool_execution_update" }>,
 	): Promise<void> {
+		// Partial results still flow through the session for consumers such as the
+		// RPC event stream, but the tool card paints only its settled result.
 		this.#ensureWorkingLoaderWhileStreaming();
-		const component = this.ctx.pendingTools.get(event.toolCallId);
-		if (component) {
-			const asyncState = (event.partialResult.details as { async?: { state?: string } } | undefined)?.async?.state;
-			component.updateResult({ ...event.partialResult, isError: asyncState === "failed" }, true, event.toolCallId);
-			this.ctx.ui.requestRender();
-		}
 	}
 
 	#settleHeldCompletion(
@@ -1474,9 +1499,7 @@ export class EventController {
 			const previous = this.#displaceableChecklistComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableChecklistComponent = undefined;
-				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-					this.ctx.chatContainer.disposeAndRemoveChild(previous);
-				}
+				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				previous.seal();
 			}
 			this.#displaceableChecklistComponent = component;
@@ -1529,15 +1552,13 @@ export class EventController {
 				this.ctx.chatContainer.accountSource(component, event.result);
 				this.ctx.pendingTools.delete(event.toolCallId);
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
-					if (event.toolName === "fleet" && component.canBeDisplacedBy("fleet")) {
+					if (event.toolName === "jobs" && component.canBeDisplacedBy("jobs")) {
 						this.#displaceablePollComponent = component;
 					} else if (event.toolName === "checklist" && component.canBeDisplacedBy("checklist")) {
 						const previous = this.#displaceableChecklistComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableChecklistComponent = undefined;
-							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
-								this.ctx.chatContainer.disposeAndRemoveChild(previous);
-							}
+							this.ctx.chatContainer.disposeAndRemoveChild(previous);
 							previous.seal();
 						}
 						this.#displaceableChecklistComponent = component;
@@ -1634,7 +1655,8 @@ export class EventController {
 		this.#lastAssistantComponent = undefined;
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
-		this.#scheduleIdleRecap();
+		if (this.#priorMessageWasGenerated(event.messages)) this.#scheduleIdleRecap();
+		else this.#cancelIdleRecap();
 		this.sendErrorNotification(event);
 		this.sendCompletionNotification(event);
 	}
@@ -1688,7 +1710,10 @@ export class EventController {
 	): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
-		this.#setTerminalProgress(true);
+		if (!this.#terminalProgressActive) {
+			this.#setTerminalProgress(true);
+			this.#compactionOwnsProgress = this.#terminalProgressActive;
+		}
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.disposeChildren();
 		const reasonText =
@@ -1714,7 +1739,10 @@ export class EventController {
 	async #handleAutoCompactionEnd(event: Extract<AgentSessionEvent, { type: "auto_compaction_end" }>): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
-		this.#setTerminalProgress(false);
+		if (this.#compactionOwnsProgress) {
+			this.#compactionOwnsProgress = false;
+			this.#setTerminalProgress(false);
+		}
 		if (this.ctx.autoCompactionLoader) {
 			this.ctx.autoCompactionLoader.stop();
 			this.ctx.autoCompactionLoader = undefined;
@@ -1912,6 +1940,7 @@ export class EventController {
 
 		const idleSettings = settings.getGroup("compaction");
 		if (!idleSettings.idleEnabled) return;
+		if (this.ctx.viewSession.model && isPromptCachePersistent(this.ctx.viewSession.model)) return;
 
 		if (this.ctx.editor.getText().trim()) return;
 
@@ -1926,6 +1955,7 @@ export class EventController {
 			if (this.ctx.viewSession.isStreaming) return;
 			if (this.ctx.viewSession.isCompacting) return;
 			if (this.ctx.editor.getText().trim()) return;
+			if (this.ctx.viewSession.model && isPromptCachePersistent(this.ctx.viewSession.model)) return;
 			if (this.#currentContextTokens() < threshold) return;
 			void this.ctx.viewSession.runIdleCompaction();
 		}, timeoutMs);
@@ -1952,7 +1982,7 @@ export class EventController {
 	async #runIdleRecap(): Promise<void> {
 		if (!this.#idleConditionsHold()) return;
 		if (!this.ctx.viewSession.model) return;
-		if (this.ctx.viewSession.messages.length === 0) return;
+		if (!this.#priorMessageWasGenerated(this.ctx.viewSession.messages)) return;
 
 		const promptText = prompt.render(idleRecapPrompt, {
 			goal: this.#idleRecapGoalText() ?? "",
@@ -1979,6 +2009,20 @@ export class EventController {
 		if (this.ctx.viewSession.isCompacting) return false;
 		if (this.ctx.editor.getText().trim()) return false;
 		return true;
+	}
+
+	#priorMessageWasGenerated(messages: readonly AgentMessage[]): boolean {
+		const last = messages.at(-1);
+		return (
+			last?.role === "assistant" &&
+			last.content.some(block =>
+				block.type === "text"
+					? block.text.length > 0
+					: block.type === "thinking"
+						? block.thinking.length > 0
+						: block.type === "toolCall",
+			)
+		);
 	}
 
 	#idleRecapGoalText(): string | undefined {

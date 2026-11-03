@@ -141,13 +141,6 @@ test("rs-match-ergonomics is code-only in Rust and catches embedded source", asy
 	expect(await fires("rs-match-ergonomics", "cell.0.py", `src = ${JSON.stringify(snippet)}`)).toBe(true);
 });
 
-test("rs-parking-lot is code-only in Rust and catches embedded source", async () => {
-	const snippet = "let guard = data.lock().unwrap();";
-	expect(await fires("rs-parking-lot", "src/lib.rs", snippet)).toBe(true);
-	expect(await fires("rs-parking-lot", "src/lib.rs", `// ${snippet}`)).toBe(false);
-	expect(await fires("rs-parking-lot", "cell.0.py", `src = ${JSON.stringify(snippet)}`)).toBe(true);
-});
-
 test("rs-result-type is code-only in Rust and catches embedded source", async () => {
 	const snippet = "type Result<T> = std::result::Result<T, Error>;";
 	expect(await fires("rs-result-type", "src/lib.rs", snippet)).toBe(true);
@@ -264,4 +257,39 @@ test("the judge gate decides the heuristic branch that reads another language's 
 	expect(await fires("ts-no-any", "cell.0.py", embedded, false)).toBe(false);
 	// The syntactic branch on real TypeScript never consults a judge.
 	expect(await fires("ts-no-any", "src/a.ts", "const root = el as any;", false)).toBe(true);
+});
+
+test("inline import type reminders ignore promise chaining and accept comments, attributes, and Unicode members", async () => {
+	expect(await fires("ts-import-type", "client.ts", 'const plugin = import("sdk").then(load);')).toBe(false);
+	expect(
+		await fires(
+			"ts-import-type",
+			"client.ts",
+			'type Client = import(/* *doc* */ "sdk", { with: { type: "json" } }).客户;',
+		),
+	).toBe(true);
+	expect(await fires("ts-import-type", "client.ts", 'type Client = typeof import("sdk");')).toBe(true);
+});
+
+test("resolver reminders require an executor argument and support typed, commented Promise constructors", async () => {
+	expect(await fires("ts-promise-with-resolvers", "wait.ts", "new Promise(() => {});")).toBe(false);
+	expect(
+		await fires("ts-promise-with-resolvers", "wait.ts", "new Promise<number>(/* *doc* */ (resolve) => resolve(1));"),
+	).toBe(true);
+});
+
+test("tiny-function reminders exclude public contracts and type guards but catch local async wrappers", async () => {
+	expect(await fires("ts-no-tiny-functions", "math.ts", "export function double(x: number) { return x * 2; }")).toBe(
+		false,
+	);
+	expect(
+		await fires(
+			"ts-no-tiny-functions",
+			"math.ts",
+			'function valid(x: unknown): x is string { return typeof x === "string"; }',
+		),
+	).toBe(false);
+	expect(
+		await fires("ts-no-tiny-functions", "math.ts", "const double = async (x: number): Promise<number> => x * 2;"),
+	).toBe(true);
 });

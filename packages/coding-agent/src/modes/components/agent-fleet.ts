@@ -35,7 +35,7 @@ import {
 	type AgentMetrics,
 	type AggregateMetrics,
 	aggregateMetrics,
-	progressMetrics,
+	fleetRowMetrics,
 	projectAgentTree,
 	refBelongsToSessionTree,
 	STATUS_ORDER,
@@ -415,17 +415,14 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	}
 
 	#metricsFor(ref: AgentRef, observed: ObservableSession | undefined): AgentMetrics | undefined {
-		if (observed?.progress) return progressMetrics(observed);
-		if (ref.history?.metrics) return ref.history.metrics;
-		const session = this.#fallbackStatsSession(ref, observed);
-		return session ? this.#sessionMetrics.get(session)?.metrics : undefined;
+		return fleetRowMetrics(ref, observed, this.#sessionMetrics);
 	}
 
 	#fallbackStatsSession(
 		ref: AgentRef,
 		observed: ObservableSession | undefined,
 	): NonNullable<AgentRef["session"]> | undefined {
-		if (observed?.progress) return undefined;
+		void observed;
 		const session = ref.session;
 		return session && typeof session.getSessionStats === "function" ? session : undefined;
 	}

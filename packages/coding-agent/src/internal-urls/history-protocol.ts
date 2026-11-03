@@ -148,6 +148,16 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		} else {
 			const disk = await this.#resolveFromDisk(ref.id);
 			if (disk) return { ...disk, url: url.href };
+			if (ref.status === "running") {
+				const content = `# ${ref.id} (${formatLifecycle(ref.status)})\n\nNo transcript has been written yet.\n`;
+				return {
+					url: url.href,
+					content,
+					contentType: "text/markdown",
+					size: Buffer.byteLength(content, "utf8"),
+					notes: ["Source: agent registry (no transcript yet)"],
+				};
+			}
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
 		}
 

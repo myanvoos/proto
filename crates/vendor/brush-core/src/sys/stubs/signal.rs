@@ -1,26 +1,19 @@
-
-
 use crate::{error, sys, traps};
-
 
 #[allow(unnameable_types)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Signal {}
 
-
 impl Signal {
-
-		pub fn iterator() -> impl Iterator<Item = Self> {
+	pub fn iterator() -> impl Iterator<Item = Self> {
 		std::iter::empty()
 	}
 
-
-		pub const fn as_str(self) -> &'static str {
+	pub const fn as_str(self) -> &'static str {
 		""
 	}
 
-
-		pub fn from_str(s: &str) -> Result<Self, error::Error> {
+	pub fn from_str(s: &str) -> Result<Self, error::Error> {
 		Err(error::ErrorKind::InvalidSignal(s.into()).into())
 	}
 }
@@ -47,12 +40,10 @@ pub(crate) fn continue_process(_pid: sys::process::ProcessId) -> Result<(), erro
 	Err(error::ErrorKind::NotSupportedOnThisPlatform("continuing process").into())
 }
 
-
 pub fn kill_process(
 	_pid: sys::process::ProcessId,
 	_signal: traps::TrapSignal,
 ) -> Result<(), error::Error> {
-
 	Err(error::ErrorKind::NotSupportedOnThisPlatform("killing process").into())
 }
 

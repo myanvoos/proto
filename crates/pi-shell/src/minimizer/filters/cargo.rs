@@ -24,7 +24,10 @@ pub fn supports(subcommand: Option<&str>) -> bool {
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	let cleaned = primitives::strip_ansi(input);
-	let text = match ctx.subcommand {
+	// Owned because the passthrough arm below moves `cleaned`; allocates only
+	// when cargo waited.
+	let lock_line = first_lock_wait_line(&cleaned).map(str::to_owned);
+	let mut text = match ctx.subcommand {
 		Some("metadata") => input.to_string(),
 		Some("test" | "bench") => failures_only(&cleaned, exit_code),
 		Some("nextest") => filter_nextest(&cleaned),
@@ -35,6 +38,24 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		Some("tree" | "update" | "publish") => compact_general(&cleaned),
 		_ => cleaned,
 	};
+	// The condensing paths drop lock waits as progress noise and the
+	// failed-test, fmt and tree bodies may keep some, but the first one is
+	// the only sign that another cargo (a parallel agent, rust-analyzer) held
+	// the lock. Drop every wait from the body and put the first one back at
+	// the top, once.
+	if !matches!(ctx.subcommand, Some("metadata"))
+		&& let Some(lock_line) = lock_line
+	{
+		let mut body = String::with_capacity(lock_line.len() + 1 + text.len());
+		body.push_str(&lock_line);
+		body.push('\n');
+		for line in text.split_inclusive('\n') {
+			if !line.trim_start().starts_with(LOCK_WAIT_PREFIX) {
+				body.push_str(line);
+			}
+		}
+		text = body;
+	}
 	if text == input {
 		MinimizerOutput::passthrough(input)
 	} else {
@@ -61,8 +82,20 @@ fn is_compiling_noise(line: &str) -> bool {
 		|| trimmed.starts_with("Downloaded ")
 		|| trimmed.starts_with("Locking ")
 		|| trimmed.starts_with("Updating ")
+		// Dropped here as progress noise; `filter` puts the first one back (first_lock_wait_line).
 		|| trimmed.starts_with("Blocking ")
 		|| is_generated_warnings_rollup(trimmed)
+}
+
+const LOCK_WAIT_PREFIX: &str = "Blocking waiting for file lock";
+
+/// First `Blocking waiting for file lock on <what>` line, trimmed of cargo's
+/// right alignment. Repeats and later lock waits collapse into this one line.
+fn first_lock_wait_line(input: &str) -> Option<&str> {
+	input
+		.lines()
+		.map(str::trim)
+		.find(|line| line.starts_with(LOCK_WAIT_PREFIX))
 }
 
 fn is_generated_warnings_rollup(trimmed: &str) -> bool {

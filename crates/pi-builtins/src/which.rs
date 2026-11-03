@@ -1,31 +1,18 @@
-
-
-
-
 use std::io::Write;
 
-use brush_core::{
-	ShellExtensions,
-	builtins::Registration,
-	pathsearch,
-	sys,
-};
+use brush_core::{ShellExtensions, builtins::Registration, pathsearch, sys};
 use clap::Parser;
 
 use crate::host::{Host, Utility, util};
 
-
 #[derive(Parser, Debug)]
 #[command(name = "which", about = "Locate a command's executable in the shell's PATH")]
 pub(crate) struct WhichCli {
-
 	#[arg(short = 'a', long = "all")]
 	all: bool,
 
-
 	#[arg(short = 's')]
 	silent: bool,
-
 
 	#[arg(value_name = "name")]
 	names: Vec<String>,
@@ -36,7 +23,6 @@ impl Utility for WhichCli {
 	const USAGE_ERROR: u8 = 2;
 
 	fn run(self, host: &mut Host) -> i32 {
-
 		if self.names.is_empty() {
 			let _ = writeln!(host.stderr, "usage: which [-as] program ...");
 			return 1;
@@ -63,7 +49,6 @@ impl Utility for WhichCli {
 			};
 
 			if matches.is_empty() {
-
 				all_found = false;
 			}
 			if !self.silent {
@@ -77,9 +62,6 @@ impl Utility for WhichCli {
 	}
 }
 
-
 pub(crate) fn which_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<WhichCli, SE>()
 }
-
-

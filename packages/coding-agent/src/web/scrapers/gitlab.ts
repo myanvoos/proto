@@ -138,14 +138,14 @@ async function renderGitLabFile(
 	projectId: number,
 	timeout: number,
 	signal?: AbortSignal,
-): Promise<{ content: string; ok: boolean }> {
+): Promise<{ content: string; ok: boolean; truncated?: boolean }> {
 	const encodedPath = encodeURIComponent(gl.path!);
 	const apiUrl = `https://gitlab.com/api/v4/projects/${projectId}/repository/files/${encodedPath}/raw?ref=${gl.ref}`;
 
 	const result = await loadPage(apiUrl, { timeout, signal });
 	if (!result.ok) return { content: "", ok: false };
 
-	return { content: result.content, ok: true };
+	return { content: result.content, ok: true, truncated: result.truncated };
 }
 
 async function renderGitLabTree(
@@ -284,7 +284,7 @@ async function renderGitLabMR(
 	}
 
 	md += `\n---\n\n## Description\n\n`;
-	md += mr.description ? htmlToBasicMarkdown(mr.description) : "*No description*";
+	md += mr.description ? await htmlToBasicMarkdown(mr.description) : "*No description*";
 
 	return { content: md, ok: true };
 }
@@ -314,6 +314,7 @@ export const handleGitLab: SpecialHandler = async (
 					fetchedAt,
 					notes,
 					contentType: "text/plain",
+					truncated: result.truncated,
 				});
 			}
 			break;

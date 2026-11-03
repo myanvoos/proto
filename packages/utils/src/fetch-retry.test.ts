@@ -1,6 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import { extractRetryHint, fetchWithRetry, isUnexpectedSocketCloseMessage } from "./fetch-retry";
 
+it("network retry failures preserve AggregateError errno causes", async () => {
+	const errno = Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+	const original = new TypeError("fetch failed", { cause: new AggregateError([errno], "all connections failed") });
+	try {
+		await fetchWithRetry("https://example.invalid", {
+			maxAttempts: 1,
+			fetch: async () => {
+				throw original;
+			},
+		});
+		throw new Error("fetch unexpectedly succeeded");
+	} catch (error) {
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).cause).toBe(original);
+	}
+});
+
 describe("extractRetryHint account reset bodies", () => {
 	it.each([
 		["space-separated UTC", "Your limit will reset at 2099-09-01 09:44:51", Date.UTC(2099, 8, 1, 9, 44, 51)],
