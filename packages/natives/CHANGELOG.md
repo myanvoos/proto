@@ -46,7 +46,6 @@
 - Keep accessibility refs stable and make Chromium/Catalyst actions and permission failures actionable.
 - Preserve background input focus, release failed shortcut modifiers and retain exact pixel-scroll distance.
 
-
 ## [19.2.0] - 2026-10-03
 
 ### Changed

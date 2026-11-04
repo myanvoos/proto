@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.0.0] - 2026-11-04
+
 ### Fixed
 
 - Preserve committed text when shrinking a terminal whose empty padding below the cursor is discarded instead of scrolled.
@@ -17,7 +19,6 @@
 - Keep streamed Markdown equivalent to a fresh render for long lists, math, growing tables, wrapped links and wide characters.
 - Refresh autocomplete before same-batch selection and reuse fuzzy searches without stale candidates.
 - Release render caches without losing finalized content or component state.
-
 
 ## [19.2.0] - 2026-10-03
 

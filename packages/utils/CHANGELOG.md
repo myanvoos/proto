@@ -22,7 +22,6 @@
 - Recognize missing descendants of symlinked roots without allowing path escapes.
 - Keep spawned shells on the main-session environment captured after lifecycle hooks.
 
-
 ## [19.2.0] - 2026-10-03
 
 ### Fixed

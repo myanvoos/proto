@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.0.0] - 2026-11-04
+
 ### Breaking Changes
 
 - SDK session forks now return a new independent `AgentSession` instead of replacing the source session; adopt the returned root explicitly.
@@ -57,7 +59,6 @@
 - Improve composer/model/session search responsiveness and release render-only transcript caches.
 - Load large bundled JSON from compressed assets and reuse isolated development startup and verified shell setup.
 
-
 ### Fixed
 
 - Cancelling a subagent's memory compaction no longer crashes the main session and the rest of the agent fleet.
@@ -96,7 +97,6 @@
 - Preserve linked skill roots and configured shell environments without leaking shared kernel ownership into logs.
 - Keep compiled extensions and compressed assets resolvable, use valid baseline-musl release targets and finish guarded startup/shutdown safely.
 
-
 ### Added
 
 - Use DeepSeek web search and target X posts or accounts through xAI search.
@@ -108,7 +108,6 @@
 - Configure per-worker request budgets, advisor targets and continuation severity; observe live worker request, cost, context and activity progress.
 - Configure assistant prose color, collapsed advisor-note limits, image-count budgets, cl100k tokenization and protolens notice visibility.
 - Wait for newly opened desktop windows and use chained accessibility refs and double-clicks.
-
 
 ## [19.2.0] - 2026-10-03
 

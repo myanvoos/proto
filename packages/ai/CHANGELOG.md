@@ -39,7 +39,6 @@
 - Redact credential headers in debug dumps, avoid duplicate error bodies and retain capped-request permits through terminal drains.
 - Preserve safe OAuth callback text, refresh Cursor sessions reliably and retain account identity for GitHub and Google sign-ins.
 
-
 ## [19.2.0] - 2026-10-03
 
 ### Fixed

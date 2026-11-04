@@ -16,7 +16,6 @@
 - Preserve pending cleanup and file-chooser ownership through reconnects without replying on replaced sockets.
 - Keep compatible relay versions usable and distinguish stale-relay recovery from disconnected-extension recovery.
 
-
 ## [18.5.0] - 2026-09-23
 
 ### Changed

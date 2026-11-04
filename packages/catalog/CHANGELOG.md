@@ -23,7 +23,6 @@
 - Respect discovered token caps, paginate LiteLLM rosters and exclude disabled or retired deployments.
 - Scope image, sampling, thinking-off, replay and shared-cache policies to verified models and routes.
 
-
 ## [19.2.0] - 2026-10-03
 
 ### Changed

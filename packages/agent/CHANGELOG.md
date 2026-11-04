@@ -16,7 +16,6 @@
 - Keep pruning and image-aware context accounting conservative, and apply tool-description pruning changes on subsequent requests.
 - Expose real turn-boundary context to loop guards so injected progress resets stalled-call detection without treating tool results as new prompts.
 
-
 ## [19.2.0] - 2026-10-03
 
 ### Added
